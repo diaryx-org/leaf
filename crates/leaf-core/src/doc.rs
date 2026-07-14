@@ -16,7 +16,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
-use twig::{BlockKind, Editor, FlatNode, Format, InlineKind};
+use twig::{BlockKind, Change, Editor, FlatNode, Format, InlineKind};
 
 use crate::wysiwyg::{self, VisualMap};
 
@@ -27,6 +27,16 @@ pub enum View {
     Source,
     /// Markup resolved to real styles, caret riding the rendered glyphs.
     Wysiwyg,
+}
+
+/// What kind of edit produced an undo group. Same-kind edits in a row coalesce
+/// into one undo step (a run of typed characters undoes together); `Other` never
+/// coalesces, so a paste, format toggle, or block change is always its own step.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EditKind {
+    Insert,
+    Delete,
+    Other,
 }
 
 pub struct Doc {
@@ -43,6 +53,13 @@ pub struct Doc {
     pub dirty: bool,
     pub status: Option<String>,
     pub view: View,
+    /// The kind of the last edit, for coalescing: twig owns the undo *history*
+    /// (see `undo`/`redo`), but "what counts as one undo step" is a frontend-UX
+    /// call, so leaf decides when a run continues and tells twig to coalesce.
+    last_edit_kind: Option<EditKind>,
+    /// The source as of the last open/save — `dirty` is `source != clean_source`,
+    /// so undoing back to the saved state correctly clears the modified flag.
+    clean_source: String,
     /// The "sticky" column vertical motion aims for, in the active view's
     /// column space. Set on the first `move_up`/`move_down` of a run and
     /// reused by every subsequent one in that run, so passing through a
@@ -70,12 +87,14 @@ impl Doc {
             editor,
             format,
             path,
+            clean_source: source.clone(),
             source,
             caret: 0,
             anchor: None,
             dirty: false,
             status: None,
             view: View::Source,
+            last_edit_kind: None,
             goal_col: None,
             vmap: VisualMap::default(),
             scroll: 0,
@@ -169,30 +188,37 @@ impl Doc {
     /// hit-tests to a byte offset (or an IME that hands back an explicit range)
     /// edits through this, the same twig `edit_range` the caret ops use.
     pub fn edit(&mut self, start: usize, end: usize, text: &str) {
-        self.splice(start, end, text);
+        self.splice(start, end, text, EditKind::Other);
     }
 
-    /// Insert `text` at the caret, replacing the selection if there is one.
+    /// Insert `text` at the caret, replacing the selection if there is one. A
+    /// single typed character coalesces with the run of typing before it; a
+    /// newline or a multi-character insert (a paste) is its own undo step.
     pub fn insert(&mut self, text: &str) {
         let (s, e) = self.selection().unwrap_or((self.caret, self.caret));
-        self.splice(s, e, text);
+        let kind = if text.chars().take(2).count() == 1 && text != "\n" {
+            EditKind::Insert
+        } else {
+            EditKind::Other
+        };
+        self.splice(s, e, text, kind);
     }
 
     pub fn backspace(&mut self) {
         if let Some((s, e)) = self.selection() {
-            self.splice(s, e, "");
+            self.splice(s, e, "", EditKind::Other);
         } else if self.caret > 0 {
             let prev = prev_boundary(&self.source, self.caret);
-            self.splice(prev, self.caret, "");
+            self.splice(prev, self.caret, "", EditKind::Delete);
         }
     }
 
     pub fn delete_forward(&mut self) {
         if let Some((s, e)) = self.selection() {
-            self.splice(s, e, "");
+            self.splice(s, e, "", EditKind::Other);
         } else if self.caret < self.source.len() {
             let next = next_boundary(&self.source, self.caret);
-            self.splice(self.caret, next, "");
+            self.splice(self.caret, next, "", EditKind::Delete);
         }
     }
 
@@ -200,11 +226,11 @@ impl Doc {
     /// Ctrl+⌫). Deletes the selection instead when one is active.
     pub fn delete_word_back(&mut self) {
         if let Some((s, e)) = self.selection() {
-            self.splice(s, e, "");
+            self.splice(s, e, "", EditKind::Other);
         } else {
             let start = prev_word(&self.source, self.caret);
             if start < self.caret {
-                self.splice(start, self.caret, "");
+                self.splice(start, self.caret, "", EditKind::Delete);
             }
         }
     }
@@ -213,11 +239,11 @@ impl Doc {
     /// Ctrl+Del). Deletes the selection instead when one is active.
     pub fn delete_word_forward(&mut self) {
         if let Some((s, e)) = self.selection() {
-            self.splice(s, e, "");
+            self.splice(s, e, "", EditKind::Other);
         } else {
             let end = next_word(&self.source, self.caret);
             if end > self.caret {
-                self.splice(self.caret, end, "");
+                self.splice(self.caret, end, "", EditKind::Delete);
             }
         }
     }
@@ -225,14 +251,22 @@ impl Doc {
     /// One splice via twig's `edit_range`, then re-anchor the caret from the
     /// returned `Change` and refresh the cached source. A reparse-breaking edit
     /// (rare for Markdown/Djot) leaves the document untouched and reports.
-    fn splice(&mut self, start: usize, end: usize, text: &str) {
+    fn splice(&mut self, start: usize, end: usize, text: &str, kind: EditKind) {
+        // twig records an undo step for every edit; when this one continues a
+        // run of the same kind (typing, deleting), tell twig to fold it into the
+        // step before it so the whole run undoes at once.
+        let coalesce = kind != EditKind::Other && self.last_edit_kind == Some(kind);
         match self.editor.edit_range(start, end, text) {
             Ok(change) => {
+                if coalesce {
+                    let _ = self.editor.coalesce_last_undo();
+                }
+                self.last_edit_kind = Some(kind);
                 self.refresh();
                 self.caret = change.new.end;
                 self.anchor = None;
                 self.goal_col = None;
-                self.dirty = true;
+                self.dirty = self.source != self.clean_source;
                 self.status = None;
             }
             Err(e) => self.status = Some(format!("edit: {e}")),
@@ -248,10 +282,11 @@ impl Doc {
         };
         match self.editor.toggle_inline(s, e, kind) {
             Ok(change) => {
+                self.last_edit_kind = None; // structural edit is its own undo step
                 self.refresh();
                 self.anchor = Some(change.new.start);
                 self.caret = change.new.end;
-                self.dirty = true;
+                self.dirty = self.source != self.clean_source;
                 self.status = None;
             }
             Err(e) => self.status = Some(format!("{kind:?}: {e}")),
@@ -262,19 +297,57 @@ impl Doc {
     pub fn set_block(&mut self, kind: BlockKind) {
         match self.editor.set_block(self.caret, kind) {
             Ok(_) => {
+                self.last_edit_kind = None;
                 self.refresh();
                 self.clamp_caret();
                 self.anchor = None;
-                self.dirty = true;
+                self.dirty = self.source != self.clean_source;
                 self.status = None;
             }
             Err(e) => self.status = Some(format!("{kind:?}: {e}")),
         }
     }
 
+    // ── undo / redo ───────────────────────────────────────────────────────────
+    // twig owns the history (it owns the buffer); leaf just drives it and
+    // re-anchors the caret from the returned `Change`. See `splice` for how a
+    // run of keystrokes is coalesced into one step via `coalesce_last_undo`.
+
+    /// Undo the last edit step (⌘Z / ^Z).
+    pub fn undo(&mut self) {
+        match self.editor.undo() {
+            Ok(Some(change)) => self.after_history(change),
+            Ok(None) => self.status = Some("nothing to undo".into()),
+            Err(e) => self.status = Some(format!("undo: {e}")),
+        }
+    }
+
+    /// Redo the last undone edit step (⇧⌘Z / ^Y).
+    pub fn redo(&mut self) {
+        match self.editor.redo() {
+            Ok(Some(change)) => self.after_history(change),
+            Ok(None) => self.status = Some("nothing to redo".into()),
+            Err(e) => self.status = Some(format!("redo: {e}")),
+        }
+    }
+
+    /// Refresh the cached source and re-anchor the caret to where an undo/redo
+    /// landed (the end of the changed region), clearing any active run.
+    fn after_history(&mut self, change: Change) {
+        self.refresh();
+        self.caret = change.new.end.min(self.source.len());
+        self.anchor = None;
+        self.goal_col = None;
+        self.last_edit_kind = None;
+        self.dirty = self.source != self.clean_source;
+        self.status = None;
+        self.clamp_caret();
+    }
+
     pub fn save(&mut self) {
         match std::fs::write(&self.path, self.source.as_bytes()) {
             Ok(()) => {
+                self.clean_source = self.source.clone();
                 self.dirty = false;
                 self.status = Some(format!("saved {}", self.file_name()));
             }
@@ -308,6 +381,7 @@ impl Doc {
         self.anchor = Some(0);
         self.caret = self.source.len();
         self.goal_col = None;
+        self.last_edit_kind = None;
         self.status = None;
     }
 
@@ -319,6 +393,7 @@ impl Doc {
         self.anchor = Some(s);
         self.caret = e;
         self.goal_col = None;
+        self.last_edit_kind = None;
         self.status = None;
         self.clamp_caret();
     }
@@ -349,6 +424,7 @@ impl Doc {
         self.anchor = Some(range.start.min(self.source.len()));
         self.caret = range.end.min(self.source.len());
         self.goal_col = None;
+        self.last_edit_kind = None;
         self.status = None;
         self.clamp_caret();
     }
@@ -363,6 +439,9 @@ impl Doc {
         }
         self.caret = offset.min(self.source.len());
         self.status = None;
+        // A caret move ends the current typing/deletion run, so the next edit
+        // starts a fresh undo group rather than coalescing across the gap.
+        self.last_edit_kind = None;
     }
 
     // In the source view, motion walks source bytes / source lines. In the
@@ -970,6 +1049,90 @@ mod tests {
         let (row, _) = d.caret_pos();
         assert!(row >= 2, "caret should have moved down to the new line, got row {row}");
         assert!(d.vmap.num_rows() >= 3, "the blank lines should render as rows");
+    }
+
+    #[test]
+    fn undo_then_redo_round_trips_an_edit() {
+        let mut d = doc_with("undo", "hello\n");
+        d.caret = 5;
+        d.insert("!");
+        assert_eq!(d.source, "hello!\n");
+        d.undo();
+        assert_eq!(d.source, "hello\n");
+        assert_eq!(d.caret, 5, "undo restores the caret");
+        d.redo();
+        assert_eq!(d.source, "hello!\n");
+    }
+
+    #[test]
+    fn a_run_of_typing_undoes_as_one_step() {
+        let mut d = doc_with("coalesce", "\n");
+        d.caret = 0;
+        d.insert("a");
+        d.insert("b");
+        d.insert("c");
+        assert_eq!(d.source, "abc\n");
+        d.undo(); // the whole typed run, not just "c"
+        assert_eq!(d.source, "\n");
+        d.undo(); // nothing left — the run was one step
+        assert_eq!(d.source, "\n");
+        assert_eq!(d.status.as_deref(), Some("nothing to undo"));
+    }
+
+    #[test]
+    fn moving_the_caret_starts_a_new_undo_group() {
+        let mut d = doc_with("break", "\n");
+        d.caret = 0;
+        d.insert("a");
+        d.insert("b"); // "ab\n", caret at 2
+        d.move_left(false); // breaks the run
+        d.insert("X"); // "aXb\n"
+        assert_eq!(d.source, "aXb\n");
+        d.undo();
+        assert_eq!(d.source, "ab\n", "first undo removes only the post-move insert");
+        d.undo();
+        assert_eq!(d.source, "\n", "second undo removes the earlier run");
+    }
+
+    #[test]
+    fn undo_reverses_a_format_toggle() {
+        let mut d = doc_with("fmt_undo", "a word b\n");
+        d.anchor = Some(2);
+        d.caret = 6;
+        d.toggle(InlineKind::Strong);
+        assert_eq!(d.source, "a **word** b\n");
+        d.undo();
+        assert_eq!(d.source, "a word b\n");
+    }
+
+    #[test]
+    fn undo_back_to_the_saved_state_clears_dirty() {
+        let mut d = doc_with("dirty_undo", "hello\n");
+        assert!(!d.dirty);
+        d.caret = 5;
+        d.insert("!");
+        assert!(d.dirty);
+        d.undo();
+        assert!(!d.dirty, "undoing to the saved source is not a modification");
+    }
+
+    #[test]
+    fn a_new_edit_invalidates_redo() {
+        let mut d = doc_with("redo_inv", "\n");
+        d.caret = 0;
+        d.insert("a");
+        d.undo();
+        d.insert("b"); // diverges — the redo of "a" is now gone
+        d.redo();
+        assert_eq!(d.source, "b\n");
+    }
+
+    #[test]
+    fn undo_on_empty_history_is_a_no_op() {
+        let mut d = doc_with("undo_empty", "hi\n");
+        d.undo();
+        assert_eq!(d.source, "hi\n");
+        assert_eq!(d.status.as_deref(), Some("nothing to undo"));
     }
 
     #[test]

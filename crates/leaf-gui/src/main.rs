@@ -54,6 +54,8 @@ actions!(
         Heading6,
         // Clipboard (⌘C/⌘X/⌘V), backed by gpui's own clipboard — no external crate.
         Copy, Cut, Paste,
+        // History (⌘Z / ⇧⌘Z).
+        Undo, Redo,
     ]
 );
 
@@ -259,6 +261,18 @@ impl Editor {
     fn save(&mut self, _: &Save, _: &mut Window, cx: &mut Context<Self>) {
         let Some(doc) = self.doc.as_mut() else { return };
         doc.save();
+        cx.notify();
+    }
+    fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_mut() else { return };
+        doc.undo();
+        self.scroll_caret_into_view();
+        cx.notify();
+    }
+    fn redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_mut() else { return };
+        doc.redo();
+        self.scroll_caret_into_view();
         cx.notify();
     }
     fn toggle_view(&mut self, _: &ToggleView, _: &mut Window, cx: &mut Context<Self>) {
@@ -1239,6 +1253,8 @@ impl Render for Editor {
             .on_action(cx.listener(Self::toggle_italic))
             .on_action(cx.listener(Self::toggle_view))
             .on_action(cx.listener(Self::save))
+            .on_action(cx.listener(Self::undo))
+            .on_action(cx.listener(Self::redo))
             .on_action(cx.listener(Self::move_word_left))
             .on_action(cx.listener(Self::move_word_right))
             .on_action(cx.listener(Self::select_word_left))
@@ -1347,6 +1363,8 @@ fn main() {
             KeyBinding::new("cmd-i", ToggleItalic, None),
             KeyBinding::new("cmd-e", ToggleView, None),
             KeyBinding::new("cmd-s", Save, None),
+            KeyBinding::new("cmd-z", Undo, None),
+            KeyBinding::new("cmd-shift-z", Redo, None),
             KeyBinding::new("cmd-q", Quit, None),
             // Word motion / deletion — the macOS convention, mirroring
             // leaf-core's move_word_left/right and delete_word_back/forward.

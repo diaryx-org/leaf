@@ -114,6 +114,10 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
             KeyCode::Char('c') => clipboard_copy(doc),
             KeyCode::Char('x') => clipboard_cut(doc),
             KeyCode::Char('v') => clipboard_paste(doc),
+            // ^Z undo, ^⇧Z or ^Y redo.
+            KeyCode::Char('z') | KeyCode::Char('Z') if shift => doc.redo(),
+            KeyCode::Char('z') | KeyCode::Char('Z') => doc.undo(),
+            KeyCode::Char('y') | KeyCode::Char('Y') => doc.redo(),
             _ => {}
         }
         return Flow::Continue;

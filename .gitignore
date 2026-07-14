@@ -1,4 +1,3 @@
 /target
 /.obsidian
-# Background-agent git worktrees (transient)
-/.claude/worktrees/
+/.claude/
