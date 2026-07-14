@@ -243,6 +243,12 @@ impl Editor {
         cx.notify();
     }
 
+    /// Debug snapshot of caret state: `(caret, selection anchor, source len)`.
+    /// Used by the iOS toolbar logging to diagnose command behaviour.
+    pub fn caret_debug(&self) -> Option<(usize, Option<usize>, usize)> {
+        self.doc.as_ref().map(|d| (d.caret, d.anchor, d.source.len()))
+    }
+
     /// Run a command programmatically (native toolbar, menu, etc.), equivalent
     /// to invoking the corresponding keybound action.
     pub fn run_command(&mut self, cmd: EditorCommand, window: &mut Window, cx: &mut Context<Self>) {

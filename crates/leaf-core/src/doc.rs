@@ -988,6 +988,25 @@ mod tests {
     }
 
     #[test]
+    fn toggle_code_wraps_then_unwraps_the_selection() {
+        let mut d = doc_with("code_rt", "a word b\n");
+        d.anchor = Some(2);
+        d.caret = 6;
+        d.toggle(InlineKind::Verbatim);
+        assert_eq!(d.source, "a `word` b\n");
+        d.toggle(InlineKind::Verbatim);
+        assert_eq!(d.source, "a word b\n");
+    }
+
+    #[test]
+    fn set_block_turns_a_paragraph_into_a_heading_at_the_caret() {
+        let mut d = doc_with("head_set", "hello\n");
+        d.caret = 2; // caret inside the paragraph, no selection
+        d.set_block(BlockKind::Heading(1));
+        assert_eq!(d.source, "# hello\n");
+    }
+
+    #[test]
     fn set_block_makes_a_heading_at_the_caret() {
         let mut d = doc_with("head", "Title\n\nbody\n");
         d.caret = 0;

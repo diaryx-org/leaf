@@ -84,13 +84,22 @@ mod ios {
         };
         // Re-enter the gpui app — we're on the main thread but outside gpui's own
         // event dispatch (a UIKit button tap) — and run the command on the editor.
-        gpui_mobile::ios::ffi::with_app(|cx| {
-            if let Err(e) = win.update(cx, |editor, window, cx| {
+        let ran = gpui_mobile::ios::ffi::with_app(|cx| {
+            win.update(cx, |editor, window, cx| {
+                let before = editor.caret_debug();
                 editor.run_command(cmd, window, cx);
-            }) {
-                log::error!("leaf-ios: toolbar command failed: {e:?}");
-            }
+                let after = editor.caret_debug();
+                // (caret, selection anchor, source len). If `anchor` is None the
+                // inline toggles no-op; if `len` is unchanged the command made no
+                // edit (e.g. heading on an already-heading line).
+                log::info!("leaf-ios: cmd {id} {cmd:?} — before={before:?} after={after:?}");
+            })
         });
+        match ran {
+            None => log::warn!("leaf-ios: cmd {id} — app not running"),
+            Some(Err(e)) => log::error!("leaf-ios: cmd {id} failed: {e:?}"),
+            Some(Ok(())) => {}
+        }
     }
 
     /// Open a fullscreen window whose root view is the leaf `Editor`.

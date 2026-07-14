@@ -160,31 +160,63 @@ extern void leaf_ios_cmd(uint32_t cmd_id);
 static LeafToolbarActions *gLeafToolbarActions = nil;
 static UIToolbar *gLeafToolbar = nil;
 
-static UIBarButtonItem *LeafBtn(NSString *title, SEL action) {
+// An SF Symbol button, falling back to a text title if the symbol is
+// unavailable (so a button is never blank).
+static UIBarButtonItem *LeafSym(NSString *symbol, NSString *fallback, SEL action) {
+    UIImage *img = [UIImage systemImageNamed:symbol];
+    if (img) {
+        return [[UIBarButtonItem alloc] initWithImage:img
+                                                style:UIBarButtonItemStylePlain
+                                               target:gLeafToolbarActions
+                                               action:action];
+    }
+    return [[UIBarButtonItem alloc] initWithTitle:fallback
+                                            style:UIBarButtonItemStylePlain
+                                           target:gLeafToolbarActions
+                                           action:action];
+}
+
+static UIBarButtonItem *LeafText(NSString *title, SEL action) {
     return [[UIBarButtonItem alloc] initWithTitle:title
                                             style:UIBarButtonItemStylePlain
                                            target:gLeafToolbarActions
                                            action:action];
 }
 
+static UIBarButtonItem *LeafFlex(void) {
+    return [[UIBarButtonItem alloc]
+        initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
+}
+
 static void leaf_install_toolbar(void) {
     gLeafToolbarActions = [[LeafToolbarActions alloc] init];
     CGFloat width = [UIScreen mainScreen].bounds.size.width;
     UIToolbar *tb = [[UIToolbar alloc] initWithFrame:CGRectMake(0, 0, width, 44)];
-    UIBarButtonItem *flex = [[UIBarButtonItem alloc]
-        initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
-    tb.items = @[
-        LeafBtn(@"B",   @selector(bold)),
-        LeafBtn(@"I",   @selector(italic)),
-        LeafBtn(@"</>", @selector(code)),
-        LeafBtn(@"H1",  @selector(h1)),
-        LeafBtn(@"H2",  @selector(h2)),
-        LeafBtn(@"¶",   @selector(body)),
-        flex,
-        LeafBtn(@"↔",   @selector(toggleView)),
-        LeafBtn(@"↶",   @selector(undo)),
-        LeafBtn(@"↷",   @selector(redo)),
+
+    // SF Symbols keep the buttons compact and native; headings stay as short
+    // text since there is no clean symbol for them.
+    NSArray<UIBarButtonItem *> *buttons = @[
+        LeafSym(@"bold",   @"B",   @selector(bold)),
+        LeafSym(@"italic", @"I",   @selector(italic)),
+        LeafSym(@"chevron.left.forwardslash.chevron.right", @"</>", @selector(code)),
+        LeafText(@"H1",  @selector(h1)),
+        LeafText(@"H2",  @selector(h2)),
+        LeafSym(@"paragraphsign", @"¶", @selector(body)),
+        LeafSym(@"textformat",    @"Aa", @selector(toggleView)),
+        LeafSym(@"arrow.uturn.backward", @"Undo", @selector(undo)),
+        LeafSym(@"arrow.uturn.forward",  @"Redo", @selector(redo)),
     ];
+
+    // Interleave flexible spaces so the buttons spread evenly across the bar
+    // instead of clustering on the left and overflowing.
+    NSMutableArray<UIBarButtonItem *> *items = [NSMutableArray array];
+    [items addObject:LeafFlex()];
+    for (NSUInteger i = 0; i < buttons.count; i++) {
+        [items addObject:buttons[i]];
+        [items addObject:LeafFlex()];
+    }
+    tb.items = items;
+
     [tb sizeToFit];
     gLeafToolbar = tb;
     gpui_ios_set_input_accessory_view((__bridge void *)tb);
