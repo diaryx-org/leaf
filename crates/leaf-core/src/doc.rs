@@ -94,7 +94,11 @@ impl Doc {
             anchor: None,
             dirty: false,
             status: None,
-            view: View::Source,
+            // leaf opens in the rich-text (WYSIWYG) view by default — the
+            // markup-resolved surface is leaf's differentiator. Frontends can
+            // still start in source view explicitly (e.g. a CLI flag), and ⌘e/⌥w
+            // toggles at runtime.
+            view: View::Wysiwyg,
             last_edit_kind: None,
             goal_col: None,
             vmap: VisualMap::default(),
@@ -809,11 +813,16 @@ fn line_end_from(s: &str, start: usize) -> usize {
 mod tests {
     use super::*;
 
+    // Source-view document for the source-behaviour tests. `Doc::open` now
+    // defaults to WYSIWYG (leaf's default view), so pin the source view here;
+    // `wysiwyg_doc` builds the rich-text variant on top of this.
     fn doc_with(name: &str, body: &str) -> Doc {
         let mut p = std::env::temp_dir();
         p.push(format!("leaf_test_{name}.md"));
         std::fs::write(&p, body).unwrap();
-        Doc::open(p).unwrap()
+        let mut d = Doc::open(p).unwrap();
+        d.view = View::Source;
+        d
     }
 
     // ── golden-case harness ──────────────────────────────────────────────────

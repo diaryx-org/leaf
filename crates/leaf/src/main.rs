@@ -183,16 +183,18 @@ impl Focusable for LeafApp {
 
 fn main() {
     // `leaf-gui <file> [wysiwyg|source]` — the optional second arg picks the
-    // starting view. With no file we open to the empty `+` canvas.
+    // starting view. leaf defaults to the rich-text (WYSIWYG) view; pass
+    // `source` to start in raw source. With no file we open to the empty `+` canvas.
     let args: Vec<String> = std::env::args().skip(1).collect();
     let doc: Option<Doc> = match args.first() {
         None => None,
         Some(path) => {
-            let start_wysiwyg = args.get(1).map(|s| s == "wysiwyg").unwrap_or(false);
             match Doc::open(PathBuf::from(path)) {
                 Ok(mut d) => {
-                    if start_wysiwyg {
-                        d.view = View::Wysiwyg;
+                    match args.get(1).map(|s| s.as_str()) {
+                        Some("source") => d.view = View::Source,
+                        Some("wysiwyg") => d.view = View::Wysiwyg,
+                        _ => {} // keep Doc::open's default (WYSIWYG)
                     }
                     Some(d)
                 }
