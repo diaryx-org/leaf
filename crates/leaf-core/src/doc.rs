@@ -43,6 +43,12 @@ pub struct Doc {
     pub dirty: bool,
     pub status: Option<String>,
     pub view: View,
+    /// The "sticky" column vertical motion aims for, in the active view's
+    /// column space. Set on the first `move_up`/`move_down` of a run and
+    /// reused by every subsequent one in that run, so passing through a
+    /// shorter line doesn't permanently forget the original column. Any
+    /// horizontal motion or edit clears it.
+    goal_col: Option<usize>,
     /// The rendered map for the WYSIWYG view, rebuilt each frame; empty in the
     /// source view. Movement and clicks read it to stay in visible space.
     pub vmap: VisualMap,
@@ -70,6 +76,7 @@ impl Doc {
             dirty: false,
             status: None,
             view: View::Source,
+            goal_col: None,
             vmap: VisualMap::default(),
             scroll: 0,
             body_origin: (0, 0),
@@ -216,6 +223,7 @@ impl Doc {
                 self.refresh();
                 self.caret = change.new.end;
                 self.anchor = None;
+                self.goal_col = None;
                 self.dirty = true;
                 self.status = None;
             }
@@ -282,6 +290,7 @@ impl Doc {
     /// the selection when `extend` is set. The public form of `move_to`, for a
     /// frontend that hit-tests pixels straight to a source offset.
     pub fn place_caret(&mut self, offset: usize, extend: bool) {
+        self.goal_col = None;
         self.move_to(offset, extend);
         self.clamp_caret();
     }
@@ -290,6 +299,7 @@ impl Doc {
     pub fn select_all(&mut self) {
         self.anchor = Some(0);
         self.caret = self.source.len();
+        self.goal_col = None;
         self.status = None;
     }
 
@@ -300,6 +310,7 @@ impl Doc {
         let (s, e) = word_range_at(&self.source, offset.min(self.source.len()));
         self.anchor = Some(s);
         self.caret = e;
+        self.goal_col = None;
         self.status = None;
         self.clamp_caret();
     }
@@ -321,6 +332,13 @@ impl Doc {
     // what steps the caret cleanly over hidden delimiters.
 
     pub fn move_left(&mut self, extend: bool) {
+        self.goal_col = None;
+        if !extend {
+            if let Some((s, _e)) = self.selection() {
+                self.move_to(s, false);
+                return;
+            }
+        }
         let target = match self.view {
             View::Source => {
                 if self.caret > 0 {
@@ -344,6 +362,13 @@ impl Doc {
     }
 
     pub fn move_right(&mut self, extend: bool) {
+        self.goal_col = None;
+        if !extend {
+            if let Some((_s, e)) = self.selection() {
+                self.move_to(e, false);
+                return;
+            }
+        }
         let target = match self.view {
             View::Source => {
                 if self.caret < self.source.len() {
@@ -370,43 +395,48 @@ impl Doc {
     /// are computed over the source in both views, since the source is the
     /// document of record and the caret is always a source offset.
     pub fn move_word_left(&mut self, extend: bool) {
+        self.goal_col = None;
         let target = prev_word(&self.source, self.caret);
         self.move_to(target, extend);
     }
 
     /// Move to the end of the next word (⌥→ / Ctrl+→).
     pub fn move_word_right(&mut self, extend: bool) {
+        self.goal_col = None;
         let target = next_word(&self.source, self.caret);
         self.move_to(target, extend);
     }
 
     pub fn move_up(&mut self, extend: bool) {
         let (row, col) = self.caret_pos();
+        let goal = *self.goal_col.get_or_insert(col);
         if row == 0 {
             return;
         }
         let target = match self.view {
-            View::Source => row_col_to_offset(&self.source, row - 1, col),
-            View::Wysiwyg => self.vmap.offset_of_pos(row - 1, col.min(self.vmap.row_len(row - 1))),
+            View::Source => row_col_to_offset(&self.source, row - 1, goal),
+            View::Wysiwyg => self.vmap.offset_of_pos(row - 1, goal.min(self.vmap.row_len(row - 1))),
         };
         self.move_to(target, extend);
     }
 
     pub fn move_down(&mut self, extend: bool) {
         let (row, col) = self.caret_pos();
+        let goal = *self.goal_col.get_or_insert(col);
         let target = match self.view {
-            View::Source => row_col_to_offset(&self.source, row + 1, col),
+            View::Source => row_col_to_offset(&self.source, row + 1, goal),
             View::Wysiwyg => {
                 if row + 1 >= self.vmap.num_rows() {
                     return;
                 }
-                self.vmap.offset_of_pos(row + 1, col.min(self.vmap.row_len(row + 1)))
+                self.vmap.offset_of_pos(row + 1, goal.min(self.vmap.row_len(row + 1)))
             }
         };
         self.move_to(target, extend);
     }
 
     pub fn move_home(&mut self, extend: bool) {
+        self.goal_col = None;
         let (row, _) = self.caret_pos();
         let target = match self.view {
             View::Source => row_col_to_offset(&self.source, row, 0),
@@ -416,6 +446,7 @@ impl Doc {
     }
 
     pub fn move_end(&mut self, extend: bool) {
+        self.goal_col = None;
         let (row, _) = self.caret_pos();
         let target = match self.view {
             View::Source => line_end(&self.source, row),
@@ -424,8 +455,24 @@ impl Doc {
         self.move_to(target, extend);
     }
 
+    /// Move the caret to the very start of the document (⌘↑ on macOS,
+    /// Ctrl+Home on Windows/Linux).
+    pub fn move_doc_start(&mut self, extend: bool) {
+        self.goal_col = None;
+        self.move_to(0, extend);
+    }
+
+    /// Move the caret to the very end of the document (⌘↓ on macOS,
+    /// Ctrl+End on Windows/Linux).
+    pub fn move_doc_end(&mut self, extend: bool) {
+        self.goal_col = None;
+        let end = self.source.len();
+        self.move_to(end, extend);
+    }
+
     /// Point the caret at the body cell `(row, col)` the mouse landed on.
     pub fn click(&mut self, row: usize, col: usize, extend: bool) {
+        self.goal_col = None;
         let target = match self.view {
             View::Source => row_col_to_offset(&self.source, row, col),
             View::Wysiwyg => self.vmap.offset_of_pos(row, col),
@@ -788,13 +835,18 @@ mod tests {
         // Regression: the blank separator row used to share the previous
         // paragraph's end offset, so Down got pinned at the boundary (while Up
         // still crossed). Both directions must now step through it symmetrically.
+        //
+        // The final offset lands on col 3 (not col 0): the sticky goal column
+        // from "abc"'s end offset survives the blank line's clamp to col 0 and
+        // is restored once "def" is long enough again, per the goal-column
+        // behavior below.
         let mut d = wysiwyg_doc("wys_down", "abc\n\ndef\n");
         d.caret = 3; // end of "abc" (row 0)
         d.move_down(false); // onto the blank separator line
         assert_eq!(d.caret_pos().0, 1, "Down should reach the separator row");
         d.move_down(false); // onto "def"
         assert_eq!(d.caret_pos().0, 2, "Down should reach the second paragraph");
-        assert_eq!(d.caret, 5); // start of "def"
+        assert_eq!(d.caret, 8); // end of "def", col 3 restored
     }
 
     #[test]
@@ -833,6 +885,144 @@ mod tests {
         d.caret = 3; // "abc|d" on row 0, col 3
         d.move_down(false); // row 1 "ef" only has cols 0..2 -> clamps to end
         assert_eq!(d.caret, 7); // just after "ef"
+    }
+
+    // ── goal column ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn vertical_motion_goal_column_survives_a_short_line() {
+        // Regression: re-deriving the column from the clamped position on
+        // every step permanently forgets it once a short line clamps it.
+        // Down through "xy" (2 cols) and into "ghijkl" must return to col 4.
+        let g = |m, f: fn(&mut Doc)| golden("goalcol", m, f);
+        assert_eq!(
+            g("abcd|ef\nxy\nghijkl\n", |d| {
+                d.move_down(false); // clamps to end of "xy"
+                d.move_down(false); // restores col 4 on the long line
+            }),
+            "abcdef\nxy\nghij|kl\n"
+        );
+    }
+
+    #[test]
+    fn goal_column_state_is_set_by_vertical_motion_and_cleared_by_horizontal() {
+        let mut d = doc_with("goalcol_state", "abcdef\nxy\nghijkl\n");
+        assert_eq!(d.goal_col, None);
+        d.caret = 4; // row 0, col 4
+        d.move_down(false); // clamps into "xy"; goal stays the original col
+        assert_eq!(d.goal_col, Some(4));
+        assert_eq!(d.caret_pos(), (1, 2));
+
+        // A horizontal motion drops the goal column...
+        d.move_left(false);
+        assert_eq!(d.goal_col, None);
+
+        // ...so the next vertical motion picks up the *new* column (1), not
+        // the stale one (4).
+        d.move_down(false);
+        assert_eq!(d.goal_col, Some(1));
+        assert_eq!(d.caret_pos(), (2, 1));
+    }
+
+    #[test]
+    fn editing_clears_the_goal_column() {
+        let mut d = doc_with("goalcol_edit", "abcdef\nxy\nghijkl\n");
+        d.caret = 4;
+        d.move_down(false);
+        assert_eq!(d.goal_col, Some(4));
+        d.insert("Z");
+        assert_eq!(d.goal_col, None);
+    }
+
+    #[test]
+    fn vertical_motion_on_an_empty_document_is_a_no_op() {
+        let mut d = doc_with("empty_vert", "");
+        d.move_down(false);
+        assert_eq!(d.caret, 0);
+        d.move_up(false);
+        assert_eq!(d.caret, 0);
+    }
+
+    // ── document start / end ────────────────────────────────────────────────
+
+    #[test]
+    fn move_doc_start_and_end_jump_to_the_edges() {
+        let g = |m, f: fn(&mut Doc)| golden("doc_edges", m, f);
+        assert_eq!(g("hello\nwor|ld\n", |d| d.move_doc_start(false)), "|hello\nworld\n");
+        assert_eq!(g("hel|lo\nworld\n", |d| d.move_doc_end(false)), "hello\nworld\n|");
+        // Already at the edge: a no-op.
+        assert_eq!(g("|hello\n", |d| d.move_doc_start(false)), "|hello\n");
+        assert_eq!(g("hello|\n", |d| d.move_doc_end(false)), "hello\n|");
+    }
+
+    #[test]
+    fn move_doc_start_and_end_extend_the_selection() {
+        assert_eq!(
+            golden("doc_edges_ext_end", "hello wor|ld\n", |d| d.move_doc_end(true)),
+            "hello wor[ld\n|]"
+        );
+        assert_eq!(
+            golden("doc_edges_ext_start", "hello wor|ld\n", |d| d.move_doc_start(true)),
+            "[|hello wor]ld\n"
+        );
+    }
+
+    #[test]
+    fn move_doc_start_and_end_on_an_empty_document_are_a_no_op() {
+        let mut d = doc_with("empty_edges", "");
+        d.move_doc_end(false);
+        assert_eq!(d.caret, 0);
+        d.move_doc_start(false);
+        assert_eq!(d.caret, 0);
+    }
+
+    // ── arrow collapses an active selection ─────────────────────────────────
+
+    #[test]
+    fn arrow_collapses_selection_to_its_near_edge() {
+        let mut d = doc_with("collapse", "hello world\n");
+
+        // Forward selection (anchor before caret): Right -> end, Left -> start.
+        d.anchor = Some(2);
+        d.caret = 7;
+        d.move_right(false);
+        assert_eq!((d.caret, d.anchor), (7, None));
+
+        d.anchor = Some(2);
+        d.caret = 7;
+        d.move_left(false);
+        assert_eq!((d.caret, d.anchor), (2, None));
+
+        // Backward selection (anchor after caret): edges are the same
+        // regardless of which end the caret started on.
+        d.anchor = Some(7);
+        d.caret = 2;
+        d.move_right(false);
+        assert_eq!((d.caret, d.anchor), (7, None));
+
+        d.anchor = Some(7);
+        d.caret = 2;
+        d.move_left(false);
+        assert_eq!((d.caret, d.anchor), (2, None));
+    }
+
+    #[test]
+    fn arrow_with_extend_keeps_growing_the_selection() {
+        let mut d = doc_with("collapse_extend", "hello world\n");
+        d.anchor = Some(2);
+        d.caret = 7;
+        d.move_right(true); // extend: no collapse, caret steps one further
+        assert_eq!((d.caret, d.anchor), (8, Some(2)));
+    }
+
+    #[test]
+    fn arrow_without_a_selection_moves_one_character_as_before() {
+        let mut d = doc_with("no_collapse", "hello\n");
+        d.caret = 2;
+        d.move_right(false);
+        assert_eq!(d.caret, 3);
+        d.move_left(false);
+        assert_eq!(d.caret, 2);
     }
 }
 
