@@ -20,7 +20,7 @@ edition = "2024"
 # wrap_range/toggle_inline/set_block).
 # Published on crates.io as `twig-doc` (the `twig` name is taken); the library's
 # import name is still `twig`, so `package` renames it back for `use twig::…`.
-twig = { version = "1.0.0", package = "twig-doc" }
+twig-doc = { version = "1.0.0" }
 anyhow = "1"
 # Frontend-neutral core: the caret/selection model + AST→glyph map, styled with
 # a toolkit-agnostic Style. Each frontend crate maps that to its own styling.
