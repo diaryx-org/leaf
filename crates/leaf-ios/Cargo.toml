@@ -1,0 +1,40 @@
+[package]
+name = "leaf-ios"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "iOS host for the leaf Editor widget, running on the gpui-mobile platform layer."
+
+[lib]
+name = "leaf_ios"
+# staticlib → libleaf_ios.a for the Xcode target to force_load; lib → allow
+# `cargo build`/tests to see the Rust API too.
+crate-type = ["staticlib", "cdylib", "lib"]
+
+[dependencies]
+# The forked gpui-mobile platform layer, upgraded to gpui bd72919.
+gpui-mobile = { path = "../../../gpui-mobile" }
+# The embeddable editor widget WITHOUT its desktop backend (no gpui_platform).
+leaf-gpui = { path = "../leaf-gpui", default-features = false }
+# The document model — to seed a sample buffer so the editing surface has content.
+leaf-core = { path = "../leaf-core" }
+# Same gpui git rev as leaf-gpui and gpui-mobile so the whole graph resolves a
+# single gpui. default-features = false matches gpui-mobile.
+gpui = { git = "https://github.com/zed-industries/zed", rev = "bd72919555149fc072d33c4fa6805c742a11ee8b", package = "gpui", default-features = false }
+log = "0.4"
+
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.6"
+
+# gpui-mobile is a *path* dependency, so its own [patch] table is ignored — only
+# the workspace root's patches apply. Replicate the async-task fork that gpui
+# (via Zed) pins, otherwise transitive resolution fails to build.
+[patch.crates-io]
+async-task = { git = "https://github.com/smol-rs/async-task.git", rev = "b4486cd71e4e94fbda54ce6302444de14f4d190e" }
+
+# Standalone workspace — deliberately separate from leaf's workspace.
+[workspace]
+
+[profile.dev]
+opt-level = 0
+debug = true

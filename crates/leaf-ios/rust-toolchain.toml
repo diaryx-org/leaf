@@ -1,0 +1,11 @@
+# Same pin as leaf and the gpui-mobile fork: gpui (bd72919) needs the 1.95.0
+# stabilization of std::hint::cold_path. Without this, cargo (including the
+# Xcode pre-build step) falls back to the host default toolchain and, if that is
+# < 1.95.0, fails with `error[E0658]: use of unstable library feature 'cold_path'`.
+[toolchain]
+channel = "1.95.0"
+profile = "minimal"
+targets = [
+    "aarch64-apple-ios-sim",
+    "aarch64-apple-ios",
+]

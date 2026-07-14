@@ -1,6 +1,10 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# leaf-ios is a standalone workspace (it path-deps the external gpui-mobile fork
+# and needs its own [patch] table); keep its heavy gpui/wgpu graph out of this
+# workspace's Cargo.lock. Build it explicitly from crates/leaf-ios.
+exclude = ["crates/leaf-ios"]
 # `cargo run -- file.md` and `cargo build` default to the TUI, so the workspace
 # split doesn't change the everyday UX. leaf-gui, once it grows a binary, is
 # built explicitly with `-p leaf-gui`.
