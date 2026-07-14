@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
 use twig::{BlockKind, Change, Editor, FlatNode, Format, InlineKind};
+use unicode_segmentation::GraphemeCursor;
 
 use crate::wysiwyg::{self, VisualMap};
 
@@ -617,20 +618,19 @@ impl Doc {
 
 // ── byte-offset ⇄ (row, col) helpers ─────────────────────────────────────────
 
+// Left/right motion and backspace/delete step by *grapheme cluster*, not
+// codepoint, so an emoji (a ZWJ sequence) or a base letter plus its combining
+// marks moves and deletes as the single character a user sees. Grapheme
+// boundaries are a superset of char boundaries, so the caret stays valid for twig.
+
 fn prev_boundary(s: &str, i: usize) -> usize {
-    let mut j = i - 1;
-    while j > 0 && !s.is_char_boundary(j) {
-        j -= 1;
-    }
-    j
+    let mut cursor = GraphemeCursor::new(i, s.len(), true);
+    cursor.prev_boundary(s, 0).ok().flatten().unwrap_or(0)
 }
 
 fn next_boundary(s: &str, i: usize) -> usize {
-    let mut j = i + 1;
-    while j < s.len() && !s.is_char_boundary(j) {
-        j += 1;
-    }
-    j
+    let mut cursor = GraphemeCursor::new(i, s.len(), true);
+    cursor.next_boundary(s, 0).ok().flatten().unwrap_or(s.len())
 }
 
 // ── word boundaries ──────────────────────────────────────────────────────────
@@ -1049,6 +1049,32 @@ mod tests {
         let (row, _) = d.caret_pos();
         assert!(row >= 2, "caret should have moved down to the new line, got row {row}");
         assert!(d.vmap.num_rows() >= 3, "the blank lines should render as rows");
+    }
+
+    #[test]
+    fn motion_and_delete_treat_an_emoji_as_one_character() {
+        // 👨‍👩‍👧 is a single grapheme built from three emoji joined by ZWJ — 18
+        // bytes, several codepoints. Right-arrow must clear it in one step, and
+        // backspace must remove the whole cluster, not a stray joiner.
+        let family = "👨‍👩‍👧";
+        let mut d = doc_with("emoji", &format!("a{family}b\n"));
+        d.caret = 1; // just after 'a', before the emoji
+        d.move_right(false);
+        assert_eq!(d.caret, 1 + family.len(), "one step clears the whole cluster");
+        assert_eq!(&d.source[d.caret..d.caret + 1], "b");
+
+        d.backspace(); // delete the emoji as a unit
+        assert_eq!(d.source, "ab\n");
+        assert_eq!(d.caret, 1);
+    }
+
+    #[test]
+    fn motion_handles_a_combining_accent_as_one_character() {
+        // "e" + U+0301 (combining acute) renders as one é.
+        let mut d = doc_with("combining", "e\u{0301}x\n");
+        d.caret = 0;
+        d.move_right(false);
+        assert_eq!(d.caret, "e\u{0301}".len(), "steps past base + combining mark");
     }
 
     #[test]

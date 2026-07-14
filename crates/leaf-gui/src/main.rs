@@ -56,6 +56,11 @@ actions!(
         Copy, Cut, Paste,
         // History (⌘Z / ⇧⌘Z).
         Undo, Redo,
+        // Document start/end (⌘↑ / ⌘↓) and page motion, with ⇧ selecting.
+        DocStart, DocEnd, SelectDocStart, SelectDocEnd,
+        PageUp, PageDown, SelectPageUp, SelectPageDown,
+        // Cancel a pending quit confirmation.
+        Cancel,
     ]
 );
 
@@ -86,6 +91,9 @@ struct Editor {
     /// the goal is recomputed — so we never sprinkle resets across every handler.
     goal_x: Option<Pixels>,
     goal_caret: usize,
+    /// Armed by a ⌘Q on a modified document: the first press warns (in the
+    /// header), a second confirms. Cancelled by ⌘S or Escape.
+    quit_armed: bool,
 }
 
 impl Editor {
@@ -261,7 +269,80 @@ impl Editor {
     fn save(&mut self, _: &Save, _: &mut Window, cx: &mut Context<Self>) {
         let Some(doc) = self.doc.as_mut() else { return };
         doc.save();
+        self.quit_armed = false;
         cx.notify();
+    }
+    fn doc_start(&mut self, _: &DocStart, _: &mut Window, cx: &mut Context<Self>) {
+        self.jump_doc(false, false, cx);
+    }
+    fn doc_end(&mut self, _: &DocEnd, _: &mut Window, cx: &mut Context<Self>) {
+        self.jump_doc(true, false, cx);
+    }
+    fn select_doc_start(&mut self, _: &SelectDocStart, _: &mut Window, cx: &mut Context<Self>) {
+        self.jump_doc(false, true, cx);
+    }
+    fn select_doc_end(&mut self, _: &SelectDocEnd, _: &mut Window, cx: &mut Context<Self>) {
+        self.jump_doc(true, true, cx);
+    }
+    fn jump_doc(&mut self, to_end: bool, extend: bool, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_mut() else { return };
+        self.goal_x = None;
+        if to_end {
+            doc.move_doc_end(extend);
+        } else {
+            doc.move_doc_start(extend);
+        }
+        self.scroll_caret_into_view();
+        cx.notify();
+    }
+    fn page_up(&mut self, _: &PageUp, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_page(-1, false, cx);
+    }
+    fn page_down(&mut self, _: &PageDown, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_page(1, false, cx);
+    }
+    fn select_page_up(&mut self, _: &SelectPageUp, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_page(-1, true, cx);
+    }
+    fn select_page_down(&mut self, _: &SelectPageDown, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_page(1, true, cx);
+    }
+    /// Move the caret a screenful of visual rows in `dir`, reusing the per-row
+    /// vertical target so it rides the pixel wrap exactly like ↑/↓.
+    fn move_page(&mut self, dir: i32, extend: bool, cx: &mut Context<Self>) {
+        if self.doc.is_none() {
+            return;
+        }
+        let rows = self.page_rows();
+        for _ in 0..rows {
+            let Some((off, goal)) = self.vertical_target(dir) else { break };
+            self.goal_x = Some(goal);
+            self.goal_caret = off;
+            self.doc.as_mut().unwrap().place_caret(off, extend);
+        }
+        self.scroll_caret_into_view();
+        cx.notify();
+    }
+    /// Visible rows in the body viewport, minus one for overlap — the page step.
+    fn page_rows(&self) -> usize {
+        let viewport = f32::from(self.scroll_handle.bounds().size.height);
+        let line = f32::from(self.last_line_height).max(1.0);
+        ((viewport / line) as usize).saturating_sub(1).max(1)
+    }
+    fn quit(&mut self, _: &Quit, _: &mut Window, cx: &mut Context<Self>) {
+        let dirty = self.doc.as_ref().is_some_and(|d| d.dirty);
+        if !dirty || self.quit_armed {
+            cx.quit();
+        } else {
+            self.quit_armed = true; // warn once; a second ⌘Q confirms
+            cx.notify();
+        }
+    }
+    fn cancel(&mut self, _: &Cancel, _: &mut Window, cx: &mut Context<Self>) {
+        if self.quit_armed {
+            self.quit_armed = false;
+            cx.notify();
+        }
     }
     fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
         let Some(doc) = self.doc.as_mut() else { return };
@@ -709,6 +790,7 @@ impl EntityInputHandler for Editor {
             doc.edit(range.start, range.end, new_text);
         }
         self.marked_range = None;
+        self.quit_armed = false; // typing means "not quitting after all"
         self.scroll_caret_into_view();
         cx.notify();
     }
@@ -1194,6 +1276,7 @@ impl Render for Editor {
                 .text_color(gpui::rgb(0x1e1e1e))
                 .key_context("Editor")
                 .track_focus(&self.focus_handle(cx))
+                .on_action(cx.listener(Self::quit))
                 .child(
                     div()
                         .id("open-file")
@@ -1222,6 +1305,14 @@ impl Render for Editor {
         let name = doc.file_name();
         let view = doc.view_name();
         let dirty = if doc.dirty { " ●" } else { "" };
+        let header = if self.quit_armed {
+            "Unsaved changes — ⌘Q again to quit without saving, ⌘S to save, Esc to cancel".to_string()
+        } else {
+            format!(
+                "leaf-gui — {name}{dirty}   [{view}]   ⌘e view · ⌘b/⌘i/⌘⇧c/⌘⇧m bold/italic/code/mark · \
+                 ⌃0-6 ¶/heading · ⌥←/→ word, ⌥⌫/⌦ delete · ⌘↑/↓ doc ends · ⌘z/⇧⌘z undo · ⌘s save"
+            )
+        };
 
         div()
             .flex()
@@ -1255,6 +1346,16 @@ impl Render for Editor {
             .on_action(cx.listener(Self::save))
             .on_action(cx.listener(Self::undo))
             .on_action(cx.listener(Self::redo))
+            .on_action(cx.listener(Self::doc_start))
+            .on_action(cx.listener(Self::doc_end))
+            .on_action(cx.listener(Self::select_doc_start))
+            .on_action(cx.listener(Self::select_doc_end))
+            .on_action(cx.listener(Self::page_up))
+            .on_action(cx.listener(Self::page_down))
+            .on_action(cx.listener(Self::select_page_up))
+            .on_action(cx.listener(Self::select_page_down))
+            .on_action(cx.listener(Self::quit))
+            .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::move_word_left))
             .on_action(cx.listener(Self::move_word_right))
             .on_action(cx.listener(Self::select_word_left))
@@ -1287,12 +1388,9 @@ impl Render for Editor {
                     .flex_none()
                     .px_3()
                     .py_1()
-                    .bg(gpui::rgb(0xf0f0f0))
+                    .bg(if self.quit_armed { gpui::rgb(0xffe9b0) } else { gpui::rgb(0xf0f0f0) })
                     .text_color(gpui::rgb(0x555555))
-                    .child(format!(
-                        "leaf-gui — {name}{dirty}   [{view}]   ⌘e view · ⌘b/⌘i/⌘⇧c/⌘⇧m bold/italic/code/mark · \
-                         ⌃0-6 ¶/heading · ⌥←/→ word, ⌥⌫/⌦ delete · ⌘a select all · ⌘c/⌘x/⌘v copy/cut/paste · ⌘s save"
-                    )),
+                    .child(header),
             )
             .child(
                 div()
@@ -1393,8 +1491,19 @@ fn main() {
             KeyBinding::new("cmd-c", Copy, None),
             KeyBinding::new("cmd-x", Cut, None),
             KeyBinding::new("cmd-v", Paste, None),
+            // Document start/end (macOS ⌘↑/⌘↓) and page motion, ⇧ to select.
+            KeyBinding::new("cmd-up", DocStart, None),
+            KeyBinding::new("cmd-down", DocEnd, None),
+            KeyBinding::new("cmd-shift-up", SelectDocStart, None),
+            KeyBinding::new("cmd-shift-down", SelectDocEnd, None),
+            KeyBinding::new("pageup", PageUp, None),
+            KeyBinding::new("pagedown", PageDown, None),
+            KeyBinding::new("shift-pageup", SelectPageUp, None),
+            KeyBinding::new("shift-pagedown", SelectPageDown, None),
+            KeyBinding::new("escape", Cancel, None),
         ]);
-        cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
+        // Quit is handled on the Editor (to confirm unsaved changes); it falls
+        // back to an immediate quit only when no document is open.
 
         let bounds = Bounds::centered(None, size(px(820.0), px(640.0)), cx);
         let window = cx
@@ -1417,6 +1526,7 @@ fn main() {
                         last_row_count: 0,
                         goal_x: None,
                         goal_caret: usize::MAX,
+                        quit_armed: false,
                     })
                 },
             )

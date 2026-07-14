@@ -118,6 +118,9 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
             KeyCode::Char('z') | KeyCode::Char('Z') if shift => doc.redo(),
             KeyCode::Char('z') | KeyCode::Char('Z') => doc.undo(),
             KeyCode::Char('y') | KeyCode::Char('Y') => doc.redo(),
+            // ^Home / ^End jump to the document's start / end.
+            KeyCode::Home => doc.move_doc_start(shift),
+            KeyCode::End => doc.move_doc_end(shift),
             _ => {}
         }
         return Flow::Continue;
@@ -159,9 +162,25 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
         KeyCode::Down => doc.move_down(shift),
         KeyCode::Home => doc.move_home(shift),
         KeyCode::End => doc.move_end(shift),
+        // Page motion: one bodyful of rows, one row kept for overlap.
+        KeyCode::PageUp => {
+            for _ in 0..page_rows(doc) {
+                doc.move_up(shift);
+            }
+        }
+        KeyCode::PageDown => {
+            for _ in 0..page_rows(doc) {
+                doc.move_down(shift);
+            }
+        }
         _ => {}
     }
     Flow::Continue
+}
+
+/// The page step: the body's visible rows minus one for overlap (at least one).
+fn page_rows(doc: &Doc) -> usize {
+    (doc.body_height as usize).saturating_sub(1).max(1)
 }
 
 fn handle_mouse(doc: &mut Doc, m: MouseEvent, app: &mut App) {
