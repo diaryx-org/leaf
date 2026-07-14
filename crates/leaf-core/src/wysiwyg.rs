@@ -39,6 +39,12 @@ pub struct VRow {
 #[derive(Default)]
 pub struct VisualMap {
     pub rows: Vec<VRow>,
+    /// The first source offset that is actually rendered — the caret floor for
+    /// the WYSIWYG view. Non-zero when a leading `metadata` block (YAML/TOML
+    /// frontmatter) is skipped: the frontmatter is preserved in the source and
+    /// editable in the source view, but hidden and unreachable here, so the
+    /// caret and selection can't wander into it (and copy won't grab it).
+    pub content_start: usize,
 }
 
 impl VisualMap {
@@ -103,7 +109,26 @@ pub fn build(nodes: &[FlatNode], source: &str, wrap: Option<usize>) -> VisualMap
     };
     b.blocks(doc, &[], &[]);
     b.emit_trailing_blank_lines();
-    VisualMap { rows: b.rows }
+    let content_start = first_content_offset(nodes, doc);
+    VisualMap {
+        rows: b.rows,
+        content_start,
+    }
+}
+
+/// The source offset of the first *rendered* top-level block — the first child
+/// of `doc` that isn't hidden frontmatter (a `metadata` node). Zero when the
+/// document opens straight into content (or is nothing but frontmatter).
+fn first_content_offset(nodes: &[FlatNode], doc: usize) -> usize {
+    let mut child = nodes[doc].first_child;
+    while let Some(cid) = child {
+        let n = &nodes[cid.0 as usize];
+        if n.kind != "metadata" {
+            return n.span.start;
+        }
+        child = n.next_sibling;
+    }
+    0
 }
 
 struct Builder<'a> {
@@ -133,19 +158,42 @@ impl Builder<'_> {
 
     /// Render a node's block children, a blank separator between each.
     fn blocks(&mut self, id: usize, pf: &[Glyph], pc: &[Glyph]) {
-        for (i, child) in self.children(id).into_iter().enumerate() {
+        // Frontmatter (a leading `metadata` block) is document metadata, not
+        // prose: hide it entirely in the rich-text view. Skipping it here means
+        // no phantom blank rows for its lines and no separator before the first
+        // real block — the document opens straight into its content.
+        let kids: Vec<usize> = self
+            .children(id)
+            .into_iter()
+            .filter(|&c| self.nodes[c].kind != "metadata")
+            .collect();
+        for (i, child) in kids.into_iter().enumerate() {
             if i > 0 {
-                // The blank line between two blocks is a real caret stop, so it
-                // needs its *own* source offset — one strictly past the previous
+                // The blank line(s) between two blocks are real caret stops, each
+                // needing its *own* source offset — one strictly past the previous
                 // block's content, else it collides with that block's last row
-                // and `pos_of_offset` (first-match-wins) would resolve the
-                // caret onto the wrong row, pinning downward motion there.
+                // and `pos_of_offset` (first-match-wins) would resolve the caret
+                // onto the wrong row, pinning downward motion there.
+                //
+                // One row *per* blank source line, not a single collapsed
+                // separator: an empty paragraph opened between two blocks (Enter
+                // in the gap, `…\n\n\n\n…`) must be a navigable empty row, not
+                // vanish — else the caret in it snaps onto the *next* block's
+                // start and Enter looks like it did nothing.
                 let next_start = self.nodes[child].span.start;
-                let end_src = self.blank_line_offset(self.last_off, next_start);
-                self.rows.push(VRow {
-                    glyphs: pc.to_vec(),
-                    end_src,
-                });
+                let mut offs = self.blank_rows_between(self.last_off, next_start);
+                if offs.is_empty() {
+                    // A tight gap with no blank line (e.g. a heading directly
+                    // above its text): keep the one conventional separator row so
+                    // blocks still breathe, as they always have.
+                    offs.push(self.blank_line_offset(self.last_off, next_start));
+                }
+                for end_src in offs {
+                    self.rows.push(VRow {
+                        glyphs: pc.to_vec(),
+                        end_src,
+                    });
+                }
             }
             let first = if i == 0 { pf } else { pc };
             self.block(child, first, pc);
@@ -355,6 +403,43 @@ impl Builder<'_> {
         after_nl.min(next_start.saturating_sub(1)).max(prev_end)
     }
 
+    /// The source offset of each blank row between a block ending at `prev_end`
+    /// and content starting at `next_start` — one per blank source line. The
+    /// first newline terminates the previous block's line; every line it opens up
+    /// to (but not including) the line that holds `next_start` is a blank row the
+    /// caret can occupy. Offsets are unique and ascending so `pos_of_offset`
+    /// resolves each to its own row. Empty when the two blocks are tight (no
+    /// blank line between them).
+    fn blank_rows_between(&self, prev_end: usize, next_start: usize) -> Vec<usize> {
+        // Spans aren't always in tidy source order (e.g. a block after
+        // frontmatter can start *before* the previous block's rendered content
+        // ends). There's no blank line to place then — fall back to the clamped
+        // single separator (an empty return) rather than slicing an inverted
+        // range.
+        if next_start <= prev_end {
+            return Vec::new();
+        }
+        let gap = &self.source[prev_end..next_start];
+        let Some(nl) = gap.find('\n') else {
+            return Vec::new();
+        };
+        // The line holding `next_start` belongs to the next block; blank rows
+        // stop before it.
+        let next_line_start = self.source[..next_start]
+            .rfind('\n')
+            .map_or(0, |p| p + 1);
+        let mut offs = Vec::new();
+        let mut start = prev_end + nl + 1;
+        while start < next_line_start {
+            offs.push(start);
+            match self.source[start..next_start].find('\n') {
+                Some(k) => start += k + 1,
+                None => break,
+            }
+        }
+        offs
+    }
+
     /// Blank lines the user typed past the end of the last block (e.g. two
     /// `Enter`s to open a fresh paragraph) leave no AST node, so nothing renders
     /// and the caret appears stuck on the old line. Reconstruct one empty row
@@ -365,10 +450,19 @@ impl Builder<'_> {
         if last_end >= self.source.len() {
             return;
         }
-        // The first newline after the last content just terminates that line;
-        // every newline beyond it is a blank line the caret can occupy.
+        // The first newline after the last content just terminates that line, so
+        // a lone trailing `\n` (an ordinary file ending) opens no blank row. A
+        // *second* newline opens an empty paragraph: render it the way a block
+        // boundary is rendered — a blank spacer row, then the empty paragraph row
+        // the caret rests on — so the just-pressed-Enter view already shows the
+        // gap it will keep once text is typed, and typing doesn't shift the line
+        // down. One row per trailing newline (each its own caret offset), the
+        // last landing at the document end where the caret sits.
         let extra = self.source[last_end..].matches('\n').count();
-        for k in 1..extra {
+        if extra < 2 {
+            return;
+        }
+        for k in 1..=extra {
             self.rows.push(VRow {
                 glyphs: Vec::new(),
                 end_src: last_end + k,
@@ -489,6 +583,58 @@ mod tests {
         // Every glyph's source byte is preserved in the single row.
         let text: String = unwrapped.rows[0].glyphs.iter().map(|g| g.ch).collect();
         assert_eq!(text.trim_end(), long.trim_end());
+    }
+
+    #[test]
+    fn an_empty_paragraph_between_blocks_renders_its_own_rows() {
+        // "A", then two blank lines (an empty paragraph opened with Enter), then
+        // "B": the empty paragraph must be navigable rows, not collapsed onto B.
+        // Rows: "A", spacer, empty-paragraph, spacer, "B" — each blank row a
+        // distinct source offset.
+        let m = map("A\n\n\n\nB\n");
+        let text: Vec<String> = m
+            .rows
+            .iter()
+            .map(|r| r.glyphs.iter().map(|g| g.ch).collect())
+            .collect();
+        assert_eq!(text, vec!["A", "", "", "", "B"], "got {text:?}");
+        let offs: Vec<usize> = m.rows.iter().map(|r| r.end_src).collect();
+        // Strictly ascending — no two rows share an offset (else the caret pins).
+        assert!(offs.windows(2).all(|w| w[0] < w[1]), "offsets not unique: {offs:?}");
+    }
+
+    #[test]
+    fn a_tight_block_boundary_still_gets_one_separator() {
+        // A heading directly above text (no blank line between) keeps the single
+        // conventional separator row, as before.
+        let m = map("# H\ntext\n");
+        let text: Vec<String> = m
+            .rows
+            .iter()
+            .map(|r| r.glyphs.iter().map(|g| g.ch).collect())
+            .collect();
+        assert_eq!(text, vec!["H", "", "text"], "got {text:?}");
+    }
+
+    #[test]
+    fn frontmatter_is_hidden_and_the_document_opens_into_its_content() {
+        // Leading YAML frontmatter renders nothing — no phantom blank rows for
+        // its lines, no leading gap — and `content_start` points at the first
+        // real block so the caret floor can keep out of the hidden metadata.
+        let fm = "---\nconfig: colophon.yaml\ncontents:\n- '[Sample](sample.md)'\n---\n";
+        let src = format!("{fm}# leaf\n\nA line.\n");
+        let m = map(&src);
+        let text = rendered(&m);
+        assert!(!text.contains("config"), "frontmatter body leaked: {text:?}");
+        assert!(!text.contains("colophon"), "frontmatter body leaked: {text:?}");
+        assert_eq!(m.rows[0].glyphs.iter().map(|g| g.ch).collect::<String>(), "leaf");
+        assert_eq!(m.content_start, fm.len(), "floor should be the first real block");
+    }
+
+    #[test]
+    fn a_document_without_frontmatter_has_a_zero_floor() {
+        let m = map("# leaf\n\nbody\n");
+        assert_eq!(m.content_start, 0);
     }
 
     #[test]

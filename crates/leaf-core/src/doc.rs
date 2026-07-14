@@ -115,6 +115,9 @@ impl Doc {
         };
         self.scroll = 0;
         self.status = None;
+        // Entering WYSIWYG, the caret may be sitting in now-hidden frontmatter;
+        // lift it to the first rendered offset.
+        self.clamp_caret();
     }
 
     pub fn view_name(&self) -> &'static str {
@@ -129,6 +132,7 @@ impl Doc {
     pub fn build_visual(&mut self, width: usize) {
         let nodes = self.nodes();
         self.vmap = wysiwyg::build(&nodes, &self.source, Some(width));
+        self.clamp_caret();
     }
 
     /// Build the WYSIWYG map with each block as a single unwrapped row — for a
@@ -137,6 +141,7 @@ impl Doc {
     pub fn build_visual_unwrapped(&mut self) {
         let nodes = self.nodes();
         self.vmap = wysiwyg::build(&nodes, &self.source, None);
+        self.clamp_caret();
     }
 
     fn nodes(&mut self) -> Vec<FlatNode> {
@@ -318,8 +323,10 @@ impl Doc {
     pub fn backspace(&mut self) {
         if let Some((s, e)) = self.selection() {
             self.splice(s, e, "", EditKind::Other);
-        } else if self.caret > 0 {
-            let prev = prev_boundary(&self.source, self.caret);
+        } else if self.caret > self.caret_floor() {
+            // Never delete back across the floor — that would eat hidden
+            // frontmatter the WYSIWYG caret can't even see.
+            let prev = prev_boundary(&self.source, self.caret).max(self.caret_floor());
             self.splice(prev, self.caret, "", EditKind::Delete);
         }
     }
@@ -339,7 +346,7 @@ impl Doc {
         if let Some((s, e)) = self.selection() {
             self.splice(s, e, "", EditKind::Other);
         } else {
-            let start = prev_word(&self.source, self.caret);
+            let start = prev_word(&self.source, self.caret).max(self.caret_floor());
             if start < self.caret {
                 self.splice(start, self.caret, "", EditKind::Delete);
             }
@@ -561,9 +568,11 @@ impl Doc {
         self.clamp_caret();
     }
 
-    /// Select the whole document (⌘A / Ctrl+A).
+    /// Select the whole document (⌘A / Ctrl+A) — everything reachable in the
+    /// active view, so in WYSIWYG it starts below hidden frontmatter (copy won't
+    /// grab the metadata) while the source view still selects the literal whole.
     pub fn select_all(&mut self) {
-        self.anchor = Some(0);
+        self.anchor = Some(self.caret_floor());
         self.caret = self.source.len();
         self.goal_col = None;
         self.last_edit_kind = None;
@@ -614,6 +623,16 @@ impl Doc {
         self.clamp_caret();
     }
 
+    /// The lowest source offset the caret may occupy in the active view. In
+    /// WYSIWYG, leading frontmatter is hidden and unreachable, so the floor is
+    /// the first rendered offset; the source view reaches everything, so it's 0.
+    fn caret_floor(&self) -> usize {
+        match self.view {
+            View::Wysiwyg => self.vmap.content_start.min(self.source.len()),
+            View::Source => 0,
+        }
+    }
+
     fn move_to(&mut self, offset: usize, extend: bool) {
         if extend {
             if self.anchor.is_none() {
@@ -622,7 +641,7 @@ impl Doc {
         } else {
             self.anchor = None;
         }
-        self.caret = offset.min(self.source.len());
+        self.caret = offset.min(self.source.len()).max(self.caret_floor());
         self.status = None;
         // A caret move ends the current typing/deletion run, so the next edit
         // starts a fresh undo group rather than coalescing across the gap.
@@ -793,6 +812,17 @@ impl Doc {
     fn clamp_caret(&mut self) {
         if self.caret > self.source.len() {
             self.caret = self.source.len();
+        }
+        // In WYSIWYG the caret can't sit inside hidden frontmatter; lift it (and
+        // any selection anchor) to the first rendered offset.
+        let floor = self.caret_floor();
+        if self.caret < floor {
+            self.caret = floor;
+        }
+        if let Some(a) = self.anchor {
+            if a < floor {
+                self.anchor = Some(floor);
+            }
         }
         while self.caret > 0 && !self.source.is_char_boundary(self.caret) {
             self.caret -= 1;
@@ -1386,6 +1416,110 @@ mod tests {
         let (row, _) = d.caret_pos();
         assert!(row >= 2, "caret should have moved down to the new line, got row {row}");
         assert!(d.vmap.num_rows() >= 3, "the blank lines should render as rows");
+    }
+
+    #[test]
+    fn wysiwyg_enter_between_paragraphs_lands_on_an_empty_line() {
+        // The reported bug: Enter at the end of a paragraph that has another
+        // paragraph below put the caret at the *start of the next paragraph* —
+        // the empty paragraph it opened had no row, so the caret snapped onto
+        // "World". It must now sit on its own empty line, with a blank spacer
+        // above it (the paragraph gap).
+        let mut d = wysiwyg_doc("wys_gap_mid", "Hello\n\nWorld\n");
+        d.caret = 5; // end of "Hello"
+        d.newline();
+        d.build_visual(80);
+        let (row, col) = d.caret_pos();
+        assert_eq!(col, 0, "caret should start an empty line, not sit in text");
+        assert_eq!(d.vmap.row_len(row), 0, "caret's row must be empty, not 'World'");
+        assert!(row >= 2, "a blank spacer row should sit above the caret, got row {row}");
+        // The row above the caret is a real (empty) gap, and "Hello" stays put.
+        assert_eq!(d.vmap.row_len(row - 1), 0, "the row above the caret is a gap");
+        let row0: String = d.vmap.rows[0].glyphs.iter().map(|g| g.ch).collect();
+        assert_eq!(row0, "Hello", "the paragraph above the caret must not move");
+    }
+
+    #[test]
+    fn wysiwyg_enter_at_eof_shows_a_gap_before_typing() {
+        // At the document end a single Enter must also show the paragraph gap —
+        // a blank spacer row above the caret — so the layout already matches how
+        // it will look once the new paragraph has text.
+        let mut d = wysiwyg_doc("wys_gap_eof", "Hello");
+        d.caret = 5; // end of "Hello", no trailing newline
+        d.newline(); // source becomes "Hello\n\n"
+        d.build_visual(80);
+        let (row, col) = d.caret_pos();
+        assert_eq!(col, 0);
+        assert!(row >= 2, "caret should sit below a blank spacer, got row {row}");
+        assert_eq!(d.vmap.row_len(row - 1), 0, "the row above the caret is a gap");
+    }
+
+    #[test]
+    fn wysiwyg_typing_after_enter_does_not_shift_the_caret_row() {
+        // The spacer is view-only: typing the new paragraph must not reflow the
+        // caret onto a different row — the transient view already matched the
+        // settled one.
+        let mut d = wysiwyg_doc("wys_no_reflow", "Hello\n\nWorld\n");
+        d.caret = 5;
+        d.newline();
+        d.build_visual(80);
+        let before = d.caret_pos();
+        d.insert("New");
+        d.build_visual(80);
+        let after = d.caret_pos();
+        assert_eq!(
+            after.0, before.0,
+            "typing must not move the caret to another row ({before:?} -> {after:?})"
+        );
+    }
+
+    #[test]
+    fn wysiwyg_hides_frontmatter_from_the_caret_and_copy() {
+        let fm = "---\ntitle: hi\n---\n";
+        let body = format!("{fm}# leaf\n\nbody\n");
+        let mut d = wysiwyg_doc("wys_fm", &body);
+        // Opening lifts the caret out of the now-hidden frontmatter.
+        assert_eq!(d.caret, fm.len(), "caret should start at the first real block");
+        // Left at the content start can't step back into frontmatter.
+        d.move_left(false);
+        assert_eq!(d.caret, fm.len(), "left must not enter frontmatter");
+        // Doc-start lands on the content floor, not offset 0.
+        d.move_doc_start(false);
+        assert_eq!(d.caret, fm.len());
+        // Select-all + copy never include the frontmatter bytes.
+        d.select_all();
+        let sel = d.selected_text().unwrap().to_string();
+        assert!(!sel.contains("title"), "copy leaked frontmatter: {sel:?}");
+        assert!(sel.starts_with("# leaf"), "selection should begin at content: {sel:?}");
+    }
+
+    #[test]
+    fn wysiwyg_backspace_at_content_start_leaves_frontmatter_intact() {
+        // Backspace deletes `prev_boundary..caret` directly; at the first real
+        // block that boundary is inside the hidden frontmatter, so it must be a
+        // no-op rather than eating the closing `---`.
+        let fm = "---\ntitle: hi\n---\n";
+        let body = format!("{fm}leaf\n");
+        let mut d = wysiwyg_doc("wys_fm_bs", &body);
+        assert_eq!(d.caret, fm.len());
+        d.backspace();
+        assert_eq!(d.source, body, "backspace must not touch frontmatter");
+        d.delete_word_back();
+        assert_eq!(d.source, body, "word-delete must not touch frontmatter either");
+    }
+
+    #[test]
+    fn source_view_still_reaches_frontmatter() {
+        // The metadata is only *hidden*, never lost: the source view edits and
+        // selects it in full, and it's always preserved on save.
+        let fm = "---\ntitle: hi\n---\n";
+        let body = format!("{fm}# leaf\n");
+        let mut d = doc_with("src_fm", &body);
+        d.select_all();
+        let sel = d.selected_text().unwrap();
+        assert!(sel.contains("title"), "source view should select everything");
+        d.move_doc_start(false);
+        assert_eq!(d.caret, 0, "source view can reach offset 0");
     }
 
     #[test]
