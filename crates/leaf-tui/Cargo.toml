@@ -1,0 +1,16 @@
+[package]
+name = "leaf-tui"
+version.workspace = true
+edition.workspace = true
+description = "A caret-based rich-text TUI editor for documents, built on twig's round-trippable AST."
+
+# The everyday `cargo run -- file.md` invocation still runs `leaf`.
+[[bin]]
+name = "leaf"
+path = "src/main.rs"
+
+[dependencies]
+leaf-core.workspace = true
+anyhow.workspace = true
+# TUI framework; we use its re-exported crossterm so backend versions can't skew.
+ratatui = "0.29"

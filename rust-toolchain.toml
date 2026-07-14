@@ -1,0 +1,6 @@
+# gpui (pulled by leaf-gui from the Zed monorepo) uses library features that
+# stabilized in 1.95 — Zed itself pins this exact channel. leaf-core and
+# leaf-tui build fine on it too, so the whole workspace uses one toolchain.
+[toolchain]
+channel = "1.95.0"
+profile = "minimal"

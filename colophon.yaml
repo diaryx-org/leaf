@@ -1,0 +1,9 @@
+title: colophon config
+part_of: '[README](README.md)'
+link_format: markdown_relative
+identity: lazy
+id_links: false
+id_storage: frontmatter
+embed_format: yaml
+embed_type: delimited
+content_format: markdown

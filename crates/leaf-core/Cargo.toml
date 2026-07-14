@@ -1,0 +1,9 @@
+[package]
+name = "leaf-core"
+version.workspace = true
+edition.workspace = true
+description = "Frontend-neutral core of leaf: a byte-offset caret/selection model over twig, plus an AST→glyph map, styled with a toolkit-agnostic Style."
+
+[dependencies]
+twig.workspace = true
+anyhow.workspace = true

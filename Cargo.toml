@@ -1,0 +1,21 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+# `cargo run -- file.md` and `cargo build` default to the TUI, so the workspace
+# split doesn't change the everyday UX. leaf-gui, once it grows a binary, is
+# built explicitly with `-p leaf-gui`.
+default-members = ["crates/leaf-tui"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+# The document AST + offset-addressed span-splice editor. Same sibling checkout
+# bough uses; leaf drives its P0–P5 surface (edit_range, node_at, nodes,
+# wrap_range/toggle_inline/set_block).
+twig = { path = "../twig/bindings/rust/twig", version = "0.1.0" }
+anyhow = "1"
+# Frontend-neutral core: the caret/selection model + AST→glyph map, styled with
+# a toolkit-agnostic Style. Each frontend crate maps that to its own styling.
+leaf-core = { path = "crates/leaf-core", version = "0.1.0" }

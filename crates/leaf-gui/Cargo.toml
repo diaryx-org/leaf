@@ -1,0 +1,24 @@
+[package]
+name = "leaf-gui"
+version.workspace = true
+edition.workspace = true
+description = "A caret-based rich-text GUI editor for documents, built on twig via leaf-core and rendered with gpui."
+
+[[bin]]
+name = "leaf-gui"
+path = "src/main.rs"
+
+[dependencies]
+leaf-core.workspace = true
+anyhow.workspace = true
+
+# gpui is not published to crates.io — it's consumed from the Zed monorepo as a
+# git dependency. Pinned to a specific commit so the API can't drift underneath
+# us; bump `rev` deliberately. `gpui_platform` provides `application()` and pulls
+# the per-OS backend (gpui_macos here) via the Zed workspace's own path deps.
+gpui = { git = "https://github.com/zed-industries/zed", rev = "bd72919555149fc072d33c4fa6805c742a11ee8b" }
+# IMPORTANT: the `font-kit` feature is required. Without it gpui's macOS backend
+# uses a placeholder text system that lays out text but rasterizes NO glyphs —
+# the window renders (quads, caret) but every character is invisible. font-kit
+# is what actually turns fonts into glyph bitmaps for the atlas.
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "bd72919555149fc072d33c4fa6805c742a11ee8b", features = ["font-kit"] }
