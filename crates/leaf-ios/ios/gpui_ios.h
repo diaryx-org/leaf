@@ -136,6 +136,10 @@ void gpui_ios_handle_key_event(void* window_ptr, uint32_t key_code, uint32_t mod
 /// - url_ptr: Pointer to NSString containing the URL
 void gpui_ios_handle_open_url(void* url_ptr);
 
+/// Install a keyboard accessory view (a UIView*, e.g. a formatting toolbar) on
+/// the current window's text-input view. Call after the GPUI window exists.
+void gpui_ios_set_input_accessory_view(void* view);
+
 #ifdef __cplusplus
 }
 #endif

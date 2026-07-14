@@ -38,6 +38,28 @@ use gpui::{
 };
 use leaf_core::style::Style as CoreStyle;
 
+/// A formatting / view / history command that can be run programmatically —
+/// e.g. from a native iOS toolbar — equivalent to the corresponding keybound
+/// action. Dispatched via [`Editor::run_command`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditorCommand {
+    ToggleBold,
+    ToggleItalic,
+    ToggleCode,
+    ToggleMark,
+    Paragraph,
+    Heading1,
+    Heading2,
+    Heading3,
+    Heading4,
+    Heading5,
+    Heading6,
+    ToggleView,
+    Undo,
+    Redo,
+    Save,
+}
+
 /// The widget's visual theme — the handful of colors and text metrics a host can
 /// override to match its own look. `Default` reproduces the standalone app's
 /// appearance (light background, blue caret). Pass one with [`Editor::set_style`].
@@ -219,6 +241,28 @@ impl Editor {
     pub fn set_style(&mut self, style: EditorStyle, cx: &mut Context<Self>) {
         self.style = style;
         cx.notify();
+    }
+
+    /// Run a command programmatically (native toolbar, menu, etc.), equivalent
+    /// to invoking the corresponding keybound action.
+    pub fn run_command(&mut self, cmd: EditorCommand, window: &mut Window, cx: &mut Context<Self>) {
+        match cmd {
+            EditorCommand::ToggleBold => self.toggle_bold(&ToggleBold, window, cx),
+            EditorCommand::ToggleItalic => self.toggle_italic(&ToggleItalic, window, cx),
+            EditorCommand::ToggleCode => self.toggle_code(&ToggleCode, window, cx),
+            EditorCommand::ToggleMark => self.toggle_mark(&ToggleMark, window, cx),
+            EditorCommand::Paragraph => self.set_paragraph(&Paragraph, window, cx),
+            EditorCommand::Heading1 => self.heading1(&Heading1, window, cx),
+            EditorCommand::Heading2 => self.heading2(&Heading2, window, cx),
+            EditorCommand::Heading3 => self.heading3(&Heading3, window, cx),
+            EditorCommand::Heading4 => self.heading4(&Heading4, window, cx),
+            EditorCommand::Heading5 => self.heading5(&Heading5, window, cx),
+            EditorCommand::Heading6 => self.heading6(&Heading6, window, cx),
+            EditorCommand::ToggleView => self.toggle_view(&ToggleView, window, cx),
+            EditorCommand::Undo => self.undo(&Undo, window, cx),
+            EditorCommand::Redo => self.redo(&Redo, window, cx),
+            EditorCommand::Save => self.save(&Save, window, cx),
+        }
     }
 
     /// Whether a document is open. The host shows its own placeholder otherwise.

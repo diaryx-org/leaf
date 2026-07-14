@@ -12,6 +12,9 @@
 // This requires linking against libgpui.a
 #ifdef USE_GPUI_RUST
 #import "gpui_ios.h"
+// Exported by the leaf-ios Rust static lib: run a formatting command on the
+// editor. Ids match crates/leaf-ios/src/lib.rs (leaf_ios_cmd).
+extern void leaf_ios_cmd(uint32_t cmd_id);
 #endif
 
 #ifndef USE_GPUI_RUST
@@ -134,6 +137,61 @@
 @end
 #endif // !USE_GPUI_RUST
 
+#ifdef USE_GPUI_RUST
+// ── Formatting toolbar (keyboard accessory view) ─────────────────────────────
+// A native UIToolbar docked above the software keyboard. Each button calls
+// leaf_ios_cmd(id), which re-enters gpui and runs the editor command. This is
+// the native-shell counterpart to the desktop's ⌘-key formatting actions.
+
+@interface LeafToolbarActions : NSObject
+@end
+@implementation LeafToolbarActions
+- (void)bold        { leaf_ios_cmd(0); }
+- (void)italic      { leaf_ios_cmd(1); }
+- (void)code        { leaf_ios_cmd(2); }
+- (void)h1          { leaf_ios_cmd(3); }
+- (void)h2          { leaf_ios_cmd(4); }
+- (void)body        { leaf_ios_cmd(5); }
+- (void)toggleView  { leaf_ios_cmd(6); }
+- (void)undo        { leaf_ios_cmd(7); }
+- (void)redo        { leaf_ios_cmd(8); }
+@end
+
+static LeafToolbarActions *gLeafToolbarActions = nil;
+static UIToolbar *gLeafToolbar = nil;
+
+static UIBarButtonItem *LeafBtn(NSString *title, SEL action) {
+    return [[UIBarButtonItem alloc] initWithTitle:title
+                                            style:UIBarButtonItemStylePlain
+                                           target:gLeafToolbarActions
+                                           action:action];
+}
+
+static void leaf_install_toolbar(void) {
+    gLeafToolbarActions = [[LeafToolbarActions alloc] init];
+    CGFloat width = [UIScreen mainScreen].bounds.size.width;
+    UIToolbar *tb = [[UIToolbar alloc] initWithFrame:CGRectMake(0, 0, width, 44)];
+    UIBarButtonItem *flex = [[UIBarButtonItem alloc]
+        initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
+    tb.items = @[
+        LeafBtn(@"B",   @selector(bold)),
+        LeafBtn(@"I",   @selector(italic)),
+        LeafBtn(@"</>", @selector(code)),
+        LeafBtn(@"H1",  @selector(h1)),
+        LeafBtn(@"H2",  @selector(h2)),
+        LeafBtn(@"¶",   @selector(body)),
+        flex,
+        LeafBtn(@"↔",   @selector(toggleView)),
+        LeafBtn(@"↶",   @selector(undo)),
+        LeafBtn(@"↷",   @selector(redo)),
+    ];
+    [tb sizeToFit];
+    gLeafToolbar = tb;
+    gpui_ios_set_input_accessory_view((__bridge void *)tb);
+    NSLog(@"leaf-ios: formatting toolbar installed");
+}
+#endif // USE_GPUI_RUST
+
 // App Delegate
 @interface GPUIAppDelegate : UIResponder <UIApplicationDelegate>
 @property (nonatomic, strong) UIWindow *window;
@@ -168,6 +226,9 @@
         self.displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(renderFrame)];
         [self.displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
         NSLog(@"CADisplayLink started for GPUI rendering");
+
+        // Install the native formatting toolbar as the keyboard accessory view.
+        leaf_install_toolbar();
     } else {
         NSLog(@"Warning: No GPUI window was created");
     }

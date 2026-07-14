@@ -22,8 +22,8 @@ extern crate gpui_mobile;
 mod ios {
     // `prelude::*` brings gpui's context traits into scope so `cx.new(...)`
     // (entity construction) resolves on `&mut App`.
-    use gpui::{prelude::*, App, Focusable, WindowOptions};
-    use leaf_gpui::{register_keybindings, Editor};
+    use gpui::{prelude::*, App, Focusable, WindowHandle, WindowOptions};
+    use leaf_gpui::{register_keybindings, Editor, EditorCommand};
 
     /// Register the leaf root view with the gpui-mobile iOS platform.
     ///
@@ -36,6 +36,61 @@ mod ios {
         gpui_mobile::ios::ffi::set_app_callback(Box::new(|cx: &mut App| {
             open_editor_window(cx);
         }));
+    }
+
+    // ── Editor window handle (so the native toolbar can target the editor) ──
+    //
+    // Main-thread-only, so an UnsafeCell behind a OnceLock is safe (same pattern
+    // gpui-mobile uses for its app callback). WindowHandle is Copy.
+    struct WindowCell(std::cell::UnsafeCell<Option<WindowHandle<Editor>>>);
+    unsafe impl Send for WindowCell {}
+    unsafe impl Sync for WindowCell {}
+    static EDITOR_WINDOW: std::sync::OnceLock<WindowCell> = std::sync::OnceLock::new();
+
+    fn store_editor_window(w: WindowHandle<Editor>) {
+        let cell = EDITOR_WINDOW.get_or_init(|| WindowCell(std::cell::UnsafeCell::new(None)));
+        unsafe { *cell.0.get() = Some(w) };
+    }
+
+    fn editor_window() -> Option<WindowHandle<Editor>> {
+        EDITOR_WINDOW.get().and_then(|c| unsafe { *c.0.get() })
+    }
+
+    /// Run a formatting command on the editor, invoked from the native toolbar.
+    ///
+    /// Command ids are kept in sync with `ios/main.m`:
+    ///   0 bold · 1 italic · 2 code · 3 H1 · 4 H2 · 5 body (¶)
+    ///   · 6 toggle source/wysiwyg · 7 undo · 8 redo
+    #[unsafe(no_mangle)]
+    pub extern "C" fn leaf_ios_cmd(id: u32) {
+        let cmd = match id {
+            0 => EditorCommand::ToggleBold,
+            1 => EditorCommand::ToggleItalic,
+            2 => EditorCommand::ToggleCode,
+            3 => EditorCommand::Heading1,
+            4 => EditorCommand::Heading2,
+            5 => EditorCommand::Paragraph,
+            6 => EditorCommand::ToggleView,
+            7 => EditorCommand::Undo,
+            8 => EditorCommand::Redo,
+            other => {
+                log::warn!("leaf-ios: unknown toolbar command id {other}");
+                return;
+            }
+        };
+        let Some(win) = editor_window() else {
+            log::warn!("leaf-ios: toolbar command with no editor window");
+            return;
+        };
+        // Re-enter the gpui app — we're on the main thread but outside gpui's own
+        // event dispatch (a UIKit button tap) — and run the command on the editor.
+        gpui_mobile::ios::ffi::with_app(|cx| {
+            if let Err(e) = win.update(cx, |editor, window, cx| {
+                editor.run_command(cmd, window, cx);
+            }) {
+                log::error!("leaf-ios: toolbar command failed: {e:?}");
+            }
+        });
     }
 
     /// Open a fullscreen window whose root view is the leaf `Editor`.
@@ -56,6 +111,9 @@ mod ios {
         ) {
             Ok(window) => {
                 log::info!("leaf-ios: editor window opened");
+                // Remember the window so the native toolbar (`leaf_ios_cmd`) can
+                // target this editor.
+                store_editor_window(window);
                 // Focus the editor so gpui registers its text-input handler for
                 // the focused element — which is what brings up the soft keyboard
                 // (see IosWindow::set_input_handler in the gpui-mobile fork).
