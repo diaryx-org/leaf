@@ -2873,7 +2873,7 @@ name = "leaf-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "twig",
+ "twig-doc",
  "unicode-segmentation",
 ]
 
@@ -2891,6 +2891,9 @@ dependencies = [
 name = "leaf-gui"
 version = "0.1.0"
 dependencies = [
+ "gpui",
+ "gpui_platform",
+ "leaf-core",
  "leaf-gpui",
 ]
 
@@ -5626,7 +5629,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "twig"
+name = "twig-doc"
 version = "0.1.0"
 
 [[package]]

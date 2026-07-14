@@ -22,17 +22,14 @@
 mod style;
 
 use std::ops::Range;
-use std::path::PathBuf;
 
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, ElementInputHandler,
     Entity, EntityInputHandler, FocusHandle, Focusable, Font, GlobalElementId, InspectorElementId,
     IntoElement, KeyBinding, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     PaintQuad, Pixels, Point, Render, ScrollHandle, ShapedLine, Style, TextAlign, UTF16Selection,
-    Window, WindowBounds, WindowOptions, actions, anchored, deferred, div, fill, point,
-    prelude::*, px, relative, rgba, size,
+    Window, actions, anchored, deferred, div, fill, point, prelude::*, px, relative, rgba, size,
 };
-use gpui_platform::application;
 use leaf_core::style::Style as CoreStyle;
 use leaf_core::{BlockKind, Doc, Glyph, InlineKind, View};
 
@@ -42,7 +39,7 @@ actions!(
     leaf,
     [
         Backspace, Delete, Left, Right, Up, Down, SelectLeft, SelectRight, SelectUp, SelectDown,
-        Home, End, SelectHome, SelectEnd, Newline, Indent, Save, Quit, ToggleBold, ToggleItalic,
+        Home, End, SelectHome, SelectEnd, Newline, Indent, Save, ToggleBold, ToggleItalic,
         ToggleView,
         // Word motion / deletion (⌥←/→, ⌥⌫/⌦) and select-all (⌘A) — the same
         // leaf-core word-boundary ops the TUI already binds.
@@ -59,17 +56,77 @@ actions!(
         // Document start/end (⌘↑ / ⌘↓) and page motion, with ⇧ selecting.
         DocStart, DocEnd, SelectDocStart, SelectDocEnd,
         PageUp, PageDown, SelectPageUp, SelectPageDown,
-        // Cancel a pending quit confirmation.
-        Cancel,
     ]
 );
 
-/// The editor entity: a `leaf_core::Doc` plus gpui focus, and the last painted
-/// layout cached so a mouse event can hit-test pixels back to a source offset.
-struct Editor {
+/// Bind the editor's keys to their actions, scoped to the `Editor` key context
+/// so they only fire when an embedded editor is focused and never clash with a
+/// host application's own bindings. A host calls this once at startup; the
+/// standalone app does too. App-level keys (quit, open) are the host's to bind.
+pub fn register_keybindings(cx: &mut App) {
+    let ctx = Some("Editor");
+    cx.bind_keys([
+        KeyBinding::new("left", Left, ctx),
+        KeyBinding::new("right", Right, ctx),
+        KeyBinding::new("up", Up, ctx),
+        KeyBinding::new("down", Down, ctx),
+        KeyBinding::new("shift-left", SelectLeft, ctx),
+        KeyBinding::new("shift-right", SelectRight, ctx),
+        KeyBinding::new("shift-up", SelectUp, ctx),
+        KeyBinding::new("shift-down", SelectDown, ctx),
+        KeyBinding::new("home", Home, ctx),
+        KeyBinding::new("end", End, ctx),
+        KeyBinding::new("shift-home", SelectHome, ctx),
+        KeyBinding::new("shift-end", SelectEnd, ctx),
+        KeyBinding::new("backspace", Backspace, ctx),
+        KeyBinding::new("delete", Delete, ctx),
+        KeyBinding::new("enter", Newline, ctx),
+        KeyBinding::new("tab", Indent, ctx),
+        KeyBinding::new("cmd-b", ToggleBold, ctx),
+        KeyBinding::new("cmd-i", ToggleItalic, ctx),
+        KeyBinding::new("cmd-e", ToggleView, ctx),
+        KeyBinding::new("cmd-s", Save, ctx),
+        KeyBinding::new("cmd-z", Undo, ctx),
+        KeyBinding::new("cmd-shift-z", Redo, ctx),
+        KeyBinding::new("alt-left", MoveWordLeft, ctx),
+        KeyBinding::new("alt-right", MoveWordRight, ctx),
+        KeyBinding::new("shift-alt-left", SelectWordLeft, ctx),
+        KeyBinding::new("shift-alt-right", SelectWordRight, ctx),
+        KeyBinding::new("alt-backspace", DeleteWordBack, ctx),
+        KeyBinding::new("alt-delete", DeleteWordForward, ctx),
+        KeyBinding::new("cmd-a", SelectAll, ctx),
+        KeyBinding::new("cmd-shift-c", ToggleCode, ctx),
+        KeyBinding::new("cmd-shift-m", ToggleMark, ctx),
+        KeyBinding::new("ctrl-0", Paragraph, ctx),
+        KeyBinding::new("ctrl-1", Heading1, ctx),
+        KeyBinding::new("ctrl-2", Heading2, ctx),
+        KeyBinding::new("ctrl-3", Heading3, ctx),
+        KeyBinding::new("ctrl-4", Heading4, ctx),
+        KeyBinding::new("ctrl-5", Heading5, ctx),
+        KeyBinding::new("ctrl-6", Heading6, ctx),
+        KeyBinding::new("cmd-c", Copy, ctx),
+        KeyBinding::new("cmd-x", Cut, ctx),
+        KeyBinding::new("cmd-v", Paste, ctx),
+        KeyBinding::new("cmd-up", DocStart, ctx),
+        KeyBinding::new("cmd-down", DocEnd, ctx),
+        KeyBinding::new("cmd-shift-up", SelectDocStart, ctx),
+        KeyBinding::new("cmd-shift-down", SelectDocEnd, ctx),
+        KeyBinding::new("pageup", PageUp, ctx),
+        KeyBinding::new("pagedown", PageDown, ctx),
+        KeyBinding::new("shift-pageup", SelectPageUp, ctx),
+        KeyBinding::new("shift-pagedown", SelectPageDown, ctx),
+    ]);
+}
+
+/// The embeddable editor widget: a `leaf_core::Doc` plus gpui focus, and the
+/// last painted layout cached so a mouse event can hit-test pixels back to a
+/// source offset. Drop it into any gpui view with [`register_keybindings`]; it
+/// renders just the editing surface and leaves window chrome, file I/O, and quit
+/// to the host (the standalone app in `leaf-gui` is one such host).
+pub struct Editor {
     focus_handle: FocusHandle,
-    /// The open document, or `None` before a file has been chosen — in which
-    /// case the editor shows a `+` button that opens a file picker.
+    /// The open document, or `None` when the widget is empty (the host decides
+    /// what to show in that case — the app overlays a file-open button).
     doc: Option<Doc>,
     marked_range: Option<Range<usize>>,
     is_selecting: bool,
@@ -91,14 +148,66 @@ struct Editor {
     /// the goal is recomputed — so we never sprinkle resets across every handler.
     goal_x: Option<Pixels>,
     goal_caret: usize,
-    /// Armed by a ⌘Q on a modified document: the first press warns (in the
-    /// header), a second confirms. Cancelled by ⌘S or Escape.
-    quit_armed: bool,
 }
 
 impl Editor {
+    /// Create the widget over an optional document (`None` = empty). Register the
+    /// key bindings once with [`register_keybindings`], size the returned entity
+    /// in your view, and focus its [`Focusable::focus_handle`] to type into it.
+    pub fn new(cx: &mut Context<Self>, doc: Option<Doc>) -> Self {
+        Editor {
+            focus_handle: cx.focus_handle(),
+            doc,
+            marked_range: None,
+            is_selecting: false,
+            context_menu: None,
+            scroll_handle: ScrollHandle::new(),
+            last_rows: Vec::new(),
+            last_line_height: px(24.0),
+            last_bounds: None,
+            last_row_count: 0,
+            goal_x: None,
+            goal_caret: usize::MAX,
+        }
+    }
+
+    /// Whether a document is open. The host shows its own placeholder otherwise.
+    pub fn has_doc(&self) -> bool {
+        self.doc.is_some()
+    }
+
+    /// Whether the open document has unsaved edits (for a host's title/close UI).
+    pub fn is_dirty(&self) -> bool {
+        self.doc.as_ref().is_some_and(|d| d.dirty)
+    }
+
+    /// The open document's file name, or empty when none is open.
+    pub fn file_name(&self) -> String {
+        self.doc.as_ref().map(|d| d.file_name()).unwrap_or_default()
+    }
+
+    /// The active view's label (`source` / `wysiwyg`), or empty when no document.
+    pub fn view_label(&self) -> &'static str {
+        self.doc.as_ref().map(|d| d.view_name()).unwrap_or("")
+    }
+
+    /// Open a document into the widget (e.g. after the host's file picker).
+    pub fn set_doc(&mut self, doc: Doc, cx: &mut Context<Self>) {
+        self.doc = Some(doc);
+        self.goal_x = None;
+        cx.notify();
+    }
+
+    /// Persist the open document to its path (the ⌘S default). A host that owns
+    /// saving can rebind `Save` and call this — or not — as its policy dictates.
+    pub fn save_document(&mut self) {
+        if let Some(doc) = self.doc.as_mut() {
+            doc.save();
+        }
+    }
+
     // ── keyboard actions → leaf-core Doc ops ────────────────────────────────
-    // Every handler is a no-op until a document is open (the `+` button state).
+    // Every handler is a no-op until a document is open.
     fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
         let Some(doc) = self.doc.as_mut() else { return };
         doc.move_left(false);
@@ -267,9 +376,7 @@ impl Editor {
         cx.notify();
     }
     fn save(&mut self, _: &Save, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(doc) = self.doc.as_mut() else { return };
-        doc.save();
-        self.quit_armed = false;
+        self.save_document();
         cx.notify();
     }
     fn doc_start(&mut self, _: &DocStart, _: &mut Window, cx: &mut Context<Self>) {
@@ -328,21 +435,6 @@ impl Editor {
         let viewport = f32::from(self.scroll_handle.bounds().size.height);
         let line = f32::from(self.last_line_height).max(1.0);
         ((viewport / line) as usize).saturating_sub(1).max(1)
-    }
-    fn quit(&mut self, _: &Quit, _: &mut Window, cx: &mut Context<Self>) {
-        let dirty = self.doc.as_ref().is_some_and(|d| d.dirty);
-        if !dirty || self.quit_armed {
-            cx.quit();
-        } else {
-            self.quit_armed = true; // warn once; a second ⌘Q confirms
-            cx.notify();
-        }
-    }
-    fn cancel(&mut self, _: &Cancel, _: &mut Window, cx: &mut Context<Self>) {
-        if self.quit_armed {
-            self.quit_armed = false;
-            cx.notify();
-        }
     }
     fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
         let Some(doc) = self.doc.as_mut() else { return };
@@ -510,37 +602,6 @@ impl Editor {
         }
         offset.y = offset.y.clamp(-self.scroll_handle.max_offset().y, px(0.0));
         self.scroll_handle.set_offset(offset);
-    }
-
-    // ── file picker ─────────────────────────────────────────────────────────
-    /// Open the platform file picker (from the `+` button). twig supports
-    /// markdown, djot, and HTML; the picker filters to those extensions. When a
-    /// file is chosen we open it into `self.doc` and re-render as the editor.
-    fn open_file_dialog(&mut self, _: &mut Window, cx: &mut Context<Self>) {
-        let receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: Some("Open".into()),
-        });
-        cx.spawn(async move |editor, cx| {
-            let Ok(Ok(Some(paths))) = receiver.await else {
-                return;
-            };
-            let Some(path) = paths.into_iter().next() else {
-                return;
-            };
-            editor
-                .update(cx, |editor, cx| {
-                    match Doc::open(path) {
-                        Ok(doc) => editor.doc = Some(doc),
-                        Err(e) => eprintln!("leaf-gui: {e}"),
-                    }
-                    cx.notify();
-                })
-                .ok();
-        })
-        .detach();
     }
 
     // ── mouse ───────────────────────────────────────────────────────────────
@@ -790,7 +851,6 @@ impl EntityInputHandler for Editor {
             doc.edit(range.start, range.end, new_text);
         }
         self.marked_range = None;
-        self.quit_armed = false; // typing means "not quitting after all"
         self.scroll_caret_into_view();
         cx.notify();
     }
@@ -1261,59 +1321,11 @@ impl Element for TextElement {
 }
 
 impl Render for Editor {
+    /// Renders just the editing surface — a focusable, scrollable text body with
+    /// the caret, selection, and an optional right-click menu. No window chrome:
+    /// a host places this inside its own layout (see `leaf-gui` for the app that
+    /// wraps it with a header and file-open UI).
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // No document open: an empty canvas with a `+` button that opens the
-        // file picker (markdown / djot / HTML — the formats twig supports).
-        let Some(doc) = self.doc.as_ref() else {
-            return div()
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .size_full()
-                .font_family("Helvetica")
-                .bg(gpui::white())
-                .text_color(gpui::rgb(0x1e1e1e))
-                .key_context("Editor")
-                .track_focus(&self.focus_handle(cx))
-                .on_action(cx.listener(Self::quit))
-                .child(
-                    div()
-                        .id("open-file")
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .size(px(96.0))
-                        .rounded_full()
-                        .bg(gpui::rgb(0xf0f0f0))
-                        .text_color(gpui::rgb(0x555555))
-                        .text_size(px(56.0))
-                        .cursor(CursorStyle::PointingHand)
-                        .hover(|s| s.bg(gpui::rgb(0xe4e4e4)))
-                        .child("+")
-                        .on_click(cx.listener(|editor, _, window, cx| {
-                            editor.open_file_dialog(window, cx)
-                        })),
-                )
-                .child(
-                    div()
-                        .mt_4()
-                        .text_color(gpui::rgb(0x999999))
-                        .child("Open a markdown, djot, or HTML file"),
-                );
-        };
-        let name = doc.file_name();
-        let view = doc.view_name();
-        let dirty = if doc.dirty { " ●" } else { "" };
-        let header = if self.quit_armed {
-            "Unsaved changes — ⌘Q again to quit without saving, ⌘S to save, Esc to cancel".to_string()
-        } else {
-            format!(
-                "leaf-gui — {name}{dirty}   [{view}]   ⌘e view · ⌘b/⌘i/⌘⇧c/⌘⇧m bold/italic/code/mark · \
-                 ⌃0-6 ¶/heading · ⌥←/→ word, ⌥⌫/⌦ delete · ⌘↑/↓ doc ends · ⌘z/⇧⌘z undo · ⌘s save"
-            )
-        };
-
         div()
             .flex()
             .flex_col()
@@ -1354,8 +1366,6 @@ impl Render for Editor {
             .on_action(cx.listener(Self::page_down))
             .on_action(cx.listener(Self::select_page_up))
             .on_action(cx.listener(Self::select_page_down))
-            .on_action(cx.listener(Self::quit))
-            .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::move_word_left))
             .on_action(cx.listener(Self::move_word_right))
             .on_action(cx.listener(Self::select_word_left))
@@ -1385,15 +1395,6 @@ impl Render for Editor {
             })
             .child(
                 div()
-                    .flex_none()
-                    .px_3()
-                    .py_1()
-                    .bg(if self.quit_armed { gpui::rgb(0xffe9b0) } else { gpui::rgb(0xf0f0f0) })
-                    .text_color(gpui::rgb(0x555555))
-                    .child(header),
-            )
-            .child(
-                div()
                     .id("body")
                     .flex_1()
                     .p_3()
@@ -1414,136 +1415,6 @@ impl Focusable for Editor {
     }
 }
 
-/// Run leaf as a standalone application: parse `leaf-gui <file> [view]` from the
-/// process args, open a window, and hand off to the editor. The turnkey app on
-/// top of the embeddable [`Editor`] widget — a host that wants to embed the
-/// editor in its own window uses [`Editor`] and [`register_keybindings`] instead.
-pub fn run() {
-    // `leaf-gui <file> [wysiwyg|source]` — the optional second arg picks the
-    // starting view (handy for screenshotting the WYSIWYG view without keys).
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    // The file argument is optional: with no file we open to an empty canvas
-    // whose `+` button lets the user pick one. With a file, we open it directly.
-    let doc: Option<Doc> = match args.first() {
-        None => None,
-        Some(path) => {
-            let start_wysiwyg = args.get(1).map(|s| s == "wysiwyg").unwrap_or(false);
-            match Doc::open(PathBuf::from(path)) {
-                Ok(mut d) => {
-                    if start_wysiwyg {
-                        d.view = View::Wysiwyg;
-                    }
-                    Some(d)
-                }
-                Err(e) => {
-                    eprintln!("leaf-gui: {e}");
-                    std::process::exit(1);
-                }
-            }
-        }
-    };
-
-    application().run(move |cx: &mut App| {
-        cx.bind_keys([
-            KeyBinding::new("left", Left, None),
-            KeyBinding::new("right", Right, None),
-            KeyBinding::new("up", Up, None),
-            KeyBinding::new("down", Down, None),
-            KeyBinding::new("shift-left", SelectLeft, None),
-            KeyBinding::new("shift-right", SelectRight, None),
-            KeyBinding::new("shift-up", SelectUp, None),
-            KeyBinding::new("shift-down", SelectDown, None),
-            KeyBinding::new("home", Home, None),
-            KeyBinding::new("end", End, None),
-            KeyBinding::new("shift-home", SelectHome, None),
-            KeyBinding::new("shift-end", SelectEnd, None),
-            KeyBinding::new("backspace", Backspace, None),
-            KeyBinding::new("delete", Delete, None),
-            KeyBinding::new("enter", Newline, None),
-            KeyBinding::new("tab", Indent, None),
-            KeyBinding::new("cmd-b", ToggleBold, None),
-            KeyBinding::new("cmd-i", ToggleItalic, None),
-            KeyBinding::new("cmd-e", ToggleView, None),
-            KeyBinding::new("cmd-s", Save, None),
-            KeyBinding::new("cmd-z", Undo, None),
-            KeyBinding::new("cmd-shift-z", Redo, None),
-            KeyBinding::new("cmd-q", Quit, None),
-            // Word motion / deletion — the macOS convention, mirroring
-            // leaf-core's move_word_left/right and delete_word_back/forward.
-            KeyBinding::new("alt-left", MoveWordLeft, None),
-            KeyBinding::new("alt-right", MoveWordRight, None),
-            KeyBinding::new("shift-alt-left", SelectWordLeft, None),
-            KeyBinding::new("shift-alt-right", SelectWordRight, None),
-            KeyBinding::new("alt-backspace", DeleteWordBack, None),
-            KeyBinding::new("alt-delete", DeleteWordForward, None),
-            // Select-all.
-            KeyBinding::new("cmd-a", SelectAll, None),
-            // Format parity with the TUI's ⌥ toolbar (⌥c code, ⌥m mark, ⌥0-6
-            // block). ⌥ is already spoken for by word motion above, so these
-            // ride ⌘⇧ (code/mark) and ⌃ (block kind) instead — neither collides
-            // with cmd-b/i/e/s/q or with each other.
-            KeyBinding::new("cmd-shift-c", ToggleCode, None),
-            KeyBinding::new("cmd-shift-m", ToggleMark, None),
-            KeyBinding::new("ctrl-0", Paragraph, None),
-            KeyBinding::new("ctrl-1", Heading1, None),
-            KeyBinding::new("ctrl-2", Heading2, None),
-            KeyBinding::new("ctrl-3", Heading3, None),
-            KeyBinding::new("ctrl-4", Heading4, None),
-            KeyBinding::new("ctrl-5", Heading5, None),
-            KeyBinding::new("ctrl-6", Heading6, None),
-            // Clipboard.
-            KeyBinding::new("cmd-c", Copy, None),
-            KeyBinding::new("cmd-x", Cut, None),
-            KeyBinding::new("cmd-v", Paste, None),
-            // Document start/end (macOS ⌘↑/⌘↓) and page motion, ⇧ to select.
-            KeyBinding::new("cmd-up", DocStart, None),
-            KeyBinding::new("cmd-down", DocEnd, None),
-            KeyBinding::new("cmd-shift-up", SelectDocStart, None),
-            KeyBinding::new("cmd-shift-down", SelectDocEnd, None),
-            KeyBinding::new("pageup", PageUp, None),
-            KeyBinding::new("pagedown", PageDown, None),
-            KeyBinding::new("shift-pageup", SelectPageUp, None),
-            KeyBinding::new("shift-pagedown", SelectPageDown, None),
-            KeyBinding::new("escape", Cancel, None),
-        ]);
-        // Quit is handled on the Editor (to confirm unsaved changes); it falls
-        // back to an immediate quit only when no document is open.
-
-        let bounds = Bounds::centered(None, size(px(820.0), px(640.0)), cx);
-        let window = cx
-            .open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    ..Default::default()
-                },
-                |_, cx| {
-                    cx.new(|cx| Editor {
-                        focus_handle: cx.focus_handle(),
-                        doc,
-                        marked_range: None,
-                        is_selecting: false,
-                        context_menu: None,
-                        scroll_handle: ScrollHandle::new(),
-                        last_rows: Vec::new(),
-                        last_line_height: px(24.0),
-                        last_bounds: None,
-                        last_row_count: 0,
-                        goal_x: None,
-                        goal_caret: usize::MAX,
-                        quit_armed: false,
-                    })
-                },
-            )
-            .unwrap();
-
-        window
-            .update(cx, |editor, window, cx| {
-                window.focus(&editor.focus_handle(cx), cx);
-                cx.activate(true);
-            })
-            .unwrap();
-    });
-}
 
 #[cfg(test)]
 mod tests {

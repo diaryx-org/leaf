@@ -16,7 +16,8 @@ live in a frontend-neutral core; each frontend is a thin leaf crate on top of it
 |-------|------------|
 | [`leaf-core`](crates/leaf-core) | the document model — a `twig::Editor` with a byte-offset caret + selection, and the WYSIWYG `VisualMap`. Glyphs carry a **toolkit-agnostic `Style`**; no UI dependency. |
 | [`leaf-tui`](crates/leaf-tui) | the terminal frontend (ratatui + crossterm). Maps `leaf-core`'s `Style` onto terminal colors. Ships the `leaf` binary. |
-| [`leaf-gui`](crates/leaf-gui) | a GUI frontend on [gpui](https://github.com/zed-industries/zed). Reuses every bit of `leaf-core`'s caret math and edit surface; only paints glyphs (gpui's text system) and forwards key/mouse events into the same `Doc` ops. |
+| [`leaf-gpui`](crates/leaf-gpui) | the **embeddable GUI widget** on [gpui](https://github.com/zed-industries/zed): the `Editor` view plus its input, pixel-wrapping renderer, and `register_keybindings`. It renders only the editing surface and leaves window chrome, file I/O, and quit to the host — so it drops into any gpui app. Reuses every bit of `leaf-core`'s caret math and edit surface; only paints glyphs and forwards key/mouse events into the same `Doc` ops. |
+| [`leaf-gui`](crates/leaf-gui) | the standalone **application** — a thin host around `leaf-gpui`: a window, a header bar, a file-open button, and an unsaved-changes quit guard. The same widget powers this app and any embedding host. |
 
 ```sh
 cargo run -- path/to/document.md            # the TUI (workspace default)

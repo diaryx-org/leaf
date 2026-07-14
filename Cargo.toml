@@ -14,7 +14,9 @@ edition = "2024"
 # The document AST + offset-addressed span-splice editor. Same sibling checkout
 # bough uses; leaf drives its P0–P5 surface (edit_range, node_at, nodes,
 # wrap_range/toggle_inline/set_block).
-twig = { path = "../twig/bindings/rust/twig", version = "0.1.0" }
+# Published as `twig-doc` (the `twig` name is taken on crates.io); the library's
+# import name is still `twig`, so `package` renames it back for `use twig::…`.
+twig = { path = "../twig/bindings/rust/twig", version = "0.1.0", package = "twig-doc" }
 anyhow = "1"
 # Frontend-neutral core: the caret/selection model + AST→glyph map, styled with
 # a toolkit-agnostic Style. Each frontend crate maps that to its own styling.
