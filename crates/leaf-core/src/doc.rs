@@ -313,6 +313,29 @@ impl Doc {
         }
     }
 
+    /// The heading level of the text block at the caret, or `None` when that
+    /// block is not a heading.
+    pub fn current_heading_level(&mut self) -> Option<u32> {
+        let caret = self.caret;
+        self.nodes()
+            .into_iter()
+            .filter(|n| n.kind == "heading")
+            .find(|n| n.span.start <= caret && caret <= n.span.end)
+            .and_then(|n| n.level)
+    }
+
+    /// Toggle a heading at the caret: if the block is already this heading level,
+    /// revert it to a paragraph; otherwise convert it to this heading level.
+    /// This gives the heading commands the same toggle feel as bold/italic/code —
+    /// re-applying a heading a line already has turns it back into body text.
+    pub fn toggle_heading(&mut self, level: u32) {
+        if self.current_heading_level() == Some(level) {
+            self.set_block(BlockKind::Paragraph);
+        } else {
+            self.set_block(BlockKind::Heading(level));
+        }
+    }
+
     // ── undo / redo ───────────────────────────────────────────────────────────
     // twig owns the history (it owns the buffer); leaf just drives it and
     // re-anchors the caret from the returned `Change`. See `splice` for how a
@@ -1004,6 +1027,27 @@ mod tests {
         d.caret = 2; // caret inside the paragraph, no selection
         d.set_block(BlockKind::Heading(1));
         assert_eq!(d.source, "# hello\n");
+    }
+
+    #[test]
+    fn set_block_heading_works_in_wysiwyg_view() {
+        // The app defaults to WYSIWYG; the caret is a source offset either way.
+        let mut d = wysiwyg_doc("head_wys", "hello\n");
+        d.caret = 2;
+        d.set_block(BlockKind::Heading(1));
+        assert_eq!(d.source, "# hello\n");
+    }
+
+    #[test]
+    fn toggle_heading_applies_switches_and_reverts() {
+        let mut d = doc_with("head_toggle", "hello\n");
+        d.caret = 2;
+        d.toggle_heading(1);
+        assert_eq!(d.source, "# hello\n"); // paragraph → H1
+        d.toggle_heading(2);
+        assert_eq!(d.source, "## hello\n"); // H1 → H2 (different level switches)
+        d.toggle_heading(2);
+        assert_eq!(d.source, "hello\n"); // same level reverts to paragraph
     }
 
     #[test]

@@ -619,7 +619,9 @@ impl Editor {
     /// so the handlers are thin wrappers over this.
     fn set_heading(&mut self, level: u32, cx: &mut Context<Self>) {
         let Some(doc) = self.doc.as_mut() else { return };
-        doc.set_block(BlockKind::Heading(level));
+        // Toggle: applying a heading a line already has reverts it to a paragraph
+        // (matches bold/italic/code, and lets ⌃1/H1 undo itself).
+        doc.toggle_heading(level);
         cx.notify();
     }
     fn heading1(&mut self, _: &Heading1, _: &mut Window, cx: &mut Context<Self>) {
