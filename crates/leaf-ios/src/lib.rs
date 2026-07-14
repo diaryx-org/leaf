@@ -22,7 +22,7 @@ extern crate gpui_mobile;
 mod ios {
     // `prelude::*` brings gpui's context traits into scope so `cx.new(...)`
     // (entity construction) resolves on `&mut App`.
-    use gpui::{prelude::*, App, WindowOptions};
+    use gpui::{prelude::*, App, Focusable, WindowOptions};
     use leaf_gpui::{register_keybindings, Editor};
 
     /// Register the leaf root view with the gpui-mobile iOS platform.
@@ -54,7 +54,15 @@ mod ios {
             },
             move |_, cx| cx.new(|cx| Editor::new(cx, seed_document())),
         ) {
-            Ok(_) => log::info!("leaf-ios: editor window opened"),
+            Ok(window) => {
+                log::info!("leaf-ios: editor window opened");
+                // Focus the editor so gpui registers its text-input handler for
+                // the focused element — which is what brings up the soft keyboard
+                // (see IosWindow::set_input_handler in the gpui-mobile fork).
+                let _ = window.update(cx, |editor, window, cx| {
+                    editor.focus_handle(cx).focus(window, cx);
+                });
+            }
             Err(e) => log::error!("leaf-ios: open_window failed: {e:?}"),
         }
 
@@ -65,6 +73,7 @@ mod ios {
     /// editing surface has visible content. `Doc` loads from a path; iOS gives
     /// each app a writable temp directory (`std::env::temp_dir()`).
     fn seed_document() -> Option<leaf_core::Doc> {
+        // Long enough to overflow the screen so touch-scroll is exercisable.
         const SAMPLE: &str = "\
 # leaf on iOS 🍃
 
@@ -75,6 +84,30 @@ The **twig**-backed rich-text editor, now running on **gpui** via `gpui-mobile`
 - The same `Editor` widget as the desktop app, unchanged
 - Native gpui rendering on iOS (not a web view)
 - `source` and `wysiwyg` views share one render path
+
+## Try it
+- **Tap** the text to place the caret and raise the keyboard.
+- **Type** — the buffer is live; markup resolves as you go.
+- **Drag** to scroll; the keyboard dismisses on scroll.
+
+## Markup
+Headings, **bold**, *italic*, `code`, and lists all render inline, with the
+delimiters hidden in the WYSIWYG view and revealed in source (⌘e / ⌥w).
+
+1. First ordered item
+2. Second ordered item
+3. Third ordered item
+
+> A blockquote, to show block-level styling on the phone.
+
+### A deeper heading
+Paragraphs keep flowing so there is enough content here to run past the bottom
+of the screen and give the scroll gesture something to move. Keep dragging and
+the text should glide under your finger, with momentum after you let go.
+
+#### Even deeper
+More text. More lines. The point is simply to overflow the viewport so the
+`overflow_y_scroll` body actually has somewhere to go.
 
 *This text is the leaf editor's own buffer — you are looking at `Editor`.*
 ";
