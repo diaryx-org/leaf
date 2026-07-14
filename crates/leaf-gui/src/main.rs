@@ -25,16 +25,16 @@ use std::ops::Range;
 use std::path::PathBuf;
 
 use gpui::{
-    App, Bounds, Context, CursorStyle, Element, ElementId, ElementInputHandler, Entity,
-    EntityInputHandler, FocusHandle, Focusable, Font, GlobalElementId, InspectorElementId,
+    App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, ElementInputHandler,
+    Entity, EntityInputHandler, FocusHandle, Focusable, Font, GlobalElementId, InspectorElementId,
     IntoElement, KeyBinding, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     PaintQuad, Pixels, Point, Render, ScrollHandle, ShapedLine, Style, TextAlign, UTF16Selection,
-    Window, WindowBounds, WindowOptions, actions, div, fill, point, prelude::*, px, relative, rgba,
-    size,
+    Window, WindowBounds, WindowOptions, actions, anchored, deferred, div, fill, point,
+    prelude::*, px, relative, rgba, size,
 };
 use gpui_platform::application;
 use leaf_core::style::Style as CoreStyle;
-use leaf_core::{Doc, Glyph, InlineKind, View};
+use leaf_core::{BlockKind, Doc, Glyph, InlineKind, View};
 
 use crate::style::text_run;
 
@@ -44,6 +44,16 @@ actions!(
         Backspace, Delete, Left, Right, Up, Down, SelectLeft, SelectRight, SelectUp, SelectDown,
         Home, End, SelectHome, SelectEnd, Newline, Indent, Save, Quit, ToggleBold, ToggleItalic,
         ToggleView,
+        // Word motion / deletion (⌥←/→, ⌥⌫/⌦) and select-all (⌘A) — the same
+        // leaf-core word-boundary ops the TUI already binds.
+        MoveWordLeft, MoveWordRight, SelectWordLeft, SelectWordRight, DeleteWordBack,
+        DeleteWordForward, SelectAll,
+        // Format parity with the TUI's ⌥ toolbar (⌥c/⌥m/⌥0-6): code, mark, and
+        // block kind. The GUI keeps ⌥ for word motion, so these ride ⌘⇧ / ⌃.
+        ToggleCode, ToggleMark, Paragraph, Heading1, Heading2, Heading3, Heading4, Heading5,
+        Heading6,
+        // Clipboard (⌘C/⌘X/⌘V), backed by gpui's own clipboard — no external crate.
+        Copy, Cut, Paste,
     ]
 );
 
@@ -56,6 +66,9 @@ struct Editor {
     doc: Option<Doc>,
     marked_range: Option<Range<usize>>,
     is_selecting: bool,
+    /// Set while the right-click context menu is open, to the window position
+    /// it should be anchored at. `None` hides it.
+    context_menu: Option<Point<Pixels>>,
     /// Scroll offset of the document body; lets the view exceed the window.
     scroll_handle: ScrollHandle,
     // Filled by the element each paint; read by mouse handlers to hit-test.
@@ -183,6 +196,117 @@ impl Editor {
         doc.toggle_view();
         cx.notify();
     }
+    fn move_word_left(&mut self, _: &MoveWordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_mut() else { return };
+        doc.move_word_left(false);
+        self.scroll_caret_into_view();
+        cx.notify();
+    }
+    fn move_word_right(&mut self, _: &MoveWordRight, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_mut() else { return };
+        doc.move_word_right(false);
+        self.scroll_caret_into_view();
+        cx.notify();
+    }
+    fn select_word_left(&mut self, _: &SelectWordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_mut() else { return };
+        doc.move_word_left(true);
+        self.scroll_caret_into_view();
+        cx.notify();
+    }
+    fn select_word_right(&mut self, _: &SelectWordRight, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_mut() else { return };
+        doc.move_word_right(true);
+        self.scroll_caret_into_view();
+        cx.notify();
+    }
+    fn delete_word_back(&mut self, _: &DeleteWordBack, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_mut() else { return };
+        doc.delete_word_back();
+        self.scroll_caret_into_view();
+        cx.notify();
+    }
+    fn delete_word_forward(
+        &mut self,
+        _: &DeleteWordForward,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(doc) = self.doc.as_mut() else { return };
+        doc.delete_word_forward();
+        self.scroll_caret_into_view();
+        cx.notify();
+    }
+    fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_mut() else { return };
+        doc.select_all();
+        cx.notify();
+    }
+    fn toggle_code(&mut self, _: &ToggleCode, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_mut() else { return };
+        doc.toggle(InlineKind::Verbatim);
+        cx.notify();
+    }
+    fn toggle_mark(&mut self, _: &ToggleMark, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_mut() else { return };
+        doc.toggle(InlineKind::Mark);
+        cx.notify();
+    }
+    fn set_paragraph(&mut self, _: &Paragraph, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_mut() else { return };
+        doc.set_block(BlockKind::Paragraph);
+        cx.notify();
+    }
+    /// Shared body for the six `Heading{1..6}` actions below — each is a
+    /// distinct zero-sized action type (gpui binds keys to types, not values),
+    /// so the handlers are thin wrappers over this.
+    fn set_heading(&mut self, level: u32, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_mut() else { return };
+        doc.set_block(BlockKind::Heading(level));
+        cx.notify();
+    }
+    fn heading1(&mut self, _: &Heading1, _: &mut Window, cx: &mut Context<Self>) {
+        self.set_heading(1, cx);
+    }
+    fn heading2(&mut self, _: &Heading2, _: &mut Window, cx: &mut Context<Self>) {
+        self.set_heading(2, cx);
+    }
+    fn heading3(&mut self, _: &Heading3, _: &mut Window, cx: &mut Context<Self>) {
+        self.set_heading(3, cx);
+    }
+    fn heading4(&mut self, _: &Heading4, _: &mut Window, cx: &mut Context<Self>) {
+        self.set_heading(4, cx);
+    }
+    fn heading5(&mut self, _: &Heading5, _: &mut Window, cx: &mut Context<Self>) {
+        self.set_heading(5, cx);
+    }
+    fn heading6(&mut self, _: &Heading6, _: &mut Window, cx: &mut Context<Self>) {
+        self.set_heading(6, cx);
+    }
+    // ── clipboard (gpui's own, not an external crate) ───────────────────────
+    fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_ref() else { return };
+        if let Some(text) = doc.selected_text() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text.to_string()));
+        }
+    }
+    fn cut(&mut self, _: &Cut, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_mut() else { return };
+        let Some(text) = doc.selected_text().map(str::to_string) else { return };
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        doc.backspace();
+        self.scroll_caret_into_view();
+        cx.notify();
+    }
+    fn paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
+            return;
+        };
+        let Some(doc) = self.doc.as_mut() else { return };
+        doc.insert(&text);
+        self.scroll_caret_into_view();
+        cx.notify();
+    }
 
     /// Scroll the document body, if needed, so the caret's row is visible after
     /// a keyboard motion or edit. Works in window-space from the last painted
@@ -248,14 +372,34 @@ impl Editor {
     }
 
     // ── mouse ───────────────────────────────────────────────────────────────
+    /// Left click: `click_count` (from gpui, which tracks the OS's double/
+    /// triple-click timing) picks single caret placement, double-click word
+    /// select, or triple-click line select. A click while the context menu is
+    /// open just dismisses it (a menu item click never reaches here — it stops
+    /// propagation in `context_menu_item`).
     fn on_mouse_down(&mut self, ev: &MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         if self.doc.is_none() {
             return;
         }
+        if self.context_menu.take().is_some() {
+            cx.notify();
+            return;
+        }
         self.is_selecting = true;
         let off = self.offset_for_position(ev.position);
-        if let Some(doc) = self.doc.as_mut() {
-            doc.place_caret(off, ev.modifiers.shift);
+        let Some(doc) = self.doc.as_mut() else { return };
+        match ev.click_count {
+            1 => doc.place_caret(off, ev.modifiers.shift),
+            2 => doc.select_word_at(off),
+            _ => {
+                // Triple-click (or more): select the caret's whole source
+                // line/paragraph. leaf-core has no single call for this, so
+                // it's placing the caret then riding move_home/move_end the
+                // same way a keyboard Home then Shift-End would.
+                doc.place_caret(off, false);
+                doc.move_home(false);
+                doc.move_end(true);
+            }
         }
         cx.notify();
     }
@@ -270,6 +414,85 @@ impl Editor {
             }
             cx.notify();
         }
+    }
+
+    /// Right click: place the caret (unless the click landed inside an
+    /// existing selection, in which case Cut/Copy should act on it), then open
+    /// the context menu anchored at the click.
+    fn on_right_mouse_down(&mut self, ev: &MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let off = self.offset_for_position(ev.position);
+        let Some(doc) = self.doc.as_mut() else { return };
+        let inside_selection = doc.selection().is_some_and(|(s, e)| off >= s && off < e);
+        if !inside_selection {
+            doc.place_caret(off, false);
+        }
+        self.context_menu = Some(ev.position);
+        cx.notify();
+    }
+
+    // ── context menu ─────────────────────────────────────────────────────────
+    /// One clickable row of the right-click menu. Performs `on_click`, closes
+    /// the menu, and — critically — stops propagation so the same click
+    /// doesn't also fall through to `on_mouse_down` on the document body
+    /// underneath (which would otherwise re-place the caret at the menu's
+    /// screen position right after, say, a paste).
+    fn context_menu_item(
+        label: &'static str,
+        cx: &mut Context<Self>,
+        on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) -> impl IntoElement {
+        div()
+            .id(label)
+            .px_3()
+            .py_1()
+            .cursor(CursorStyle::PointingHand)
+            .hover(|s| s.bg(gpui::rgb(0xe4e4e4)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |editor, _: &MouseDownEvent, window, cx| {
+                    on_click(editor, window, cx);
+                    editor.context_menu = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                }),
+            )
+            .child(label)
+    }
+
+    /// The right-click menu itself: Cut / Copy / Paste / Select All, wired to
+    /// the same ops as their keybindings. `anchored`/`deferred` paint it above
+    /// the document (and, since deferred draws are hit-tested before their
+    /// ancestors, its clicks are seen first too) at the window position the
+    /// right-click landed on.
+    fn render_context_menu(pos: Point<Pixels>, cx: &mut Context<Self>) -> impl IntoElement {
+        deferred(
+            anchored().position(pos).snap_to_window().child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .min_w(px(140.0))
+                    .py_1()
+                    .bg(gpui::white())
+                    .rounded_md()
+                    .shadow_lg()
+                    .border_1()
+                    .border_color(gpui::rgb(0xd0d0d0))
+                    .text_color(gpui::rgb(0x1e1e1e))
+                    .child(Self::context_menu_item("Cut", cx, |e, w, cx| {
+                        e.cut(&Cut, w, cx)
+                    }))
+                    .child(Self::context_menu_item("Copy", cx, |e, w, cx| {
+                        e.copy(&Copy, w, cx)
+                    }))
+                    .child(Self::context_menu_item("Paste", cx, |e, w, cx| {
+                        e.paste(&Paste, w, cx)
+                    }))
+                    .child(Self::context_menu_item("Select All", cx, |e, w, cx| {
+                        e.select_all(&SelectAll, w, cx)
+                    })),
+            ),
+        )
+        .with_priority(1)
     }
 
     /// Hit-test a pixel position to a *source* byte offset, reusing the cached
@@ -817,10 +1040,33 @@ impl Render for Editor {
             .on_action(cx.listener(Self::toggle_italic))
             .on_action(cx.listener(Self::toggle_view))
             .on_action(cx.listener(Self::save))
+            .on_action(cx.listener(Self::move_word_left))
+            .on_action(cx.listener(Self::move_word_right))
+            .on_action(cx.listener(Self::select_word_left))
+            .on_action(cx.listener(Self::select_word_right))
+            .on_action(cx.listener(Self::delete_word_back))
+            .on_action(cx.listener(Self::delete_word_forward))
+            .on_action(cx.listener(Self::select_all))
+            .on_action(cx.listener(Self::toggle_code))
+            .on_action(cx.listener(Self::toggle_mark))
+            .on_action(cx.listener(Self::set_paragraph))
+            .on_action(cx.listener(Self::heading1))
+            .on_action(cx.listener(Self::heading2))
+            .on_action(cx.listener(Self::heading3))
+            .on_action(cx.listener(Self::heading4))
+            .on_action(cx.listener(Self::heading5))
+            .on_action(cx.listener(Self::heading6))
+            .on_action(cx.listener(Self::copy))
+            .on_action(cx.listener(Self::cut))
+            .on_action(cx.listener(Self::paste))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
+            .on_mouse_down(MouseButton::Right, cx.listener(Self::on_right_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
+            .when_some(self.context_menu, |el, pos| {
+                el.child(Self::render_context_menu(pos, &mut *cx))
+            })
             .child(
                 div()
                     .flex_none()
@@ -829,7 +1075,8 @@ impl Render for Editor {
                     .bg(gpui::rgb(0xf0f0f0))
                     .text_color(gpui::rgb(0x555555))
                     .child(format!(
-                        "leaf-gui — {name}{dirty}   [{view}]   ⌘e view · ⌘b/⌘i bold/italic · ⌘s save"
+                        "leaf-gui — {name}{dirty}   [{view}]   ⌘e view · ⌘b/⌘i/⌘⇧c/⌘⇧m bold/italic/code/mark · \
+                         ⌃0-6 ¶/heading · ⌥←/→ word, ⌥⌫/⌦ delete · ⌘a select all · ⌘c/⌘x/⌘v copy/cut/paste · ⌘s save"
                     )),
             )
             .child(
@@ -902,6 +1149,33 @@ fn main() {
             KeyBinding::new("cmd-e", ToggleView, None),
             KeyBinding::new("cmd-s", Save, None),
             KeyBinding::new("cmd-q", Quit, None),
+            // Word motion / deletion — the macOS convention, mirroring
+            // leaf-core's move_word_left/right and delete_word_back/forward.
+            KeyBinding::new("alt-left", MoveWordLeft, None),
+            KeyBinding::new("alt-right", MoveWordRight, None),
+            KeyBinding::new("shift-alt-left", SelectWordLeft, None),
+            KeyBinding::new("shift-alt-right", SelectWordRight, None),
+            KeyBinding::new("alt-backspace", DeleteWordBack, None),
+            KeyBinding::new("alt-delete", DeleteWordForward, None),
+            // Select-all.
+            KeyBinding::new("cmd-a", SelectAll, None),
+            // Format parity with the TUI's ⌥ toolbar (⌥c code, ⌥m mark, ⌥0-6
+            // block). ⌥ is already spoken for by word motion above, so these
+            // ride ⌘⇧ (code/mark) and ⌃ (block kind) instead — neither collides
+            // with cmd-b/i/e/s/q or with each other.
+            KeyBinding::new("cmd-shift-c", ToggleCode, None),
+            KeyBinding::new("cmd-shift-m", ToggleMark, None),
+            KeyBinding::new("ctrl-0", Paragraph, None),
+            KeyBinding::new("ctrl-1", Heading1, None),
+            KeyBinding::new("ctrl-2", Heading2, None),
+            KeyBinding::new("ctrl-3", Heading3, None),
+            KeyBinding::new("ctrl-4", Heading4, None),
+            KeyBinding::new("ctrl-5", Heading5, None),
+            KeyBinding::new("ctrl-6", Heading6, None),
+            // Clipboard.
+            KeyBinding::new("cmd-c", Copy, None),
+            KeyBinding::new("cmd-x", Cut, None),
+            KeyBinding::new("cmd-v", Paste, None),
         ]);
         cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
 
@@ -918,6 +1192,7 @@ fn main() {
                         doc,
                         marked_range: None,
                         is_selecting: false,
+                        context_menu: None,
                         scroll_handle: ScrollHandle::new(),
                         last_rows: Vec::new(),
                         last_line_height: px(24.0),
