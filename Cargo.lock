@@ -2878,13 +2878,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "leaf-gui"
+name = "leaf-gpui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "gpui",
  "gpui_platform",
  "leaf-core",
+]
+
+[[package]]
+name = "leaf-gui"
+version = "0.1.0"
+dependencies = [
+ "leaf-gpui",
 ]
 
 [[package]]
