@@ -75,6 +75,15 @@ struct Editor {
     last_rows: Vec<RowLayout>,
     last_line_height: Pixels,
     last_bounds: Option<Bounds<Pixels>>,
+    /// Visual-row count from the last paint — request_layout reserves height for
+    /// it, since the true (pixel-wrapped) count is only known once we've laid out.
+    last_row_count: usize,
+    /// The "sticky" x the caret aims for through a run of vertical moves, and the
+    /// caret offset it was computed for. If the caret has since moved by any other
+    /// path (typing, a horizontal key, a click), `goal_caret` no longer matches and
+    /// the goal is recomputed — so we never sprinkle resets across every handler.
+    goal_x: Option<Pixels>,
+    goal_caret: usize,
 }
 
 impl Editor {
@@ -93,16 +102,10 @@ impl Editor {
         cx.notify();
     }
     fn up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(doc) = self.doc.as_mut() else { return };
-        doc.move_up(false);
-        self.scroll_caret_into_view();
-        cx.notify();
+        self.move_line(-1, false, cx);
     }
     fn down(&mut self, _: &Down, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(doc) = self.doc.as_mut() else { return };
-        doc.move_down(false);
-        self.scroll_caret_into_view();
-        cx.notify();
+        self.move_line(1, false, cx);
     }
     fn select_left(&mut self, _: &SelectLeft, _: &mut Window, cx: &mut Context<Self>) {
         let Some(doc) = self.doc.as_mut() else { return };
@@ -117,38 +120,105 @@ impl Editor {
         cx.notify();
     }
     fn select_up(&mut self, _: &SelectUp, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(doc) = self.doc.as_mut() else { return };
-        doc.move_up(true);
-        self.scroll_caret_into_view();
-        cx.notify();
+        self.move_line(-1, true, cx);
     }
     fn select_down(&mut self, _: &SelectDown, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(doc) = self.doc.as_mut() else { return };
-        doc.move_down(true);
-        self.scroll_caret_into_view();
-        cx.notify();
+        self.move_line(1, true, cx);
     }
     fn home(&mut self, _: &Home, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(doc) = self.doc.as_mut() else { return };
-        doc.move_home(false);
-        self.scroll_caret_into_view();
-        cx.notify();
+        self.move_to_line_edge(false, false, cx);
     }
     fn end(&mut self, _: &End, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(doc) = self.doc.as_mut() else { return };
-        doc.move_end(false);
-        self.scroll_caret_into_view();
-        cx.notify();
+        self.move_to_line_edge(true, false, cx);
     }
     fn select_home(&mut self, _: &SelectHome, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(doc) = self.doc.as_mut() else { return };
-        doc.move_home(true);
+        self.move_to_line_edge(false, true, cx);
+    }
+    fn select_end(&mut self, _: &SelectEnd, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_to_line_edge(true, true, cx);
+    }
+
+    // ── visual-line motion (the GUI wraps at pixel width, so ↑/↓ and Home/End
+    //    move by *visual* row, computed from the last painted layout — leaf-core's
+    //    row model is one-per-paragraph and can't see the pixel wrap) ───────────
+
+    /// Move the caret one visual row up (`dir < 0`) or down, keeping a sticky
+    /// goal x across the run. Falls back to the model's paragraph-level move only
+    /// before the first paint, when there's no cached layout to read.
+    fn move_line(&mut self, dir: i32, extend: bool, cx: &mut Context<Self>) {
+        if self.doc.is_none() {
+            return;
+        }
+        match self.vertical_target(dir) {
+            Some((off, goal)) => {
+                self.goal_x = Some(goal);
+                self.goal_caret = off;
+                self.doc.as_mut().unwrap().place_caret(off, extend);
+            }
+            None => {
+                let doc = self.doc.as_mut().unwrap();
+                if dir < 0 {
+                    doc.move_up(extend);
+                } else {
+                    doc.move_down(extend);
+                }
+            }
+        }
         self.scroll_caret_into_view();
         cx.notify();
     }
-    fn select_end(&mut self, _: &SelectEnd, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(doc) = self.doc.as_mut() else { return };
-        doc.move_end(true);
+
+    /// The source offset one visual row away in `dir`, plus the goal x used — or
+    /// `None` if there's no cached layout yet.
+    fn vertical_target(&self, dir: i32) -> Option<(usize, Pixels)> {
+        let doc = self.doc.as_ref()?;
+        let rows = &self.last_rows;
+        if rows.is_empty() {
+            return None;
+        }
+        let (r, gi) = locate_caret(rows, doc.caret);
+        // Reuse the sticky x only if the caret hasn't moved by some other path.
+        let x = match self.goal_x {
+            Some(x) if self.goal_caret == doc.caret => x,
+            _ => rows[r].shaped.x_for_index(rows[r].char_byte[gi]),
+        };
+        let tr = ((r as i32 + dir).max(0) as usize).min(rows.len() - 1);
+        let byte = rows[tr].shaped.closest_index_for_x(x);
+        Some((src_at(&rows[tr], byte), x))
+    }
+
+    /// Move the caret to the start (`to_end = false`) or end of its *visual* row.
+    fn move_to_line_edge(&mut self, to_end: bool, extend: bool, cx: &mut Context<Self>) {
+        if self.doc.is_none() {
+            return;
+        }
+        let target = {
+            let rows = &self.last_rows;
+            let caret = self.doc.as_ref().unwrap().caret;
+            if rows.is_empty() {
+                None
+            } else {
+                let (r, _) = locate_caret(rows, caret);
+                let row = &rows[r];
+                Some(if to_end {
+                    row.end_src
+                } else {
+                    row.char_srcs.first().copied().unwrap_or(row.end_src)
+                })
+            }
+        };
+        self.goal_x = None;
+        match target {
+            Some(off) => self.doc.as_mut().unwrap().place_caret(off, extend),
+            None => {
+                let doc = self.doc.as_mut().unwrap();
+                if to_end {
+                    doc.move_end(extend);
+                } else {
+                    doc.move_home(extend);
+                }
+            }
+        }
         self.scroll_caret_into_view();
         cx.notify();
     }
@@ -324,7 +394,14 @@ impl Editor {
             return; // not laid out yet
         }
         let lh = self.last_line_height;
-        let (row, _) = doc.caret_pos();
+        // The caret's *visual* row — located against the painted rows, since the
+        // pixel wrap means one paragraph can span several rows (caret_pos() would
+        // give the paragraph index instead).
+        let row = if self.last_rows.is_empty() {
+            0
+        } else {
+            locate_caret(&self.last_rows, doc.caret).0
+        };
         let caret_top = text_bounds.top() + lh * (row as f32);
         let caret_bottom = caret_top + lh;
 
@@ -703,27 +780,157 @@ fn build_runs(glyphs: &[Glyph], base: &Font) -> Vec<gpui::TextRun> {
         .collect()
 }
 
-/// Measure the current font's *real* average character advance at `font_size`
-/// by shaping a representative sample. `leaf-core`'s `VisualMap` wraps by
-/// character count (a monospace notion), so to place its breaks near the true
-/// pixel edge with a proportional font we need an accurate per-char width — a
-/// fixed em-fraction guess wrapped lines well short of the edge (the "artificial
-/// line breaks"). Shaping a sample and dividing by its length gives the honest
-/// average, spaces and mixed case included.
-fn avg_advance(window: &mut Window, font_size: Pixels, base: &Font) -> f32 {
-    const SAMPLE: &str = "the quick brown fox jumps over the lazy dog, and THEN a bit MORE";
-    let run = text_run(SAMPLE.len(), CoreStyle::default(), base);
-    let shaped = window
+/// Pixel-wrap one logical line (a paragraph, or a source line) into visual rows,
+/// pushing a [`RowLayout`] per row. This is the *true* proportional wrap that
+/// replaces leaf-core's monospace character-count estimate: it shapes the whole
+/// line once to measure real glyph advances, then greedily breaks it at word
+/// boundaries wherever the measured width exceeds `wrap_px`. A line that doesn't
+/// need to wrap reuses its single shaped line as-is (no re-shaping).
+fn wrap_logical(
+    window: &mut Window,
+    font: &Font,
+    font_size: Pixels,
+    glyphs: &[Glyph],
+    logical_end_src: usize,
+    wrap_px: f32,
+    out: &mut Vec<RowLayout>,
+) {
+    if glyphs.is_empty() {
+        let shaped = window.text_system().shape_line("".into(), font_size, &[], None);
+        out.push(RowLayout {
+            shaped,
+            char_srcs: Vec::new(),
+            char_byte: vec![0],
+            end_src: logical_end_src,
+        });
+        return;
+    }
+
+    // Shape the whole line once, purely to measure where the breaks fall.
+    let (text, char_byte) = row_text(glyphs);
+    let runs = build_runs(glyphs, font);
+    let full = window
         .text_system()
-        .shape_line(SAMPLE.into(), font_size, &[run], None);
-    let width = f32::from(shaped.x_for_index(SAMPLE.len()));
-    (width / SAMPLE.chars().count() as f32).max(1.0)
+        .shape_line(text.into(), font_size, &runs, None);
+    let x = |byte: usize| f32::from(full.x_for_index(byte));
+
+    // Greedy word wrap: walk maximal non-space runs, breaking before a word when
+    // the line up to that word's end would overflow.
+    let n = glyphs.len();
+    let mut starts = vec![0usize]; // glyph index each visual row starts at
+    let mut line_start = 0usize;
+    let mut j = 0usize;
+    while j < n {
+        if glyphs[j].ch == ' ' {
+            j += 1;
+            continue;
+        }
+        let word_start = j;
+        while j < n && glyphs[j].ch != ' ' {
+            j += 1;
+        }
+        if x(char_byte[j]) - x(char_byte[line_start]) > wrap_px && word_start > line_start {
+            starts.push(word_start);
+            line_start = word_start;
+        }
+    }
+
+    // The common case — the line fits — reuses the shaped line we already have.
+    if starts.len() == 1 {
+        out.push(RowLayout {
+            shaped: full,
+            char_srcs: glyphs.iter().map(|g| g.src).collect(),
+            char_byte,
+            end_src: logical_end_src,
+        });
+        return;
+    }
+
+    for k in 0..starts.len() {
+        let gs = starts[k];
+        let ge = starts.get(k + 1).copied().unwrap_or(n);
+        let sub = &glyphs[gs..ge];
+        let (stext, scb) = row_text(sub);
+        let sruns = build_runs(sub, font);
+        let shaped = window
+            .text_system()
+            .shape_line(stext.into(), font_size, &sruns, None);
+        // The offset the caret lands on past this row: the block's end on the
+        // last row, else the start of the next row's first glyph.
+        let end_src = if ge == n {
+            logical_end_src
+        } else {
+            let last = &glyphs[ge - 1];
+            last.src + last.ch.len_utf8()
+        };
+        out.push(RowLayout {
+            shaped,
+            char_srcs: sub.iter().map(|g| g.src).collect(),
+            char_byte: scb,
+            end_src,
+        });
+    }
 }
 
-/// How many `VisualMap` character-columns fit in `width_px`, given the font's
-/// measured average advance.
-fn columns(width_px: f32, avg_advance_px: f32) -> usize {
-    ((width_px / avg_advance_px.max(1.0)) as usize).max(8)
+/// A glyph run's concatenated text and its per-glyph cumulative byte offsets
+/// (`chars + 1` entries, the last being the total length).
+fn row_text(glyphs: &[Glyph]) -> (String, Vec<usize>) {
+    let mut text = String::new();
+    let mut char_byte = vec![0usize];
+    let mut acc = 0usize;
+    for g in glyphs {
+        text.push(g.ch);
+        acc += g.ch.len_utf8();
+        char_byte.push(acc);
+    }
+    (text, char_byte)
+}
+
+/// The source byte offset for a byte index within a row's text (the inverse of
+/// `char_byte`): the glyph starting at `byte`, or the row's end past the last.
+fn src_at(row: &RowLayout, byte: usize) -> usize {
+    let ci = row
+        .char_byte
+        .iter()
+        .position(|&b| b == byte)
+        .unwrap_or(row.char_srcs.len());
+    row.char_srcs.get(ci).copied().unwrap_or(row.end_src)
+}
+
+/// Locate the caret's visual `(row, glyph column)` for source offset `caret`
+/// against the painted rows. Thin wrapper over [`locate_caret_core`], which is
+/// split out to be unit-testable without a live text system.
+fn locate_caret(rows: &[RowLayout], caret: usize) -> (usize, usize) {
+    let srcs: Vec<&[usize]> = rows.iter().map(|r| r.char_srcs.as_slice()).collect();
+    let ends: Vec<usize> = rows.iter().map(|r| r.end_src).collect();
+    locate_caret_core(&srcs, &ends, caret)
+}
+
+/// Map a source offset to `(visual row, glyph column)`. The column may equal the
+/// row's glyph count, meaning "just past the last glyph". At a soft-wrap boundary
+/// one offset is both the end of a row and the start of the next; we bias to the
+/// next row's start so the caret rides the wrapped line rather than its far edge.
+fn locate_caret_core(row_srcs: &[&[usize]], row_end: &[usize], caret: usize) -> (usize, usize) {
+    let n = row_srcs.len();
+    for r in 0..n {
+        let srcs = row_srcs[r];
+        match srcs.iter().position(|&s| s >= caret) {
+            Some(gi) => return (r, gi),
+            None => {
+                if caret <= row_end[r] {
+                    if caret == row_end[r]
+                        && r + 1 < n
+                        && row_srcs[r + 1].first() == Some(&caret)
+                    {
+                        continue; // soft-wrap boundary → next row's start
+                    }
+                    return (r, srcs.len());
+                }
+            }
+        }
+    }
+    let r = n.saturating_sub(1);
+    (r, row_srcs.get(r).map(|s| s.len()).unwrap_or(0))
 }
 
 impl IntoElement for TextElement {
@@ -752,28 +959,10 @@ impl Element for TextElement {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        // Row count differs by view; for WYSIWYG we must build the map to know
-        // it. Use last frame's width (or a sane default before the first paint).
-        let font_size = window.text_style().font_size.to_pixels(window.rem_size());
-        let font = window.text_style().font();
-        let adv = avg_advance(window, font_size, &font);
-        let last_w = self
-            .editor
-            .read(cx)
-            .last_bounds
-            .map(|b| f32::from(b.size.width))
-            .unwrap_or(760.0);
-        let cols = columns(last_w, adv);
-        let n = self.editor.update(cx, |e, _| {
-            let Some(doc) = e.doc.as_mut() else { return 1 };
-            match doc.view {
-                View::Source => doc.source.split('\n').count().max(1),
-                View::Wysiwyg => {
-                    doc.build_visual(cols);
-                    doc.vmap.num_rows().max(1)
-                }
-            }
-        });
+        // The pixel-wrapped row count is only known once prepaint has laid the
+        // text out, so reserve height from the last paint's count (self-correcting
+        // by one frame, like `last_bounds`). Before the first paint, one row.
+        let n = self.editor.read(cx).last_row_count.max(1);
         let mut style = Style::default();
         style.size.width = relative(1.).into();
         style.size.height = (window.line_height() * n as f32).into();
@@ -793,8 +982,7 @@ impl Element for TextElement {
         let font: Font = text_style.font();
         let font_size = text_style.font_size.to_pixels(window.rem_size());
         let line_height = window.line_height();
-        let adv = avg_advance(window, font_size, &font);
-        let cols = columns(f32::from(bounds.size.width), adv);
+        let wrap_px = f32::from(bounds.size.width);
 
         // No document open: nothing to lay out (the `+` button is rendered
         // elsewhere, so this element is empty). Return a single blank row.
@@ -820,74 +1008,70 @@ impl Element for TextElement {
         let view = self.editor.read(cx).doc.as_ref().unwrap().view;
         if view == View::Wysiwyg {
             self.editor
-                .update(cx, |e, _| e.doc.as_mut().unwrap().build_visual(cols));
+                .update(cx, |e, _| e.doc.as_mut().unwrap().build_visual_unwrapped());
         }
 
-        let editor = self.editor.read(cx);
-        let doc = editor.doc.as_ref().unwrap();
-        let sel = doc.selection();
-        let (caret_row, caret_col) = doc.caret_pos();
-
-        // Build a RowLayout per visual row of the active view.
-        let shape_row = |text: String, char_srcs: Vec<usize>, char_byte: Vec<usize>,
-                             runs: Vec<gpui::TextRun>, end_src: usize| {
-            let shaped = window
-                .text_system()
-                .shape_line(text.into(), font_size, &runs, None);
-            RowLayout { shaped, char_srcs, char_byte, end_src }
+        // Gather the logical lines (glyphs owned) so we can shape them below with
+        // a mutable window borrow after the document borrow is dropped. A logical
+        // line is a whole paragraph (WYSIWYG) or a source line (Source); the pixel
+        // wrap that follows turns each into one or more visual rows.
+        let (logical_lines, sel, caret): (Vec<(Vec<Glyph>, usize)>, _, usize) = {
+            let editor = self.editor.read(cx);
+            let doc = editor.doc.as_ref().unwrap();
+            let sel = doc.selection();
+            let caret = doc.caret;
+            let mut lines: Vec<(Vec<Glyph>, usize)> = Vec::new();
+            match doc.view {
+                View::Source => {
+                    let mut start = 0usize;
+                    for line in doc.source.split('\n') {
+                        let glyphs: Vec<Glyph> = line
+                            .char_indices()
+                            .map(|(i, ch)| Glyph {
+                                ch,
+                                style: CoreStyle::default(),
+                                src: start + i,
+                            })
+                            .collect();
+                        lines.push((glyphs, start + line.len()));
+                        start += line.len() + 1;
+                    }
+                }
+                View::Wysiwyg => {
+                    for vrow in &doc.vmap.rows {
+                        lines.push((vrow.glyphs.clone(), vrow.end_src));
+                    }
+                }
+            }
+            (lines, sel, caret)
         };
+
+        // Wrap each logical line at the real pixel width.
         let mut rows: Vec<RowLayout> = Vec::new();
-        match view {
-            View::Source => {
-                let mut start = 0usize;
-                for line in doc.source.split('\n') {
-                    let mut char_srcs = Vec::new();
-                    let mut char_byte = vec![0usize];
-                    let mut acc = 0usize;
-                    for (i, ch) in line.char_indices() {
-                        char_srcs.push(start + i);
-                        acc += ch.len_utf8();
-                        char_byte.push(acc);
-                    }
-                    let runs = if line.is_empty() {
-                        Vec::new()
-                    } else {
-                        vec![text_run(line.len(), CoreStyle::default(), &font)]
-                    };
-                    rows.push(shape_row(line.to_string(), char_srcs, char_byte, runs, start + line.len()));
-                    start += line.len() + 1;
-                }
-            }
-            View::Wysiwyg => {
-                for vrow in &doc.vmap.rows {
-                    let mut text = String::new();
-                    let mut char_srcs = Vec::new();
-                    let mut char_byte = vec![0usize];
-                    let mut acc = 0usize;
-                    for g in &vrow.glyphs {
-                        text.push(g.ch);
-                        char_srcs.push(g.src);
-                        acc += g.ch.len_utf8();
-                        char_byte.push(acc);
-                    }
-                    let runs = build_runs(&vrow.glyphs, &font);
-                    rows.push(shape_row(text, char_srcs, char_byte, runs, vrow.end_src));
-                }
-            }
+        for (glyphs, end_src) in &logical_lines {
+            wrap_logical(window, &font, font_size, glyphs, *end_src, wrap_px, &mut rows);
         }
         if rows.is_empty() {
-            rows.push(shape_row(String::new(), Vec::new(), vec![0], Vec::new(), 0));
+            let shaped = window.text_system().shape_line("".into(), font_size, &[], None);
+            rows.push(RowLayout {
+                shaped,
+                char_srcs: Vec::new(),
+                char_byte: vec![0],
+                end_src: 0,
+            });
         }
 
         let left = bounds.left();
         let top = bounds.top();
         let row_top = |row: usize| top + line_height * (row as f32);
 
-        // Caret: caret_pos() gives (row, col) in the active view's grid; col is a
-        // character index, which char_byte turns into an x within the row.
-        let cr = caret_row.min(rows.len() - 1);
-        let cc = caret_col.min(rows[cr].char_byte.len() - 1);
-        let caret_x = rows[cr].shaped.x_for_index(rows[cr].char_byte[cc]);
+        // Caret: locate its visual row/column from the source offset against the
+        // painted rows — the pixel wrap means caret_pos()'s paragraph grid no
+        // longer matches the rows on screen.
+        let (cr, cgi) = locate_caret(&rows, caret);
+        let cr = cr.min(rows.len() - 1);
+        let cgi = cgi.min(rows[cr].char_byte.len() - 1);
+        let caret_x = rows[cr].shaped.x_for_index(rows[cr].char_byte[cgi]);
         let cursor = if sel.is_none() {
             Some(fill(
                 Bounds::new(point(left + caret_x, row_top(cr)), size(px(2.0), line_height)),
@@ -972,6 +1156,7 @@ impl Element for TextElement {
         // Cache the layout so mouse handlers can hit-test back to source offsets.
         let rows = std::mem::take(&mut prepaint.rows);
         self.editor.update(cx, |editor, _| {
+            editor.last_row_count = rows.len();
             editor.last_rows = rows;
             editor.last_line_height = lh;
             editor.last_bounds = Some(bounds);
@@ -1211,6 +1396,9 @@ fn main() {
                         last_rows: Vec::new(),
                         last_line_height: px(24.0),
                         last_bounds: None,
+                        last_row_count: 0,
+                        goal_x: None,
+                        goal_caret: usize::MAX,
                     })
                 },
             )
@@ -1223,4 +1411,61 @@ fn main() {
             })
             .unwrap();
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::locate_caret_core;
+
+    // Two paragraphs, the first wrapped across two visual rows:
+    //   row 0: "one two "  srcs 0..7   end 8   (soft-wrap boundary at 8)
+    //   row 1: "three"     srcs 8..12  end 13
+    //   row 2: ""          (blank separator)   end 14
+    //   row 3: "def"       srcs 15..17 end 18
+    fn fixture() -> (Vec<Vec<usize>>, Vec<usize>) {
+        (
+            vec![
+                vec![0, 1, 2, 3, 4, 5, 6, 7],
+                vec![8, 9, 10, 11, 12],
+                vec![],
+                vec![15, 16, 17],
+            ],
+            vec![8, 13, 14, 18],
+        )
+    }
+
+    fn locate(caret: usize) -> (usize, usize) {
+        let (srcs, ends) = fixture();
+        let refs: Vec<&[usize]> = srcs.iter().map(|v| v.as_slice()).collect();
+        locate_caret_core(&refs, &ends, caret)
+    }
+
+    #[test]
+    fn caret_inside_a_row_lands_in_that_row() {
+        assert_eq!(locate(0), (0, 0));
+        assert_eq!(locate(3), (0, 3));
+        assert_eq!(locate(10), (1, 2));
+        assert_eq!(locate(16), (3, 1));
+    }
+
+    #[test]
+    fn soft_wrap_boundary_biases_to_the_next_rows_start() {
+        // Offset 8 ends row 0 and starts row 1 — it must resolve to row 1 col 0,
+        // so the caret rides the wrapped line instead of the first row's far edge.
+        assert_eq!(locate(8), (1, 0));
+    }
+
+    #[test]
+    fn paragraph_end_stays_at_that_rows_end() {
+        // Offset 13 ends "three"; the next row is a blank separator (offset 14),
+        // not a soft-wrap continuation, so the caret stays at row 1's end.
+        assert_eq!(locate(13), (1, 5));
+        // The blank separator line itself is reachable.
+        assert_eq!(locate(14), (2, 0));
+    }
+
+    #[test]
+    fn caret_at_document_end_lands_on_the_last_row() {
+        assert_eq!(locate(18), (3, 3));
+    }
 }

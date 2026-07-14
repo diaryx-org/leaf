@@ -104,7 +104,15 @@ impl Doc {
     /// (called by the renderer each frame it's in the WYSIWYG view).
     pub fn build_visual(&mut self, width: usize) {
         let nodes = self.nodes();
-        self.vmap = wysiwyg::build(&nodes, &self.source, width);
+        self.vmap = wysiwyg::build(&nodes, &self.source, Some(width));
+    }
+
+    /// Build the WYSIWYG map with each block as a single unwrapped row — for a
+    /// frontend (the GUI) that wraps at its own proportional pixel width rather
+    /// than a fixed character column.
+    pub fn build_visual_unwrapped(&mut self) {
+        let nodes = self.nodes();
+        self.vmap = wysiwyg::build(&nodes, &self.source, None);
     }
 
     fn nodes(&mut self) -> Vec<FlatNode> {

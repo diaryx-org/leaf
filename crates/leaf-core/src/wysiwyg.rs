@@ -80,17 +80,24 @@ impl VisualMap {
     }
 }
 
-/// Render the document to a [`VisualMap`], wrapping to `width` columns. Text and
-/// offsets come from the AST (`str` nodes carry the verbatim source slice and an
-/// exact span), so the original source string isn't needed here.
-pub fn build(nodes: &[FlatNode], source: &str, width: usize) -> VisualMap {
+/// A horizontal rule's dash count when the map isn't wrapping to a column grid
+/// (the GUI, which wraps at pixel width): a fixed, sane width the frontend can
+/// paint or re-wrap, instead of a runaway count from an unbounded wrap width.
+const UNWRAPPED_RULE_WIDTH: usize = 40;
+
+/// Render the document to a [`VisualMap`]. `wrap` is the column budget for
+/// word-wrapping (`Some` for the monospace TUI), or `None` to emit one row per
+/// block — the GUI does its own proportional pixel wrapping over these rows.
+/// Text and offsets come from the AST (`str` nodes carry the verbatim source
+/// slice and an exact span), so the original source string isn't needed here.
+pub fn build(nodes: &[FlatNode], source: &str, wrap: Option<usize>) -> VisualMap {
     let Some(doc) = nodes.iter().position(|n| n.kind == "doc") else {
         return VisualMap::default();
     };
     let mut b = Builder {
         nodes,
         source,
-        width: width.max(8),
+        wrap: wrap.map(|w| w.max(8)),
         rows: Vec::new(),
         last_off: 0,
     };
@@ -104,7 +111,9 @@ struct Builder<'a> {
     /// The document source, consulted to place blank-line rows at the source
     /// offsets the caret should occupy on them (the AST drops blank lines).
     source: &'a str,
-    width: usize,
+    /// The word-wrap column budget, or `None` to emit each block as a single
+    /// unwrapped row (the frontend wraps).
+    wrap: Option<usize>,
     rows: Vec<VRow>,
     /// The end offset of the last content emitted — the anchor for blank
     /// separator rows so the caret never snaps onto one.
@@ -187,7 +196,8 @@ impl Builder<'_> {
                 }
             }
             "thematic_break" => {
-                let w = self.width.saturating_sub(prefix_width(pf)).max(4);
+                let full = self.wrap.unwrap_or(UNWRAPPED_RULE_WIDTH);
+                let w = full.saturating_sub(prefix_width(pf)).max(4);
                 let mut glyphs = pf.to_vec();
                 for _ in 0..w {
                     glyphs.push(Glyph {
@@ -269,6 +279,17 @@ impl Builder<'_> {
     /// Word-wrap `glyphs` to the available width and push the visual rows,
     /// prefixing the first with `pf` and the rest with `pc`.
     fn emit_wrapped(&mut self, glyphs: Vec<Glyph>, block_start: usize, pf: &[Glyph], pc: &[Glyph]) {
+        // No column budget: emit the whole block as one row and let the frontend
+        // wrap it at its own (pixel) width.
+        let Some(width) = self.wrap else {
+            if glyphs.is_empty() {
+                self.push_row(pf.to_vec(), block_start);
+            } else {
+                self.push_row(concat(pf, &glyphs), block_start);
+            }
+            return;
+        };
+
         // Split into words (maximal non-space runs), each carrying the space
         // glyph that followed it (so its source offset is preserved).
         let mut words: Vec<(Vec<Glyph>, Option<Glyph>)> = Vec::new();
@@ -293,8 +314,7 @@ impl Builder<'_> {
         let mut used = 0usize;
         let mut first = true;
         for (w, space) in words {
-            let avail = self
-                .width
+            let avail = width
                 .saturating_sub(prefix_width(if first { pf } else { pc }))
                 .max(1);
             if used > 0 && used + w.len() > avail {
@@ -410,7 +430,7 @@ mod tests {
 
     fn map(src: &str) -> VisualMap {
         let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
-        build(&ed.nodes().unwrap(), src, 80)
+        build(&ed.nodes().unwrap(), src, Some(80))
     }
 
     fn rendered(m: &VisualMap) -> String {
@@ -454,6 +474,21 @@ mod tests {
         let m = map("hello world\n");
         let (r, c) = m.pos_of_offset(6); // the 'w'
         assert_eq!(m.offset_of_pos(r, c), 6);
+    }
+
+    #[test]
+    fn unwrapped_mode_emits_one_row_per_paragraph() {
+        // A long paragraph that would wrap under a column budget stays a single
+        // row when wrap is None (the GUI wraps it at pixel width instead).
+        let long = "one two three four five six seven eight nine ten eleven twelve\n";
+        let mut ed = Editor::new_str(long, Format::Markdown).unwrap();
+        let wrapped = build(&ed.nodes().unwrap(), long, Some(12));
+        let unwrapped = build(&ed.nodes().unwrap(), long, None);
+        assert!(wrapped.num_rows() > 1, "narrow column should wrap");
+        assert_eq!(unwrapped.num_rows(), 1, "no budget should keep it one row");
+        // Every glyph's source byte is preserved in the single row.
+        let text: String = unwrapped.rows[0].glyphs.iter().map(|g| g.ch).collect();
+        assert_eq!(text.trim_end(), long.trim_end());
     }
 
     #[test]
