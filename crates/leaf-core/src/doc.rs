@@ -175,6 +175,32 @@ impl Doc {
         }
     }
 
+    /// Delete from the caret back to the start of the previous word (⌥⌫ /
+    /// Ctrl+⌫). Deletes the selection instead when one is active.
+    pub fn delete_word_back(&mut self) {
+        if let Some((s, e)) = self.selection() {
+            self.splice(s, e, "");
+        } else {
+            let start = prev_word(&self.source, self.caret);
+            if start < self.caret {
+                self.splice(start, self.caret, "");
+            }
+        }
+    }
+
+    /// Delete from the caret forward to the end of the next word (⌥⌦ /
+    /// Ctrl+Del). Deletes the selection instead when one is active.
+    pub fn delete_word_forward(&mut self) {
+        if let Some((s, e)) = self.selection() {
+            self.splice(s, e, "");
+        } else {
+            let end = next_word(&self.source, self.caret);
+            if end > self.caret {
+                self.splice(self.caret, end, "");
+            }
+        }
+    }
+
     /// One splice via twig's `edit_range`, then re-anchor the caret from the
     /// returned `Change` and refresh the cached source. A reparse-breaking edit
     /// (rare for Markdown/Djot) leaves the document untouched and reports.
@@ -254,6 +280,24 @@ impl Doc {
         self.clamp_caret();
     }
 
+    /// Select the whole document (⌘A / Ctrl+A).
+    pub fn select_all(&mut self) {
+        self.anchor = Some(0);
+        self.caret = self.source.len();
+        self.status = None;
+    }
+
+    /// Select the word (or whitespace / punctuation run) at `offset` — the
+    /// double-click gesture. Anchors on the run's start with the caret at its
+    /// end so a following Shift-motion extends from the far edge.
+    pub fn select_word_at(&mut self, offset: usize) {
+        let (s, e) = word_range_at(&self.source, offset.min(self.source.len()));
+        self.anchor = Some(s);
+        self.caret = e;
+        self.status = None;
+        self.clamp_caret();
+    }
+
     fn move_to(&mut self, offset: usize, extend: bool) {
         if extend {
             if self.anchor.is_none() {
@@ -313,6 +357,20 @@ impl Doc {
                 }
             }
         };
+        self.move_to(target, extend);
+    }
+
+    /// Move to the start of the previous word (⌥← / Ctrl+←). Word boundaries
+    /// are computed over the source in both views, since the source is the
+    /// document of record and the caret is always a source offset.
+    pub fn move_word_left(&mut self, extend: bool) {
+        let target = prev_word(&self.source, self.caret);
+        self.move_to(target, extend);
+    }
+
+    /// Move to the end of the next word (⌥→ / Ctrl+→).
+    pub fn move_word_right(&mut self, extend: bool) {
+        let target = next_word(&self.source, self.caret);
         self.move_to(target, extend);
     }
 
@@ -405,6 +463,98 @@ fn next_boundary(s: &str, i: usize) -> usize {
     j
 }
 
+// ── word boundaries ──────────────────────────────────────────────────────────
+// The shared primitive behind word-wise motion, word deletion, and
+// double-click-to-select-a-word. A "word" is a maximal run of one character
+// class; whitespace and punctuation are their own classes, so motion skips
+// cleanly between them the way native text fields do.
+
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum Class {
+    Word,
+    Space,
+    Other,
+}
+
+fn classify(c: char) -> Class {
+    if c == '_' || c.is_alphanumeric() {
+        Class::Word
+    } else if c.is_whitespace() {
+        Class::Space
+    } else {
+        Class::Other
+    }
+}
+
+/// The offset at the end of the next word to the right of `i` (⌥→ / Ctrl+→):
+/// skip any leading separators, then consume the following word run.
+fn next_word(s: &str, i: usize) -> usize {
+    let mut off = i;
+    let mut in_word = false;
+    for c in s[i..].chars() {
+        if classify(c) == Class::Word {
+            in_word = true;
+        } else if in_word {
+            break;
+        }
+        off += c.len_utf8();
+    }
+    off
+}
+
+/// The offset at the start of the word to the left of `i` (⌥← / Ctrl+←):
+/// skip separators walking left, then consume the preceding word run.
+fn prev_word(s: &str, i: usize) -> usize {
+    let mut off = i;
+    let mut in_word = false;
+    for c in s[..i].chars().rev() {
+        if classify(c) == Class::Word {
+            in_word = true;
+        } else if in_word {
+            break;
+        }
+        off -= c.len_utf8();
+    }
+    off
+}
+
+/// The `[start, end)` run of same-class characters surrounding `off` — the
+/// word (or whitespace/punctuation run) a double-click selects. At end-of-text
+/// the run ending there is used.
+fn word_range_at(s: &str, off: usize) -> (usize, usize) {
+    if s.is_empty() {
+        return (0, 0);
+    }
+    let off = off.min(s.len());
+    let reference = if off < s.len() {
+        s[off..].chars().next()
+    } else {
+        s[..off].chars().next_back()
+    };
+    let Some(rc) = reference else {
+        return (off, off);
+    };
+    let class = classify(rc);
+
+    let mut start = off;
+    for c in s[..start].chars().rev() {
+        if classify(c) == class {
+            start -= c.len_utf8();
+        } else {
+            break;
+        }
+    }
+    let mut end = off;
+    for c in s[end..].chars() {
+        if classify(c) == class {
+            end += c.len_utf8();
+        } else {
+            break;
+        }
+    }
+    (start, end)
+}
+
 /// `(row, col)` of byte offset `off`, col counted in characters from line start.
 fn offset_to_row_col(s: &str, off: usize) -> (usize, usize) {
     let off = off.min(s.len());
@@ -469,6 +619,97 @@ mod tests {
         p.push(format!("leaf_test_{name}.md"));
         std::fs::write(&p, body).unwrap();
         Doc::open(p).unwrap()
+    }
+
+    // ── golden-case harness ──────────────────────────────────────────────────
+    // The pattern the whole parity suite can reuse: write a fixture with the
+    // caret marked by `|`, run one action, and compare the rendered result —
+    // also caret-marked — against the expected string. One readable line per
+    // behavior, and it exercises the exact `Doc` ops both frontends call.
+
+    /// Split a `|`-marked fixture into `(source, caret_offset)`.
+    fn parse_caret(marked: &str) -> (String, usize) {
+        let caret = marked.find('|').expect("fixture needs a `|` caret marker");
+        (marked.replacen('|', "", 1), caret)
+    }
+
+    /// Render a doc's source with `|` at the caret (and `[`…`]` around any
+    /// selection) so a result reads like the fixtures.
+    fn render_caret(d: &Doc) -> String {
+        // (offset, rank, char); rank keeps coincident markers ordered `[ | ]`
+        // so the caret always renders inside its own selection.
+        let mut marks: Vec<(usize, u8, char)> = vec![(d.caret, 1, '|')];
+        if let Some((s, e)) = d.selection() {
+            marks.push((s, 0, '['));
+            marks.push((e, 2, ']'));
+        }
+        // Insert right-to-left: descending offset, then descending rank.
+        marks.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+        let mut out = d.source.clone();
+        for (at, _, ch) in marks {
+            out.insert(at, ch);
+        }
+        out
+    }
+
+    /// Load a `|`-marked fixture, run `action`, return the caret-marked result.
+    fn golden(name: &str, marked: &str, action: impl FnOnce(&mut Doc)) -> String {
+        let (src, caret) = parse_caret(marked);
+        let mut d = doc_with(name, &src);
+        d.caret = caret;
+        action(&mut d);
+        render_caret(&d)
+    }
+
+    #[test]
+    fn word_motion_walks_word_by_word() {
+        let g = |m, f: fn(&mut Doc)| golden("word_motion", m, f);
+        assert_eq!(g("hello wor|ld", |d| d.move_word_left(false)), "hello |world");
+        assert_eq!(g("hello| world", |d| d.move_word_left(false)), "|hello world");
+        assert_eq!(g("hel|lo world", |d| d.move_word_right(false)), "hello| world");
+        assert_eq!(g("hello| world", |d| d.move_word_right(false)), "hello world|");
+        // Punctuation is its own class, so motion stops at the boundary.
+        assert_eq!(g("|foo.bar", |d| d.move_word_right(false)), "foo|.bar");
+    }
+
+    #[test]
+    fn word_motion_extends_the_selection_when_asked() {
+        assert_eq!(
+            golden("word_sel", "hello |world", |d| d.move_word_right(true)),
+            "hello [world|]"
+        );
+    }
+
+    #[test]
+    fn delete_word_removes_a_whole_word() {
+        let g = |m, f: fn(&mut Doc)| golden("del_word", m, f);
+        assert_eq!(g("hello world|", |d| d.delete_word_back()), "hello |");
+        assert_eq!(g("hello |world", |d| d.delete_word_forward()), "hello |");
+        assert_eq!(g("foo |bar baz", |d| d.delete_word_back()), "|bar baz");
+    }
+
+    #[test]
+    fn select_all_spans_the_document() {
+        let mut d = doc_with("sel_all", "abc\n\ndef\n");
+        d.select_all();
+        assert_eq!(d.selection(), Some((0, d.source.len())));
+    }
+
+    #[test]
+    fn select_word_at_picks_the_surrounding_word() {
+        let mut d = doc_with("sel_word", "hello world\n");
+        d.select_word_at(8); // inside "world"
+        assert_eq!(d.selection(), Some((6, 11)));
+        // Double-clicking at end-of-word still grabs the word to its left.
+        d.select_word_at(5); // the space between the words
+        assert_eq!(d.selection(), Some((5, 6)));
+    }
+
+    #[test]
+    fn word_helpers_respect_utf8_boundaries() {
+        // "café" is 5 bytes ('é' is two); motion must land on char boundaries.
+        assert_eq!(golden("utf8", "|café ok", |d| d.move_word_right(false)), "café| ok");
+        assert_eq!(golden("utf8b", "café |ok", |d| d.delete_word_back()), "|ok");
     }
 
     #[test]
