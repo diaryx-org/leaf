@@ -86,13 +86,10 @@ mod ios {
         // event dispatch (a UIKit button tap) — and run the command on the editor.
         let ran = gpui_mobile::ios::ffi::with_app(|cx| {
             win.update(cx, |editor, window, cx| {
-                let before = editor.caret_debug();
+                let before = editor.diag();
                 editor.run_command(cmd, window, cx);
-                let after = editor.caret_debug();
-                // (caret, selection anchor, source len). If `anchor` is None the
-                // inline toggles no-op; if `len` is unchanged the command made no
-                // edit (e.g. heading on an already-heading line).
-                log::info!("leaf-ios: cmd {id} {cmd:?} — before={before:?} after={after:?}");
+                let after = editor.diag();
+                log::info!("leaf-ios: cmd {id} {cmd:?}\n  before: {before}\n  after:  {after}");
             })
         });
         match ran {
@@ -123,6 +120,17 @@ mod ios {
                 // Remember the window so the native toolbar (`leaf_ios_cmd`) can
                 // target this editor.
                 store_editor_window(window);
+
+                // Keep the caret above the software keyboard: feed the keyboard
+                // height to the editor as a bottom inset whenever it changes.
+                gpui_mobile::set_keyboard_height_callback(Box::new(|height| {
+                    let Some(win) = editor_window() else { return };
+                    gpui_mobile::ios::ffi::with_app(|cx| {
+                        let _ = win.update(cx, |editor, _window, cx| {
+                            editor.set_bottom_inset(gpui::px(height), cx);
+                        });
+                    });
+                }));
                 // Focus the editor so gpui registers its text-input handler for
                 // the focused element — which is what brings up the soft keyboard
                 // (see IosWindow::set_input_handler in the gpui-mobile fork).

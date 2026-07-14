@@ -212,6 +212,10 @@ pub struct Editor {
     goal_caret: usize,
     /// The host-overridable theme (colors, font metrics).
     style: EditorStyle,
+    /// Space at the bottom of the viewport the caret must stay clear of — set by
+    /// the host to the on-screen keyboard height on mobile, so the edited line is
+    /// never hidden behind the keyboard. `0` on desktop.
+    bottom_inset: Pixels,
 }
 
 impl Editor {
@@ -234,7 +238,20 @@ impl Editor {
             goal_x: None,
             goal_caret: usize::MAX,
             style: EditorStyle::default(),
+            bottom_inset: px(0.0),
         }
+    }
+
+    /// Set the space the caret must stay clear of at the bottom of the viewport
+    /// (e.g. the on-screen keyboard height on mobile). Scrolls the caret above it
+    /// immediately. Hosts call this when the keyboard shows/hides.
+    pub fn set_bottom_inset(&mut self, inset: Pixels, cx: &mut Context<Self>) {
+        if self.bottom_inset == inset {
+            return;
+        }
+        self.bottom_inset = inset;
+        self.scroll_caret_into_view();
+        cx.notify();
     }
 
     /// Replace the widget's theme (colors, font) to match the host application.
@@ -247,6 +264,28 @@ impl Editor {
     /// Used by the iOS toolbar logging to diagnose command behaviour.
     pub fn caret_debug(&self) -> Option<(usize, Option<usize>, usize)> {
         self.doc.as_ref().map(|d| (d.caret, d.anchor, d.source.len()))
+    }
+
+    /// Verbose diagnostic string (view, caret, selection, the block the caret is
+    /// in, its heading level, and the last op's status). Used by the iOS toolbar
+    /// logging to see why a block command did or didn't apply.
+    pub fn diag(&mut self) -> String {
+        match self.doc.as_mut() {
+            None => "no doc".into(),
+            Some(d) => {
+                // These take &mut self; compute before the immutable reads below.
+                let block = d.breadcrumb();
+                let heading = d.current_heading_level();
+                format!(
+                    "view={} caret={} anchor={:?} len={} block=[{block}] heading={heading:?} status={:?}",
+                    d.view_name(),
+                    d.caret,
+                    d.anchor,
+                    d.source.len(),
+                    d.status,
+                )
+            }
+        }
     }
 
     /// Run a command programmatically (native toolbar, menu, etc.), equivalent
@@ -269,6 +308,9 @@ impl Editor {
             EditorCommand::Redo => self.redo(&Redo, window, cx),
             EditorCommand::Save => self.save(&Save, window, cx),
         }
+        // Keep the affected line visible (above the keyboard on mobile) so the
+        // result of a toolbar command is always on screen.
+        self.scroll_caret_into_view();
     }
 
     /// Whether a document is open. The host shows its own placeholder otherwise.
@@ -694,11 +736,15 @@ impl Editor {
         let caret_top = text_bounds.top() + lh * (row as f32);
         let caret_bottom = caret_top + lh;
 
+        // The keyboard (or any host inset) covers the bottom of the viewport, so
+        // the caret must stay above `bottom() - bottom_inset`, not `bottom()`.
+        let visible_bottom = view.bottom() - self.bottom_inset;
+
         let mut offset = self.scroll_handle.offset();
         if caret_top < view.top() {
             offset.y += view.top() - caret_top;
-        } else if caret_bottom > view.bottom() {
-            offset.y -= caret_bottom - view.bottom();
+        } else if caret_bottom > visible_bottom {
+            offset.y -= caret_bottom - visible_bottom;
         } else {
             return;
         }
@@ -1220,10 +1266,16 @@ impl Element for TextElement {
         // The pixel-wrapped row count is only known once prepaint has laid the
         // text out, so reserve height from the last paint's count (self-correcting
         // by one frame, like `last_bounds`). Before the first paint, one row.
-        let n = self.editor.read(cx).last_row_count.max(1);
+        let (n, bottom_inset) = {
+            let e = self.editor.read(cx);
+            (e.last_row_count.max(1), e.bottom_inset)
+        };
         let mut style = Style::default();
         style.size.width = relative(1.).into();
-        style.size.height = (window.line_height() * n as f32).into();
+        // Reserve the rows' height plus the host bottom inset (keyboard) as extra
+        // scroll room, so the caret can be scrolled clear of the keyboard even
+        // when the document itself is shorter than the screen.
+        style.size.height = (window.line_height() * n as f32 + bottom_inset).into();
         (window.request_layout(style, [], cx), ())
     }
 
