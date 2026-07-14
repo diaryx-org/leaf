@@ -128,6 +128,12 @@ impl Doc {
             .filter(|(s, e)| s != e)
     }
 
+    /// The selected text, or `None` when there's no selection — the source
+    /// slice a copy/cut hands to the system clipboard.
+    pub fn selected_text(&self) -> Option<&str> {
+        self.selection().map(|(s, e)| &self.source[s..e])
+    }
+
     /// The AST breadcrumb at the caret (root → deepest), e.g.
     /// `doc › para › strong`. Read live from twig via `ancestors_at`.
     pub fn breadcrumb(&mut self) -> String {
