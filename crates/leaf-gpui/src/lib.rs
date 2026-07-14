@@ -513,7 +513,7 @@ impl Editor {
     }
     fn newline(&mut self, _: &Newline, _: &mut Window, cx: &mut Context<Self>) {
         let Some(doc) = self.doc.as_mut() else { return };
-        doc.insert("\n");
+        doc.newline();
         self.scroll_caret_into_view();
         cx.notify();
     }

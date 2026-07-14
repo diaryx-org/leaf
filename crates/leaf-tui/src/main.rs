@@ -152,7 +152,7 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
 
     match key.code {
         KeyCode::Char(c) => doc.insert(&c.to_string()),
-        KeyCode::Enter => doc.insert("\n"),
+        KeyCode::Enter => doc.newline(),
         KeyCode::Tab => doc.insert("    "),
         KeyCode::Backspace => doc.backspace(),
         KeyCode::Delete => doc.delete_forward(),

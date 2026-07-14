@@ -209,6 +209,19 @@ impl Doc {
         self.splice(s, e, text, kind);
     }
 
+    /// The Enter key. In source view this is a literal newline. In WYSIWYG it
+    /// starts a **new paragraph** in one press: markdown needs a blank line
+    /// between paragraphs, so a single `\n` only makes a soft break and leaves
+    /// the caret between the two newlines (typing there stays in the same
+    /// paragraph — the "two Enters" bug). Inserting the blank-line separator puts
+    /// the caret at the start of a fresh paragraph.
+    pub fn newline(&mut self) {
+        match self.view {
+            View::Source => self.insert("\n"),
+            View::Wysiwyg => self.insert("\n\n"),
+        }
+    }
+
     pub fn backspace(&mut self) {
         if let Some((s, e)) = self.selection() {
             self.splice(s, e, "", EditKind::Other);
@@ -300,17 +313,68 @@ impl Doc {
 
     /// Convert the block at the caret to a heading level or paragraph.
     pub fn set_block(&mut self, kind: BlockKind) {
-        match self.editor.set_block(self.caret, kind) {
-            Ok(_) => {
-                self.last_edit_kind = None;
-                self.refresh();
-                self.clamp_caret();
-                self.anchor = None;
-                self.dirty = self.source != self.clean_source;
-                self.status = None;
-            }
-            Err(e) => self.status = Some(format!("{kind:?}: {e}")),
+        match self.block_offset_for_caret() {
+            Some(offset) => match self.editor.set_block(offset, kind) {
+                Ok(_) => {
+                    self.last_edit_kind = None;
+                    self.refresh();
+                    self.clamp_caret();
+                    self.anchor = None;
+                    self.dirty = self.source != self.clean_source;
+                    self.status = None;
+                }
+                Err(e) => self.status = Some(format!("{kind:?}: {e}")),
+            },
+            // A blank line — a fresh, empty paragraph with no AST node to convert.
+            // Insert the block's marker so it becomes an (empty) block to type
+            // into (twig's `set_block` needs an existing block at the offset).
+            None => self.insert_block_prefix(kind),
         }
+    }
+
+    /// Whether `off` is inside a text block (paragraph, heading, code block…).
+    fn has_block_at(&mut self, off: usize) -> bool {
+        self.editor.ancestors_at(off).ok().is_some_and(|chain| {
+            chain
+                .iter()
+                .any(|m| !wysiwyg::is_inline(&m.kind) && !is_block_container(&m.kind))
+        })
+    }
+
+    /// The offset to hand twig's `set_block`: the caret when it is already inside
+    /// a block, otherwise nudged onto the previous character (a caret at a line
+    /// end sits at the doc level, outside the block). `None` when the caret is on
+    /// a blank line — a new paragraph with no block node to convert.
+    fn block_offset_for_caret(&mut self) -> Option<usize> {
+        let caret = self.caret.min(self.source.len());
+        if self.has_block_at(caret) {
+            return Some(caret);
+        }
+        // Nudge to the previous character — but never across a newline: that would
+        // target the previous block, and a blank line genuinely has no block.
+        if let Some((i, ch)) = self.source[..caret].char_indices().next_back() {
+            if ch != '\n' && self.has_block_at(i) {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    /// Insert the source marker for `kind` at the caret, to create a block on an
+    /// otherwise-empty line. Markdown/djot spell headings with leading `#`s; a
+    /// paragraph needs no marker (a blank line is already a paragraph slot).
+    fn insert_block_prefix(&mut self, kind: BlockKind) {
+        let prefix = match kind {
+            BlockKind::Heading(n) if matches!(self.format, Format::Markdown | Format::Djot) => {
+                format!("{} ", "#".repeat(n as usize))
+            }
+            BlockKind::Paragraph => return,
+            _ => {
+                self.status = Some(format!("{kind:?}: nothing to convert on an empty line"));
+                return;
+            }
+        };
+        self.insert(&prefix);
     }
 
     /// The heading level of the text block at the caret, or `None` when that
@@ -1048,6 +1112,45 @@ mod tests {
         assert_eq!(d.source, "## hello\n"); // H1 → H2 (different level switches)
         d.toggle_heading(2);
         assert_eq!(d.source, "hello\n"); // same level reverts to paragraph
+    }
+
+    #[test]
+    fn wysiwyg_one_enter_starts_a_new_paragraph() {
+        // Regression: one Enter left the caret between the two newlines, so typing
+        // made a soft break (one paragraph) and you needed a second Enter.
+        let mut d = wysiwyg_doc("wys_enter", "abc\n");
+        d.caret = 3;
+        d.newline();
+        d.insert("def");
+        assert_eq!(d.source, "abc\n\ndef\n"); // two paragraphs, not "abc\ndef\n"
+    }
+
+    #[test]
+    fn source_view_enter_is_a_single_newline() {
+        let mut d = doc_with("src_enter", "abc\n");
+        d.caret = 3;
+        d.newline();
+        assert_eq!(d.source, "abc\n\n");
+    }
+
+    #[test]
+    fn heading_applies_at_the_end_of_a_paragraph() {
+        // The caret at a line end sits at the doc level; set_block must still find
+        // the block on that line.
+        let mut d = doc_with("head_end", "abc\n");
+        d.caret = 3; // end of "abc"
+        d.toggle_heading(1);
+        assert_eq!(d.source, "# abc\n");
+    }
+
+    #[test]
+    fn heading_on_an_empty_new_paragraph_creates_one() {
+        let mut d = wysiwyg_doc("head_empty", "abc\n");
+        d.caret = 3;
+        d.newline(); // caret now on a fresh, empty paragraph
+        d.toggle_heading(1);
+        d.insert("Title");
+        assert!(d.source.contains("# Title"), "got {:?}", d.source);
     }
 
     #[test]
