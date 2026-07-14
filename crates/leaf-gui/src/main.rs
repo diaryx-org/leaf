@@ -391,15 +391,10 @@ impl Editor {
         match ev.click_count {
             1 => doc.place_caret(off, ev.modifiers.shift),
             2 => doc.select_word_at(off),
-            _ => {
-                // Triple-click (or more): select the caret's whole source
-                // line/paragraph. leaf-core has no single call for this, so
-                // it's placing the caret then riding move_home/move_end the
-                // same way a keyboard Home then Shift-End would.
-                doc.place_caret(off, false);
-                doc.move_home(false);
-                doc.move_end(true);
-            }
+            // Triple-click (or more): select the whole enclosing paragraph. This
+            // reads the block's span from the AST, so it selects the entire
+            // logical paragraph even when it soft-wraps across several rows.
+            _ => doc.select_block_at(off),
         }
         cx.notify();
     }
@@ -708,11 +703,27 @@ fn build_runs(glyphs: &[Glyph], base: &Font) -> Vec<gpui::TextRun> {
         .collect()
 }
 
-/// Approximate how many character-columns fit in `width_px` — the wrap width
-/// `leaf-core`'s `VisualMap` counts in. It wraps by character count (a monospace
-/// assumption), so we estimate a character as ~0.62em of the current font.
-fn columns(width_px: f32, font_size_px: f32) -> usize {
-    ((width_px / (font_size_px * 0.62).max(1.0)) as usize).max(8)
+/// Measure the current font's *real* average character advance at `font_size`
+/// by shaping a representative sample. `leaf-core`'s `VisualMap` wraps by
+/// character count (a monospace notion), so to place its breaks near the true
+/// pixel edge with a proportional font we need an accurate per-char width — a
+/// fixed em-fraction guess wrapped lines well short of the edge (the "artificial
+/// line breaks"). Shaping a sample and dividing by its length gives the honest
+/// average, spaces and mixed case included.
+fn avg_advance(window: &mut Window, font_size: Pixels, base: &Font) -> f32 {
+    const SAMPLE: &str = "the quick brown fox jumps over the lazy dog, and THEN a bit MORE";
+    let run = text_run(SAMPLE.len(), CoreStyle::default(), base);
+    let shaped = window
+        .text_system()
+        .shape_line(SAMPLE.into(), font_size, &[run], None);
+    let width = f32::from(shaped.x_for_index(SAMPLE.len()));
+    (width / SAMPLE.chars().count() as f32).max(1.0)
+}
+
+/// How many `VisualMap` character-columns fit in `width_px`, given the font's
+/// measured average advance.
+fn columns(width_px: f32, avg_advance_px: f32) -> usize {
+    ((width_px / avg_advance_px.max(1.0)) as usize).max(8)
 }
 
 impl IntoElement for TextElement {
@@ -743,14 +754,16 @@ impl Element for TextElement {
     ) -> (LayoutId, Self::RequestLayoutState) {
         // Row count differs by view; for WYSIWYG we must build the map to know
         // it. Use last frame's width (or a sane default before the first paint).
-        let font_size = f32::from(window.text_style().font_size.to_pixels(window.rem_size()));
+        let font_size = window.text_style().font_size.to_pixels(window.rem_size());
+        let font = window.text_style().font();
+        let adv = avg_advance(window, font_size, &font);
         let last_w = self
             .editor
             .read(cx)
             .last_bounds
             .map(|b| f32::from(b.size.width))
             .unwrap_or(760.0);
-        let cols = columns(last_w, font_size);
+        let cols = columns(last_w, adv);
         let n = self.editor.update(cx, |e, _| {
             let Some(doc) = e.doc.as_mut() else { return 1 };
             match doc.view {
@@ -780,7 +793,8 @@ impl Element for TextElement {
         let font: Font = text_style.font();
         let font_size = text_style.font_size.to_pixels(window.rem_size());
         let line_height = window.line_height();
-        let cols = columns(f32::from(bounds.size.width), f32::from(font_size));
+        let adv = avg_advance(window, font_size, &font);
+        let cols = columns(f32::from(bounds.size.width), adv);
 
         // No document open: nothing to lay out (the `+` button is rendered
         // elsewhere, so this element is empty). Return a single blank row.

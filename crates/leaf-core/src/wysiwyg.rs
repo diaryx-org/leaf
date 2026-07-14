@@ -394,7 +394,7 @@ fn heading_style(level: u32) -> Style {
     }
 }
 
-fn is_inline(kind: &str) -> bool {
+pub(crate) fn is_inline(kind: &str) -> bool {
     matches!(
         kind,
         "str" | "soft_break" | "hard_break" | "non_breaking_space" | "emph" | "strong" | "mark"

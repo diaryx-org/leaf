@@ -315,6 +315,36 @@ impl Doc {
         self.clamp_caret();
     }
 
+    /// Select the whole enclosing text block (paragraph, heading, list item's
+    /// text…) at `offset` — the triple-click gesture. Reads the range straight
+    /// from the AST (twig's `content_span`), so it selects the entire *logical*
+    /// paragraph even when that paragraph soft-wraps across several visual rows —
+    /// where a visual-row-based select breaks down, because one source offset at
+    /// a wrap boundary belongs to two rows at once.
+    pub fn select_block_at(&mut self, offset: usize) {
+        let off = offset.min(self.source.len());
+        let range = self
+            .editor
+            .ancestors_at(off)
+            .ok()
+            .and_then(|chain| {
+                // Ancestors run root → deepest; the deepest node that is neither
+                // an inline span nor a multi-block container is the text block
+                // the caret sits in (a paragraph, a heading, a code block…).
+                chain
+                    .into_iter()
+                    .rev()
+                    .find(|m| !wysiwyg::is_inline(&m.kind) && !is_block_container(&m.kind))
+                    .map(|m| m.content_span.unwrap_or(m.span))
+            })
+            .unwrap_or_else(|| source_line_range(&self.source, off));
+        self.anchor = Some(range.start.min(self.source.len()));
+        self.caret = range.end.min(self.source.len());
+        self.goal_col = None;
+        self.status = None;
+        self.clamp_caret();
+    }
+
     fn move_to(&mut self, offset: usize, extend: bool) {
         if extend {
             if self.anchor.is_none() {
@@ -529,6 +559,31 @@ enum Class {
     Other,
 }
 
+/// A block that holds other blocks (not a single line of text). `select_block_at`
+/// skips these so a triple-click grabs the paragraph, not the whole list/section.
+fn is_block_container(kind: &str) -> bool {
+    matches!(
+        kind,
+        "doc" | "section"
+            | "block_quote"
+            | "bullet_list"
+            | "ordered_list"
+            | "task_list"
+            | "list_item"
+            | "task_list_item"
+    )
+}
+
+/// The `[start, end)` byte range of the source line containing `off` (newline
+/// excluded) — the fallback when `off` sits outside any AST block (e.g. a blank
+/// line between paragraphs).
+fn source_line_range(s: &str, off: usize) -> std::ops::Range<usize> {
+    let off = off.min(s.len());
+    let start = s[..off].rfind('\n').map(|p| p + 1).unwrap_or(0);
+    let end = s[off..].find('\n').map(|p| off + p).unwrap_or(s.len());
+    start..end
+}
+
 fn classify(c: char) -> Class {
     if c == '_' || c.is_alphanumeric() {
         Class::Word
@@ -739,6 +794,36 @@ mod tests {
         assert_eq!(g("hello world|", |d| d.delete_word_back()), "hello |");
         assert_eq!(g("hello |world", |d| d.delete_word_forward()), "hello |");
         assert_eq!(g("foo |bar baz", |d| d.delete_word_back()), "|bar baz");
+    }
+
+    #[test]
+    fn select_block_grabs_the_whole_paragraph_from_any_wrapped_row() {
+        // Regression: triple-click used move_home/move_end over visual rows, so
+        // it only worked on a paragraph's first row (a wrap-boundary offset maps
+        // to the earlier row). select_block_at reads the AST, so every offset in
+        // the paragraph selects the whole thing.
+        let body = "one two three four five six seven eight\n";
+        let mut d = doc_with("sel_block", body);
+        d.view = View::Wysiwyg;
+        d.build_visual(12); // force the paragraph to wrap into several rows
+        assert!(d.vmap.num_rows() > 1, "test needs a wrapped paragraph");
+        let para = (0, "one two three four five six seven eight".len());
+        for off in [0usize, 8, 19, 28, 38] {
+            d.caret = 0;
+            d.anchor = None;
+            d.select_block_at(off);
+            assert_eq!(d.selection(), Some(para), "offset {off} should select the paragraph");
+        }
+    }
+
+    #[test]
+    fn select_block_uses_content_span_for_a_heading() {
+        let mut d = doc_with("sel_head", "# Title\n\nbody\n");
+        d.select_block_at(4); // inside "Title"
+        // content_span excludes the "# " marker.
+        assert_eq!(d.selected_text(), Some("Title"));
+        d.select_block_at(10); // inside "body"
+        assert_eq!(d.selected_text(), Some("body"));
     }
 
     #[test]
