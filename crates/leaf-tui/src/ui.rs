@@ -18,7 +18,7 @@ use leaf_core::{Doc, View};
 
 use crate::style::wysiwyg_lines;
 
-pub fn render(f: &mut Frame, doc: &mut Doc, breadcrumb: &str) {
+pub fn render(f: &mut Frame, doc: &mut Doc, breadcrumb: &str, confirm_quit: bool) {
     let chunks = Layout::vertical([
         Constraint::Length(1), // header
         Constraint::Min(1),    // body
@@ -28,7 +28,7 @@ pub fn render(f: &mut Frame, doc: &mut Doc, breadcrumb: &str) {
 
     render_header(f, chunks[0], doc, breadcrumb);
     render_body(f, chunks[1], doc);
-    render_footer(f, chunks[2], doc);
+    render_footer(f, chunks[2], doc, confirm_quit);
 }
 
 fn render_header(f: &mut Frame, area: Rect, doc: &Doc, breadcrumb: &str) {
@@ -92,9 +92,28 @@ fn render_body(f: &mut Frame, area: Rect, doc: &mut Doc) {
     }
 }
 
-fn render_footer(f: &mut Frame, area: Rect, doc: &Doc) {
+fn render_footer(f: &mut Frame, area: Rect, doc: &Doc, confirm_quit: bool) {
     let dim = Style::default().fg(Color::DarkGray);
     let key = Style::default().fg(Color::Cyan);
+
+    // The quit-confirmation prompt takes over both footer lines until the
+    // user answers, so an accidental Ctrl+Q on a dirty document can't lose
+    // work to a stray keystroke.
+    if confirm_quit {
+        let warn = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+        let line1 = Line::from(Span::styled(
+            "Unsaved changes — quit without saving?",
+            warn,
+        ));
+        let line2 = Line::from(vec![
+            Span::styled("y ", key),
+            Span::styled("quit   ", dim),
+            Span::styled("n/esc ", key),
+            Span::styled("cancel", dim),
+        ]);
+        f.render_widget(Paragraph::new(vec![line1, line2]), area);
+        return;
+    }
 
     let line1 = if let Some(msg) = &doc.status {
         Line::from(Span::styled(msg.clone(), Style::default().fg(Color::Yellow)))
@@ -113,6 +132,10 @@ fn render_footer(f: &mut Frame, area: Rect, doc: &Doc) {
         Span::styled("to edit   ", dim),
         Span::styled("⇧+move ", key),
         Span::styled("select   ", dim),
+        Span::styled("⌥←/→/⌫/⌦ ", key),
+        Span::styled("word   ", dim),
+        Span::styled("^a/c/x/v ", key),
+        Span::styled("all·copy·cut·paste   ", dim),
         Span::styled("⌥w ", key),
         Span::styled("view   ", dim),
         Span::styled("^s ", key),
