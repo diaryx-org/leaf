@@ -126,8 +126,8 @@ mod ios {
                 gpui_mobile::set_keyboard_height_callback(Box::new(|height| {
                     let Some(win) = editor_window() else { return };
                     gpui_mobile::ios::ffi::with_app(|cx| {
-                        let _ = win.update(cx, |editor, _window, cx| {
-                            editor.set_bottom_inset(gpui::px(height), cx);
+                        let _ = win.update(cx, |editor, window, cx| {
+                            editor.set_bottom_inset(gpui::px(height), window, cx);
                         });
                     });
                 }));

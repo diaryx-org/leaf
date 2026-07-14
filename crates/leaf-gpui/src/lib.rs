@@ -243,15 +243,31 @@ impl Editor {
     }
 
     /// Set the space the caret must stay clear of at the bottom of the viewport
-    /// (e.g. the on-screen keyboard height on mobile). Scrolls the caret above it
-    /// immediately. Hosts call this when the keyboard shows/hides.
-    pub fn set_bottom_inset(&mut self, inset: Pixels, cx: &mut Context<Self>) {
+    /// (e.g. the on-screen keyboard height on mobile). Scrolls the caret above it.
+    /// Hosts call this when the keyboard shows/hides.
+    pub fn set_bottom_inset(&mut self, inset: Pixels, window: &mut Window, cx: &mut Context<Self>) {
         if self.bottom_inset == inset {
             return;
         }
         self.bottom_inset = inset;
         self.scroll_caret_into_view();
         cx.notify();
+        // The extra scroll room this inset reserves only lands in the layout when
+        // the *next* frame paints — but `on_next_frame` callbacks run at the top
+        // of a frame, before that frame's own paint. So the first callback still
+        // sees the old `max_offset` and can't move the document end. Hop one more
+        // frame: by then the inset-reserving paint is in and the re-scroll has the
+        // room it needs to lift the last line clear of the keyboard.
+        let editor = cx.entity();
+        window.on_next_frame(move |window, _cx| {
+            let editor = editor.clone();
+            window.on_next_frame(move |_window, cx| {
+                editor.update(cx, |editor, cx| {
+                    editor.scroll_caret_into_view();
+                    cx.notify();
+                });
+            });
+        });
     }
 
     /// Replace the widget's theme (colors, font) to match the host application.
@@ -777,6 +793,9 @@ impl Editor {
             // logical paragraph even when it soft-wraps across several rows.
             _ => doc.select_block_at(off),
         }
+        // Lift the tapped line into view — above the keyboard on mobile — so a tap
+        // near the bottom (keyboard already up) isn't left hidden behind it.
+        self.scroll_caret_into_view();
         cx.notify();
     }
     fn on_mouse_up(&mut self, _: &MouseUpEvent, _: &mut Window, _: &mut Context<Self>) {
