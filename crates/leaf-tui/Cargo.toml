@@ -14,3 +14,8 @@ leaf-core.workspace = true
 anyhow.workspace = true
 # TUI framework; we use its re-exported crossterm so backend versions can't skew.
 ratatui = "0.29"
+# System clipboard for Ctrl+C/X/V. Opened fresh per operation (cheap, and
+# avoids holding a stale pasteboard handle across app focus changes) and
+# guarded so a headless/unavailable clipboard degrades to a status message
+# instead of a panic.
+arboard = "3"
