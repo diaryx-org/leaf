@@ -1,9 +1,11 @@
 [package]
-name = "leaf-gui"
+name = "leaf"
 version.workspace = true
 edition.workspace = true
-description = "The leaf standalone GUI application — a thin host around the leaf-gpui editor widget."
+description = "leaf — the flagship rich-text document editor: a standalone gpui application over the leaf-gpui editor widget."
 
+# The binary keeps the name `leaf-gui`; the TUI crate ships the `leaf` binary for
+# the fast everyday `cargo run`. Run this GUI app with `cargo run -p leaf`.
 [[bin]]
 name = "leaf-gui"
 path = "src/main.rs"

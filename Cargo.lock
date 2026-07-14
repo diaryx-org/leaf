@@ -2869,6 +2869,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
+name = "leaf"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "gpui_platform",
+ "leaf-core",
+ "leaf-gpui",
+]
+
+[[package]]
 name = "leaf-core"
 version = "0.1.0"
 dependencies = [
@@ -2885,16 +2895,6 @@ dependencies = [
  "gpui",
  "gpui_platform",
  "leaf-core",
-]
-
-[[package]]
-name = "leaf-gui"
-version = "0.1.0"
-dependencies = [
- "gpui",
- "gpui_platform",
- "leaf-core",
- "leaf-gpui",
 ]
 
 [[package]]
@@ -5630,7 +5630,9 @@ dependencies = [
 
 [[package]]
 name = "twig-doc"
-version = "0.1.0"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a284b276a71cfcca8493e8d0097d3fb82700d60658455cb5c590097d1fc4fe9c"
 
 [[package]]
 name = "typeid"

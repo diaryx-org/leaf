@@ -1,5 +1,10 @@
-//! leaf-gui — a caret-based rich-text GUI editor, built on twig via `leaf-core`
-//! and rendered with gpui.
+//! leaf-gpui — an **embeddable** caret-based rich-text editor widget for gpui,
+//! built on twig via `leaf-core`.
+//!
+//! The public surface is the [`Editor`] entity: a host drops it into its own
+//! gpui view, calls [`register_keybindings`] once, and themes it with an
+//! [`EditorStyle`]. It renders only the editing surface — window chrome, file
+//! I/O, and quit stay with the host (the `leaf` binary is one such host).
 //!
 //! Sibling to `leaf-tui`: **same core, different surface.** Every hard part —
 //! the byte-offset caret, the selection model, and turning each edit into one of
@@ -25,12 +30,47 @@ use std::ops::Range;
 
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, ElementInputHandler,
-    Entity, EntityInputHandler, FocusHandle, Focusable, Font, GlobalElementId, InspectorElementId,
-    IntoElement, KeyBinding, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    PaintQuad, Pixels, Point, Render, ScrollHandle, ShapedLine, Style, TextAlign, UTF16Selection,
-    Window, actions, anchored, deferred, div, fill, point, prelude::*, px, relative, rgba, size,
+    Entity, EntityInputHandler, FocusHandle, Focusable, Font, GlobalElementId, Hsla,
+    InspectorElementId, IntoElement, KeyBinding, LayoutId, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render, ScrollHandle, SharedString,
+    ShapedLine, Style, TextAlign, UTF16Selection, Window, actions, anchored, deferred, div, fill,
+    point, prelude::*, px, relative, rgb, rgba, size,
 };
 use leaf_core::style::Style as CoreStyle;
+
+/// The widget's visual theme — the handful of colors and text metrics a host can
+/// override to match its own look. `Default` reproduces the standalone app's
+/// appearance (light background, blue caret). Pass one with [`Editor::set_style`].
+#[derive(Clone)]
+pub struct EditorStyle {
+    /// The editing surface's background.
+    pub background: Hsla,
+    /// Default (unstyled) glyph color; markup styling layers over it.
+    pub text: Hsla,
+    /// The caret bar.
+    pub caret: Hsla,
+    /// The selection highlight (typically translucent).
+    pub selection: Hsla,
+    /// Body font family.
+    pub font_family: SharedString,
+    /// Body font size and line height.
+    pub font_size: Pixels,
+    pub line_height: Pixels,
+}
+
+impl Default for EditorStyle {
+    fn default() -> Self {
+        EditorStyle {
+            background: gpui::white(),
+            text: rgb(0x1e1e1e).into(),
+            caret: gpui::blue(),
+            selection: rgba(0x3311ff30).into(),
+            font_family: "Helvetica".into(),
+            font_size: px(16.0),
+            line_height: px(24.0),
+        }
+    }
+}
 use leaf_core::{BlockKind, Doc, Glyph, InlineKind, View};
 
 use crate::style::text_run;
@@ -122,7 +162,7 @@ pub fn register_keybindings(cx: &mut App) {
 /// last painted layout cached so a mouse event can hit-test pixels back to a
 /// source offset. Drop it into any gpui view with [`register_keybindings`]; it
 /// renders just the editing surface and leaves window chrome, file I/O, and quit
-/// to the host (the standalone app in `leaf-gui` is one such host).
+/// to the host (the `leaf` binary is one such host).
 pub struct Editor {
     focus_handle: FocusHandle,
     /// The open document, or `None` when the widget is empty (the host decides
@@ -148,12 +188,15 @@ pub struct Editor {
     /// the goal is recomputed — so we never sprinkle resets across every handler.
     goal_x: Option<Pixels>,
     goal_caret: usize,
+    /// The host-overridable theme (colors, font metrics).
+    style: EditorStyle,
 }
 
 impl Editor {
-    /// Create the widget over an optional document (`None` = empty). Register the
-    /// key bindings once with [`register_keybindings`], size the returned entity
-    /// in your view, and focus its [`Focusable::focus_handle`] to type into it.
+    /// Create the widget over an optional document (`None` = empty), with the
+    /// default theme. Register the key bindings once with [`register_keybindings`],
+    /// size the returned entity in your view, and focus its
+    /// [`Focusable::focus_handle`] to type into it. Restyle with [`Self::set_style`].
     pub fn new(cx: &mut Context<Self>, doc: Option<Doc>) -> Self {
         Editor {
             focus_handle: cx.focus_handle(),
@@ -168,7 +211,14 @@ impl Editor {
             last_row_count: 0,
             goal_x: None,
             goal_caret: usize::MAX,
+            style: EditorStyle::default(),
         }
+    }
+
+    /// Replace the widget's theme (colors, font) to match the host application.
+    pub fn set_style(&mut self, style: EditorStyle, cx: &mut Context<Self>) {
+        self.style = style;
+        cx.notify();
     }
 
     /// Whether a document is open. The host shows its own placeholder otherwise.
@@ -1171,8 +1221,16 @@ impl Element for TextElement {
         // a mutable window borrow after the document borrow is dropped. A logical
         // line is a whole paragraph (WYSIWYG) or a source line (Source); the pixel
         // wrap that follows turns each into one or more visual rows.
-        let (logical_lines, sel, caret): (Vec<(Vec<Glyph>, usize)>, _, usize) = {
+        let (logical_lines, sel, caret, caret_color, selection_color): (
+            Vec<(Vec<Glyph>, usize)>,
+            _,
+            usize,
+            Hsla,
+            Hsla,
+        ) = {
             let editor = self.editor.read(cx);
+            let caret_color = editor.style.caret;
+            let selection_color = editor.style.selection;
             let doc = editor.doc.as_ref().unwrap();
             let sel = doc.selection();
             let caret = doc.caret;
@@ -1199,7 +1257,7 @@ impl Element for TextElement {
                     }
                 }
             }
-            (lines, sel, caret)
+            (lines, sel, caret, caret_color, selection_color)
         };
 
         // Wrap each logical line at the real pixel width.
@@ -1231,7 +1289,7 @@ impl Element for TextElement {
         let cursor = if sel.is_none() {
             Some(fill(
                 Bounds::new(point(left + caret_x, row_top(cr)), size(px(2.0), line_height)),
-                gpui::blue(),
+                caret_color,
             ))
         } else {
             None
@@ -1258,7 +1316,7 @@ impl Element for TextElement {
                             point(left + x0, row_top(r)),
                             point(left + x1, row_top(r) + line_height),
                         ),
-                        rgba(0x3311ff30),
+                        selection_color,
                     ));
                 }
             }
@@ -1323,16 +1381,17 @@ impl Element for TextElement {
 impl Render for Editor {
     /// Renders just the editing surface — a focusable, scrollable text body with
     /// the caret, selection, and an optional right-click menu. No window chrome:
-    /// a host places this inside its own layout (see `leaf-gui` for the app that
+    /// a host places this inside its own layout (see the `leaf` binary for the app that
     /// wraps it with a header and file-open UI).
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let style = self.style.clone();
         div()
             .flex()
             .flex_col()
             .size_full()
-            .font_family("Helvetica")
-            .bg(gpui::white())
-            .text_color(gpui::rgb(0x1e1e1e))
+            .font_family(style.font_family.clone())
+            .bg(style.background)
+            .text_color(style.text)
             .key_context("Editor")
             .track_focus(&self.focus_handle(cx))
             .cursor(CursorStyle::IBeam)
@@ -1400,8 +1459,8 @@ impl Render for Editor {
                     .p_3()
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll_handle)
-                    .text_size(px(16.0))
-                    .line_height(px(24.0))
+                    .text_size(style.font_size)
+                    .line_height(style.line_height)
                     .child(TextElement {
                         editor: cx.entity(),
                     }),

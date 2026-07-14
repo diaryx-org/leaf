@@ -17,14 +17,14 @@ live in a frontend-neutral core; each frontend is a thin leaf crate on top of it
 | [`leaf-core`](crates/leaf-core) | the document model — a `twig::Editor` with a byte-offset caret + selection, and the WYSIWYG `VisualMap`. Glyphs carry a **toolkit-agnostic `Style`**; no UI dependency. |
 | [`leaf-tui`](crates/leaf-tui) | the terminal frontend (ratatui + crossterm). Maps `leaf-core`'s `Style` onto terminal colors. Ships the `leaf` binary. |
 | [`leaf-gpui`](crates/leaf-gpui) | the **embeddable GUI widget** on [gpui](https://github.com/zed-industries/zed): the `Editor` view plus its input, pixel-wrapping renderer, and `register_keybindings`. It renders only the editing surface and leaves window chrome, file I/O, and quit to the host — so it drops into any gpui app. Reuses every bit of `leaf-core`'s caret math and edit surface; only paints glyphs and forwards key/mouse events into the same `Doc` ops. |
-| [`leaf-gui`](crates/leaf-gui) | the standalone **application** — a thin host around `leaf-gpui`: a window, a header bar, a file-open button, and an unsaved-changes quit guard. The same widget powers this app and any embedding host. |
+| [`leaf`](crates/leaf) | the standalone **application** (binary `leaf-gui`) — a thin host around `leaf-gpui`: a window, a header bar, a file-open button, and an unsaved-changes quit guard. The same widget powers this app and any embedding host. |
 
 ```sh
 cargo run -- path/to/document.md            # the TUI (workspace default)
-cargo run -p leaf-gui -- path/to/document.md  # the GUI
+cargo run -p leaf -- path/to/document.md     # the GUI
 ```
 
-`leaf-gui` pins gpui to a specific Zed commit (gpui isn't published to
+`leaf` and `leaf-gpui` pin gpui to a specific Zed commit (gpui isn't published to
 crates.io); the first build fetches and compiles the gpui tree, so it is slow.
 It has **both views**, toggled with `⌘e`, just like the TUI's `⌥w`:
 
@@ -35,7 +35,7 @@ It has **both views**, toggled with `⌘e`, just like the TUI's `⌥w`:
   byte, so the caret, selection, and clicks ride the *visible* text and step over
   hidden delimiters — the identical `VisualMap` the TUI renders, here with real
   proportional bold/italic via the per-glyph `to_gpui` styling in
-  `leaf-gui/src/style.rs`.
+  `leaf-gpui/src/style.rs`.
 
 Both views share one rendering path (a `RowLayout` per visual row carrying each
 character's source offset), so caret, selection, and mouse hit-testing are
@@ -43,8 +43,8 @@ written once and work in either view. Keys: arrows/Home/End (+`⇧` to select),
 type to edit, `⌘b`/`⌘i` bold/italic, `⌘e` toggle view, `⌘s` save, `⌘q` quit.
 
 ```sh
-cargo run -p leaf-gui -- document.md            # opens in the source view
-cargo run -p leaf-gui -- document.md wysiwyg    # opens straight in wysiwyg
+cargo run -p leaf -- document.md            # opens in the source view
+cargo run -p leaf -- document.md wysiwyg    # opens straight in wysiwyg
 ```
 
 **gpui gotchas (macOS), learned the hard way:**

@@ -1,4 +1,4 @@
-//! The `leaf-gui` binary — the standalone application. A thin host around the
+//! The `leaf` crate (binary `leaf-gui`) — the standalone application. A thin host around the
 //! embeddable [`leaf_gpui::Editor`] widget: it owns the window, a header bar, a
 //! file-open button, and an unsaved-changes quit guard, and embeds the editor
 //! for everything else. The same widget powers this app and any gpui host that
@@ -71,7 +71,7 @@ impl LeafApp {
                 Ok(doc) => {
                     editor.update(cx, |e, cx| e.set_doc(doc, cx)).ok();
                 }
-                Err(e) => eprintln!("leaf-gui: {e}"),
+                Err(e) => eprintln!("leaf: {e}"),
             }
         })
         .detach();
@@ -197,7 +197,7 @@ fn main() {
                     Some(d)
                 }
                 Err(e) => {
-                    eprintln!("leaf-gui: {e}");
+                    eprintln!("leaf: {e}");
                     std::process::exit(1);
                 }
             }
