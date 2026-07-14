@@ -209,17 +209,110 @@ impl Doc {
         self.splice(s, e, text, kind);
     }
 
-    /// The Enter key. In source view this is a literal newline. In WYSIWYG it
-    /// starts a **new paragraph** in one press: markdown needs a blank line
-    /// between paragraphs, so a single `\n` only makes a soft break and leaves
-    /// the caret between the two newlines (typing there stays in the same
-    /// paragraph — the "two Enters" bug). Inserting the blank-line separator puts
-    /// the caret at the start of a fresh paragraph.
+    /// The Enter key.
+    ///
+    /// In source view it's a literal newline. In WYSIWYG it's **AST-aware**: it
+    /// reads the block the caret is in and splices the source that reparses into
+    /// the structurally right thing — because a bare `\n` is only a markdown soft
+    /// break (same paragraph), which is why a paragraph needs a blank-line
+    /// separator, a list item needs the next marker, and so on.
+    ///
+    ///   - paragraph / heading  → a new paragraph (blank line)
+    ///   - list item            → the next item (same bullet, next number);
+    ///                            an *empty* item exits the list
+    ///   - block quote          → a new quoted line
+    ///   - code block           → a literal newline (stay in the block)
     pub fn newline(&mut self) {
-        match self.view {
-            View::Source => self.insert("\n"),
-            View::Wysiwyg => self.insert("\n\n"),
+        if self.view == View::Source {
+            self.insert("\n");
+            return;
         }
+        // Enter over a selection replaces it with a paragraph break.
+        if let Some((s, e)) = self.selection() {
+            self.splice(s, e, "\n\n", EditKind::Other);
+            return;
+        }
+        // The block the caret is in. `block_offset_for_caret` nudges off a line
+        // end (where the caret sits at the doc level); on a bare line (e.g. an
+        // empty list item) fall back to the caret so the enclosing list/quote is
+        // still visible in the ancestors.
+        let off = self.block_offset_for_caret().unwrap_or(self.caret);
+        let kinds: Vec<String> = self
+            .editor
+            .ancestors_at(off)
+            .map(|c| c.into_iter().map(|m| m.kind).collect())
+            .unwrap_or_default();
+        let has = |k: &str| kinds.iter().any(|x| x == k);
+
+        if has("code_block") {
+            self.insert("\n");
+            return;
+        }
+        // Lists: detect from the source marker on the caret's line rather than the
+        // ancestors — twig doesn't report an *empty* `- ` line as a `list_item`,
+        // and we still want Enter there to exit the list.
+        if let Some((line_start, marker)) = self.list_marker_on_line(self.caret) {
+            self.list_newline(line_start, marker);
+            return;
+        }
+        if has("block_quote") {
+            self.insert("\n> ");
+            return;
+        }
+        self.insert("\n\n");
+    }
+
+    /// Enter inside a list: start the next item, or exit the list if the current
+    /// item is empty (the standard "double-Enter leaves the list" behaviour).
+    fn list_newline(&mut self, line_start: usize, marker: String) {
+        let caret = self.caret;
+        let content_start = (line_start + marker.len()).min(self.source.len());
+        let line_end = self.source[caret..]
+            .find('\n')
+            .map(|i| caret + i)
+            .unwrap_or(self.source.len());
+        let item_is_empty = self.source[content_start..line_end.max(content_start)]
+            .trim()
+            .is_empty();
+        if item_is_empty {
+            // Exit the list: replace the empty item's marker with a blank line,
+            // so the caret lands in a fresh paragraph below the list.
+            self.splice(line_start, caret, "\n", EditKind::Other);
+        } else {
+            self.insert(&format!("\n{}", next_list_marker(&marker)));
+        }
+    }
+
+    /// Parse a list marker at the start of `off`'s line, e.g. `"- "`, `"  * "`,
+    /// `"1. "`, `"3) "`. Returns `(line_start, marker_text)`.
+    fn list_marker_on_line(&self, off: usize) -> Option<(usize, String)> {
+        let off = off.min(self.source.len());
+        let line_start = self.source[..off].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let bytes = self.source.as_bytes();
+        let mut i = line_start;
+        while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
+            i += 1;
+        }
+        if i < bytes.len() && matches!(bytes[i], b'-' | b'*' | b'+') {
+            i += 1;
+        } else {
+            let digits_start = i;
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+            if i == digits_start || !(i < bytes.len() && matches!(bytes[i], b'.' | b')')) {
+                return None;
+            }
+            i += 1; // the . or )
+        }
+        let after_marker = i;
+        while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
+            i += 1;
+        }
+        if i == after_marker {
+            return None; // a marker needs a trailing space
+        }
+        Some((line_start, self.source[line_start..i].to_string()))
     }
 
     pub fn backspace(&mut self) {
@@ -739,6 +832,21 @@ enum Class {
 
 /// A block that holds other blocks (not a single line of text). `select_block_at`
 /// skips these so a triple-click grabs the paragraph, not the whole list/section.
+/// The marker for the *next* list item given the current one: a bullet repeats
+/// (`"- "` → `"- "`), an ordered marker increments (`"1. "` → `"2. "`), keeping
+/// any leading indentation and the delimiter/spacing.
+fn next_list_marker(marker: &str) -> String {
+    let indent_len = marker.len() - marker.trim_start().len();
+    let (indent, rest) = marker.split_at(indent_len);
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if let Ok(n) = digits.parse::<u64>() {
+        // ordered: bump the number, keep the delimiter + trailing space(s).
+        format!("{indent}{}{}", n + 1, &rest[digits.len()..])
+    } else {
+        marker.to_string()
+    }
+}
+
 fn is_block_container(kind: &str) -> bool {
     matches!(
         kind,
@@ -1151,6 +1259,60 @@ mod tests {
         d.toggle_heading(1);
         d.insert("Title");
         assert!(d.source.contains("# Title"), "got {:?}", d.source);
+    }
+
+    #[test]
+    fn wysiwyg_enter_after_a_heading_makes_a_paragraph() {
+        let mut d = wysiwyg_doc("head_enter", "# Title\n");
+        d.caret = 7; // end of the heading
+        d.newline();
+        d.insert("body");
+        assert_eq!(d.source, "# Title\n\nbody\n");
+    }
+
+    #[test]
+    fn wysiwyg_enter_continues_a_bullet_list() {
+        let mut d = wysiwyg_doc("wys_bullet", "- item\n");
+        d.caret = 6; // end of "item"
+        d.newline();
+        d.insert("two");
+        assert_eq!(d.source, "- item\n- two\n");
+    }
+
+    #[test]
+    fn wysiwyg_enter_increments_an_ordered_list() {
+        let mut d = wysiwyg_doc("wys_ol", "1. one\n");
+        d.caret = 6; // end of "one"
+        d.newline();
+        d.insert("two");
+        assert_eq!(d.source, "1. one\n2. two\n");
+    }
+
+    #[test]
+    fn wysiwyg_enter_on_an_empty_list_item_exits_the_list() {
+        let mut d = wysiwyg_doc("wys_exit", "- a\n- \n");
+        d.caret = 6; // end of the empty "- " item
+        d.newline();
+        d.insert("p");
+        assert_eq!(d.source, "- a\n\np\n");
+    }
+
+    #[test]
+    fn wysiwyg_enter_in_a_code_block_is_a_literal_newline() {
+        let mut d = wysiwyg_doc("wys_code", "```\nabc\n```\n");
+        d.caret = 7; // end of "abc" inside the fence
+        d.newline();
+        d.insert("def");
+        assert_eq!(d.source, "```\nabc\ndef\n```\n");
+    }
+
+    #[test]
+    fn wysiwyg_enter_continues_a_block_quote() {
+        let mut d = wysiwyg_doc("wys_quote", "> quote\n");
+        d.caret = 7; // end of "quote"
+        d.newline();
+        d.insert("more");
+        assert_eq!(d.source, "> quote\n> more\n");
     }
 
     #[test]
