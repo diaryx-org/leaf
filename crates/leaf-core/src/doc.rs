@@ -31,6 +31,96 @@ pub enum View {
     Wysiwyg,
 }
 
+/// What the file behind a document looks like right now, against the bytes leaf
+/// last read from it or wrote to it — the question a frontend asks before it
+/// saves (a `Changed` file plus a `dirty` document is an overwrite about to
+/// happen) or when its window regains focus. See [`Doc::disk_state`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiskState {
+    /// The file holds exactly the bytes leaf last read or wrote.
+    Unchanged,
+    /// Someone else wrote the file since. Saving overwrites their work; see
+    /// [`Doc::reload`] for the other direction.
+    Changed,
+    /// The file is gone — deleted or renamed away. A save recreates it.
+    Missing,
+    /// There is a path, but the file couldn't be read (permissions, a directory
+    /// in the way): leaf can't tell, and won't guess.
+    Unreadable,
+    /// No file behind this document yet — see [`Doc::blank`]. Nothing can have
+    /// changed under a document that was never on disk.
+    Untitled,
+}
+
+/// The inline marks in force at a point in the document — what a toolbar
+/// lights up. A `Copy` bitset rather than a `HashSet`, because
+/// [`Doc::active_inline_marks`] is called on every frame that draws a toolbar
+/// and a set that allocates to answer "is Bold on?" is a set that shouldn't.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InlineMarks(u8);
+
+impl InlineMarks {
+    /// Every kind, in the order [`InlineMarks::iter`] yields them.
+    const ALL: [InlineKind; 8] = [
+        InlineKind::Strong,
+        InlineKind::Emph,
+        InlineKind::Verbatim,
+        InlineKind::Mark,
+        InlineKind::Superscript,
+        InlineKind::Subscript,
+        InlineKind::Insert,
+        InlineKind::Delete,
+    ];
+
+    pub const fn empty() -> Self {
+        InlineMarks(0)
+    }
+
+    /// Private: the set is an *answer*, and adding a mark to it doesn't mark
+    /// anything ([`Doc::toggle`] does that). `FromIterator` is the way in.
+    fn insert(&mut self, kind: InlineKind) {
+        self.0 |= Self::bit(kind);
+    }
+
+    /// Whether `kind` is in force — the toolbar's "is Bold active?".
+    pub fn contains(self, kind: InlineKind) -> bool {
+        self.0 & Self::bit(kind) != 0
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// The marks in force, for a frontend that renders whatever is on rather
+    /// than asking after a fixed list.
+    pub fn iter(self) -> impl Iterator<Item = InlineKind> {
+        Self::ALL.into_iter().filter(move |&k| self.contains(k))
+    }
+
+    fn bit(kind: InlineKind) -> u8 {
+        1 << match kind {
+            InlineKind::Strong => 0,
+            InlineKind::Emph => 1,
+            InlineKind::Verbatim => 2,
+            InlineKind::Mark => 3,
+            InlineKind::Superscript => 4,
+            InlineKind::Subscript => 5,
+            InlineKind::Insert => 6,
+            InlineKind::Delete => 7,
+        }
+    }
+}
+
+impl FromIterator<InlineKind> for InlineMarks {
+    fn from_iter<I: IntoIterator<Item = InlineKind>>(iter: I) -> Self {
+        let mut m = InlineMarks::empty();
+        for k in iter {
+            m.insert(k);
+        }
+        m
+    }
+}
+
 /// What kind of edit produced an undo group. Same-kind edits in a row coalesce
 /// into one undo step (a run of typed characters undoes together); `Other` never
 /// coalesces, so a paste, format toggle, or block change is always its own step.
@@ -62,6 +152,19 @@ pub struct Doc {
     /// The source as of the last open/save — `dirty` is `source != clean_source`,
     /// so undoing back to the saved state correctly clears the modified flag.
     clean_source: String,
+    /// A hash of the bytes leaf last read from `path` or wrote to it; `None`
+    /// while the document has no file behind it. [`Doc::disk_state`] compares
+    /// the file against this to catch an edit made *outside* leaf before a save
+    /// silently overwrites it — `clean_source` only knows what leaf itself did.
+    ///
+    /// A hash, not an mtime: mtime is the cheap answer and the wrong one — two
+    /// writes inside one filesystem timestamp tick are indistinguishable, a
+    /// clock that steps backwards (or a writer that restores an mtime) hides a
+    /// real change, and a `touch` invents one. The whole point of the watermark
+    /// is to not clobber someone's work, so it reads the bytes and compares what
+    /// is actually there. That costs a file read per question, which is why the
+    /// question is asked on a user event (focus, save) and not every frame.
+    disk_hash: Option<u64>,
     /// The "sticky" display column vertical motion aims for, in the active
     /// view's grid. Set on the first `move_up`/`move_down` of a run and
     /// reused by every subsequent one in that run, so passing through a
@@ -100,10 +203,44 @@ impl Doc {
         let format = detect_format(&path)?;
         let editor = Editor::new(&bytes, format).map_err(|e| anyhow!("twig parse: {e}"))?;
         let source = String::from_utf8(bytes).map_err(|_| anyhow!("document is not UTF-8"))?;
-        Ok(Doc {
+        let disk_hash = Some(hash_bytes(source.as_bytes()));
+        Ok(Doc::from_parts(editor, format, path, source, disk_hash))
+    }
+
+    /// An untitled, empty document — the `+` button and a `leaf` launched with
+    /// no file argument. Nothing on disk backs it until a [`Doc::save_as`].
+    ///
+    /// It is Markdown, because a format has to be chosen before a name exists to
+    /// read one from: `detect_format` reads the extension and an untitled
+    /// document has neither. Markdown is what leaf's own files are, what its
+    /// block markers are already written for (`insert_block_prefix`), and the
+    /// extension a Save As will overwhelmingly pick — a wrong guess here would
+    /// mean typing djot into a buffer parsing it as Markdown. Note that Save As
+    /// *doesn't* revisit this: see [`Doc::save_as`].
+    pub fn blank() -> Result<Self> {
+        let format = Format::Markdown;
+        let editor = Editor::new_str("", format).map_err(|e| anyhow!("twig parse: {e}"))?;
+        // An empty `path` is the untitled marker (`path` is a public `PathBuf`
+        // field two frontends already read; making it an `Option` to say this
+        // would break both). `is_untitled` is the question to ask, not the
+        // representation to copy.
+        Ok(Doc::from_parts(editor, format, PathBuf::new(), String::new(), None))
+    }
+
+    /// The fields every constructor agrees on, so `open` and `blank` can't drift
+    /// apart in the ones neither of them has an opinion about.
+    fn from_parts(
+        editor: Editor,
+        format: Format,
+        path: PathBuf,
+        source: String,
+        disk_hash: Option<u64>,
+    ) -> Self {
+        Doc {
             editor,
             format,
             path,
+            disk_hash,
             clean_source: source.clone(),
             source,
             caret: 0,
@@ -122,7 +259,15 @@ impl Doc {
             body_origin: (0, 0),
             body_height: 0,
             drawn_caret: None,
-        })
+        }
+    }
+
+    /// Whether this document has no file behind it yet — a [`Doc::blank`] that
+    /// has never been saved. The question a ⌘S handler asks to know it should
+    /// open a Save As picker instead ([`Doc::save`] won't guess a name), and the
+    /// header asks to know the name it shows is a placeholder.
+    pub fn is_untitled(&self) -> bool {
+        self.path.as_os_str().is_empty()
     }
 
     pub fn toggle_view(&mut self) {
@@ -174,7 +319,13 @@ impl Doc {
         }
     }
 
+    /// The name to show for this document. An untitled one has no file to name
+    /// it, and both frontends put this straight on screen — an empty path
+    /// renders as an empty header, so it says so instead.
     pub fn file_name(&self) -> String {
+        if self.is_untitled() {
+            return "untitled".into();
+        }
         self.path
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
@@ -546,6 +697,71 @@ impl Doc {
             .and_then(|n| n.level)
     }
 
+    /// The inline marks in force at the caret (or over the selection) — what a
+    /// toolbar draws lit, and the block-level [`Doc::current_heading_level`]'s
+    /// inline counterpart. Cheap enough to call every frame: one twig
+    /// `ancestors_at` query per caret (two with a selection), each walking root
+    /// → deepest node at one offset. It never snapshots the tree the way
+    /// `current_heading_level` does, and the returned set is a `Copy` bitset, so
+    /// the only allocation is twig's own small ancestor `Vec`.
+    ///
+    /// **A selection reports a mark only when the mark covers *all* of it.**
+    /// That's what every real toolbar means by an active button — Bold lit over
+    /// a half-bold selection would claim a press turns bold *off*, when
+    /// [`Doc::toggle`] hands the range to twig and gets the whole thing bolded.
+    /// Whole-coverage is asked as "is the same mark node standing over both the
+    /// first and the last character?": inline nodes are contiguous, so one node
+    /// covering both ends covers every byte between them. Two touching runs
+    /// (`**a****b**`) are two nodes, and correctly light nothing.
+    ///
+    /// At a bare caret a mark is active when the caret stands inside the mark's
+    /// span — `span.start <= caret < span.end`, delimiters included, which is
+    /// what makes the boundaries behave. In `a **bold** b` the offsets from the
+    /// opening `*` (2) through the last byte of the closing `**` (9) are all
+    /// bold, so the WYSIWYG caret both before `b` and after `d` (the delimiters
+    /// are hidden, and those offsets are 4 and 8) reports bold — matching where
+    /// typing would actually land inside the marked run. The offset one past the
+    /// mark (10) is the text after it and reports nothing, at the end of the
+    /// buffer exactly as in the middle.
+    pub fn active_inline_marks(&mut self) -> InlineMarks {
+        let Some((start, end)) = self.selection() else {
+            return self.marks_at(self.caret).into_iter().map(|(k, _)| k).collect();
+        };
+        // The selection's *last character*, not its exclusive end: `end` is the
+        // offset one past the selection, which for a selection ending exactly at
+        // a mark's close is already outside it (`[4,10)` of `a **bold** b` is
+        // entirely bold, but offset 10 is the space after).
+        let last = prev_boundary(&self.source, end);
+        let head = self.marks_at(start);
+        let tail = self.marks_at(last);
+        head.into_iter()
+            .filter(|m| tail.contains(m))
+            .map(|(k, _)| k)
+            .collect()
+    }
+
+    /// The inline marks whose span covers `off`, each with the id of the node
+    /// carrying it — the id is what lets a selection tell one mark node from
+    /// another of the same kind.
+    fn marks_at(&mut self, off: usize) -> Vec<(InlineKind, u32)> {
+        let off = off.min(self.source.len());
+        self.editor
+            .ancestors_at(off)
+            .unwrap_or_default()
+            .into_iter()
+            // `span.end` is the offset one *past* the mark, so it isn't in it.
+            // twig already resolves a boundary to whatever starts there — in
+            // `**bold** x` offset 8 is the following text, not the strong — but
+            // when nothing follows, the tie has nobody to break for and the
+            // chain still ends at the mark. That would make the answer at the
+            // last offset of the document depend on whether the file happens to
+            // end in a newline; the rule is `span.start <= off < span.end`, and
+            // it's the same rule at the end of a buffer as in the middle.
+            .filter(|m| off < m.span.end)
+            .filter_map(|m| inline_kind(&m.kind).map(|k| (k, m.node_id)))
+            .collect()
+    }
+
     /// Toggle a heading at the caret: if the block is already this heading level,
     /// revert it to a paragraph; otherwise convert it to this heading level.
     /// This gives the heading commands the same toggle feel as bold/italic/code —
@@ -780,15 +996,158 @@ impl Doc {
         self.clamp_caret();
     }
 
+    // ── the file ──────────────────────────────────────────────────────────────
+
     pub fn save(&mut self) {
-        match std::fs::write(&self.path, self.source.as_bytes()) {
-            Ok(()) => {
-                self.clean_source = self.source.clone();
-                self.dirty = false;
-                self.status = Some(format!("saved {}", self.file_name()));
-            }
-            Err(e) => self.status = Some(format!("save failed: {e}")),
+        if self.is_untitled() {
+            // No path to write and no name to invent: ⌘S on an untitled document
+            // is a Save As, and only a frontend has a picker to ask with. Say so
+            // rather than failing at the filesystem with an empty path.
+            self.status = Some("untitled — save as…".into());
+            return;
         }
+        let path = self.path.clone();
+        if self.write(&path) {
+            self.mark_saved();
+        }
+    }
+
+    /// Save As: write the document to `path` and *move* it there — `self.path`
+    /// becomes `path`, and every later [`Doc::save`] writes the new file. That's
+    /// what Save As means; a copy would leave the user editing a document whose
+    /// name is no longer where their keystrokes go.
+    ///
+    /// The move only happens if the bytes actually landed. A failed write leaves
+    /// the path, `dirty`, and the disk watermark exactly as they were, with the
+    /// same `save failed: …` status a failed [`Doc::save`] sets — the document
+    /// must never come away believing it was saved.
+    ///
+    /// An existing `path` is overwritten, and the caller is the one that knows
+    /// whether to ask first: a Save As picker has already run that prompt, and a
+    /// second confirmation from down here would be the same question twice.
+    ///
+    /// `format` does **not** follow the new extension. The buffer is parsed as
+    /// the format it was opened with, and re-reading it as another one is a
+    /// conversion — a different, lossy operation that would throw away the undo
+    /// history — not a rename. So `notes.md` saved as `notes.dj` holds Markdown
+    /// in a `.dj` file, and `format_name()` keeps honestly saying `markdown`
+    /// until it's reopened.
+    pub fn save_as(&mut self, path: PathBuf) {
+        if !self.write(&path) {
+            return;
+        }
+        self.path = path;
+        self.mark_saved();
+    }
+
+    /// Put `source` on disk at `path`, reporting whether it got there. The one
+    /// place leaf writes a document, so a save and a Save As can't disagree
+    /// about what a failure looks like.
+    fn write(&mut self, path: &Path) -> bool {
+        match std::fs::write(path, self.source.as_bytes()) {
+            Ok(()) => true,
+            Err(e) => {
+                self.status = Some(format!("save failed: {e}"));
+                false
+            }
+        }
+    }
+
+    /// Everything a write that landed means — run after `self.path` is whatever
+    /// was written, so the status names the file the bytes are actually in.
+    fn mark_saved(&mut self) {
+        self.clean_source = self.source.clone();
+        self.dirty = false;
+        // The bytes on disk are now ours, so this is the new watermark: without
+        // re-stamping it, every save would report its own work as an external
+        // change forever after.
+        self.disk_hash = Some(hash_bytes(self.source.as_bytes()));
+        self.status = Some(format!("saved {}", self.file_name()));
+    }
+
+    /// What the file looks like now against the bytes leaf last read or wrote.
+    ///
+    /// Reads the file and hashes it (see `disk_hash` for why it isn't an mtime),
+    /// so this is a filesystem round-trip, not a per-frame question — ask it
+    /// when a window regains focus, on a timer, or before a save.
+    ///
+    /// This *only* reports the file. Whether the document also has unsaved edits
+    /// is `dirty`, and the interesting case is the conjunction: `dirty` plus
+    /// [`DiskState::Changed`] means a save overwrites someone's work and a
+    /// [`Doc::reload`] discards the user's. leaf-core deliberately won't choose —
+    /// it has no way to ask — so it hands a frontend both halves and lets it put
+    /// the question to the person who can answer it.
+    pub fn disk_state(&self) -> DiskState {
+        let Some(want) = self.disk_hash else {
+            return DiskState::Untitled;
+        };
+        match std::fs::read(&self.path) {
+            Ok(bytes) if hash_bytes(&bytes) == want => DiskState::Unchanged,
+            Ok(_) => DiskState::Changed,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => DiskState::Missing,
+            Err(_) => DiskState::Unreadable,
+        }
+    }
+
+    /// Re-read the file and replace the document with what's there — the other
+    /// answer to a [`DiskState::Changed`].
+    ///
+    /// **Discards unsaved changes and the undo history, unconditionally.** It
+    /// doesn't check `dirty` first: a frontend that wants to protect unsaved
+    /// work asks (`dirty` + [`Doc::disk_state`]) *before* calling this, and one
+    /// reloading a clean document shouldn't have to argue with a guard. The
+    /// history goes because twig's undo stack belongs to the buffer, and these
+    /// are different bytes — replaying a step recorded against the old ones onto
+    /// them would corrupt the document, and nothing here can honestly rebase it.
+    ///
+    /// The caret keeps its byte offset, clamped to the new length; the selection
+    /// is dropped. Anything cleverer would be a lie: leaf doesn't know how the
+    /// file changed, so it can't know where the caret "still" is. Clamping keeps
+    /// it where the user left it in the common case (a change further down the
+    /// file, or none in the text they're sitting in), and never puts it
+    /// somewhere invalid. A selection has two such offsets and no such excuse —
+    /// silently reinterpreting one over changed bytes would arm the *next*
+    /// keystroke to delete something the user never selected.
+    ///
+    /// Nothing is touched unless the whole reload succeeds; a failure leaves the
+    /// document alone with a status.
+    pub fn reload(&mut self) {
+        if self.is_untitled() {
+            self.status = Some("no file to reload".into());
+            return;
+        }
+        let bytes = match std::fs::read(&self.path) {
+            Ok(b) => b,
+            Err(e) => {
+                self.status = Some(format!("reload failed: {e}"));
+                return;
+            }
+        };
+        let Ok(source) = String::from_utf8(bytes) else {
+            self.status = Some("reload failed: file is not UTF-8".into());
+            return;
+        };
+        // Reparse rather than splice the difference in: leaf doesn't know what
+        // changed, and `format` is the format this document is, not what the
+        // (unchanged) name now says — see `save_as`.
+        let editor = match Editor::new_str(&source, self.format) {
+            Ok(ed) => ed,
+            Err(e) => {
+                self.status = Some(format!("reload failed: twig parse: {e}"));
+                return;
+            }
+        };
+        self.editor = editor;
+        self.disk_hash = Some(hash_bytes(source.as_bytes()));
+        self.clean_source = source.clone();
+        self.source = source;
+        self.caret = self.caret.min(self.source.len());
+        self.anchor = None;
+        self.goal_col = None;
+        self.last_edit_kind = None;
+        self.dirty = false;
+        self.status = Some(format!("reloaded {}", self.file_name()));
+        self.clamp_caret();
     }
 
     fn refresh(&mut self) {
@@ -3143,6 +3502,441 @@ mod tests {
         assert_eq!(d.caret, at + "你".len());
     }
 
+    // ── active inline marks ───────────────────────────────────────────────────
+
+    /// The marks at a `|`-marked fixture's caret, in `InlineMarks::iter` order.
+    fn marks(view: View, name: &str, marked: &str) -> Vec<InlineKind> {
+        let (src, caret) = parse_caret(marked);
+        let mut d = doc_in(view, name, &src);
+        d.caret = caret;
+        d.active_inline_marks().iter().collect()
+    }
+
+    /// The marks over the selection `[start, end)`.
+    fn marks_over(view: View, name: &str, src: &str, start: usize, end: usize) -> Vec<InlineKind> {
+        let mut d = doc_in(view, name, src);
+        d.anchor = Some(start);
+        d.caret = end;
+        d.active_inline_marks().iter().collect()
+    }
+
+    #[test]
+    fn a_caret_in_a_mark_reports_it() {
+        for (view, tag) in VIEWS {
+            let m = |marked| marks(view, &format!("marks_in_{tag}"), marked);
+            assert_eq!(m("a **bo|ld** b"), [InlineKind::Strong], "{tag}");
+            assert_eq!(m("a *it|alic* b"), [InlineKind::Emph], "{tag}");
+            assert_eq!(m("a `co|de` b"), [InlineKind::Verbatim], "{tag}");
+            // Plain text under no mark lights nothing — the toolbar's resting state.
+            assert_eq!(m("a| **bold** b"), [], "{tag}");
+            assert!(m("plain t|ext").is_empty(), "{tag}");
+        }
+    }
+
+    #[test]
+    fn nested_marks_all_report() {
+        // Bold *and* italic: a toolbar lights both buttons, so the set has both —
+        // the ancestor chain is a chain, and every mark on it is in force.
+        for (view, tag) in VIEWS {
+            assert_eq!(
+                marks(view, &format!("marks_nested_{tag}"), "**bold and *bo|th*** end"),
+                [InlineKind::Strong, InlineKind::Emph],
+                "{tag}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_caret_at_a_marks_edge_reports_it_where_typing_would_extend_it() {
+        // The offsets a WYSIWYG caret actually reaches at a bold run's edges are
+        // the first byte of its text and the byte after its last — both inside
+        // the mark's span, both places typing lands inside the bold. The offset
+        // past the closing delimiter is the next text, and reports nothing.
+        let src = "a **bold** b";
+        let inner_start = src.find("bold").unwrap(); // 4
+        let inner_end = inner_start + "bold".len(); // 8, on the closing `**`
+        for (view, tag) in VIEWS {
+            let mut d = doc_in(view, &format!("marks_edge_{tag}"), src);
+            for off in [2, 3, inner_start, inner_end, 9] {
+                d.caret = off;
+                assert!(
+                    d.active_inline_marks().contains(InlineKind::Strong),
+                    "{tag}: offset {off} is inside the strong span"
+                );
+            }
+            for off in [0, 1, 10, 11, 12] {
+                d.caret = off;
+                assert!(
+                    !d.active_inline_marks().contains(InlineKind::Strong),
+                    "{tag}: offset {off} is outside the strong run"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_mark_ends_the_same_way_at_the_end_of_the_buffer_as_in_the_middle() {
+        // Regression: twig resolves an offset that is one node's end and the
+        // next one's start to the node that *starts* there, so `**bold**|\n`
+        // isn't bold. With nothing following there's no tie to break and the
+        // chain still ended at the mark, which made a trailing `\n` — not the
+        // text — decide whether the caret after a bold word reported bold. It's
+        // the offset past the mark either way, and typing there is plain either
+        // way. A blank document typed into is exactly this shape.
+        for (view, tag) in VIEWS {
+            let m = |name: String, marked| marks(view, &name, marked);
+            assert_eq!(m(format!("marks_eob_{tag}"), "**bold**|"), [], "{tag}: no trailing newline");
+            assert_eq!(m(format!("marks_eol_{tag}"), "**bold**|\n"), [], "{tag}: with one");
+            // And the last offset that *is* in the mark still is.
+            assert_eq!(
+                m(format!("marks_eob_in_{tag}"), "**bold*|*"),
+                [InlineKind::Strong],
+                "{tag}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_selection_reports_a_mark_only_when_it_covers_the_whole_thing() {
+        let src = "a **bold** b";
+        let (b, d_) = (src.find("bold").unwrap(), src.find("bold").unwrap() + 4);
+        for (view, tag) in VIEWS {
+            let m = |s, e| marks_over(view, &format!("marks_sel_{tag}"), src, s, e);
+            // The whole bold word, and a slice of it.
+            assert_eq!(m(b, d_), [InlineKind::Strong], "{tag}: the whole word");
+            assert_eq!(m(b + 1, d_ - 1), [InlineKind::Strong], "{tag}: a slice");
+            // Ending exactly at the closing delimiter's start is still all-bold:
+            // an exclusive end sits *past* the last selected character, so the
+            // question is asked of the character, not the boundary.
+            assert_eq!(m(b, d_ + 2), [InlineKind::Strong], "{tag}: through the close");
+            // Half in, half out: Bold lit here would claim a press turns it off.
+            assert_eq!(m(0, d_), [], "{tag}: leading plain text");
+            assert_eq!(m(b, src.len()), [], "{tag}: trailing plain text");
+        }
+    }
+
+    #[test]
+    fn a_selection_across_two_runs_of_the_same_mark_reports_nothing() {
+        // Both ends are bold, but the space between them isn't — two runs are two
+        // nodes, which is exactly what the node id catches and a kind-only
+        // comparison would not.
+        let src = "**one** **two**";
+        for (view, tag) in VIEWS {
+            let m = marks_over(view, &format!("marks_runs_{tag}"), src, 2, 13);
+            assert_eq!(m, [], "{tag}: `one** **two` is not all bold");
+        }
+    }
+
+    #[test]
+    fn marks_read_the_document_as_it_is_edited() {
+        // The point of asking twig every frame instead of caching: the answer has
+        // to follow the toggle that changed it.
+        let mut d = wysiwyg_doc("marks_live", "one two\n");
+        d.anchor = Some(0);
+        d.caret = 3;
+        assert!(d.active_inline_marks().is_empty(), "plain to start");
+        d.toggle(InlineKind::Strong);
+        assert_eq!(d.source, "**one** two\n");
+        // `toggle` leaves the bolded text selected, so the button it lit stays lit.
+        assert!(d.active_inline_marks().contains(InlineKind::Strong));
+        d.toggle(InlineKind::Strong);
+        assert!(d.active_inline_marks().is_empty(), "and off again");
+    }
+
+    #[test]
+    fn a_link_is_not_an_inline_mark() {
+        // `link`/`str` are inline nodes, but nothing on the inline toolbar
+        // toggles them — a set with a "link mark" in it would have no button.
+        for (view, tag) in VIEWS {
+            assert_eq!(marks(view, &format!("marks_link_{tag}"), "a [te|xt](u) b"), [], "{tag}");
+        }
+    }
+
+    // ── blank documents ───────────────────────────────────────────────────────
+
+    #[test]
+    fn a_blank_document_is_untitled_empty_and_markdown() {
+        let mut d = Doc::blank().unwrap();
+        assert!(d.is_untitled());
+        assert_eq!(d.path, PathBuf::new());
+        assert_eq!(d.file_name(), "untitled", "the header has to show something");
+        assert_eq!(d.format_name(), "markdown");
+        assert_eq!(d.source, "");
+        assert!(!d.dirty, "nothing typed yet is nothing to lose");
+        assert_eq!(d.disk_state(), DiskState::Untitled);
+        // And it's a document you can be in: the default view renders it.
+        d.build_visual(80);
+        assert_eq!(d.caret, 0);
+    }
+
+    #[test]
+    fn saving_an_untitled_document_asks_for_a_name_instead_of_writing() {
+        let mut d = Doc::blank().unwrap();
+        d.insert("hello");
+        assert!(d.dirty);
+        d.save();
+        assert_eq!(d.status.as_deref(), Some("untitled — save as…"));
+        assert!(d.dirty, "it must not come away believing it saved");
+        assert!(d.is_untitled(), "and it still has no file");
+    }
+
+    #[test]
+    fn a_blank_document_becomes_a_real_one_at_the_first_save_as() {
+        let p = temp_path("blank_save_as");
+        let mut d = Doc::blank().unwrap();
+        d.insert("# hi");
+        d.save_as(p.clone());
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "# hi");
+        assert!(!d.is_untitled());
+        assert!(!d.dirty);
+        assert_eq!(d.file_name(), p.file_name().unwrap().to_string_lossy());
+        assert_eq!(d.disk_state(), DiskState::Unchanged, "the watermark is stamped");
+        // And ⌘S is a plain save from here on.
+        d.insert("!");
+        d.save();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "# hi!");
+        let _ = std::fs::remove_file(&p);
+    }
+
+    // ── save as ───────────────────────────────────────────────────────────────
+
+    /// A unique path in the temp dir that no fixture wrote — a Save As target.
+    fn temp_path(name: &str) -> PathBuf {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut p = std::env::temp_dir();
+        p.push(format!("leaf_test_target_{name}_{seq}.md"));
+        let _ = std::fs::remove_file(&p);
+        p
+    }
+
+    #[test]
+    fn save_as_moves_the_document_and_leaves_the_old_file_alone() {
+        let mut d = doc_with("save_as_move", "original\n");
+        let old = d.path.clone();
+        let new = temp_path("save_as_move");
+        d.insert("edited: ");
+        d.save_as(new.clone());
+
+        assert_eq!(std::fs::read_to_string(&new).unwrap(), "edited: original\n");
+        assert_eq!(
+            std::fs::read_to_string(&old).unwrap(),
+            "original\n",
+            "Save As doesn't touch the file it came from"
+        );
+        assert_eq!(d.path, new, "the document moved");
+        assert!(!d.dirty);
+        assert_eq!(d.status.as_deref(), Some(&*format!("saved {}", d.file_name())));
+
+        // Every later save follows it, which is the whole difference from a copy.
+        d.caret = 0;
+        d.insert("re-");
+        d.save();
+        assert_eq!(std::fs::read_to_string(&new).unwrap(), "re-edited: original\n");
+        assert_eq!(std::fs::read_to_string(&old).unwrap(), "original\n");
+        let _ = std::fs::remove_file(&new);
+    }
+
+    #[test]
+    fn save_as_overwrites_an_existing_target() {
+        // The picker already asked; asking again down here is the same question
+        // twice, and the second one has no way to be answered.
+        let new = temp_path("save_as_over");
+        std::fs::write(&new, "theirs\n").unwrap();
+        let mut d = doc_with("save_as_over", "ours\n");
+        d.save_as(new.clone());
+        assert_eq!(std::fs::read_to_string(&new).unwrap(), "ours\n");
+        let _ = std::fs::remove_file(&new);
+    }
+
+    #[test]
+    fn a_save_as_that_fails_leaves_the_document_where_it_was() {
+        let mut d = doc_with("save_as_fail", "body\n");
+        let old = d.path.clone();
+        d.insert("x");
+        // A directory that doesn't exist: the write can't land.
+        let bad = std::env::temp_dir().join("leaf_test_no_such_dir_9f2/doc.md");
+        d.save_as(bad);
+
+        assert_eq!(d.path, old, "the document must not move to a file that isn't there");
+        assert!(d.dirty, "and must not believe it saved");
+        assert!(
+            d.status.as_deref().unwrap().starts_with("save failed:"),
+            "the same failure a plain save reports, got {:?}",
+            d.status
+        );
+        // The original is still the document's file, and still saveable.
+        d.save();
+        assert_eq!(std::fs::read_to_string(&old).unwrap(), "xbody\n");
+        assert!(!d.dirty);
+    }
+
+    #[test]
+    fn save_as_renames_without_reparsing_the_format() {
+        // `.dj` on the name doesn't make the buffer djot: it was parsed as
+        // Markdown and still is, and saying otherwise would be a conversion the
+        // user never asked for (and an undo history thrown away to do it).
+        let mut d = doc_with("save_as_format", "**b**\n");
+        let mut new = temp_path("save_as_format");
+        new.set_extension("dj");
+        d.save_as(new.clone());
+        assert_eq!(d.format_name(), "markdown");
+        let _ = std::fs::remove_file(&new);
+    }
+
+    // ── external change / reload ──────────────────────────────────────────────
+
+    #[test]
+    fn an_untouched_file_reports_unchanged() {
+        let mut d = doc_with("disk_clean", "body\n");
+        assert_eq!(d.disk_state(), DiskState::Unchanged);
+        // Editing the buffer is not editing the file.
+        d.insert("x");
+        assert_eq!(d.disk_state(), DiskState::Unchanged);
+        assert!(d.dirty);
+        // Saving re-stamps the watermark rather than reporting our own bytes back.
+        d.save();
+        assert_eq!(d.disk_state(), DiskState::Unchanged);
+    }
+
+    #[test]
+    fn a_file_written_underneath_reports_changed() {
+        let mut d = doc_with("disk_changed", "body\n");
+        std::fs::write(&d.path, "someone else\n").unwrap();
+        assert_eq!(d.disk_state(), DiskState::Changed);
+        // Dirty *and* changed is the clobber: both halves are readable, and
+        // leaf-core takes neither side.
+        d.insert("x");
+        assert!(d.dirty && d.disk_state() == DiskState::Changed);
+        // Saving anyway is allowed — the frontend asked, or chose not to.
+        d.save();
+        assert_eq!(std::fs::read_to_string(&d.path).unwrap(), "xbody\n");
+        assert_eq!(d.disk_state(), DiskState::Unchanged);
+    }
+
+    #[test]
+    fn a_file_rewritten_with_the_same_bytes_is_unchanged() {
+        // The hash is what makes this honest: the file was written (a fresh
+        // mtime), and nothing about the document is stale.
+        let d = doc_with("disk_same_bytes", "body\n");
+        std::fs::write(&d.path, "body\n").unwrap();
+        assert_eq!(d.disk_state(), DiskState::Unchanged);
+    }
+
+    #[test]
+    fn a_deleted_file_reports_missing() {
+        let mut d = doc_with("disk_missing", "body\n");
+        std::fs::remove_file(&d.path).unwrap();
+        assert_eq!(d.disk_state(), DiskState::Missing);
+        // A save recreates it, and the document is whole again.
+        d.save();
+        assert_eq!(d.disk_state(), DiskState::Unchanged);
+        assert_eq!(std::fs::read_to_string(&d.path).unwrap(), "body\n");
+    }
+
+    #[test]
+    fn reload_replaces_the_document_with_the_file() {
+        for (view, tag) in VIEWS {
+            let mut d = doc_in(view, &format!("reload_{tag}"), "one\n\ntwo\n");
+            d.insert("edited ");
+            assert!(d.dirty);
+            std::fs::write(&d.path, "one\n\ntwo\n\nthree\n").unwrap();
+            d.reload();
+
+            assert_eq!(d.source, "one\n\ntwo\n\nthree\n", "{tag}");
+            assert!(!d.dirty, "{tag}: the file is what we have");
+            assert_eq!(d.disk_state(), DiskState::Unchanged, "{tag}");
+            assert_eq!(d.status.as_deref(), Some(&*format!("reloaded {}", d.file_name())));
+            // The reloaded tree is live, not the old parse.
+            d.caret = d.source.find("three").unwrap();
+            assert_eq!(d.breadcrumb(), "doc › para › str", "{tag}");
+        }
+    }
+
+    #[test]
+    fn reload_clamps_the_caret_and_drops_the_selection() {
+        let mut d = doc_with("reload_caret", "a long first line\n");
+        d.caret = 12;
+        d.anchor = Some(4);
+        std::fs::write(&d.path, "short\n").unwrap();
+        d.reload();
+        assert_eq!(d.caret, d.source.len(), "clamped into the shorter file");
+        assert_eq!(d.anchor, None, "a selection over bytes that changed is a lie");
+        assert!(d.selection().is_none());
+
+        // A caret the file still has room for stays put.
+        let mut d = doc_with("reload_caret_keep", "one\n\ntwo\n");
+        d.caret = 2;
+        std::fs::write(&d.path, "one\n\ntwo\n\nthree\n").unwrap();
+        d.reload();
+        assert_eq!(d.caret, 2);
+    }
+
+    #[test]
+    fn reload_drops_the_undo_history() {
+        // twig's stack belongs to the buffer, and these are different bytes:
+        // replaying a step recorded against the old ones would corrupt the file.
+        let mut d = doc_with("reload_undo", "body\n");
+        d.insert("x");
+        std::fs::write(&d.path, "replaced\n").unwrap();
+        d.reload();
+        d.undo();
+        assert_eq!(d.source, "replaced\n", "an undo must not resurrect the old buffer");
+        assert_eq!(d.status.as_deref(), Some("nothing to undo"));
+    }
+
+    #[test]
+    fn a_reload_that_cant_read_leaves_the_document_alone() {
+        let mut d = doc_with("reload_gone", "body\n");
+        d.insert("x");
+        std::fs::remove_file(&d.path).unwrap();
+        d.reload();
+        assert_eq!(d.source, "xbody\n", "the unsaved work is still here");
+        assert!(d.dirty);
+        assert!(d.status.as_deref().unwrap().starts_with("reload failed:"), "{:?}", d.status);
+
+        // And an untitled document has nothing to reload from.
+        let mut d = Doc::blank().unwrap();
+        d.insert("typed");
+        d.reload();
+        assert_eq!(d.source, "typed");
+        assert_eq!(d.status.as_deref(), Some("no file to reload"));
+    }
+}
+
+/// twig's node-kind name for an inline mark, back to the [`InlineKind`] a
+/// frontend names when it calls [`Doc::toggle`] — the inverse of the mapping
+/// twig applies writing the mark out, so the toolbar can light the same button
+/// that made the node.
+///
+/// `None` for every other kind, including the inline nodes that aren't marks at
+/// all (`str`, `link`, `image`, the math and break kinds): they're things a
+/// caret stands in, not formatting a button toggles.
+fn inline_kind(kind: &str) -> Option<InlineKind> {
+    Some(match kind {
+        "strong" => InlineKind::Strong,
+        "emph" => InlineKind::Emph,
+        "verbatim" => InlineKind::Verbatim,
+        "mark" => InlineKind::Mark,
+        "superscript" => InlineKind::Superscript,
+        "subscript" => InlineKind::Subscript,
+        "insert" => InlineKind::Insert,
+        "delete" => InlineKind::Delete,
+        _ => return None,
+    })
+}
+
+/// A watermark for a file's contents (see `Doc::disk_hash`).
+///
+/// `DefaultHasher` is not stable across Rust releases, which doesn't matter: a
+/// watermark is compared only against one taken by the same process moments
+/// earlier, and never outlives it. 64 bits leaves a collision — an external edit
+/// that hashes to exactly what leaf wrote — at odds no filesystem race gets near.
+fn hash_bytes(bytes: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut h);
+    h.finish()
 }
 
 fn detect_format(path: &Path) -> Result<Format> {
