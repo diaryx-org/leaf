@@ -108,6 +108,15 @@ impl VisualMap {
     /// cells put rows slightly out of offset order: scanning top to bottom, the
     /// second line of column 1 comes *after* the first line of column 2 but
     /// holds smaller offsets. Where rows are in order the two rules agree.
+    ///
+    /// A soft wrap is the one place two rows want the same offset: the row above
+    /// ends where the row below opens, the space the wrap ate being drawn on the
+    /// row above and the offset past it being the row below's first character.
+    /// It resolves *downstream*, to the row that character is on — the row
+    /// above's last column is a phantom, a place the caret can be drawn but
+    /// never sent, and resolving upstream into it is what pinned Down at the
+    /// first wrap of a paragraph: it aimed at the row below's column 0, landed
+    /// on the offset it already had, and read that back as the row above's end.
     pub fn pos_of_offset(&self, off: usize) -> (usize, usize) {
         let mut best: Option<(usize, usize, usize)> = None; // (src, row, col)
         for (r, row) in self.rows.iter().enumerate() {
@@ -124,7 +133,9 @@ impl VisualMap {
                 .map(|(i, g)| (g.src, r, row.col_of_glyph(i)))
                 .or_else(|| (row.end_src >= off).then_some((row.end_src, r, row.width())));
             if let Some(c) = cand {
-                if best.is_none_or(|b| c.0 < b.0) {
+                // `<=`, so a tie goes to the later row: the only offset two rows
+                // both hold is a wrap boundary, and it belongs to the row below.
+                if best.is_none_or(|b| c.0 <= b.0) {
                     best = Some(c);
                 }
             }
@@ -194,6 +205,20 @@ impl VisualMap {
     /// border rules) are stepped over by vertical motion.
     pub fn row_is_navigable(&self, row: usize) -> bool {
         self.rows.get(row).is_some_and(|r| !r.decoration)
+    }
+
+    /// The first offset the caret can rest at on `row` — its first stop, or the
+    /// row's own end when it holds no text (an empty paragraph). `None` for a
+    /// decoration row, which holds no caret at all.
+    ///
+    /// Not `offset_of_pos(row, 0)`: column 0 of a quoted or listed row is the
+    /// gutter, and a gutter's `src` points at the *block* it opens, so the stop
+    /// nearest it is the one on the block's first row rather than on this one.
+    /// Which is right for a click — the gutter decorates the whole block — and
+    /// wrong for Home, whose whole question is where *this* row starts.
+    pub fn row_start(&self, row: usize) -> Option<usize> {
+        let r = self.rows.get(row).filter(|r| !r.decoration)?;
+        Some(r.glyphs.iter().find(|g| g.stop).map_or(r.end_src, |g| g.src))
     }
 
     /// The last row the caret can rest on — the fallback when an offset is past
