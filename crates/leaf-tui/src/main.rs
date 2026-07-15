@@ -269,7 +269,7 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
             KeyCode::Char('7') => toggle_list(doc, true),
             KeyCode::Char('8') => toggle_list(doc, false),
             KeyCode::Char('9') => doc.toggle_blockquote(),
-            KeyCode::Char('k') => open_link_prompt(app),
+            KeyCode::Char('k') => open_link_prompt(doc, app),
             _ => {}
         }
         return Flow::Continue;
@@ -444,14 +444,14 @@ fn list_depth(doc: &mut Doc, kind: &str) -> usize {
     doc.breadcrumb().split(" › ").filter(|k| *k == kind).count()
 }
 
-/// ⌥k: open the link prompt empty. A caret already standing in a link would
-/// ideally start the prompt from that link's current destination, but nothing
-/// public on `Doc` returns one — `nodes()` and the `FlatNode::destination` it
-/// carries are internal to leaf-core's own `insert_link` — so this can't do
-/// better without an addition there. Confirming still re-points the link the
-/// caret is in, same as `Doc::insert_link` always has.
-fn open_link_prompt(app: &mut App) {
-    app.text_prompt = Some(TextPrompt::new("Link destination", "", |doc, dest| {
+/// ⌥k: open the link prompt, prefilled with the destination of the link the
+/// caret already stands in (if any), so re-pointing a link means editing its
+/// URL rather than retyping it. A caret outside any link gets an empty box,
+/// same as before. Confirming still re-points the link the caret is in, same
+/// as `Doc::insert_link` always has.
+fn open_link_prompt(doc: &mut Doc, app: &mut App) {
+    let initial = doc.link_destination_at_caret().unwrap_or_default();
+    app.text_prompt = Some(TextPrompt::new("Link destination", initial, |doc, dest| {
         doc.insert_link(dest);
     }));
 }
@@ -715,16 +715,22 @@ mod tests {
 
     #[test]
     fn alt_k_opens_the_link_prompt_empty() {
-        // Nothing public on `Doc` returns a link's destination (see
-        // `open_link_prompt`), so the prompt always starts blank — even a
-        // caret standing inside an existing link gets an empty box to type a
-        // fresh destination into rather than a prefilled one.
         let mut doc = doc_with("link_open", "hello\n");
         let mut app = App::default();
         handle_key(&mut doc, alt('k'), &mut app);
         let prompt = app.text_prompt.as_ref().expect("⌥k should open the prompt");
         assert_eq!(prompt.label, "Link destination");
         assert_eq!(prompt.value, "");
+    }
+
+    #[test]
+    fn alt_k_prefills_the_existing_link_s_destination() {
+        let mut doc = doc_with("link_prefill", "see [t](https://x.dev) ok\n");
+        doc.caret = 5; // inside the link's text
+        let mut app = App::default();
+        handle_key(&mut doc, alt('k'), &mut app);
+        let prompt = app.text_prompt.as_ref().expect("⌥k should open the prompt");
+        assert_eq!(prompt.value, "https://x.dev");
     }
 
     #[test]
