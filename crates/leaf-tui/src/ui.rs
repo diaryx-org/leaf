@@ -11,14 +11,15 @@ use ratatui::{
     layout::{Constraint, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Clear, Paragraph},
 };
 
 use leaf_core::{Doc, View};
 
 use crate::style::wysiwyg_lines;
+use crate::{App, ContextMenu, MENU_ITEMS};
 
-pub fn render(f: &mut Frame, doc: &mut Doc, breadcrumb: &str, confirm_quit: bool) {
+pub fn render(f: &mut Frame, doc: &mut Doc, breadcrumb: &str, app: &mut App) {
     let chunks = Layout::vertical([
         Constraint::Length(1), // header
         Constraint::Min(1),    // body
@@ -27,8 +28,12 @@ pub fn render(f: &mut Frame, doc: &mut Doc, breadcrumb: &str, confirm_quit: bool
     .split(f.area());
 
     render_header(f, chunks[0], doc, breadcrumb);
-    render_body(f, chunks[1], doc);
-    render_footer(f, chunks[2], doc, confirm_quit);
+    render_body(f, chunks[1], doc, &mut app.scroll_x);
+    render_footer(f, chunks[2], doc, app.confirm_quit);
+
+    if let Some(menu) = &mut app.context_menu {
+        render_context_menu(f, f.area(), menu);
+    }
 }
 
 fn render_header(f: &mut Frame, area: Rect, doc: &Doc, breadcrumb: &str) {
@@ -55,7 +60,7 @@ fn render_header(f: &mut Frame, area: Rect, doc: &Doc, breadcrumb: &str) {
     f.render_widget(Line::from(spans), area);
 }
 
-fn render_body(f: &mut Frame, area: Rect, doc: &mut Doc) {
+fn render_body(f: &mut Frame, area: Rect, doc: &mut Doc, scroll_x: &mut usize) {
     let sel = doc.selection();
 
     // Build the view's lines. The WYSIWYG map must be built before we read the
@@ -75,14 +80,43 @@ fn render_body(f: &mut Frame, area: Rect, doc: &mut Doc) {
     doc.body_origin = (area.x, area.y);
     doc.body_height = area.height;
 
-    let para = Paragraph::new(lines).scroll((doc.scroll as u16, 0));
+    // The WYSIWYG view already soft-wraps at `area.width` (`build_visual`
+    // above), so every column it produces is on screen. Only the source view
+    // splits on '\n' alone and can run a line past the right edge, so it's the
+    // only one that needs a horizontal follow — the vertical one `doc.scroll`
+    // gets from `follow_caret`, but kept in the frontend since it doesn't
+    // affect the row/col ↔ offset mapping leaf-core owns.
+    let width = area.width as usize;
+    match doc.view {
+        View::Source => follow_caret_x(scroll_x, caret_col, width),
+        View::Wysiwyg => *scroll_x = 0,
+    }
+
+    let para = Paragraph::new(lines).scroll((doc.scroll as u16, *scroll_x as u16));
     f.render_widget(para, area);
 
     // Draw the real terminal caret (only when it's within the viewport).
-    if caret_row >= doc.scroll && (height == 0 || caret_row < doc.scroll + height) {
-        let x = area.x + caret_col as u16;
+    let col_visible = caret_col >= *scroll_x && (width == 0 || caret_col < *scroll_x + width);
+    if col_visible && caret_row >= doc.scroll && (height == 0 || caret_row < doc.scroll + height) {
+        let x = area.x + (caret_col - *scroll_x) as u16;
         let y = area.y + (caret_row - doc.scroll) as u16;
         f.set_cursor_position(Position::new(x, y));
+    }
+}
+
+/// Horizontal analogue of `Doc::follow_caret`: keeps the caret's column
+/// on screen in the source view. Unlike the vertical axis there's no
+/// horizontal scroll wheel to fight — nothing else ever moves `scroll_x` — so
+/// this can just chase the caret on every frame instead of only on caret
+/// moves.
+fn follow_caret_x(scroll_x: &mut usize, caret_col: usize, width: usize) {
+    if width == 0 {
+        return;
+    }
+    if caret_col < *scroll_x {
+        *scroll_x = caret_col;
+    } else if caret_col >= *scroll_x + width {
+        *scroll_x = caret_col + 1 - width;
     }
 }
 
@@ -140,6 +174,39 @@ fn render_footer(f: &mut Frame, area: Rect, doc: &Doc, confirm_quit: bool) {
     f.render_widget(Paragraph::new(vec![line1, line2]), area);
 }
 
+/// The right-click menu: Cut / Copy / Paste / Select All, anchored at the
+/// click and nudged back onto `screen` if it wouldn't otherwise fit (the
+/// terminal equivalent of the GUI menu's `snap_to_window`). Stashes the rect
+/// it painted at back onto `menu` so `main::menu_item_at` can hit-test clicks
+/// against the exact geometry drawn here, the same way `doc.body_origin`
+/// carries the body's geometry back out to `handle_mouse`.
+fn render_context_menu(f: &mut Frame, screen: Rect, menu: &mut ContextMenu) {
+    let width = MENU_ITEMS.iter().map(|(label, _)| label.len()).max().unwrap_or(0) as u16 + 4;
+    let height = MENU_ITEMS.len() as u16;
+    let (anchor_x, anchor_y) = menu.anchor;
+    let x = anchor_x.min(screen.width.saturating_sub(width));
+    let y = anchor_y.min(screen.height.saturating_sub(height));
+    let rect = Rect { x, y, width, height };
+    menu.rect = Some(rect);
+
+    let base = Style::default().bg(Color::DarkGray).fg(Color::White);
+    let lines: Vec<Line<'static>> = MENU_ITEMS
+        .iter()
+        .enumerate()
+        .map(|(i, (label, _))| {
+            let style = if i == menu.selected {
+                base.add_modifier(Modifier::REVERSED)
+            } else {
+                base
+            };
+            Line::from(Span::styled(format!(" {label:<pad$}", pad = width as usize - 1), style))
+        })
+        .collect();
+
+    f.render_widget(Clear, rect);
+    f.render_widget(Paragraph::new(lines).style(base), rect);
+}
+
 /// Split `source` into styled lines, drawing any part of the `[start, end)`
 /// selection reversed.
 fn build_lines(source: &str, sel: Option<(usize, usize)>) -> Vec<Line<'static>> {
@@ -176,5 +243,31 @@ fn build_lines(source: &str, sel: Option<(usize, usize)>) -> Vec<Line<'static>> 
 fn push(spans: &mut Vec<Span<'static>>, text: &str, style: Style) {
     if !text.is_empty() {
         spans.push(Span::styled(text.to_string(), style));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn follow_caret_x_scrolls_right_just_far_enough_to_reveal_the_caret() {
+        let mut scroll_x = 0;
+        follow_caret_x(&mut scroll_x, 50, 20);
+        assert_eq!(scroll_x, 31); // caret_col + 1 - width
+    }
+
+    #[test]
+    fn follow_caret_x_scrolls_left_when_the_caret_moves_before_the_offset() {
+        let mut scroll_x = 30;
+        follow_caret_x(&mut scroll_x, 5, 20);
+        assert_eq!(scroll_x, 5);
+    }
+
+    #[test]
+    fn follow_caret_x_leaves_scroll_alone_when_the_caret_is_already_visible() {
+        let mut scroll_x = 10;
+        follow_caret_x(&mut scroll_x, 15, 20);
+        assert_eq!(scroll_x, 10);
     }
 }

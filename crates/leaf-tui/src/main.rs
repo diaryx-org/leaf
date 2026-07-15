@@ -14,12 +14,15 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
-use ratatui::crossterm::{
-    event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-        KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+use ratatui::{
+    crossterm::{
+        event::{
+            self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent,
+            KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+        },
+        execute,
     },
-    execute,
+    layout::Rect,
 };
 use leaf_core::{BlockKind, Doc, InlineKind};
 
@@ -37,9 +40,10 @@ fn main() -> Result<()> {
     result
 }
 
-/// UI-only state that doesn't belong on `Doc`: the quit-confirmation prompt
-/// and mouse click-counting for double/triple-click. Doc stays the frontend-
-/// neutral model; this is the crossterm-facing bookkeeping around it.
+/// UI-only state that doesn't belong on `Doc`: the quit-confirmation prompt,
+/// mouse click-counting for double/triple-click, the right-click context menu,
+/// and the source view's horizontal scroll. Doc stays the frontend-neutral
+/// model; this is the crossterm-facing bookkeeping around it.
 #[derive(Default)]
 struct App {
     /// Set by Ctrl+Q on a dirty document; while true the footer shows the
@@ -48,6 +52,13 @@ struct App {
     /// Timing and screen cell of the last left mouse-down, for detecting
     /// double/triple clicks.
     last_click: Option<ClickState>,
+    /// Present while the right-click menu is open; consumes keyboard and
+    /// mouse input until an item is chosen or it's dismissed.
+    context_menu: Option<ContextMenu>,
+    /// How far the source view is scrolled sideways. There's no horizontal
+    /// scroll wheel to drive this independently (unlike `doc.scroll`), so it
+    /// only ever chases the caret — see `ui::follow_caret_x`.
+    scroll_x: usize,
 }
 
 struct ClickState {
@@ -61,11 +72,34 @@ struct ClickState {
 /// Clicks within this long, on the same cell, extend the click count.
 const MULTI_CLICK_WINDOW: Duration = Duration::from_millis(400);
 
+/// The right-click menu's rows, in display order: a label paired with the
+/// action a click or Enter on that row runs. `ui::render_context_menu` reads
+/// the labels off this same list so the menu drawn on screen and the actions
+/// wired to it can't drift apart.
+const MENU_ITEMS: &[(&str, fn(&mut Doc))] = &[
+    ("Cut", clipboard_cut),
+    ("Copy", clipboard_copy),
+    ("Paste", clipboard_paste),
+    ("Select All", Doc::select_all),
+];
+
+struct ContextMenu {
+    /// Screen cell the right-click landed on; the overlay is anchored here
+    /// (and nudged back on screen if it wouldn't fit).
+    anchor: (u16, u16),
+    /// Index into `MENU_ITEMS` currently highlighted, moved by the arrow keys.
+    selected: usize,
+    /// The rect `ui::render_context_menu` last painted the menu at, stashed
+    /// the same way `doc.body_origin`/`body_height` are, so mouse hit-testing
+    /// here and drawing there agree on one geometry.
+    rect: Option<Rect>,
+}
+
 fn run(terminal: &mut ratatui::DefaultTerminal, doc: &mut Doc) -> Result<()> {
     let mut app = App::default();
     loop {
         let breadcrumb = doc.breadcrumb();
-        terminal.draw(|f| ui::render(f, doc, &breadcrumb, app.confirm_quit))?;
+        terminal.draw(|f| ui::render(f, doc, &breadcrumb, &mut app))?;
 
         match event::read()? {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
@@ -92,6 +126,23 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
             KeyCode::Char('y') | KeyCode::Char('Y') => return Flow::Quit,
             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => app.confirm_quit = false,
             _ => {} // anything else: leave the prompt up
+        }
+        return Flow::Continue;
+    }
+
+    // The context menu takes over the keyboard the same way the quit prompt
+    // does: arrows move the highlight, Enter runs the highlighted row, Esc (or
+    // anything else) closes it without acting.
+    if let Some(menu) = &mut app.context_menu {
+        match key.code {
+            KeyCode::Up => menu.selected = (menu.selected + MENU_ITEMS.len() - 1) % MENU_ITEMS.len(),
+            KeyCode::Down => menu.selected = (menu.selected + 1) % MENU_ITEMS.len(),
+            KeyCode::Enter => {
+                let action = MENU_ITEMS[menu.selected].1;
+                app.context_menu = None;
+                action(doc);
+            }
+            _ => app.context_menu = None,
         }
         return Flow::Continue;
     }
@@ -142,9 +193,9 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
             KeyCode::Char('c') => doc.toggle(InlineKind::Verbatim),
             KeyCode::Char('m') => doc.toggle(InlineKind::Mark),
             KeyCode::Char('0') => doc.set_block(BlockKind::Paragraph),
-            KeyCode::Char(d @ '1'..='6') => {
-                doc.set_block(BlockKind::Heading(d.to_digit(10).unwrap()))
-            }
+            // Toggle, not set: ⌥1 on a line that's already H1 reverts it to a
+            // paragraph, matching the feel of the bold/italic/code toggles.
+            KeyCode::Char(d @ '1'..='6') => doc.toggle_heading(d.to_digit(10).unwrap()),
             _ => {}
         }
         return Flow::Continue;
@@ -188,6 +239,24 @@ fn page_rows(doc: &Doc) -> usize {
 }
 
 fn handle_mouse(doc: &mut Doc, m: MouseEvent, app: &mut App) {
+    // The menu owns the mouse while it's open: a click on one of its rows runs
+    // that row's action, a click anywhere else just dismisses it — either way
+    // the click doesn't also fall through to the document underneath (a menu
+    // click landing on, say, a paste shouldn't also re-place the caret at the
+    // menu's screen position).
+    if let Some(menu) = &app.context_menu {
+        if let MouseEventKind::Down(_) = m.kind {
+            if let Some(i) = menu_item_at(menu, m.row, m.column) {
+                let action = MENU_ITEMS[i].1;
+                app.context_menu = None;
+                action(doc);
+            } else {
+                app.context_menu = None;
+            }
+        }
+        return;
+    }
+
     let (bx, by) = doc.body_origin;
     let within = m.row >= by
         && (m.row as usize) < by as usize + doc.body_height as usize
@@ -198,17 +267,20 @@ fn handle_mouse(doc: &mut Doc, m: MouseEvent, app: &mut App) {
             let row = doc.scroll + (m.row - by) as usize;
             let col = (m.column - bx) as usize;
             let count = click_count(app, m.row, m.column);
+            let shift = m.modifiers.contains(KeyModifiers::SHIFT);
 
-            // Single click places the caret; double selects the word under
-            // it; triple selects the block it's in. All three start from the
-            // same `click` hit-test so the row/col → offset mapping (source
-            // bytes vs. the WYSIWYG glyph grid) only lives in one place.
+            // Single click places the caret (extending the selection if shift
+            // is held, same as a shift-click in any other editor); double
+            // selects the word under it; triple selects the block it's in.
+            // All three start from the same `click` hit-test so the row/col →
+            // offset mapping (source bytes vs. the WYSIWYG glyph grid) only
+            // lives in one place.
             //
             // The block, not the source line: a paragraph broken over several
             // lines is one paragraph, and a triple click that stopped at the
             // newline inside it would be selecting a detail of the markup the
             // rich-text view exists to hide. Same call the GUI makes.
-            doc.click(row, col, false);
+            doc.click(row, col, shift);
             match count {
                 2 => doc.select_word_at(doc.caret),
                 n if n >= 3 => doc.select_block_at(doc.caret),
@@ -220,9 +292,40 @@ fn handle_mouse(doc: &mut Doc, m: MouseEvent, app: &mut App) {
             let col = (m.column - bx) as usize;
             doc.click(row, col, true); // extend the selection
         }
+        MouseEventKind::Down(MouseButton::Right) if within => {
+            // A right-click on top of an existing selection should offer to
+            // act on *it* (Cut/Copy), not collapse it to a fresh caret. There's
+            // no public way to test "is this screen cell inside the selection"
+            // without moving the caret (that mapping is private to `Doc`), so
+            // this approximates the precise hit-test the GUI does with the
+            // coarser "is any selection active at all" — good enough since a
+            // right-click while nothing is selected has no selection to lose.
+            if doc.selection().is_none() {
+                let row = doc.scroll + (m.row - by) as usize;
+                let col = (m.column - bx) as usize;
+                doc.click(row, col, false);
+            }
+            app.context_menu = Some(ContextMenu {
+                anchor: (m.column, m.row),
+                selected: 0,
+                rect: None,
+            });
+        }
         MouseEventKind::ScrollDown => doc.scroll = doc.scroll.saturating_add(1),
         MouseEventKind::ScrollUp => doc.scroll = doc.scroll.saturating_sub(1),
         _ => {}
+    }
+}
+
+/// Hit-test a mouse-down against the last-painted context menu rect, returning
+/// the row index under it (if any). Mirrors the `doc.body_origin`/
+/// `body_height` dance the document body itself uses for the same purpose.
+fn menu_item_at(menu: &ContextMenu, row: u16, col: u16) -> Option<usize> {
+    let rect = menu.rect?;
+    if row >= rect.y && row < rect.y + rect.height && col >= rect.x && col < rect.x + rect.width {
+        Some((row - rect.y) as usize)
+    } else {
+        None
     }
 }
 
@@ -320,6 +423,24 @@ mod tests {
         }
     }
 
+    fn shift_left_down(row: u16, col: u16) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row,
+            modifiers: KeyModifiers::SHIFT,
+        }
+    }
+
+    fn right_down(row: u16, col: u16) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Right),
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
     #[test]
     fn triple_click_selects_the_paragraph_not_the_source_line() {
         // The TUI used to select the source *line* under the click, walking out
@@ -342,6 +463,90 @@ mod tests {
             handle_mouse(&mut doc, left_down(1, 1), &mut app);
         }
         assert_eq!(doc.selected_text(), Some("one"));
+    }
+
+    #[test]
+    fn shift_click_extends_the_selection_from_the_first_click() {
+        let mut doc = doc_with("shift", "one two three\n");
+        let mut app = App::default();
+        handle_mouse(&mut doc, left_down(1, 0), &mut app); // caret before "one"
+        handle_mouse(&mut doc, shift_left_down(1, 9), &mut app); // shift-click into "three"
+        assert_eq!(doc.selected_text(), Some("one two t"));
+    }
+
+    #[test]
+    fn right_click_places_the_caret_and_opens_the_menu() {
+        let mut doc = doc_with("right_place", "one two three\n");
+        let mut app = App::default();
+        handle_mouse(&mut doc, right_down(1, 4), &mut app);
+        assert_eq!(doc.caret, 4);
+        assert!(app.context_menu.is_some());
+    }
+
+    #[test]
+    fn right_click_on_a_selection_leaves_it_intact() {
+        // Right-clicking inside a selection should offer to act on it (Cut/
+        // Copy), not collapse it to a fresh caret the way a left click would.
+        let mut doc = doc_with("right_sel", "one two three\n");
+        let mut app = App::default();
+        for _ in 0..2 {
+            handle_mouse(&mut doc, left_down(1, 5), &mut app); // double-click selects "two"
+        }
+        let before = doc.selected_text().map(str::to_string);
+        assert_eq!(before.as_deref(), Some("two"));
+        handle_mouse(&mut doc, right_down(1, 5), &mut app);
+        assert_eq!(doc.selected_text().map(str::to_string), before);
+    }
+
+    #[test]
+    fn context_menu_esc_dismisses_without_acting() {
+        let mut doc = doc_with("menu_esc", "one two three\n");
+        let mut app = App::default();
+        handle_mouse(&mut doc, right_down(1, 4), &mut app);
+        assert!(app.context_menu.is_some());
+        handle_key(&mut doc, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut app);
+        assert!(app.context_menu.is_none());
+        assert_eq!(doc.selection(), None);
+    }
+
+    #[test]
+    fn context_menu_arrows_and_enter_run_the_highlighted_action() {
+        let mut doc = doc_with("menu_nav", "one two three\n");
+        let mut app = App::default();
+        handle_mouse(&mut doc, right_down(1, 4), &mut app);
+        // Cut, Copy, Paste, Select All: three Downs from Cut lands on Select All.
+        for _ in 0..3 {
+            handle_key(&mut doc, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &mut app);
+        }
+        handle_key(&mut doc, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &mut app);
+        assert!(app.context_menu.is_none());
+        assert_eq!(doc.selected_text(), Some("one two three\n"));
+    }
+
+    #[test]
+    fn menu_click_on_an_item_runs_it_and_a_click_elsewhere_just_dismisses() {
+        let mut doc = doc_with("menu_click", "one two three\n");
+        let mut app = App::default();
+        handle_mouse(&mut doc, right_down(1, 4), &mut app);
+        // The menu hasn't been drawn (no `ui::render` in this test), so there's
+        // no painted rect to click on; a click anywhere just dismisses it.
+        assert!(app.context_menu.as_ref().unwrap().rect.is_none());
+        handle_mouse(&mut doc, left_down(5, 5), &mut app);
+        assert!(app.context_menu.is_none());
+    }
+
+    #[test]
+    fn alt_1_toggles_a_heading_back_to_a_paragraph_and_forth_again() {
+        let mut doc = doc_with("heading_toggle", "# Title\n\nbody text\n");
+        let mut app = App::default();
+        doc.caret = 3; // inside "Title"
+        let alt_1 = KeyEvent::new(KeyCode::Char('1'), KeyModifiers::ALT);
+
+        handle_key(&mut doc, alt_1, &mut app);
+        assert_eq!(&doc.source[..7], "Title\n\n", "first ⌥1 should strip the heading marker");
+
+        handle_key(&mut doc, alt_1, &mut app);
+        assert!(doc.source.starts_with("# Title"), "second ⌥1 should re-apply H1");
     }
 
     #[test]
