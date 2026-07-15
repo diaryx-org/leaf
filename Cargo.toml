@@ -31,5 +31,10 @@ leaf-core = { path = "crates/leaf-core", version = "0.1.0" }
 
 # Local twig while the container/link editor ops are unreleased. twig-doc 2.1.0
 # is not on crates.io yet; drop this patch once it is.
+#
+# This points at a *pinned worktree* (detached at 29097fa), not the main twig
+# checkout, because twig's build.rs declares `rerun-if-changed=<root>/src`: any
+# save in a live twig tree makes leaf re-run `zig build` mid-edit and fail. Repoint
+# at ~/Code/twig — or bump the worktree — to pick up newer twig work.
 [patch.crates-io]
-twig-doc = { path = "/Users/adamharris/Code/twig/bindings/rust/twig" }
+twig-doc = { path = "/Users/adamharris/Code/worktrees/twig-pin/bindings/rust/twig" }
