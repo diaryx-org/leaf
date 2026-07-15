@@ -8,3 +8,6 @@ description = "Frontend-neutral core of leaf: a byte-offset caret/selection mode
 twig-doc.workspace = true
 anyhow.workspace = true
 unicode-segmentation = "1.13.3"
+# Display width: a column is a terminal cell, and a `col` counted in characters
+# drifts from the glyph it names by one cell per wide character on the line.
+unicode-width = "0.2.0"
