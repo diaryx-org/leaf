@@ -200,13 +200,18 @@ fn handle_mouse(doc: &mut Doc, m: MouseEvent, app: &mut App) {
             let count = click_count(app, m.row, m.column);
 
             // Single click places the caret; double selects the word under
-            // it; triple selects the whole line. All three start from the
+            // it; triple selects the block it's in. All three start from the
             // same `click` hit-test so the row/col → offset mapping (source
             // bytes vs. the WYSIWYG glyph grid) only lives in one place.
+            //
+            // The block, not the source line: a paragraph broken over several
+            // lines is one paragraph, and a triple click that stopped at the
+            // newline inside it would be selecting a detail of the markup the
+            // rich-text view exists to hide. Same call the GUI makes.
             doc.click(row, col, false);
             match count {
                 2 => doc.select_word_at(doc.caret),
-                n if n >= 3 => select_line(doc, doc.caret),
+                n if n >= 3 => doc.select_block_at(doc.caret),
                 _ => {}
             }
         }
@@ -234,18 +239,6 @@ fn click_count(app: &mut App, row: u16, col: u16) -> u8 {
     };
     app.last_click = Some(ClickState { at: now, row, col, count });
     count
-}
-
-/// Select the whole source line containing `offset` (the triple-click
-/// gesture). `Doc` has no line-selection method, but `anchor`/`caret` are
-/// public, so we find the line's byte range the same way the renderer's
-/// per-line highlighting does and drive them directly.
-fn select_line(doc: &mut Doc, offset: usize) {
-    let src = &doc.source;
-    let start = src[..offset].rfind('\n').map(|i| i + 1).unwrap_or(0);
-    let end = src[offset..].find('\n').map(|i| offset + i).unwrap_or(src.len());
-    doc.anchor = Some(start);
-    doc.caret = end;
 }
 
 /// Copy the current selection to the system clipboard.
@@ -305,6 +298,52 @@ fn get_clipboard_text() -> Result<String, arboard::Error> {
 mod tests {
     use super::*;
 
+    /// A `Doc` over `body`, laid out with the body occupying the whole screen
+    /// below a one-row header — the geometry `handle_mouse` hit-tests against.
+    fn doc_with(name: &str, body: &str) -> Doc {
+        let mut p = std::env::temp_dir();
+        p.push(format!("leaf_tui_test_{name}.md"));
+        std::fs::write(&p, body).unwrap();
+        let mut doc = Doc::open(p).unwrap();
+        doc.build_visual(80);
+        doc.body_origin = (0, 1);
+        doc.body_height = 10;
+        doc
+    }
+
+    fn left_down(row: u16, col: u16) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn triple_click_selects_the_paragraph_not_the_source_line() {
+        // The TUI used to select the source *line* under the click, walking out
+        // to the nearest newline. A paragraph broken over two lines is one
+        // paragraph, and that newline is markup the WYSIWYG view hides — so the
+        // selection stopped in the middle of what it looked like it had grabbed.
+        let mut doc = doc_with("triple", "one two\nthree four\n\nnext\n");
+        let mut app = App::default();
+        for _ in 0..3 {
+            handle_mouse(&mut doc, left_down(1, 1), &mut app);
+        }
+        assert_eq!(doc.selected_text(), Some("one two\nthree four"));
+    }
+
+    #[test]
+    fn double_click_still_takes_only_the_word() {
+        let mut doc = doc_with("double", "one two\nthree four\n\nnext\n");
+        let mut app = App::default();
+        for _ in 0..2 {
+            handle_mouse(&mut doc, left_down(1, 1), &mut app);
+        }
+        assert_eq!(doc.selected_text(), Some("one"));
+    }
+
     #[test]
     fn first_click_is_single() {
         let mut app = App::default();
@@ -349,17 +388,4 @@ mod tests {
         assert_eq!(click_count(&mut app, 3, 5), 1);
     }
 
-    #[test]
-    fn select_line_byte_range_covers_middle_line() {
-        // `select_line` needs a real `Doc` (constructed from a file on disk),
-        // so this exercises the same start/end byte-range math directly.
-        let source = "first\nsecond line\nthird";
-        let offset = source.find("line").unwrap();
-        let start = source[..offset].rfind('\n').map(|i| i + 1).unwrap_or(0);
-        let end = source[offset..]
-            .find('\n')
-            .map(|i| offset + i)
-            .unwrap_or(source.len());
-        assert_eq!(&source[start..end], "second line");
-    }
 }

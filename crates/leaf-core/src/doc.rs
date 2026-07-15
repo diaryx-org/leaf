@@ -1454,19 +1454,20 @@ mod tests {
     fn wysiwyg_down_crosses_a_paragraph_boundary() {
         // Regression: the blank separator row used to share the previous
         // paragraph's end offset, so Down got pinned at the boundary (while Up
-        // still crossed). Both directions must now step through it symmetrically.
+        // still crossed). Both directions must step through it symmetrically.
         //
-        // The final offset lands on col 3 (not col 0): the sticky goal column
-        // from "abc"'s end offset survives the blank line's clamp to col 0 and
-        // is restored once "def" is long enough again, per the goal-column
-        // behavior below.
+        // It's now stepped *over* rather than onto: the blank line between two
+        // paragraphs is the boundary being drawn, not a line of the document, so
+        // one press of Down crosses it. The goal column survives the crossing —
+        // col 3 at the end of "abc" is col 3 at the end of "def".
         let mut d = wysiwyg_doc("wys_down", "abc\n\ndef\n");
         d.caret = 3; // end of "abc" (row 0)
-        d.move_down(false); // onto the blank separator line
-        assert_eq!(d.caret_pos().0, 1, "Down should reach the separator row");
-        d.move_down(false); // onto "def"
+        d.move_down(false);
         assert_eq!(d.caret_pos().0, 2, "Down should reach the second paragraph");
-        assert_eq!(d.caret, 8); // end of "def", col 3 restored
+        assert_eq!(d.caret, 8); // end of "def", col 3 kept
+        d.move_up(false);
+        assert_eq!(d.caret_pos().0, 0, "Up should come back symmetrically");
+        assert_eq!(d.caret, 3);
     }
 
     #[test]
@@ -2014,6 +2015,88 @@ mod tests {
     }
 
     #[test]
+    fn the_caret_skips_the_gap_between_two_paragraphs() {
+        // The blank line between two paragraphs is the boundary itself. The
+        // caret used to be able to sit on it, and typing there landed in the
+        // previous paragraph — "A\n\nB" became "A\nx\nB", one paragraph with a
+        // soft break, so the text visibly snapped back up.
+        let mut d = wysiwyg_doc("gap_skip", "A\n\nB\n");
+        d.caret = 1; // the end of "A"
+        d.move_right(false);
+        assert_eq!(d.caret, 3, "Right stopped in the gap");
+        d.insert("x");
+        assert_eq!(d.source, "A\n\nxB\n", "typing landed outside B");
+    }
+
+    #[test]
+    fn down_from_a_paragraph_lands_on_the_next_one() {
+        let mut d = wysiwyg_doc("gap_down", "A\n\nB\n");
+        d.caret = 0;
+        d.move_down(false);
+        assert_eq!(d.caret, 3, "Down stopped in the gap");
+    }
+
+    #[test]
+    fn clicking_the_gap_lands_on_real_text() {
+        // A click can still *reach* the gap — it's drawn, so it's clickable.
+        // It has to resolve to somewhere the caret can be.
+        let mut d = wysiwyg_doc("gap_click", "A\n\nB\n");
+        d.click(1, 0, false); // the gap row
+        assert!(d.caret == 1 || d.caret == 3, "click left the caret in the gap at {}", d.caret);
+        d.insert("x");
+        // Either edge of the boundary is a fair place to land; inside it isn't.
+        assert!(
+            d.source == "Ax\n\nB\n" || d.source == "A\n\nxB\n",
+            "click in the gap typed into the boundary: {:?}",
+            d.source
+        );
+    }
+
+    #[test]
+    fn enter_opens_an_empty_paragraph_the_caret_can_type_into() {
+        // Enter inserts a paragraph break, which leaves a blank line spare on
+        // either side of a new one. That middle line is a real empty paragraph:
+        // the caret lands there, and typing makes a paragraph rather than
+        // extending a neighbour.
+        let mut d = wysiwyg_doc("gap_enter", "A\n\nB\n");
+        d.caret = 1;
+        d.newline();
+        assert_eq!(d.source, "A\n\n\n\nB\n");
+        d.build_visual(80);
+        let (row, _) = d.caret_pos();
+        assert!(d.vmap.row_is_navigable(row), "the caret landed on a gap row");
+        d.insert("x");
+        assert_eq!(d.source, "A\n\nx\n\nB\n", "the new paragraph merged into a neighbour");
+    }
+
+    #[test]
+    fn enter_at_the_end_of_the_document_opens_a_paragraph_too() {
+        let mut d = wysiwyg_doc("gap_eof", "A\n");
+        d.caret = 1;
+        d.newline();
+        d.build_visual(80);
+        let (row, _) = d.caret_pos();
+        assert!(d.vmap.row_is_navigable(row), "the caret landed on a gap row");
+        d.insert("x");
+        assert!(
+            d.source.starts_with("A\n\n") && d.source.contains('x'),
+            "typing at the end merged into A: {:?}",
+            d.source
+        );
+    }
+
+    #[test]
+    fn triple_click_selects_a_paragraph_across_its_soft_breaks() {
+        // A paragraph broken over two source lines is one paragraph. Selecting
+        // it must not stop at the newline inside it — that newline is markup the
+        // rich-text view exists to hide.
+        let src = "one two\nthree four\n\nnext\n";
+        let mut d = wysiwyg_doc("triple_para", src);
+        d.select_block_at(2);
+        assert_eq!(d.selected_text(), Some("one two\nthree four"), "stopped at the soft break");
+    }
+
+    #[test]
     fn the_wheel_can_scroll_away_from_a_caret_that_stays_put() {
         // The reader scrolls down past the caret's row. Nothing moved the
         // caret, so the view must stay where it was put — the old code revealed
@@ -2081,3 +2164,4 @@ fn detect_format(path: &Path) -> Result<Format> {
         other => return Err(anyhow!("unknown document extension: .{other}")),
     })
 }
+

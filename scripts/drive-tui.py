@@ -33,11 +33,19 @@ SEQ = {
     "right": "\x1b[C", "left": "\x1b[D", "down": "\x1b[B", "up": "\x1b[A",
     "home": "\x1b[H", "end": "\x1b[F", "enter": "\r", "tab": "\t",
     "backspace": "\x7f", "esc": "\x1b",
-    # SGR mouse, at row 5 col 10: 64 is the wheel up, 65 down, 0 a left click.
+    # SGR mouse, at row 5 col 10: 64 is the wheel up, 65 down.
     "wheelup": "\x1b[<64;10;5M", "wheeldown": "\x1b[<65;10;5M",
-    "click": "\x1b[<0;10;5M",
     "quit": "\x11",
 }
+
+
+def key_seq(name):
+    """`click@ROW,COL` clicks a screen cell (0-based, as printed below)."""
+    if name.startswith("click@"):
+        row, _, col = name[6:].partition(",")
+        return f"\x1b[<0;{int(col) + 1};{int(row) + 1}M"
+    return SEQ.get(name, name)
+
 
 keys = []
 for arg in sys.argv[2:]:
@@ -71,8 +79,9 @@ painted += drain(0.4)
 assert b"leaf" in painted, "leaf never painted a first frame"
 
 for k in keys:
-    assert k in SEQ or len(k) == 1, f"unknown key {k!r} — it would be typed in as text"
-    os.write(fd, SEQ.get(k, k).encode())
+    assert k in SEQ or k.startswith("click@") or len(k) == 1, \
+        f"unknown key {k!r} — it would be typed in as text"
+    os.write(fd, key_seq(k).encode())
     time.sleep(0.06)
     painted += drain(0.12)
 os.write(fd, SEQ["quit"].encode())
@@ -86,8 +95,10 @@ os.waitpid(pid, 0)
 
 # Replay the whole session onto a virtual screen: ratatui only repaints what
 # changed, so the final frame is only legible on top of the ones before it.
-screen = [[" "] * COLS for _ in range(ROWS)]
+blank = lambda: ([[" "] * COLS for _ in range(ROWS)], [[False] * COLS for _ in range(ROWS)])
+screen, marked = blank()
 row = col = i = 0
+rev = False  # the reversed attribute leaf paints a selection with
 text = painted.decode("utf-8", "replace")
 while i < len(text):
     ch = text[i]
@@ -100,7 +111,13 @@ while i < len(text):
             p = [int(x) if x else 1 for x in params.split(";")] + [1, 1]
             row, col = p[0] - 1, p[1] - 1
         elif cmd == "J":
-            screen = [[" "] * COLS for _ in range(ROWS)]
+            screen, marked = blank()
+        elif cmd == "m":
+            for p in params.split(";"):
+                if p in ("", "0", "27"):
+                    rev = False
+                elif p == "7":
+                    rev = True
         i = j + 1
         continue
     if ch == "\n":
@@ -110,8 +127,11 @@ while i < len(text):
     elif ch >= " ":
         if 0 <= row < ROWS and 0 <= col < COLS:
             screen[row][col] = ch
+            marked[row][col] = rev
         col += 1
     i += 1
 
-for n, line in enumerate(screen):
+for n, (line, marks) in enumerate(zip(screen, marked)):
     print(f"{n:2} |{''.join(line).rstrip()}")
+    if any(marks):
+        print(f"   |{''.join('^' if m else ' ' for m in marks).rstrip()}  <- selected")

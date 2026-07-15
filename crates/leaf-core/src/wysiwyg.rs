@@ -49,10 +49,13 @@ pub struct Glyph {
 pub struct VRow {
     pub glyphs: Vec<Glyph>,
     pub end_src: usize,
-    /// A row that is *entirely* decoration (a table's `├───┼───┤` rules): it
-    /// holds no caret stop, so vertical motion steps over it and
-    /// `pos_of_offset` never resolves onto it. Distinct from a row that merely
-    /// has no glyphs — a blank paragraph gap is empty but is a real caret stop.
+    /// A row that is drawn but holds no caret: a table's `├───┼───┤` rules, and
+    /// the blank gap a block boundary is spelled with. Vertical motion steps
+    /// over it, `pos_of_offset` never resolves onto it, and its stops (it has
+    /// none) and `end_src` stay out of the map's stop table.
+    ///
+    /// Emptiness isn't the test — an empty paragraph is a blank row too, and a
+    /// real caret stop. The test is whether the row is somewhere text can go.
     pub decoration: bool,
 }
 
@@ -144,9 +147,33 @@ impl VisualMap {
         let Some(r) = self.rows.get(row) else {
             return 0;
         };
-        match r.glyphs.get(col) {
+        let off = match r.glyphs.get(col) {
             Some(g) => g.src,
             None => r.end_src,
+        };
+        // Decoration is clickable but holds no caret, and where it points isn't
+        // always somewhere the caret can be: the blank gap between two
+        // paragraphs stands at an offset that belongs to neither of them. Land
+        // on the nearest real stop instead of handing back an offset that looks
+        // like the gap but types into the paragraph above.
+        match r.decoration {
+            true => self.nearest_stop(off),
+            false => off,
+        }
+    }
+
+    /// The caret stop nearest `off`, preferring the one before it when `off`
+    /// falls exactly between two. Returns `off` unchanged if there are no stops
+    /// at all (an empty document).
+    fn nearest_stop(&self, off: usize) -> usize {
+        let i = self.stops.partition_point(|&s| s < off);
+        let after = self.stops.get(i).copied();
+        let before = i.checked_sub(1).map(|j| self.stops[j]);
+        match (before, after) {
+            (Some(b), Some(a)) if off - b <= a - off => b,
+            (_, Some(a)) => a,
+            (Some(b), None) => b,
+            (None, None) => off,
         }
     }
 
@@ -320,11 +347,25 @@ impl Builder<'_> {
                     // blocks still breathe, as they always have.
                     offs.push(self.blank_line_offset(self.last_off, next_start));
                 }
-                for end_src in offs {
+                let last = offs.len() - 1;
+                for (k, end_src) in offs.into_iter().enumerate() {
+                    // The blank line a boundary is *drawn* with isn't a place
+                    // text can go. The first one closes the block above and the
+                    // last one opens the block below — with a single blank line,
+                    // the usual case, doing both at once. Typing on either just
+                    // continues the paragraph it abuts, since the blank line it
+                    // would need to be a paragraph of its own is the very line
+                    // being typed on. So they're a gap, like a table's border:
+                    // drawn, clickable, never a caret's home.
+                    //
+                    // The lines *between* them are the real ones. That's what
+                    // Enter opens: it inserts a paragraph break (`\n\n`), which
+                    // leaves a blank line spare on each side and the caret on the
+                    // navigable line between them.
                     self.rows.push(VRow {
                         glyphs: pc.to_vec(),
                         end_src,
-                        decoration: false,
+                        decoration: k == 0 || k == last,
                     });
                 }
             }
@@ -844,7 +885,12 @@ impl Builder<'_> {
             self.rows.push(VRow {
                 glyphs: Vec::new(),
                 end_src: last_end + k,
-                decoration: false,
+                // As between two blocks: the first blank row is the gap that
+                // closes the block above, not somewhere to type. Nothing follows
+                // to need a gap of its own, though, so every row after it is a
+                // real empty paragraph — the end of the document bounds the last
+                // one the way a following block would.
+                decoration: k == 1,
             });
         }
     }
