@@ -24,6 +24,7 @@
 //! selection rectangles, and mouse hit-testing all read that, so they work
 //! identically whether the row came from a source line or a `VisualMap` row.
 
+mod prompt;
 mod style;
 
 use std::ops::Range;
@@ -31,12 +32,13 @@ use std::ops::Range;
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, ElementInputHandler,
     Entity, EntityInputHandler, FocusHandle, Focusable, Font, GlobalElementId, Hsla,
-    InspectorElementId, IntoElement, KeyBinding, LayoutId, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render, ScrollHandle, SharedString,
-    ShapedLine, Style, TextAlign, UTF16Selection, Window, actions, anchored, deferred, div, fill,
-    point, prelude::*, px, relative, rgb, rgba, size,
+    InspectorElementId, IntoElement, KeyBinding, KeyDownEvent, LayoutId, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render, ScrollHandle,
+    SharedString, ShapedLine, Style, TextAlign, UTF16Selection, Window, actions, anchored,
+    deferred, div, fill, point, prelude::*, px, relative, rgb, rgba, size,
 };
 use leaf_core::style::Style as CoreStyle;
+use prompt::{PromptAction, TextPrompt};
 
 /// A formatting / view / history command that can be run programmatically —
 /// e.g. from a native iOS toolbar — equivalent to the corresponding keybound
@@ -118,6 +120,9 @@ actions!(
         // Document start/end (⌘↑ / ⌘↓) and page motion, with ⇧ selecting.
         DocStart, DocEnd, SelectDocStart, SelectDocEnd,
         PageUp, PageDown, SelectPageUp, SelectPageDown,
+        // Blockquote / list containers (⌘⇧9/8/7) and the link prompt (⌘K) —
+        // the toolbar's remaining format commands, mirroring the TUI's set.
+        ToggleBlockquote, ToggleBulletList, ToggleOrderedList, InsertLink,
     ]
 );
 
@@ -179,6 +184,12 @@ pub fn register_keybindings(cx: &mut App) {
         KeyBinding::new("pagedown", PageDown, ctx),
         KeyBinding::new("shift-pageup", SelectPageUp, ctx),
         KeyBinding::new("shift-pagedown", SelectPageDown, ctx),
+        // Blockquote / list / link — ⌘⇧ rather than ⌥ for the same reason as
+        // the code/mark toggles above (⌥ stays reserved for word motion).
+        KeyBinding::new("cmd-shift-9", ToggleBlockquote, ctx),
+        KeyBinding::new("cmd-shift-8", ToggleBulletList, ctx),
+        KeyBinding::new("cmd-shift-7", ToggleOrderedList, ctx),
+        KeyBinding::new("cmd-k", InsertLink, ctx),
     ]);
 }
 
@@ -223,6 +234,11 @@ pub struct Editor {
     /// quit/close guard live entirely behind that one method instead of each
     /// host tracking its own arm/disarm state.
     close_armed: bool,
+    /// The modal text prompt (⌘K's link destination today), or `None` when
+    /// none is open. `Some` both drives `render`'s prompt overlay and gates
+    /// every document key/action/mouse listener off, so the prompt owns the
+    /// keyboard until it closes — see the `prompt` module and `render`.
+    prompt: Option<TextPrompt>,
 }
 
 impl Editor {
@@ -247,6 +263,7 @@ impl Editor {
             style: EditorStyle::default(),
             bottom_inset: px(0.0),
             close_armed: false,
+            prompt: None,
         }
     }
 
@@ -315,6 +332,9 @@ impl Editor {
     /// Run a command programmatically (native toolbar, menu, etc.), equivalent
     /// to invoking the corresponding keybound action.
     pub fn run_command(&mut self, cmd: EditorCommand, window: &mut Window, cx: &mut Context<Self>) {
+        if self.prompt.is_some() {
+            return; // the modal prompt owns the keyboard until it closes
+        }
         match cmd {
             EditorCommand::ToggleBold => self.toggle_bold(&ToggleBold, window, cx),
             EditorCommand::ToggleItalic => self.toggle_italic(&ToggleItalic, window, cx),
@@ -738,6 +758,40 @@ impl Editor {
     fn heading6(&mut self, _: &Heading6, _: &mut Window, cx: &mut Context<Self>) {
         self.set_heading(6, cx);
     }
+    fn toggle_blockquote(&mut self, _: &ToggleBlockquote, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_mut() else { return };
+        doc.toggle_blockquote();
+        cx.notify();
+    }
+    fn toggle_bullet_list(&mut self, _: &ToggleBulletList, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_mut() else { return };
+        doc.toggle_list(false);
+        cx.notify();
+    }
+    fn toggle_ordered_list(
+        &mut self,
+        _: &ToggleOrderedList,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(doc) = self.doc.as_mut() else { return };
+        doc.toggle_list(true);
+        cx.notify();
+    }
+    /// ⌘K: open the link prompt. `Doc` has no public way to read an existing
+    /// link's destination at the caret — `nodes()`/`FlatNode::destination`
+    /// carry it, but `nodes()` is private to leaf-core — so the prompt always
+    /// starts blank rather than this crate reaching past that seam or
+    /// leaf-core growing a one-off accessor for it. `insert_link` itself still
+    /// re-points a link the caret sits in, so retyping the same (or a new)
+    /// destination and confirming works either way; only the convenience of
+    /// seeing the old one first is missing.
+    fn insert_link(&mut self, _: &InsertLink, window: &mut Window, cx: &mut Context<Self>) {
+        if self.doc.is_none() {
+            return;
+        }
+        self.open_prompt("Link destination", String::new(), PromptAction::Link, window, cx);
+    }
     // ── clipboard (gpui's own, not an external crate) ───────────────────────
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
         let Some(doc) = self.doc.as_ref() else { return };
@@ -761,6 +815,95 @@ impl Editor {
         doc.insert(&text);
         self.scroll_caret_into_view();
         cx.notify();
+    }
+
+    // ── modal text prompt ────────────────────────────────────────────────────
+    // A minimal, reusable single-line input (see the `prompt` module): opened
+    // over a label/initial value/[`PromptAction`], it owns the keyboard until
+    // Enter or Esc closes it. `render` gates every document key binding, mouse
+    // handler, and (via `EntityInputHandler` simply losing focus) IME hookup
+    // behind `self.prompt.is_none()`, so none of them see a keystroke meant
+    // for the prompt.
+
+    /// Open the prompt over `value` (already the right starting text — prefill
+    /// or blank is the caller's call), focused and ready to type into.
+    fn open_prompt(
+        &mut self,
+        label: impl Into<SharedString>,
+        value: String,
+        action: PromptAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let prompt = TextPrompt::new(label, value, action, cx.focus_handle());
+        prompt.focus_handle.focus(window, cx);
+        self.prompt = Some(prompt);
+        cx.notify();
+    }
+
+    /// Enter: hand the prompt's collected text to whatever it was opened for,
+    /// then return focus (and the keyboard) to the document.
+    fn confirm_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(prompt) = self.prompt.take() else { return };
+        if let Some(doc) = self.doc.as_mut() {
+            match prompt.action {
+                PromptAction::Link => doc.insert_link(&prompt.value),
+            }
+        }
+        self.focus_handle.focus(window, cx);
+        self.scroll_caret_into_view();
+        cx.notify();
+    }
+
+    /// Dismiss an open prompt without acting on it — Esc, or a host's own
+    /// Escape guard falling back to this first (see `crates/leaf`'s `LeafApp::cancel`:
+    /// its unconditional ⎋⇒Cancel binding resolves before this widget's own
+    /// keystroke handling ever runs, so a host embedding a modal-aware `Editor`
+    /// needs to ask it first). Returns whether a prompt was actually open, so
+    /// that caller knows whether it just handled the keystroke.
+    pub fn cancel_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.prompt.take().is_none() {
+            return false;
+        }
+        self.focus_handle.focus(window, cx);
+        cx.notify();
+        true
+    }
+
+    /// The prompt's raw key handling — Enter/Escape/Backspace by name, anything
+    /// else by its resolved `key_char`. Raw rather than gpui actions/keybindings
+    /// because the prompt has no fixed key context of its own to bind against;
+    /// reading straight off the keystroke is simpler than inventing one action
+    /// type per key for a single-purpose overlay. Fires only while the prompt
+    /// holds focus (this listener lives on the prompt's own element).
+    fn prompt_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.prompt.is_none() {
+            return;
+        }
+        match event.keystroke.key.as_str() {
+            "enter" => self.confirm_prompt(window, cx),
+            "escape" => {
+                self.cancel_prompt(window, cx);
+            }
+            "backspace" => {
+                self.prompt.as_mut().unwrap().backspace();
+                cx.notify();
+            }
+            _ => {
+                // `key_char` is `None` for bare navigation/function keys and
+                // for anything chorded with ⌘/⌃, so this naturally ignores
+                // everything but genuine typed text.
+                if let Some(ch) = event.keystroke.key_char.as_deref().filter(|c| !c.is_empty()) {
+                    self.prompt.as_mut().unwrap().insert(ch);
+                    cx.notify();
+                }
+            }
+        }
     }
 
     /// Scroll the document body, if needed, so the caret's row is visible after
@@ -923,6 +1066,47 @@ impl Editor {
                     .child(Self::context_menu_item("Select All", cx, |e, w, cx| {
                         e.select_all(&SelectAll, w, cx)
                     })),
+            ),
+        )
+        .with_priority(1)
+    }
+
+    /// The modal prompt itself: label, typed text split around a plain caret
+    /// bar (no glyph shaping — this is a single line of plain, unstyled text,
+    /// not the document's rich WYSIWYG surface, so it doesn't need one). Fixed
+    /// near the top of the editor rather than centered, since this only has
+    /// `cx`, not the window bounds a true centered dialog would need.
+    fn render_prompt(prompt: &TextPrompt, cx: &mut Context<Self>) -> impl IntoElement {
+        let before = prompt.value[..prompt.caret].to_string();
+        let after = prompt.value[prompt.caret..].to_string();
+        deferred(
+            anchored().position(point(px(24.0), px(24.0))).snap_to_window().child(
+                div()
+                    .id("text-prompt")
+                    .track_focus(&prompt.focus_handle)
+                    .on_key_down(cx.listener(Self::prompt_key_down))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .min_w(px(320.0))
+                    .px_3()
+                    .py_2()
+                    .bg(gpui::white())
+                    .rounded_md()
+                    .shadow_lg()
+                    .border_1()
+                    .border_color(gpui::rgb(0xd0d0d0))
+                    .text_color(gpui::rgb(0x1e1e1e))
+                    .child(prompt.label.clone())
+                    .child(
+                        div()
+                            .flex()
+                            .flex_1()
+                            .items_center()
+                            .child(before)
+                            .child(div().w(px(2.0)).h(px(16.0)).bg(gpui::blue()))
+                            .child(after),
+                    ),
             ),
         )
         .with_priority(1)
@@ -1558,62 +1742,80 @@ impl Render for Editor {
             .key_context("Editor")
             .track_focus(&self.focus_handle(cx))
             .cursor(CursorStyle::IBeam)
-            .on_action(cx.listener(Self::left))
-            .on_action(cx.listener(Self::right))
-            .on_action(cx.listener(Self::up))
-            .on_action(cx.listener(Self::down))
-            .on_action(cx.listener(Self::select_left))
-            .on_action(cx.listener(Self::select_right))
-            .on_action(cx.listener(Self::select_up))
-            .on_action(cx.listener(Self::select_down))
-            .on_action(cx.listener(Self::home))
-            .on_action(cx.listener(Self::end))
-            .on_action(cx.listener(Self::select_home))
-            .on_action(cx.listener(Self::select_end))
-            .on_action(cx.listener(Self::backspace))
-            .on_action(cx.listener(Self::delete))
-            .on_action(cx.listener(Self::newline))
-            .on_action(cx.listener(Self::indent))
-            .on_action(cx.listener(Self::toggle_bold))
-            .on_action(cx.listener(Self::toggle_italic))
-            .on_action(cx.listener(Self::toggle_view))
-            .on_action(cx.listener(Self::save))
-            .on_action(cx.listener(Self::undo))
-            .on_action(cx.listener(Self::redo))
-            .on_action(cx.listener(Self::doc_start))
-            .on_action(cx.listener(Self::doc_end))
-            .on_action(cx.listener(Self::select_doc_start))
-            .on_action(cx.listener(Self::select_doc_end))
-            .on_action(cx.listener(Self::page_up))
-            .on_action(cx.listener(Self::page_down))
-            .on_action(cx.listener(Self::select_page_up))
-            .on_action(cx.listener(Self::select_page_down))
-            .on_action(cx.listener(Self::move_word_left))
-            .on_action(cx.listener(Self::move_word_right))
-            .on_action(cx.listener(Self::select_word_left))
-            .on_action(cx.listener(Self::select_word_right))
-            .on_action(cx.listener(Self::delete_word_back))
-            .on_action(cx.listener(Self::delete_word_forward))
-            .on_action(cx.listener(Self::select_all))
-            .on_action(cx.listener(Self::toggle_code))
-            .on_action(cx.listener(Self::toggle_mark))
-            .on_action(cx.listener(Self::set_paragraph))
-            .on_action(cx.listener(Self::heading1))
-            .on_action(cx.listener(Self::heading2))
-            .on_action(cx.listener(Self::heading3))
-            .on_action(cx.listener(Self::heading4))
-            .on_action(cx.listener(Self::heading5))
-            .on_action(cx.listener(Self::heading6))
-            .on_action(cx.listener(Self::copy))
-            .on_action(cx.listener(Self::cut))
-            .on_action(cx.listener(Self::paste))
-            .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
-            .on_mouse_down(MouseButton::Right, cx.listener(Self::on_right_mouse_down))
-            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
-            .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
-            .on_mouse_move(cx.listener(Self::on_mouse_move))
+            // Every document key binding, action, and mouse listener lives
+            // behind this one gate: while the modal prompt is open (`self.prompt`
+            // is `Some`), none of them are even registered, so a resolved
+            // keystroke that would otherwise hit one of these finds no
+            // listener anywhere in the tree, falls through gpui's action
+            // dispatch untouched, and reaches the prompt's own raw
+            // `on_key_down` instead (see `prompt_key_down`). Simpler and far
+            // less error-prone than threading a `self.prompt.is_some()` guard
+            // through every handler below.
+            .when(self.prompt.is_none(), |el| {
+                el.on_action(cx.listener(Self::left))
+                    .on_action(cx.listener(Self::right))
+                    .on_action(cx.listener(Self::up))
+                    .on_action(cx.listener(Self::down))
+                    .on_action(cx.listener(Self::select_left))
+                    .on_action(cx.listener(Self::select_right))
+                    .on_action(cx.listener(Self::select_up))
+                    .on_action(cx.listener(Self::select_down))
+                    .on_action(cx.listener(Self::home))
+                    .on_action(cx.listener(Self::end))
+                    .on_action(cx.listener(Self::select_home))
+                    .on_action(cx.listener(Self::select_end))
+                    .on_action(cx.listener(Self::backspace))
+                    .on_action(cx.listener(Self::delete))
+                    .on_action(cx.listener(Self::newline))
+                    .on_action(cx.listener(Self::indent))
+                    .on_action(cx.listener(Self::toggle_bold))
+                    .on_action(cx.listener(Self::toggle_italic))
+                    .on_action(cx.listener(Self::toggle_view))
+                    .on_action(cx.listener(Self::save))
+                    .on_action(cx.listener(Self::undo))
+                    .on_action(cx.listener(Self::redo))
+                    .on_action(cx.listener(Self::doc_start))
+                    .on_action(cx.listener(Self::doc_end))
+                    .on_action(cx.listener(Self::select_doc_start))
+                    .on_action(cx.listener(Self::select_doc_end))
+                    .on_action(cx.listener(Self::page_up))
+                    .on_action(cx.listener(Self::page_down))
+                    .on_action(cx.listener(Self::select_page_up))
+                    .on_action(cx.listener(Self::select_page_down))
+                    .on_action(cx.listener(Self::move_word_left))
+                    .on_action(cx.listener(Self::move_word_right))
+                    .on_action(cx.listener(Self::select_word_left))
+                    .on_action(cx.listener(Self::select_word_right))
+                    .on_action(cx.listener(Self::delete_word_back))
+                    .on_action(cx.listener(Self::delete_word_forward))
+                    .on_action(cx.listener(Self::select_all))
+                    .on_action(cx.listener(Self::toggle_code))
+                    .on_action(cx.listener(Self::toggle_mark))
+                    .on_action(cx.listener(Self::set_paragraph))
+                    .on_action(cx.listener(Self::heading1))
+                    .on_action(cx.listener(Self::heading2))
+                    .on_action(cx.listener(Self::heading3))
+                    .on_action(cx.listener(Self::heading4))
+                    .on_action(cx.listener(Self::heading5))
+                    .on_action(cx.listener(Self::heading6))
+                    .on_action(cx.listener(Self::toggle_blockquote))
+                    .on_action(cx.listener(Self::toggle_bullet_list))
+                    .on_action(cx.listener(Self::toggle_ordered_list))
+                    .on_action(cx.listener(Self::insert_link))
+                    .on_action(cx.listener(Self::copy))
+                    .on_action(cx.listener(Self::cut))
+                    .on_action(cx.listener(Self::paste))
+                    .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
+                    .on_mouse_down(MouseButton::Right, cx.listener(Self::on_right_mouse_down))
+                    .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
+                    .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
+                    .on_mouse_move(cx.listener(Self::on_mouse_move))
+            })
             .when_some(self.context_menu, |el, pos| {
                 el.child(Self::render_context_menu(pos, &mut *cx))
+            })
+            .when_some(self.prompt.as_ref(), |el, prompt| {
+                el.child(Self::render_prompt(prompt, &mut *cx))
             })
             .child(
                 div()
