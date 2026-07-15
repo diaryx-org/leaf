@@ -17,7 +17,7 @@ use ratatui::{
 use leaf_core::{Doc, View};
 
 use crate::style::wysiwyg_lines;
-use crate::{App, ContextMenu, MENU_ITEMS};
+use crate::{App, ContextMenu, MENU_ITEMS, TextPrompt};
 
 pub fn render(f: &mut Frame, doc: &mut Doc, breadcrumb: &str, app: &mut App) {
     let chunks = Layout::vertical([
@@ -33,6 +33,9 @@ pub fn render(f: &mut Frame, doc: &mut Doc, breadcrumb: &str, app: &mut App) {
 
     if let Some(menu) = &mut app.context_menu {
         render_context_menu(f, f.area(), menu);
+    }
+    if let Some(prompt) = &app.text_prompt {
+        render_text_prompt(f, f.area(), prompt);
     }
 }
 
@@ -152,7 +155,11 @@ fn render_footer(f: &mut Frame, area: Rect, doc: &Doc, confirm_quit: bool) {
             Span::styled("⌥m ", key),
             Span::styled("mark   ", dim),
             Span::styled("⌥1-6/0 ", key),
-            Span::styled("heading/body", dim),
+            Span::styled("heading/body   ", dim),
+            Span::styled("⌥7/8/9 ", key),
+            Span::styled("numbered·bulleted·quote   ", dim),
+            Span::styled("⌥k ", key),
+            Span::styled("link", dim),
         ])
     };
     let line2 = Line::from(vec![
@@ -205,6 +212,49 @@ fn render_context_menu(f: &mut Frame, screen: Rect, menu: &mut ContextMenu) {
 
     f.render_widget(Clear, rect);
     f.render_widget(Paragraph::new(lines).style(base), rect);
+}
+
+/// The single-line input: a label row, a value row, and an Enter/Esc hint,
+/// centered over `screen` — there's no click anchor to hang it off the way
+/// the context menu has, and nothing in it is clickable, so unlike that menu
+/// this stashes no rect back for hit-testing. The caret is the real terminal
+/// cursor, positioned into the value row exactly the way the document body
+/// positions it into the source — one visible caret, one mechanism.
+fn render_text_prompt(f: &mut Frame, screen: Rect, prompt: &TextPrompt) {
+    let hint = " enter confirm  esc cancel ";
+    let content = [prompt.label.chars().count(), prompt.value.chars().count(), hint.chars().count()]
+        .into_iter()
+        .max()
+        .unwrap_or(0) as u16
+        + 2;
+    let width = content.max(24).min(screen.width.max(1));
+    let height = 3u16.min(screen.height.max(1));
+    let x = screen.x + (screen.width.saturating_sub(width)) / 2;
+    let y = screen.y + (screen.height.saturating_sub(height)) / 2;
+    let rect = Rect { x, y, width, height };
+
+    let base = Style::default().bg(Color::DarkGray).fg(Color::White);
+    let bold = base.add_modifier(Modifier::BOLD);
+    let key = base.fg(Color::Cyan);
+    let dim = base.fg(Color::Gray);
+    let lines = vec![
+        Line::from(Span::styled(format!(" {} ", prompt.label), bold)),
+        Line::from(Span::styled(format!(" {} ", prompt.value), base)),
+        Line::from(vec![
+            Span::styled(" enter ", key),
+            Span::styled("confirm  ", dim),
+            Span::styled("esc ", key),
+            Span::styled("cancel ", dim),
+        ]),
+    ];
+
+    f.render_widget(Clear, rect);
+    f.render_widget(Paragraph::new(lines).style(base), rect);
+
+    let cursor_x = rect.x + 1 + prompt.value[..prompt.cursor].chars().count() as u16;
+    if rect.height >= 2 && cursor_x < rect.x + rect.width {
+        f.set_cursor_position(Position::new(cursor_x, rect.y + 1));
+    }
 }
 
 /// Split `source` into styled lines, drawing any part of the `[start, end)`

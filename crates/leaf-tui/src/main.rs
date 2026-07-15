@@ -55,6 +55,10 @@ struct App {
     /// Present while the right-click menu is open; consumes keyboard and
     /// mouse input until an item is chosen or it's dismissed.
     context_menu: Option<ContextMenu>,
+    /// Present while a single-line input (the link-destination prompt today,
+    /// Save As later) is open; consumes the keyboard the same way
+    /// `context_menu` does, until Enter confirms or Esc cancels it.
+    text_prompt: Option<TextPrompt>,
     /// How far the source view is scrolled sideways. There's no horizontal
     /// scroll wheel to drive this independently (unlike `doc.scroll`), so it
     /// only ever chases the caret — see `ui::follow_caret_x`.
@@ -93,6 +97,27 @@ struct ContextMenu {
     /// the same way `doc.body_origin`/`body_height` are, so mouse hit-testing
     /// here and drawing there agree on one geometry.
     rect: Option<Rect>,
+}
+
+/// A minimal, reusable single-line input: a label, a starting value, and a
+/// callback to run on confirm. Modeled on `ContextMenu` — state lives on
+/// `App`, `ui::render_text_prompt` paints it — but there's nothing here to
+/// hit-test (no rows to click), so unlike the menu it stashes no rect back.
+struct TextPrompt {
+    label: &'static str,
+    value: String,
+    /// Byte offset into `value`; only ever moved by whole `char`s, so always
+    /// on a UTF-8 boundary.
+    cursor: usize,
+    on_confirm: fn(&mut Doc, &str),
+}
+
+impl TextPrompt {
+    fn new(label: &'static str, initial: impl Into<String>, on_confirm: fn(&mut Doc, &str)) -> Self {
+        let value = initial.into();
+        let cursor = value.len();
+        TextPrompt { label, value, cursor, on_confirm }
+    }
 }
 
 fn run(terminal: &mut ratatui::DefaultTerminal, doc: &mut Doc) -> Result<()> {
@@ -147,6 +172,48 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
         return Flow::Continue;
     }
 
+    // The text prompt takes the keyboard over completely — every code below
+    // this, including ^-save and ⌥-formatting, must not leak through to the
+    // document while it's up, or a save-as destination could double as a
+    // formatting command on the document underneath.
+    if let Some(prompt) = &mut app.text_prompt {
+        match key.code {
+            KeyCode::Backspace => {
+                if let Some((i, _)) = prompt.value[..prompt.cursor].char_indices().next_back() {
+                    prompt.value.drain(i..prompt.cursor);
+                    prompt.cursor = i;
+                }
+            }
+            KeyCode::Left => {
+                if let Some((i, _)) = prompt.value[..prompt.cursor].char_indices().next_back() {
+                    prompt.cursor = i;
+                }
+            }
+            KeyCode::Right => {
+                if let Some(c) = prompt.value[prompt.cursor..].chars().next() {
+                    prompt.cursor += c.len_utf8();
+                }
+            }
+            KeyCode::Char(c) => {
+                prompt.value.insert(prompt.cursor, c);
+                prompt.cursor += c.len_utf8();
+            }
+            KeyCode::Enter => {
+                // Pull the value and callback out before dropping the prompt —
+                // same "read what's needed, then clear" order the context menu
+                // uses to run its highlighted action, so `on_confirm` sees a
+                // `doc` with no prompt left standing over it.
+                let value = std::mem::take(&mut prompt.value);
+                let on_confirm = prompt.on_confirm;
+                app.text_prompt = None;
+                on_confirm(doc, &value);
+            }
+            KeyCode::Esc => app.text_prompt = None,
+            _ => {}
+        }
+        return Flow::Continue;
+    }
+
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
@@ -196,6 +263,13 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
             // Toggle, not set: ⌥1 on a line that's already H1 reverts it to a
             // paragraph, matching the feel of the bold/italic/code toggles.
             KeyCode::Char(d @ '1'..='6') => doc.toggle_heading(d.to_digit(10).unwrap()),
+            // Headings stop at 6, so the numeric family keeps going: ⌥7/⌥8 are
+            // the other pair that reads as one three-state control (numbered /
+            // bulleted / neither), ⌥9 is quote.
+            KeyCode::Char('7') => toggle_list(doc, true),
+            KeyCode::Char('8') => toggle_list(doc, false),
+            KeyCode::Char('9') => doc.toggle_blockquote(),
+            KeyCode::Char('k') => open_link_prompt(app),
             _ => {}
         }
         return Flow::Continue;
@@ -342,6 +416,44 @@ fn click_count(app: &mut App, row: u16, col: u16) -> u8 {
     };
     app.last_click = Some(ClickState { at: now, row, col, count });
     count
+}
+
+/// ⌥7/⌥8: toggle an ordered/bulleted list, then check whether that just
+/// nested rather than un-listed. `toggle_list` un-wraps a container only when
+/// the edited range covers every block it holds; a bare caret's range is just
+/// its own block, so pressing the same list's key a second time inside a
+/// multi-item list nests instead of undoing — a real, if surprising, engine
+/// rule (see `Doc::toggle_list`), not a bug this frontend can paper over.
+/// What it *can* do is stop the nest from reading as "nothing happened": the
+/// breadcrumb's count of `kind` ancestors around the caret goes up, not down
+/// to zero, exactly when that's what occurred, so that's the signal a status
+/// line hangs off.
+fn toggle_list(doc: &mut Doc, ordered: bool) {
+    let kind = if ordered { "ordered_list" } else { "bullet_list" };
+    let no_selection = doc.selection().is_none();
+    let before = list_depth(doc, kind);
+    doc.toggle_list(ordered);
+    if no_selection && doc.status.is_none() && list_depth(doc, kind) > before {
+        doc.status = Some("nested — select the whole list to un-list it".into());
+    }
+}
+
+/// How many `kind` ancestors wrap the caret, read off the same breadcrumb the
+/// header displays — the only public window onto AST ancestry a frontend has.
+fn list_depth(doc: &mut Doc, kind: &str) -> usize {
+    doc.breadcrumb().split(" › ").filter(|k| *k == kind).count()
+}
+
+/// ⌥k: open the link prompt empty. A caret already standing in a link would
+/// ideally start the prompt from that link's current destination, but nothing
+/// public on `Doc` returns one — `nodes()` and the `FlatNode::destination` it
+/// carries are internal to leaf-core's own `insert_link` — so this can't do
+/// better without an addition there. Confirming still re-points the link the
+/// caret is in, same as `Doc::insert_link` always has.
+fn open_link_prompt(app: &mut App) {
+    app.text_prompt = Some(TextPrompt::new("Link destination", "", |doc, dest| {
+        doc.insert_link(dest);
+    }));
 }
 
 /// Copy the current selection to the system clipboard.
@@ -593,4 +705,142 @@ mod tests {
         assert_eq!(click_count(&mut app, 3, 5), 1);
     }
 
+    fn alt(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT)
+    }
+
+    fn plain(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn alt_k_opens_the_link_prompt_empty() {
+        // Nothing public on `Doc` returns a link's destination (see
+        // `open_link_prompt`), so the prompt always starts blank — even a
+        // caret standing inside an existing link gets an empty box to type a
+        // fresh destination into rather than a prefilled one.
+        let mut doc = doc_with("link_open", "hello\n");
+        let mut app = App::default();
+        handle_key(&mut doc, alt('k'), &mut app);
+        let prompt = app.text_prompt.as_ref().expect("⌥k should open the prompt");
+        assert_eq!(prompt.label, "Link destination");
+        assert_eq!(prompt.value, "");
+    }
+
+    #[test]
+    fn link_prompt_enter_links_the_selection_to_the_typed_destination() {
+        let mut doc = doc_with("link_confirm", "hello\n");
+        doc.anchor = Some(0);
+        doc.caret = 5; // "hello" selected
+        let mut app = App::default();
+        handle_key(&mut doc, alt('k'), &mut app);
+        for c in "https://example.com".chars() {
+            handle_key(&mut doc, plain(c), &mut app);
+        }
+        handle_key(&mut doc, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &mut app);
+        assert!(app.text_prompt.is_none(), "Enter should close the prompt");
+        assert_eq!(doc.source, "[hello](https://example.com)\n");
+    }
+
+    #[test]
+    fn link_prompt_esc_cancels_without_touching_the_document() {
+        let mut doc = doc_with("link_cancel", "hello\n");
+        doc.anchor = Some(0);
+        doc.caret = 5;
+        let mut app = App::default();
+        handle_key(&mut doc, alt('k'), &mut app);
+        for c in "http://x".chars() {
+            handle_key(&mut doc, plain(c), &mut app);
+        }
+        handle_key(&mut doc, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut app);
+        assert!(app.text_prompt.is_none());
+        assert_eq!(doc.source, "hello\n");
+    }
+
+    #[test]
+    fn link_prompt_backspace_deletes_the_last_character_typed() {
+        let mut doc = doc_with("link_backspace", "hello\n");
+        let mut app = App::default();
+        handle_key(&mut doc, alt('k'), &mut app);
+        for c in "abc".chars() {
+            handle_key(&mut doc, plain(c), &mut app);
+        }
+        handle_key(&mut doc, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE), &mut app);
+        assert_eq!(app.text_prompt.as_ref().unwrap().value, "ab");
+    }
+
+    #[test]
+    fn text_prompt_owns_the_keyboard_document_keys_dont_leak_through() {
+        // ^A would select-all and ⌥b would toggle bold on the document if
+        // either reached it; while the prompt is open both must land as
+        // ordinary characters typed into the box (or nothing, for ^A's 'a'
+        // colliding with a letter — the point is *not* the document op) —
+        // never the document command.
+        let mut doc = doc_with("prompt_isolation", "hello\n");
+        let mut app = App::default();
+        handle_key(&mut doc, alt('k'), &mut app);
+        handle_key(&mut doc, KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL), &mut app);
+        assert_eq!(doc.selection(), None, "^A must not have reached select_all");
+        handle_key(&mut doc, alt('b'), &mut app);
+        assert_eq!(doc.source, "hello\n", "⌥b must not have reached the document");
+        assert!(app.text_prompt.is_some(), "the prompt should still be open");
+        assert_eq!(app.text_prompt.unwrap().value, "ab");
+    }
+
+    #[test]
+    fn alt_8_toggles_a_bulleted_list_at_the_caret() {
+        let mut doc = doc_with("list8", "item\n");
+        let mut app = App::default();
+        doc.caret = 0;
+        handle_key(&mut doc, alt('8'), &mut app);
+        assert_eq!(doc.source, "- item\n");
+    }
+
+    #[test]
+    fn alt_7_toggles_a_numbered_list_at_the_caret() {
+        let mut doc = doc_with("list7", "item\n");
+        let mut app = App::default();
+        doc.caret = 0;
+        handle_key(&mut doc, alt('7'), &mut app);
+        assert_eq!(doc.source, "1. item\n");
+    }
+
+    #[test]
+    fn alt_9_toggles_a_blockquote_at_the_caret() {
+        let mut doc = doc_with("quote9", "item\n");
+        let mut app = App::default();
+        doc.caret = 0;
+        handle_key(&mut doc, alt('9'), &mut app);
+        assert_eq!(doc.source, "> item\n");
+    }
+
+    #[test]
+    fn alt_8_with_a_full_selection_removes_the_list_without_a_nest_message() {
+        let mut doc = doc_with("list_unwrap", "- item\n");
+        let mut app = App::default();
+        doc.anchor = Some(0);
+        doc.caret = doc.source.len();
+        handle_key(&mut doc, alt('8'), &mut app);
+        assert_eq!(doc.source, "item\n");
+        assert_eq!(doc.status, None);
+    }
+
+    #[test]
+    fn alt_8_on_a_bare_caret_in_a_multi_item_list_nests_and_says_so() {
+        // The known engine rule from the task: an empty range only ever
+        // covers the caret's own block, and a container comes off only when
+        // the edited range covers every block it holds — so a second-item
+        // caret nests instead of un-listing. This asserts the status line
+        // says so rather than leaving the nest looking like a no-op.
+        let mut doc = doc_with("list_nest", "- a\n- b\n");
+        let mut app = App::default();
+        doc.caret = doc.source.find('b').unwrap();
+        handle_key(&mut doc, alt('8'), &mut app);
+        assert!(doc.source.contains("- - b"), "the second item should have nested: {:?}", doc.source);
+        assert!(
+            doc.status.as_deref().unwrap_or("").contains("nested"),
+            "status should explain the nest: {:?}",
+            doc.status
+        );
+    }
 }
