@@ -22,26 +22,20 @@ actions!(leaf_app, [Quit, Cancel, OpenFile]);
 struct LeafApp {
     editor: Entity<Editor>,
     focus_handle: FocusHandle,
-    /// First ⌘Q on a modified document warns; a second confirms.
-    quit_armed: bool,
 }
 
 impl LeafApp {
+    /// ⌘Q defers to the widget's own close guard (see `Editor::confirm_close`)
+    /// so the window's close button, wired the same way below, warns and
+    /// confirms identically instead of the host tracking a second arm/disarm bit.
     fn quit(&mut self, _: &Quit, _: &mut Window, cx: &mut Context<Self>) {
-        let dirty = self.editor.read(cx).is_dirty();
-        if !dirty || self.quit_armed {
+        if self.editor.update(cx, |editor, cx| editor.confirm_close(cx)) {
             cx.quit();
-        } else {
-            self.quit_armed = true; // warn once; a second ⌘Q confirms
-            cx.notify();
         }
     }
 
     fn cancel(&mut self, _: &Cancel, _: &mut Window, cx: &mut Context<Self>) {
-        if self.quit_armed {
-            self.quit_armed = false;
-            cx.notify();
-        }
+        self.editor.update(cx, |editor, cx| editor.cancel_close(cx));
     }
 
     fn open_file(&mut self, _: &OpenFile, window: &mut Window, cx: &mut Context<Self>) {
@@ -82,7 +76,7 @@ impl Render for LeafApp {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Snapshot what the header needs, then drop the editor borrow before we
         // build listeners that also touch `cx`.
-        let (has_doc, name, dirty, view, is_dirty) = {
+        let (has_doc, name, dirty, view, is_dirty, close_armed) = {
             let e = self.editor.read(cx);
             (
                 e.has_doc(),
@@ -90,9 +84,10 @@ impl Render for LeafApp {
                 if e.is_dirty() { " ●" } else { "" },
                 e.view_label(),
                 e.is_dirty(),
+                e.close_armed(),
             )
         };
-        let warn = self.quit_armed && is_dirty;
+        let warn = close_armed && is_dirty;
         let header = if warn {
             "Unsaved changes — ⌘Q again to quit without saving, ⌘S to save, Esc to cancel".to_string()
         } else if has_doc {
@@ -221,15 +216,32 @@ fn main() {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     ..Default::default()
                 },
-                move |_, cx| {
+                move |window, cx| {
                     let editor = cx.new(|cx| Editor::new(cx, doc));
+
+                    // Route the window's close button through the same guard as
+                    // ⌘Q (`LeafApp::quit`), so clicking it can't silently discard
+                    // unsaved edits. `confirm_close` lives on the widget itself, so
+                    // any other gpui host embedding `Editor` inherits this for free
+                    // instead of reimplementing a quit-armed dance of its own.
+                    let close_editor = editor.clone();
+                    window.on_window_should_close(cx, move |_window, cx| {
+                        if close_editor.update(cx, |editor, cx| editor.confirm_close(cx)) {
+                            cx.quit();
+                        }
+                        // Always veto the native close: a confirmed close quits via
+                        // `cx.quit()` above instead, since gpui doesn't otherwise
+                        // treat "last window closed" as "quit the application".
+                        false
+                    });
+
                     cx.new(|cx| {
-                        // Re-render the header when the editor changes (dirty ●).
+                        // Re-render the header when the editor changes (dirty ● /
+                        // the close guard's warning banner).
                         cx.observe(&editor, |_, _, cx| cx.notify()).detach();
                         LeafApp {
                             editor,
                             focus_handle: cx.focus_handle(),
-                            quit_armed: false,
                         }
                     })
                 },

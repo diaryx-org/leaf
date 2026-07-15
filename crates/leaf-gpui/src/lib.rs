@@ -150,6 +150,8 @@ pub fn register_keybindings(cx: &mut App) {
         KeyBinding::new("cmd-s", Save, ctx),
         KeyBinding::new("cmd-z", Undo, ctx),
         KeyBinding::new("cmd-shift-z", Redo, ctx),
+        // ⌘Y: the Windows/CUA redo convention, same alias the TUI accepts (^Y).
+        KeyBinding::new("cmd-y", Redo, ctx),
         KeyBinding::new("alt-left", MoveWordLeft, ctx),
         KeyBinding::new("alt-right", MoveWordRight, ctx),
         KeyBinding::new("shift-alt-left", SelectWordLeft, ctx),
@@ -216,6 +218,11 @@ pub struct Editor {
     /// the host to the on-screen keyboard height on mobile, so the edited line is
     /// never hidden behind the keyboard. `0` on desktop.
     bottom_inset: Pixels,
+    /// Set once [`Self::confirm_close`] has been asked against a dirty document
+    /// and answered "not yet" — a second ask then confirms. Lets a host's
+    /// quit/close guard live entirely behind that one method instead of each
+    /// host tracking its own arm/disarm state.
+    close_armed: bool,
 }
 
 impl Editor {
@@ -239,6 +246,7 @@ impl Editor {
             goal_caret: usize::MAX,
             style: EditorStyle::default(),
             bottom_inset: px(0.0),
+            close_armed: false,
         }
     }
 
@@ -337,6 +345,36 @@ impl Editor {
     /// Whether the open document has unsaved edits (for a host's title/close UI).
     pub fn is_dirty(&self) -> bool {
         self.doc.as_ref().is_some_and(|d| d.dirty)
+    }
+
+    /// Ask whether it's safe to close the widget right now — the one method a
+    /// host's quit/window-close guard should defer to, so every embedder gets
+    /// the same unsaved-changes protection instead of reimplementing it. A clean
+    /// document always answers `true`. A dirty one answers `false` the first
+    /// time (and arms the confirmation, for [`Self::close_armed`] to surface a
+    /// warning), then `true` on a second ask — mirroring the TUI's ^Q guard.
+    pub fn confirm_close(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.is_dirty() || self.close_armed {
+            return true;
+        }
+        self.close_armed = true; // warn once; a second ask confirms
+        cx.notify();
+        false
+    }
+
+    /// Clear a pending close confirmation (e.g. a host's Escape/Cancel handler).
+    pub fn cancel_close(&mut self, cx: &mut Context<Self>) {
+        if self.close_armed {
+            self.close_armed = false;
+            cx.notify();
+        }
+    }
+
+    /// Whether [`Self::confirm_close`] has been asked once already and is
+    /// waiting on a second ask to confirm — a host's banner/title UI reads this
+    /// alongside [`Self::is_dirty`] to decide whether to show a warning.
+    pub fn close_armed(&self) -> bool {
+        self.close_armed
     }
 
     /// The open document's file name, or empty when none is open.
