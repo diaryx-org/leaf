@@ -22,6 +22,7 @@
 use std::ops::Range;
 
 use twig::{Alignment, FlatNode};
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::style::{Color, Style};
 
@@ -40,6 +41,10 @@ pub struct Glyph {
     /// move by changing offset, so resting on it would pin horizontal motion.
     /// A click still maps through `src`, which is why decoration points at the
     /// text it decorates.
+    ///
+    /// Real text is a stop once per *grapheme cluster*, on the glyph that opens
+    /// it: the continuation glyphs of an emoji or an accented letter are drawn,
+    /// but standing between them is standing inside a character.
     pub stop: bool,
 }
 
@@ -147,18 +152,19 @@ impl VisualMap {
         let Some(r) = self.rows.get(row) else {
             return 0;
         };
-        let off = match r.glyphs.get(col) {
+        match r.glyphs.get(col) {
+            // A glyph that holds no caret is clickable, but where it points
+            // isn't always somewhere the caret can be: the blank gap between two
+            // paragraphs stands at an offset that belongs to neither of them,
+            // and the tail of a grapheme cluster stands inside a character.
+            // Land on the nearest real stop instead of handing back an offset
+            // that looks like the gap but types into the paragraph above.
+            Some(g) if !g.stop => self.nearest_stop(g.src),
             Some(g) => g.src,
+            // A row's end is a stop by construction — unless the row is
+            // decoration, which contributes none.
+            None if r.decoration => self.nearest_stop(r.end_src),
             None => r.end_src,
-        };
-        // Decoration is clickable but holds no caret, and where it points isn't
-        // always somewhere the caret can be: the blank gap between two
-        // paragraphs stands at an offset that belongs to neither of them. Land
-        // on the nearest real stop instead of handing back an offset that looks
-        // like the gap but types into the paragraph above.
-        match r.decoration {
-            true => self.nearest_stop(off),
-            false => off,
         }
     }
 
@@ -218,6 +224,28 @@ impl VisualMap {
     pub fn stop_after(&self, off: usize) -> Option<usize> {
         let i = self.stops.partition_point(|&s| s <= off);
         self.stops.get(i).copied()
+    }
+
+    /// The first caret stop at or past `off` — where the caret at a hidden
+    /// offset is *drawn*, and so where a rightward walk over the rendered text
+    /// starts from.
+    pub fn stop_at_or_after(&self, off: usize) -> Option<usize> {
+        let i = self.stops.partition_point(|&s| s < off);
+        self.stops.get(i).copied()
+    }
+
+    /// The last caret stop at or before `off` — where a leftward walk starts
+    /// from. Snapping the way the walk is headed, rather than always forward,
+    /// is what keeps a leftward motion from ever moving the caret right.
+    pub fn stop_at_or_before(&self, off: usize) -> Option<usize> {
+        let i = self.stops.partition_point(|&s| s <= off);
+        i.checked_sub(1).map(|i| self.stops[i])
+    }
+
+    /// Whether the caret may rest at `off` — the invariant every motion in this
+    /// view has to leave standing.
+    pub fn is_stop(&self, off: usize) -> bool {
+        self.stops.binary_search(&off).is_ok()
     }
 }
 
@@ -1000,11 +1028,21 @@ fn rule_text(widths: &[usize], left: char, mid: char, right: char) -> String {
     s
 }
 
-/// Push real document text: each glyph maps to its own source byte, so every
-/// one of them is a caret stop.
+/// Push real document text: each glyph maps to its own source byte, and the one
+/// that opens a grapheme cluster is the caret stop for the whole cluster.
+///
+/// Per cluster rather than per codepoint because a cluster is the character the
+/// user sees, and it's the unit backspace and delete already step by. A stop
+/// inside 👨‍👩‍👧 — five codepoints strung together with joiners — is a caret
+/// parked in the middle of a character: one press of Right lands there, and the
+/// next Backspace severs a joiner from what it joined, leaving a dangling ZWJ in
+/// the source. The rest of the cluster still gets its glyph (it has to be
+/// drawn); it just isn't somewhere to stand.
 fn push_text(out: &mut Vec<Glyph>, text: &str, base_src: usize, style: Style) {
-    for (i, ch) in text.char_indices() {
-        out.push(Glyph { ch, style, src: base_src + i, stop: true });
+    for (gi, cluster) in text.grapheme_indices(true) {
+        for (ci, ch) in cluster.char_indices() {
+            out.push(Glyph { ch, style, src: base_src + gi + ci, stop: ci == 0 });
+        }
     }
 }
 

@@ -356,9 +356,10 @@ impl Doc {
         if let Some((s, e)) = self.selection() {
             self.splice(s, e, "", EditKind::Other);
         } else {
-            let start = prev_word(&self.source, self.caret).max(self.caret_floor());
+            let start = self.word_left_from(self.caret).max(self.caret_floor());
             if start < self.caret {
-                self.splice(start, self.caret, "", EditKind::Delete);
+                let (s, e) = self.widen_over_emptied_inlines(start, self.caret);
+                self.splice(s, e, "", EditKind::Delete);
             }
         }
     }
@@ -369,9 +370,49 @@ impl Doc {
         if let Some((s, e)) = self.selection() {
             self.splice(s, e, "", EditKind::Other);
         } else {
-            let end = next_word(&self.source, self.caret);
+            let end = self.word_right_from(self.caret);
             if end > self.caret {
-                self.splice(self.caret, end, "", EditKind::Delete);
+                let (s, e) = self.widen_over_emptied_inlines(self.caret, end);
+                self.splice(s, e, "", EditKind::Delete);
+            }
+        }
+    }
+
+    /// Grow a WYSIWYG word-delete to swallow any inline node it empties.
+    ///
+    /// A glyph-space range covers what the user can see, which for `**bold**` is
+    /// the word and never the delimiters around it — so deleting the word on its
+    /// own leaves `a **** c`, markup wrapped around nothing. They asked for the
+    /// word, and the styling was the word's; the two go together. Only the
+    /// node's delimiters are taken, and those are hidden here anyway, so nothing
+    /// visible outside the range is lost.
+    ///
+    /// Repeated to a fixed point: emptying `***bold***` empties the emph inside
+    /// the strong, and only then is the strong empty too.
+    fn widen_over_emptied_inlines(&mut self, start: usize, end: usize) -> (usize, usize) {
+        if self.view == View::Source {
+            return (start, end);
+        }
+        let nodes = self.nodes();
+        let (mut s, mut e) = (start, end);
+        loop {
+            let mut grew = false;
+            for n in nodes.iter().filter(|n| wysiwyg::is_inline(&n.kind)) {
+                let Some(text) = inline_content_span(n, &self.source) else {
+                    continue;
+                };
+                // Some of its text survives, so the node still has a job.
+                if text.start < s || text.end > e {
+                    continue;
+                }
+                if n.span.start < s || n.span.end > e {
+                    s = s.min(n.span.start);
+                    e = e.max(n.span.end);
+                    grew = true;
+                }
+            }
+            if !grew {
+                return (s, e);
             }
         }
     }
@@ -683,7 +724,9 @@ impl Doc {
             // delimiter never holds the caret up.
             View::Wysiwyg => self.vmap.stop_before(self.caret).unwrap_or(self.caret),
         };
+        let before = self.caret;
         self.move_to(target, extend);
+        self.debug_assert_on_a_stop(before);
     }
 
     pub fn move_right(&mut self, extend: bool) {
@@ -704,23 +747,122 @@ impl Doc {
             }
             View::Wysiwyg => self.vmap.stop_after(self.caret).unwrap_or(self.caret),
         };
+        let before = self.caret;
         self.move_to(target, extend);
+        self.debug_assert_on_a_stop(before);
     }
 
-    /// Move to the start of the previous word (⌥← / Ctrl+←). Word boundaries
-    /// are computed over the source in both views, since the source is the
-    /// document of record and the caret is always a source offset.
+    /// Move to the start of the previous word (⌥← / Ctrl+←).
     pub fn move_word_left(&mut self, extend: bool) {
         self.goal_col = None;
-        let target = prev_word(&self.source, self.caret);
+        let before = self.caret;
+        let target = self.word_left_from(self.caret);
         self.move_to(target, extend);
+        self.debug_assert_on_a_stop(before);
     }
 
     /// Move to the end of the next word (⌥→ / Ctrl+→).
     pub fn move_word_right(&mut self, extend: bool) {
         self.goal_col = None;
-        let target = next_word(&self.source, self.caret);
+        let before = self.caret;
+        let target = self.word_right_from(self.caret);
         self.move_to(target, extend);
+        self.debug_assert_on_a_stop(before);
+    }
+
+    // Word boundaries are found in the space the *view* is in. The source view
+    // walks the source, because there the source is what's rendered. WYSIWYG
+    // walks the rendered text instead: `**` is invisible to the user, so it has
+    // to be invisible to word motion too — a caret parked inside one draws in
+    // the column after `bold` and types two bytes earlier, and a word-delete
+    // that stops there shreds the markup into `a ** c`.
+
+    /// The word boundary to the left of `off` in the active view's space.
+    fn word_left_from(&self, off: usize) -> usize {
+        match self.view {
+            View::Source => prev_word(&self.source, off),
+            View::Wysiwyg => self.glyph_word_left(off),
+        }
+    }
+
+    /// The word boundary to the right of `off` in the active view's space.
+    fn word_right_from(&self, off: usize) -> usize {
+        match self.view {
+            View::Source => next_word(&self.source, off),
+            View::Wysiwyg => self.glyph_word_right(off),
+        }
+    }
+
+    /// The character class of the glyph drawn at stop `off`.
+    ///
+    /// Read from the source, because a stop points at the source byte its glyph
+    /// came from — the source *is* where the rendered character is written. What
+    /// makes the walk glyph space rather than source space is that it only ever
+    /// visits stops, and the hidden bytes between them have none.
+    fn class_at(&self, off: usize) -> Class {
+        self.source
+            .get(off..)
+            .and_then(|s| s.chars().next())
+            .map_or(Class::Space, classify)
+    }
+
+    /// [`next_word`] in glyph space: skip any leading separators, then consume
+    /// the following word run, with the stop table standing in for the source's
+    /// characters.
+    fn glyph_word_right(&self, from: usize) -> usize {
+        let Some(mut off) = self.vmap.stop_at_or_after(from) else {
+            return from;
+        };
+        let mut in_word = false;
+        loop {
+            match self.class_at(off) {
+                Class::Word => in_word = true,
+                _ if in_word => return off,
+                _ => {}
+            }
+            match self.vmap.stop_after(off) {
+                Some(next) => off = next,
+                None => return off,
+            }
+        }
+    }
+
+    /// [`prev_word`] in glyph space: skip separators walking left, then consume
+    /// the preceding word run.
+    fn glyph_word_left(&self, from: usize) -> usize {
+        let Some(mut off) = self.vmap.stop_at_or_before(from) else {
+            return from;
+        };
+        let mut in_word = false;
+        while let Some(prev) = self.vmap.stop_before(off) {
+            match self.class_at(prev) {
+                Class::Word => in_word = true,
+                _ if in_word => return off,
+                _ => {}
+            }
+            off = prev;
+        }
+        off
+    }
+
+    /// After a motion that walks the visual map, the caret must be *on* the map.
+    /// A stop is the only offset where the caret draws and edits in the same
+    /// place, and it's the invariant both a caret parked inside an emoji and one
+    /// parked inside a `**` were quietly breaking.
+    ///
+    /// Only when the caret actually moved: a walk with nowhere to go leaves it
+    /// where it was, which is wherever the floor or a frontend put it rather
+    /// than somewhere this motion chose.
+    fn debug_assert_on_a_stop(&self, before: usize) {
+        debug_assert!(
+            self.view != View::Wysiwyg
+                || self.vmap.num_rows() == 0
+                || self.caret == before
+                || self.vmap.is_stop(self.caret),
+            "motion left the caret at {}, which is not a caret stop: it would draw in \
+             one place and type in another",
+            self.caret
+        );
     }
 
     pub fn move_up(&mut self, extend: bool) {
@@ -740,7 +882,9 @@ impl Doc {
                 self.vmap.offset_of_pos(r, goal.min(self.vmap.row_len(r)))
             }
         };
+        let before = self.caret;
         self.move_to(target, extend);
+        self.debug_assert_on_a_stop(before);
     }
 
     pub fn move_down(&mut self, extend: bool) {
@@ -755,7 +899,9 @@ impl Doc {
                 self.vmap.offset_of_pos(r, goal.min(self.vmap.row_len(r)))
             }
         };
+        let before = self.caret;
         self.move_to(target, extend);
+        self.debug_assert_on_a_stop(before);
     }
 
     pub fn move_home(&mut self, extend: bool) {
@@ -765,7 +911,9 @@ impl Doc {
             View::Source => row_col_to_offset(&self.source, row, 0),
             View::Wysiwyg => self.vmap.offset_of_pos(row, 0),
         };
+        let before = self.caret;
         self.move_to(target, extend);
+        self.debug_assert_on_a_stop(before);
     }
 
     pub fn move_end(&mut self, extend: bool) {
@@ -775,7 +923,9 @@ impl Doc {
             View::Source => line_end(&self.source, row),
             View::Wysiwyg => self.vmap.offset_of_pos(row, self.vmap.row_len(row)),
         };
+        let before = self.caret;
         self.move_to(target, extend);
+        self.debug_assert_on_a_stop(before);
     }
 
     /// Hop to the next (Tab) or previous (Shift+Tab) table cell, landing at the
@@ -842,7 +992,9 @@ impl Doc {
             View::Source => row_col_to_offset(&self.source, row, col),
             View::Wysiwyg => self.vmap.offset_of_pos(row, col),
         };
+        let before = self.caret;
         self.move_to(target, extend);
+        self.debug_assert_on_a_stop(before);
     }
 
     /// Settle `scroll` for a frame about to be drawn: follow the caret onto the
@@ -956,6 +1108,30 @@ fn table_of(nodes: &[FlatNode], node: &FlatNode) -> Option<usize> {
         cur = n.parent;
     }
     None
+}
+
+/// The source range of an inline node's own visible text — the part of it a
+/// WYSIWYG caret can reach, as against the delimiters that only spell it.
+/// `None` for a node with no interior to empty (a `str`, a break).
+///
+/// twig reports no `content_span` for `verbatim`/`inline_math`, whose text sits
+/// one delimiter in from the span — the same place the renderer maps it to. A
+/// longer fence (`` ``a`` ``) breaks that assumption, so the guess is checked
+/// against the source rather than trusted: a range guessed wrong here is text
+/// deleted wrong.
+fn inline_content_span(n: &FlatNode, source: &str) -> Option<std::ops::Range<usize>> {
+    if let Some(span) = n.content_span.clone() {
+        return Some(span);
+    }
+    match n.kind.as_str() {
+        "verbatim" | "inline_math" => {
+            let text = n.text.as_ref()?;
+            let start = n.span.start + 1;
+            let range = start..start + text.len();
+            (source.get(range.clone()) == Some(text.as_str())).then_some(range)
+        }
+        _ => None,
+    }
 }
 
 fn is_block_container(kind: &str) -> bool {
@@ -1119,16 +1295,26 @@ fn line_end_from(s: &str, start: usize) -> usize {
 mod tests {
     use super::*;
 
-    // Source-view document for the source-behaviour tests. `Doc::open` now
-    // defaults to WYSIWYG (leaf's default view), so pin the source view here;
-    // `wysiwyg_doc` builds the rich-text variant on top of this.
-    fn doc_with(name: &str, body: &str) -> Doc {
+    /// A document open in `view`. WYSIWYG motion reads the visual map, which the
+    /// renderer stamps each frame, so the map is built here too — a WYSIWYG doc
+    /// without one is a view no user is ever in.
+    fn doc_in(view: View, name: &str, body: &str) -> Doc {
         let mut p = std::env::temp_dir();
         p.push(format!("leaf_test_{name}.md"));
         std::fs::write(&p, body).unwrap();
         let mut d = Doc::open(p).unwrap();
-        d.view = View::Source;
+        d.view = view;
+        if view == View::Wysiwyg {
+            d.build_visual(80);
+        }
         d
+    }
+
+    // Source-view document for the source-behaviour tests. `Doc::open` now
+    // defaults to WYSIWYG (leaf's default view), so pin the source view here;
+    // `wysiwyg_doc` builds the rich-text variant on top of this.
+    fn doc_with(name: &str, body: &str) -> Doc {
+        doc_in(View::Source, name, body)
     }
 
     // ── golden-case harness ──────────────────────────────────────────────────
@@ -1444,10 +1630,7 @@ mod tests {
     }
 
     fn wysiwyg_doc(name: &str, body: &str) -> Doc {
-        let mut d = doc_with(name, body);
-        d.view = View::Wysiwyg;
-        d.build_visual(80);
-        d
+        doc_in(View::Wysiwyg, name, body)
     }
 
     #[test]
@@ -2146,6 +2329,238 @@ mod tests {
         for word in ["Ingredient", "Notes", "coarse", "folding"] {
             let at = src.find(word).unwrap();
             assert!(seen.contains(&at), "{word:?} at {at} unreachable: {seen:?}");
+        }
+    }
+
+    // ── view parity ──────────────────────────────────────────────────────────
+    // `doc_with` pins the source view, so everything above tests a view users
+    // never start in — `Doc::open` opens in WYSIWYG. These run the motion and
+    // deletion golden cases through *both*, plus the WYSIWYG cases the two
+    // can't share: where the source carries markup the rendered text is a
+    // different string, and the views agreeing would itself be the bug.
+
+    const VIEWS: [(View, &str); 2] = [(View::Source, "source"), (View::Wysiwyg, "wysiwyg")];
+
+    /// Run `action` in both views on one `|`-marked fixture and assert they
+    /// agree. Plain prose only: with no markup to hide, WYSIWYG renders the
+    /// source verbatim, so the two views are looking at the same text and any
+    /// disagreement is one of them having lost the plot.
+    fn both_views(name: &str, marked: &str, action: fn(&mut Doc)) -> String {
+        let (src, caret) = parse_caret(marked);
+        let run = |view: View, tag: &str| {
+            let mut d = doc_in(view, &format!("{name}_{tag}"), &src);
+            d.caret = caret;
+            action(&mut d);
+            render_caret(&d)
+        };
+        let source = run(VIEWS[0].0, VIEWS[0].1);
+        let wysiwyg = run(VIEWS[1].0, VIEWS[1].1);
+        assert_eq!(source, wysiwyg, "the views disagree on {marked:?}");
+        source
+    }
+
+    #[test]
+    fn word_motion_agrees_across_the_views_on_plain_prose() {
+        let g = both_views;
+        assert_eq!(g("par_wl", "hello wor|ld", |d| d.move_word_left(false)), "hello |world");
+        assert_eq!(g("par_wl2", "hello| world", |d| d.move_word_left(false)), "|hello world");
+        assert_eq!(g("par_wr", "hel|lo world", |d| d.move_word_right(false)), "hello| world");
+        assert_eq!(g("par_wr2", "hello| world", |d| d.move_word_right(false)), "hello world|");
+        assert_eq!(g("par_punct", "|foo.bar", |d| d.move_word_right(false)), "foo|.bar");
+        assert_eq!(
+            g("par_ext", "hello |world", |d| d.move_word_right(true)),
+            "hello [world|]"
+        );
+    }
+
+    #[test]
+    fn word_deletion_agrees_across_the_views_on_plain_prose() {
+        let g = both_views;
+        assert_eq!(g("par_db", "hello world|", |d| d.delete_word_back()), "hello |");
+        assert_eq!(g("par_df", "hello |world", |d| d.delete_word_forward()), "hello |");
+        assert_eq!(g("par_db2", "foo |bar baz", |d| d.delete_word_back()), "|bar baz");
+        assert_eq!(g("par_utf8", "café |ok", |d| d.delete_word_back()), "|ok");
+    }
+
+    #[test]
+    fn character_motion_and_deletion_agree_across_the_views_on_plain_prose() {
+        let g = both_views;
+        assert_eq!(g("par_r", "he|llo", |d| d.move_right(false)), "hel|lo");
+        assert_eq!(g("par_l", "he|llo", |d| d.move_left(false)), "h|ello");
+        assert_eq!(g("par_bs", "hel|lo", |d| d.backspace()), "he|lo");
+        assert_eq!(g("par_del", "hel|lo", |d| d.delete_forward()), "hel|o");
+    }
+
+    #[test]
+    fn wysiwyg_motion_steps_a_grapheme_cluster_the_way_the_source_view_does() {
+        // The reproduction: the stop table was built one stop per `char`, so
+        // Right parked the caret 4 bytes into a ZWJ sequence — a place the
+        // source view, which steps by grapheme, can't reach and backspace can't
+        // survive. The two views must land on the same offset.
+        let family = "👨‍👩‍👧"; // three emoji strung together with joiners: one cluster
+        for (view, tag) in VIEWS {
+            let mut d = doc_in(view, &format!("cluster_{tag}"), &format!("a{family}b\n"));
+            d.caret = 1;
+            d.move_right(false);
+            assert_eq!(d.caret, 1 + family.len(), "{tag} parked inside the cluster");
+
+            // ...and the edit that used to sever a joiner off the front of it.
+            d.backspace();
+            assert_eq!(d.source, "ab\n", "{tag} split the cluster");
+            assert_eq!(d.caret, 1);
+        }
+    }
+
+    #[test]
+    fn wysiwyg_motion_treats_a_combining_accent_as_one_character() {
+        for (view, tag) in VIEWS {
+            let mut d = doc_in(view, &format!("combining_{tag}"), "e\u{0301}x\n");
+            d.caret = 0;
+            d.move_right(false);
+            assert_eq!(d.caret, "e\u{0301}".len(), "{tag} stopped on the combining mark");
+        }
+    }
+
+    #[test]
+    fn no_wysiwyg_motion_can_park_the_caret_inside_a_cluster() {
+        // The general form: whatever route the caret takes through a document
+        // full of clusters, it never lands between the codepoints of one — so no
+        // motion-then-backspace sequence can leave a dangling joiner behind.
+        use unicode_segmentation::UnicodeSegmentation;
+
+        let src = "a👨‍👩‍👧b e\u{0301}mo👨‍👩‍👧ji\n\nnext 👩‍🚀 line\n";
+        let mut d = wysiwyg_doc("cluster_walk", src);
+        d.caret = 0;
+        let boundaries: Vec<usize> = src
+            .grapheme_indices(true)
+            .map(|(i, _)| i)
+            .chain(std::iter::once(src.len()))
+            .collect();
+        for off in walk_right(&mut d) {
+            assert!(
+                boundaries.contains(&off),
+                "Right stopped at {off}, inside a grapheme cluster"
+            );
+        }
+    }
+
+    #[test]
+    fn wysiwyg_word_motion_stays_out_of_hidden_delimiters() {
+        // The reproduction: ⌥→ from inside the opening `**` computed its
+        // boundary over the raw source and landed on byte 8 — inside the
+        // *closing* `**`, which `caret_pos` draws at column 6, immediately after
+        // "bold". The caret drew past the bold word and sat inside it.
+        let mut d = wysiwyg_doc("wys_word_delim", "a **bold** c\n");
+        d.caret = 2;
+        d.move_word_right(false);
+        assert!(d.vmap.is_stop(d.caret), "landed at {}, not a caret stop", d.caret);
+        assert_eq!(d.caret, 10, "should land on the space after \"bold\"");
+        // The rendered row is "a bold c": column 6 is the space just past "bold",
+        // and now the caret is really there rather than only drawn there.
+        assert_eq!(d.caret_pos(), (0, 6));
+
+        // ...and back again: ⌥← returns to the "b", not into the opening `**`.
+        d.move_word_left(false);
+        assert_eq!(d.caret, 4);
+        assert_eq!(d.caret_pos(), (0, 2));
+    }
+
+    #[test]
+    fn wysiwyg_word_delete_takes_the_markup_with_the_word() {
+        // The reproduction: ⌥⌫ from after "bold" walked the raw source, stopped
+        // inside the closing `**`, and left "a ** c\n" — delimiters with no
+        // opener. Glyph space covers the word alone, which would leave
+        // "a **** c": markup wrapped around nothing. The word and the styling
+        // that was only ever the word's go together.
+        let mut d = wysiwyg_doc("wys_word_del_back", "a **bold** c\n");
+        d.caret = 10;
+        d.delete_word_back();
+        assert_eq!(d.source, "a  c\n");
+        assert_eq!(d.caret, 2);
+
+        let mut d = wysiwyg_doc("wys_word_del_fwd", "a **bold** c\n");
+        d.caret = 4; // the "b"
+        d.delete_word_forward();
+        assert_eq!(d.source, "a  c\n");
+    }
+
+    #[test]
+    fn wysiwyg_word_delete_empties_a_nested_mark_and_a_code_span_too() {
+        let src = "a ***bold*** c\n";
+        let mut d = wysiwyg_doc("wys_word_del_nest", src);
+        d.caret = src.find(" c").unwrap();
+        d.delete_word_back();
+        assert_eq!(d.source, "a  c\n", "the emph inside the strong empties it too");
+
+        let src = "a `code` c\n";
+        let mut d = wysiwyg_doc("wys_word_del_code", src);
+        d.caret = src.find(" c").unwrap();
+        d.delete_word_back();
+        assert_eq!(d.source, "a  c\n");
+    }
+
+    #[test]
+    fn wysiwyg_word_delete_keeps_a_mark_that_still_has_text() {
+        // Only an *emptied* node goes. Take one word of two and the `**` still
+        // has a job to do.
+        let src = "a **two words** c\n";
+        let mut d = wysiwyg_doc("wys_word_del_partial", src);
+        d.caret = src.find(" words").unwrap();
+        d.delete_word_back();
+        assert_eq!(d.source, "a ** words** c\n");
+    }
+
+    #[test]
+    fn source_view_word_motion_still_walks_the_markup() {
+        // The other half of the decision: in the source view the `**` are
+        // characters like any other — they're on the screen, so word motion has
+        // to stop at them and a word-delete has to leave them behind. Only
+        // WYSIWYG hides them, so only WYSIWYG steps over them.
+        let g = |n, m, f: fn(&mut Doc)| golden(n, m, f);
+        assert_eq!(
+            g("src_word_motion", "a |**bold** c\n", |d| d.move_word_right(false)),
+            "a **bold|** c\n"
+        );
+        // The same caret as the WYSIWYG reproduction, and the opposite outcome:
+        // here "a ** c\n" is right, because `bold**` is what's to the left of it.
+        assert_eq!(
+            g("src_word_del", "a **bold**| c\n", |d| d.delete_word_back()),
+            "a **| c\n"
+        );
+    }
+
+    #[test]
+    fn every_wysiwyg_motion_lands_on_a_caret_stop() {
+        // The single invariant both bugs violated: the caret draws and edits at
+        // the same place only when it's on a stop. `debug_assert_on_a_stop`
+        // makes the same claim in-place; this pins it from the outside, over a
+        // document with every kind of thing the map has to be careful about.
+        let src = "# Title\n\na **bold** e\u{0301}mo👨‍👩‍👧ji `x` c\n\n\
+                   - item one\n\n| A | B |\n|---|---|\n| x | y |\n";
+        let mut d = wysiwyg_doc("stop_invariant", src);
+        let motions: [(&str, fn(&mut Doc)); 8] = [
+            ("right", |d| d.move_right(false)),
+            ("left", |d| d.move_left(false)),
+            ("word_right", |d| d.move_word_right(false)),
+            ("word_left", |d| d.move_word_left(false)),
+            ("down", |d| d.move_down(false)),
+            ("up", |d| d.move_up(false)),
+            ("home", |d| d.move_home(false)),
+            ("end", |d| d.move_end(false)),
+        ];
+        let stops: Vec<usize> = (0..=src.len()).filter(|&o| d.vmap.is_stop(o)).collect();
+        assert!(stops.len() > 20, "fixture should have plenty of stops");
+        for start in stops {
+            for (name, motion) in &motions {
+                d.caret = start;
+                d.anchor = None;
+                motion(&mut d);
+                assert!(
+                    d.vmap.is_stop(d.caret),
+                    "{name} from {start} landed at {} — not a caret stop",
+                    d.caret
+                );
+            }
         }
     }
 }
