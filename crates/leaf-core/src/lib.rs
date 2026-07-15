@@ -17,7 +17,7 @@ pub mod doc;
 pub mod style;
 pub mod wysiwyg;
 
-pub use doc::{Doc, View};
+pub use doc::{DiskState, Doc, InlineMarks, View};
 pub use style::{Color, Style};
 pub use wysiwyg::{Glyph, VRow, VisualMap};
 
