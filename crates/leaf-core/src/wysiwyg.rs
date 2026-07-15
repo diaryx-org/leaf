@@ -6,12 +6,20 @@
 //! That back-reference (`Glyph::src`) is what lets a caret still work: the caret
 //! stays a source offset (shared with the source view), but the [`VisualMap`]
 //! converts between an offset and a screen `(row, col)`, so cursor drawing,
-//! mouse clicks, and — crucially — arrow motion all operate in *visible* space
-//! and step right over the hidden delimiters.
+//! mouse clicks, and vertical motion all operate in *visible* space.
+//!
+//! Left and Right instead walk the map's caret *stops* in document order. On
+//! ordinary prose that's the same journey — the stops are laid out left to right
+//! — and it steps over the hidden delimiters either way. They part company only
+//! in a table, where the text is arranged in two dimensions and a cell wrapped
+//! within its column continues *below* rather than to the right. Following the
+//! document is what a caret means there.
 //!
 //! Text is walked from the AST (`str` nodes carry exact spans, and their text is
 //! the verbatim source slice), so a Markdown and a Djot file that parse alike
 //! render — and map — identically.
+
+use std::ops::Range;
 
 use twig::{Alignment, FlatNode};
 
@@ -58,6 +66,17 @@ pub struct VisualMap {
     /// editable in the source view, but hidden and unreachable here, so the
     /// caret and selection can't wander into it (and copy won't grab it).
     pub content_start: usize,
+    /// Every offset the caret may rest at, ascending and deduplicated: each
+    /// row's stop glyphs plus the row's own end (the "after the last character"
+    /// spot every line needs). Decoration contributes nothing.
+    ///
+    /// Left/Right read this instead of walking the grid, because the grid isn't
+    /// laid out in offset order: a table with wrapped cells puts column 1's
+    /// second line *below* column 2's first, so "the next stop rightward" and
+    /// "the next stop in the document" part ways. Following the document is what
+    /// a caret means — and on every row that *is* in order the two agree anyway,
+    /// so nothing else has to change.
+    stops: Vec<usize>,
 }
 
 impl VisualMap {
@@ -69,26 +88,52 @@ impl VisualMap {
         self.rows.get(row).map(|r| r.glyphs.len()).unwrap_or(0)
     }
 
-    /// The screen `(row, col)` for a source offset — where to draw the caret.
-    /// Snaps a hidden offset (inside a delimiter) to the next visible glyph, and
-    /// never resolves onto decoration (a table border, a cell's padding), which
-    /// is drawn but holds no caret.
+    /// The screen `(row, col)` for a source offset — where to draw the caret:
+    /// the *nearest* stop at or past `off`. Snaps a hidden offset (inside a
+    /// delimiter) to the next visible glyph, and never resolves onto decoration
+    /// (a table border, a cell's padding), which is drawn but holds no caret.
+    ///
+    /// "Nearest" rather than "the first one found" because a table's wrapped
+    /// cells put rows slightly out of offset order: scanning top to bottom, the
+    /// second line of column 1 comes *after* the first line of column 2 but
+    /// holds smaller offsets. Where rows are in order the two rules agree.
     pub fn pos_of_offset(&self, off: usize) -> (usize, usize) {
+        let mut best: Option<(usize, usize, usize)> = None; // (src, row, col)
         for (r, row) in self.rows.iter().enumerate() {
             if row.decoration {
                 continue;
             }
-            for (c, g) in row.glyphs.iter().enumerate() {
-                if g.stop && g.src >= off {
-                    return (r, c);
+            // Offsets ascend *within* a row, so its first stop at or past `off`
+            // is the best this row has to offer.
+            let cand = row
+                .glyphs
+                .iter()
+                .enumerate()
+                .find(|(_, g)| g.stop && g.src >= off)
+                .map(|(c, g)| (g.src, r, c))
+                .or_else(|| (row.end_src >= off).then_some((row.end_src, r, row.glyphs.len())));
+            if let Some(c) = cand {
+                if best.is_none_or(|b| c.0 < b.0) {
+                    best = Some(c);
                 }
             }
-            if row.end_src >= off {
-                return (r, row.glyphs.len());
+            // A row's *first* stop never decreases from one row to the next —
+            // true even across a table's wrapped cells, since a cell's lines run
+            // downward. So once a row opens past the best found so far, no later
+            // row can beat it and the scan stays proportional to `off`.
+            if let (Some(b), Some(first)) = (best, row.glyphs.iter().find(|g| g.stop)) {
+                if first.src > b.0 {
+                    break;
+                }
             }
         }
-        let r = self.last_stop_row();
-        (r, self.row_len(r))
+        match best {
+            Some((_, r, c)) => (r, c),
+            None => {
+                let r = self.last_stop_row();
+                (r, self.row_len(r))
+            }
+        }
     }
 
     /// The source offset for a screen `(row, col)` — where a click or a
@@ -130,51 +175,45 @@ impl VisualMap {
         ((row + 1)..self.rows.len()).find(|&r| self.row_is_navigable(r))
     }
 
-    /// The offset of the nearest caret stop strictly before `(row, col)` — one
-    /// press of Left. Steps over a run of decoration in one go rather than
-    /// stalling on padding that all shares a single offset, and falls to the end
-    /// of the row above when there's nothing left on this one.
-    pub fn stop_before(&self, row: usize, col: usize) -> Option<usize> {
-        if let Some(vr) = self.rows.get(row) {
-            if !vr.decoration {
-                let upto = col.min(vr.glyphs.len());
-                if let Some(g) = vr.glyphs[..upto].iter().rev().find(|g| g.stop) {
-                    return Some(g.src);
-                }
-            }
-        }
-        let above = self.navigable_above(row)?;
-        Some(self.rows[above].end_src)
+    /// The caret stop just before `off` — one press of Left. `None` at the
+    /// first stop in the document.
+    ///
+    /// Runs of decoration (a table border, a cell's alignment padding) are
+    /// stepped over in a single press: they hold no stop, so they aren't in the
+    /// table to land on.
+    pub fn stop_before(&self, off: usize) -> Option<usize> {
+        let i = self.stops.partition_point(|&s| s < off);
+        i.checked_sub(1).map(|i| self.stops[i])
     }
 
-    /// The offset of the nearest caret stop strictly after `(row, col)` — one
-    /// press of Right, falling to the start of the row below once this row is
-    /// spent.
-    pub fn stop_after(&self, row: usize, col: usize) -> Option<usize> {
-        if let Some(vr) = self.rows.get(row) {
-            // `col == glyphs.len()` means the caret is already at the row's end
-            // stop, so the only way on is the next row.
-            if !vr.decoration && col < vr.glyphs.len() {
-                if let Some(g) = vr.glyphs[col + 1..].iter().find(|g| g.stop) {
-                    return Some(g.src);
-                }
-                // Past the last glyph the row's end is itself a stop — but only
-                // where it's a *distinct* offset. A table row ends at its last
-                // cell's end, an offset that cell's own end stop already holds,
-                // so there's nothing past the closing `│` to land on.
-                let last = vr.glyphs.iter().rev().find(|g| g.stop).map(|g| g.src);
-                if vr.end_src > last.unwrap_or(0) {
-                    return Some(vr.end_src);
-                }
-            }
-        }
-        let below = self.navigable_below(row)?;
-        let vr = &self.rows[below];
-        Some(match vr.glyphs.iter().find(|g| g.stop) {
-            Some(g) => g.src,
-            None => vr.end_src,
-        })
+    /// The caret stop just after `off` — one press of Right. `None` at the last
+    /// stop in the document.
+    pub fn stop_after(&self, off: usize) -> Option<usize> {
+        let i = self.stops.partition_point(|&s| s <= off);
+        self.stops.get(i).copied()
     }
+}
+
+/// Collect the caret stops of a laid-out grid: every stop glyph's offset plus
+/// every row's end, ascending and deduplicated. Duplicates are the norm rather
+/// than the exception — a wrapped line's end is the same offset as the next
+/// line's first glyph — and collapsing them is what makes one press of Left or
+/// Right cross exactly one stop.
+fn collect_stops(rows: &[VRow]) -> Vec<usize> {
+    let mut stops: Vec<usize> = rows
+        .iter()
+        .filter(|r| !r.decoration)
+        .flat_map(|r| {
+            r.glyphs
+                .iter()
+                .filter(|g| g.stop)
+                .map(|g| g.src)
+                .chain(std::iter::once(r.end_src))
+        })
+        .collect();
+    stops.sort_unstable();
+    stops.dedup();
+    stops
 }
 
 /// A horizontal rule's dash count when the map isn't wrapping to a column grid
@@ -201,9 +240,11 @@ pub fn build(nodes: &[FlatNode], source: &str, wrap: Option<usize>) -> VisualMap
     b.blocks(doc, &[], &[]);
     b.emit_trailing_blank_lines();
     let content_start = first_content_offset(nodes, doc);
+    let stops = collect_stops(&b.rows);
     VisualMap {
         rows: b.rows,
         content_start,
+        stops,
     }
 }
 
@@ -326,16 +367,22 @@ impl Builder<'_> {
             "code_block" => {
                 let style = Style::default().fg(Color::Green);
                 let text = node.text.clone().unwrap_or_default();
-                let base = node.span.start; // coarse: code editing is a source-view job
-                for raw in text.trim_end_matches('\n').split('\n') {
-                    let gutter = synth("▏ ", Color::DarkGray, base);
+                let lines: Vec<&str> = text.trim_end_matches('\n').split('\n').collect();
+                // Each line at its own source offset, so the caret can walk the
+                // code a character at a time like any other text. Where the
+                // lines can't be lined up with the source there's no honest
+                // offset to give, so the block maps coarsely to its start (and
+                // stays a source-view job, as all of it once was).
+                let offs = self.code_line_offsets(&node.span, &lines);
+                for (i, raw) in lines.iter().enumerate() {
+                    let at = offs.as_ref().map_or(node.span.start, |o| o[i]);
+                    let gutter = synth("▏ ", Color::DarkGray, at);
                     let mut glyphs: Vec<Glyph> = concat(pf, &gutter);
-                    for ch in raw.chars() {
-                        // Code text is a caret stop, though the whole block maps
-                        // coarsely to `base` (code editing is a source-view job).
-                        glyphs.push(Glyph { ch, style, src: base, stop: true });
-                    }
-                    self.push_row(glyphs, base);
+                    push_text(&mut glyphs, raw, at, style);
+                    // Explicitly past the line's *text*: a blank line has only
+                    // the gutter, whose offset would put the row's end inside
+                    // the next line.
+                    self.push_row_at(glyphs, at + raw.len());
                 }
             }
             "thematic_break" => {
@@ -409,6 +456,13 @@ impl Builder<'_> {
                 widths[c] = widths[c].max(cell.glyphs.len());
             }
         }
+        // Every column at its widest cell is only the *wish*; a grid wider than
+        // the surface has its far side hanging off the edge where no amount of
+        // caret motion can reach it. Cut it down to what's actually there, and
+        // let the cells wrap into the space they're given.
+        if let Some(w) = self.wrap {
+            fit_widths(&mut widths, w.saturating_sub(prefix_width(pc)));
+        }
 
         let anchor = grid[0].first().map(|c| c.start).unwrap_or(node_end);
         self.push_rule(&rule_text(&widths, '┌', '┬', '┐'), anchor, pf);
@@ -462,48 +516,81 @@ impl Builder<'_> {
         });
     }
 
-    /// One `│ a │ b │` content row: real cell text between decoration.
+    /// One `│ a │ b │` row of the grid: real cell text between decoration.
+    ///
+    /// A row of cells is not a row of the screen — a cell wrapped to its column
+    /// spans several, each one `│`-divided across the full width so the grid
+    /// stays square. Cells in the same row are laid out independently and run
+    /// out at their own heights; a column that has run dry pads out as
+    /// decoration while its neighbours keep going.
     fn push_table_row(&mut self, cells: &[TableCell], widths: &[usize], prefix: &[Glyph]) {
         let fallback = cells.last().map(|c| c.end).unwrap_or(0);
-        let mut glyphs = prefix.to_vec();
-        for (ci, &w) in widths.iter().enumerate() {
-            // The divider before this column belongs to the cell it introduces,
-            // so clicking it lands at that cell's start.
-            let at = cells.get(ci).map(|c| c.start).unwrap_or(fallback);
-            glyphs.extend(synth("│", Color::DarkGray, at));
-            match cells.get(ci) {
-                Some(cell) => {
-                    let pad = w.saturating_sub(cell.glyphs.len());
-                    let (lead, trail) = match cell.align {
-                        Alignment::Right => (pad, 0),
-                        Alignment::Center => (pad / 2, pad - pad / 2),
-                        Alignment::Left | Alignment::Default => (0, pad),
-                    };
-                    glyphs.extend(synth(&" ".repeat(lead + 1), Color::Default, cell.start));
-                    glyphs.extend(cell.glyphs.iter().cloned());
-                    // Every cell renders at least one space after its text (the
-                    // gutter before `│`), so there is always somewhere to put
-                    // the "after the last character" caret a cell needs just as
-                    // a line does. It's the one padding glyph that is a stop.
-                    glyphs.push(Glyph {
-                        ch: ' ',
-                        style: Style::default(),
-                        src: cell.end,
-                        stop: true,
-                    });
-                    glyphs.extend(synth(&" ".repeat(trail), Color::Default, cell.end));
+        let laid: Vec<Vec<Vec<Glyph>>> = cells
+            .iter()
+            .enumerate()
+            .map(|(ci, c)| wrap_glyphs(&c.glyphs, widths.get(ci).copied().unwrap_or(0)))
+            .collect();
+        let height = laid.iter().map(|l| l.len()).max().unwrap_or(1).max(1);
+
+        for j in 0..height {
+            let mut glyphs = prefix.to_vec();
+            for (ci, &w) in widths.iter().enumerate() {
+                let cell = cells.get(ci);
+                let line = laid.get(ci).and_then(|l| l.get(j));
+                // The divider before this column belongs to the cell it
+                // introduces, so clicking it lands in that cell — on this line
+                // of it, which is what's next to the divider being clicked.
+                let at = line
+                    .and_then(|l| l.first().map(|g| g.src))
+                    .or_else(|| cell.map(|c| c.start))
+                    .unwrap_or(fallback);
+                glyphs.extend(synth("│", Color::DarkGray, at));
+                match (cell, line) {
+                    (Some(cell), Some(line)) => {
+                        let pad = w.saturating_sub(line.len());
+                        let (lead, trail) = match cell.align {
+                            Alignment::Right => (pad, 0),
+                            Alignment::Center => (pad / 2, pad - pad / 2),
+                            Alignment::Left | Alignment::Default => (0, pad),
+                        };
+                        // Every line renders at least one space after its text
+                        // (the gutter before `│`), so there is always somewhere
+                        // to put the "after the last character" caret a line
+                        // needs. It's the one padding glyph that is a stop: on
+                        // the cell's last line that's the cell's end, and on any
+                        // other it's the space the wrap consumed.
+                        let last = laid[ci].len() == j + 1;
+                        let end = match last {
+                            true => cell.end,
+                            false => line
+                                .last()
+                                .map(|g| g.src + g.ch.len_utf8())
+                                .unwrap_or(cell.end),
+                        };
+                        glyphs.extend(synth(&" ".repeat(lead + 1), Color::Default, at));
+                        glyphs.extend(line.iter().cloned());
+                        glyphs.push(Glyph { ch: ' ', style: Style::default(), src: end, stop: true });
+                        glyphs.extend(synth(&" ".repeat(trail), Color::Default, end));
+                    }
+                    // A ragged row, or a column whose cell ended higher up: pad
+                    // it out so the grid stays square.
+                    _ => {
+                        let at = cell.map(|c| c.end).unwrap_or(fallback);
+                        glyphs.extend(synth(&" ".repeat(w + 2), Color::Default, at));
+                    }
                 }
-                // A ragged row: pad the missing cell out so the grid stays square.
-                None => glyphs.extend(synth(&" ".repeat(w + 2), Color::Default, fallback)),
             }
+            glyphs.extend(synth("│", Color::DarkGray, fallback));
+            // The row ends where its last stop does. A table row has no gap
+            // between its final cell and the border, so inventing an end past
+            // that would be a stop with nothing under it.
+            let end_src = glyphs
+                .iter()
+                .rev()
+                .find(|g| g.stop)
+                .map_or(fallback, |g| g.src);
+            self.rows.push(VRow { glyphs, end_src, decoration: false });
         }
-        glyphs.extend(synth("│", Color::DarkGray, fallback));
-        let end_src = fallback;
-        self.rows.push(VRow {
-            glyphs,
-            end_src,
-            decoration: false,
-        });
     }
 
     fn inline_children(&self, id: usize, base: Style) -> Vec<Glyph> {
@@ -519,8 +606,17 @@ impl Builder<'_> {
         match node.kind.as_str() {
             "str" | "smart_punctuation" => push_text(out, node.text.as_deref().unwrap_or(""), node.span.start, base),
             "soft_break" | "hard_break" | "non_breaking_space" => {
-                let src = if node.span.start != 0 { node.span.start } else { out.last().map(|g| g.src).unwrap_or(0) };
-                // A break renders as a real, caret-navigable space.
+                // A break renders as a real, caret-navigable space — but twig
+                // gives it no span of its own (`0..0`), so the offset comes from
+                // the text in front of it: one *past* the last glyph, which is
+                // the newline the break stands for. Past, not on: sharing the
+                // previous glyph's offset would put two stops on one byte, and a
+                // caret that can't change offset can't move.
+                let src = if node.span.start != 0 {
+                    node.span.start
+                } else {
+                    out.last().map(|g| g.src + g.ch.len_utf8()).unwrap_or(0)
+                };
                 out.push(Glyph { ch: ' ', style: base, src, stop: true });
             }
             "emph" => self.recurse(id, base.italic(), out),
@@ -618,11 +714,58 @@ impl Builder<'_> {
         self.push_row(row, block_start);
     }
 
+    /// The source offset of each line of a code block's `text`.
+    ///
+    /// twig gives a code block no `content_span`, and its `text` isn't a
+    /// verbatim slice of the source: a fenced block has had its fences removed,
+    /// an indented one its four-space indent stripped. So the lines are re-found
+    /// — the run of source lines they align with is located, and each line is
+    /// anchored at the *end* of its source line, which places it past whatever
+    /// indent was stripped without having to know how much there was.
+    ///
+    /// The search runs backwards because the ambiguity is always at the front: a
+    /// block fenced ```` ```rust ```` whose first line of code is `rust` matches
+    /// its own opening fence. Nothing follows the code but the closing fence, so
+    /// coming from the end finds the content first.
+    ///
+    /// `None` when the text can't be lined up at all.
+    fn code_line_offsets(&self, span: &Range<usize>, lines: &[&str]) -> Option<Vec<usize>> {
+        let mut src_lines: Vec<(usize, &str)> = Vec::new();
+        let mut at = span.start;
+        for l in self.source.get(span.start..span.end)?.split('\n') {
+            src_lines.push((at, l));
+            at += l.len() + 1;
+        }
+        let last = src_lines.len().checked_sub(lines.len())?;
+        let base = (0..=last).rev().find(|&b| {
+            lines.iter().enumerate().all(|(i, l)| {
+                let (_, sl) = src_lines[b + i];
+                sl.len() >= l.len() && sl.ends_with(l)
+            })
+        })?;
+        Some(
+            lines
+                .iter()
+                .enumerate()
+                .map(|(i, l)| {
+                    let (start, sl) = src_lines[base + i];
+                    start + sl.len() - l.len()
+                })
+                .collect(),
+        )
+    }
+
     fn push_row(&mut self, glyphs: Vec<Glyph>, fallback: usize) {
         let end_src = glyphs
             .last()
             .map(|g| g.src + g.ch.len_utf8())
             .unwrap_or(fallback);
+        self.push_row_at(glyphs, end_src);
+    }
+
+    /// Push a row with an explicit end stop, for content that knows its own
+    /// extent better than its last glyph does.
+    fn push_row_at(&mut self, glyphs: Vec<Glyph>, end_src: usize) {
         self.last_off = end_src;
         self.rows.push(VRow { glyphs, end_src, decoration: false });
     }
@@ -717,6 +860,81 @@ struct TableCell {
     start: usize,
     end: usize,
     align: Alignment,
+}
+
+/// The narrowest a column may be squeezed. Below a few characters a column
+/// stops carrying text and just shreds it one letter per line, which is worse
+/// than letting the grid run wide.
+const MIN_COL_WIDTH: usize = 3;
+
+/// Shrink `widths` until the grid fits `avail` screen columns, taking from the
+/// widest column each time so the loss is shared out rather than falling on
+/// whichever column happens to be last. No column goes below
+/// [`MIN_COL_WIDTH`]; a table with more columns than the surface has room for
+/// still overflows, which is the honest outcome — there's nothing left to give.
+fn fit_widths(widths: &mut [usize], avail: usize) {
+    // Chrome: each column is its content plus a gutter either side, and every
+    // column is closed by a `│` — with one more opening the row.
+    let budget = avail.saturating_sub(3 * widths.len() + 1);
+    while widths.iter().sum::<usize>() > budget {
+        let Some(w) = widths.iter_mut().filter(|w| **w > MIN_COL_WIDTH).max() else {
+            return;
+        };
+        *w -= 1;
+    }
+}
+
+/// Word-wrap `glyphs` into lines of at most `width` columns, hard-breaking any
+/// single word too long to fit.
+///
+/// Unlike a paragraph — where an overlong word just trails off the end of the
+/// line — a table column is a hard boundary: a glyph past it lands on top of
+/// the border, or on the next cell. So the width here is a promise, and a word
+/// that won't keep it is broken.
+///
+/// The space at a break is dropped rather than hung past the edge. Its offset
+/// isn't lost: the caller gives every line an end stop just past its last
+/// glyph, which is exactly where that space was.
+fn wrap_glyphs(glyphs: &[Glyph], width: usize) -> Vec<Vec<Glyph>> {
+    let width = width.max(1);
+    // Words are maximal non-space runs, each carrying the space that followed it
+    // — which survives only if the next word joins it on this line.
+    let mut words: Vec<(Vec<Glyph>, Option<Glyph>)> = Vec::new();
+    let mut word: Vec<Glyph> = Vec::new();
+    for g in glyphs {
+        if g.ch == ' ' {
+            words.push((std::mem::take(&mut word), Some(g.clone())));
+        } else {
+            word.push(g.clone());
+        }
+    }
+    if !word.is_empty() {
+        words.push((word, None));
+    }
+
+    let mut lines: Vec<Vec<Glyph>> = Vec::new();
+    let mut line: Vec<Glyph> = Vec::new();
+    let mut gap: Option<Glyph> = None;
+    for (word, space) in words {
+        for chunk in word.chunks(width) {
+            let sep = gap.is_some() as usize;
+            if !line.is_empty() && line.len() + sep + chunk.len() > width {
+                lines.push(std::mem::take(&mut line));
+                gap = None; // the break swallows the space
+            }
+            if let Some(sp) = gap.take() {
+                line.push(sp);
+            }
+            line.extend_from_slice(chunk);
+        }
+        gap = space;
+    }
+    // An empty cell is still one (empty) line — it has an end the caret can
+    // sit at, which is how you type into it.
+    if !line.is_empty() || lines.is_empty() {
+        lines.push(line);
+    }
+    lines
 }
 
 /// A table rule spanning `widths`, e.g. `┌──────┬─────┐`. Each column is its
@@ -964,6 +1182,102 @@ mod tests {
     }
 
     #[test]
+    fn a_wide_table_is_cut_to_fit_and_its_cells_wrap() {
+        // Columns wider than the surface used to run off the right edge, where
+        // nothing could reach them. They're cut to the budget instead, and the
+        // text wraps down inside the column — the header rule stays put, and
+        // an alignment holds on every line of a wrapped cell, not just the first.
+        let src = "| Ingredient | Notes |\n|---|---:|\n\
+                   | flour milled coarse | sift it twice |\n| salt | a pinch |\n";
+        let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
+        let m = build(&ed.nodes().unwrap(), src, Some(30));
+        let text = rendered(&m);
+        assert_eq!(
+            text,
+            "┌──────────────┬─────────────┐\n\
+             │ Ingredient   │       Notes │\n\
+             ├──────────────┼─────────────┤\n\
+             │ flour milled │     sift it │\n\
+             │ coarse       │       twice │\n\
+             │ salt         │     a pinch │\n\
+             └──────────────┴─────────────┘",
+            "got:\n{text}"
+        );
+        for (r, row) in m.rows.iter().enumerate() {
+            assert!(row.glyphs.len() <= 30, "row {r} overflows: {}", row.glyphs.len());
+        }
+    }
+
+    #[test]
+    fn a_column_too_narrow_for_a_word_breaks_it_rather_than_spilling() {
+        // A paragraph lets an overlong word trail off the end of the line; a
+        // table column can't — a glyph past the border lands on the border.
+        let src = "| A | B |\n|---|---|\n| antidisestablishmentarianism | x |\n";
+        let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
+        let m = build(&ed.nodes().unwrap(), src, Some(20));
+        for (r, row) in m.rows.iter().enumerate() {
+            assert!(row.glyphs.len() <= 20, "row {r} overflows: {}", row.glyphs.len());
+        }
+        // Broken across lines, but whole: every letter is still drawn, at its
+        // own source byte, where the caret can reach it.
+        let word = "antidisestablishmentarianism";
+        let at = src.find(word).unwrap();
+        for (i, ch) in word.char_indices() {
+            assert!(
+                m.rows
+                    .iter()
+                    .flat_map(|r| r.glyphs.iter())
+                    .any(|g| g.stop && g.src == at + i && g.ch == ch),
+                "{ch:?} at {} was lost to the break", at + i
+            );
+        }
+    }
+
+    #[test]
+    fn a_code_block_maps_each_line_to_its_own_source_text() {
+        // Every glyph used to point at the block's start, which made the whole
+        // block one offset — visible, but impossible to put a caret inside.
+        let src = "```rust\nlet x = 1;\nfn f() {}\n```\n";
+        let m = map(src);
+        for row in &m.rows {
+            for g in row.glyphs.iter().filter(|g| g.stop) {
+                assert_eq!(
+                    src[g.src..].chars().next(),
+                    Some(g.ch),
+                    "glyph {:?} at {} isn't the source byte it claims",
+                    g.ch,
+                    g.src
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_indented_code_block_maps_past_its_stripped_indent() {
+        // twig strips the four-space indent, so `text` isn't a source slice and
+        // the lines have to be re-found. Offsets land on the code, not the indent.
+        let src = "    indented\n    code\n";
+        let m = map(src);
+        let stops: Vec<(char, usize)> = m
+            .rows
+            .iter()
+            .flat_map(|r| r.glyphs.iter().filter(|g| g.stop).map(|g| (g.ch, g.src)))
+            .collect();
+        assert_eq!(stops[0], ('i', 4), "first line should start past the indent");
+        assert!(stops.contains(&('c', 17)), "second line misplaced: {stops:?}");
+    }
+
+    #[test]
+    fn a_fenced_block_whose_code_echoes_its_info_string_maps_to_the_code() {
+        // The one case that defeats a forward search: the opening fence
+        // ```` ```rust ```` ends with the same text as the code under it.
+        let src = "```rust\nrust\n```\n";
+        let m = map(src);
+        let first = m.rows[0].glyphs.iter().find(|g| g.stop).unwrap();
+        assert_eq!(first.src, 8, "matched the info string, not the code");
+    }
+
+    #[test]
     fn caret_steps_over_hidden_delimiters() {
         // "a **bold** c": bytes 8,9 are the closing ** — no glyph. Moving right
         // from 'd' (src 7) lands on the space before 'c' (src 10), not inside **.
@@ -972,4 +1286,5 @@ mod tests {
         assert_eq!(m.offset_of_pos(r, c + 1), 10);
     }
 }
+
 

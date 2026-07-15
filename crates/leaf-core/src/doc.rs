@@ -76,6 +76,15 @@ pub struct Doc {
     pub scroll: usize,
     pub body_origin: (u16, u16),
     pub body_height: u16,
+    /// The caret as of the last frame drawn, or `None` before the first.
+    ///
+    /// Scrolling is the viewport's business, not the caret's: the view follows
+    /// the caret when the caret *moves*, but a wheel that doesn't touch the
+    /// caret has to be free to scroll away from it — otherwise the view is
+    /// pinned to the caret and stops dead at the edge of the document you can
+    /// see. Comparing against this is what tells the two apart, and it catches a
+    /// caret set by any route, including a frontend assigning the field itself.
+    pub drawn_caret: Option<usize>,
 }
 
 impl Doc {
@@ -105,6 +114,7 @@ impl Doc {
             scroll: 0,
             body_origin: (0, 0),
             body_height: 0,
+            drawn_caret: None,
         })
     }
 
@@ -668,12 +678,10 @@ impl Doc {
                     0
                 }
             }
-            View::Wysiwyg => {
-                // Walks caret *stops*, not columns: decoration (a table border,
-                // a cell's padding) is stepped over in one press.
-                let (r, c) = self.vmap.pos_of_offset(self.caret);
-                self.vmap.stop_before(r, c).unwrap_or(self.caret)
-            }
+            // Walks caret *stops*, not columns: decoration (a table border, a
+            // cell's padding) is stepped over in one press, and a hidden
+            // delimiter never holds the caret up.
+            View::Wysiwyg => self.vmap.stop_before(self.caret).unwrap_or(self.caret),
         };
         self.move_to(target, extend);
     }
@@ -694,10 +702,7 @@ impl Doc {
                     self.caret
                 }
             }
-            View::Wysiwyg => {
-                let (r, c) = self.vmap.pos_of_offset(self.caret);
-                self.vmap.stop_after(r, c).unwrap_or(self.caret)
-            }
+            View::Wysiwyg => self.vmap.stop_after(self.caret).unwrap_or(self.caret),
         };
         self.move_to(target, extend);
     }
@@ -838,6 +843,28 @@ impl Doc {
             View::Wysiwyg => self.vmap.offset_of_pos(row, col),
         };
         self.move_to(target, extend);
+    }
+
+    /// Settle `scroll` for a frame about to be drawn: follow the caret onto the
+    /// screen if it has moved since the last frame, and never scroll past the
+    /// last of `rows`.
+    ///
+    /// Only if it has *moved* — that's the whole point. Revealing the caret on
+    /// every frame ties the viewport to it, and a scroll wheel that fights the
+    /// caret for the viewport loses: the view snaps back the instant it tries to
+    /// pass the caret's row, so the document can't be scrolled beyond what's
+    /// already on screen. A caret move is the frontend's cue to follow; a scroll
+    /// with the caret sitting still is the reader's cue to leave it alone.
+    pub fn follow_caret(&mut self, caret_row: usize, height: usize, rows: usize) {
+        if self.drawn_caret != Some(self.caret) {
+            if caret_row < self.scroll {
+                self.scroll = caret_row;
+            } else if height > 0 && caret_row >= self.scroll + height {
+                self.scroll = caret_row + 1 - height;
+            }
+            self.drawn_caret = Some(self.caret);
+        }
+        self.scroll = self.scroll.min(rows.saturating_sub(1));
     }
 
     /// The caret's screen position `(row, col)` in the active view's grid.
@@ -1905,6 +1932,138 @@ mod tests {
         assert_eq!(d.caret, 3);
         d.move_left(false);
         assert_eq!(d.caret, 2);
+    }
+
+    /// Press Right until it stops, collecting the offsets walked through. Every
+    /// caret bug in the WYSIWYG view shows up here as a walk that ends early:
+    /// two stops sharing one source offset can't be moved between, so the caret
+    /// stalls on the first of them and the walk never reaches the rest.
+    fn walk_right(d: &mut Doc) -> Vec<usize> {
+        let mut seen = vec![d.caret];
+        for _ in 0..2000 {
+            let before = d.caret;
+            d.move_right(false);
+            if d.caret == before {
+                break;
+            }
+            seen.push(d.caret);
+        }
+        seen
+    }
+
+    #[test]
+    fn the_caret_crosses_a_soft_break() {
+        // A newline inside a paragraph is a `soft_break`, which twig gives no
+        // span of its own — the space it renders as used to borrow the offset of
+        // the character before it, and a caret can't move without changing
+        // offset. Right must walk clean off the end of the first line.
+        let mut d = wysiwyg_doc("soft_break_walk", "one two\nthree four\n");
+        d.caret = 0;
+        let seen = walk_right(&mut d);
+        assert_eq!(seen, (0..=18).collect::<Vec<_>>(), "walk stalled: {seen:?}");
+    }
+
+    #[test]
+    fn the_caret_walks_a_code_block() {
+        // Every glyph of a code block used to map to the block's start, so the
+        // whole block was a single offset and the caret couldn't move inside it.
+        let src = "```rust\nlet x = 1;\nfn f() {}\n```\n";
+        let mut d = wysiwyg_doc("code_walk", src);
+        d.caret = 0;
+        let seen = walk_right(&mut d);
+        // The fences are markup: hidden, and no caret stop. The code between
+        // them is reached a character at a time.
+        let code = src.find("let").unwrap()..src.find("\n```").unwrap();
+        for off in code.clone() {
+            assert!(seen.contains(&off), "offset {off} unreachable: {seen:?}");
+        }
+        assert!(seen.contains(&code.end), "no stop after the last line");
+    }
+
+    #[test]
+    fn the_caret_walks_an_indented_code_block() {
+        // An indented block's text has the four-space indent stripped, so it
+        // isn't a verbatim slice and its lines have to be re-found. The caret
+        // lands on the code, never in the indent.
+        let src = "    indented\n    code\n";
+        let mut d = wysiwyg_doc("indent_code_walk", src);
+        d.caret = 0;
+        let seen = walk_right(&mut d);
+        assert!(seen.contains(&src.find("indented").unwrap()));
+        assert!(seen.contains(&src.find("code").unwrap()));
+        assert!(
+            !seen.contains(&0) || seen[0] == 0,
+            "the caret starts where it was put"
+        );
+        // Nothing in the stripped indent is a stop.
+        for off in [1, 2, 3] {
+            assert!(!seen.contains(&off), "landed in the indent at {off}");
+        }
+    }
+
+    #[test]
+    fn the_caret_leaves_a_tight_heading() {
+        // "# H" with text directly under it: the heading row's end and the
+        // separator row's end are the same offset. Right used to find the
+        // separator's copy, set the caret to where it already was, and stop.
+        let mut d = wysiwyg_doc("tight_heading_walk", "# H\ntext\n");
+        d.caret = 2; // the "H"
+        let seen = walk_right(&mut d);
+        assert!(seen.len() > 2, "Right stalled at the heading's end: {seen:?}");
+        assert!(seen.contains(&8), "never reached the end of \"text\": {seen:?}");
+    }
+
+    #[test]
+    fn the_wheel_can_scroll_away_from_a_caret_that_stays_put() {
+        // The reader scrolls down past the caret's row. Nothing moved the
+        // caret, so the view must stay where it was put — the old code revealed
+        // the caret every frame, which dragged the view straight back and made
+        // the document unscrollable past the caret.
+        let mut d = wysiwyg_doc("scroll_free", "a\n\nb\n\nc\n\nd\n\ne\n");
+        d.caret = 0;
+        d.follow_caret(0, 3, 9); // first frame: the caret is at the top
+        d.scroll = 4; // the wheel
+        d.follow_caret(0, 3, 9);
+        assert_eq!(d.scroll, 4, "the wheel was overruled by a caret that never moved");
+    }
+
+    #[test]
+    fn moving_the_caret_brings_the_view_back_to_it() {
+        let mut d = wysiwyg_doc("scroll_follow", "a\n\nb\n\nc\n\nd\n\ne\n");
+        d.caret = 0;
+        d.follow_caret(0, 3, 9);
+        d.scroll = 6; // scrolled away
+        d.move_right(false); // ...and now the caret moves
+        let (row, _) = d.caret_pos();
+        d.follow_caret(row, 3, 9);
+        assert!(d.scroll <= row && row < d.scroll + 3, "caret row {row} off screen at scroll {}", d.scroll);
+    }
+
+    #[test]
+    fn scrolling_stops_at_the_last_row() {
+        let mut d = wysiwyg_doc("scroll_clamp", "a\n\nb\n");
+        d.caret = 0;
+        d.follow_caret(0, 3, 3); // a first frame, so the caret isn't "new"
+        d.scroll = 999; // the wheel, spun hard
+        d.follow_caret(0, 3, 3);
+        assert_eq!(d.scroll, 2, "scrolled into the void past the document");
+    }
+
+    #[test]
+    fn every_cell_of_a_wide_table_is_reachable() {
+        // A table whose cells are far wider than the surface: the columns are
+        // cut to fit and the text wraps inside them, so no cell hangs off the
+        // right edge where the caret can never go.
+        let src = "| Ingredient | Notes |\n|---|---|\n\
+                   | flour milled coarse | sift it twice before folding it in |\n";
+        let mut d = wysiwyg_doc("wide_table_walk", src);
+        d.build_visual(30);
+        d.caret = 0;
+        let seen = walk_right(&mut d);
+        for word in ["Ingredient", "Notes", "coarse", "folding"] {
+            let at = src.find(word).unwrap();
+            assert!(seen.contains(&at), "{word:?} at {at} unreachable: {seen:?}");
+        }
     }
 }
 

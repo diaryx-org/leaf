@@ -69,13 +69,7 @@ fn render_body(f: &mut Frame, area: Rect, doc: &mut Doc) {
     };
     let (caret_row, caret_col) = doc.caret_pos();
     let height = area.height as usize;
-
-    // Keep the caret row on screen.
-    if caret_row < doc.scroll {
-        doc.scroll = caret_row;
-    } else if height > 0 && caret_row >= doc.scroll + height {
-        doc.scroll = caret_row + 1 - height;
-    }
+    doc.follow_caret(caret_row, height, lines.len());
 
     // Stash geometry for mouse hit-testing.
     doc.body_origin = (area.x, area.y);
