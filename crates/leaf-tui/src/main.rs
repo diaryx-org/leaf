@@ -153,6 +153,10 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
     match key.code {
         KeyCode::Char(c) => doc.insert(&c.to_string()),
         KeyCode::Enter => doc.newline(),
+        // In a table, Tab walks the cells (Shift+Tab back); everywhere else it
+        // indents as it always has.
+        KeyCode::Tab if doc.cell_hop(true) => {}
+        KeyCode::BackTab if doc.cell_hop(false) => {}
         KeyCode::Tab => doc.insert("    "),
         KeyCode::Backspace => doc.backspace(),
         KeyCode::Delete => doc.delete_forward(),

@@ -669,14 +669,10 @@ impl Doc {
                 }
             }
             View::Wysiwyg => {
+                // Walks caret *stops*, not columns: decoration (a table border,
+                // a cell's padding) is stepped over in one press.
                 let (r, c) = self.vmap.pos_of_offset(self.caret);
-                if c > 0 {
-                    self.vmap.offset_of_pos(r, c - 1)
-                } else if r > 0 {
-                    self.vmap.offset_of_pos(r - 1, self.vmap.row_len(r - 1))
-                } else {
-                    self.caret
-                }
+                self.vmap.stop_before(r, c).unwrap_or(self.caret)
             }
         };
         self.move_to(target, extend);
@@ -700,13 +696,7 @@ impl Doc {
             }
             View::Wysiwyg => {
                 let (r, c) = self.vmap.pos_of_offset(self.caret);
-                if c < self.vmap.row_len(r) {
-                    self.vmap.offset_of_pos(r, c + 1)
-                } else if r + 1 < self.vmap.num_rows() {
-                    self.vmap.offset_of_pos(r + 1, 0)
-                } else {
-                    self.caret
-                }
+                self.vmap.stop_after(r, c).unwrap_or(self.caret)
             }
         };
         self.move_to(target, extend);
@@ -736,7 +726,14 @@ impl Doc {
         }
         let target = match self.view {
             View::Source => row_col_to_offset(&self.source, row - 1, goal),
-            View::Wysiwyg => self.vmap.offset_of_pos(row - 1, goal.min(self.vmap.row_len(row - 1))),
+            View::Wysiwyg => {
+                // A table's border rules are drawn but hold no caret, so Up
+                // steps over them to the row that does.
+                let Some(r) = self.vmap.navigable_above(row) else {
+                    return;
+                };
+                self.vmap.offset_of_pos(r, goal.min(self.vmap.row_len(r)))
+            }
         };
         self.move_to(target, extend);
     }
@@ -747,10 +744,10 @@ impl Doc {
         let target = match self.view {
             View::Source => row_col_to_offset(&self.source, row + 1, goal),
             View::Wysiwyg => {
-                if row + 1 >= self.vmap.num_rows() {
+                let Some(r) = self.vmap.navigable_below(row) else {
                     return;
-                }
-                self.vmap.offset_of_pos(row + 1, goal.min(self.vmap.row_len(row + 1)))
+                };
+                self.vmap.offset_of_pos(r, goal.min(self.vmap.row_len(r)))
             }
         };
         self.move_to(target, extend);
@@ -774,6 +771,48 @@ impl Doc {
             View::Wysiwyg => self.vmap.offset_of_pos(row, self.vmap.row_len(row)),
         };
         self.move_to(target, extend);
+    }
+
+    /// Hop to the next (Tab) or previous (Shift+Tab) table cell, landing at the
+    /// start of its text. Returns `false` when the caret isn't in a table, or is
+    /// already in the last/first cell — the frontend then does whatever Tab
+    /// normally does (indent), so Tab keeps its meaning everywhere else.
+    pub fn cell_hop(&mut self, forward: bool) -> bool {
+        let off = self.caret;
+        let Some(cells) = self.table_cells_at(off) else {
+            return false;
+        };
+        let Some(i) = cells.iter().position(|r| off >= r.start && off <= r.end) else {
+            return false;
+        };
+        let next = if forward { i.checked_add(1) } else { i.checked_sub(1) };
+        let Some(target) = next.and_then(|j| cells.get(j)) else {
+            return false; // at the table's edge; leave Tab to the frontend
+        };
+        self.goal_col = None;
+        self.move_to(target.start, false);
+        true
+    }
+
+    /// The content ranges of every cell in the table containing `off`, in
+    /// document order — `None` when `off` isn't inside a table's cell. Scoped to
+    /// the *one* table, so Tab in the last cell never jumps into another one.
+    fn table_cells_at(&mut self, off: usize) -> Option<Vec<std::ops::Range<usize>>> {
+        let nodes = self.nodes();
+        let in_cell = |n: &FlatNode| {
+            n.kind == "cell"
+                && n.content_span
+                    .as_ref()
+                    .is_some_and(|r| off >= r.start && off <= r.end)
+        };
+        let table = table_of(&nodes, nodes.iter().find(|n| in_cell(n))?)?;
+        let mut out: Vec<std::ops::Range<usize>> = nodes
+            .iter()
+            .filter(|n| n.kind == "cell" && table_of(&nodes, n) == Some(table))
+            .filter_map(|n| n.content_span.clone())
+            .collect();
+        out.sort_by_key(|r| r.start);
+        Some(out)
     }
 
     /// Move the caret to the very start of the document (⌘↑ on macOS,
@@ -875,6 +914,21 @@ fn next_list_marker(marker: &str) -> String {
     } else {
         marker.to_string()
     }
+}
+
+/// The id of the `table` a node lives under, or `None` if it isn't in one.
+/// Walks parents rather than assuming `cell`'s grandparent, so a nested table
+/// still resolves to the one that actually encloses the cell.
+fn table_of(nodes: &[FlatNode], node: &FlatNode) -> Option<usize> {
+    let mut cur = node.parent;
+    while let Some(id) = cur {
+        let n = &nodes[id.0 as usize];
+        if n.kind == "table" {
+            return Some(id.0 as usize);
+        }
+        cur = n.parent;
+    }
+    None
 }
 
 fn is_block_container(kind: &str) -> bool {
@@ -1520,6 +1574,81 @@ mod tests {
         assert!(sel.contains("title"), "source view should select everything");
         d.move_doc_start(false);
         assert_eq!(d.caret, 0, "source view can reach offset 0");
+    }
+
+    const TABLE: &str = "| Name | Qty |\n|:-----|----:|\n| Pear | 3 |\n| Fig | 12 |\n";
+
+    #[test]
+    fn wysiwyg_right_crosses_a_cell_border_without_stalling() {
+        // The border and padding between two cells all share one source offset,
+        // so a column-stepping caret would sit on `│` and then stall there
+        // forever. Right must step: end of "Name" -> start of "Qty".
+        let mut d = wysiwyg_doc("tbl_right", TABLE);
+        d.caret = TABLE.find("Name").unwrap() + 4; // just after "Name"
+        d.move_right(false);
+        assert_eq!(d.caret, TABLE.find("Qty").unwrap(), "should land in the next cell");
+        let (r, c) = d.caret_pos();
+        assert_eq!(d.vmap.rows[r].glyphs[c].ch, 'Q');
+    }
+
+    #[test]
+    fn wysiwyg_left_crosses_back_to_the_previous_cell() {
+        let mut d = wysiwyg_doc("tbl_left", TABLE);
+        d.caret = TABLE.find("Qty").unwrap();
+        d.move_left(false);
+        assert_eq!(d.caret, TABLE.find("Name").unwrap() + 4, "end of the previous cell");
+    }
+
+    #[test]
+    fn wysiwyg_down_steps_over_a_table_rule() {
+        // Between the header and the first body row sits a `├───┼───┤` rule.
+        // It's drawn but holds no caret, so one Down must reach "Pear".
+        let mut d = wysiwyg_doc("tbl_down", TABLE);
+        d.caret = TABLE.find("Name").unwrap();
+        d.move_down(false);
+        assert_eq!(d.caret, TABLE.find("Pear").unwrap(), "one Down reaches the body row");
+        d.move_down(false);
+        assert_eq!(d.caret, TABLE.find("Fig").unwrap());
+    }
+
+    #[test]
+    fn wysiwyg_tab_walks_the_cells_and_shift_tab_walks_back() {
+        let mut d = wysiwyg_doc("tbl_tab", TABLE);
+        d.caret = TABLE.find("Name").unwrap();
+        assert!(d.cell_hop(true));
+        assert_eq!(d.caret, TABLE.find("Qty").unwrap());
+        assert!(d.cell_hop(true), "Tab wraps onto the next row's first cell");
+        assert_eq!(d.caret, TABLE.find("Pear").unwrap());
+        assert!(d.cell_hop(false));
+        assert_eq!(d.caret, TABLE.find("Qty").unwrap());
+    }
+
+    #[test]
+    fn tab_outside_a_table_is_not_a_cell_hop() {
+        // `cell_hop` reports false so the frontend can indent as usual.
+        let mut d = wysiwyg_doc("tbl_none", "just a paragraph\n");
+        d.caret = 4;
+        assert!(!d.cell_hop(true));
+        assert_eq!(d.caret, 4, "a refused hop leaves the caret alone");
+    }
+
+    #[test]
+    fn tab_at_the_last_cell_declines_rather_than_leaving_the_table() {
+        let mut d = wysiwyg_doc("tbl_edge", TABLE);
+        d.caret = TABLE.rfind("12").unwrap(); // the final cell
+        assert!(!d.cell_hop(true), "no cell after the last one");
+        d.caret = TABLE.find("Name").unwrap();
+        assert!(!d.cell_hop(false), "no cell before the first one");
+    }
+
+    #[test]
+    fn typing_in_a_cell_edits_that_cell() {
+        // Editing comes free once offsets map correctly: the caret is a source
+        // offset, so a normal splice lands inside the pipe table.
+        let mut d = wysiwyg_doc("tbl_type", TABLE);
+        d.caret = TABLE.find("Pear").unwrap() + 4;
+        d.insert("s");
+        assert!(d.source.contains("| Pears | 3 |"), "got {:?}", d.source);
     }
 
     #[test]

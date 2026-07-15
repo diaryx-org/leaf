@@ -1368,6 +1368,8 @@ impl Element for TextElement {
                                 ch,
                                 style: CoreStyle::default(),
                                 src: start + i,
+                                // Raw source: every char is real text.
+                                stop: true,
                             })
                             .collect();
                         lines.push((glyphs, start + line.len()));

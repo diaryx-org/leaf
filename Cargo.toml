@@ -19,8 +19,11 @@ edition = "2024"
 # bough uses; leaf drives its P0–P5 surface (edit_range, node_at, nodes,
 # wrap_range/toggle_inline/set_block).
 # Published on crates.io as `twig-doc` (the `twig` name is taken); the library's
-# import name is still `twig`, so `package` renames it back for `use twig::…`.
-twig-doc = { version = "1.0.0" }
+# import name is still `twig` (its `[lib] name`), so `use twig::…` keeps working.
+# Pinned to the sibling checkout, not the registry: tables need `FlatNode`'s
+# `head`/`alignment` (ABI 2), which no published version carries yet. Point this
+# back at a version once that's released.
+twig-doc = { path = "../twig/bindings/rust/twig" }
 anyhow = "1"
 # Frontend-neutral core: the caret/selection model + AST→glyph map, styled with
 # a toolkit-agnostic Style. Each frontend crate maps that to its own styling.

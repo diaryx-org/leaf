@@ -5630,9 +5630,7 @@ dependencies = [
 
 [[package]]
 name = "twig-doc"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a284b276a71cfcca8493e8d0097d3fb82700d60658455cb5c590097d1fc4fe9c"
+version = "1.0.2"
 
 [[package]]
 name = "typeid"

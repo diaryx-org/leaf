@@ -13,7 +13,7 @@
 //! the verbatim source slice), so a Markdown and a Djot file that parse alike
 //! render — and map — identically.
 
-use twig::FlatNode;
+use twig::{Alignment, FlatNode};
 
 use crate::style::{Color, Style};
 
@@ -25,6 +25,14 @@ pub struct Glyph {
     pub ch: char,
     pub style: Style,
     pub src: usize,
+    /// Whether the caret may *rest* on this glyph. Decoration — a table border
+    /// or a cell's alignment padding — is visible but isn't text, so the caret
+    /// steps over it instead of into it. It also can't be a stop even in
+    /// principle: a run of decoration shares one `src`, and a caret can only
+    /// move by changing offset, so resting on it would pin horizontal motion.
+    /// A click still maps through `src`, which is why decoration points at the
+    /// text it decorates.
+    pub stop: bool,
 }
 
 /// One visual line. `end_src` is the source offset a caret sits at when placed
@@ -33,6 +41,11 @@ pub struct Glyph {
 pub struct VRow {
     pub glyphs: Vec<Glyph>,
     pub end_src: usize,
+    /// A row that is *entirely* decoration (a table's `├───┼───┤` rules): it
+    /// holds no caret stop, so vertical motion steps over it and
+    /// `pos_of_offset` never resolves onto it. Distinct from a row that merely
+    /// has no glyphs — a blank paragraph gap is empty but is a real caret stop.
+    pub decoration: bool,
 }
 
 /// The rendered document plus the offset⇄position mapping the caret rides on.
@@ -57,11 +70,16 @@ impl VisualMap {
     }
 
     /// The screen `(row, col)` for a source offset — where to draw the caret.
-    /// Snaps a hidden offset (inside a delimiter) to the next visible glyph.
+    /// Snaps a hidden offset (inside a delimiter) to the next visible glyph, and
+    /// never resolves onto decoration (a table border, a cell's padding), which
+    /// is drawn but holds no caret.
     pub fn pos_of_offset(&self, off: usize) -> (usize, usize) {
         for (r, row) in self.rows.iter().enumerate() {
+            if row.decoration {
+                continue;
+            }
             for (c, g) in row.glyphs.iter().enumerate() {
-                if g.src >= off {
+                if g.stop && g.src >= off {
                     return (r, c);
                 }
             }
@@ -69,12 +87,14 @@ impl VisualMap {
                 return (r, row.glyphs.len());
             }
         }
-        let r = self.rows.len().saturating_sub(1);
+        let r = self.last_stop_row();
         (r, self.row_len(r))
     }
 
     /// The source offset for a screen `(row, col)` — where a click or a
-    /// visual-space move lands the caret.
+    /// visual-space move lands the caret. Clicking decoration maps through its
+    /// `src`, which points at the text it decorates, so a click on a border or
+    /// on a cell's padding lands in that cell.
     pub fn offset_of_pos(&self, row: usize, col: usize) -> usize {
         let Some(r) = self.rows.get(row) else {
             return 0;
@@ -83,6 +103,77 @@ impl VisualMap {
             Some(g) => g.src,
             None => r.end_src,
         }
+    }
+
+    /// Whether the caret can occupy `row` at all: decoration rows (a table's
+    /// border rules) are stepped over by vertical motion.
+    pub fn row_is_navigable(&self, row: usize) -> bool {
+        self.rows.get(row).is_some_and(|r| !r.decoration)
+    }
+
+    /// The last row the caret can rest on — the fallback when an offset is past
+    /// everything rendered (a table's bottom border must not swallow the caret).
+    fn last_stop_row(&self) -> usize {
+        (0..self.rows.len())
+            .rev()
+            .find(|&r| self.row_is_navigable(r))
+            .unwrap_or(0)
+    }
+
+    /// The nearest row above `row` the caret can occupy, skipping decoration.
+    pub fn navigable_above(&self, row: usize) -> Option<usize> {
+        (0..row.min(self.rows.len())).rev().find(|&r| self.row_is_navigable(r))
+    }
+
+    /// The nearest row below `row` the caret can occupy, skipping decoration.
+    pub fn navigable_below(&self, row: usize) -> Option<usize> {
+        ((row + 1)..self.rows.len()).find(|&r| self.row_is_navigable(r))
+    }
+
+    /// The offset of the nearest caret stop strictly before `(row, col)` — one
+    /// press of Left. Steps over a run of decoration in one go rather than
+    /// stalling on padding that all shares a single offset, and falls to the end
+    /// of the row above when there's nothing left on this one.
+    pub fn stop_before(&self, row: usize, col: usize) -> Option<usize> {
+        if let Some(vr) = self.rows.get(row) {
+            if !vr.decoration {
+                let upto = col.min(vr.glyphs.len());
+                if let Some(g) = vr.glyphs[..upto].iter().rev().find(|g| g.stop) {
+                    return Some(g.src);
+                }
+            }
+        }
+        let above = self.navigable_above(row)?;
+        Some(self.rows[above].end_src)
+    }
+
+    /// The offset of the nearest caret stop strictly after `(row, col)` — one
+    /// press of Right, falling to the start of the row below once this row is
+    /// spent.
+    pub fn stop_after(&self, row: usize, col: usize) -> Option<usize> {
+        if let Some(vr) = self.rows.get(row) {
+            // `col == glyphs.len()` means the caret is already at the row's end
+            // stop, so the only way on is the next row.
+            if !vr.decoration && col < vr.glyphs.len() {
+                if let Some(g) = vr.glyphs[col + 1..].iter().find(|g| g.stop) {
+                    return Some(g.src);
+                }
+                // Past the last glyph the row's end is itself a stop — but only
+                // where it's a *distinct* offset. A table row ends at its last
+                // cell's end, an offset that cell's own end stop already holds,
+                // so there's nothing past the closing `│` to land on.
+                let last = vr.glyphs.iter().rev().find(|g| g.stop).map(|g| g.src);
+                if vr.end_src > last.unwrap_or(0) {
+                    return Some(vr.end_src);
+                }
+            }
+        }
+        let below = self.navigable_below(row)?;
+        let vr = &self.rows[below];
+        Some(match vr.glyphs.iter().find(|g| g.stop) {
+            Some(g) => g.src,
+            None => vr.end_src,
+        })
     }
 }
 
@@ -192,6 +283,7 @@ impl Builder<'_> {
                     self.rows.push(VRow {
                         glyphs: pc.to_vec(),
                         end_src,
+                        decoration: false,
                     });
                 }
             }
@@ -230,6 +322,7 @@ impl Builder<'_> {
                 }
             }
             "list_item" | "task_list_item" => self.blocks(id, pf, pc),
+            "table" => self.table(id, pf, pc),
             "code_block" => {
                 let style = Style::default().fg(Color::Green);
                 let text = node.text.clone().unwrap_or_default();
@@ -238,7 +331,9 @@ impl Builder<'_> {
                     let gutter = synth("▏ ", Color::DarkGray, base);
                     let mut glyphs: Vec<Glyph> = concat(pf, &gutter);
                     for ch in raw.chars() {
-                        glyphs.push(Glyph { ch, style, src: base });
+                        // Code text is a caret stop, though the whole block maps
+                        // coarsely to `base` (code editing is a source-view job).
+                        glyphs.push(Glyph { ch, style, src: base, stop: true });
                     }
                     self.push_row(glyphs, base);
                 }
@@ -252,6 +347,9 @@ impl Builder<'_> {
                         ch: '─',
                         style: Style::default().fg(Color::DarkGray),
                         src: node.span.start,
+                        // A rule is a block the caret can sit on, as it always
+                        // has; it maps coarsely to the block's start.
+                        stop: true,
                     });
                 }
                 self.push_row(glyphs, node.span.start);
@@ -272,6 +370,142 @@ impl Builder<'_> {
         }
     }
 
+    /// Render a table as a box-drawn grid: every column as wide as its widest
+    /// cell, the header bold and ruled off, each cell padded to its column's
+    /// alignment.
+    ///
+    /// The alignment comes from twig's `cell.alignment` — the delimiter row
+    /// (`|:--|--:|`) that spells it out is consumed by the parser and leaves no
+    /// node, so the snapshot is the only source for it.
+    ///
+    /// Borders and padding are *decoration*: they carry the source offset of the
+    /// text they surround, so a click lands in that cell, but they're never
+    /// caret stops — the caret steps cell-to-cell instead of into the box art.
+    fn table(&mut self, id: usize, pf: &[Glyph], pc: &[Glyph]) {
+        let node_end = self.nodes[id].span.end;
+        // twig's shape is `[caption, row, row, …]`: the caption is always
+        // present (usually empty in Markdown) and is not part of the grid.
+        let row_ids: Vec<usize> = self
+            .children(id)
+            .into_iter()
+            .filter(|&c| self.nodes[c].kind == "row")
+            .collect();
+        if row_ids.is_empty() {
+            return;
+        }
+        // Lay every cell out first — the column widths depend on all of them.
+        let grid: Vec<Vec<TableCell>> = row_ids.iter().map(|&r| self.row_cells(r)).collect();
+        let heads: Vec<bool> = row_ids
+            .iter()
+            .map(|&r| self.nodes[r].head.unwrap_or(false))
+            .collect();
+        let cols = grid.iter().map(|r| r.len()).max().unwrap_or(0);
+        if cols == 0 {
+            return;
+        }
+        let mut widths = vec![0usize; cols];
+        for row in &grid {
+            for (c, cell) in row.iter().enumerate() {
+                widths[c] = widths[c].max(cell.glyphs.len());
+            }
+        }
+
+        let anchor = grid[0].first().map(|c| c.start).unwrap_or(node_end);
+        self.push_rule(&rule_text(&widths, '┌', '┬', '┐'), anchor, pf);
+        for (ri, row) in grid.iter().enumerate() {
+            self.push_table_row(row, &widths, pc);
+            // The rule under the header: only where the head actually ends.
+            let ends_head = heads[ri] && heads.get(ri + 1) == Some(&false);
+            if ends_head {
+                let next = grid[ri + 1].first().map(|c| c.start).unwrap_or(node_end);
+                self.push_rule(&rule_text(&widths, '├', '┼', '┤'), next, pc);
+            }
+        }
+        self.push_rule(&rule_text(&widths, '└', '┴', '┘'), node_end, pc);
+        // The table's own end anchors whatever separator follows it; the border
+        // rows deliberately don't move `last_off` (they hold no content).
+        self.last_off = node_end;
+    }
+
+    /// One row of laid-out cells, in column order.
+    fn row_cells(&self, row: usize) -> Vec<TableCell> {
+        self.children(row)
+            .into_iter()
+            .filter(|&c| self.nodes[c].kind == "cell")
+            .map(|c| {
+                let n = &self.nodes[c];
+                let style = if n.head.unwrap_or(false) {
+                    Style::default().bold()
+                } else {
+                    Style::default()
+                };
+                // A cell's own `span` is the whole row; only `content_span`
+                // bounds its text.
+                let span = n.content_span.clone().unwrap_or(n.span.start..n.span.start);
+                TableCell {
+                    glyphs: self.inline_children(c, style),
+                    start: span.start,
+                    end: span.end,
+                    align: n.alignment.unwrap_or(Alignment::Default),
+                }
+            })
+            .collect()
+    }
+
+    /// A horizontal rule between/around rows — entirely decoration.
+    fn push_rule(&mut self, text: &str, src: usize, prefix: &[Glyph]) {
+        let glyphs = concat(prefix, &synth(text, Color::DarkGray, src));
+        self.rows.push(VRow {
+            glyphs,
+            end_src: src,
+            decoration: true,
+        });
+    }
+
+    /// One `│ a │ b │` content row: real cell text between decoration.
+    fn push_table_row(&mut self, cells: &[TableCell], widths: &[usize], prefix: &[Glyph]) {
+        let fallback = cells.last().map(|c| c.end).unwrap_or(0);
+        let mut glyphs = prefix.to_vec();
+        for (ci, &w) in widths.iter().enumerate() {
+            // The divider before this column belongs to the cell it introduces,
+            // so clicking it lands at that cell's start.
+            let at = cells.get(ci).map(|c| c.start).unwrap_or(fallback);
+            glyphs.extend(synth("│", Color::DarkGray, at));
+            match cells.get(ci) {
+                Some(cell) => {
+                    let pad = w.saturating_sub(cell.glyphs.len());
+                    let (lead, trail) = match cell.align {
+                        Alignment::Right => (pad, 0),
+                        Alignment::Center => (pad / 2, pad - pad / 2),
+                        Alignment::Left | Alignment::Default => (0, pad),
+                    };
+                    glyphs.extend(synth(&" ".repeat(lead + 1), Color::Default, cell.start));
+                    glyphs.extend(cell.glyphs.iter().cloned());
+                    // Every cell renders at least one space after its text (the
+                    // gutter before `│`), so there is always somewhere to put
+                    // the "after the last character" caret a cell needs just as
+                    // a line does. It's the one padding glyph that is a stop.
+                    glyphs.push(Glyph {
+                        ch: ' ',
+                        style: Style::default(),
+                        src: cell.end,
+                        stop: true,
+                    });
+                    glyphs.extend(synth(&" ".repeat(trail), Color::Default, cell.end));
+                }
+                // A ragged row: pad the missing cell out so the grid stays square.
+                None => glyphs.extend(synth(&" ".repeat(w + 2), Color::Default, fallback)),
+            }
+        }
+        glyphs.extend(synth("│", Color::DarkGray, fallback));
+        let end_src = fallback;
+        self.rows.push(VRow {
+            glyphs,
+            end_src,
+            decoration: false,
+        });
+    }
+
     fn inline_children(&self, id: usize, base: Style) -> Vec<Glyph> {
         let mut out = Vec::new();
         for c in self.children(id) {
@@ -286,7 +520,8 @@ impl Builder<'_> {
             "str" | "smart_punctuation" => push_text(out, node.text.as_deref().unwrap_or(""), node.span.start, base),
             "soft_break" | "hard_break" | "non_breaking_space" => {
                 let src = if node.span.start != 0 { node.span.start } else { out.last().map(|g| g.src).unwrap_or(0) };
-                out.push(Glyph { ch: ' ', style: base, src });
+                // A break renders as a real, caret-navigable space.
+                out.push(Glyph { ch: ' ', style: base, src, stop: true });
             }
             "emph" => self.recurse(id, base.italic(), out),
             "strong" => self.recurse(id, base.bold(), out),
@@ -389,7 +624,7 @@ impl Builder<'_> {
             .map(|g| g.src + g.ch.len_utf8())
             .unwrap_or(fallback);
         self.last_off = end_src;
-        self.rows.push(VRow { glyphs, end_src });
+        self.rows.push(VRow { glyphs, end_src, decoration: false });
     }
 
     /// The source offset the caret rests at on the blank line separating a block
@@ -466,6 +701,7 @@ impl Builder<'_> {
             self.rows.push(VRow {
                 glyphs: Vec::new(),
                 end_src: last_end + k,
+                decoration: false,
             });
         }
     }
@@ -473,17 +709,50 @@ impl Builder<'_> {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
+/// One laid-out table cell: its rendered text, the source range that text
+/// occupies (`start`/`end` are the caret anchors decoration points at), and the
+/// column alignment its padding honours.
+struct TableCell {
+    glyphs: Vec<Glyph>,
+    start: usize,
+    end: usize,
+    align: Alignment,
+}
+
+/// A table rule spanning `widths`, e.g. `┌──────┬─────┐`. Each column is its
+/// content width plus the one-space gutter on either side.
+fn rule_text(widths: &[usize], left: char, mid: char, right: char) -> String {
+    let mut s = String::new();
+    s.push(left);
+    for (i, w) in widths.iter().enumerate() {
+        if i > 0 {
+            s.push(mid);
+        }
+        for _ in 0..w + 2 {
+            s.push('─');
+        }
+    }
+    s.push(right);
+    s
+}
+
+/// Push real document text: each glyph maps to its own source byte, so every
+/// one of them is a caret stop.
 fn push_text(out: &mut Vec<Glyph>, text: &str, base_src: usize, style: Style) {
     for (i, ch) in text.char_indices() {
-        out.push(Glyph { ch, style, src: base_src + i });
+        out.push(Glyph { ch, style, src: base_src + i, stop: true });
     }
 }
 
 /// Build synthetic prefix glyphs (a bullet, a gutter) all pointing at `src`.
-/// `Color::Default` yields the surface's own color (no override).
+/// `Color::Default` yields the surface's own color (no override). Synthetic
+/// glyphs are never caret stops — they share one offset, so the caret steps
+/// over them (a click still lands at `src`).
 fn synth(text: &str, color: Color, src: usize) -> Vec<Glyph> {
     let style = Style::default().fg(color);
-    text.chars().map(|ch| Glyph { ch, style, src }).collect()
+    text.chars()
+        .map(|ch| Glyph { ch, style, src, stop: false })
+        .collect()
 }
 
 fn concat(a: &[Glyph], b: &[Glyph]) -> Vec<Glyph> {
@@ -637,6 +906,63 @@ mod tests {
         assert_eq!(m.content_start, 0);
     }
 
+    /// `| Name | Qty |` with Name left-aligned and Qty right-aligned.
+    const TABLE: &str = "| Name | Qty |\n|:-----|----:|\n| Pear | 3 |\n| Fig | 12 |\n";
+
+    #[test]
+    fn a_table_renders_as_an_aligned_grid() {
+        let text = rendered(&map(TABLE));
+        assert_eq!(
+            text,
+            "┌──────┬─────┐\n\
+             │ Name │ Qty │\n\
+             ├──────┼─────┤\n\
+             │ Pear │   3 │\n\
+             │ Fig  │  12 │\n\
+             └──────┴─────┘",
+            "got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn table_columns_honour_their_alignment() {
+        // Centre and default(left) come straight from twig's cell.alignment —
+        // the delimiter row it's spelled in is consumed and has no node.
+        let text = rendered(&map("| A | Bee |\n| --- | :---: |\n| x | y |\n"));
+        assert!(text.contains("│ x │  y  │"), "centred column: {text:?}");
+    }
+
+    #[test]
+    fn table_borders_are_decoration_the_caret_never_lands_on() {
+        let m = map(TABLE);
+        // The rules are whole decoration rows.
+        for r in [0, 2, 5] {
+            assert!(m.rows[r].decoration, "row {r} should be a decoration rule");
+            assert!(!m.rows[r].glyphs.iter().any(|g| g.stop), "row {r} has a stop");
+        }
+        // A content row's `│` and padding are decoration; only the cell text
+        // and each cell's one end-stop are stops.
+        let header = &m.rows[1];
+        assert!(!header.decoration);
+        for g in &header.glyphs {
+            if g.ch == '│' {
+                assert!(!g.stop, "a border is not a caret stop");
+            }
+        }
+        let stops: String = header.glyphs.iter().filter(|g| g.stop).map(|g| g.ch).collect();
+        assert_eq!(stops, "Name Qty ", "cell text plus one end-stop space each");
+    }
+
+    #[test]
+    fn a_cell_maps_to_its_own_source_text() {
+        let m = map(TABLE);
+        // "Pear" starts at byte 32 in TABLE; the caret there draws on the 'P'.
+        let pear = TABLE.find("Pear").unwrap();
+        let (r, c) = m.pos_of_offset(pear);
+        assert_eq!(m.rows[r].glyphs[c].ch, 'P');
+        assert_eq!(m.offset_of_pos(r, c), pear, "round trips");
+    }
+
     #[test]
     fn caret_steps_over_hidden_delimiters() {
         // "a **bold** c": bytes 8,9 are the closing ** — no glyph. Moving right
@@ -646,3 +972,4 @@ mod tests {
         assert_eq!(m.offset_of_pos(r, c + 1), 10);
     }
 }
+
