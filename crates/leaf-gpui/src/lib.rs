@@ -778,19 +778,13 @@ impl Editor {
         doc.toggle_list(true);
         cx.notify();
     }
-    /// ⌘K: open the link prompt. `Doc` has no public way to read an existing
-    /// link's destination at the caret — `nodes()`/`FlatNode::destination`
-    /// carry it, but `nodes()` is private to leaf-core — so the prompt always
-    /// starts blank rather than this crate reaching past that seam or
-    /// leaf-core growing a one-off accessor for it. `insert_link` itself still
-    /// re-points a link the caret sits in, so retyping the same (or a new)
-    /// destination and confirming works either way; only the convenience of
-    /// seeing the old one first is missing.
+    /// ⌘K: open the link prompt, prefilled with the destination of the link
+    /// the caret already sits in (if any) so re-pointing a link means editing
+    /// its URL rather than retyping it from scratch.
     fn insert_link(&mut self, _: &InsertLink, window: &mut Window, cx: &mut Context<Self>) {
-        if self.doc.is_none() {
-            return;
-        }
-        self.open_prompt("Link destination", String::new(), PromptAction::Link, window, cx);
+        let Some(doc) = self.doc.as_mut() else { return };
+        let initial = doc.link_destination_at_caret().unwrap_or_default();
+        self.open_prompt("Link destination", initial, PromptAction::Link, window, cx);
     }
     // ── clipboard (gpui's own, not an external crate) ───────────────────────
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
