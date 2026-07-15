@@ -11,11 +11,28 @@ use gpui::{
     Render, Window, WindowBounds, WindowOptions, actions, div, prelude::*, px, size,
 };
 use gpui_platform::application;
-use leaf_core::{Doc, View};
-use leaf_gpui::{Editor, register_keybindings};
+use leaf_core::{Doc, InlineKind, View};
+use leaf_gpui::{Editor, EditorEvent, register_keybindings};
 
 // App-level actions the host owns — the editor never quits or opens files itself.
 actions!(leaf_app, [Quit, Cancel, OpenFile]);
+
+/// The badge the header lights up for an inline mark in force at the caret.
+/// Short enough to sit in a row of them without crowding the file name out.
+fn mark_badge(kind: InlineKind) -> &'static str {
+    match kind {
+        InlineKind::Strong => "B",
+        InlineKind::Emph => "I",
+        InlineKind::Verbatim => "code",
+        InlineKind::Mark => "mark",
+        InlineKind::Superscript => "sup",
+        InlineKind::Subscript => "sub",
+        // twig's edit-tracking pair, which leaf binds as underline (⌘⇧U) and
+        // strikethrough (⌘⇧X) — so the badge names the key, not the AST node.
+        InlineKind::Insert => "U",
+        InlineKind::Delete => "S",
+    }
+}
 
 /// The application shell: window chrome (header, file-open `+`, quit guard) around
 /// an embedded [`Editor`]. All editing lives in the widget; this is the app.
@@ -26,8 +43,10 @@ struct LeafApp {
 
 impl LeafApp {
     /// ⌘Q defers to the widget's own close guard (see `Editor::confirm_close`)
-    /// so the window's close button, wired the same way below, warns and
-    /// confirms identically instead of the host tracking a second arm/disarm bit.
+    /// so the window's close button, wired the same way below, asks identically
+    /// instead of the host growing a second copy of the question. A dirty
+    /// document answers `false` and puts Save / Discard / Cancel on screen; the
+    /// quit then arrives (or doesn't) as an `EditorEvent::CloseConfirmed`.
     fn quit(&mut self, _: &Quit, _: &mut Window, cx: &mut Context<Self>) {
         if self.editor.update(cx, |editor, cx| editor.confirm_close(cx)) {
             cx.quit();
@@ -37,12 +56,12 @@ impl LeafApp {
     /// Esc is unconditionally bound (`ctx: None`, below) so it always resolves
     /// to this action first, ahead of anything the embedded widget itself
     /// might want to do with the same key — including dismissing its own
-    /// modal text prompt. So this asks the widget's prompt to close first and
-    /// only falls back to the close-warning guard when there wasn't one.
+    /// modal prompt or dialog. So this hands the keystroke to those in turn
+    /// rather than letting the binding swallow it.
     fn cancel(&mut self, _: &Cancel, window: &mut Window, cx: &mut Context<Self>) {
         self.editor.update(cx, |editor, cx| {
             if !editor.cancel_prompt(window, cx) {
-                editor.cancel_close(cx);
+                editor.dismiss_dialog(cx);
             }
         });
     }
@@ -85,24 +104,26 @@ impl Render for LeafApp {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Snapshot what the header needs, then drop the editor borrow before we
         // build listeners that also touch `cx`.
-        let (has_doc, name, dirty, view, is_dirty, close_armed) = {
+        let (has_doc, name, dirty, view) = {
             let e = self.editor.read(cx);
             (
                 e.has_doc(),
                 e.file_name(),
                 if e.is_dirty() { " ●" } else { "" },
                 e.view_label(),
-                e.is_dirty(),
-                e.close_armed(),
             )
         };
-        let warn = close_armed && is_dirty;
-        let header = if warn {
-            "Unsaved changes — ⌘Q again to quit without saving, ⌘S to save, Esc to cancel".to_string()
-        } else if has_doc {
+        // Which inline marks are in force where the caret is — Bold lights up
+        // when the caret sits in bold text, not just when ⌘B was the last key.
+        // A separate `update` because leaf-core answers this from the AST and so
+        // needs `&mut` (see `Editor::active_marks`); it's an AST walk over a
+        // `Copy` bitset, built to be asked every frame, not a file read.
+        let marks = self.editor.update(cx, |e, _| e.active_marks());
+        let header = if has_doc {
             format!(
-                "leaf — {name}{dirty}   [{view}]   ⌘e view · ⌘b/⌘i/⌘⇧c/⌘⇧m bold/italic/code/mark · \
-                 ⌃0-6 ¶/heading · ⌥←/→ word · ⌘↑/↓ doc ends · ⌘z/⇧⌘z undo · ⌘s save"
+                "leaf — {name}{dirty}   [{view}]   ⌘e view · ⌘b/⌘i/⌘⇧c/⌘⇧m/⌘⇧x/⌘⇧u \
+                 bold/italic/code/mark/strike/underline · ⌃0-6 ¶/heading · ⇥/⇧⇥ indent · \
+                 ⌥←/→ word · ⌘z/⇧⌘z undo · ⌘n new · ⌘s save · ⌘⇧s save as"
             )
         } else {
             "leaf — no file open   (⌘O or click + to open a markdown, djot, or HTML file)".to_string()
@@ -123,15 +144,22 @@ impl Render for LeafApp {
             .child(
                 div()
                     .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap_1()
                     .px_3()
                     .py_1()
-                    .bg(if warn {
-                        gpui::rgb(0xffe9b0)
-                    } else {
-                        gpui::rgb(0xf0f0f0)
-                    })
+                    .bg(gpui::rgb(0xf0f0f0))
                     .text_color(gpui::rgb(0x555555))
-                    .child(header),
+                    .child(header)
+                    .children(marks.iter().map(|kind| {
+                        div()
+                            .px_1()
+                            .rounded_sm()
+                            .bg(gpui::rgb(0xd4dcf0))
+                            .text_color(gpui::rgb(0x1e3a8a))
+                            .child(mark_badge(kind))
+                    })),
             )
             .child(
                 // The editor fills the rest; the `+` overlay shows only when empty.
@@ -245,9 +273,32 @@ fn main() {
                     });
 
                     cx.new(|cx| {
-                        // Re-render the header when the editor changes (dirty ● /
-                        // the close guard's warning banner).
-                        cx.observe(&editor, |_, _, cx| cx.notify()).detach();
+                        // Re-render the header when the editor changes (dirty ●,
+                        // the caret's active marks).
+                        cx.observe(&editor, |_: &mut LeafApp, _, cx| cx.notify()).detach();
+
+                        // The widget owns the close question but can't act on the
+                        // answer — quitting is the app's. Two of the three answers
+                        // (Save, Discard) end here.
+                        cx.subscribe(&editor, |_, _, event, cx| match event {
+                            EditorEvent::CloseConfirmed => cx.quit(),
+                        })
+                        .detach();
+
+                        // Notice a file edited by something else while leaf wasn't
+                        // looking. Window activation is the moment for it: the user
+                        // is coming back from whatever touched the file, and
+                        // `disk_state` is a read + hash — affordable per
+                        // activation, never per frame. gpui's activation observer
+                        // fires on deactivation too, hence the `is_window_active`
+                        // check rather than a read on the way out as well.
+                        cx.observe_window_activation(window, |app, window, cx| {
+                            if window.is_window_active() {
+                                app.editor.update(cx, |e, cx| e.check_disk_state(cx));
+                            }
+                        })
+                        .detach();
+
                         LeafApp {
                             editor,
                             focus_handle: cx.focus_handle(),

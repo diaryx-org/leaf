@@ -1,8 +1,8 @@
 //! A minimal, reusable single-line text prompt: a caller-supplied label and
 //! initial value, edited with Backspace and printable characters, Enter to
-//! confirm and Esc to cancel. `Editor` (`lib.rs`) is the only caller today —
-//! ⌘K's link destination — but nothing here names links; Save As's file name
-//! is meant to be the next [`PromptAction`] variant, not a new prompt type.
+//! confirm and Esc to cancel. `Editor` (`lib.rs`) opens it for ⌘K's link
+//! destination and ⌘⇧S's file name; nothing here names either, and a third
+//! caller adds a [`PromptAction`] variant rather than a second prompt type.
 //!
 //! The prompt owns a `FocusHandle` distinct from the document's own. Moving
 //! window focus onto it (`Editor::open_prompt`) is what keeps keystrokes out
@@ -18,6 +18,8 @@
 
 use gpui::{FocusHandle, SharedString};
 
+use crate::Pending;
+
 /// What a confirmed prompt does with the string it collected. `Editor::confirm_prompt`
 /// matches on this; a new caller adds a variant and an arm there rather than
 /// teaching this module about itself.
@@ -25,6 +27,11 @@ use gpui::{FocusHandle, SharedString};
 pub(crate) enum PromptAction {
     /// Link the selection, or the block at the caret, to the entered destination.
     Link,
+    /// Write the document to the entered path (`Doc::save_as`). `then` is what
+    /// the Save As was on the way to: an untitled document reaches this from a
+    /// plain ⌘S (nothing follows), but also from the quit dialog's Save, and
+    /// naming the file is the only reason that quit hasn't happened yet.
+    SaveAs { then: Pending },
 }
 
 /// One open prompt's live state.
