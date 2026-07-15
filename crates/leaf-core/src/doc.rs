@@ -41,6 +41,26 @@ enum EditKind {
     Other,
 }
 
+/// The caret and selection at one moment — the part of a history step twig's
+/// `Change` cannot carry, because the caret is leaf's state and twig only knows
+/// about bytes.
+#[derive(Clone, Copy)]
+struct CaretState {
+    caret: usize,
+    anchor: Option<usize>,
+}
+
+/// The leaf-side half of one undo step, sitting at the same depth as twig's:
+/// `before` is where the caret was when the edit began, `after` where the edit
+/// left it. Undo restores `before`, redo `after` — an edit is only truly
+/// reversed when the caret comes back too, and where the caret *was* is not
+/// something the bytes remember.
+#[derive(Clone, Copy)]
+struct CaretStep {
+    before: CaretState,
+    after: CaretState,
+}
+
 pub struct Doc {
     editor: Editor,
     pub format: Format,
@@ -59,6 +79,17 @@ pub struct Doc {
     /// (see `undo`/`redo`), but "what counts as one undo step" is a frontend-UX
     /// call, so leaf decides when a run continues and tells twig to coalesce.
     last_edit_kind: Option<EditKind>,
+    /// Caret/selection states running in lockstep with twig's undo and redo
+    /// stacks — `caret_undo[i]` belongs to twig's i-th undo step, and the two
+    /// are pushed, popped, coalesced, and truncated together or not at all.
+    ///
+    /// Drift here is silent and awful: the stacks stay the same *depth* while
+    /// holding states from different timelines, so undo puts the caret somewhere
+    /// plausible from an edit that never happened. Every twig history mutation
+    /// therefore has exactly one counterpart here — see `push_history` (which
+    /// owns the redo truncation a fresh edit forces) and `after_history`.
+    caret_undo: Vec<CaretStep>,
+    caret_redo: Vec<CaretStep>,
     /// The source as of the last open/save — `dirty` is `source != clean_source`,
     /// so undoing back to the saved state correctly clears the modified flag.
     clean_source: String,
@@ -116,6 +147,8 @@ impl Doc {
             // toggles at runtime.
             view: View::Wysiwyg,
             last_edit_kind: None,
+            caret_undo: Vec::new(),
+            caret_redo: Vec::new(),
             goal_col: None,
             vmap: VisualMap::default(),
             scroll: 0,
@@ -218,9 +251,11 @@ impl Doc {
         self.splice(start, end, text, EditKind::Other);
     }
 
-    /// Insert `text` at the caret, replacing the selection if there is one. A
-    /// single typed character coalesces with the run of typing before it; a
-    /// newline or a multi-character insert (a paste) is its own undo step.
+    /// Insert typed `text` at the caret, replacing the selection if there is one.
+    /// A single typed character coalesces with the run of typing before it; a
+    /// newline or a multi-character insert is its own undo step.
+    ///
+    /// Typed input only — clipboard text goes through [`paste`](Self::paste).
     pub fn insert(&mut self, text: &str) {
         let (s, e) = self.selection().unwrap_or((self.caret, self.caret));
         let kind = if text.chars().take(2).count() == 1 && text != "\n" {
@@ -229,6 +264,139 @@ impl Doc {
             EditKind::Other
         };
         self.splice(s, e, text, kind);
+    }
+
+    /// Insert clipboard `text` at the caret, replacing the selection if there is
+    /// one — always its own undo step, whatever its length.
+    ///
+    /// Provenance is the whole point, and only the caller has it. `insert` reads
+    /// a lone character as a keystroke and folds it into the run around it,
+    /// which is right for typing and wrong for a one-character paste: that paste
+    /// would vanish mid-run on an undo it was never part of, and the characters
+    /// the user actually typed would go with it. Length can't tell the two
+    /// apart — `⌘V` of `x` and typing `x` are the same string — so the door the
+    /// caller comes through is what says which happened.
+    pub fn paste(&mut self, text: &str) {
+        let (s, e) = self.selection().unwrap_or((self.caret, self.caret));
+        self.splice(s, e, text, EditKind::Other);
+    }
+
+    // ── indentation ──────────────────────────────────────────────────────────
+
+    /// One indent level.
+    ///
+    /// Two spaces, not the four both frontends type for Tab today, because in a
+    /// markdown document four columns isn't a width — it's a *meaning*. Four
+    /// spaces at the head of a line is markdown's indented-code-block marker, so
+    /// one Tab on a paragraph would reparse it into code and style it as such;
+    /// two cannot, and the line stays the prose it was. Two is also exactly
+    /// where a `- ` bullet's content starts, so an indented line lands under its
+    /// parent item's text instead of beside it — the column a list-aware indent
+    /// has to hit anyway, which keeps this width from being relitigated later.
+    const INDENT: &'static str = "  ";
+
+    /// Indent the selected lines — or the caret's line, with no selection — by
+    /// one level (Tab).
+    pub fn indent(&mut self) {
+        self.reindent(true);
+    }
+
+    /// Take one indent level back off the selected lines, or the caret's line
+    /// (Shift+Tab). A line with no indentation is left exactly as it is.
+    ///
+    /// A line with *less* than a full level gives back what it has rather than
+    /// refusing: outdent's job is to walk a line left, and real documents — hand
+    /// written, or reflowed by some other editor — are full of indentation that
+    /// was never a clean multiple of anything. Refusing there would strand the
+    /// line at a depth Shift+Tab couldn't undo.
+    pub fn outdent(&mut self) {
+        self.reindent(false);
+    }
+
+    /// The body of [`indent`](Self::indent) / [`outdent`](Self::outdent).
+    ///
+    /// One splice across the whole line range, never one per line: a Tab is one
+    /// thing the user did, so it has to be one undo step and one reparse. Per
+    /// line, twig would reparse the document once per line and leave a stack of
+    /// steps that Shift+⌘Z walks back one line at a time.
+    fn reindent(&mut self, add: bool) {
+        let (sel_start, sel_end) = self.selection().unwrap_or((self.caret, self.caret));
+        let start = source_line_range(&self.source, sel_start).start;
+        let end = source_line_range(&self.source, sel_end).end;
+        let region = self.source[start..end].to_string();
+        let lines: Vec<&str> = region.split('\n').collect();
+        // A blank line has no text to move, and padding it would leave nothing
+        // but trailing whitespace — but Tab on a blank line *is* a request for
+        // indentation to type into, so the skip only applies where the op has
+        // other lines to do real work on.
+        let skip_blank = add && lines.len() > 1;
+
+        let mut out = String::with_capacity(region.len() + lines.len() * Self::INDENT.len());
+        let mut deltas: Vec<isize> = Vec::with_capacity(lines.len());
+        for (i, line) in lines.iter().enumerate() {
+            if i > 0 {
+                out.push('\n');
+            }
+            let delta = if add {
+                if skip_blank && line.trim().is_empty() {
+                    out.push_str(line);
+                    0
+                } else {
+                    out.push_str(Self::INDENT);
+                    out.push_str(line);
+                    Self::INDENT.len() as isize
+                }
+            } else {
+                let strip = outdent_width(line);
+                out.push_str(&line[strip..]);
+                -(strip as isize)
+            };
+            deltas.push(delta);
+        }
+        // Nothing to give back. Returning before the splice keeps an outdent at
+        // column zero from spending an undo step on a document it never changed.
+        if deltas.iter().all(|d| *d == 0) {
+            return;
+        }
+
+        // Every line's text keeps its offset *within the line*, so the caret is
+        // remapped by its column, not by its byte offset — which the prefixes on
+        // the lines above it have already invalidated.
+        let remap = |off: usize| -> usize {
+            let (mut old_ls, mut new_ls) = (start, start);
+            for (line, delta) in lines.iter().zip(&deltas) {
+                let old_le = old_ls + line.len();
+                let new_len = (line.len() as isize + delta) as usize;
+                if off <= old_le {
+                    let col = (off - old_ls) as isize;
+                    return new_ls + ((col + delta).max(0) as usize).min(new_len);
+                }
+                old_ls = old_le + 1;
+                new_ls += new_len + 1;
+            }
+            start + out.len()
+        };
+        let placed = match self.selection() {
+            // Keep the rewritten region selected, the way a container toggle
+            // keeps its own: it leaves a second Tab aimed at the same lines
+            // rather than at whatever the shifted offsets now happen to cover.
+            Some(_) => (start + out.len(), Some(start)),
+            None => (remap(self.caret), None),
+        };
+
+        // A rolled-back splice leaves the old source in place, where every offset
+        // computed above addresses text that was never written.
+        if !self.splice(start, end, &out, EditKind::Other) {
+            return;
+        }
+        // `splice` re-anchors to the end of the `Change`, which for a whole-region
+        // rewrite is the last line's end — nowhere the caret was. Place it, then
+        // tell the history where it really ended up, or a redo would replay the
+        // caret splice left behind instead of this one.
+        self.caret = placed.0.min(self.source.len());
+        self.anchor = placed.1;
+        self.clamp_caret();
+        self.sync_history_after();
     }
 
     /// The Enter key.
@@ -474,11 +642,16 @@ impl Doc {
     /// One splice via twig's `edit_range`, then re-anchor the caret from the
     /// returned `Change` and refresh the cached source. A reparse-breaking edit
     /// (rare for Markdown/Djot) leaves the document untouched and reports.
-    fn splice(&mut self, start: usize, end: usize, text: &str, kind: EditKind) {
+    ///
+    /// Returns whether the edit landed — for a caller that has offsets of its
+    /// own to place afterwards, which a rolled-back splice would leave pointing
+    /// into text that never came to exist.
+    fn splice(&mut self, start: usize, end: usize, text: &str, kind: EditKind) -> bool {
         // twig records an undo step for every edit; when this one continues a
         // run of the same kind (typing, deleting), tell twig to fold it into the
         // step before it so the whole run undoes at once.
         let coalesce = kind != EditKind::Other && self.last_edit_kind == Some(kind);
+        let before = self.snapshot();
         match self.editor.edit_range(start, end, text) {
             Ok(change) => {
                 if coalesce {
@@ -491,8 +664,55 @@ impl Doc {
                 self.goal_col = None;
                 self.dirty = self.source != self.clean_source;
                 self.status = None;
+                self.push_history(before, coalesce);
+                true
             }
-            Err(e) => self.status = Some(format!("edit: {e}")),
+            // The edit was rolled back, so twig's history did not move and
+            // neither may ours: pushing here would leave a step with no edit
+            // under it and shift every later undo onto the wrong caret.
+            Err(e) => {
+                self.status = Some(format!("edit: {e}"));
+                false
+            }
+        }
+    }
+
+    fn snapshot(&self) -> CaretState {
+        CaretState {
+            caret: self.caret,
+            anchor: self.anchor,
+        }
+    }
+
+    /// Record the caret state around one successful twig edit. `before` is the
+    /// snapshot taken before the op ran; the caret as it stands *now* is the
+    /// step's `after`, so call this once the op has placed the caret where it
+    /// finally means to leave it.
+    ///
+    /// `coalesce` must be the same flag handed to twig's `coalesce_last_undo`:
+    /// folding two twig steps into one has to fold two of ours into one as well,
+    /// which is a matter of *not* pushing and instead stretching the open step's
+    /// `after` over the new edit. The run's original `before` stays put — a
+    /// coalesced run undoes as one step, so it restores the caret from before
+    /// the whole run, not before its last keystroke.
+    fn push_history(&mut self, before: CaretState, coalesce: bool) {
+        let after = self.snapshot();
+        // Any fresh edit makes twig drop its redo stack; ours goes with it, or a
+        // later redo would replay a caret from the branch that edit abandoned.
+        self.caret_redo.clear();
+        match self.caret_undo.last_mut().filter(|_| coalesce) {
+            Some(open) => open.after = after,
+            None => self.caret_undo.push(CaretStep { before, after }),
+        }
+    }
+
+    /// Re-point the open history step's `after` at the caret as it now stands —
+    /// for an op that splices and then places the caret itself, whose final
+    /// caret isn't the one `splice` re-anchored from the `Change`.
+    fn sync_history_after(&mut self) {
+        let after = self.snapshot();
+        if let Some(open) = self.caret_undo.last_mut() {
+            open.after = after;
         }
     }
 
@@ -503,6 +723,7 @@ impl Doc {
             self.status = Some("select text first".into());
             return;
         };
+        let before = self.snapshot();
         match self.editor.toggle_inline(s, e, kind) {
             Ok(change) => {
                 self.last_edit_kind = None; // structural edit is its own undo step
@@ -511,6 +732,7 @@ impl Doc {
                 self.caret = change.new.end;
                 self.dirty = self.source != self.clean_source;
                 self.status = None;
+                self.push_history(before, false);
             }
             Err(e) => self.status = Some(format!("{kind:?}: {e}")),
         }
@@ -518,6 +740,7 @@ impl Doc {
 
     /// Convert the block at the caret to a heading level or paragraph.
     pub fn set_block(&mut self, kind: BlockKind) {
+        let before = self.snapshot();
         match self.block_offset_for_caret() {
             Some(offset) => match self.editor.set_block(offset, kind) {
                 Ok(_) => {
@@ -527,6 +750,7 @@ impl Doc {
                     self.anchor = None;
                     self.dirty = self.source != self.clean_source;
                     self.status = None;
+                    self.push_history(before, false);
                 }
                 Err(e) => self.status = Some(format!("{kind:?}: {e}")),
             },
@@ -649,6 +873,7 @@ impl Doc {
                 (off, off)
             }
         };
+        let before = self.snapshot();
         match self.editor.toggle_block_container(start, end, kind) {
             Ok(change) => {
                 // Read the caret's place out of the *pre-edit* source, before
@@ -675,6 +900,7 @@ impl Doc {
                 self.dirty = self.source != self.clean_source;
                 self.status = None;
                 self.clamp_caret();
+                self.push_history(before, false);
             }
             Err(e) => self.status = Some(format!("{kind:?}: {e}")),
         }
@@ -734,6 +960,7 @@ impl Doc {
     /// as an error rather than a quietly rewritten URL.
     pub fn insert_link(&mut self, destination: &str) {
         let (start, end) = self.selection().unwrap_or((self.caret, self.caret));
+        let before = self.snapshot();
         match self.editor.insert_link(start, end, destination) {
             Ok(change) => {
                 self.last_edit_kind = None;
@@ -757,6 +984,7 @@ impl Doc {
                 self.dirty = self.source != self.clean_source;
                 self.status = None;
                 self.clamp_caret();
+                self.push_history(before, false);
             }
             Err(e) => self.status = Some(format!("link: {e}")),
         }
@@ -792,34 +1020,66 @@ impl Doc {
     }
 
     // ── undo / redo ───────────────────────────────────────────────────────────
-    // twig owns the history (it owns the buffer); leaf just drives it and
-    // re-anchors the caret from the returned `Change`. See `splice` for how a
-    // run of keystrokes is coalesced into one step via `coalesce_last_undo`.
+    // twig owns the history of *bytes* (it owns the buffer); leaf drives it and
+    // keeps the matching history of *carets*, which twig's `Change` can't carry
+    // because the caret was never twig's to know. The two stacks move as one —
+    // see `push_history` for the pushing, coalescing, and redo truncation, and
+    // `splice` for how a run of keystrokes becomes a single step.
 
-    /// Undo the last edit step (⌘Z / ^Z).
+    /// Undo the last edit step (⌘Z / ^Z), putting the caret and selection back
+    /// where they were when that step began.
     pub fn undo(&mut self) {
         match self.editor.undo() {
-            Ok(Some(change)) => self.after_history(change),
+            Ok(Some(change)) => {
+                let step = self.caret_undo.pop();
+                self.after_history(change, step.map(|s| s.before));
+                if let Some(step) = step {
+                    self.caret_redo.push(step);
+                }
+            }
             Ok(None) => self.status = Some("nothing to undo".into()),
             Err(e) => self.status = Some(format!("undo: {e}")),
         }
     }
 
-    /// Redo the last undone edit step (⇧⌘Z / ^Y).
+    /// Redo the last undone edit step (⇧⌘Z / ^Y), putting the caret and
+    /// selection back where that step originally left them.
     pub fn redo(&mut self) {
         match self.editor.redo() {
-            Ok(Some(change)) => self.after_history(change),
+            Ok(Some(change)) => {
+                let step = self.caret_redo.pop();
+                self.after_history(change, step.map(|s| s.after));
+                if let Some(step) = step {
+                    self.caret_undo.push(step);
+                }
+            }
             Ok(None) => self.status = Some("nothing to redo".into()),
             Err(e) => self.status = Some(format!("redo: {e}")),
         }
     }
 
-    /// Refresh the cached source and re-anchor the caret to where an undo/redo
-    /// landed (the end of the changed region), clearing any active run.
-    fn after_history(&mut self, change: Change) {
+    /// Refresh the cached source and put the caret back where the step being
+    /// undone/redone had it, clearing any active run.
+    ///
+    /// `restore` is that remembered state; `change` is only the fallback for a
+    /// step with no record of its own — a caret at the end of the restored text,
+    /// which is where this always landed before the states were kept. It is the
+    /// edit site, not where the user was standing, so it's a floor and not the
+    /// behaviour: undoing should hand back the document *and* the place you were
+    /// working, which for an edit made anywhere but under the caret are two
+    /// different places.
+    fn after_history(&mut self, change: Change, restore: Option<CaretState>) {
         self.refresh();
-        self.caret = change.new.end.min(self.source.len());
-        self.anchor = None;
+        match restore {
+            Some(state) => {
+                self.caret = state.caret.min(self.source.len());
+                self.anchor = state.anchor.map(|a| a.min(self.source.len()));
+            }
+            None => {
+                self.caret = change.new.end.min(self.source.len());
+                self.anchor = None;
+            }
+        }
         self.goal_col = None;
         self.last_edit_kind = None;
         self.dirty = self.source != self.clean_source;
@@ -1557,6 +1817,22 @@ fn source_line_range(s: &str, off: usize) -> std::ops::Range<usize> {
     let start = s[..off].rfind('\n').map(|p| p + 1).unwrap_or(0);
     let end = s[off..].find('\n').map(|p| off + p).unwrap_or(s.len());
     start..end
+}
+
+/// How many leading bytes an outdent takes off `line`: a whole indent level
+/// where the line has one, and whatever it has where it has less.
+///
+/// A leading tab counts as a level on its own. It's indentation some other
+/// editor wrote, and one tab is one level everywhere it came from — measuring it
+/// in spaces it doesn't contain would leave it untouchable.
+fn outdent_width(line: &str) -> usize {
+    if line.starts_with('\t') {
+        return 1;
+    }
+    line.bytes()
+        .take(Doc::INDENT.len())
+        .take_while(|b| *b == b' ')
+        .count()
 }
 
 fn classify(c: char) -> Class {
@@ -2761,6 +3037,265 @@ mod tests {
     }
 
     #[test]
+    fn a_one_character_paste_is_its_own_undo_step() {
+        for view in [View::Source, View::Wysiwyg] {
+            let mut d = doc_in(view, "paste_step", "ab\n");
+            d.caret = 0;
+            d.insert("x");
+            d.insert("y"); // a run of typing
+            d.paste("z"); // one character, but pasted — not part of that run
+            assert_eq!(d.source, "xyzab\n");
+            d.undo();
+            assert_eq!(d.source, "xyab\n", "the paste undoes on its own");
+            assert_eq!(d.caret, 2, "and hands back the caret it found");
+            d.undo();
+            assert_eq!(d.source, "ab\n", "the typed run is still one step under it");
+        }
+    }
+
+    #[test]
+    fn the_same_character_typed_still_joins_the_run() {
+        // The other half of the pair: `z` is a keystroke here and a paste above,
+        // and the two undo differently. Nothing about the *string* says which —
+        // which is why provenance has to come from the door the caller uses.
+        for view in [View::Source, View::Wysiwyg] {
+            let mut d = doc_in(view, "typed_run", "ab\n");
+            d.caret = 0;
+            d.insert("x");
+            d.insert("y");
+            d.insert("z");
+            d.undo();
+            assert_eq!(d.source, "ab\n", "one run, one step");
+        }
+    }
+
+    #[test]
+    fn undo_restores_the_caret_to_where_it_was_not_to_the_edit_site() {
+        for view in [View::Source, View::Wysiwyg] {
+            let mut d = doc_in(view, "undo_caret", "hello world\n");
+            d.caret = 11; // standing at the end of "world", away from the edit
+            d.edit(0, 5, "goodbye");
+            assert_eq!(d.source, "goodbye world\n");
+            d.undo();
+            assert_eq!(d.source, "hello world\n");
+            // The undone edit ends at offset 5; the user was at 11.
+            assert_eq!(d.caret, 11, "the caret comes back with the bytes");
+        }
+    }
+
+    #[test]
+    fn undo_restores_the_selection_the_edit_replaced() {
+        for view in [View::Source, View::Wysiwyg] {
+            let mut d = doc_in(view, "undo_sel", "a word b\n");
+            d.anchor = Some(2);
+            d.caret = 6; // "word" selected
+            d.insert("X");
+            assert_eq!(d.source, "a X b\n");
+            d.undo();
+            assert_eq!(d.source, "a word b\n");
+            assert_eq!(d.selection(), Some((2, 6)), "the selection comes back too");
+        }
+    }
+
+    #[test]
+    fn redo_restores_the_caret_the_edit_left_behind() {
+        for view in [View::Source, View::Wysiwyg] {
+            let mut d = doc_in(view, "redo_caret", "hello world\n");
+            d.caret = 11;
+            d.edit(0, 5, "goodbye");
+            assert_eq!(d.caret, 7, "the edit left the caret after its new text");
+            d.undo();
+            d.redo();
+            assert_eq!(d.source, "goodbye world\n");
+            assert_eq!(d.caret, 7, "redo puts it back where the edit had it");
+        }
+    }
+
+    #[test]
+    fn undoing_a_typed_run_restores_the_caret_from_before_the_whole_run() {
+        for view in [View::Source, View::Wysiwyg] {
+            let mut d = doc_in(view, "run_caret", "hi\n");
+            d.caret = 2;
+            d.insert("a");
+            d.insert("b");
+            d.insert("c");
+            assert_eq!(d.source, "hiabc\n");
+            d.undo();
+            assert_eq!(d.source, "hi\n");
+            assert_eq!(d.caret, 2, "before the run, not before its last keystroke");
+            d.redo();
+            assert_eq!(d.caret, 5, "and redo restores the end of the whole run");
+        }
+    }
+
+    #[test]
+    fn undo_restores_the_caret_across_a_format_toggle() {
+        // A toggle reaches twig without going through `splice`, so it has to
+        // record its own step — miss it and every stack depth below it is off by
+        // one, and undo starts handing back another edit's caret.
+        for view in [View::Source, View::Wysiwyg] {
+            let mut d = doc_in(view, "fmt_caret", "a word b\n");
+            d.caret = 8;
+            d.anchor = Some(2);
+            d.caret = 6;
+            d.toggle(InlineKind::Strong);
+            assert_eq!(d.source, "a **word** b\n");
+            d.undo();
+            assert_eq!(d.source, "a word b\n");
+            assert_eq!(d.selection(), Some((2, 6)), "the toggled selection comes back");
+        }
+    }
+
+    #[test]
+    fn an_edit_after_an_undo_truncates_the_caret_history_with_twigs() {
+        // The drift that would never announce itself: twig drops its redo stack
+        // on any fresh edit, so a leaf redo entry that outlives it would restore
+        // a caret from the timeline that edit abandoned.
+        for view in [View::Source, View::Wysiwyg] {
+            let mut d = doc_in(view, "redo_trunc", "hello world\n");
+            d.caret = 11;
+            d.edit(0, 5, "goodbye"); // step A, caret 11 → 7
+            d.undo();
+            assert_eq!(d.caret, 11);
+            d.caret = 0;
+            d.insert("X"); // diverges: A's redo is gone from twig
+            assert_eq!(d.source, "Xhello world\n");
+            assert_eq!(d.caret_undo.len(), 1, "A's step went with A's redo");
+            assert!(d.caret_redo.is_empty(), "the abandoned branch is gone");
+
+            d.redo();
+            assert_eq!(d.source, "Xhello world\n", "nothing to redo onto");
+            assert_eq!(d.status.as_deref(), Some("nothing to redo"));
+            d.undo();
+            assert_eq!(d.source, "hello world\n");
+            assert_eq!(d.caret, 0, "the surviving step's caret, not the dropped one");
+        }
+    }
+
+    #[test]
+    fn indent_and_outdent_move_the_caret_line_with_its_text() {
+        for view in [View::Source, View::Wysiwyg] {
+            let g = |m, f: fn(&mut Doc)| golden_in(view, "indent_line", m, f);
+            assert_eq!(g("he|llo\n", |d| d.indent()), "  he|llo\n");
+            assert_eq!(g("  he|llo\n", |d| d.outdent()), "he|llo\n");
+            // Indentation the caret is standing *in* collapses to the line start
+            // rather than dragging the caret into the text.
+            assert_eq!(g("| hello\n", |d| d.outdent()), "|hello\n");
+            // A line with none to give back is left exactly as it was.
+            assert_eq!(g("he|llo\n", |d| d.outdent()), "he|llo\n");
+            // Less than a full level gives back what it has.
+            assert_eq!(g(" he|llo\n", |d| d.outdent()), "he|llo\n");
+            // A tab is one level however many spaces it isn't.
+            assert_eq!(g("\the|llo\n", |d| d.outdent()), "he|llo\n");
+        }
+    }
+
+    #[test]
+    fn one_indent_level_leaves_a_paragraph_a_paragraph() {
+        // Why the level is two spaces and not the four both frontends type
+        // today. Four is markdown's indented-code-block marker, so a Tab on a
+        // paragraph would silently restyle it as code — a width that changes
+        // what the document *means* isn't an indent. Pinned because the number
+        // is the kind of thing a later list-aware pass would reach for.
+        let mut d = doc_with("indent_kind", "hello\n");
+        d.caret = 2;
+        d.indent();
+        assert_eq!(d.source, "  hello\n");
+        assert!(
+            d.nodes().iter().any(|n| n.kind == "para"),
+            "still prose after a Tab"
+        );
+        assert!(!d.nodes().iter().any(|n| n.kind == "code_block"));
+
+        // The four-space level this replaces, for contrast: same text, and twig
+        // reparses the paragraph into a code block.
+        let mut wide = doc_with("indent_kind_4", "    hello\n");
+        wide.build_visual(80);
+        assert!(
+            wide.nodes().iter().any(|n| n.kind == "code_block"),
+            "four spaces is a code block, not an indented paragraph"
+        );
+    }
+
+    #[test]
+    fn indent_nests_a_list_item_under_its_parent() {
+        // Not list-*aware* (that needs container-aware indentation in twig), but
+        // the plain line shift already lands a bullet at the column that nests
+        // it — which is the same width the aware version will need.
+        for view in [View::Source, View::Wysiwyg] {
+            let mut d = doc_in(view, "indent_nest", "- a\n- b\n");
+            d.caret = 6; // on the second item
+            d.indent();
+            assert_eq!(d.source, "- a\n  - b\n");
+            let lists = d.nodes().iter().filter(|n| n.kind == "bullet_list").count();
+            assert_eq!(lists, 2, "the indented item is a nested list");
+        }
+    }
+
+    #[test]
+    fn outdent_with_nothing_to_give_back_records_no_undo_step() {
+        for view in [View::Source, View::Wysiwyg] {
+            let mut d = doc_in(view, "outdent_noop", "hello\n");
+            d.caret = 2;
+            d.outdent();
+            assert_eq!(d.source, "hello\n");
+            assert!(!d.dirty, "a no-op is not a modification");
+            assert!(d.caret_undo.is_empty(), "and spends no undo step");
+        }
+    }
+
+    #[test]
+    fn indent_shifts_every_selected_line_and_keeps_them_selected() {
+        for view in [View::Source, View::Wysiwyg] {
+            let mut d = doc_in(view, "indent_sel", "one\n\ntwo\n");
+            d.anchor = Some(0);
+            d.caret = 7; // through "two"
+            d.indent();
+            assert_eq!(
+                d.source, "  one\n\n  two\n",
+                "the blank line keeps no trailing pad"
+            );
+            // Selected, so a second Tab lands on the same lines rather than on
+            // whatever the shifted offsets now cover.
+            assert_eq!(d.selection(), Some((0, 12)));
+            d.indent();
+            assert_eq!(d.source, "    one\n\n    two\n");
+        }
+    }
+
+    #[test]
+    fn outdent_takes_what_each_line_has_and_leaves_the_rest_alone() {
+        for view in [View::Source, View::Wysiwyg] {
+            let mut d = doc_in(view, "outdent_sel", "  two\n one\nnone\n");
+            d.anchor = Some(0);
+            d.caret = 15;
+            d.outdent();
+            assert_eq!(d.source, "two\none\nnone\n");
+        }
+    }
+
+    #[test]
+    fn a_tab_undoes_as_one_step_however_many_lines_it_moved() {
+        for view in [View::Source, View::Wysiwyg] {
+            let mut d = doc_in(view, "indent_undo", "one\n\ntwo\n");
+            d.anchor = Some(0);
+            d.caret = 7;
+            d.indent();
+            assert_eq!(d.source, "  one\n\n  two\n");
+            d.undo();
+            assert_eq!(d.source, "one\n\ntwo\n", "one step, not one per line");
+            assert_eq!(d.selection(), Some((0, 7)), "with the selection it was aimed at");
+            d.redo();
+            assert_eq!(d.source, "  one\n\n  two\n");
+            assert_eq!(
+                d.selection(),
+                Some((0, 12)),
+                "redo replays the caret the indent placed, not the one splice left"
+            );
+        }
+    }
+
+    #[test]
     fn vertical_motion_keeps_the_column() {
         let mut d = doc_with("move", "abcd\nef\n");
         d.caret = 3; // "abc|d" on row 0, col 3
@@ -3702,5 +4237,6 @@ fn detect_format(path: &Path) -> Result<Format> {
         other => return Err(anyhow!("unknown document extension: .{other}")),
     })
 }
+
 
 
