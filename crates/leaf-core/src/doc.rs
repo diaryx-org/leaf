@@ -385,6 +385,53 @@ impl Doc {
         }
     }
 
+    /// Delete from the caret back to the start of its line (⌘⌫). Deletes the
+    /// selection instead when one is active, as every other delete here does.
+    ///
+    /// The line is the view's own — the one Home and End work on, so in WYSIWYG
+    /// a soft-wrapped row is a line. It is not Home's *target*, though: Home
+    /// stops at the first character and this takes the indentation with it, the
+    /// way Cocoa's `deleteToBeginningOfLine:` does. Stopping at the text would
+    /// leave an indent behind that nothing can then ask to delete, where a caret
+    /// left at column 0 is one press of Home away from either.
+    pub fn delete_to_line_start(&mut self) {
+        if let Some((s, e)) = self.selection() {
+            self.splice(s, e, "", EditKind::Other);
+            return;
+        }
+        // Never back across the floor: hidden frontmatter isn't on this line, or
+        // on any line the WYSIWYG caret can see.
+        let (start, _) = self.line_span();
+        let start = start.max(self.caret_floor());
+        if start < self.caret {
+            let (s, e) = self.widen_over_emptied_inlines(start, self.caret);
+            self.splice(s, e, "", EditKind::Delete);
+        }
+    }
+
+    /// Kill from the caret to the end of its line (^K). Deletes the selection
+    /// instead when one is active.
+    ///
+    /// At the end of the line it does nothing, rather than pulling the line
+    /// below up into this one. Joining has no meaning to give it in both views
+    /// at once: a WYSIWYG line ends at a soft wrap as often as at a newline, and
+    /// there is nothing there to delete, while the newline a *source* line ends
+    /// with is only half of the blank line that separates two paragraphs —
+    /// deleting one leaves a soft break, which is not the join it looks like.
+    /// The views agreeing is worth more than emacs' second press, and Delete is
+    /// already the key that joins.
+    pub fn delete_to_line_end(&mut self) {
+        if let Some((s, e)) = self.selection() {
+            self.splice(s, e, "", EditKind::Other);
+            return;
+        }
+        let (_, end) = self.line_span();
+        if end > self.caret {
+            let (s, e) = self.widen_over_emptied_inlines(self.caret, end);
+            self.splice(s, e, "", EditKind::Delete);
+        }
+    }
+
     /// Grow a WYSIWYG word-delete to swallow any inline node it empties.
     ///
     /// A glyph-space range covers what the user can see, which for `**bold**` is
@@ -1058,66 +1105,223 @@ impl Doc {
         );
     }
 
+    // Up and Down run off the ends of the document rather than stopping dead at
+    // them: Up from the first row lands at the document's start, Down from the
+    // last at its end. That's Cocoa's rule (`moveUp:`/`moveDown:` past the edge
+    // are `moveToBeginningOfDocument:`/`moveToEndOfDocument:`), and holding ↓
+    // reaching the end of the text is what a reader means by it.
+    //
+    // The views used to disagree here by accident rather than by decision: the
+    // source view fell into the edge behaviour through `row_col_to_offset`
+    // clamping an out-of-range row to the end of the string, while WYSIWYG had
+    // no row below to walk to and did nothing at all. They share the rule now,
+    // each in its own space — the source view reaches every byte, WYSIWYG only
+    // the offsets it draws.
+
     pub fn move_up(&mut self, extend: bool) {
         let (row, col) = self.caret_pos();
-        let goal = *self.goal_col.get_or_insert(col);
-        if row == 0 {
-            return;
-        }
+        let goal = self.goal_col.unwrap_or(col);
         let target = match self.view {
-            View::Source => row_col_to_offset(&self.source, row - 1, goal),
-            View::Wysiwyg => {
-                // A table's border rules are drawn but hold no caret, so Up
-                // steps over them to the row that does.
-                let Some(r) = self.vmap.navigable_above(row) else {
-                    return;
-                };
-                self.vmap.offset_of_pos(r, goal.min(self.vmap.row_width(r)))
-            }
+            View::Source => match row.checked_sub(1) {
+                Some(r) => row_col_to_offset(&self.source, r, goal),
+                None => self.reachable_start(),
+            },
+            // A table's border rules are drawn but hold no caret, so Up steps
+            // over them to the row that does.
+            View::Wysiwyg => match self.vmap.navigable_above(row) {
+                Some(r) => self.row_target(r, goal),
+                None => self.reachable_start(),
+            },
         };
-        let before = self.caret;
-        self.move_to(target, extend);
-        self.debug_assert_on_a_stop(before);
+        self.step_vertical(target, goal, extend);
     }
 
     pub fn move_down(&mut self, extend: bool) {
         let (row, col) = self.caret_pos();
-        let goal = *self.goal_col.get_or_insert(col);
+        let goal = self.goal_col.unwrap_or(col);
         let target = match self.view {
-            View::Source => row_col_to_offset(&self.source, row + 1, goal),
-            View::Wysiwyg => {
-                let Some(r) = self.vmap.navigable_below(row) else {
-                    return;
-                };
-                self.vmap.offset_of_pos(r, goal.min(self.vmap.row_width(r)))
-            }
+            View::Source => match self.source_row_below(row) {
+                Some(r) => row_col_to_offset(&self.source, r, goal),
+                None => self.reachable_end(),
+            },
+            View::Wysiwyg => match self.vmap.navigable_below(row) {
+                Some(r) => self.row_target(r, goal),
+                None => self.reachable_end(),
+            },
         };
+        self.step_vertical(target, goal, extend);
+    }
+
+    /// Land a vertical motion at `target`, latching the `goal` column it aimed
+    /// with so the rest of the run keeps aiming there.
+    ///
+    /// A motion with nowhere to go changes *nothing*, the goal column included:
+    /// the latch used to run before the early return at the top of the document,
+    /// so an Up that did nothing still armed a column, and the next Down aimed
+    /// at one the caret had never been in.
+    fn step_vertical(&mut self, target: usize, goal: usize, extend: bool) {
         let before = self.caret;
+        if target == before {
+            return;
+        }
+        self.goal_col = Some(goal);
         self.move_to(target, extend);
         self.debug_assert_on_a_stop(before);
     }
 
+    /// The source line below `row`, or `None` when `row` is the last one. Lines
+    /// are counted by newline, so a trailing one leaves a real, empty last line
+    /// for the caret to sit on — the document ends below it, not on it.
+    fn source_row_below(&self, row: usize) -> Option<usize> {
+        let last = self.source.bytes().filter(|&b| b == b'\n').count();
+        (row < last).then_some(row + 1)
+    }
+
+    /// Where a vertical motion aiming at the `goal` column lands on visual row
+    /// `r`: the column clamped to the row, mapped to its offset, then held
+    /// inside the row's own [bounds](Self::row_bounds) — a wrapped row's last
+    /// column belongs to the row below, and a gutter's column 0 points at the
+    /// block rather than at this row.
+    fn row_target(&self, r: usize, goal: usize) -> usize {
+        let (start, end) = self.row_bounds(r);
+        self.vmap
+            .offset_of_pos(r, goal.min(self.vmap.row_width(r)))
+            .clamp(start, end)
+    }
+
+    /// The first and last offsets the caret can reach in the active view.
+    ///
+    /// Not the same span in both: the source view shows every byte, so it can
+    /// reach every byte. WYSIWYG reaches only what it draws — hidden frontmatter
+    /// sits below the first stop, and a document's trailing newline is drawn
+    /// nowhere and so sits past the last.
+    fn reachable_start(&self) -> usize {
+        match self.view {
+            View::Source => 0,
+            View::Wysiwyg => self.vmap.stop_at_or_after(0).unwrap_or(self.caret),
+        }
+    }
+
+    fn reachable_end(&self) -> usize {
+        match self.view {
+            View::Source => self.source.len(),
+            View::Wysiwyg => self.vmap.stop_at_or_before(self.source.len()).unwrap_or(self.caret),
+        }
+    }
+
+    /// The `[start, end]` offsets visual row `r` *draws* — everything on it,
+    /// including the space a soft wrap ate off its end, which is drawn on this
+    /// row however much the offset past it belongs to the next one.
+    fn row_span(&self, r: usize) -> (usize, usize) {
+        let start = self
+            .vmap
+            .row_start(r)
+            .unwrap_or_else(|| self.vmap.offset_of_pos(r, 0));
+        let end = self.vmap.offset_of_pos(r, self.vmap.row_width(r));
+        (start.min(end), end)
+    }
+
+    /// [`row_span`](Self::row_span) narrowed to where the caret can stand: a
+    /// soft wrap's shared offset opens the row below (see `pos_of_offset`), so
+    /// this row's last position is the one before it — the offset before the
+    /// space the wrap ate, where the caret draws just past the row's last word
+    /// and types there too.
+    ///
+    /// Aiming at the shared offset instead is what stalled End: it is the row's
+    /// last *column*, so End pressed on the row reached it and then read back as
+    /// the row below's start, where a second press ran on to that row's end and
+    /// the next to the one after — End walking down the paragraph a row a press.
+    fn row_bounds(&self, r: usize) -> (usize, usize) {
+        let (start, end) = self.row_span(r);
+        let wraps = self
+            .vmap
+            .navigable_below(r)
+            .and_then(|b| self.vmap.row_start(b))
+            .is_some_and(|off| off == end);
+        match wraps {
+            true => (start, self.vmap.stop_before(end).unwrap_or(end).max(start)),
+            false => (start, end),
+        }
+    }
+
+    /// The `[start, end]` of the line Home and End aim at: the visual row in
+    /// WYSIWYG, the logical line in the source view. Both ends are caret stops.
+    ///
+    /// A soft-wrapped row is a line here, because it is one to the eye and the
+    /// eye is what these keys are aimed by — a reader pressing End means the end
+    /// of the line they can see. (`select_block_at` wants the opposite and reads
+    /// the AST for it: a triple-click grabs the whole paragraph, however many
+    /// rows it folds into.)
+    fn line_bounds(&self) -> (usize, usize) {
+        let (row, _) = self.caret_pos();
+        match self.view {
+            View::Source => {
+                let start = line_start(&self.source, row);
+                (start, line_end_from(&self.source, start))
+            }
+            View::Wysiwyg => self.row_bounds(row),
+        }
+    }
+
+    /// The same line as [`line_bounds`](Self::line_bounds), as far as it is
+    /// *drawn* — what a kill takes.
+    ///
+    /// The two part only at a soft wrap, over the space the wrap ate: the caret
+    /// can't stand after it (that offset opens the row below, and End stopping
+    /// there would walk), but it is on this row, and a kill that spared it would
+    /// leave a double space behind where the row's text had been. Deleting it
+    /// joins nothing — a wrap is drawn, not written.
+    fn line_span(&self) -> (usize, usize) {
+        let (row, _) = self.caret_pos();
+        match self.view {
+            View::Source => self.line_bounds(),
+            View::Wysiwyg => self.row_span(row),
+        }
+    }
+
+    /// The first offset in `[start, end]` holding something other than
+    /// whitespace, or `end` when the line holds nothing else — where Home aims.
+    ///
+    /// Walks the space the view is in, as word motion does: WYSIWYG steps stops,
+    /// so a hidden delimiter is never taken for the line's first character (nor
+    /// landed on), and the source view steps the source it is showing.
+    fn first_non_space(&self, start: usize, end: usize) -> usize {
+        let mut off = start;
+        while off < end {
+            if self.class_at(off) != Class::Space {
+                return off;
+            }
+            off = match self.view {
+                View::Source => next_boundary(&self.source, off),
+                View::Wysiwyg => match self.vmap.stop_after(off) {
+                    Some(next) => next,
+                    None => return end,
+                },
+            };
+        }
+        end
+    }
+
+    /// Home: to the first character on the line, or to column 0 when the caret
+    /// is already on it — the two-press toggle every editor spells this way.
+    /// The indentation is somewhere the caret has to be able to reach and almost
+    /// never where a reader is headed, so it costs the second press.
     pub fn move_home(&mut self, extend: bool) {
         self.goal_col = None;
-        let (row, _) = self.caret_pos();
-        let target = match self.view {
-            View::Source => row_col_to_offset(&self.source, row, 0),
-            View::Wysiwyg => self.vmap.offset_of_pos(row, 0),
-        };
+        let (start, end) = self.line_bounds();
+        let text = self.first_non_space(start, end);
+        let target = if self.caret == text { start } else { text };
         let before = self.caret;
         self.move_to(target, extend);
         self.debug_assert_on_a_stop(before);
     }
 
+    /// End: to the end of the line.
     pub fn move_end(&mut self, extend: bool) {
         self.goal_col = None;
-        let (row, _) = self.caret_pos();
-        let target = match self.view {
-            View::Source => line_end(&self.source, row),
-            View::Wysiwyg => self.vmap.offset_of_pos(row, self.vmap.row_width(row)),
-        };
+        let (_, end) = self.line_bounds();
         let before = self.caret;
-        self.move_to(target, extend);
+        self.move_to(end, extend);
         self.debug_assert_on_a_stop(before);
     }
 
@@ -1496,10 +1700,6 @@ fn line_start(s: &str, row: usize) -> usize {
     s.len()
 }
 
-fn line_end(s: &str, row: usize) -> usize {
-    line_end_from(s, line_start(s, row))
-}
-
 fn line_end_from(s: &str, start: usize) -> usize {
     s[start..].find('\n').map(|p| start + p).unwrap_or(s.len())
 }
@@ -1607,6 +1807,150 @@ mod tests {
         assert_eq!(g("hello world|", |d| d.delete_word_back()), "hello |");
         assert_eq!(g("hello |world", |d| d.delete_word_forward()), "hello |");
         assert_eq!(g("foo |bar baz", |d| d.delete_word_back()), "|bar baz");
+    }
+
+    // ── Home / End ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn home_toggles_between_the_line_s_text_and_its_margin() {
+        // Source: the indentation is what the toggle is for. WYSIWYG resolves an
+        // indent to the markup it spells everywhere it means one, so the fixture
+        // with whitespace left to walk is a code block, which is verbatim.
+        let g = |m, f: fn(&mut Doc)| golden("smart_home", m, f);
+        assert_eq!(g("    inden|ted", |d| d.move_home(false)), "    |indented");
+        assert_eq!(g("    |indented", |d| d.move_home(false)), "|    indented");
+        assert_eq!(g("|    indented", |d| d.move_home(false)), "    |indented");
+        // A line with no indentation has one place to go, so the toggle is a
+        // no-op rather than a trip to nowhere.
+        assert_eq!(g("hel|lo", |d| d.move_home(false)), "|hello");
+        assert_eq!(g("|hello", |d| d.move_home(false)), "|hello");
+
+        let mut d = wysiwyg_doc("smart_home_wys", "```\n    indented\n```\n");
+        let indent = d.source.find("    indented").unwrap();
+        d.caret = indent + 6; // inside "indented"
+        d.move_home(false);
+        assert_eq!(d.caret, indent + 4, "wysiwyg: Home aims at the code line's text");
+        d.move_home(false);
+        assert_eq!(d.caret, indent, "wysiwyg: the second press takes the indent");
+        d.move_home(false);
+        assert_eq!(d.caret, indent + 4, "wysiwyg: the toggle swaps back");
+    }
+
+    #[test]
+    fn end_takes_the_line_the_view_is_showing() {
+        // The line differs by view for the same document, and that is the point:
+        // a bare newline inside a paragraph is a soft break, which WYSIWYG draws
+        // as a space on one row and the source view as two lines.
+        let mut d = doc_with("end_src", "one two\nthree\n");
+        d.caret = 1;
+        d.move_end(false);
+        assert_eq!(d.caret, 7, "source: the end of the source line");
+
+        let mut d = wysiwyg_doc("end_wys", "one two\nthree\n");
+        d.caret = 1;
+        d.move_end(false);
+        assert_eq!(d.caret, 13, "wysiwyg: the end of the row, soft break and all");
+    }
+
+    #[test]
+    fn home_and_end_extend_the_selection_when_asked() {
+        for (view, tag) in VIEWS {
+            let mut d = doc_in(view, &format!("home_end_ext_{tag}"), "hello world");
+            d.caret = 6;
+            d.move_end(true);
+            assert_eq!(d.selection(), Some((6, 11)), "{tag}: End extends");
+            let mut d = doc_in(view, &format!("home_ext_{tag}"), "hello world");
+            d.caret = 6;
+            d.move_home(true);
+            assert_eq!(d.selection(), Some((0, 6)), "{tag}: Home extends");
+        }
+    }
+
+    // ── kill to the line's start / end ───────────────────────────────────────
+
+    #[test]
+    fn kill_to_the_line_start_and_end_in_both_views() {
+        for (view, tag) in VIEWS {
+            // The gap that reads as a paragraph break in each view: the source
+            // view's lines are the renderer's rows only where the source says so.
+            let gap = if view == View::Source { "\n" } else { "\n\n" };
+            let mut d = doc_in(view, &format!("kill_end_{tag}"), &format!("one two{gap}three\n"));
+            d.caret = 3;
+            d.delete_to_line_end();
+            assert_eq!(d.source, format!("one{gap}three\n"), "{tag}: ^K to the line's end");
+            assert_eq!(d.caret, 3, "{tag}: the caret stays where it kills from");
+
+            let mut d = doc_in(view, &format!("kill_start_{tag}"), &format!("one two{gap}three\n"));
+            d.caret = 7; // the end of the first line
+            d.delete_to_line_start();
+            assert_eq!(d.source, format!("{gap}three\n"), "{tag}: ⌘⌫ to the line's start");
+            assert_eq!(d.caret, 0, "{tag}");
+        }
+    }
+
+    #[test]
+    fn a_kill_at_the_line_s_edge_leaves_the_lines_joined() {
+        // The decision: at the boundary both kills do nothing, rather than
+        // eating the line break. "Line" is the view's own — in WYSIWYG it ends
+        // at a soft wrap as often as at a newline, where there is nothing
+        // written to delete — and a source newline is only half of the blank
+        // line between two paragraphs, so taking it leaves a soft break rather
+        // than the join it looks like. Backspace and Delete are the keys for it.
+        for (view, tag) in VIEWS {
+            let gap = if view == View::Source { "\n" } else { "\n\n" };
+            let src = format!("one{gap}three\n");
+            let mut d = doc_in(view, &format!("kill_edge_end_{tag}"), &src);
+            d.caret = 3; // the end of "one"
+            d.delete_to_line_end();
+            assert_eq!(d.source, src, "{tag}: ^K at the line's end joined it to the next");
+
+            let mut d = doc_in(view, &format!("kill_edge_start_{tag}"), &src);
+            d.caret = 3 + gap.len(); // the start of "three"
+            d.delete_to_line_start();
+            assert_eq!(d.source, src, "{tag}: ⌘⌫ at the line's start joined it to the last");
+        }
+    }
+
+    #[test]
+    fn a_kill_takes_the_selection_when_there_is_one() {
+        // What every other delete here does with one, so these two as well.
+        for (view, tag) in VIEWS {
+            for (name, kill) in [
+                ("end", (|d: &mut Doc| d.delete_to_line_end()) as fn(&mut Doc)),
+                ("start", |d: &mut Doc| d.delete_to_line_start()),
+            ] {
+                let mut d = doc_in(view, &format!("kill_sel_{name}_{tag}"), "one two three\n");
+                d.anchor = Some(4);
+                d.caret = 7; // "two"
+                kill(&mut d);
+                assert_eq!(d.source, "one  three\n", "{tag}: {name} ignored the selection");
+                assert_eq!(d.selection(), None, "{tag}: {name}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_kill_takes_the_markup_it_empties_with_it() {
+        // The same hazard a word-delete has: a WYSIWYG range covers what the
+        // user can see, which for `**bold**` is the word and never the
+        // delimiters, so a kill that stopped at the text would leave `a ****` —
+        // markup wrapped around nothing.
+        let mut d = wysiwyg_doc("kill_widen", "a **bold**\n");
+        d.caret = d.source.find("bold").unwrap();
+        d.delete_to_line_end();
+        assert_eq!(d.source, "a \n");
+    }
+
+    #[test]
+    fn a_kill_is_undone_in_one_step() {
+        for (view, tag) in VIEWS {
+            let mut d = doc_in(view, &format!("kill_undo_{tag}"), "one two three\n");
+            d.caret = 3;
+            d.delete_to_line_end();
+            assert_eq!(d.source, "one\n", "{tag}");
+            d.undo();
+            assert_eq!(d.source, "one two three\n", "{tag}: a kill takes one undo");
+        }
     }
 
     #[test]
@@ -2092,15 +2436,22 @@ mod tests {
 
     #[test]
     fn wysiwyg_up_and_down_are_inverse_across_paragraphs() {
+        // The second Up and the second Down here run off the ends of the
+        // document, which is no longer a place a press is swallowed: they carry
+        // the caret to the start and the end of the text. The claim in the
+        // middle — that a Down retraces the Up that crossed the paragraph gap —
+        // is the one this test is for, and it is asserted where it is made.
         let mut d = wysiwyg_doc("wys_updown", "abc\n\ndef\n");
         d.caret = 5; // start of "def"
         let start = d.caret_pos();
         d.move_up(false);
+        assert_eq!(d.caret_pos().0, 0, "Up reaches the first paragraph");
         d.move_up(false);
-        assert_eq!(d.caret_pos().0, 0, "two Ups reach the first paragraph");
-        d.move_down(false);
+        assert_eq!(d.caret, 0, "a second Up runs on to the document's start");
         d.move_down(false);
         assert_eq!(d.caret_pos(), start, "Down retraces Up exactly");
+        d.move_down(false);
+        assert_eq!(d.caret, 8, "a second Down runs on to the document's end");
     }
 
     #[test]
@@ -2471,6 +2822,155 @@ mod tests {
         assert_eq!(d.caret, 0);
         d.move_up(false);
         assert_eq!(d.caret, 0);
+    }
+
+    // ── the document's edges ─────────────────────────────────────────────────
+
+    #[test]
+    fn vertical_motion_at_the_document_edges_runs_to_them_in_both_views() {
+        // The reproduction, and the disagreement: Down on the last line ran to
+        // the end of the document in the source view — by accident, an
+        // out-of-range row clamping to the end of the string — and did nothing
+        // whatever in the view leaf opens in. One rule now, in both.
+        for (view, tag) in VIEWS {
+            let mut d = doc_in(view, &format!("edge_{tag}"), "abc");
+            d.caret = 1;
+            d.move_down(false);
+            assert_eq!(d.caret, 3, "{tag}: Down on the last line runs to the end");
+            d.move_up(false);
+            assert_eq!(d.caret, 0, "{tag}: Up on the first line runs to the start");
+        }
+    }
+
+    #[test]
+    fn vertical_motion_at_the_edges_carries_the_column_across_the_lines_between() {
+        // Down off the bottom is a motion like any other, so it latches a goal
+        // column — and Up comes back to the column the caret left, not to the
+        // one the document's end happened to be in.
+        for (view, tag) in VIEWS {
+            let gap = if view == View::Source { "\n" } else { "\n\n" };
+            let src = format!("abcdef{gap}ghijkl");
+            let mut d = doc_in(view, &format!("edge_goal_{tag}"), &src);
+            d.caret = 2; // row 0, col 2
+            d.move_down(false);
+            assert_eq!(d.caret_pos().1, 2, "{tag}: Down keeps the column");
+            d.move_down(false);
+            assert_eq!(d.caret, src.len(), "{tag}: Down off the bottom reaches the end");
+            d.move_up(false);
+            assert_eq!(d.caret_pos().1, 2, "{tag}: Up returns to the column Down left");
+        }
+    }
+
+    #[test]
+    fn vertical_motion_with_nowhere_to_go_latches_no_goal_column() {
+        // `goal_col.get_or_insert` ran *before* the early return at row 0, so an
+        // Up that did nothing still armed a goal column, and the next Down aimed
+        // at a column the caret had never been in.
+        for (view, tag) in VIEWS {
+            let mut d = doc_in(view, &format!("noop_goal_{tag}"), "abc\n\ndef");
+            d.caret = 0;
+            d.move_up(false);
+            assert_eq!(d.caret, 0, "{tag}: already at the start");
+            assert_eq!(d.goal_col, None, "{tag}: a no-op Up latched a goal column");
+
+            d.caret = d.source.len();
+            d.move_down(false);
+            assert_eq!(d.caret, d.source.len(), "{tag}: already at the end");
+            assert_eq!(d.goal_col, None, "{tag}: a no-op Down latched a goal column");
+        }
+    }
+
+    // ── soft wrap ────────────────────────────────────────────────────────────
+    // Every other test here builds the map at 80 columns, where no fixture is
+    // long enough to fold. A wrap is where one offset belongs to two rows at
+    // once, and it broke everything that asks the caret what row it is on.
+
+    /// The wrapped fixture these cases share, folded at 12 columns into
+    /// `one two ` / `three four ` / `five six ` / `seven eight`.
+    fn wrapped_doc(name: &str) -> Doc {
+        let mut d = wysiwyg_doc(name, "one two three four five six seven eight");
+        d.build_visual(12);
+        d
+    }
+
+    #[test]
+    fn home_and_end_work_from_a_wrapped_row() {
+        // The reproduction: offset 19 is the `f` of "five", the first character
+        // of the third row — and also the offset the second row ends at. It
+        // resolved to the *second* row, so End aimed at a place the caret was
+        // already in and did nothing, while Home walked backwards onto a row the
+        // caret had left.
+        let mut d = wrapped_doc("wrap_home_end");
+        d.caret = 19;
+        assert_eq!(d.caret_pos(), (2, 0), "the wrap boundary opens the third row");
+        d.move_end(false);
+        assert_eq!(d.caret, 27, "End stalled at the wrap boundary");
+        d.move_home(false);
+        assert_eq!(d.caret, 19, "Home left the row the caret was on");
+    }
+
+    #[test]
+    fn end_of_a_wrapped_row_stays_put_when_pressed_again() {
+        // The row's end is the last offset that is only ever its own: the offset
+        // past it opens the row below, and aiming there would send a second
+        // press on to *that* row's end, and a third to the next — End walking
+        // down the paragraph rather than sitting where it landed.
+        let mut d = wrapped_doc("wrap_end_twice");
+        d.caret = 12; // inside "three", on the second row
+        d.move_end(false);
+        assert_eq!(d.caret, 18, "the end of `three four`, before the space the wrap ate");
+        assert_eq!(d.caret_pos(), (1, 10), "drawn on the row it is the end of");
+        d.move_end(false);
+        assert_eq!(d.caret, 18, "a second End moved the caret");
+        d.move_home(false);
+        assert_eq!(d.caret, 8, "Home takes the row's own start");
+    }
+
+    #[test]
+    fn vertical_motion_crosses_a_soft_wrap() {
+        // Down aimed at the row below's column 0, an offset that resolved *up*
+        // to the row above's end — so it landed on the offset it already had and
+        // the caret could never leave a paragraph's first row.
+        let mut d = wrapped_doc("wrap_down");
+        d.caret = 0;
+        for (want, row) in [(8, 1), (19, 2), (28, 3), (39, 3)] {
+            d.move_down(false);
+            assert_eq!(d.caret, want, "Down stalled");
+            assert_eq!(d.caret_pos().0, row, "Down landed on the wrong row");
+        }
+        d.move_down(false);
+        assert_eq!(d.caret, 39, "the last row's Down runs to the end and stops");
+
+        // ...and back up, one row per press. The goal column is the end of the
+        // last row, past every other row's width, so each press clamps to the
+        // row's own last offset rather than to the one that opens the next.
+        let mut d = wrapped_doc("wrap_up");
+        d.caret = 39;
+        for (want, pos) in [(27, (2, 8)), (18, (1, 10)), (7, (0, 7)), (0, (0, 0))] {
+            d.move_up(false);
+            assert_eq!(d.caret, want, "Up stalled");
+            assert_eq!(d.caret_pos(), pos, "Up landed on the wrong row");
+        }
+    }
+
+    #[test]
+    fn a_kill_on_a_wrapped_row_stops_at_the_row() {
+        // The kills take the same line Home and End do, so in WYSIWYG they take
+        // the visual row — and a soft wrap has no newline in it to delete, so
+        // nothing is joined by reaching the end of one.
+        let mut d = wrapped_doc("wrap_kill");
+        d.caret = 19; // the `f` of "five", opening the third row
+        d.delete_to_line_end();
+        // The space the wrap ate goes with the row it was drawn on: sparing it
+        // would leave "four  seven", two spaces where the row had been.
+        assert_eq!(d.source, "one two three four seven eight");
+
+        // Backwards from the row's last caret position — which is *before* that
+        // space, so this one survives, being on the far side of the caret.
+        let mut d = wrapped_doc("wrap_kill_back");
+        d.caret = 27;
+        d.delete_to_line_start();
+        assert_eq!(d.source, "one two three four  seven eight");
     }
 
     // ── document start / end ────────────────────────────────────────────────
@@ -2972,9 +3472,13 @@ mod tests {
         // the same place only when it's on a stop. `debug_assert_on_a_stop`
         // makes the same claim in-place; this pins it from the outside, over a
         // document with every kind of thing the map has to be careful about.
+        // At two widths: the wide one every other test builds at, where no
+        // fixture folds, and one narrow enough that they all do. A soft wrap is
+        // where an offset stops being on exactly one row, and testing only the
+        // width that never wraps is how the caret came to be pinned at the first
+        // one Down reached.
         let src = "# Title\n\na **bold** e\u{0301}mo👨‍👩‍👧ji `x` c\n\n\
                    - item one\n\n| A | B |\n|---|---|\n| x | y |\n";
-        let mut d = wysiwyg_doc("stop_invariant", src);
         let motions: [(&str, fn(&mut Doc)); 8] = [
             ("right", |d| d.move_right(false)),
             ("left", |d| d.move_left(false)),
@@ -2985,18 +3489,57 @@ mod tests {
             ("home", |d| d.move_home(false)),
             ("end", |d| d.move_end(false)),
         ];
-        let stops: Vec<usize> = (0..=src.len()).filter(|&o| d.vmap.is_stop(o)).collect();
-        assert!(stops.len() > 20, "fixture should have plenty of stops");
-        for start in stops {
-            for (name, motion) in &motions {
-                d.caret = start;
-                d.anchor = None;
-                motion(&mut d);
-                assert!(
-                    d.vmap.is_stop(d.caret),
-                    "{name} from {start} landed at {} — not a caret stop",
-                    d.caret
-                );
+        for width in [80, 12] {
+            let mut d = wysiwyg_doc("stop_invariant", src);
+            d.build_visual(width);
+            let stops: Vec<usize> = (0..=src.len()).filter(|&o| d.vmap.is_stop(o)).collect();
+            assert!(stops.len() > 20, "fixture should have plenty of stops");
+            for start in stops {
+                for (name, motion) in &motions {
+                    d.caret = start;
+                    d.anchor = None;
+                    motion(&mut d);
+                    assert!(
+                        d.vmap.is_stop(d.caret),
+                        "{name} from {start} at width {width} landed at {} — not a caret stop",
+                        d.caret
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn no_wysiwyg_motion_is_a_dead_end() {
+        // Down held to the bottom of a document reaches the bottom, and Up held
+        // to the top reaches the top — from anywhere, at a width that wraps. The
+        // invariant above says a motion lands somewhere legal; this one says it
+        // gets somewhere at all, which is what a caret pinned at a wrap boundary
+        // was quietly failing to do while every assertion around it held.
+        let src = "# Title\n\none two three four five six seven eight nine ten\n\n\
+                   - item one two three four five\n\nlast\n";
+        for width in [80, 12] {
+            let mut d = wysiwyg_doc("no_dead_end", src);
+            d.build_visual(width);
+            let stops: Vec<usize> = (0..=src.len()).filter(|&o| d.vmap.is_stop(o)).collect();
+            let (first, last) = (stops[0], stops[stops.len() - 1]);
+            for &start in &stops {
+                for (name, motion, want) in [
+                    ("down", (|d: &mut Doc| d.move_down(false)) as fn(&mut Doc), last),
+                    ("up", |d: &mut Doc| d.move_up(false), first),
+                ] {
+                    d.caret = start;
+                    d.anchor = None;
+                    d.goal_col = None;
+                    // Every row, plus the presses the edges take, plus slack.
+                    for _ in 0..d.vmap.num_rows() + 4 {
+                        motion(&mut d);
+                    }
+                    assert_eq!(
+                        d.caret, want,
+                        "{name} held from {start} at width {width} never arrived"
+                    );
+                }
             }
         }
     }
