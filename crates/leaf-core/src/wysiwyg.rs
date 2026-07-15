@@ -23,6 +23,7 @@ use std::ops::Range;
 
 use twig::{Alignment, FlatNode};
 use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use crate::style::{Color, Style};
 
@@ -92,8 +93,10 @@ impl VisualMap {
         self.rows.len()
     }
 
-    pub fn row_len(&self, row: usize) -> usize {
-        self.rows.get(row).map(|r| r.glyphs.len()).unwrap_or(0)
+    /// The width of `row` in display columns — the rightmost column its caret
+    /// can occupy, and so what a goal column is clamped to on the way in.
+    pub fn row_width(&self, row: usize) -> usize {
+        self.rows.get(row).map_or(0, |r| r.width())
     }
 
     /// The screen `(row, col)` for a source offset — where to draw the caret:
@@ -118,8 +121,8 @@ impl VisualMap {
                 .iter()
                 .enumerate()
                 .find(|(_, g)| g.stop && g.src >= off)
-                .map(|(c, g)| (g.src, r, c))
-                .or_else(|| (row.end_src >= off).then_some((row.end_src, r, row.glyphs.len())));
+                .map(|(i, g)| (g.src, r, row.col_of_glyph(i)))
+                .or_else(|| (row.end_src >= off).then_some((row.end_src, r, row.width())));
             if let Some(c) = cand {
                 if best.is_none_or(|b| c.0 < b.0) {
                     best = Some(c);
@@ -139,7 +142,7 @@ impl VisualMap {
             Some((_, r, c)) => (r, c),
             None => {
                 let r = self.last_stop_row();
-                (r, self.row_len(r))
+                (r, self.row_width(r))
             }
         }
     }
@@ -148,11 +151,15 @@ impl VisualMap {
     /// visual-space move lands the caret. Clicking decoration maps through its
     /// `src`, which points at the text it decorates, so a click on a border or
     /// on a cell's padding lands in that cell.
+    ///
+    /// The inverse of [`pos_of_offset`](Self::pos_of_offset), which it has to
+    /// agree with: `col` is a display column, and the one it names may be the
+    /// far cell of a wide glyph — [`VRow::glyph_at_col`] is where that lands.
     pub fn offset_of_pos(&self, row: usize, col: usize) -> usize {
         let Some(r) = self.rows.get(row) else {
             return 0;
         };
-        match r.glyphs.get(col) {
+        match r.glyph_at_col(col).and_then(|i| r.glyphs.get(i)) {
             // A glyph that holds no caret is clickable, but where it points
             // isn't always somewhere the caret can be: the blank gap between two
             // paragraphs stands at an offset that belongs to neither of them,
@@ -427,7 +434,7 @@ impl Builder<'_> {
                         "• ".to_string()
                     };
                     let bullet = synth(&marker, Color::Yellow, start);
-                    let indent = synth(&" ".repeat(marker.chars().count()), Color::Default, start);
+                    let indent = synth(&" ".repeat(text_width(&marker)), Color::Default, start);
                     self.block(item, &concat(pc, &bullet), &concat(pc, &indent));
                 }
             }
@@ -522,7 +529,7 @@ impl Builder<'_> {
         let mut widths = vec![0usize; cols];
         for row in &grid {
             for (c, cell) in row.iter().enumerate() {
-                widths[c] = widths[c].max(cell.glyphs.len());
+                widths[c] = widths[c].max(glyphs_width(&cell.glyphs));
             }
         }
         // Every column at its widest cell is only the *wish*; a grid wider than
@@ -616,7 +623,7 @@ impl Builder<'_> {
                 glyphs.extend(synth("│", Color::DarkGray, at));
                 match (cell, line) {
                     (Some(cell), Some(line)) => {
-                        let pad = w.saturating_sub(line.len());
+                        let pad = w.saturating_sub(glyphs_width(line));
                         let (lead, trail) = match cell.align {
                             Alignment::Right => (pad, 0),
                             Alignment::Center => (pad / 2, pad - pad / 2),
@@ -765,14 +772,15 @@ impl Builder<'_> {
             let avail = width
                 .saturating_sub(prefix_width(if first { pf } else { pc }))
                 .max(1);
-            if used > 0 && used + w.len() > avail {
+            let cells = glyphs_width(&w);
+            if used > 0 && used + cells > avail {
                 let row = concat(if first { pf } else { pc }, &line);
                 self.push_row(row, block_start);
                 line = Vec::new();
                 used = 0;
                 first = false;
             }
-            used += w.len();
+            used += cells;
             line.extend(w);
             if let Some(sp) = space {
                 used += 1;
@@ -924,6 +932,107 @@ impl Builder<'_> {
     }
 }
 
+// ── display width ────────────────────────────────────────────────────────────
+//
+// Two things a row can be counted in, and they are not the same number:
+//
+//   *glyphs*, one per codepoint — how the text is stored here, and what an
+//   index into `VRow::glyphs` means; and
+//   *columns*, one per terminal cell — where the text is drawn, and what every
+//   `col` in this crate means.
+//
+// `你` is one glyph in two columns. Counting columns with `glyphs.len()` (or,
+// in the source view, `chars().count()`) is the same number only for the ASCII
+// that most fixtures are written in, and drifts one cell per wide character
+// everywhere else — the caret drawn a column short of the text it types into.
+// Everything below converts between the two; nothing else should have to.
+
+/// The display width of `s` in terminal cells.
+///
+/// Measured per grapheme cluster, because that is the unit a surface advances
+/// by: `👨‍👩‍👧` is five codepoints measuring 2 + 0 + 2 + 0 + 2 cells one at a
+/// time, but the character they spell is drawn in 2. Both frontends already
+/// measure it that way — ratatui asks `unicode-width` per cluster, and the GUI
+/// asks its own text system — so the caret only lands where the text is if this
+/// agrees with them.
+pub fn text_width(s: &str) -> usize {
+    UnicodeWidthStr::width(s)
+}
+
+/// One grapheme cluster of a laid-out row: the glyphs that spell it, and the
+/// cells it is drawn in.
+///
+/// The cluster, not the glyph, is what has a width. A row's glyphs are one per
+/// codepoint, so an accented letter or an emoji is several of them drawn in one
+/// character's worth of cells — the glyph that opens the cluster claims those
+/// cells, and the ones continuing it are drawn *inside* them rather than beside
+/// them. It's the same cluster the stop table is built on: the opening glyph is
+/// the one a caret can rest on, and so the only one whose column it can be
+/// drawn at.
+struct Cluster {
+    /// Index of the glyph that opens it.
+    glyph: usize,
+    /// The display column it starts at.
+    col: usize,
+    /// How many cells it is drawn in. Zero for a cluster with no width of its
+    /// own (a lone joiner), which therefore sits at no column at all.
+    cells: usize,
+}
+
+/// Walk a row's glyphs as the clusters they spell, in column order.
+fn clusters(glyphs: &[Glyph]) -> Vec<Cluster> {
+    let text: String = glyphs.iter().map(|g| g.ch).collect();
+    let mut out = Vec::new();
+    let (mut glyph, mut col) = (0, 0);
+    for cluster in text.graphemes(true) {
+        let cells = text_width(cluster);
+        out.push(Cluster { glyph, col, cells });
+        // One glyph per codepoint, so a cluster spans exactly its own.
+        glyph += cluster.chars().count();
+        col += cells;
+    }
+    out
+}
+
+/// The display width of a run of glyphs.
+fn glyphs_width(glyphs: &[Glyph]) -> usize {
+    clusters(glyphs).last().map_or(0, |c| c.col + c.cells)
+}
+
+impl VRow {
+    /// The row's width in display columns — and so the column of the caret
+    /// placed past its last glyph, which is the rightmost column it can occupy.
+    fn width(&self) -> usize {
+        glyphs_width(&self.glyphs)
+    }
+
+    /// The display column glyph `i` is drawn at. Glyphs continuing a cluster
+    /// report the column of the glyph that opened it, since that is where they
+    /// are drawn; none of them is ever a stop, so no caret is placed by it.
+    fn col_of_glyph(&self, i: usize) -> usize {
+        clusters(&self.glyphs)
+            .iter()
+            .rev()
+            .find(|c| c.glyph <= i)
+            .map_or(0, |c| c.col)
+    }
+
+    /// The glyph drawn at display column `col`, or `None` past the row's last
+    /// cell.
+    ///
+    /// A column landing on the *second* cell of a wide glyph resolves to that
+    /// glyph: half a character is not a place to be, so clicking either cell of
+    /// `你` means `你`, and the caret comes to rest at its start — the column it
+    /// would be drawn at anyway. That rule is what makes the mapping invertible:
+    /// every offset has one column, and every column has one offset.
+    fn glyph_at_col(&self, col: usize) -> Option<usize> {
+        clusters(&self.glyphs)
+            .into_iter()
+            .find(|c| col < c.col + c.cells)
+            .map(|c| c.glyph)
+    }
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 /// One laid-out table cell: its rendered text, the source range that text
@@ -969,6 +1078,12 @@ fn fit_widths(widths: &mut [usize], avail: usize) {
 /// The space at a break is dropped rather than hung past the edge. Its offset
 /// isn't lost: the caller gives every line an end stop just past its last
 /// glyph, which is exactly where that space was.
+///
+/// `width` is in display columns, and a break only ever falls between grapheme
+/// clusters. Both matter to more than the picture: the caller anchors each
+/// line's end stop just past its last glyph, so a line cut mid-cluster would
+/// put a caret stop inside a character — reachable by Down or a click, and the
+/// next Backspace would take the cluster apart from the middle.
 fn wrap_glyphs(glyphs: &[Glyph], width: usize) -> Vec<Vec<Glyph>> {
     let width = width.max(1);
     // Words are maximal non-space runs, each carrying the space that followed it
@@ -988,18 +1103,23 @@ fn wrap_glyphs(glyphs: &[Glyph], width: usize) -> Vec<Vec<Glyph>> {
 
     let mut lines: Vec<Vec<Glyph>> = Vec::new();
     let mut line: Vec<Glyph> = Vec::new();
+    let mut used = 0usize;
     let mut gap: Option<Glyph> = None;
     for (word, space) in words {
-        for chunk in word.chunks(width) {
+        for chunk in hard_break(&word, width) {
             let sep = gap.is_some() as usize;
-            if !line.is_empty() && line.len() + sep + chunk.len() > width {
+            let cells = glyphs_width(chunk);
+            if !line.is_empty() && used + sep + cells > width {
                 lines.push(std::mem::take(&mut line));
+                used = 0;
                 gap = None; // the break swallows the space
             }
             if let Some(sp) = gap.take() {
                 line.push(sp);
+                used += 1;
             }
             line.extend_from_slice(chunk);
+            used += cells;
         }
         gap = space;
     }
@@ -1009,6 +1129,33 @@ fn wrap_glyphs(glyphs: &[Glyph], width: usize) -> Vec<Vec<Glyph>> {
         lines.push(line);
     }
     lines
+}
+
+/// Break a single word into pieces of at most `width` columns, cutting only
+/// between grapheme clusters — the replacement for slicing it into fixed runs
+/// of glyphs, which measures a wide character as one column and can cut an
+/// emoji in half.
+///
+/// A cluster wider than the whole column still gets a piece to itself: there is
+/// nowhere legal to cut it, and overflowing by a cell is better than splitting a
+/// character. An empty word yields no pieces at all, which is what keeps a
+/// double space from opening a line of its own.
+fn hard_break(word: &[Glyph], width: usize) -> Vec<&[Glyph]> {
+    let mut out = Vec::new();
+    if word.is_empty() {
+        return out;
+    }
+    let (mut start, mut used) = (0usize, 0usize);
+    for c in clusters(word) {
+        if used > 0 && used + c.cells > width {
+            out.push(&word[start..c.glyph]);
+            start = c.glyph;
+            used = 0;
+        }
+        used += c.cells;
+    }
+    out.push(&word[start..]);
+    out
 }
 
 /// A table rule spanning `widths`, e.g. `┌──────┬─────┐`. Each column is its
@@ -1063,8 +1210,10 @@ fn concat(a: &[Glyph], b: &[Glyph]) -> Vec<Glyph> {
     v
 }
 
+/// The columns a row's prefix (a bullet, a quote gutter, an indent) takes up
+/// before the text it introduces — what the wrap budget has left to spend.
 fn prefix_width(prefix: &[Glyph]) -> usize {
-    prefix.len()
+    glyphs_width(prefix)
 }
 
 fn heading_style(level: u32) -> Style {
@@ -1369,6 +1518,116 @@ mod tests {
         let (r, c) = m.pos_of_offset(7);
         assert_eq!(m.offset_of_pos(r, c + 1), 10);
     }
-}
 
+    // ── display columns ──────────────────────────────────────────────────────
+
+    #[test]
+    fn a_table_column_is_as_wide_as_its_cells_are_drawn() {
+        // A column sized by counting characters is drawn narrower than the text
+        // it has to hold — `你好` is two characters in four cells — and the cell
+        // spills over the border it is supposed to sit inside, taking the whole
+        // grid out of square with it. Squareness is the property: every row of a
+        // grid is drawn to the same column, whatever its cells are spelled with.
+        for src in [
+            "| A | B |\n|---|---|\n| 你好 | y |\n",
+            "| A | B |\n|---|---|\n| a👨‍👩‍👧b | y |\n",
+            "| A | 漢字 |\n|---|---|\n| x | y |\n",
+        ] {
+            let m = map(src);
+            let widths: Vec<usize> = m.rows.iter().map(|r| r.width()).collect();
+            assert!(
+                widths.windows(2).all(|w| w[0] == w[1]),
+                "ragged grid {widths:?} for {src:?}:\n{}",
+                rendered(&m)
+            );
+        }
+    }
+
+    #[test]
+    fn a_cell_wrapped_narrow_never_breaks_inside_a_character() {
+        // A column too narrow for its cell hard-breaks the text, and every line
+        // of it is given an end stop just past its last glyph. Broken into runs
+        // of four glyphs, the first line of this cell ends between `👨‍👩` and the
+        // joiner holding `👧` on — so its end stop lands inside a character,
+        // where a click or Down can reach it and the next Backspace takes the
+        // cluster apart from the middle.
+        let src = "| A |\n|---|\n| 👨‍👩‍👧👨‍👩‍👧 |\n";
+        let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
+        let m = build(&ed.nodes().unwrap(), src, Some(8));
+        let boundaries: Vec<usize> = src
+            .grapheme_indices(true)
+            .map(|(i, _)| i)
+            .chain(std::iter::once(src.len()))
+            .collect();
+        for off in (0..=src.len()).filter(|&o| m.is_stop(o)) {
+            assert!(
+                boundaries.contains(&off),
+                "stop at {off} is inside a character:\n{}",
+                rendered(&m)
+            );
+        }
+    }
+
+    #[test]
+    fn a_wrapped_cell_keeps_every_line_inside_its_column() {
+        // The width is a promise in a table, where a glyph past the column lands
+        // on the border or in the next cell — and it is a promise about cells,
+        // which is not what a count of glyphs measures.
+        let src = "| A |\n|---|\n| 你好世界漢字 |\n";
+        let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
+        let m = build(&ed.nodes().unwrap(), src, Some(14));
+        for r in &m.rows {
+            assert_eq!(r.width(), 14, "{:?} is not drawn to the grid", rendered(&m));
+        }
+    }
+
+    #[test]
+    fn a_hard_break_falls_between_clusters_and_measures_in_cells() {
+        let glyphs = |s: &str| {
+            let mut out = Vec::new();
+            push_text(&mut out, s, 0, Style::default());
+            out
+        };
+        let piece = |p: &[Glyph]| p.iter().map(|g| g.ch).collect::<String>();
+
+        // Six cells of CJK broken at four: two characters, then one — never
+        // between the two cells of `好`.
+        let w = glyphs("你好世");
+        let pieces: Vec<String> = hard_break(&w, 4).iter().map(|p| piece(p)).collect();
+        assert_eq!(pieces, ["你好", "世"]);
+
+        // A character wider than the column has nowhere legal to break, so it
+        // keeps its cells rather than being cut in half.
+        let w = glyphs("你好");
+        let pieces: Vec<String> = hard_break(&w, 1).iter().map(|p| piece(p)).collect();
+        assert_eq!(pieces, ["你", "好"]);
+
+        // An empty word yields no pieces at all — a double space stays a space.
+        assert!(hard_break(&[], 4).is_empty());
+    }
+
+    #[test]
+    fn every_caret_stop_opens_a_cluster_of_its_row() {
+        // The two ways of finding a cluster have to agree. `push_text` marks the
+        // stops by segmenting one run of text; the column mapping segments the
+        // whole row, decoration and all. A stop that came out as the *middle* of
+        // some row-level cluster would be a caret with no column of its own —
+        // drawn at the column of whatever swallowed it.
+        let src = "# 標題\n\na **bold** e\u{0301}mo👨‍👩‍👧ji `x` 你好\n\n\
+                   - 項目 one\n- e\u{0301}dge\n\n> 引用 text\n\n\
+                   | A | 值 |\n|---|---|\n| 你好 | 👩‍🚀 |\n";
+        let m = map(src);
+        for (r, row) in m.rows.iter().enumerate() {
+            let openers: Vec<usize> = clusters(&row.glyphs).iter().map(|c| c.glyph).collect();
+            for (i, g) in row.glyphs.iter().enumerate() {
+                assert!(
+                    !g.stop || openers.contains(&i),
+                    "row {r}: the stop at glyph {i} ({:?}) is inside a cluster, \
+                     so it is drawn at another glyph's column",
+                    g.ch
+                );
+            }
+        }
+    }
+}
 

@@ -61,11 +61,17 @@ pub struct Doc {
     /// The source as of the last open/save — `dirty` is `source != clean_source`,
     /// so undoing back to the saved state correctly clears the modified flag.
     clean_source: String,
-    /// The "sticky" column vertical motion aims for, in the active view's
-    /// column space. Set on the first `move_up`/`move_down` of a run and
+    /// The "sticky" display column vertical motion aims for, in the active
+    /// view's grid. Set on the first `move_up`/`move_down` of a run and
     /// reused by every subsequent one in that run, so passing through a
     /// shorter line doesn't permanently forget the original column. Any
     /// horizontal motion or edit clears it.
+    ///
+    /// A column, not a character index: dropping down a line of `你好` onto one
+    /// of ASCII has to land under the glyph the caret was drawn beneath, which
+    /// is the only thing the user can see to aim by. Where the goal falls inside
+    /// a wide character on the target line, the mapping resolves it to that
+    /// character — the caret lands on it rather than between its cells.
     goal_col: Option<usize>,
     /// The rendered map for the WYSIWYG view, rebuilt each frame; empty in the
     /// source view. Movement and clicks read it to stay in visible space.
@@ -879,7 +885,7 @@ impl Doc {
                 let Some(r) = self.vmap.navigable_above(row) else {
                     return;
                 };
-                self.vmap.offset_of_pos(r, goal.min(self.vmap.row_len(r)))
+                self.vmap.offset_of_pos(r, goal.min(self.vmap.row_width(r)))
             }
         };
         let before = self.caret;
@@ -896,7 +902,7 @@ impl Doc {
                 let Some(r) = self.vmap.navigable_below(row) else {
                     return;
                 };
-                self.vmap.offset_of_pos(r, goal.min(self.vmap.row_len(r)))
+                self.vmap.offset_of_pos(r, goal.min(self.vmap.row_width(r)))
             }
         };
         let before = self.caret;
@@ -921,7 +927,7 @@ impl Doc {
         let (row, _) = self.caret_pos();
         let target = match self.view {
             View::Source => line_end(&self.source, row),
-            View::Wysiwyg => self.vmap.offset_of_pos(row, self.vmap.row_len(row)),
+            View::Wysiwyg => self.vmap.offset_of_pos(row, self.vmap.row_width(row)),
         };
         let before = self.caret;
         self.move_to(target, extend);
@@ -985,7 +991,10 @@ impl Doc {
         self.move_to(end, extend);
     }
 
-    /// Point the caret at the body cell `(row, col)` the mouse landed on.
+    /// Point the caret at the body cell `(row, col)` the mouse landed on —
+    /// `col` being a cell of the terminal grid, which is what a display column
+    /// is. A click on the far cell of a wide character lands at that
+    /// character's start; the mapping's own doc-comments carry the rule.
     pub fn click(&mut self, row: usize, col: usize, extend: bool) {
         self.goal_col = None;
         let target = match self.view {
@@ -1019,7 +1028,9 @@ impl Doc {
         self.scroll = self.scroll.min(rows.saturating_sub(1));
     }
 
-    /// The caret's screen position `(row, col)` in the active view's grid.
+    /// The caret's screen position `(row, col)` in the active view's grid, with
+    /// `col` a display column: the cell to draw the caret in, which on a line of
+    /// `你好` or emoji is not the count of characters before it.
     pub fn caret_pos(&self) -> (usize, usize) {
         match self.view {
             View::Source => offset_to_row_col(&self.source, self.caret),
@@ -1236,7 +1247,9 @@ fn word_range_at(s: &str, off: usize) -> (usize, usize) {
     (start, end)
 }
 
-/// `(row, col)` of byte offset `off`, col counted in characters from line start.
+/// `(row, col)` of byte offset `off`, `col` counted in *display columns* from
+/// the line's start — terminal cells, not characters, so the column names the
+/// cell the caret is drawn in even on a line of `你好` or emoji.
 fn offset_to_row_col(s: &str, off: usize) -> (usize, usize) {
     let off = off.min(s.len());
     let mut row = 0;
@@ -1250,19 +1263,32 @@ fn offset_to_row_col(s: &str, off: usize) -> (usize, usize) {
             line_start = i + 1;
         }
     }
-    (row, s[line_start..off].chars().count())
+    (row, wysiwyg::text_width(&s[line_start..off]))
 }
 
-/// The byte offset of `col` chars into `row` (clamped to that line's end).
+/// The byte offset at display column `col` of `row` (clamped to that line's
+/// end) — the inverse of [`offset_to_row_col`], which it has to agree with.
+///
+/// A column landing *inside* a character — the second cell of `你`, or any cell
+/// but the first of an emoji — resolves to that character's start, which is the
+/// column the caret would have been drawn at to begin with. So both cells of a
+/// wide character mean the character, and every offset survives the round trip
+/// out to a column and back. The walk steps by grapheme cluster for the same
+/// reason the caret does: a cluster is the character, and the cells belong to it
+/// rather than to the codepoints spelling it.
 fn row_col_to_offset(s: &str, row: usize, col: usize) -> usize {
     let start = line_start(s, row);
     let end = line_end_from(s, start);
     let mut off = start;
-    for _ in 0..col {
-        if off >= end {
-            break;
+    let mut at = 0; // the display column `off` sits at
+    while off < end {
+        let next = next_boundary(s, off).min(end);
+        let cells = wysiwyg::text_width(&s[off..next]);
+        if at + cells > col {
+            break; // `col` is one of this cluster's own cells
         }
-        off = next_boundary(s, off);
+        at += cells;
+        off = next;
     }
     off
 }
@@ -1696,10 +1722,10 @@ mod tests {
         d.build_visual(80);
         let (row, col) = d.caret_pos();
         assert_eq!(col, 0, "caret should start an empty line, not sit in text");
-        assert_eq!(d.vmap.row_len(row), 0, "caret's row must be empty, not 'World'");
+        assert_eq!(d.vmap.row_width(row), 0, "caret's row must be empty, not 'World'");
         assert!(row >= 2, "a blank spacer row should sit above the caret, got row {row}");
         // The row above the caret is a real (empty) gap, and "Hello" stays put.
-        assert_eq!(d.vmap.row_len(row - 1), 0, "the row above the caret is a gap");
+        assert_eq!(d.vmap.row_width(row - 1), 0, "the row above the caret is a gap");
         let row0: String = d.vmap.rows[0].glyphs.iter().map(|g| g.ch).collect();
         assert_eq!(row0, "Hello", "the paragraph above the caret must not move");
     }
@@ -1716,7 +1742,7 @@ mod tests {
         let (row, col) = d.caret_pos();
         assert_eq!(col, 0);
         assert!(row >= 2, "caret should sit below a blank spacer, got row {row}");
-        assert_eq!(d.vmap.row_len(row - 1), 0, "the row above the caret is a gap");
+        assert_eq!(d.vmap.row_width(row - 1), 0, "the row above the caret is a gap");
     }
 
     #[test]
@@ -2563,6 +2589,149 @@ mod tests {
             }
         }
     }
+    // ── display columns ──────────────────────────────────────────────────────
+    // A `col` is a terminal cell, not a character. The two are the same number
+    // for the ASCII the fixtures above are written in, which is how they came
+    // apart in the first place: `你` is one character drawn in two cells, so a
+    // column counted in characters names a cell the text isn't in — one earlier
+    // for every wide character to its left.
+
+    #[test]
+    fn a_wide_character_is_two_columns_wide() {
+        // The reproduction: `你` is one char and two cells, so the caret just
+        // past it drew at column 1 — inside the character it had already left.
+        for (view, tag) in VIEWS {
+            let mut d = doc_in(view, &format!("wide_col_{tag}"), "你好\n");
+            d.caret = "你".len();
+            assert_eq!(d.caret_pos(), (0, 2), "{tag}: caret drew inside 你");
+            d.caret = "你好".len();
+            assert_eq!(d.caret_pos(), (0, 4), "{tag}");
+        }
+    }
+
+    #[test]
+    fn a_cluster_is_as_wide_as_it_is_drawn_not_as_its_codepoints_measure() {
+        // `👨‍👩‍👧` is five codepoints — two-cell, joiner, two-cell, joiner,
+        // two-cell — measuring six cells one at a time, but the character they
+        // spell is drawn in two. Width belongs to the cluster, not the glyph,
+        // and the frontends measure it the same way.
+        let family = "👨‍👩‍👧";
+        for (view, tag) in VIEWS {
+            let src = format!("a{family}b\n");
+            let mut d = doc_in(view, &format!("wide_cluster_{tag}"), &src);
+            d.caret = 1 + family.len();
+            assert_eq!(d.caret_pos(), (0, 3), "{tag}: 'a' is one cell, the family two");
+        }
+    }
+
+    #[test]
+    fn both_cells_of_a_wide_character_mean_the_character() {
+        // Clicking the far half of `好` is still clicking `好`: half a character
+        // is not a place the caret can be, so it comes to rest at the
+        // character's start — the column it would have been drawn at anyway.
+        for (view, tag) in VIEWS {
+            let mut d = doc_in(view, &format!("wide_click_{tag}"), "你好\n");
+            for col in [2, 3] {
+                d.caret = 0;
+                d.click(0, col, false);
+                assert_eq!(d.caret, "你".len(), "{tag}: click at col {col}");
+                assert_eq!(d.caret_pos(), (0, 2), "{tag}: click at col {col}");
+            }
+            // Past the last cell is the line's end, as it is for ASCII.
+            d.click(0, 9, false);
+            assert_eq!(d.caret, "你好".len(), "{tag}: click past the end");
+        }
+    }
+
+    #[test]
+    fn every_offset_survives_the_trip_out_to_a_column_and_back() {
+        // The mapping is only a mapping if it inverts: the cell the caret is
+        // drawn in has to be the cell that brings it back to the same offset.
+        // Over a fixture where a character may be one cell or two, and one
+        // codepoint or five.
+        use unicode_segmentation::UnicodeSegmentation;
+
+        let src = "ab 你好 c\n\n👨‍👩‍👧 e\u{0301}x 漢字\n\nplain ascii\n";
+
+        let mut d = doc_in(View::Source, "roundtrip_source", src);
+        // Every offset the source view's caret can occupy: it steps by grapheme
+        // cluster, so those are its boundaries.
+        for (off, _) in src.grapheme_indices(true).chain(std::iter::once((src.len(), ""))) {
+            d.caret = off;
+            let (row, col) = d.caret_pos();
+            d.click(row, col, false);
+            assert_eq!(d.caret, off, "source: {off} → ({row}, {col}) → {}", d.caret);
+        }
+
+        // And in WYSIWYG, where the offsets the caret can occupy are the map's
+        // stops rather than every boundary.
+        let mut d = doc_in(View::Wysiwyg, "roundtrip_wysiwyg", src);
+        let stops: Vec<usize> = (0..=src.len()).filter(|&o| d.vmap.is_stop(o)).collect();
+        assert!(stops.len() > 20, "fixture should have plenty of stops");
+        for off in stops {
+            d.caret = off;
+            let (row, col) = d.caret_pos();
+            d.click(row, col, false);
+            assert_eq!(d.caret, off, "wysiwyg: {off} → ({row}, {col}) → {}", d.caret);
+        }
+    }
+
+    #[test]
+    fn vertical_motion_aims_at_a_column_the_reader_can_see() {
+        // Down from under `世` lands under the glyph in that cell, not two
+        // characters further along the line. The goal is a column, so a line of
+        // wide characters and a line of ASCII line up the way they're drawn.
+        //
+        // The gap differs by view: a bare newline inside a paragraph is a soft
+        // break, which WYSIWYG draws as a space on a single row. The views share
+        // a grid only where the source's lines are the renderer's rows too.
+        for (view, tag) in VIEWS {
+            let gap = if view == View::Source { "\n" } else { "\n\n" };
+            let src = format!("你好世{gap}abcdef\n");
+            let mut d = doc_in(view, &format!("goal_wide_{tag}"), &src);
+            d.caret = "你好".len();
+            assert_eq!(d.caret_pos().1, 4, "{tag}: `世` is drawn at column 4");
+            d.move_down(false);
+            assert_eq!(d.caret_pos().1, 4, "{tag}: goal column lost");
+            assert!(d.source[d.caret..].starts_with('e'), "{tag}: landed on the wrong glyph");
+        }
+    }
+
+    #[test]
+    fn a_goal_column_landing_inside_a_wide_character_lands_on_it() {
+        // Down from column 3 onto `你好`, whose characters start at columns 0
+        // and 2: column 3 is the *second* cell of `好`. There is nowhere to be
+        // between the cells of one character, so the caret rests on it — and on
+        // its start, which is the only offset there that is a caret stop.
+        for (view, tag) in VIEWS {
+            let gap = if view == View::Source { "\n" } else { "\n\n" };
+            let src = format!("abcdef{gap}你好\n");
+            let mut d = doc_in(view, &format!("goal_inside_{tag}"), &src);
+            let line = src.find('你').unwrap();
+            d.caret = 3;
+            d.move_down(false);
+            assert_eq!(d.caret, line + "你".len(), "{tag}: landed off `好`'s start");
+            assert_eq!(d.caret_pos().1, 2, "{tag}: drew between `好`'s cells");
+        }
+    }
+
+    #[test]
+    fn a_caret_in_a_table_cell_of_wide_text_draws_where_the_text_is() {
+        // The column the cell's text is laid out in is measured in cells, so the
+        // caret walking that text has to be too — the two agreeing is the whole
+        // point of the grid staying square.
+        let mut d = wysiwyg_doc("table_wide", "| A | B |\n|---|---|\n| 你好 | y |\n");
+        let at = d.source.find("你").unwrap();
+        d.caret = at;
+        let (row, col) = d.caret_pos();
+        // `│ ` opens the row, so the cell's text starts at column 2; `好` is two
+        // cells further along.
+        assert_eq!(col, 2, "the cell's first character");
+        d.move_right(false);
+        assert_eq!(d.caret_pos(), (row, 4), "`好` is drawn past `你`'s two cells");
+        assert_eq!(d.caret, at + "你".len());
+    }
+
 }
 
 fn detect_format(path: &Path) -> Result<Format> {
@@ -2579,4 +2748,5 @@ fn detect_format(path: &Path) -> Result<Format> {
         other => return Err(anyhow!("unknown document extension: .{other}")),
     })
 }
+
 
