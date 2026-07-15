@@ -20,10 +20,10 @@ edition = "2024"
 # wrap_range/toggle_inline/set_block).
 # Published on crates.io as `twig-doc` (the `twig` name is taken); the library's
 # import name is still `twig` (its `[lib] name`), so `use twig::…` keeps working.
-# Pinned to the sibling checkout, not the registry: tables need `FlatNode`'s
-# `head`/`alignment` (ABI 2), which no published version carries yet. Point this
-# back at a version once that's released.
-twig-doc = { path = "../twig/bindings/rust/twig" }
+# 2.0: `FlatNode` carries a table's `head`/`alignment` (the delimiter row that
+# spells alignment out is consumed by the parser and leaves no node, so the
+# snapshot is the only source), and is `#[non_exhaustive]`.
+twig-doc = { version = "2.0.0" }
 anyhow = "1"
 # Frontend-neutral core: the caret/selection model + AST→glyph map, styled with
 # a toolkit-agnostic Style. Each frontend crate maps that to its own styling.
