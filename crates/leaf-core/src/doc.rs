@@ -7,7 +7,8 @@
 //!   - typing / delete  → `edit_range(start, end, text)`   (P0)
 //!   - re-anchoring      → the returned `Change`            (P1)
 //!   - cursor context    → `node_at` / `ancestors_at`       (P3)
-//!   - the toolbar       → `wrap_range`/`toggle_inline`/`set_block` (P5)
+//!   - the toolbar       → `wrap_range`/`toggle_inline`/`set_block`,
+//!                         `toggle_block_container`/`insert_link`   (P5)
 //!
 //! twig reparses after every edit and leaves everything outside the splice
 //! byte-for-byte untouched, so the document stays a live, navigable AST while
@@ -16,7 +17,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
-use twig::{BlockKind, Change, Editor, FlatNode, Format, InlineKind};
+use twig::{BlockContainerKind, BlockKind, Change, Editor, FlatNode, Format, InlineKind};
 use unicode_segmentation::GraphemeCursor;
 
 use crate::wysiwyg::{self, VisualMap};
@@ -555,6 +556,167 @@ impl Doc {
         } else {
             self.set_block(BlockKind::Heading(level));
         }
+    }
+
+    /// Toggle a block quote around the selection, or around the block at the
+    /// caret — the toolbar's Quote button.
+    pub fn toggle_blockquote(&mut self) {
+        self.toggle_container(BlockContainerKind::BlockQuote);
+    }
+
+    /// Toggle a numbered (`ordered`) or bulleted list over the selection, or
+    /// over the block at the caret — one op with the kind as a flag, the way
+    /// `toggle_heading` takes its level, so a frontend needs no twig type to
+    /// name the two buttons.
+    ///
+    /// Pressing the *other* list's button while in a list converts in place
+    /// rather than nesting, so the pair reads as one three-state control
+    /// (bulleted / numbered / neither) rather than two independent wrappers.
+    pub fn toggle_list(&mut self, ordered: bool) {
+        self.toggle_container(if ordered {
+            BlockContainerKind::OrderedList
+        } else {
+            BlockContainerKind::BulletList
+        });
+    }
+
+    /// One `toggle_block_container` over the block-level target.
+    ///
+    /// leaf says *where*; twig decides everything else — which blocks the range
+    /// covers, whether that means wrapping, unwrapping, nesting or converting,
+    /// and how this document's format spells the prefix. The rule that a
+    /// container only comes off when the range covers every block it holds is
+    /// what the re-anchoring below is built around.
+    fn toggle_container(&mut self, kind: BlockContainerKind) {
+        let selected = self.selection();
+        // Without a selection the target is the caret's own block, resolved the
+        // way `set_block` resolves it — a caret at a line end sits at the doc
+        // level and has to be nudged back onto the block it looks like it's in.
+        // An empty range is enough: twig widens to the whole lines it touches.
+        // A blank line resolves to nothing twig can wrap, and its `NotFound`
+        // says so.
+        let (start, end) = match selected {
+            Some(range) => range,
+            None => {
+                let off = self.block_offset_for_caret().unwrap_or(self.caret);
+                (off, off)
+            }
+        };
+        match self.editor.toggle_block_container(start, end, kind) {
+            Ok(change) => {
+                // Read the caret's place out of the *pre-edit* source, before
+                // `refresh` swaps that source out from under it.
+                let place = selected.is_none().then(|| self.caret_line_tail(&change.old));
+                self.last_edit_kind = None; // structural edit is its own undo step
+                self.refresh();
+                match place {
+                    // Select what the container now holds, the way `toggle`
+                    // keeps its marked region selected — and for a stronger
+                    // reason than symmetry: a container comes *off* only a range
+                    // covering every block it holds, so a selection left on its
+                    // old bytes (now short by a prefix per line) would nest on
+                    // the second press instead of reversing the first.
+                    None => {
+                        self.anchor = Some(change.new.start);
+                        self.caret = change.new.end;
+                    }
+                    Some(place) => {
+                        self.anchor = None;
+                        self.caret = self.line_tail_offset(&change.new, place);
+                    }
+                }
+                self.dirty = self.source != self.clean_source;
+                self.status = None;
+                self.clamp_caret();
+            }
+            Err(e) => self.status = Some(format!("{kind:?}: {e}")),
+        }
+    }
+
+    /// The caret's place inside the region a container toggle is rewriting, in
+    /// the only terms the rewrite preserves: which of the region's lines it sits
+    /// on, and how many bytes of that line lie ahead of it.
+    ///
+    /// A container's markup goes in at column 0 and never touches what follows
+    /// on the line, so that pair survives the edit exactly where a byte offset
+    /// does not — a caret left on its old offset slides back by one prefix per
+    /// line above it, which on a hard-wrapped paragraph parks it *inside* the
+    /// `> ` it just asked for.
+    fn caret_line_tail(&self, old: &std::ops::Range<usize>) -> (usize, usize) {
+        let caret = self.caret.clamp(old.start, old.end);
+        let line = self.source[old.start..caret].matches('\n').count();
+        let end = self.source[caret..old.end]
+            .find('\n')
+            .map_or(old.end, |i| caret + i);
+        (line, end - caret)
+    }
+
+    /// [`caret_line_tail`](Self::caret_line_tail) undone against the rewritten
+    /// region: the offset `tail` bytes back from the end of the region's `line`.
+    ///
+    /// Both walks are clamped rather than trusted, because the one op that does
+    /// *not* keep a region's lines one-to-one is stripping a list — twig blows
+    /// the items back apart with blank lines between them — and a caret landing
+    /// on the nearest line of the right item beats one landing out of the region
+    /// entirely.
+    fn line_tail_offset(&self, new: &std::ops::Range<usize>, (line, tail): (usize, usize)) -> usize {
+        let region = &self.source[new.start.min(self.source.len())..new.end.min(self.source.len())];
+        let mut start = 0;
+        for _ in 0..line {
+            match region[start..].find('\n') {
+                Some(i) => start += i + 1,
+                None => break,
+            }
+        }
+        let end = region[start..].find('\n').map_or(region.len(), |i| start + i);
+        new.start + end.saturating_sub(tail).max(start)
+    }
+
+    /// Link the selection to `destination` — the toolbar's Link button. With no
+    /// selection it acts at the caret, which re-points a link the caret is
+    /// already standing in (twig replaces an existing link's destination and
+    /// keeps its text) and otherwise leaves an empty `[](destination)` to type
+    /// the text into.
+    ///
+    /// `destination` reaches twig raw. Escaping it is format knowledge and the
+    /// two formats genuinely disagree — Markdown ends a destination at the first
+    /// space and moves it into `<…>`, djot reads that `<…>` as part of the URL
+    /// itself — so the side holding the document is the side that gets to spell
+    /// it. A destination twig can't carry at all (one with a newline) comes back
+    /// as an error rather than a quietly rewritten URL.
+    pub fn insert_link(&mut self, destination: &str) {
+        let (start, end) = self.selection().unwrap_or((self.caret, self.caret));
+        match self.editor.insert_link(start, end, destination) {
+            Ok(change) => {
+                self.last_edit_kind = None;
+                self.refresh();
+                // The caret belongs on the link's *text*, never out past a
+                // destination the WYSIWYG view doesn't even draw: selected, so a
+                // second press re-points what the first one linked, and — where
+                // that text is empty because the range was — collapsed to a
+                // caret between the brackets, waiting for it.
+                let text = self.link_text_span(change.new.start).unwrap_or(change.new);
+                self.anchor = (text.start != text.end).then_some(text.start);
+                self.caret = text.end;
+                self.dirty = self.source != self.clean_source;
+                self.status = None;
+                self.clamp_caret();
+            }
+            Err(e) => self.status = Some(format!("link: {e}")),
+        }
+    }
+
+    /// The source range of the text inside the link covering `off` — what sits
+    /// between its `[` and `]`. `None` when twig reports no link there.
+    fn link_text_span(&mut self, off: usize) -> Option<std::ops::Range<usize>> {
+        self.nodes()
+            .into_iter()
+            // Two links can touch (`[a](x)[b](y)`), and then one's `span.end` is
+            // the other's `span.start`; the link that starts latest at or before
+            // `off` is the one `off` is actually in.
+            .filter(|n| n.kind == "link" && n.span.start <= off && off < n.span.end)
+            .max_by_key(|n| n.span.start)
+            .and_then(|n| n.content_span)
     }
 
     // ── undo / redo ───────────────────────────────────────────────────────────
@@ -1376,8 +1538,14 @@ mod tests {
 
     /// Load a `|`-marked fixture, run `action`, return the caret-marked result.
     fn golden(name: &str, marked: &str, action: impl FnOnce(&mut Doc)) -> String {
+        golden_in(View::Source, name, marked, action)
+    }
+
+    /// [`golden`] in a chosen view — the editing ops are the view's to share, so
+    /// the same fixture has to read the same way in both.
+    fn golden_in(view: View, name: &str, marked: &str, action: impl FnOnce(&mut Doc)) -> String {
         let (src, caret) = parse_caret(marked);
-        let mut d = doc_with(name, &src);
+        let mut d = doc_in(view, name, &src);
         d.caret = caret;
         action(&mut d);
         render_caret(&d)
@@ -1646,6 +1814,178 @@ mod tests {
         assert_eq!(d.source, "## Title\n\nbody\n");
         d.set_block(BlockKind::Paragraph);
         assert_eq!(d.source, "Title\n\nbody\n");
+    }
+
+    // ── block containers (quote / list) ──────────────────────────────────────
+
+    #[test]
+    fn toggle_blockquote_wraps_the_block_at_the_caret_and_reverses() {
+        let g = |m, f: fn(&mut Doc)| golden("quote", m, f);
+        assert_eq!(g("hel|lo\n", |d| d.toggle_blockquote()), "> hel|lo\n");
+        assert_eq!(g("> hel|lo\n", |d| d.toggle_blockquote()), "hel|lo\n");
+        // A caret at a line end sits at the doc level; the block is still found.
+        assert_eq!(g("hello|\n", |d| d.toggle_blockquote()), "> hello|\n");
+    }
+
+    #[test]
+    fn toggle_blockquote_keeps_the_caret_in_a_hard_wrapped_paragraph() {
+        // Every source line of the paragraph gets its own `> `, so a caret left
+        // on its old byte offset falls one prefix per line above it too far
+        // back — inside the markup it just asked for rather than in its word.
+        assert_eq!(
+            golden("quote_wrap", "aaa\nb|bb\nccc\n", |d| d.toggle_blockquote()),
+            "> aaa\n> b|bb\n> ccc\n"
+        );
+    }
+
+    #[test]
+    fn toggle_blockquote_works_in_wysiwyg_view() {
+        let g = |n, m, f: fn(&mut Doc)| golden_in(View::Wysiwyg, n, m, f);
+        assert_eq!(g("q_wys", "hel|lo\n", |d| d.toggle_blockquote()), "> hel|lo\n");
+        assert_eq!(g("q_wys2", "> hel|lo\n", |d| d.toggle_blockquote()), "hel|lo\n");
+    }
+
+    #[test]
+    fn toggle_list_makes_a_list_and_converts_between_the_kinds() {
+        let g = |m, f: fn(&mut Doc)| golden("list", m, f);
+        assert_eq!(g("hel|lo\n", |d| d.toggle_list(false)), "- hel|lo\n");
+        assert_eq!(g("hel|lo\n", |d| d.toggle_list(true)), "1. hel|lo\n");
+        // The *other* kind converts in place instead of nesting, which is what
+        // makes the two buttons one three-state control.
+        assert_eq!(g("- hel|lo\n", |d| d.toggle_list(true)), "1. hel|lo\n");
+        assert_eq!(g("1. hel|lo\n", |d| d.toggle_list(false)), "- hel|lo\n");
+        // Its own kind, over the only item the list holds, takes it off.
+        assert_eq!(g("- hel|lo\n", |d| d.toggle_list(false)), "hel|lo\n");
+    }
+
+    #[test]
+    fn toggle_list_works_in_wysiwyg_view() {
+        let g = |n, m, f: fn(&mut Doc)| golden_in(View::Wysiwyg, n, m, f);
+        assert_eq!(g("l_wys", "hel|lo\n", |d| d.toggle_list(true)), "1. hel|lo\n");
+        assert_eq!(g("l_wys2", "1. hel|lo\n", |d| d.toggle_list(false)), "- hel|lo\n");
+        assert_eq!(g("l_wys3", "- hel|lo\n", |d| d.toggle_list(false)), "hel|lo\n");
+    }
+
+    #[test]
+    fn a_list_over_a_selection_numbers_each_block_and_stays_selected() {
+        // The selection has to grow with the markup: twig takes a container off
+        // only a range covering every block it holds, so the second press can
+        // reverse the first only if the result is what's selected.
+        let mut d = doc_with("list_sel", "abc\n\ndef\n");
+        d.select_all();
+        d.toggle_list(true);
+        assert_eq!(d.source, "1. abc\n\n2. def\n");
+        assert_eq!(d.selection(), Some((0, d.source.len())));
+        d.toggle_list(true);
+        assert_eq!(d.source, "abc\n\ndef\n");
+    }
+
+    #[test]
+    fn toggle_blockquote_nests_a_partly_covered_quote() {
+        // twig's rule: covering only some of a container's blocks nests, because
+        // taking the quote off would drag its uncovered siblings out with it.
+        let mut d = doc_with("quote_nest", "> a\n>\n> b\n");
+        d.caret = 2; // in the first quoted paragraph only
+        d.toggle_blockquote();
+        assert_eq!(d.source, "> > a\n>\n> b\n");
+    }
+
+    #[test]
+    fn a_container_toggle_on_a_blank_line_reports_and_changes_nothing() {
+        let mut d = doc_with("quote_blank", "\nabc\n");
+        d.caret = 0; // a blank line is no block for twig to wrap
+        d.toggle_blockquote();
+        assert_eq!(d.source, "\nabc\n");
+        assert!(d.status.is_some(), "twig's error should reach the status line");
+        assert!(!d.dirty);
+    }
+
+    #[test]
+    fn a_container_toggle_is_one_undo_step() {
+        let mut d = doc_with("quote_undo", "hello\n");
+        d.caret = 3;
+        d.insert("X"); // a typing run the structural edit must not fold into
+        d.toggle_blockquote();
+        assert_eq!(d.source, "> helXlo\n");
+        d.undo();
+        assert_eq!(d.source, "helXlo\n");
+    }
+
+    // ── links ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn insert_link_wraps_the_selection_and_leaves_its_text_selected() {
+        let mut d = doc_with("link_sel", "word here\n");
+        d.anchor = Some(0);
+        d.caret = 4;
+        d.insert_link("http://x.dev");
+        assert_eq!(d.source, "[word](http://x.dev) here\n");
+        // The text, not the destination — so a second press re-points the link
+        // the first one made rather than nesting one inside it.
+        assert_eq!(d.selected_text(), Some("word"));
+        d.insert_link("http://y.dev");
+        assert_eq!(d.source, "[word](http://y.dev) here\n");
+        assert_eq!(d.selected_text(), Some("word"));
+    }
+
+    #[test]
+    fn insert_link_repoints_the_link_at_a_bare_caret() {
+        let mut d = doc_with("link_repoint", "[word](http://x.dev)\n");
+        d.caret = 3; // in the link's text, nothing selected
+        d.insert_link("http://y.dev");
+        assert_eq!(d.source, "[word](http://y.dev)\n");
+        assert_eq!(d.selected_text(), Some("word"));
+    }
+
+    #[test]
+    fn insert_link_on_an_empty_range_waits_for_the_text() {
+        // twig writes `[](dest)`; the caret belongs between the brackets, which
+        // is exactly where the text about to be typed goes.
+        let mut d = doc_with("link_empty", "\n");
+        d.caret = 0;
+        d.insert_link("http://x.dev");
+        assert_eq!(d.source, "[](http://x.dev)\n");
+        assert_eq!(d.selection(), None);
+        d.insert("text");
+        assert_eq!(d.source, "[text](http://x.dev)\n");
+    }
+
+    #[test]
+    fn insert_link_hands_the_destination_to_twig_raw() {
+        // Escaping is twig's, and format-specific: Markdown ends a destination
+        // at the first space and needs the `<…>` form, where djot would read
+        // those angle brackets as part of the URL.
+        let mut d = doc_with("link_space", "word\n");
+        d.anchor = Some(0);
+        d.caret = 4;
+        d.insert_link("a b");
+        assert_eq!(d.source, "[word](<a b>)\n");
+    }
+
+    #[test]
+    fn insert_link_reports_a_destination_no_format_can_carry() {
+        let mut d = doc_with("link_bad", "word\n");
+        d.anchor = Some(0);
+        d.caret = 4;
+        d.insert_link("a\nb");
+        assert_eq!(d.source, "word\n"); // untouched, not quietly rewritten
+        assert!(d.status.is_some(), "InvalidArgument should reach the status line");
+        assert!(!d.dirty);
+    }
+
+    #[test]
+    fn insert_link_works_in_wysiwyg_view() {
+        let mut d = wysiwyg_doc("link_wys", "word here\n");
+        d.anchor = Some(0);
+        d.caret = 4;
+        d.insert_link("http://x.dev");
+        assert_eq!(d.source, "[word](http://x.dev) here\n");
+        assert_eq!(d.selected_text(), Some("word"));
+        // The map the caret has to keep riding is rebuilt each frame; motion
+        // over the fresh one must still land on a real stop (the debug_assert).
+        d.build_visual(80);
+        d.move_right(false);
+        d.move_left(false);
     }
 
     #[test]
