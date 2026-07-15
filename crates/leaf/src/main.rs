@@ -34,8 +34,17 @@ impl LeafApp {
         }
     }
 
-    fn cancel(&mut self, _: &Cancel, _: &mut Window, cx: &mut Context<Self>) {
-        self.editor.update(cx, |editor, cx| editor.cancel_close(cx));
+    /// Esc is unconditionally bound (`ctx: None`, below) so it always resolves
+    /// to this action first, ahead of anything the embedded widget itself
+    /// might want to do with the same key — including dismissing its own
+    /// modal text prompt. So this asks the widget's prompt to close first and
+    /// only falls back to the close-warning guard when there wasn't one.
+    fn cancel(&mut self, _: &Cancel, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |editor, cx| {
+            if !editor.cancel_prompt(window, cx) {
+                editor.cancel_close(cx);
+            }
+        });
     }
 
     fn open_file(&mut self, _: &OpenFile, window: &mut Window, cx: &mut Context<Self>) {
