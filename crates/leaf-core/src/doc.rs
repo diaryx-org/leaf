@@ -675,8 +675,9 @@ impl Doc {
     /// Link the selection to `destination` — the toolbar's Link button. With no
     /// selection it acts at the caret, which re-points a link the caret is
     /// already standing in (twig replaces an existing link's destination and
-    /// keeps its text) and otherwise leaves an empty `[](destination)` to type
-    /// the text into.
+    /// keeps its text) and otherwise spells a link that has no text of its own:
+    /// an autolink (`<https://x.dev>`) where the destination is one, and
+    /// `[destination](destination)` where it isn't.
     ///
     /// `destination` reaches twig raw. Escaping it is format knowledge and the
     /// two formats genuinely disagree — Markdown ends a destination at the first
@@ -690,20 +691,44 @@ impl Doc {
             Ok(change) => {
                 self.last_edit_kind = None;
                 self.refresh();
-                // The caret belongs on the link's *text*, never out past a
-                // destination the WYSIWYG view doesn't even draw: selected, so a
-                // second press re-points what the first one linked, and — where
-                // that text is empty because the range was — collapsed to a
-                // caret between the brackets, waiting for it.
-                let text = self.link_text_span(change.new.start).unwrap_or(change.new);
-                self.anchor = (text.start != text.end).then_some(text.start);
-                self.caret = text.end;
+                match self.link_text_span(change.new.start) {
+                    // A link with text of its own: select it, so typing replaces
+                    // a `[dest](dest)`'s stand-in label and a second press
+                    // re-points what the first one linked.
+                    Some(text) => {
+                        self.anchor = (text.start != text.end).then_some(text.start);
+                        self.caret = text.end;
+                    }
+                    // An autolink is finished the moment it's written — its text
+                    // *is* the URL. Leaving it selected would aim the next press
+                    // at the one shape twig still wraps instead of re-points.
+                    None => {
+                        self.anchor = None;
+                        self.caret = change.new.end;
+                    }
+                }
                 self.dirty = self.source != self.clean_source;
                 self.status = None;
                 self.clamp_caret();
             }
             Err(e) => self.status = Some(format!("link: {e}")),
         }
+    }
+
+    /// The destination of the link under the caret — what a Link prompt shows so
+    /// ⌘K on an existing link edits its URL instead of asking for it again.
+    /// `None` when the caret stands in no link.
+    ///
+    /// An autolink carries no separate destination: its text *is* the URL, so
+    /// that's what comes back for one.
+    pub fn link_destination_at_caret(&mut self) -> Option<String> {
+        let off = self.caret;
+        self.nodes()
+            .into_iter()
+            .filter(|n| matches!(n.kind.as_str(), "link" | "url" | "email"))
+            .filter(|n| n.span.start <= off && off < n.span.end)
+            .max_by_key(|n| n.span.start)
+            .and_then(|n| n.destination.or(n.text))
     }
 
     /// The source range of the text inside the link covering `off` — what sits
@@ -1487,8 +1512,14 @@ mod tests {
     /// renderer stamps each frame, so the map is built here too — a WYSIWYG doc
     /// without one is a view no user is ever in.
     fn doc_in(view: View, name: &str, body: &str) -> Doc {
+        // The fixture name doubles as the temp file's, so two tests picking the
+        // same one raced under the parallel runner and read each other's body —
+        // a green suite proving the wrong thing. The counter makes that
+        // unreachable rather than asking every future caller to notice.
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut p = std::env::temp_dir();
-        p.push(format!("leaf_test_{name}.md"));
+        p.push(format!("leaf_test_{name}_{seq}.md"));
         std::fs::write(&p, body).unwrap();
         let mut d = Doc::open(p).unwrap();
         d.view = view;
@@ -1938,16 +1969,56 @@ mod tests {
     }
 
     #[test]
-    fn insert_link_on_an_empty_range_waits_for_the_text() {
-        // twig writes `[](dest)`; the caret belongs between the brackets, which
-        // is exactly where the text about to be typed goes.
+    fn insert_link_on_an_empty_range_autolinks_a_url() {
+        // A link with no text of its own is an autolink, and twig spells it —
+        // `<…>` is the canonical form and needs no text typed into it, so the
+        // caret lands after it rather than selecting a finished link.
         let mut d = doc_with("link_empty", "\n");
         d.caret = 0;
         d.insert_link("http://x.dev");
-        assert_eq!(d.source, "[](http://x.dev)\n");
+        assert_eq!(d.source, "<http://x.dev>\n");
         assert_eq!(d.selection(), None);
-        d.insert("text");
-        assert_eq!(d.source, "[text](http://x.dev)\n");
+        assert_eq!(d.caret, 14);
+    }
+
+    #[test]
+    fn insert_link_on_an_empty_range_falls_back_for_a_non_url() {
+        // `<./notes.md>` is literal text in both formats and `<foo>` is raw HTML
+        // in Markdown, so a destination that can't autolink doubles as the text
+        // instead — which is then selected, ready to be typed over.
+        let mut d = doc_with("link_rel", "\n");
+        d.caret = 0;
+        d.insert_link("./notes.md");
+        assert_eq!(d.source, "[./notes.md](./notes.md)\n");
+        assert_eq!(d.selection(), Some((1, 11)));
+        d.insert("Notes");
+        assert_eq!(d.source, "[Notes](./notes.md)\n");
+    }
+
+    #[test]
+    fn insert_link_repoints_the_autolink_the_caret_stands_in() {
+        // The autolink's text is its URL, so re-pointing replaces the whole
+        // node — the caret must not splice a second link inside the first.
+        let mut d = doc_with("link_repoint_auto", "see <https://x.dev> ok\n");
+        d.caret = 10;
+        d.insert_link("https://y.dev");
+        assert_eq!(d.source, "see <https://y.dev> ok\n");
+    }
+
+    #[test]
+    fn link_destination_at_caret_reads_both_spellings() {
+        let mut d = doc_with("link_dest", "see [t](https://x.dev) ok\n");
+        d.caret = 5;
+        assert_eq!(d.link_destination_at_caret().as_deref(), Some("https://x.dev"));
+        d.caret = 0;
+        assert_eq!(d.link_destination_at_caret(), None);
+
+        // An autolink has no `destination`; its text is the URL.
+        let mut a = doc_with("link_dest_auto", "see <https://x.dev> ok\n");
+        a.caret = 10;
+        assert_eq!(a.link_destination_at_caret().as_deref(), Some("https://x.dev"));
+        a.caret = 21;
+        assert_eq!(a.link_destination_at_caret(), None);
     }
 
     #[test]
