@@ -95,6 +95,15 @@ pub struct EditorStyle {
     pub table_border: Hsla,
     pub table_header: Hsla,
     pub table_stripe: Hsla,
+    /// The GUI's palette for leaf-core's semantic roles (see [`crate::style`]).
+    /// Core no longer bakes colors in — a role is all it records — so a heading,
+    /// code, and body text all read in [`Self::text`]; only these three roles
+    /// take a color of their own. `link` is a hyperlink; `muted` is quiet
+    /// decoration (bullets, quote/code gutters, rules); `mark_background` is the
+    /// highlight behind `==marked==` text.
+    pub link: Hsla,
+    pub muted: Hsla,
+    pub mark_background: Hsla,
     /// Body font family.
     pub font_family: SharedString,
     /// The monospace family code (inline `` `verbatim` `` and fenced blocks) is
@@ -125,6 +134,9 @@ impl Default for EditorStyle {
             table_border: rgb(0xd0d0d0).into(),
             table_header: rgb(0xf0f0f0).into(),
             table_stripe: rgb(0xf8f8f8).into(),
+            link: rgb(0x1e66f5).into(),
+            muted: rgb(0x9a9a9a).into(),
+            mark_background: rgb(0xfaf0a0).into(),
             font_family: "Helvetica".into(),
             mono_font_family: "Menlo".into(),
             font_size: px(16.0),
@@ -138,7 +150,7 @@ use leaf_core::{
     Alignment, BlockKind, DiskState, Doc, Glyph, InlineKind, InlineMarks, TableInfo, View,
 };
 
-use crate::style::{Fonts, heading_scale, text_run};
+use crate::style::{RunStyle, heading_scale, text_run};
 
 /// Something the widget needs its host to do, because only the host can: the
 /// editor owns the document, but the window and the process are the app's.
@@ -1966,9 +1978,9 @@ impl EntityInputHandler for Editor {
 /// than growing with everything it has ever been.
 struct Shaper<'w> {
     window: &'w mut Window,
-    /// The families a run is shaped in — body for prose, mono for code, picked
-    /// per run from each glyph's [`Role`] (see [`build_runs`]).
-    fonts: Fonts,
+    /// The families and role colors a run is styled with — body/mono family and
+    /// the palette, picked per run from each glyph's [`Role`] (see [`build_runs`]).
+    styler: RunStyle,
     /// The body font size. A line's size is this, unless its glyphs carry a
     /// heading [`Role`], in which case it scales up by [`Self::heading_scale`] —
     /// see [`Self::line_size`].
@@ -2044,7 +2056,7 @@ impl Shaper<'_> {
             return line.clone();
         }
         let text: String = glyphs.iter().map(|g| g.ch).collect();
-        let runs = build_runs(glyphs, &self.fonts, marked);
+        let runs = build_runs(glyphs, &self.styler, marked);
         // The whole line shapes at one size — a run carries a family, not a size
         // — so a heading's larger glyphs are a per-line decision keyed by their
         // role (already folded into `key` via `style_bits`).
@@ -2114,21 +2126,25 @@ fn shape_key(glyphs: &[Glyph], marked: Option<&Range<usize>>) -> u64 {
 /// A style packed into the bits that reach the font: colour and the emphasis
 /// flags. `Style` is `Eq` but not `Hash`, and this is the part that matters.
 fn style_bits(s: CoreStyle) -> u16 {
-    // The role reaches the shape twice over: it picks the run's family (mono for
-    // code) and the line's size (larger for a heading), so two otherwise-equal
-    // glyphs that differ only in role must not share a shape.
+    // The role reaches the shape more than one way — it picks the run's family
+    // (mono for code), color, and the line's size (larger for a heading) — so two
+    // otherwise-equal glyphs that differ only in role must not share a shape.
     let role = match s.role {
         Role::Body => 0u16,
         Role::Code => 1,
-        Role::Heading(l) => 2 + l.min(13) as u16, // 2..=15, four bits
+        Role::Link => 2,
+        Role::Mark => 3,
+        Role::ListMarker => 4,
+        Role::QuoteGutter => 5,
+        Role::CodeFence => 6,
+        Role::Rule => 7,
+        Role::Heading(l) => 8 + l.min(7) as u16, // 8..=15, four bits
     };
-    (s.fg as u16)
-        | ((s.bg as u16) << 4)
-        | ((s.bold as u16) << 8)
-        | ((s.italic as u16) << 9)
-        | ((s.underline as u16) << 10)
-        | ((s.strikethrough as u16) << 11)
-        | (role << 12)
+    (s.bold as u16)
+        | ((s.italic as u16) << 1)
+        | ((s.underline as u16) << 2)
+        | ((s.strikethrough as u16) << 3)
+        | (role << 4)
 }
 
 /// One shaped run of text within a row, placed at a known x from the row's left.
@@ -2415,7 +2431,7 @@ fn gather_logical(doc: &Doc) -> Vec<Logical> {
 /// *source* byte falls inside it — so it segments runs alongside the style, and
 /// rides the glyphs' `src` exactly like everything else here (a preedit in
 /// WYSIWYG is underlined across the visible text, hidden delimiters and all).
-fn build_runs(glyphs: &[Glyph], fonts: &Fonts, marked: Option<&Range<usize>>) -> Vec<gpui::TextRun> {
+fn build_runs(glyphs: &[Glyph], styler: &RunStyle, marked: Option<&Range<usize>>) -> Vec<gpui::TextRun> {
     let mut segs: Vec<(usize, CoreStyle, bool)> = Vec::new();
     for g in glyphs {
         let bytes = g.ch.len_utf8();
@@ -2431,7 +2447,7 @@ fn build_runs(glyphs: &[Glyph], fonts: &Fonts, marked: Option<&Range<usize>>) ->
     }
     segs.into_iter()
         .map(|(len, st, preedit)| {
-            let mut run = text_run(len, st, fonts);
+            let mut run = text_run(len, st, styler);
             if preedit {
                 // `color: None` inherits the run's own text color, so the
                 // underline follows a preedit composed inside styled text.
@@ -3254,17 +3270,22 @@ impl Element for TextElement {
                         std::mem::take(&mut e.break_cache),
                     )
                 });
-                // Body and mono families, and the ratio that turns a font size
-                // into a row height — the metrics the shaper reads to size each
-                // line by its role (see [`Shaper::line_size`]).
-                let fonts = Fonts {
+                // The families and palette a run is styled with, and the ratio
+                // that turns a font size into a row height — the metrics the
+                // shaper reads to style each line by its role (see
+                // [`Shaper::line_size`] and [`text_run`]).
+                let styler = RunStyle {
                     body: font.clone(),
                     mono: gpui::font(style.mono_font_family.clone()),
+                    text: style.text,
+                    link: style.link,
+                    muted: style.muted,
+                    mark_bg: style.mark_background,
                 };
                 let line_ratio = (f32::from(line_height) / f32::from(font_size).max(1.0)).max(1.0);
                 let mut shaper = Shaper {
                     window,
-                    fonts,
+                    styler,
                     body_size: font_size,
                     heading_scale: style.heading_scale,
                     line_ratio,
@@ -3591,11 +3612,25 @@ impl Focusable for Editor {
     }
 }
 
+/// A [`RunStyle`] over `body` with the default theme's palette — the styler the
+/// shaping and run tests build their shapes with.
+#[cfg(test)]
+fn test_run_style(body: Font) -> RunStyle {
+    let theme = EditorStyle::default();
+    RunStyle {
+        body,
+        mono: gpui::font("Menlo"),
+        text: theme.text,
+        link: theme.link,
+        muted: theme.muted,
+        mark_bg: theme.mark_background,
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::{
-        Fonts, Glyph, build_runs, locate_caret_core, marked_replace_range, utf16_to_utf8,
+        Glyph, build_runs, locate_caret_core, marked_replace_range, test_run_style, utf16_to_utf8,
         utf8_to_utf16,
     };
     use leaf_core::style::Style as CoreStyle;
@@ -3760,9 +3795,9 @@ mod tests {
 
     #[test]
     fn a_preedit_underlines_only_the_composed_glyphs() {
-        let fonts = Fonts { body: gpui::font("Helvetica"), mono: gpui::font("Menlo") };
+        let styler = test_run_style(gpui::font("Helvetica"));
         // "abcde", composition over the source bytes of "cd".
-        let runs = build_runs(&glyphs("abcde", 0), &fonts, Some(&(2..4)));
+        let runs = build_runs(&glyphs("abcde", 0), &styler, Some(&(2..4)));
         // One unstyled run either side of the underlined middle — the marked
         // range has to split runs even though every glyph shares a style.
         let lens: Vec<usize> = runs.iter().map(|r| r.len).collect();
@@ -3774,8 +3809,8 @@ mod tests {
 
     #[test]
     fn no_composition_leaves_one_unbroken_run() {
-        let fonts = Fonts { body: gpui::font("Helvetica"), mono: gpui::font("Menlo") };
-        let runs = build_runs(&glyphs("abcde", 0), &fonts, None);
+        let styler = test_run_style(gpui::font("Helvetica"));
+        let runs = build_runs(&glyphs("abcde", 0), &styler, None);
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].len, 5);
         assert!(runs[0].underline.is_none());
@@ -3880,7 +3915,7 @@ mod table_layout_tests {
             let font = window.text_style().font();
             let mut shaper = Shaper {
                 window,
-                fonts: Fonts { body: font.clone(), mono: gpui::font("Menlo") },
+                styler: test_run_style(font.clone()),
                 body_size: px(16.0),
                 heading_scale: EditorStyle::default().heading_scale,
                 line_ratio: 1.5,
@@ -4094,7 +4129,7 @@ mod table_layout_tests {
             let font = window.text_style().font();
             let mut shaper = Shaper {
                 window,
-                fonts: Fonts { body: font.clone(), mono: gpui::font("Menlo") },
+                styler: test_run_style(font.clone()),
                 body_size: px(16.0),
                 heading_scale: EditorStyle::default().heading_scale,
                 line_ratio: 1.5,
@@ -4409,34 +4444,35 @@ mod table_layout_tests {
     }
 
     #[test]
-    fn code_uses_the_mono_family_and_a_heading_uses_the_default_color() {
-        use leaf_core::style::Color;
-        let fonts = Fonts { body: gpui::font("Helvetica"), mono: gpui::font("Menlo") };
+    fn the_gui_styles_roles_by_family_color_and_weight() {
+        // Core now emits only a role; the GUI supplies the whole look. This pins
+        // the mapping down: family (mono for code), color (default text for
+        // headings/code, a link color, decoration muted), weight (headings bold
+        // from their role), and the mark background.
+        let theme = EditorStyle::default();
+        let styler = test_run_style(gpui::font("Helvetica"));
+        let run = |role| build_runs(&glyphs_of("x", 0, CoreStyle::default().role(role)), &styler, None)[0].clone();
 
-        // Code is shaped in the mono family — the GUI's answer to `Role::Code`,
-        // where a terminal, already monospace, needs nothing.
-        let code = build_runs(
-            &glyphs_of("x", 0, CoreStyle::default().fg(Color::Green).role(Role::Code)),
-            &fonts,
-            None,
-        );
-        assert_eq!(code[0].font.family, "Menlo", "code should shape in the mono family");
+        // Code shapes in the mono family, in the default text color — mono is the
+        // distinguisher, so it no longer needs the terminal's green.
+        let code = run(Role::Code);
+        assert_eq!(code.font.family, "Menlo", "code should shape in the mono family");
+        assert_eq!(code.color, theme.text, "code reads in the default text color, not green");
 
-        // A heading keeps the body family but sheds the neutral hue the terminal
-        // uses to tell levels apart: size and weight do the distinguishing, so it
-        // renders in the default text color, not cyan/green/…
-        let heading = build_runs(
-            &glyphs_of("x", 0, CoreStyle::default().fg(Color::Cyan).bold().role(Role::Heading(1))),
-            &fonts,
-            None,
-        );
-        assert_eq!(heading[0].font.family, "Helvetica", "a heading stays in the body family");
-        assert_eq!(heading[0].font.weight, gpui::FontWeight::BOLD, "a heading is still bold");
-        assert_eq!(
-            heading[0].color,
-            crate::style::to_hsla(Color::Default),
-            "a heading renders in the default text color, not its level's hue",
-        );
+        // A heading stays in the body family but is bold from its role and in the
+        // default text color — size and weight distinguish it, not a hue.
+        let heading = run(Role::Heading(1));
+        assert_eq!(heading.font.family, "Helvetica", "a heading stays in the body family");
+        assert_eq!(heading.font.weight, gpui::FontWeight::BOLD, "a heading is bold from its role");
+        assert_eq!(heading.color, theme.text, "a heading renders in the default text color");
+
+        // A link takes the link color and is underlined; a mark carries the
+        // highlight background; decoration is muted.
+        let link = run(Role::Link);
+        assert_eq!(link.color, theme.link, "a link takes the link color");
+        assert!(link.underline.is_some(), "a link is underlined");
+        assert_eq!(run(Role::Mark).background_color, Some(theme.mark_background), "mark is highlighted");
+        assert_eq!(run(Role::QuoteGutter).color, theme.muted, "decoration is muted");
     }
 
     #[test]

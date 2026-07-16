@@ -19,7 +19,7 @@ pub mod style;
 pub mod wysiwyg;
 
 pub use doc::{DiskState, Doc, InlineMarks, View};
-pub use style::{Color, Style};
+pub use style::{Role, Style};
 pub use wysiwyg::{Glyph, TableCell, TableInfo, TableRow, VRow, VisualMap};
 
 // Re-export the twig types a frontend needs to name when calling into a `Doc`

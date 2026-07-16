@@ -7,31 +7,52 @@
 //! the geometry it reads (glyphs, source offsets) stays in leaf-core so a GUI
 //! frontend reuses it unchanged.
 
-use leaf_core::style::{Color as LColor, Style as LStyle};
+use leaf_core::style::{Role, Style as LStyle};
 use leaf_core::VisualMap;
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
 
-/// Map a neutral core color onto a terminal color.
-fn color(c: LColor) -> Color {
-    match c {
-        LColor::Default => Color::Reset,
-        LColor::Black => Color::Black,
-        LColor::Cyan => Color::Cyan,
-        LColor::Green => Color::Green,
-        LColor::Yellow => Color::Yellow,
-        LColor::Blue => Color::Blue,
-        LColor::Magenta => Color::Magenta,
-        LColor::Gray => Color::Gray,
-        LColor::DarkGray => Color::DarkGray,
+/// The terminal's palette, keyed on a glyph's semantic [`Role`]. This is the
+/// presentation core used to bake in and no longer does: a terminal can only
+/// tell a heading from body text by *color*, so the choice of which color lives
+/// here, in the frontend that has the constraint — not in the shared model. A
+/// GUI, which can vary size and font, maps the same roles to entirely different
+/// looks.
+///
+/// Returns the base style for the role; the caller layers the author's own
+/// emphasis (bold/italic/…) on top. Headings cycle a color by level and bold,
+/// exactly as before the palette moved out of core.
+fn role_style(role: Role) -> Style {
+    let s = Style::default();
+    match role {
+        Role::Body => s,
+        Role::Heading(level) => {
+            let base = s.add_modifier(Modifier::BOLD);
+            match level {
+                1 => base.fg(Color::Cyan).add_modifier(Modifier::UNDERLINED),
+                2 => base.fg(Color::Green),
+                3 => base.fg(Color::Yellow),
+                4 => base.fg(Color::Blue),
+                5 => base.fg(Color::Magenta),
+                _ => base.fg(Color::Gray),
+            }
+        }
+        Role::Code => s.fg(Color::Green),
+        Role::Link => s.fg(Color::Cyan).add_modifier(Modifier::UNDERLINED),
+        Role::Mark => s.fg(Color::Black).bg(Color::Yellow),
+        Role::ListMarker => s.fg(Color::Yellow),
+        Role::QuoteGutter => s.fg(Color::Green),
+        // The code fence, thematic breaks, and table rules are all quiet grey.
+        Role::CodeFence | Role::Rule => s.fg(Color::DarkGray),
     }
 }
 
-/// Map a neutral core style onto a ratatui style.
+/// Map a neutral core style onto a ratatui style: the role picks the palette,
+/// then the author's own emphasis flags layer on top.
 pub fn to_ratatui(s: LStyle) -> Style {
-    let mut out = Style::default().fg(color(s.fg)).bg(color(s.bg));
+    let mut out = role_style(s.role);
     if s.bold {
         out = out.add_modifier(Modifier::BOLD);
     }

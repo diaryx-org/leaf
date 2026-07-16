@@ -26,7 +26,7 @@ use twig::{Alignment, FlatNode};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::style::{Color, Role, Style};
+use crate::style::{Role, Style};
 
 /// One rendered character plus the source byte offset it originates from.
 /// Synthetic glyphs (a list bullet, a quote gutter) point at their block's
@@ -694,7 +694,7 @@ impl Builder<'_> {
                 self.emit_wrapped(glyphs, node.span.start, pf, pc);
             }
             "block_quote" => {
-                let gutter = synth("│ ", Color::Green, node.span.start);
+                let gutter = synth("│ ", Role::QuoteGutter, node.span.start);
                 let f = concat(pf, &gutter);
                 let c = concat(pc, &gutter);
                 self.blocks(id, &f, &c);
@@ -708,15 +708,15 @@ impl Builder<'_> {
                     } else {
                         "• ".to_string()
                     };
-                    let bullet = synth(&marker, Color::Yellow, start);
-                    let indent = synth(&" ".repeat(text_width(&marker)), Color::Default, start);
+                    let bullet = synth(&marker, Role::ListMarker, start);
+                    let indent = synth(&" ".repeat(text_width(&marker)), Role::Body, start);
                     self.block(item, &concat(pc, &bullet), &concat(pc, &indent));
                 }
             }
             "list_item" | "task_list_item" => self.blocks(id, pf, pc),
             "table" => self.table(id, pf, pc),
             "code_block" => {
-                let style = Style::default().fg(Color::Green).role(Role::Code);
+                let style = Style::default().role(Role::Code);
                 let text = node.text.clone().unwrap_or_default();
                 let lines: Vec<&str> = text.trim_end_matches('\n').split('\n').collect();
                 // Each line at its own source offset, so the caret can walk the
@@ -730,7 +730,7 @@ impl Builder<'_> {
                     .and_then(|c| self.code_line_offsets(c, &lines));
                 for (i, raw) in lines.iter().enumerate() {
                     let at = offs.as_ref().map_or(node.span.start, |o| o[i]);
-                    let gutter = synth("▏ ", Color::DarkGray, at);
+                    let gutter = synth("▏ ", Role::CodeFence, at);
                     let mut glyphs: Vec<Glyph> = concat(pf, &gutter);
                     push_text(&mut glyphs, raw, at, style);
                     // Explicitly past the line's *text*: a blank line has only
@@ -746,7 +746,7 @@ impl Builder<'_> {
                 for _ in 0..w {
                     glyphs.push(Glyph {
                         ch: '─',
-                        style: Style::default().fg(Color::DarkGray),
+                        style: Style::default().role(Role::Rule),
                         src: node.span.start,
                         // A rule is a block the caret can sit on, as it always
                         // has; it maps coarsely to the block's start.
@@ -882,7 +882,7 @@ impl Builder<'_> {
 
     /// A horizontal rule between/around rows — entirely decoration.
     fn push_rule(&mut self, text: &str, src: usize, prefix: &[Glyph]) {
-        let glyphs = concat(prefix, &synth(text, Color::DarkGray, src));
+        let glyphs = concat(prefix, &synth(text, Role::Rule, src));
         self.rows.push(VRow {
             glyphs,
             end_src: src,
@@ -918,7 +918,7 @@ impl Builder<'_> {
                     .and_then(|l| l.first().map(|g| g.src))
                     .or_else(|| cell.map(|c| c.start))
                     .unwrap_or(fallback);
-                glyphs.extend(synth("│", Color::DarkGray, at));
+                glyphs.extend(synth("│", Role::Rule, at));
                 match (cell, line) {
                     (Some(cell), Some(line)) => {
                         let pad = w.saturating_sub(glyphs_width(line));
@@ -941,20 +941,20 @@ impl Builder<'_> {
                                 .map(|g| g.src + g.ch.len_utf8())
                                 .unwrap_or(cell.end),
                         };
-                        glyphs.extend(synth(&" ".repeat(lead + 1), Color::Default, at));
+                        glyphs.extend(synth(&" ".repeat(lead + 1), Role::Body, at));
                         glyphs.extend(line.iter().cloned());
                         glyphs.push(Glyph { ch: ' ', style: Style::default(), src: end, stop: true });
-                        glyphs.extend(synth(&" ".repeat(trail), Color::Default, end));
+                        glyphs.extend(synth(&" ".repeat(trail), Role::Body, end));
                     }
                     // A ragged row, or a column whose cell ended higher up: pad
                     // it out so the grid stays square.
                     _ => {
                         let at = cell.map(|c| c.end).unwrap_or(fallback);
-                        glyphs.extend(synth(&" ".repeat(w + 2), Color::Default, at));
+                        glyphs.extend(synth(&" ".repeat(w + 2), Role::Body, at));
                     }
                 }
             }
-            glyphs.extend(synth("│", Color::DarkGray, fallback));
+            glyphs.extend(synth("│", Role::Rule, fallback));
             // The row ends where its last stop does. A table row has no gap
             // between its final cell and the border, so inventing an end past
             // that would be a stop with nothing under it.
@@ -995,7 +995,7 @@ impl Builder<'_> {
             }
             "emph" => self.recurse(id, base.italic(), out),
             "strong" => self.recurse(id, base.bold(), out),
-            "mark" => self.recurse(id, base.bg(Color::Yellow).fg(Color::Black), out),
+            "mark" => self.recurse(id, base.role(Role::Mark), out),
             "insert" => self.recurse(id, base.underline(), out),
             "delete" => self.recurse(id, base.strikethrough(), out),
             "superscript" | "subscript" => self.recurse(id, base, out),
@@ -1004,10 +1004,10 @@ impl Builder<'_> {
                 // backticks the fence used, which `span.start + 1` only guessed
                 // right for a single one. Fall back to that guess if it's absent.
                 let at = node.content_span.as_ref().map_or(node.span.start + 1, |c| c.start);
-                push_text(out, node.text.as_deref().unwrap_or(""), at, base.fg(Color::Green).role(Role::Code));
+                push_text(out, node.text.as_deref().unwrap_or(""), at, base.role(Role::Code));
             }
             "link" | "url" | "email" => {
-                let style = base.fg(Color::Cyan).underline();
+                let style = base.role(Role::Link);
                 if self.children(id).is_empty() {
                     push_text(out, node.destination.as_deref().or(node.text.as_deref()).unwrap_or("link"), node.span.start, style);
                 } else {
@@ -1527,12 +1527,12 @@ fn push_text(out: &mut Vec<Glyph>, text: &str, base_src: usize, style: Style) {
     }
 }
 
-/// Build synthetic prefix glyphs (a bullet, a gutter) all pointing at `src`.
-/// `Color::Default` yields the surface's own color (no override). Synthetic
-/// glyphs are never caret stops — they share one offset, so the caret steps
-/// over them (a click still lands at `src`).
-fn synth(text: &str, color: Color, src: usize) -> Vec<Glyph> {
-    let style = Style::default().fg(color);
+/// Build synthetic decoration glyphs (a bullet, a gutter) all pointing at `src`,
+/// each carrying `role` so the frontend can style it (`Role::Body` for plain
+/// padding). Synthetic glyphs are never caret stops — they share one offset, so
+/// the caret steps over them (a click still lands at `src`).
+fn synth(text: &str, role: Role, src: usize) -> Vec<Glyph> {
+    let style = Style::default().role(role);
     text.chars()
         .map(|ch| Glyph { ch, style, src, stop: false })
         .collect()
@@ -1551,18 +1551,11 @@ fn prefix_width(prefix: &[Glyph]) -> usize {
 }
 
 fn heading_style(level: u32) -> Style {
-    // The `role` is what a GUI reads to size the heading; the colors are the
-    // terminal's only lever and are left as they were. `level as u8` is safe —
+    // Just the role — a frontend decides how a heading of this level *looks*
+    // (the terminal cycles a color and bolds it, the GUI scales the font). The
+    // author wrote no emphasis here, so core records none. `level as u8` is safe:
     // Markdown/Djot cap headings at 6.
-    let base = Style::default().bold().role(Role::Heading(level.min(255) as u8));
-    match level {
-        1 => base.fg(Color::Cyan).underline(),
-        2 => base.fg(Color::Green),
-        3 => base.fg(Color::Yellow),
-        4 => base.fg(Color::Blue),
-        5 => base.fg(Color::Magenta),
-        _ => base.fg(Color::Gray),
-    }
+    Style::default().role(Role::Heading(level.min(255) as u8))
 }
 
 pub(crate) fn is_inline(kind: &str) -> bool {

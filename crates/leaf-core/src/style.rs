@@ -3,81 +3,64 @@
 //!
 //! The WYSIWYG builder ([`crate::wysiwyg`]) tags each rendered glyph with one of
 //! these instead of a `ratatui::Style` or a `gpui::TextStyle`, so the caret
-//! model and the AST→glyph layout stay free of any GUI/TUI dependency. Each
-//! frontend crate converts a [`Style`] into its own styling type — `leaf-tui`
-//! maps [`Color`] onto the 16 terminal colors; a GUI frontend is free to map
-//! the same [`Color`] onto whatever RGB its theme wants.
+//! model and the AST→glyph layout stay free of any GUI/TUI dependency.
 //!
-//! The palette names (`Cyan`, `Green`, …) are *roles* borrowed from the terminal
-//! world, not literal sRGB: headings deliberately cycle hues by level, links are
-//! "Cyan", code is "Green". A frontend re-reads them however it likes.
+//! What core records is *what a glyph is*, never *what color to paint it*: a
+//! [`Role`] (heading, code, link, a list bullet, …) plus the portable emphasis
+//! the author actually wrote (`**bold**`, `*em*`, `{+ins+}`, `{-del-}`). Palette
+//! is presentation, and presentation belongs to the frontend — a terminal tells
+//! a heading from body text by color because color is all it can vary, while a
+//! GUI varies size and font instead. So each frontend maps a [`Role`] to its own
+//! look: `leaf-tui` turns it into terminal colors, `leaf-gpui` into an `Hsla`
+//! plus a font size and family. Core stays out of that argument.
 
-/// A semantic foreground/background color. Frontends map these to concrete
-/// colors; [`Color::Default`] means "the surface's own default" (terminal
-/// reset, or the GUI's default text/background).
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum Color {
-    #[default]
-    Default,
-    Black,
-    Cyan,
-    Green,
-    Yellow,
-    Blue,
-    Magenta,
-    Gray,
-    DarkGray,
-}
-
-/// A glyph's *typographic role* — what kind of text it is, as opposed to what
-/// color it wears. Orthogonal to [`Color`] on purpose: a heading is a heading
-/// because of its role, not its hue, so a frontend can render it larger without
-/// also having to tint it. A terminal, which can only vary color, ignores this
-/// entirely (the [`Color`] roles already carry the whole story there); a GUI
-/// reads it to pick a font size and family.
+/// What a glyph *is*, typographically — the semantic role a frontend maps to its
+/// own presentation. Mutually exclusive per glyph (a glyph is a heading, or a
+/// link, or body text — not two at once); the compositional emphasis a run can
+/// also carry lives in [`Style`]'s `bold`/`italic`/`underline`/`strikethrough`
+/// flags alongside this.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Role {
-    /// Ordinary prose — the surface's default font at its default size.
+    /// Ordinary prose — the surface's default text.
     #[default]
     Body,
-    /// A heading of the given level (1 = top). A GUI scales the font by level;
-    /// the terminal leaves it be.
+    /// A heading of the given level (1 = top). A GUI scales the font by level; a
+    /// terminal cycles a color by it.
     Heading(u8),
     /// Code — inline `` `verbatim` `` or a fenced block. A GUI renders it in a
-    /// monospace family so columns line up; the terminal, already monospace,
-    /// only needs the color the [`Color`] role carries.
+    /// monospace family; a terminal tints it.
     Code,
+    /// A hyperlink's visible text (or bare URL/email).
+    Link,
+    /// Highlighted / marked text (`==mark==`).
+    Mark,
+    /// A list item's bullet or number — synthetic decoration, not authored text.
+    ListMarker,
+    /// A block quote's gutter (`│`), drawn down its left edge.
+    QuoteGutter,
+    /// A fenced code block's gutter (`▏`), marking the block's extent.
+    CodeFence,
+    /// A drawn rule: a thematic break (`───`) or a table's borders. A GUI that
+    /// draws its own tables ignores the border glyphs; the rule still reaches it.
+    Rule,
 }
 
-/// A glyph's style: a foreground/background [`Color`], emphasis flags, and a
-/// typographic [`Role`].
-/// Builder methods (`.fg`, `.bold`, …) mirror the shape of ratatui's `Style`
-/// so the WYSIWYG builder reads the same as it did before the split.
+/// A glyph's style: a typographic [`Role`] plus the compositional emphasis flags
+/// the author wrote. Deliberately *no* color — that is a frontend's call, keyed
+/// on the [`Role`]. Builder methods (`.bold`, `.italic`, …) mirror the shape of
+/// ratatui's `Style` so the WYSIWYG builder reads the same as it did before the
+/// split.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Style {
-    pub fg: Color,
-    pub bg: Color,
     pub bold: bool,
     pub italic: bool,
     pub underline: bool,
     pub strikethrough: bool,
-    /// The typographic role — [`Role::Body`] for ordinary text. A frontend free
-    /// to vary metrics (a GUI) maps this to a font size and family; one that
-    /// can't (the terminal) ignores it.
+    /// The typographic role — [`Role::Body`] for ordinary text.
     pub role: Role,
 }
 
 impl Style {
-    pub const fn fg(mut self, c: Color) -> Self {
-        self.fg = c;
-        self
-    }
-
-    pub const fn bg(mut self, c: Color) -> Self {
-        self.bg = c;
-        self
-    }
-
     pub const fn bold(mut self) -> Self {
         self.bold = true;
         self
