@@ -405,60 +405,82 @@ pub fn build_cached(
         last_off: 0,
     };
 
+    // Record the per-block row decomposition as we go, so a later
+    // [`build_spliced`] can patch one block without rebuilding the map.
+    let mut layout_blocks: Vec<BlockLayout> = Vec::with_capacity(blocks.len());
+    let mut all_shift_safe = true;
     for (i, block) in blocks.iter().enumerate() {
         let start = block.span.start;
+        let before_sep = b.rows.len();
         if i > 0 {
             b.emit_separators_before(start, &[]);
         }
+        let sep_rows = b.rows.len() - before_sep;
+        let after_sep = b.rows.len();
         let bytes = source.as_bytes().get(block.span.clone()).unwrap_or(&[]);
         let hash = block_hash(bytes);
 
         // Hit: clone the block's rows shifted to its current offset and restore
         // the (shifted) `last_off` so the next separator lands right — no marshal.
+        // Only shift-safe blocks are ever cached, so a hit is safe by construction.
         if let Some(hit) = cache.reuse(hash, bytes) {
             let delta = start as isize - hit.built_start as isize;
             for row in &hit.rows {
                 b.rows.push(shift_row(row, delta));
             }
             b.last_off = (hit.last_off as isize + delta) as usize;
-            continue;
-        }
-
-        // Miss: marshal just this block's subtree and render it. A subtree is
-        // self-contained with local ids (root at 0) and absolute spans, so a
-        // fresh builder over it produces the same rows the whole-arena path would.
-        let subtree = fetch_subtree(block.node_id);
-        if subtree.is_empty() {
-            continue; // a block twig couldn't hand back — skip rather than panic
-        }
-        let mut sub = Builder {
-            nodes: &subtree,
-            source,
-            wrap,
-            rows: Vec::new(),
-            tables: Vec::new(),
-            last_off: 0,
-        };
-        sub.block(0, &[], &[]);
-        let last_off = sub.last_off;
-        if sub.tables.is_empty() {
-            // Cacheable: store the rows and reuse them (shifted) next time.
-            cache.store(hash, bytes, start, sub.rows.clone(), last_off);
-            b.rows.extend(sub.rows);
         } else {
-            // A table block is never cached; rebase its row-index bookkeeping
-            // onto the combined row vector and append.
-            let base = b.rows.len();
-            for t in &mut sub.tables {
-                t.rows_span = (t.rows_span.start + base)..(t.rows_span.end + base);
+            // Miss: marshal just this block's subtree and render it. A subtree is
+            // self-contained with local ids (root at 0) and absolute spans, so a
+            // fresh builder over it produces the same rows the whole-arena path
+            // would. An empty subtree (twig couldn't hand it back) renders nothing.
+            let subtree = fetch_subtree(block.node_id);
+            if !subtree.is_empty() {
+                let mut sub = Builder {
+                    nodes: &subtree,
+                    source,
+                    wrap,
+                    rows: Vec::new(),
+                    tables: Vec::new(),
+                    last_off: 0,
+                };
+                sub.block(0, &[], &[]);
+                let last_off = sub.last_off;
+                // Cache only a block that is table-free AND renders inside its own
+                // span: those two are the conditions for reuse-by-shift to be
+                // correct. A block failing either is re-rendered every build (a
+                // fresh render always matches a fresh whole-document build).
+                if sub.tables.is_empty() {
+                    if rows_within(&sub.rows, &block.span) {
+                        cache.store(hash, bytes, start, sub.rows.clone(), last_off);
+                    }
+                    b.rows.extend(sub.rows);
+                } else {
+                    // A table block is never cached; rebase its row-index
+                    // bookkeeping onto the combined row vector and append.
+                    let base = b.rows.len();
+                    for t in &mut sub.tables {
+                        t.rows_span = (t.rows_span.start + base)..(t.rows_span.end + base);
+                    }
+                    b.rows.extend(sub.rows);
+                    b.tables.extend(sub.tables);
+                }
+                b.last_off = last_off;
             }
-            b.rows.extend(sub.rows);
-            b.tables.extend(sub.tables);
         }
-        b.last_off = last_off;
+        let content_rows = b.rows.len() - after_sep;
+        all_shift_safe &= rows_within(&b.rows[after_sep..], &block.span);
+        layout_blocks.push(BlockLayout {
+            span: block.span.clone(),
+            kind: block.kind.clone(),
+            sep_rows,
+            content_rows,
+        });
     }
 
+    let before_trailing = b.rows.len();
     b.emit_trailing_blank_lines();
+    let trailing_rows = b.rows.len() - before_trailing;
 
     // Evict every entry no block reused this build, so the cache tracks the
     // current document instead of growing without bound over a session.
@@ -467,6 +489,14 @@ pub fn build_cached(
         bucket.retain(|e| e.generation == g);
         !bucket.is_empty()
     });
+
+    cache.layout = Layout {
+        blocks: layout_blocks,
+        trailing_rows,
+        built_len: source.len(),
+        has_tables: !b.tables.is_empty(),
+        all_shift_safe,
+    };
 
     // The first rendered offset is the first non-metadata block's start (0 when
     // the document is empty or all frontmatter) — the analogue of
@@ -479,6 +509,181 @@ pub fn build_cached(
         stops,
         tables: b.tables,
     }
+}
+
+/// The fast path for a single-block edit: patch the previous [`VisualMap`] in
+/// place rather than reassembling it. Returns `Some(new_map)` when it applies,
+/// or `None` to tell the caller to fall back to [`build_cached`] (always
+/// correct). Consumes `prev` either way — on `None` the caller rebuilds from
+/// scratch and doesn't need it.
+///
+/// It applies only when `dirty` (twig's dirty byte range) falls inside exactly
+/// one top-level block AND the block structure around it is unchanged — verified
+/// by matching the new `top` list against the previous [`Layout`] block for
+/// block: kinds unchanged, spans before the edit identical, spans after it
+/// shifted by the byte delta, count unchanged. Any deviation — a block split or
+/// merged, a fence opened to swallow later blocks, a table anywhere, a
+/// multi-block edit — fails the match and returns `None`. That check is what
+/// makes the byte-range trustworthy: twig's dirty range is exact about *bytes*
+/// but silent about *reparse*, and the structural match catches the reparse
+/// effects it can't see.
+///
+/// When it applies, the unchanged prefix rows move verbatim, the suffix rows
+/// shift by the delta *in place* (integer adds, no glyph copy), and only the one
+/// dirty block is re-marshalled and re-rendered; stops splice the same way by
+/// offset. So the cost is O(rows after the edit), and nothing before the edit is
+/// touched. The hash-keyed entry cache is left alone — a later [`build_cached`]
+/// will miss on the changed block, re-render it, and evict the stale entry, so
+/// chained splices neither corrupt nor grow it.
+pub fn build_spliced(
+    prev: VisualMap,
+    source: &str,
+    wrap: Option<usize>,
+    top: &[QueryMatch],
+    dirty: Range<usize>,
+    cache: &mut BlockCache,
+    mut fetch_subtree: impl FnMut(u32) -> Vec<FlatNode>,
+) -> Option<VisualMap> {
+    let wrap = wrap.map(|w| w.max(8));
+    // A width change invalidates every cached row — a full rebuild's job.
+    if cache.wrap != Some(wrap) {
+        return None;
+    }
+    // Take the previous layout; on any bail below the caller rebuilds it (and the
+    // map) via `build_cached`, so leaving it empty is fine. A table or a block
+    // that renders outside its span (a degenerate inline span) makes shifting
+    // unsound, so those force the full-rebuild path.
+    let prev_layout = std::mem::take(&mut cache.layout);
+    if prev_layout.built_len == 0 || prev_layout.has_tables || !prev_layout.all_shift_safe {
+        return None;
+    }
+
+    let blocks: Vec<&QueryMatch> = top.iter().filter(|m| m.kind != "metadata").collect();
+    if blocks.is_empty() || blocks.len() != prev_layout.blocks.len() {
+        return None;
+    }
+    let delta = source.len() as isize - prev_layout.built_len as isize;
+
+    // The single block whose NEW span contains the whole dirty range. A dirty
+    // range straddling a block boundary (or a separator) finds none → bail.
+    let k = blocks
+        .iter()
+        .position(|m| m.span.start <= dirty.start && dirty.end <= m.span.end)?;
+
+    // Structural match: every OTHER block is unchanged — same kind throughout,
+    // span identical before the edit and shifted by `delta` after it. A mismatch
+    // means the reparse reshaped the block structure, which only a full rebuild
+    // renders correctly.
+    for (i, (m, pl)) in blocks.iter().zip(&prev_layout.blocks).enumerate() {
+        if m.kind != pl.kind {
+            return None;
+        }
+        if i == k {
+            continue;
+        }
+        let want = if i < k {
+            pl.span.clone()
+        } else {
+            (pl.span.start as isize + delta) as usize..(pl.span.end as isize + delta) as usize
+        };
+        if m.span != want {
+            return None;
+        }
+    }
+    // The dirty block itself: start unchanged (the edit is inside it, past its
+    // start), end moved by exactly the delta.
+    let pk_start = prev_layout.blocks[k].span.start;
+    let pk_end = prev_layout.blocks[k].span.end;
+    let pk_sep = prev_layout.blocks[k].sep_rows;
+    let pk_content = prev_layout.blocks[k].content_rows;
+    if blocks[k].span.start != pk_start
+        || blocks[k].span.end != (pk_end as isize + delta) as usize
+    {
+        return None;
+    }
+
+    // Re-render the dirty block from its subtree. A table makes the splice
+    // bookkeeping unsafe, so bail if one appears.
+    let subtree = fetch_subtree(blocks[k].node_id);
+    if subtree.is_empty() {
+        return None;
+    }
+    let mut sub = Builder {
+        nodes: &subtree,
+        source,
+        wrap,
+        rows: Vec::new(),
+        tables: Vec::new(),
+        last_off: 0,
+    };
+    sub.block(0, &[], &[]);
+    // A table, or content that renders outside the block's span (a degenerate
+    // inline span), makes the shift bookkeeping unsound — fall back.
+    if !sub.tables.is_empty() || !rows_within(&sub.rows, &blocks[k].span) {
+        return None;
+    }
+    let new_content = sub.rows;
+    let new_content_len = new_content.len();
+    let new_stops = collect_stops(&new_content);
+
+    // Row span of the dirty block's CONTENT. Its leading separator stays in the
+    // prefix: the gap before block k is unchanged, since k's start didn't move.
+    let content_start_row: usize = prev_layout.blocks[..k]
+        .iter()
+        .map(|pl| pl.sep_rows + pl.content_rows)
+        .sum::<usize>()
+        + pk_sep;
+    let content_end_row = content_start_row + pk_content;
+
+    // Splice rows: [prefix | new content | suffix + delta]. The prefix moves
+    // untouched; the suffix shifts in place — integer adds, no glyph copy.
+    let mut rows = prev.rows;
+    let mut suffix = rows.split_off(content_end_row);
+    rows.truncate(content_start_row);
+    for row in &mut suffix {
+        shift_row_in_place(row, delta);
+    }
+    rows.reserve(new_content_len + suffix.len());
+    rows.extend(new_content);
+    rows.extend(suffix);
+
+    // Splice stops by offset. The old dirty block covered `[pk_start, pk_end]`:
+    // prefix stops fall below it, suffix stops above it (shift by delta), the new
+    // content supplies the middle. The three ranges stay disjoint and ascending,
+    // so the result needs no re-sort.
+    let p1 = prev.stops.partition_point(|&s| s < pk_start);
+    let p2 = prev.stops.partition_point(|&s| s <= pk_end);
+    let mut stops = Vec::with_capacity(p1 + new_stops.len() + (prev.stops.len() - p2));
+    stops.extend_from_slice(&prev.stops[..p1]);
+    stops.extend(new_stops);
+    for &s in &prev.stops[p2..] {
+        stops.push((s as isize + delta) as usize);
+    }
+
+    // Record the patched layout for the next splice: spans move to the new
+    // coordinates, and the dirty block takes its new content-row count.
+    let mut new_blocks = prev_layout.blocks;
+    for (pl, m) in new_blocks.iter_mut().zip(&blocks) {
+        pl.span = m.span.clone();
+    }
+    new_blocks[k].content_rows = new_content_len;
+    cache.layout = Layout {
+        blocks: new_blocks,
+        trailing_rows: prev_layout.trailing_rows,
+        built_len: source.len(),
+        has_tables: false,
+        // Every prefix/suffix block was shift-safe last build (we bailed
+        // otherwise) and the re-rendered block was just checked, so the patched
+        // document is still entirely shift-safe.
+        all_shift_safe: true,
+    };
+
+    Some(VisualMap {
+        rows,
+        content_start: blocks[0].span.start,
+        stops,
+        tables: Vec::new(),
+    })
 }
 
 /// A persistent, content-keyed cache of the rows each top-level block renders
@@ -517,6 +722,46 @@ pub struct BlockCache {
     /// distinct blocks can collide, while two *identical* blocks share one entry
     /// (free dedup).
     entries: HashMap<u64, Vec<CachedBlock>>,
+    /// The row/stop decomposition of the last build, which [`build_spliced`]
+    /// patches in place for a single-block edit. Kept in step with whatever
+    /// [`VisualMap`] was last produced; empty before the first build.
+    layout: Layout,
+}
+
+/// How the last build's [`VisualMap`] decomposes into top-level blocks — the
+/// bookkeeping [`build_spliced`] needs to splice one block's rows and stops
+/// without rebuilding the whole map. Every field describes the *previous* build,
+/// in that build's coordinates.
+#[derive(Default)]
+struct Layout {
+    /// One entry per rendered (metadata-filtered) top-level block, in order.
+    blocks: Vec<BlockLayout>,
+    /// Trailing blank rows past the last block (from `emit_trailing_blank_lines`).
+    trailing_rows: usize,
+    /// The source length this layout was built at — the reference for the edit's
+    /// byte delta.
+    built_len: usize,
+    /// Whether the last build drew any table. A table's cross-referenced row
+    /// indices don't survive a blind splice, so their presence makes
+    /// [`build_spliced`] bail to a full rebuild.
+    has_tables: bool,
+    /// Whether every block rendered strictly inside its own span (see
+    /// [`rows_within`]). A block that doesn't — a malformed Markdown inline node
+    /// that twig leaves with a degenerate `0..0` span renders at a fixed offset
+    /// outside its block — can't be shifted correctly, so its presence makes
+    /// [`build_spliced`] bail to a full rebuild.
+    all_shift_safe: bool,
+}
+
+/// One top-level block's contribution to the last build: its span and kind (for
+/// the structural match that proves only one block changed) and how many
+/// separator and content rows it emitted (to locate its slice of the row
+/// vector).
+struct BlockLayout {
+    span: Range<usize>,
+    kind: String,
+    sep_rows: usize,
+    content_rows: usize,
 }
 
 /// One cached block: the rows it rendered to, plus what a reuse at a new
@@ -604,6 +849,33 @@ fn shift_row(row: &VRow, delta: isize) -> VRow {
         end_src: shift(row.end_src),
         decoration: row.decoration,
     }
+}
+
+/// Advance a row's source offsets by `delta` in place — the suffix half of
+/// [`build_spliced`], where the rows are already owned and only need shifting,
+/// not copying.
+fn shift_row_in_place(row: &mut VRow, delta: isize) {
+    for g in &mut row.glyphs {
+        g.src = (g.src as isize + delta) as usize;
+    }
+    row.end_src = (row.end_src as isize + delta) as usize;
+}
+
+/// Whether every source offset a block's rows carry falls inside the block's own
+/// span — the precondition for reusing the block by a uniform offset shift. It
+/// holds for well-formed blocks (their glyphs and row ends address bytes within
+/// the block, synthetic glyphs point at the block start). It fails when a node
+/// renders *outside* its block, which today means a malformed Markdown inline
+/// node twig leaves with a degenerate `0..0` span: that content lands at a fixed
+/// offset that doesn't move with the block. Such a block is re-rendered every
+/// build instead of shifted, so the incremental map still matches a fresh one —
+/// see [`build_cached`] and [`build_spliced`].
+fn rows_within(rows: &[VRow], span: &Range<usize>) -> bool {
+    rows.iter().all(|r| {
+        r.end_src >= span.start
+            && r.end_src <= span.end
+            && r.glyphs.iter().all(|g| g.src >= span.start && g.src <= span.end)
+    })
 }
 
 /// The source offset of the first *rendered* top-level block — the first child
@@ -1601,6 +1873,34 @@ pub(crate) fn is_inline(kind: &str) -> bool {
     )
 }
 
+/// Assert two maps are identical down to every glyph, stop, and table span — the
+/// contract `build_cached` and `build_spliced` must hold against `build`. Lives
+/// at module scope (not in `mod tests`) so the Doc-driven differential test in
+/// `doc.rs` can reach it and the private `stops` field it compares.
+#[cfg(test)]
+pub(crate) fn assert_maps_eq(a: &VisualMap, b: &VisualMap, ctx: &str) {
+    assert_eq!(a.rows.len(), b.rows.len(), "row count ({ctx})");
+    for (i, (ra, rb)) in a.rows.iter().zip(&b.rows).enumerate() {
+        assert_eq!(ra.end_src, rb.end_src, "row {i} end_src ({ctx})");
+        assert_eq!(ra.decoration, rb.decoration, "row {i} decoration ({ctx})");
+        assert_eq!(ra.glyphs.len(), rb.glyphs.len(), "row {i} glyph count ({ctx})");
+        for (j, (ga, gb)) in ra.glyphs.iter().zip(&rb.glyphs).enumerate() {
+            assert_eq!(
+                (ga.ch, ga.src, ga.stop, ga.style),
+                (gb.ch, gb.src, gb.stop, gb.style),
+                "row {i} glyph {j} ({ctx})"
+            );
+        }
+    }
+    assert_eq!(a.content_start, b.content_start, "content_start ({ctx})");
+    assert_eq!(a.stops, b.stops, "stops ({ctx})");
+    assert_eq!(a.tables.len(), b.tables.len(), "table count ({ctx})");
+    for (i, (ta, tb)) in a.tables.iter().zip(&b.tables).enumerate() {
+        assert_eq!(ta.rows_span, tb.rows_span, "table {i} rows_span ({ctx})");
+        assert_eq!(ta.end_src, tb.end_src, "table {i} end_src ({ctx})");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1617,31 +1917,6 @@ mod tests {
             .map(|r| r.glyphs.iter().map(|g| g.ch).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
-    }
-
-    /// Assert two maps are identical down to every glyph, stop, and table span —
-    /// the contract [`build_cached`] must hold against [`build`].
-    fn assert_map_eq(a: &VisualMap, b: &VisualMap, ctx: &str) {
-        assert_eq!(a.rows.len(), b.rows.len(), "row count ({ctx})");
-        for (i, (ra, rb)) in a.rows.iter().zip(&b.rows).enumerate() {
-            assert_eq!(ra.end_src, rb.end_src, "row {i} end_src ({ctx})");
-            assert_eq!(ra.decoration, rb.decoration, "row {i} decoration ({ctx})");
-            assert_eq!(ra.glyphs.len(), rb.glyphs.len(), "row {i} glyph count ({ctx})");
-            for (j, (ga, gb)) in ra.glyphs.iter().zip(&rb.glyphs).enumerate() {
-                assert_eq!(
-                    (ga.ch, ga.src, ga.stop, ga.style),
-                    (gb.ch, gb.src, gb.stop, gb.style),
-                    "row {i} glyph {j} ({ctx})"
-                );
-            }
-        }
-        assert_eq!(a.content_start, b.content_start, "content_start ({ctx})");
-        assert_eq!(a.stops, b.stops, "stops ({ctx})");
-        assert_eq!(a.tables.len(), b.tables.len(), "table count ({ctx})");
-        for (i, (ta, tb)) in a.tables.iter().zip(&b.tables).enumerate() {
-            assert_eq!(ta.rows_span, tb.rows_span, "table {i} rows_span ({ctx})");
-            assert_eq!(ta.end_src, tb.end_src, "table {i} end_src ({ctx})");
-        }
     }
 
     /// Render a source both ways: `build` over the whole marshalled arena (the
@@ -1684,7 +1959,7 @@ mod tests {
 
                 // 1) Fresh cache equals the cache-free build.
                 let (plain, cached) = render_both(&mut ed, src, wrap, &mut cache);
-                assert_map_eq(&plain, &cached, &format!("fresh {ctx}"));
+                assert_maps_eq(&plain, &cached, &format!("fresh {ctx}"));
 
                 // 2) Type a char mid-document, reparse, rebuild with the now-warm
                 //    cache: the edited block is re-marshalled and re-rendered,
@@ -1696,14 +1971,14 @@ mod tests {
                 ed.edit_range(at, at, "Z").unwrap();
                 let src2 = ed.source_str().unwrap();
                 let (plain2, cached2) = render_both(&mut ed, &src2, wrap, &mut cache);
-                assert_map_eq(&plain2, &cached2, &format!("after insert {ctx}"));
+                assert_maps_eq(&plain2, &cached2, &format!("after insert {ctx}"));
 
                 // 3) Delete it again: offsets shift back the other way, and the
                 //    warm cache must not hand back stale shifted rows.
                 ed.edit_range(at, at + 1, "").unwrap();
                 let src3 = ed.source_str().unwrap();
                 let (plain3, cached3) = render_both(&mut ed, &src3, wrap, &mut cache);
-                assert_map_eq(&plain3, &cached3, &format!("after delete {ctx}"));
+                assert_maps_eq(&plain3, &cached3, &format!("after delete {ctx}"));
             }
         }
     }
@@ -2169,4 +2444,3 @@ mod tests {
         }
     }
 }
-

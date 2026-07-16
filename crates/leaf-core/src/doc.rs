@@ -394,18 +394,38 @@ impl Doc {
         let key = (self.revision, wrap);
         if self.vmap_key != Some(key) {
             // Enumerate the top-level blocks cheaply — no whole-arena marshal.
-            // The block cache then pulls a subtree only for a block that actually
-            // changed (a keystroke touches one), so the FFI marshal shrinks from
-            // O(document) to O(edited block). Fields are borrowed split so the
-            // subtree fetcher can hold `&mut editor` alongside source and cache.
+            // A subtree is pulled only for the block(s) that actually changed, so
+            // the FFI marshal shrinks from O(document) to O(edited block).
             let top = self.editor.child_spans(None).unwrap_or_default();
-            let source = &self.source;
-            let cache = &mut self.block_cache;
-            let editor = &mut self.editor;
-            let map = wysiwyg::build_cached(&top, source, wrap, cache, |id| {
-                editor.subtree(NodeId(id)).unwrap_or_default()
+
+            // Fast path: when twig reports a dirty byte range, try to patch the
+            // previous map in place — a single-block edit moves the prefix,
+            // shifts the suffix, and re-renders only one block. `build_spliced`
+            // returns `None` (and we fall back to the always-correct full rebuild)
+            // whenever the edit reshaped the block structure, hit a table, or
+            // there's no previous map to patch.
+            let spliced = match self.editor.dirty_range() {
+                Some(dirty) => {
+                    let prev = std::mem::take(&mut self.vmap);
+                    let source = &self.source;
+                    let cache = &mut self.block_cache;
+                    let editor = &mut self.editor;
+                    wysiwyg::build_spliced(prev, source, wrap, &top, dirty, cache, |id| {
+                        editor.subtree(NodeId(id)).unwrap_or_default()
+                    })
+                }
+                None => None,
+            };
+            self.vmap = spliced.unwrap_or_else(|| {
+                let source = &self.source;
+                let cache = &mut self.block_cache;
+                let editor = &mut self.editor;
+                wysiwyg::build_cached(&top, source, wrap, cache, |id| {
+                    editor.subtree(NodeId(id)).unwrap_or_default()
+                })
             });
-            self.vmap = map;
+            // Acknowledge the dirty range so the next edit's range starts fresh.
+            self.editor.clear_dirty();
             self.vmap_key = Some(key);
         }
         self.clamp_caret();
@@ -3361,6 +3381,77 @@ mod tests {
 
     fn wysiwyg_doc(name: &str, body: &str) -> Doc {
         doc_in(View::Wysiwyg, name, body)
+    }
+
+    /// A from-scratch, cache-free WYSIWYG map for `source` — the ground truth the
+    /// incremental (`build_spliced` / `build_cached`) path must always match.
+    fn reference_map(source: &str) -> crate::wysiwyg::VisualMap {
+        let mut ed = twig::Editor::new_str(source, Format::Markdown).unwrap();
+        let nodes = ed.nodes().unwrap();
+        crate::wysiwyg::build(&nodes, source, None)
+    }
+
+    fn maps_differ(a: &crate::wysiwyg::VisualMap, b: &crate::wysiwyg::VisualMap) -> bool {
+        if a.rows.len() != b.rows.len() {
+            return true;
+        }
+        for (ra, rb) in a.rows.iter().zip(&b.rows) {
+            if ra.end_src != rb.end_src || ra.glyphs.len() != rb.glyphs.len() {
+                return true;
+            }
+            for (ga, gb) in ra.glyphs.iter().zip(&rb.glyphs) {
+                if ga.ch != gb.ch || ga.src != gb.src {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn incremental_build_matches_a_fresh_build_across_edits() {
+        // Every `Doc` edit rebuilds through `build_spliced` (the single-block
+        // fast path, gated on twig's `dirty_range`) or falls back to
+        // `build_cached`. After each edit the map must be byte-identical to a
+        // from-scratch build — this is the correctness net under the splice.
+        let docs = [
+            "# Title\n\nThe quick brown fox jumps.\n\nAnother paragraph here.\n\n- a\n- b\n",
+            "para one\n\n> quote **bold** text\n> continued line\n\ntail paragraph\n",
+            "alpha\n\nbeta\n\ngamma\n\ndelta\n\nepsilon\n\nzeta\n",
+        ];
+        // A deterministic mix: mostly single characters (which stay inside one
+        // block → splice), plus edits that reshape structure (a paragraph break,
+        // a heading marker, a code fence → fallback), so both paths are exercised.
+        let inserts = ["x", "y", "\n\n", "#", "`", " ", "z"];
+        for src in docs {
+            let mut d = wysiwyg_doc("diff", src);
+            d.build_visual_unwrapped();
+            wysiwyg::assert_maps_eq(&d.vmap, &reference_map(&d.source), "initial");
+
+            for step in 0..60usize {
+                let len = d.source.len();
+                let raw = (step * 13 + 5) % (len + 1);
+                let pos = (raw..=len).find(|&i| d.source.is_char_boundary(i)).unwrap();
+                let pre = d.source.clone();
+                let action;
+                if step % 3 == 0 && pos < len {
+                    let end = (pos + 1..=len).find(|&i| d.source.is_char_boundary(i)).unwrap();
+                    action = format!("delete [{pos},{end})");
+                    d.edit(pos, end, "");
+                } else {
+                    let ins = inserts[step % inserts.len()];
+                    action = format!("insert {ins:?} @ {pos}");
+                    d.edit(pos, pos, ins);
+                }
+                d.build_visual_unwrapped();
+                if maps_differ(&d.vmap, &reference_map(&d.source)) {
+                    panic!(
+                        "FIRST MISMATCH at step {step}: {action}\n  pre  = {pre:?}\n  post = {:?}",
+                        d.source
+                    );
+                }
+            }
+        }
     }
 
     #[test]
