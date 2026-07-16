@@ -24,7 +24,7 @@ use ratatui::{
     },
     layout::Rect,
 };
-use leaf_core::{BlockKind, Doc, InlineKind};
+use leaf_core::{BlockKind, DiskState, Doc, InlineKind};
 
 fn main() -> Result<()> {
     let arg = std::env::args_os()
@@ -46,9 +46,25 @@ fn main() -> Result<()> {
 /// model; this is the crossterm-facing bookkeeping around it.
 #[derive(Default)]
 struct App {
-    /// Set by Ctrl+Q on a dirty document; while true the footer shows the
-    /// "quit without saving?" prompt and normal key handling is suspended.
-    confirm_quit: bool,
+    /// Set by Ctrl+Q or ⌥n meeting a dirty document: the footer shows a
+    /// Save/Discard/Cancel choice and normal key handling is suspended until
+    /// one is picked. What runs once it's picked (and, for Save, once any
+    /// dialog that choice opens resolves) is `dirty_prompt`'s own `action`.
+    dirty_prompt: Option<DirtyPrompt>,
+    /// What a resolved `dirty_prompt`'s Save choice is waiting to do once the
+    /// document comes out clean — `None` for a bare ^S, which has nothing to
+    /// do once it's saved. Set right before whichever dialog a save has to
+    /// open first (Save As for an untitled document, the overwrite/reload
+    /// choice for a conflict) and consumed by `resolve_pending` once that
+    /// dialog resolves, so a Save chosen from the quit prompt still quits
+    /// after a Save-As detour, and one chosen to guard ⌥n still swaps in the
+    /// blank document after it.
+    pending_action: Option<DirtyAction>,
+    /// Set when a save is about to write over a file that changed on disk
+    /// since leaf last read or wrote it (`Doc::disk_state`); offers
+    /// Overwrite/Reload/Cancel instead of silently clobbering someone else's
+    /// edit. See `attempt_save` for the one place that sets it.
+    conflict: Option<ConflictPrompt>,
     /// Timing and screen cell of the last left mouse-down, for detecting
     /// double/triple clicks.
     last_click: Option<ClickState>,
@@ -120,6 +136,38 @@ impl TextPrompt {
     }
 }
 
+/// What a `DirtyPrompt` is guarding: quitting, or replacing the buffer with a
+/// new blank document. Both walk away from whatever's in `doc` right now, so
+/// both need the same Save/Discard/Cancel choice before losing it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DirtyAction {
+    Quit,
+    New,
+}
+
+/// The Save/Discard/Cancel choice offered in place of the old y/n "quit
+/// without saving?" — same overlay-owns-the-keyboard shape as `ContextMenu`,
+/// but, like `TextPrompt`, drawn inline in the footer rather than floated:
+/// there's no click to anchor it to.
+struct DirtyPrompt {
+    action: DirtyAction,
+    /// Index into `["Save", "Discard", "Cancel"]`, moved by the arrow keys;
+    /// `s`/`d`/`c` jump straight to a choice the way they always could.
+    /// Defaults to Save — the one an accidental Enter should do, on the same
+    /// reasoning every "unsaved changes" dialog defaults to it.
+    selected: usize,
+}
+
+/// The Overwrite/Reload/Cancel choice offered when a save is about to write
+/// over a file that changed on disk since leaf last touched it. Shaped like
+/// `DirtyPrompt` for the same reason.
+struct ConflictPrompt {
+    /// Defaults to Cancel — unlike `DirtyPrompt`, the risky option here
+    /// (Overwrite, clobbering someone else's edit) is *not* what an
+    /// accidental Enter should do.
+    selected: usize,
+}
+
 fn run(terminal: &mut ratatui::DefaultTerminal, doc: &mut Doc) -> Result<()> {
     let mut app = App::default();
     loop {
@@ -145,18 +193,49 @@ enum Flow {
 }
 
 fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
-    // The quit-confirmation prompt takes over the keyboard until answered.
-    if app.confirm_quit {
+    // The Save/Discard/Cancel prompt takes over the keyboard until answered,
+    // the same as the old y/n quit confirmation did — but Save can lead
+    // through a Save-As detour (untitled) or a conflict check (see
+    // `attempt_save`), so unlike the old bool this doesn't always resolve in
+    // one keystroke.
+    if let Some(prompt) = &mut app.dirty_prompt {
         match key.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') => return Flow::Quit,
-            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => app.confirm_quit = false,
+            KeyCode::Up => prompt.selected = (prompt.selected + 3 - 1) % 3,
+            KeyCode::Down => prompt.selected = (prompt.selected + 1) % 3,
+            KeyCode::Char('s') | KeyCode::Char('S') => return resolve_dirty_prompt(doc, app, 0),
+            KeyCode::Char('d') | KeyCode::Char('D') => return resolve_dirty_prompt(doc, app, 1),
+            KeyCode::Char('c') | KeyCode::Char('C') | KeyCode::Esc => app.dirty_prompt = None,
+            KeyCode::Enter => {
+                let selected = prompt.selected;
+                return resolve_dirty_prompt(doc, app, selected);
+            }
             _ => {} // anything else: leave the prompt up
         }
         return Flow::Continue;
     }
 
-    // The context menu takes over the keyboard the same way the quit prompt
-    // does: arrows move the highlight, Enter runs the highlighted row, Esc (or
+    // The overwrite/reload conflict prompt, same shape as `dirty_prompt`.
+    if let Some(prompt) = &mut app.conflict {
+        match key.code {
+            KeyCode::Up => prompt.selected = (prompt.selected + 3 - 1) % 3,
+            KeyCode::Down => prompt.selected = (prompt.selected + 1) % 3,
+            KeyCode::Char('o') | KeyCode::Char('O') => return resolve_conflict(doc, app, 0),
+            KeyCode::Char('r') | KeyCode::Char('R') => return resolve_conflict(doc, app, 1),
+            KeyCode::Char('c') | KeyCode::Char('C') | KeyCode::Esc => {
+                app.conflict = None;
+                app.pending_action = None;
+            }
+            KeyCode::Enter => {
+                let selected = prompt.selected;
+                return resolve_conflict(doc, app, selected);
+            }
+            _ => {}
+        }
+        return Flow::Continue;
+    }
+
+    // The context menu takes over the keyboard the same way the prompts above
+    // do: arrows move the highlight, Enter runs the highlighted row, Esc (or
     // anything else) closes it without acting.
     if let Some(menu) = &mut app.context_menu {
         match key.code {
@@ -207,8 +286,18 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
                 let on_confirm = prompt.on_confirm;
                 app.text_prompt = None;
                 on_confirm(doc, &value);
+                // A Save-As opened by `attempt_save` leaves a `pending_action`
+                // behind for exactly this moment: the link prompt has none, so
+                // this is a no-op there.
+                return resolve_pending(doc, app);
             }
-            KeyCode::Esc => app.text_prompt = None,
+            KeyCode::Esc => {
+                app.text_prompt = None;
+                // Whatever Save flow opened this (quit/new's Save choice, or a
+                // conflict's overwrite) is abandoned, not retried — the user
+                // backed out of naming a file, not of the choice to save.
+                app.pending_action = None;
+            }
             _ => {}
         }
         return Flow::Continue;
@@ -222,12 +311,14 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
         match key.code {
             KeyCode::Char('q') => {
                 if doc.dirty {
-                    app.confirm_quit = true;
+                    app.dirty_prompt = Some(DirtyPrompt { action: DirtyAction::Quit, selected: 0 });
                 } else {
                     return Flow::Quit;
                 }
             }
-            KeyCode::Char('s') => doc.save(),
+            KeyCode::Char('s') => {
+                attempt_save(doc, app, None);
+            }
             KeyCode::Char('a') => doc.select_all(),
             KeyCode::Char('c') => clipboard_copy(doc),
             KeyCode::Char('x') => clipboard_cut(doc),
@@ -236,6 +327,11 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
             KeyCode::Char('z') | KeyCode::Char('Z') if shift => doc.redo(),
             KeyCode::Char('z') | KeyCode::Char('Z') => doc.undo(),
             KeyCode::Char('y') | KeyCode::Char('Y') => doc.redo(),
+            // Readline's kill-line pair: ^U back to the line start, ^K forward
+            // to its end — the convention a terminal user already has under
+            // their fingers, and free (neither was bound to anything here).
+            KeyCode::Char('u') => doc.delete_to_line_start(),
+            KeyCode::Char('k') => doc.delete_to_line_end(),
             // ^Home / ^End jump to the document's start / end.
             KeyCode::Home => doc.move_doc_start(shift),
             KeyCode::End => doc.move_doc_end(shift),
@@ -259,6 +355,12 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
             KeyCode::Char('i') => doc.toggle(InlineKind::Emph),
             KeyCode::Char('c') => doc.toggle(InlineKind::Verbatim),
             KeyCode::Char('m') => doc.toggle(InlineKind::Mark),
+            // twig models strikethrough/underline as the Delete/Insert marks
+            // (their names in the CommonMark/Djot extensions that define them,
+            // not the toolbar's), matching ⌥d/⌥u to what a user actually reads
+            // in the WYSIWYG view: struck-through and underlined text.
+            KeyCode::Char('d') => doc.toggle(InlineKind::Delete),
+            KeyCode::Char('u') => doc.toggle(InlineKind::Insert),
             KeyCode::Char('0') => doc.set_block(BlockKind::Paragraph),
             // Toggle, not set: ⌥1 on a line that's already H1 reverts it to a
             // paragraph, matching the feel of the bold/italic/code toggles.
@@ -270,6 +372,14 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
             KeyCode::Char('8') => toggle_list(doc, false),
             KeyCode::Char('9') => doc.toggle_blockquote(),
             KeyCode::Char('k') => open_link_prompt(doc, app),
+            KeyCode::Char('s') => open_save_as_prompt(doc, app),
+            KeyCode::Char('n') => {
+                if doc.dirty {
+                    app.dirty_prompt = Some(DirtyPrompt { action: DirtyAction::New, selected: 0 });
+                } else {
+                    replace_with_blank(doc);
+                }
+            }
             _ => {}
         }
         return Flow::Continue;
@@ -278,11 +388,15 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
     match key.code {
         KeyCode::Char(c) => doc.insert(&c.to_string()),
         KeyCode::Enter => doc.newline(),
-        // In a table, Tab walks the cells (Shift+Tab back); everywhere else it
-        // indents as it always has.
+        // In a table, Tab walks the cells (Shift+Tab back) — that precedence
+        // is unchanged from before indent/outdent existed. Only once the
+        // caret isn't in a table does Tab/Shift+Tab fall through to indent,
+        // matching how a Tab in any list/outline editor behaves outside a
+        // table and reserving the table's own Tab convention where it applies.
         KeyCode::Tab if doc.cell_hop(true) => {}
         KeyCode::BackTab if doc.cell_hop(false) => {}
-        KeyCode::Tab => doc.insert("    "),
+        KeyCode::Tab => doc.indent(),
+        KeyCode::BackTab => doc.outdent(),
         KeyCode::Backspace => doc.backspace(),
         KeyCode::Delete => doc.delete_forward(),
         KeyCode::Left => doc.move_left(shift),
@@ -365,6 +479,28 @@ fn handle_mouse(doc: &mut Doc, m: MouseEvent, app: &mut App) {
             let row = doc.scroll + (m.row - by) as usize;
             let col = (m.column - bx) as usize;
             doc.click(row, col, true); // extend the selection
+        }
+        // Dragging past the top or bottom edge of the body scrolls to keep
+        // revealing more document, the way a drag-select stalling at the
+        // viewport edge never does in any other editor. `within`'s column
+        // check still applies (dragging off the body sideways isn't this),
+        // but its row check is exactly what these two exist to fall outside
+        // of, so each re-derives "past the top"/"past the bottom" instead of
+        // reusing `within`. `doc.scroll` isn't clamped to the document's
+        // length here — `Doc::follow_caret` does that every frame, the same
+        // as the wheel handlers below already rely on.
+        MouseEventKind::Drag(MouseButton::Left) if m.column >= bx && m.row < by => {
+            doc.scroll = doc.scroll.saturating_sub(1);
+            let col = (m.column - bx) as usize;
+            doc.click(doc.scroll, col, true);
+        }
+        MouseEventKind::Drag(MouseButton::Left)
+            if m.column >= bx && (m.row as usize) >= by as usize + doc.body_height as usize =>
+        {
+            doc.scroll = doc.scroll.saturating_add(1);
+            let col = (m.column - bx) as usize;
+            let row = doc.scroll + doc.body_height.saturating_sub(1) as usize;
+            doc.click(row, col, true);
         }
         MouseEventKind::Down(MouseButton::Right) if within => {
             // A right-click on top of an existing selection should offer to
@@ -456,6 +592,121 @@ fn open_link_prompt(doc: &mut Doc, app: &mut App) {
     }));
 }
 
+/// ⌥s and the `dirty_prompt`/conflict flows' Save-As detour: prompt for a
+/// destination, prefilled with the document's current path (empty for an
+/// untitled one, which just leaves the box empty — there's nothing better to
+/// suggest), then move the document there on confirm.
+fn open_save_as_prompt(doc: &mut Doc, app: &mut App) {
+    let initial = doc.path.to_string_lossy().into_owned();
+    app.text_prompt = Some(TextPrompt::new("Save as", initial, |doc, path| {
+        doc.save_as(PathBuf::from(path));
+    }));
+}
+
+/// ⌥n on a clean document, and Discard's answer to a `DirtyAction::New`:
+/// swap in a fresh, empty document. `Doc::blank` can only fail on a twig
+/// parse of `""`, which isn't a realistic failure, but there's no `Result`
+/// for this call site to hand the error to, so it's reported as a status
+/// instead of unwrapped into a panic over a user who did nothing wrong.
+fn replace_with_blank(doc: &mut Doc) {
+    match Doc::blank() {
+        Ok(fresh) => *doc = fresh,
+        Err(e) => doc.status = Some(format!("new document failed: {e}")),
+    }
+}
+
+/// Try to save, routing through whichever dialog the situation calls for
+/// instead of the two ways a bare `doc.save()` can go wrong silently: an
+/// untitled document has no path to write (Save As instead), and a document
+/// whose file changed on disk since leaf last touched it would otherwise
+/// clobber that change (the overwrite/reload conflict prompt instead).
+///
+/// `then` is what should happen once the document comes out clean: `None`
+/// for a plain ^S, `Some(action)` when Save was chosen to guard a Quit or a
+/// New. It's stashed on `app.pending_action` for whichever dialog opens to
+/// hand back to `resolve_pending` when it resolves, and resolved immediately
+/// when neither dialog is needed.
+fn attempt_save(doc: &mut Doc, app: &mut App, then: Option<DirtyAction>) -> Flow {
+    if doc.is_untitled() {
+        app.pending_action = then;
+        open_save_as_prompt(doc, app);
+        return Flow::Continue;
+    }
+    // Only worth the filesystem round-trip `disk_state` costs when there's
+    // something of the user's on the line: a document with no unsaved edits
+    // has nothing a silent overwrite could lose, so a clean ^S doesn't pay for
+    // a read+hash it doesn't need.
+    if doc.dirty && doc.disk_state() == DiskState::Changed {
+        app.pending_action = then;
+        app.conflict = Some(ConflictPrompt { selected: 2 }); // default to Cancel
+        return Flow::Continue;
+    }
+    doc.save();
+    app.pending_action = then;
+    resolve_pending(doc, app)
+}
+
+/// What a save was waiting to do, now that it's had its chance: quit if the
+/// save actually landed (`!doc.dirty`), swap in the blank document for New,
+/// or — if the write failed — nothing, leaving the failure's status message
+/// up instead of pretending the action happened anyway.
+fn resolve_pending(doc: &mut Doc, app: &mut App) -> Flow {
+    match app.pending_action.take() {
+        None => Flow::Continue,
+        Some(_) if doc.dirty => Flow::Continue,
+        Some(DirtyAction::Quit) => Flow::Quit,
+        Some(DirtyAction::New) => {
+            replace_with_blank(doc);
+            Flow::Continue
+        }
+    }
+}
+
+/// Run the choice made on a `dirty_prompt`: Save (0) hands off to
+/// `attempt_save`, Discard (1) runs the guarded action immediately without
+/// saving, Cancel (2, or anything else) just closes the prompt. Consumes the
+/// prompt either way — Save's continuation past a Save-As or conflict dialog
+/// lives on `app.pending_action`, not here.
+fn resolve_dirty_prompt(doc: &mut Doc, app: &mut App, choice: usize) -> Flow {
+    let action = app.dirty_prompt.take().unwrap().action;
+    match choice {
+        0 => attempt_save(doc, app, Some(action)),
+        1 => match action {
+            DirtyAction::Quit => Flow::Quit,
+            DirtyAction::New => {
+                replace_with_blank(doc);
+                Flow::Continue
+            }
+        },
+        _ => Flow::Continue,
+    }
+}
+
+/// Run the choice made on a `conflict` prompt: Overwrite (0) writes over the
+/// external change and lets `resolve_pending` continue whatever was waiting
+/// on the save; Reload (1) takes the disk's version instead and drops the
+/// pending action — the user asked to catch up with the other write, not to
+/// blow past it; Cancel (2, or anything else) leaves the document, and the
+/// pending action, untouched, so not saving is always the safe choice.
+fn resolve_conflict(doc: &mut Doc, app: &mut App, choice: usize) -> Flow {
+    app.conflict = None;
+    match choice {
+        0 => {
+            doc.save();
+            resolve_pending(doc, app)
+        }
+        1 => {
+            doc.reload();
+            app.pending_action = None;
+            Flow::Continue
+        }
+        _ => {
+            app.pending_action = None;
+            Flow::Continue
+        }
+    }
+}
+
 /// Copy the current selection to the system clipboard.
 fn clipboard_copy(doc: &mut Doc) {
     let Some(text) = doc.selected_text() else {
@@ -489,7 +740,7 @@ fn clipboard_cut(doc: &mut Doc) {
 fn clipboard_paste(doc: &mut Doc) {
     match get_clipboard_text() {
         Ok(text) => {
-            doc.insert(&text);
+            doc.paste(&text);
             doc.status = Some("pasted".into());
         }
         Err(_) => doc.status = Some("clipboard unavailable".into()),
@@ -512,6 +763,7 @@ fn get_clipboard_text() -> Result<String, arboard::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use leaf_core::View;
 
     /// A `Doc` over `body`, laid out with the body occupying the whole screen
     /// below a one-row header — the geometry `handle_mouse` hit-tests against.
@@ -713,6 +965,34 @@ mod tests {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
     }
 
+    fn ctrl(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    /// Like `doc_with`, but a Djot (`.dj`) document — twig's strikethrough
+    /// (`Delete`) and underline (`Insert`) marks aren't representable in
+    /// Markdown (`toggle` reports "unsupported format" there), so the tests
+    /// that exercise ⌥d/⌥u need a format that actually has syntax for them.
+    fn doc_with_dj(name: &str, body: &str) -> Doc {
+        let mut p = std::env::temp_dir();
+        p.push(format!("leaf_tui_test_{name}.dj"));
+        std::fs::write(&p, body).unwrap();
+        let mut doc = Doc::open(p).unwrap();
+        doc.build_visual(80);
+        doc.body_origin = (0, 1);
+        doc.body_height = 10;
+        doc
+    }
+
+    fn drag(row: u16, col: u16) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
     #[test]
     fn alt_k_opens_the_link_prompt_empty() {
         let mut doc = doc_with("link_open", "hello\n");
@@ -848,5 +1128,333 @@ mod tests {
             "status should explain the nest: {:?}",
             doc.status
         );
+    }
+
+    // ── quit / save / discard ────────────────────────────────────────────────
+
+    #[test]
+    fn ctrl_q_on_a_clean_document_quits_immediately() {
+        let mut doc = doc_with("quit_clean", "hello\n");
+        let mut app = App::default();
+        assert!(!doc.dirty);
+        assert!(handle_key(&mut doc, ctrl('q'), &mut app) == Flow::Quit);
+    }
+
+    #[test]
+    fn ctrl_q_on_a_dirty_document_opens_a_save_discard_cancel_prompt() {
+        // The old y/n confirmation could only quit *without* saving; this is
+        // the three-way choice item 1 replaces it with, defaulted to Save —
+        // the choice an accidental Enter should make.
+        let mut doc = doc_with("quit_dirty", "hello\n");
+        doc.caret = 5;
+        doc.insert(" world");
+        let mut app = App::default();
+        assert!(handle_key(&mut doc, ctrl('q'), &mut app) == Flow::Continue);
+        let prompt = app.dirty_prompt.as_ref().expect("a dirty ^Q should open the prompt");
+        assert!(prompt.action == DirtyAction::Quit);
+        assert_eq!(prompt.selected, 0);
+    }
+
+    #[test]
+    fn dirty_prompt_cancel_leaves_the_document_untouched() {
+        let mut doc = doc_with("quit_cancel", "hello\n");
+        doc.caret = 5;
+        doc.insert(" world");
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('q'), &mut app);
+        assert!(handle_key(&mut doc, plain('c'), &mut app) == Flow::Continue);
+        assert!(app.dirty_prompt.is_none());
+        assert_eq!(doc.source, "hello world\n");
+        assert!(doc.dirty);
+    }
+
+    #[test]
+    fn dirty_prompt_discard_quits_without_writing_the_file() {
+        let mut doc = doc_with("quit_discard", "hello\n");
+        doc.caret = 5;
+        doc.insert(" world");
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('q'), &mut app);
+        assert!(handle_key(&mut doc, plain('d'), &mut app) == Flow::Quit);
+        assert_eq!(std::fs::read_to_string(&doc.path).unwrap(), "hello\n");
+    }
+
+    #[test]
+    fn dirty_prompt_save_writes_the_file_and_then_quits() {
+        let mut doc = doc_with("quit_save", "hello\n");
+        doc.caret = 5;
+        doc.insert(" world");
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('q'), &mut app);
+        assert!(handle_key(&mut doc, plain('s'), &mut app) == Flow::Quit);
+        assert_eq!(std::fs::read_to_string(&doc.path).unwrap(), "hello world\n");
+    }
+
+    #[test]
+    fn ctrl_s_on_an_untitled_document_routes_to_save_as_instead_of_failing() {
+        let mut doc = Doc::blank().unwrap();
+        doc.insert("hello");
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('s'), &mut app);
+        let prompt = app.text_prompt.as_ref().expect("^S on an untitled doc should open Save As");
+        assert_eq!(prompt.label, "Save as");
+        assert_eq!(prompt.value, "");
+        assert!(doc.is_untitled(), "no path should have been invented");
+    }
+
+    #[test]
+    fn save_as_confirm_writes_the_file_and_adopts_the_path() {
+        let mut doc = Doc::blank().unwrap();
+        doc.insert("hello");
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('s'), &mut app);
+
+        let mut p = std::env::temp_dir();
+        p.push("leaf_tui_test_saveas_confirm.md");
+        let _ = std::fs::remove_file(&p);
+        for c in p.to_string_lossy().chars() {
+            handle_key(&mut doc, plain(c), &mut app);
+        }
+        handle_key(&mut doc, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &mut app);
+
+        assert!(app.text_prompt.is_none());
+        assert!(!doc.is_untitled());
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "hello");
+    }
+
+    #[test]
+    fn quitting_an_untitled_dirty_document_quits_only_after_the_save_as_lands() {
+        // The interplay item 1 and item 6 create: Save from the quit prompt on
+        // an untitled document can't write anywhere yet, so it has to detour
+        // through Save As, and only *that* landing should let the pending quit
+        // through — not the keystroke that opened the detour.
+        let mut doc = Doc::blank().unwrap();
+        doc.insert("hello");
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('q'), &mut app);
+        assert!(handle_key(&mut doc, plain('s'), &mut app) == Flow::Continue);
+        assert!(app.text_prompt.is_some(), "Save should have detoured to Save As");
+        assert!(app.dirty_prompt.is_none());
+
+        let mut p = std::env::temp_dir();
+        p.push("leaf_tui_test_quit_via_saveas.md");
+        let _ = std::fs::remove_file(&p);
+        for c in p.to_string_lossy().chars() {
+            handle_key(&mut doc, plain(c), &mut app);
+        }
+        let flow = handle_key(&mut doc, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &mut app);
+        assert!(flow == Flow::Quit, "the pending quit should fire once the save-as lands");
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "hello");
+    }
+
+    #[test]
+    fn escaping_the_save_as_detour_abandons_the_quit_too() {
+        let mut doc = Doc::blank().unwrap();
+        doc.insert("hello");
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('q'), &mut app);
+        handle_key(&mut doc, plain('s'), &mut app);
+        assert!(app.text_prompt.is_some());
+        assert!(handle_key(&mut doc, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut app) == Flow::Continue);
+        assert!(app.text_prompt.is_none());
+        assert!(app.dirty_prompt.is_none(), "canceling the destination shouldn't resurrect the quit prompt");
+        assert!(doc.dirty);
+    }
+
+    // ── new document ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn alt_n_on_a_clean_document_replaces_it_immediately() {
+        let mut doc = doc_with("new_clean", "hello\n");
+        let mut app = App::default();
+        handle_key(&mut doc, alt('n'), &mut app);
+        assert!(doc.is_untitled());
+        assert_eq!(doc.source, "");
+    }
+
+    #[test]
+    fn alt_n_on_a_dirty_document_asks_first() {
+        let mut doc = doc_with("new_dirty", "hello\n");
+        doc.caret = 5;
+        doc.insert(" world");
+        let mut app = App::default();
+        handle_key(&mut doc, alt('n'), &mut app);
+        let prompt = app.dirty_prompt.as_ref().expect("⌥n on a dirty doc should ask first");
+        assert!(prompt.action == DirtyAction::New);
+        assert_eq!(doc.source, "hello world\n", "nothing should change before the choice is made");
+    }
+
+    #[test]
+    fn alt_n_dirty_prompt_discard_replaces_the_document() {
+        let mut doc = doc_with("new_discard", "hello\n");
+        doc.caret = 5;
+        doc.insert(" world");
+        let mut app = App::default();
+        handle_key(&mut doc, alt('n'), &mut app);
+        assert!(handle_key(&mut doc, plain('d'), &mut app) == Flow::Continue);
+        assert!(doc.is_untitled());
+        assert_eq!(doc.source, "");
+    }
+
+    // ── external-change conflict ─────────────────────────────────────────────
+
+    #[test]
+    fn ctrl_s_stops_for_a_file_changed_on_disk_instead_of_clobbering_it() {
+        let mut doc = doc_with("conflict", "hello\n");
+        doc.caret = 5;
+        doc.insert(" world");
+        std::fs::write(&doc.path, "someone else's edit\n").unwrap(); // external write
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('s'), &mut app);
+        let prompt = app.conflict.as_ref().expect("a changed file should stop the save");
+        assert_eq!(prompt.selected, 2, "the safe default is Cancel, not Overwrite");
+        assert_eq!(std::fs::read_to_string(&doc.path).unwrap(), "someone else's edit\n");
+    }
+
+    #[test]
+    fn conflict_reload_takes_the_disk_version_and_drops_the_local_edits() {
+        let mut doc = doc_with("conflict_reload", "hello\n");
+        doc.caret = 5;
+        doc.insert(" world");
+        std::fs::write(&doc.path, "someone else's edit\n").unwrap();
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('s'), &mut app);
+        assert!(handle_key(&mut doc, plain('r'), &mut app) == Flow::Continue);
+        assert!(app.conflict.is_none());
+        assert_eq!(doc.source, "someone else's edit\n");
+        assert!(!doc.dirty);
+    }
+
+    #[test]
+    fn conflict_overwrite_writes_over_the_external_change() {
+        let mut doc = doc_with("conflict_overwrite", "hello\n");
+        doc.caret = 5;
+        doc.insert(" world");
+        std::fs::write(&doc.path, "someone else's edit\n").unwrap();
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('s'), &mut app);
+        assert!(handle_key(&mut doc, plain('o'), &mut app) == Flow::Continue);
+        assert_eq!(std::fs::read_to_string(&doc.path).unwrap(), "hello world\n");
+    }
+
+    // ── indent / outdent / kill line ─────────────────────────────────────────
+
+    #[test]
+    fn tab_indents_two_spaces_not_the_four_space_code_block_marker() {
+        let mut doc = doc_with("indent", "line one\n");
+        let mut app = App::default();
+        doc.caret = 0;
+        handle_key(&mut doc, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &mut app);
+        assert_eq!(doc.source, "  line one\n");
+    }
+
+    #[test]
+    fn shift_tab_outdents_one_level() {
+        let mut doc = doc_with("outdent", "    line one\n");
+        let mut app = App::default();
+        doc.caret = 0;
+        handle_key(&mut doc, KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE), &mut app);
+        assert_eq!(doc.source, "  line one\n");
+    }
+
+    #[test]
+    fn tab_in_a_table_hops_cells_instead_of_indenting() {
+        // Table cell-hop takes precedence over indent — the same Tab that
+        // indents everywhere else keeps walking cells inside a table, exactly
+        // as it did before indent/outdent existed.
+        let mut doc = doc_with("table_tab", "| a | b |\n| - | - |\n| c | d |\n");
+        let mut app = App::default();
+        doc.caret = doc.source.find('a').unwrap();
+        handle_key(&mut doc, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &mut app);
+        assert_eq!(doc.source, "| a | b |\n| - | - |\n| c | d |\n", "a table hop must not indent");
+        assert_eq!(doc.caret, doc.source.find('b').unwrap());
+    }
+
+    #[test]
+    fn ctrl_u_kills_back_to_the_line_start() {
+        let mut doc = doc_with("kill_start", "hello world\n");
+        let mut app = App::default();
+        doc.caret = 5; // just after "hello"
+        handle_key(&mut doc, ctrl('u'), &mut app);
+        assert_eq!(doc.source, " world\n");
+    }
+
+    #[test]
+    fn ctrl_k_kills_forward_to_the_line_end() {
+        let mut doc = doc_with("kill_end", "hello world\n");
+        let mut app = App::default();
+        doc.caret = 5; // just after "hello"
+        handle_key(&mut doc, ctrl('k'), &mut app);
+        assert_eq!(doc.source, "hello\n");
+    }
+
+    // ── strikethrough / underline ────────────────────────────────────────────
+
+    #[test]
+    fn alt_d_toggles_strikethrough_on_the_selection() {
+        let mut doc = doc_with_dj("strike", "hello world\n");
+        let mut app = App::default();
+        doc.anchor = Some(0);
+        doc.caret = 5; // "hello" selected
+        handle_key(&mut doc, alt('d'), &mut app);
+        assert!(doc.active_inline_marks().contains(InlineKind::Delete), "status: {:?}", doc.status);
+    }
+
+    #[test]
+    fn alt_u_toggles_underline_on_the_selection() {
+        let mut doc = doc_with_dj("underline", "hello world\n");
+        let mut app = App::default();
+        doc.anchor = Some(0);
+        doc.caret = 5; // "hello" selected
+        handle_key(&mut doc, alt('u'), &mut app);
+        assert!(doc.active_inline_marks().contains(InlineKind::Insert), "status: {:?}", doc.status);
+    }
+
+    // ── paste ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn clipboard_paste_uses_doc_paste_not_doc_insert() {
+        // `Doc::paste` (unlike `insert`) is always its own undo step, even for
+        // one character — the observable difference is that a paste right
+        // after typing does *not* coalesce into that typing run's undo.
+        let mut doc = doc_with("paste_coalesce", "");
+        doc.insert("a"); // a one-character typing run
+        set_clipboard_text("b".into()).ok(); // best-effort: skip if no clipboard
+        clipboard_paste(&mut doc);
+        if doc.status.as_deref() == Some("clipboard unavailable") {
+            return; // headless CI/sandbox with no system clipboard
+        }
+        assert_eq!(doc.source, "ab");
+        doc.undo();
+        assert_eq!(doc.source, "a", "undo should peel off only the pasted 'b'");
+    }
+
+    // ── drag autoscroll ──────────────────────────────────────────────────────
+
+    #[test]
+    fn dragging_past_the_bottom_edge_scrolls_down_and_keeps_selecting() {
+        // Source view, not WYSIWYG: WYSIWYG joins bare lines with soft breaks
+        // into one wrapped paragraph, so "row 10" isn't the tenth line the way
+        // it is here — the row/col → offset mapping this is exercising is
+        // `handle_mouse`'s scroll bookkeeping, not either view's own mapping.
+        let mut doc = doc_with("drag_down", &"line\n".repeat(30));
+        doc.view = View::Source;
+        let mut app = App::default();
+        handle_mouse(&mut doc, left_down(1, 0), &mut app); // caret at the top row
+        let before = doc.scroll;
+        handle_mouse(&mut doc, drag(11, 0), &mut app); // one row past body_height (10)
+        assert!(doc.scroll > before, "dragging past the bottom edge should scroll down");
+        assert!(doc.selection().is_some(), "the drag should still be extending a selection");
+    }
+
+    #[test]
+    fn dragging_past_the_top_edge_scrolls_up() {
+        let mut doc = doc_with("drag_up", &"line\n".repeat(30));
+        doc.view = View::Source;
+        doc.scroll = 5;
+        let mut app = App::default();
+        handle_mouse(&mut doc, left_down(2, 0), &mut app);
+        handle_mouse(&mut doc, drag(0, 0), &mut app); // above body_origin's row (1)
+        assert_eq!(doc.scroll, 4);
     }
 }
