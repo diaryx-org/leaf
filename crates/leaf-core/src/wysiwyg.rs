@@ -1,7 +1,8 @@
 //! The WYSIWYG view: render the document with its markup *resolved*, not shown —
-//! headings coloured, `**bold**` as real bold, `# ` / `**` / `` ` `` delimiters
-//! hidden — while keeping every visible glyph tied back to the source byte it
-//! came from.
+//! headings and code tagged with a typographic role (a frontend sizes or colours
+//! them; see [`crate::style`]), `**bold**` as real bold, `# ` / `**` / `` ` ``
+//! delimiters hidden — while keeping every visible glyph tied back to the source
+//! byte it came from.
 //!
 //! That back-reference (`Glyph::src`) is what lets a caret still work: the caret
 //! stays a source offset (shared with the source view), but the [`VisualMap`]
@@ -73,6 +74,19 @@ pub struct VRow {
 /// The rendered document plus the offset⇄position mapping the caret rides on.
 #[derive(Default)]
 pub struct VisualMap {
+    /// The document's **default monospace rendering** — one [`VRow`] of glyphs
+    /// per visual line, tables spelled with box-drawing borders (`│ ─ ┌┬┐…`) and
+    /// cells padded to whole character-cell columns. Any monospace surface can
+    /// draw these verbatim, so a consumer gets a working view for free: the TUI
+    /// paints them as-is, and a five-line plain-text dump would too.
+    ///
+    /// It's a *default*, not the only truth. A frontend with its own geometry —
+    /// a proportional GUI — lays text out in its own units, and for a table
+    /// skips the box-drawn rows named by [`TableInfo::rows_span`] and draws from
+    /// the structural [`TableInfo`] instead. The box glyphs live here rather than
+    /// in a frontend precisely because they *are* a renderable default: unlike a
+    /// colour (a role each surface must map to its own palette — see
+    /// [`crate::style`]), `┌─┐` is finished text that needs no interpretation.
     pub rows: Vec<VRow>,
     /// The first source offset that is actually rendered — the caret floor for
     /// the WYSIWYG view. Non-zero when a leading `metadata` block (YAML/TOML
@@ -790,7 +804,10 @@ impl Builder<'_> {
 
     /// Render a table as a box-drawn grid: every column as wide as its widest
     /// cell, the header bold and ruled off, each cell padded to its column's
-    /// alignment.
+    /// alignment. This is the *default* monospace rendering (see
+    /// [`VisualMap::rows`]); the same cells are also published structurally as
+    /// [`TableInfo`], so a frontend that lays the grid out in its own units draws
+    /// from there and skips the picture built here.
     ///
     /// The alignment comes from twig's `cell.alignment` — the delimiter row
     /// (`|:--|--:|`) that spells it out is consumed by the parser and leaves no
@@ -1367,10 +1384,10 @@ pub struct TableRow {
 
 /// A table's structure, published alongside the box-drawn rows that spell it.
 ///
-/// The rows in [`VisualMap::rows`] are a *terminal's* picture of a table: every
-/// border a `│`, every column a whole number of character cells. That picture is
-/// exactly right where a cell is a cell, and unfixable anywhere else — in a
-/// proportional font the `│`s of two rows land at different x and the grid
+/// The rows in [`VisualMap::rows`] are the *default monospace* picture of a
+/// table: every border a `│`, every column a whole number of character cells.
+/// That picture is exactly right on any monospace surface, and unfixable off one
+/// — in a proportional font the `│`s of two rows land at different x and the grid
 /// shears. So a frontend that draws its own geometry reads this instead: the
 /// cells, their alignment, and which rows are the head, with no opinion about
 /// how wide a column is or what a border looks like.
