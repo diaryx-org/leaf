@@ -232,6 +232,11 @@ pub struct Doc {
     /// a pure function of `(revision, wrap)`, so when those haven't moved,
     /// rebuilding it produces the identical map — see [`Doc::build_visual`].
     vmap_key: Option<(u64, Option<usize>)>,
+    /// Per-block row cache backing the incremental rebuild: when the text
+    /// changes, only the top-level blocks whose bytes moved are re-rendered and
+    /// the rest are reused shifted (see [`wysiwyg::BlockCache`]). Persists across
+    /// builds; a pure accelerator, so it's never read for correctness.
+    block_cache: wysiwyg::BlockCache,
 
     // View geometry the renderer stamps each frame, so mouse events can map a
     // screen cell back to a byte offset.
@@ -310,6 +315,7 @@ impl Doc {
             revision: 0,
             // No map yet — the first `build_visual` always builds.
             vmap_key: None,
+            block_cache: wysiwyg::BlockCache::default(),
             scroll: 0,
             body_origin: (0, 0),
             body_height: 0,
@@ -388,7 +394,7 @@ impl Doc {
         let key = (self.revision, wrap);
         if self.vmap_key != Some(key) {
             let nodes = self.nodes();
-            self.vmap = wysiwyg::build(&nodes, &self.source, wrap);
+            self.vmap = wysiwyg::build_cached(&nodes, &self.source, wrap, &mut self.block_cache);
             self.vmap_key = Some(key);
         }
         self.clamp_caret();

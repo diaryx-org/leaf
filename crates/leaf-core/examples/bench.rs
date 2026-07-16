@@ -46,6 +46,18 @@ fn main() {
         });
         time("twig nodes() FFI marshal", 5, || ed.nodes().unwrap().len());
         time("wysiwyg::build", 5, || wysiwyg::build(&nodes, &src, None).rows.len());
+        {
+            // The incremental path with a warm cache and nothing changed: the
+            // floor cost the block cache adds even on a pure repaint — hash every
+            // block, clone every reused row, recollect stops. The real keystroke
+            // win shows up in "Doc::insert + rebuild" below, which reuses all but
+            // the edited block.
+            let mut cache = wysiwyg::BlockCache::default();
+            let _ = wysiwyg::build_cached(&nodes, &src, None, &mut cache);
+            time("wysiwyg::build_cached (all reused)", 5, || {
+                wysiwyg::build_cached(&nodes, &src, None, &mut cache).rows.len()
+            });
+        }
 
         println!("  -- claimed hot, actually noise --");
         time("twig source_str() (full copy)", 5, || ed.source_str().unwrap().len());

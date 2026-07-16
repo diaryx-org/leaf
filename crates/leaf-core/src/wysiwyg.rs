@@ -19,6 +19,7 @@
 //! the verbatim source slice), so a Markdown and a Djot file that parse alike
 //! render — and map — identically.
 
+use std::collections::HashMap;
 use std::ops::Range;
 
 use twig::{Alignment, FlatNode};
@@ -52,6 +53,10 @@ pub struct Glyph {
 /// One visual line. `end_src` is the source offset a caret sits at when placed
 /// at the line's end (past its last glyph) — the anchor for end-of-line and
 /// click-past-content.
+///
+/// `Clone` so a block's rows can be cached and re-emitted at a shifted offset
+/// across an edit — see [`BlockCache`].
+#[derive(Clone)]
 pub struct VRow {
     pub glyphs: Vec<Glyph>,
     pub end_src: usize,
@@ -340,6 +345,182 @@ pub fn build(nodes: &[FlatNode], source: &str, wrap: Option<usize>) -> VisualMap
     }
 }
 
+/// Like [`build`], but reuses a persistent [`BlockCache`] across calls so an
+/// edit re-renders only the top-level blocks whose source bytes changed and
+/// reuses the rest. The result is byte-for-byte identical to [`build`] on the
+/// same input — the cache changes only how fast the map is produced, never what
+/// it contains (the `build_cached_matches_build` test pins this). This is the
+/// entry point [`crate::Doc`] uses; `build` stays the cache-free reference.
+pub fn build_cached(
+    nodes: &[FlatNode],
+    source: &str,
+    wrap: Option<usize>,
+    cache: &mut BlockCache,
+) -> VisualMap {
+    let Some(doc) = nodes.iter().position(|n| n.kind == "doc") else {
+        // No doc root: nothing to render, and nothing to learn — leave the cache
+        // untouched rather than bump a generation that would evict everything.
+        return VisualMap::default();
+    };
+    let wrap = wrap.map(|w| w.max(8));
+
+    // Wrapping is a function of the width, so a width change makes every cached
+    // row's wrap wrong: start the cache over.
+    if cache.wrap != Some(wrap) {
+        cache.entries.clear();
+        cache.wrap = Some(wrap);
+    }
+    cache.generation = cache.generation.wrapping_add(1);
+
+    let mut b = Builder {
+        nodes,
+        source,
+        wrap,
+        rows: Vec::new(),
+        tables: Vec::new(),
+        last_off: 0,
+    };
+    b.top_blocks_cached(doc, cache);
+    b.emit_trailing_blank_lines();
+
+    // Evict every entry no block reused this build, so the cache tracks the
+    // current document instead of growing without bound over a session.
+    let g = cache.generation;
+    cache.entries.retain(|_, bucket| {
+        bucket.retain(|e| e.generation == g);
+        !bucket.is_empty()
+    });
+
+    let content_start = first_content_offset(nodes, doc);
+    let stops = collect_stops(&b.rows);
+    VisualMap {
+        rows: b.rows,
+        content_start,
+        stops,
+        tables: b.tables,
+    }
+}
+
+/// A persistent, content-keyed cache of the rows each top-level block renders
+/// to — the [`VisualMap`] analogue of the GUI's ShapedLine cache, one level
+/// down. Held by a [`crate::Doc`] and threaded into [`build_cached`], it is what
+/// makes a rebuild after a keystroke cost "re-render the edited block + shift
+/// the rest" instead of re-rendering the whole document.
+///
+/// A top-level block's rows are a pure function of its source bytes and the wrap
+/// width (its rendering never reads where it sits in the document — see
+/// [`Builder::top_blocks_cached`]), so an unchanged block's rows are cloned and
+/// their source offsets shifted by the edit's byte delta rather than rebuilt
+/// glyph by glyph. Keyed by a fast hash of the block's bytes with the bytes kept
+/// for a verify-on-hit — exactly the shape cache's weak-hash-then-compare, so a
+/// collision costs a re-render, never a wrong row.
+///
+/// Tables are never cached (a block that emits any table row is always rebuilt):
+/// their rows are cross-referenced from the map's `tables` side-table by row
+/// index, which a blind offset-shift wouldn't fix up, and they are rare enough
+/// that the simplicity beats the reuse.
+#[derive(Default)]
+pub struct BlockCache {
+    /// The wrap width every entry was built at; a change invalidates all of
+    /// them. `None` before the first build (distinct from `Some(None)`, the
+    /// unwrapped GUI width).
+    wrap: Option<Option<usize>>,
+    /// Bumped once per [`build_cached`]. An entry reused or inserted this build
+    /// carries the current value; stale entries are dropped at the end of it.
+    generation: u64,
+    /// `hash(bytes)` → the block(s) sharing that hash — a bucket because
+    /// distinct blocks can collide, while two *identical* blocks share one entry
+    /// (free dedup).
+    entries: HashMap<u64, Vec<CachedBlock>>,
+}
+
+/// One cached block: the rows it rendered to, plus what a reuse at a new
+/// position needs to shift them. Offsets are stored absolute (as built) and
+/// shifted by `new_start - built_start` on reuse.
+struct CachedBlock {
+    /// The block's exact source bytes, compared on a hash hit so a collision
+    /// can never hand back another block's rows.
+    bytes: Box<[u8]>,
+    /// The offset the rows were built at (the block's `span.start`).
+    built_start: usize,
+    /// The block's rows, offsets absolute as built.
+    rows: Vec<VRow>,
+    /// `last_off` after this block was emitted, absolute as built — restored
+    /// (shifted) on reuse so the following separator lands correctly.
+    last_off: usize,
+    /// The build that last reused or inserted this entry (see `generation`).
+    generation: u64,
+}
+
+impl BlockCache {
+    /// Look up a block by hash, verify its bytes, and on a hit stamp it used
+    /// this build and hand back a borrow to shift-and-clone from. `None` on a
+    /// miss (unknown hash, or a collision whose bytes differ).
+    fn reuse(&mut self, hash: u64, bytes: &[u8]) -> Option<&CachedBlock> {
+        let g = self.generation;
+        let bucket = self.entries.get_mut(&hash)?;
+        let e = bucket.iter_mut().find(|e| &*e.bytes == bytes)?;
+        e.generation = g;
+        Some(&*e)
+    }
+
+    /// Cache the rows a freshly-rendered block produced (or refresh an existing
+    /// entry for the same bytes — an identical block elsewhere, or a re-render).
+    fn store(&mut self, hash: u64, bytes: &[u8], built_start: usize, rows: Vec<VRow>, last_off: usize) {
+        let g = self.generation;
+        let bucket = self.entries.entry(hash).or_default();
+        if let Some(e) = bucket.iter_mut().find(|e| &*e.bytes == bytes) {
+            e.built_start = built_start;
+            e.rows = rows;
+            e.last_off = last_off;
+            e.generation = g;
+        } else {
+            bucket.push(CachedBlock {
+                bytes: bytes.into(),
+                built_start,
+                rows,
+                last_off,
+                generation: g,
+            });
+        }
+    }
+}
+
+/// A fast, allocation-free content hash (FNV-1a) for a block's bytes. Weak by
+/// design — the bytes are compared on a hit — so its only job is to spread
+/// blocks across buckets cheaply. SipHash over every block's bytes on every
+/// keystroke would cost more than it saves, the same lesson the shape cache
+/// learned when it stopped hashing through the standard hasher.
+fn block_hash(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &x in bytes {
+        h ^= x as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+/// Clone a cached row with every source offset advanced by `delta` — the whole
+/// cost of reusing an unchanged block: integer adds where a rebuild would
+/// re-shape every glyph.
+fn shift_row(row: &VRow, delta: isize) -> VRow {
+    let shift = |off: usize| (off as isize + delta) as usize;
+    VRow {
+        glyphs: row
+            .glyphs
+            .iter()
+            .map(|g| Glyph {
+                ch: g.ch,
+                style: g.style,
+                src: shift(g.src),
+                stop: g.stop,
+            })
+            .collect(),
+        end_src: shift(row.end_src),
+        decoration: row.decoration,
+    }
+}
+
 /// The source offset of the first *rendered* top-level block — the first child
 /// of `doc` that isn't hidden frontmatter (a `metadata` node). Zero when the
 /// document opens straight into content (or is nothing but frontmatter).
@@ -395,49 +576,111 @@ impl Builder<'_> {
             .collect();
         for (i, child) in kids.into_iter().enumerate() {
             if i > 0 {
-                // The blank line(s) between two blocks are real caret stops, each
-                // needing its *own* source offset — one strictly past the previous
-                // block's content, else it collides with that block's last row
-                // and `pos_of_offset` (first-match-wins) would resolve the caret
-                // onto the wrong row, pinning downward motion there.
-                //
-                // One row *per* blank source line, not a single collapsed
-                // separator: an empty paragraph opened between two blocks (Enter
-                // in the gap, `…\n\n\n\n…`) must be a navigable empty row, not
-                // vanish — else the caret in it snaps onto the *next* block's
-                // start and Enter looks like it did nothing.
-                let next_start = self.nodes[child].span.start;
-                let mut offs = self.blank_rows_between(self.last_off, next_start);
-                if offs.is_empty() {
-                    // A tight gap with no blank line (e.g. a heading directly
-                    // above its text): keep the one conventional separator row so
-                    // blocks still breathe, as they always have.
-                    offs.push(self.blank_line_offset(self.last_off, next_start));
-                }
-                let last = offs.len() - 1;
-                for (k, end_src) in offs.into_iter().enumerate() {
-                    // The blank line a boundary is *drawn* with isn't a place
-                    // text can go. The first one closes the block above and the
-                    // last one opens the block below — with a single blank line,
-                    // the usual case, doing both at once. Typing on either just
-                    // continues the paragraph it abuts, since the blank line it
-                    // would need to be a paragraph of its own is the very line
-                    // being typed on. So they're a gap, like a table's border:
-                    // drawn, clickable, never a caret's home.
-                    //
-                    // The lines *between* them are the real ones. That's what
-                    // Enter opens: it inserts a paragraph break (`\n\n`), which
-                    // leaves a blank line spare on each side and the caret on the
-                    // navigable line between them.
-                    self.rows.push(VRow {
-                        glyphs: pc.to_vec(),
-                        end_src,
-                        decoration: k == 0 || k == last,
-                    });
-                }
+                self.emit_separators_before(self.nodes[child].span.start, pc);
             }
             let first = if i == 0 { pf } else { pc };
             self.block(child, first, pc);
+        }
+    }
+
+    /// Emit the blank separator row(s) that sit between a block ending at the
+    /// current `last_off` and the next block starting at `next_start`, wearing
+    /// the continuation prefix `pc`. Shared by [`Builder::blocks`] and the
+    /// incremental top-level walk so the two can't drift on how a boundary is
+    /// spelled.
+    ///
+    /// The blank line(s) between two blocks are real caret stops, each needing
+    /// its *own* source offset — one strictly past the previous block's content,
+    /// else it collides with that block's last row and `pos_of_offset`
+    /// (first-match-wins) would resolve the caret onto the wrong row, pinning
+    /// downward motion there.
+    ///
+    /// One row *per* blank source line, not a single collapsed separator: an
+    /// empty paragraph opened between two blocks (Enter in the gap,
+    /// `…\n\n\n\n…`) must be a navigable empty row, not vanish — else the caret
+    /// in it snaps onto the *next* block's start and Enter looks like it did
+    /// nothing.
+    fn emit_separators_before(&mut self, next_start: usize, pc: &[Glyph]) {
+        let mut offs = self.blank_rows_between(self.last_off, next_start);
+        if offs.is_empty() {
+            // A tight gap with no blank line (e.g. a heading directly above its
+            // text): keep the one conventional separator row so blocks still
+            // breathe, as they always have.
+            offs.push(self.blank_line_offset(self.last_off, next_start));
+        }
+        let last = offs.len() - 1;
+        for (k, end_src) in offs.into_iter().enumerate() {
+            // The blank line a boundary is *drawn* with isn't a place text can
+            // go. The first one closes the block above and the last one opens the
+            // block below — with a single blank line, the usual case, doing both
+            // at once. Typing on either just continues the paragraph it abuts,
+            // since the blank line it would need to be a paragraph of its own is
+            // the very line being typed on. So they're a gap, like a table's
+            // border: drawn, clickable, never a caret's home.
+            //
+            // The lines *between* them are the real ones. That's what Enter
+            // opens: it inserts a paragraph break (`\n\n`), which leaves a blank
+            // line spare on each side and the caret on the navigable line
+            // between them.
+            self.rows.push(VRow {
+                glyphs: pc.to_vec(),
+                end_src,
+                decoration: k == 0 || k == last,
+            });
+        }
+    }
+
+    /// Walk the document's top-level blocks, reusing each block's cached rows
+    /// when its bytes are unchanged and rendering (and caching) it otherwise.
+    /// Mirrors [`Builder::blocks`] for the `doc` root — the same `metadata` skip
+    /// and the same separators — with the per-block cache in the loop. Feeds
+    /// [`build_cached`]; [`build`] uses the plain [`Builder::blocks`].
+    ///
+    /// Reuse is sound because a *top-level* block renders to rows that depend
+    /// only on its own bytes and the wrap width. Two things guarantee that: the
+    /// prefix at the top level is always empty (nesting prefixes — a quote
+    /// gutter, a list indent — only exist below a top-level block, inside its
+    /// cached unit), and a block's output never reads the incoming `last_off`
+    /// (it writes `last_off` from its own content before any nested separator
+    /// reads it). So the only thing that differs between two positions of an
+    /// unchanged block is a uniform shift of every source offset it carries —
+    /// which [`shift_row`] applies on reuse.
+    fn top_blocks_cached(&mut self, doc: usize, cache: &mut BlockCache) {
+        let kids: Vec<usize> = self
+            .children(doc)
+            .into_iter()
+            .filter(|&c| self.nodes[c].kind != "metadata")
+            .collect();
+        for (i, child) in kids.into_iter().enumerate() {
+            let start = self.nodes[child].span.start;
+            if i > 0 {
+                self.emit_separators_before(start, &[]);
+            }
+            let span = self.nodes[child].span.clone();
+            let bytes = self.source.as_bytes().get(span.start..span.end).unwrap_or(&[]);
+            let hash = block_hash(bytes);
+
+            // Hit: clone the block's rows shifted to its current offset, and
+            // restore the (shifted) `last_off` so the next separator lands right.
+            if let Some(hit) = cache.reuse(hash, bytes) {
+                let delta = start as isize - hit.built_start as isize;
+                for row in &hit.rows {
+                    self.rows.push(shift_row(row, delta));
+                }
+                self.last_off = (hit.last_off as isize + delta) as usize;
+                continue;
+            }
+
+            // Miss: render the block fresh, then cache it — unless it produced a
+            // table row, which the cache deliberately never stores (see
+            // [`BlockCache`]).
+            let rows_before = self.rows.len();
+            let tables_before = self.tables.len();
+            self.block(child, &[], &[]);
+            if self.tables.len() == tables_before {
+                let rows = self.rows[rows_before..].to_vec();
+                cache.store(hash, bytes, start, rows, self.last_off);
+            }
         }
     }
 
@@ -1347,6 +1590,82 @@ mod tests {
             .map(|r| r.glyphs.iter().map(|g| g.ch).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// Assert two maps are identical down to every glyph, stop, and table span —
+    /// the contract [`build_cached`] must hold against [`build`].
+    fn assert_map_eq(a: &VisualMap, b: &VisualMap, ctx: &str) {
+        assert_eq!(a.rows.len(), b.rows.len(), "row count ({ctx})");
+        for (i, (ra, rb)) in a.rows.iter().zip(&b.rows).enumerate() {
+            assert_eq!(ra.end_src, rb.end_src, "row {i} end_src ({ctx})");
+            assert_eq!(ra.decoration, rb.decoration, "row {i} decoration ({ctx})");
+            assert_eq!(ra.glyphs.len(), rb.glyphs.len(), "row {i} glyph count ({ctx})");
+            for (j, (ga, gb)) in ra.glyphs.iter().zip(&rb.glyphs).enumerate() {
+                assert_eq!(
+                    (ga.ch, ga.src, ga.stop, ga.style),
+                    (gb.ch, gb.src, gb.stop, gb.style),
+                    "row {i} glyph {j} ({ctx})"
+                );
+            }
+        }
+        assert_eq!(a.content_start, b.content_start, "content_start ({ctx})");
+        assert_eq!(a.stops, b.stops, "stops ({ctx})");
+        assert_eq!(a.tables.len(), b.tables.len(), "table count ({ctx})");
+        for (i, (ta, tb)) in a.tables.iter().zip(&b.tables).enumerate() {
+            assert_eq!(ta.rows_span, tb.rows_span, "table {i} rows_span ({ctx})");
+            assert_eq!(ta.end_src, tb.end_src, "table {i} end_src ({ctx})");
+        }
+    }
+
+    /// The whole correctness claim of the block cache: `build_cached` produces a
+    /// byte-identical map to `build`, on a fresh cache *and* — the case that
+    /// actually exercises reuse-and-shift — on a warm cache after the source has
+    /// been edited underneath it.
+    #[test]
+    fn build_cached_matches_build() {
+        let docs = [
+            "# Title\n\nThe quick brown fox.\n\nAnother paragraph here.\n",
+            "## H\n\n- one\n- two\n- three\n\n> a quote\n> continued\n",
+            "para one\n\n```\ncode\nlines\n```\n\nafter code\n",
+            "| a | b |\n|---|---|\n| 1 | 2 |\n\ntext after a table\n",
+            "line\n- \nsetext?\n\nreal para\n\n\n\ntrailing blanks\n",
+            "> quote with **bold** and a [link](https://x.dev)\n>\n> - item\n> - item2\n\ntail\n",
+        ];
+        for wrap in [None, Some(80usize), Some(20)] {
+            for src in docs {
+                let ctx = format!("wrap={wrap:?} src={src:?}");
+                let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
+                let mut cache = BlockCache::default();
+
+                // 1) Fresh cache equals the cache-free build.
+                let nodes = ed.nodes().unwrap();
+                let plain = build(&nodes, src, wrap);
+                let cached = build_cached(&nodes, src, wrap, &mut cache);
+                assert_map_eq(&plain, &cached, &format!("fresh {ctx}"));
+
+                // 2) Type a char mid-document, reparse, rebuild with the now-warm
+                //    cache: every block below the edit is reused shifted, and the
+                //    result must still match a from-scratch build.
+                let at = (src.len() / 2..=src.len())
+                    .find(|&i| src.is_char_boundary(i))
+                    .unwrap();
+                ed.edit_range(at, at, "Z").unwrap();
+                let src2 = ed.source_str().unwrap();
+                let nodes2 = ed.nodes().unwrap();
+                let plain2 = build(&nodes2, &src2, wrap);
+                let cached2 = build_cached(&nodes2, &src2, wrap, &mut cache);
+                assert_map_eq(&plain2, &cached2, &format!("after insert {ctx}"));
+
+                // 3) Delete it again: offsets shift back the other way, and the
+                //    warm cache must not hand back stale shifted rows.
+                ed.edit_range(at, at + 1, "").unwrap();
+                let src3 = ed.source_str().unwrap();
+                let nodes3 = ed.nodes().unwrap();
+                let plain3 = build(&nodes3, &src3, wrap);
+                let cached3 = build_cached(&nodes3, &src3, wrap, &mut cache);
+                assert_map_eq(&plain3, &cached3, &format!("after delete {ctx}"));
+            }
+        }
     }
 
     #[test]
