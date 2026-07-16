@@ -23,18 +23,11 @@ edition = "2024"
 # 2.0: `FlatNode` carries a table's `head`/`alignment` (the delimiter row that
 # spells alignment out is consumed by the parser and leaves no node, so the
 # snapshot is the only source), and is `#[non_exhaustive]`.
-twig-doc = { version = "2.0.0" }
+# 2.1: `toggle_block_container` (blockquote/bullet/ordered) and `insert_link`,
+# which spells a text-less link the way the format does — an autolink where the
+# destination is one, `[dest](dest)` where it isn't.
+twig-doc = { version = "2.1.0" }
 anyhow = "1"
 # Frontend-neutral core: the caret/selection model + AST→glyph map, styled with
 # a toolkit-agnostic Style. Each frontend crate maps that to its own styling.
 leaf-core = { path = "crates/leaf-core", version = "0.1.0" }
-
-# Local twig while the container/link editor ops are unreleased. twig-doc 2.1.0
-# is not on crates.io yet; drop this patch once it is.
-#
-# This points at a *pinned worktree* (detached at 29097fa), not the main twig
-# checkout, because twig's build.rs declares `rerun-if-changed=<root>/src`: any
-# save in a live twig tree makes leaf re-run `zig build` mid-edit and fail. Repoint
-# at ~/Code/twig — or bump the worktree — to pick up newer twig work.
-[patch.crates-io]
-twig-doc = { path = "/Users/adamharris/Code/worktrees/twig-pin/bindings/rust/twig" }
