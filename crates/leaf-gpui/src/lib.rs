@@ -41,7 +41,7 @@ use gpui::{
     SharedString, ShapedLine, Style, Task, TextAlign, UTF16Selection, UnderlineStyle, Window,
     actions, anchored, deferred, div, fill, point, prelude::*, px, relative, rgb, rgba, size,
 };
-use leaf_core::style::Style as CoreStyle;
+use leaf_core::style::{Role, Style as CoreStyle};
 use prompt::{PromptAction, TextPrompt};
 
 /// How long the caret rests in each blink phase.
@@ -97,9 +97,22 @@ pub struct EditorStyle {
     pub table_stripe: Hsla,
     /// Body font family.
     pub font_family: SharedString,
-    /// Body font size and line height.
+    /// The monospace family code (inline `` `verbatim` `` and fenced blocks) is
+    /// drawn in — the GUI's answer to leaf-core's `Role::Code`, where the TUI,
+    /// already monospace, needs nothing. Kept separate from `font_family` so the
+    /// body can be proportional while code still lines up in columns.
+    pub mono_font_family: SharedString,
+    /// Body font size and line height. A heading's size is this scaled by
+    /// [`Self::heading_scale`]; its row is proportionally taller (the line
+    /// height tracks the font size), which is why the widget lays rows out at
+    /// their own heights rather than on one uniform grid.
     pub font_size: Pixels,
     pub line_height: Pixels,
+    /// How much larger than the body each heading level is drawn, `[h1, …, h6]`.
+    /// Headings are distinguished by size and weight alone (no color), so this
+    /// ramp is the whole hierarchy. The default is a moderate one — h1 ≈ 1.6×
+    /// body, tapering to body size by h5.
+    pub heading_scale: [f32; 6],
 }
 
 impl Default for EditorStyle {
@@ -113,8 +126,11 @@ impl Default for EditorStyle {
             table_header: rgb(0xf0f0f0).into(),
             table_stripe: rgb(0xf8f8f8).into(),
             font_family: "Helvetica".into(),
+            mono_font_family: "Menlo".into(),
             font_size: px(16.0),
             line_height: px(24.0),
+            // 26 / 22 / 19 / 17 / 16 / 15 px against a 16px body.
+            heading_scale: [1.625, 1.375, 1.1875, 1.0625, 1.0, 0.9375],
         }
     }
 }
@@ -122,7 +138,7 @@ use leaf_core::{
     Alignment, BlockKind, DiskState, Doc, Glyph, InlineKind, InlineMarks, TableInfo, View,
 };
 
-use crate::style::text_run;
+use crate::style::{Fonts, heading_scale, text_run};
 
 /// Something the widget needs its host to do, because only the host can: the
 /// editor owns the document, but the window and the process are the app's.
@@ -327,7 +343,17 @@ pub struct Editor {
     shape_cache: HashMap<u64, Rc<ShapedLine>>,
     /// Where each logical line wraps — see [`Shaper::breaks`].
     break_cache: HashMap<(u64, u32), Rc<Vec<usize>>>,
+    /// A representative (body) line height from the last paint — enough for page
+    /// up/down, which steps by viewportfuls. Exact per-row geometry rides
+    /// [`Self::last_row_tops`] instead, since a heading's row is taller.
     last_line_height: Pixels,
+    /// The top y of each visual row from the last paint, relative to the text
+    /// origin, plus a final entry for the bottom of the last row (so it has
+    /// `rows + 1` entries). Rows are no longer a uniform height — a heading's is
+    /// larger — so caret placement, selection, mouse hit-testing, scrolling, and
+    /// the IME rect all read their y from here rather than multiplying a row
+    /// index by one line height.
+    last_row_tops: Rc<Vec<Pixels>>,
     last_bounds: Option<Bounds<Pixels>>,
     /// Visual-row count from the last paint — request_layout reserves height for
     /// it, since the true (pixel-wrapped) count is only known once we've laid out.
@@ -389,6 +415,7 @@ impl Editor {
             shape_cache: HashMap::new(),
             break_cache: HashMap::new(),
             last_line_height: px(24.0),
+            last_row_tops: Rc::new(Vec::new()),
             last_bounds: None,
             last_row_count: 0,
             goal_x: None,
@@ -1299,7 +1326,6 @@ impl Editor {
         if view.size.height <= px(0.0) {
             return; // not laid out yet
         }
-        let lh = self.last_line_height;
         // The caret's *visual* row — located against the painted rows, since the
         // pixel wrap means one paragraph can span several rows (caret_pos() would
         // give the paragraph index instead).
@@ -1308,8 +1334,14 @@ impl Editor {
         } else {
             locate_caret(&self.last_rows, doc.caret).0
         };
-        let caret_top = text_bounds.top() + lh * (row as f32);
-        let caret_bottom = caret_top + lh;
+        // Its top and height come from the cumulative tops (a heading's row is
+        // taller); fall back to the body line height before the first paint.
+        let tops = &self.last_row_tops;
+        let (caret_top, caret_h) = match (tops.get(row), tops.get(row + 1)) {
+            (Some(&t), Some(&b)) => (text_bounds.top() + t, b - t),
+            _ => (text_bounds.top(), self.last_line_height),
+        };
+        let caret_bottom = caret_top + caret_h;
 
         // The keyboard (or any host inset) covers the bottom of the viewport, so
         // the caret must stay above `bottom() - bottom_inset`, not `bottom()`.
@@ -1681,9 +1713,10 @@ impl Editor {
         if self.last_rows.is_empty() {
             return 0;
         }
-        let lh = f32::from(self.last_line_height).max(1.0);
-        let rel_y = f32::from(pos.y - bounds.top()).max(0.0);
-        let r = ((rel_y / lh) as usize).min(self.last_rows.len() - 1);
+        // Rows are variable height, so the row a click lands in is read from the
+        // cumulative tops rather than by dividing by one line height.
+        let rel_y = (pos.y - bounds.top()).max(px(0.0));
+        let r = row_at_y(&self.last_row_tops, rel_y).min(self.last_rows.len() - 1);
         let row = &self.last_rows[r];
         row.src_at_index(row.index_for_x(pos.x - bounds.left()))
     }
@@ -1890,10 +1923,16 @@ impl EntityInputHandler for Editor {
         // the y it gets back to find the line the composition sits on.
         let (r, gi) = locate_caret(&self.last_rows, start);
         let x = self.last_rows[r].x_at(gi);
-        let lh = self.last_line_height;
+        // The row's top and height from the cumulative tops (variable per row),
+        // falling back to the body line height if they're somehow absent.
+        let tops = &self.last_row_tops;
+        let (y, h) = match (tops.get(r), tops.get(r + 1)) {
+            (Some(&t), Some(&b)) => (t, b - t),
+            _ => (self.last_line_height * (r as f32), self.last_line_height),
+        };
         Some(Bounds::new(
-            element_bounds.origin + point(x, lh * (r as f32)),
-            size(px(2.0), lh),
+            element_bounds.origin + point(x, y),
+            size(px(2.0), h),
         ))
     }
 
@@ -1927,7 +1966,19 @@ impl EntityInputHandler for Editor {
 /// than growing with everything it has ever been.
 struct Shaper<'w> {
     window: &'w mut Window,
-    font_size: Pixels,
+    /// The families a run is shaped in — body for prose, mono for code, picked
+    /// per run from each glyph's [`Role`] (see [`build_runs`]).
+    fonts: Fonts,
+    /// The body font size. A line's size is this, unless its glyphs carry a
+    /// heading [`Role`], in which case it scales up by [`Self::heading_scale`] —
+    /// see [`Self::line_size`].
+    body_size: Pixels,
+    /// The per-level heading size multipliers from the theme.
+    heading_scale: [f32; 6],
+    /// A row's height as a multiple of its font size (the body line height over
+    /// the body size). Applied per row, so a heading's taller font gets a
+    /// proportionally taller row rather than being crammed onto the body grid.
+    line_ratio: f32,
     prev: HashMap<u64, Rc<ShapedLine>>,
     fresh: HashMap<u64, Rc<ShapedLine>>,
     /// Where a logical line wraps, keyed by its content *and the width it was
@@ -1943,11 +1994,32 @@ struct Shaper<'w> {
 }
 
 impl Shaper<'_> {
+    /// The pixel size a line of these glyphs is shaped at: the body size, scaled
+    /// up if they are a heading. Taken as the largest role on the line so a
+    /// stray body glyph can't shrink a heading; in practice a heading's glyphs
+    /// all carry the same level, and everything else is body.
+    fn line_size(&self, glyphs: &[Glyph]) -> Pixels {
+        let scale = glyphs
+            .iter()
+            .map(|g| match g.style.role {
+                Role::Heading(l) => heading_scale(l, &self.heading_scale),
+                _ => 1.0,
+            })
+            .fold(1.0f32, f32::max);
+        self.body_size * scale
+    }
+
+    /// The height of a row of these glyphs — its font size stretched by the
+    /// line-height ratio, so a heading's row is taller than a body row.
+    fn row_height(&self, glyphs: &[Glyph]) -> Pixels {
+        self.line_size(glyphs) * self.line_ratio
+    }
+
     /// Shape `glyphs`, reusing an identical shape from the last paint if there
     /// is one.
-    fn shape(&mut self, glyphs: &[Glyph], font: &Font, marked: Option<&Range<usize>>) -> Rc<ShapedLine> {
+    fn shape(&mut self, glyphs: &[Glyph], marked: Option<&Range<usize>>) -> Rc<ShapedLine> {
         let key = shape_key(glyphs, marked);
-        self.shape_keyed(key, glyphs, font, marked)
+        self.shape_keyed(key, glyphs, marked)
     }
 
     /// [`Shaper::shape`] for a caller that has already hashed these glyphs —
@@ -1957,7 +2029,6 @@ impl Shaper<'_> {
         &mut self,
         key: u64,
         glyphs: &[Glyph],
-        font: &Font,
         marked: Option<&Range<usize>>,
     ) -> Rc<ShapedLine> {
         // A hash names the entry; the text confirms it. That pairing is what
@@ -1973,11 +2044,15 @@ impl Shaper<'_> {
             return line.clone();
         }
         let text: String = glyphs.iter().map(|g| g.ch).collect();
-        let runs = build_runs(glyphs, font, marked);
+        let runs = build_runs(glyphs, &self.fonts, marked);
+        // The whole line shapes at one size — a run carries a family, not a size
+        // — so a heading's larger glyphs are a per-line decision keyed by their
+        // role (already folded into `key` via `style_bits`).
+        let size = self.line_size(glyphs);
         let line = Rc::new(
             self.window
                 .text_system()
-                .shape_line(text.into(), self.font_size, &runs, None),
+                .shape_line(text.into(), size, &runs, None),
         );
         self.fresh.insert(key, line.clone());
         line
@@ -1985,7 +2060,7 @@ impl Shaper<'_> {
 
     /// The empty line, for a row with nothing on it.
     fn empty(&mut self) -> Rc<ShapedLine> {
-        self.shape(&[], &Font::default(), None)
+        self.shape(&[], None)
     }
 
     /// Stop retaining a shape — for one that was only ever measured through.
@@ -2039,12 +2114,21 @@ fn shape_key(glyphs: &[Glyph], marked: Option<&Range<usize>>) -> u64 {
 /// A style packed into the bits that reach the font: colour and the emphasis
 /// flags. `Style` is `Eq` but not `Hash`, and this is the part that matters.
 fn style_bits(s: CoreStyle) -> u16 {
+    // The role reaches the shape twice over: it picks the run's family (mono for
+    // code) and the line's size (larger for a heading), so two otherwise-equal
+    // glyphs that differ only in role must not share a shape.
+    let role = match s.role {
+        Role::Body => 0u16,
+        Role::Code => 1,
+        Role::Heading(l) => 2 + l.min(13) as u16, // 2..=15, four bits
+    };
     (s.fg as u16)
         | ((s.bg as u16) << 4)
         | ((s.bold as u16) << 8)
         | ((s.italic as u16) << 9)
         | ((s.underline as u16) << 10)
         | ((s.strikethrough as u16) << 11)
+        | (role << 12)
 }
 
 /// One shaped run of text within a row, placed at a known x from the row's left.
@@ -2085,6 +2169,10 @@ struct RowLayout {
     segments: Vec<RowSegment>,
     char_srcs: Vec<usize>,
     end_src: usize,
+    /// This row's own height. A body row is the theme's line height; a heading
+    /// row is taller, since its font is bigger. Rows are stacked by summing
+    /// these rather than by a single line height (see [`row_tops`]).
+    height: Pixels,
 }
 
 impl RowLayout {
@@ -2094,12 +2182,14 @@ impl RowLayout {
         char_srcs: Vec<usize>,
         char_byte: Vec<usize>,
         end_src: usize,
+        height: Pixels,
     ) -> Self {
         let field = (px(0.0), shaped.width);
         RowLayout {
             segments: vec![RowSegment { x: px(0.0), shaped, char_byte, first: 0, field }],
             char_srcs,
             end_src,
+            height,
         }
     }
 
@@ -2191,6 +2281,34 @@ impl RowLayout {
     }
 }
 
+/// The top y of every row, relative to the text origin, plus a final entry for
+/// the bottom of the last row — a running sum of the rows' own heights. This is
+/// what replaces "row index × one line height" now that a heading's row is
+/// taller than a body row: `tops[r]` is where row `r` starts, `tops[r + 1]` is
+/// where it ends. Has `rows.len() + 1` entries (`[0]` for an empty document).
+fn row_tops(rows: &[RowLayout]) -> Vec<Pixels> {
+    let mut tops = Vec::with_capacity(rows.len() + 1);
+    let mut y = px(0.0);
+    tops.push(y);
+    for row in rows {
+        y += row.height;
+        tops.push(y);
+    }
+    tops
+}
+
+/// The row a y (relative to the text origin) falls in — the inverse of
+/// [`row_tops`], for turning a click's pixel into a row. Clamped to a real row:
+/// a y above the first lands on row 0, one past the last on the final row.
+fn row_at_y(tops: &[Pixels], y: Pixels) -> usize {
+    // `tops` ascends, so the row is the last top at or below `y`. `partition_point`
+    // counts the tops `<= y`; one before that is the row index. The final entry is
+    // the bottom edge, not a row, so the answer clamps to `rows - 1 == len - 2`.
+    tops.partition_point(|&t| t <= y)
+        .saturating_sub(1)
+        .min(tops.len().saturating_sub(2))
+}
+
 /// The document body element: builds a [`RowLayout`] per visual row of the
 /// active view, paints them with the caret and selection, and installs the
 /// input handler.
@@ -2202,6 +2320,10 @@ struct Prepaint {
     /// Shared with the editor's `last_rows` — the same shaped lines the mouse
     /// hit-tests against, not a copy of them.
     rows: Rc<Vec<RowLayout>>,
+    /// The cumulative row tops (see [`row_tops`]) — where each row is painted,
+    /// and what the editor keeps for the next frame's mouse/scroll math.
+    tops: Rc<Vec<Pixels>>,
+    /// A representative body line height, stored back for page up/down.
     line_height: Pixels,
     cursor: Option<PaintQuad>,
     selections: Vec<PaintQuad>,
@@ -2293,7 +2415,7 @@ fn gather_logical(doc: &Doc) -> Vec<Logical> {
 /// *source* byte falls inside it — so it segments runs alongside the style, and
 /// rides the glyphs' `src` exactly like everything else here (a preedit in
 /// WYSIWYG is underlined across the visible text, hidden delimiters and all).
-fn build_runs(glyphs: &[Glyph], base: &Font, marked: Option<&Range<usize>>) -> Vec<gpui::TextRun> {
+fn build_runs(glyphs: &[Glyph], fonts: &Fonts, marked: Option<&Range<usize>>) -> Vec<gpui::TextRun> {
     let mut segs: Vec<(usize, CoreStyle, bool)> = Vec::new();
     for g in glyphs {
         let bytes = g.ch.len_utf8();
@@ -2309,7 +2431,7 @@ fn build_runs(glyphs: &[Glyph], base: &Font, marked: Option<&Range<usize>>) -> V
     }
     segs.into_iter()
         .map(|(len, st, preedit)| {
-            let mut run = text_run(len, st, base);
+            let mut run = text_run(len, st, fonts);
             if preedit {
                 // `color: None` inherits the run's own text color, so the
                 // underline follows a preedit composed inside styled text.
@@ -2332,16 +2454,18 @@ fn build_runs(glyphs: &[Glyph], base: &Font, marked: Option<&Range<usize>>) -> V
 /// need to wrap reuses its single shaped line as-is (no re-shaping).
 fn wrap_logical(
     shaper: &mut Shaper,
-    font: &Font,
     glyphs: &[Glyph],
     logical_end_src: usize,
     wrap_px: f32,
     marked: Option<&Range<usize>>,
     out: &mut Vec<RowLayout>,
 ) {
+    // Every visual row of one logical line shares its role, so its height too:
+    // a heading wraps into taller rows, a paragraph into body-height ones.
+    let height = shaper.row_height(glyphs);
     if glyphs.is_empty() {
         let shaped = shaper.empty();
-        out.push(RowLayout::prose(shaped, Vec::new(), vec![0], logical_end_src));
+        out.push(RowLayout::prose(shaped, Vec::new(), vec![0], logical_end_src, height));
         return;
     }
 
@@ -2358,7 +2482,7 @@ fn wrap_logical(
         None => {
             // Shape the whole line once, purely to measure where the breaks
             // fall.
-            let full = shaper.shape_keyed(hash, glyphs, font, marked);
+            let full = shaper.shape_keyed(hash, glyphs, marked);
             let x = |byte: usize| f32::from(full.x_for_index(byte));
 
             // Greedy word wrap: walk maximal non-space runs, breaking before a
@@ -2398,10 +2522,11 @@ fn wrap_logical(
     // measured above is the one it paints.
     if starts.len() == 1 {
         out.push(RowLayout::prose(
-            shaper.shape_keyed(hash, glyphs, font, marked),
+            shaper.shape_keyed(hash, glyphs, marked),
             glyphs.iter().map(|g| g.src).collect(),
             char_byte,
             logical_end_src,
+            height,
         ));
         return;
     }
@@ -2411,7 +2536,7 @@ fn wrap_logical(
         let ge = starts.get(k + 1).copied().unwrap_or(n);
         let sub = &glyphs[gs..ge];
         let scb = char_bytes(sub);
-        let shaped = shaper.shape(sub, font, marked);
+        let shaped = shaper.shape(sub, marked);
         // The offset the caret lands on past this row: the block's end on the
         // last row, else the start of the next row's first glyph.
         let end_src = if ge == n {
@@ -2425,6 +2550,7 @@ fn wrap_logical(
             sub.iter().map(|g| g.src).collect(),
             scb,
             end_src,
+            height,
         ));
     }
 }
@@ -2503,7 +2629,6 @@ fn fit_widths_px(widths: &mut [f32], avail: f32) {
 /// character, and the next Backspace would take it apart from the middle.
 fn wrap_glyphs_px(
     shaper: &mut Shaper,
-    font: &Font,
     glyphs: &[Glyph],
     width: f32,
 ) -> Vec<Vec<Glyph>> {
@@ -2512,7 +2637,7 @@ fn wrap_glyphs_px(
     }
     let char_byte = char_bytes(glyphs);
     let hash = shape_key(glyphs, None);
-    let shaped = shaper.shape_keyed(hash, glyphs, font, None);
+    let shaped = shaper.shape_keyed(hash, glyphs, None);
     let x = |i: usize| f32::from(shaped.x_for_index(char_byte[i]));
 
     let n = glyphs.len();
@@ -2561,7 +2686,6 @@ fn wrap_glyphs_px(
 /// squeezed if the grid won't fit, at which point cells wrap into what's left.
 fn layout_table(
     shaper: &mut Shaper,
-    font: &Font,
     info: &TableInfo,
     avail: f32,
     marked: Option<&Range<usize>>,
@@ -2572,15 +2696,18 @@ fn layout_table(
         return None;
     }
 
+    // A table is body text throughout, so every grid line is a body-height row.
+    let row_h = shaper.row_height(&[]);
+
     // The block prefix — a quote's gutter, a list's indent — is drawn on every
     // grid row and the table starts past it, the way the picture does it.
-    let prefix = shape_glyphs(shaper, font, &info.prefix, marked);
+    let prefix = shape_glyphs(shaper, &info.prefix, marked);
     let indent = f32::from(prefix.as_ref().map_or(px(0.0), |p| p.1.width));
 
     // Every cell renders a trailing gutter space, which carries its end stop —
     // so it's part of what a column has to hold, and part of what a wrapped line
     // has to leave room for.
-    let space = measure_glyphs(shaper, font, &[]);
+    let space = measure_glyphs(shaper, &[]);
 
     // Every column at its widest cell is the wish; `fit_widths_px` is what the
     // surface can actually give. The measurements are kept: a cell that already
@@ -2592,7 +2719,7 @@ fn layout_table(
         .map(|row| {
             row.cells
                 .iter()
-                .map(|cell| measure_glyphs(shaper, font, &cell.glyphs))
+                .map(|cell| measure_glyphs(shaper, &cell.glyphs))
                 .collect()
         })
         .collect();
@@ -2623,7 +2750,7 @@ fn layout_table(
                 // The wrap width leaves room for the gutter space appended
                 // below, or the line plus its space would overrun the column.
                 Some(cell) => {
-                    wrap_glyphs_px(shaper, font, &cell.glyphs, (widths[c] - space).max(1.0))
+                    wrap_glyphs_px(shaper, &cell.glyphs, (widths[c] - space).max(1.0))
                 }
                 None => vec![Vec::new()],
             })
@@ -2671,7 +2798,7 @@ fn layout_table(
                     stop: true,
                 });
                 let char_byte = char_bytes(&gs);
-                let shaped = shaper.shape(&gs, font, marked);
+                let shaped = shaper.shape(&gs, marked);
 
                 let slack = (widths[c] - f32::from(shaped.width)).max(0.0);
                 let lead = match cell.align {
@@ -2691,7 +2818,7 @@ fn layout_table(
             }
             // The row ends where its last cell's end stop does.
             let end_src = char_srcs.last().copied().unwrap_or(info.end_src);
-            out.push(RowLayout { segments, char_srcs, end_src });
+            out.push(RowLayout { segments, char_srcs, end_src, height: row_h });
         }
         bands.push((band_start..out.len(), row.head));
     }
@@ -2714,10 +2841,12 @@ fn table_chrome(
     geom: &TableGeom,
     left: Pixels,
     top: Pixels,
-    line_height: Pixels,
+    tops: &[Pixels],
     style: &EditorStyle,
 ) -> (Vec<PaintQuad>, Vec<PaintQuad>) {
-    let y = |row: usize| top + line_height * (row as f32);
+    // A grid line's y is read from the cumulative row tops, not a uniform line
+    // height — a heading above the table would otherwise misplace the whole grid.
+    let y = |row: usize| top + tops[row.min(tops.len() - 1)];
     let x = |v: f32| left + px(v);
     let (x0, x1) = (x(geom.bounds[0]), x(*geom.bounds.last().unwrap()));
     let (y0, y1) = (y(geom.rows.start), y(geom.rows.end));
@@ -2772,7 +2901,6 @@ fn table_chrome(
 #[allow(clippy::type_complexity)]
 fn shape_glyphs(
     shaper: &mut Shaper,
-    font: &Font,
     glyphs: &[Glyph],
     marked: Option<&Range<usize>>,
 ) -> Option<(Vec<Glyph>, Rc<ShapedLine>, Vec<usize>)> {
@@ -2781,7 +2909,7 @@ fn shape_glyphs(
     }
     Some((
         glyphs.to_vec(),
-        shaper.shape(glyphs, font, marked),
+        shaper.shape(glyphs, marked),
         char_bytes(glyphs),
     ))
 }
@@ -2789,7 +2917,7 @@ fn shape_glyphs(
 /// The width `glyphs` shape to, plus the trailing gutter space every cell
 /// renders — what a column has to be to hold this cell. Passing no glyphs
 /// measures the gutter space alone.
-fn measure_glyphs(shaper: &mut Shaper, font: &Font, glyphs: &[Glyph]) -> f32 {
+fn measure_glyphs(shaper: &mut Shaper, glyphs: &[Glyph]) -> f32 {
     let mut gs = glyphs.to_vec();
     gs.push(Glyph {
         ch: ' ',
@@ -2797,7 +2925,7 @@ fn measure_glyphs(shaper: &mut Shaper, font: &Font, glyphs: &[Glyph]) -> f32 {
         src: 0,
         stop: true,
     });
-    f32::from(shaper.shape(&gs, font, None).width)
+    f32::from(shaper.shape(&gs, None).width)
 }
 
 /// The UTF-8 byte offset a UTF-16 offset into `source` names — [`Editor::offset_from_utf16`]'s
@@ -3018,8 +3146,18 @@ impl Element for TextElement {
         style.size.width = relative(1.).into();
         // Reserve the rows' height plus the host bottom inset (keyboard) as extra
         // scroll room, so the caret can be scrolled clear of the keyboard even
-        // when the document itself is shorter than the screen.
-        style.size.height = (window.line_height() * n as f32 + bottom_inset).into();
+        // when the document itself is shorter than the screen. The true height is
+        // the last paint's sum of (now variable) row heights; before the first
+        // paint, fall back to one line per reserved row.
+        let last_height = self
+            .editor
+            .read(cx)
+            .last_row_tops
+            .last()
+            .copied()
+            .filter(|h| *h > px(0.0))
+            .unwrap_or(window.line_height() * n as f32);
+        style.size.height = (last_height + bottom_inset).into();
         (window.request_layout(style, [], cx), ())
     }
 
@@ -3046,8 +3184,11 @@ impl Element for TextElement {
                     .text_system()
                     .shape_line("".into(), font_size, &[], None),
             );
+            let rows = Rc::new(vec![RowLayout::prose(shaped, Vec::new(), vec![0], 0, line_height)]);
+            let tops = Rc::new(row_tops(&rows));
             return Prepaint {
-                rows: Rc::new(vec![RowLayout::prose(shaped, Vec::new(), vec![0], 0)]),
+                rows,
+                tops,
                 line_height,
                 cursor: None,
                 selections: Vec::new(),
@@ -3113,9 +3254,20 @@ impl Element for TextElement {
                         std::mem::take(&mut e.break_cache),
                     )
                 });
+                // Body and mono families, and the ratio that turns a font size
+                // into a row height — the metrics the shaper reads to size each
+                // line by its role (see [`Shaper::line_size`]).
+                let fonts = Fonts {
+                    body: font.clone(),
+                    mono: gpui::font(style.mono_font_family.clone()),
+                };
+                let line_ratio = (f32::from(line_height) / f32::from(font_size).max(1.0)).max(1.0);
                 let mut shaper = Shaper {
                     window,
-                    font_size,
+                    fonts,
+                    body_size: font_size,
+                    heading_scale: style.heading_scale,
+                    line_ratio,
                     prev,
                     fresh: HashMap::new(),
                     breaks: HashMap::new(),
@@ -3128,7 +3280,6 @@ impl Element for TextElement {
                     match logical {
                         Logical::Line(glyphs, end_src) => wrap_logical(
                             &mut shaper,
-                            &font,
                             glyphs,
                             *end_src,
                             wrap_px,
@@ -3137,7 +3288,7 @@ impl Element for TextElement {
                         ),
                         Logical::Table(info) => {
                             if let Some(g) =
-                                layout_table(&mut shaper, &font, info, wrap_px, marked.as_ref(), &mut rows)
+                                layout_table(&mut shaper, info, wrap_px, marked.as_ref(), &mut rows)
                             {
                                 geoms.push(g);
                             }
@@ -3146,7 +3297,8 @@ impl Element for TextElement {
                 }
                 if rows.is_empty() {
                     let shaped = shaper.empty();
-                    rows.push(RowLayout::prose(shaped, Vec::new(), vec![0], 0));
+                    let h = shaper.row_height(&[]);
+                    rows.push(RowLayout::prose(shaped, Vec::new(), vec![0], 0, h));
                 }
 
                 // Whatever is still in `prev` was not used by this paint: text
@@ -3167,7 +3319,11 @@ impl Element for TextElement {
 
         let left = bounds.left();
         let top = bounds.top();
-        let row_top = |row: usize| top + line_height * (row as f32);
+        // Rows are stacked by their own heights, not a uniform line height —
+        // `tops[r]` is where row `r` starts, `tops[r + 1]` where it ends.
+        let tops = Rc::new(row_tops(&rows));
+        let row_top = |row: usize| top + tops[row];
+        let row_h = |row: usize| tops[row + 1] - tops[row];
 
         // Caret: locate its visual row/column from the source offset against the
         // painted rows — the pixel wrap means caret_pos()'s paragraph grid no
@@ -3177,7 +3333,7 @@ impl Element for TextElement {
         let caret_x = rows[cr].x_at(cgi);
         let cursor = if sel.is_none() {
             Some(fill(
-                Bounds::new(point(left + caret_x, row_top(cr)), size(px(2.0), line_height)),
+                Bounds::new(point(left + caret_x, row_top(cr)), size(px(2.0), row_h(cr))),
                 caret_color,
             ))
         } else {
@@ -3210,7 +3366,7 @@ impl Element for TextElement {
                         selections.push(fill(
                             Bounds::from_corners(
                                 point(left + row.x_in(si, a), row_top(r)),
-                                point(left + row.x_in(si, b), row_top(r) + line_height),
+                                point(left + row.x_in(si, b), row_top(r) + row_h(r)),
                             ),
                             selection_color,
                         ));
@@ -3223,13 +3379,14 @@ impl Element for TextElement {
         // rides `bounds`, which the cache key doesn't cover.
         let (mut table_fills, mut table_borders) = (Vec::new(), Vec::new());
         for g in geoms.iter() {
-            let (f, b) = table_chrome(g, left, top, line_height, &style);
+            let (f, b) = table_chrome(g, left, top, &tops, &style);
             table_fills.extend(f);
             table_borders.extend(b);
         }
 
         Prepaint {
             rows,
+            tops,
             line_height,
             cursor,
             selections,
@@ -3267,14 +3424,17 @@ impl Element for TextElement {
             window.paint_quad(quad);
         }
 
-        let lh = prepaint.line_height;
         let left = bounds.left();
         let top = bounds.top();
+        let tops = prepaint.tops.clone();
         for (r, row) in prepaint.rows.iter().enumerate() {
-            let y = top + lh * (r as f32);
+            // Each row paints at its own top and its own height — a shaped line is
+            // painted at the height it was measured to, so a heading's larger
+            // glyphs sit in a proportionally taller row.
+            let y = top + tops[r];
             for seg in &row.segments {
                 seg.shaped
-                    .paint(point(left + seg.x, y), lh, TextAlign::Left, None, window, cx)
+                    .paint(point(left + seg.x, y), row.height, TextAlign::Left, None, window, cx)
                     .ok();
             }
         }
@@ -3292,9 +3452,12 @@ impl Element for TextElement {
         }
 
         // The rows are already the editor's — prepaint stored them under their
-        // key. Only what the mouse needs to turn a pixel into a row is left.
+        // key. Only what the mouse needs to turn a pixel into a row is left: the
+        // cumulative tops (for hit-testing y → row) and a body line height (for
+        // page up/down).
         self.editor.update(cx, |editor, _| {
-            editor.last_line_height = lh;
+            editor.last_line_height = prepaint.line_height;
+            editor.last_row_tops = tops;
             editor.last_bounds = Some(bounds);
         });
     }
@@ -3432,7 +3595,8 @@ impl Focusable for Editor {
 #[cfg(test)]
 mod tests {
     use super::{
-        Glyph, build_runs, locate_caret_core, marked_replace_range, utf16_to_utf8, utf8_to_utf16,
+        Fonts, Glyph, build_runs, locate_caret_core, marked_replace_range, utf16_to_utf8,
+        utf8_to_utf16,
     };
     use leaf_core::style::Style as CoreStyle;
 
@@ -3596,9 +3760,9 @@ mod tests {
 
     #[test]
     fn a_preedit_underlines_only_the_composed_glyphs() {
-        let font = gpui::font("Helvetica");
+        let fonts = Fonts { body: gpui::font("Helvetica"), mono: gpui::font("Menlo") };
         // "abcde", composition over the source bytes of "cd".
-        let runs = build_runs(&glyphs("abcde", 0), &font, Some(&(2..4)));
+        let runs = build_runs(&glyphs("abcde", 0), &fonts, Some(&(2..4)));
         // One unstyled run either side of the underlined middle — the marked
         // range has to split runs even though every glyph shares a style.
         let lens: Vec<usize> = runs.iter().map(|r| r.len).collect();
@@ -3610,8 +3774,8 @@ mod tests {
 
     #[test]
     fn no_composition_leaves_one_unbroken_run() {
-        let font = gpui::font("Helvetica");
-        let runs = build_runs(&glyphs("abcde", 0), &font, None);
+        let fonts = Fonts { body: gpui::font("Helvetica"), mono: gpui::font("Menlo") };
+        let runs = build_runs(&glyphs("abcde", 0), &fonts, None);
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].len, 5);
         assert!(runs[0].underline.is_none());
@@ -3716,14 +3880,17 @@ mod table_layout_tests {
             let font = window.text_style().font();
             let mut shaper = Shaper {
                 window,
-                font_size: px(16.0),
+                fonts: Fonts { body: font.clone(), mono: gpui::font("Menlo") },
+                body_size: px(16.0),
+                heading_scale: EditorStyle::default().heading_scale,
+                line_ratio: 1.5,
                 prev: HashMap::new(),
                 fresh: HashMap::new(),
                 breaks: HashMap::new(),
                 prev_breaks: HashMap::new(),
             };
             let mut rows = Vec::new();
-            let geom = layout_table(&mut shaper, &font, &info, avail, None, &mut rows)
+            let geom = layout_table(&mut shaper, &info, avail, None, &mut rows)
                 .expect("the table should lay out");
             (rows, geom, info)
         })
@@ -3924,9 +4091,13 @@ mod table_layout_tests {
         let window = cx.add_window(|_, _| gpui::Empty);
         let mut vcx = VisualTestContext::from_window(window.into(), cx);
         vcx.update(|window, _| {
+            let font = window.text_style().font();
             let mut shaper = Shaper {
                 window,
-                font_size: px(16.0),
+                fonts: Fonts { body: font.clone(), mono: gpui::font("Menlo") },
+                body_size: px(16.0),
+                heading_scale: EditorStyle::default().heading_scale,
+                line_ratio: 1.5,
                 prev: HashMap::new(),
                 fresh: HashMap::new(),
                 breaks: HashMap::new(),
@@ -3944,12 +4115,11 @@ mod table_layout_tests {
         // the caret on every keystroke. A shape doesn't depend on where its text
         // came from, so this must be a hit.
         with_shaper(cx, |sh| {
-            let font = Font::default();
             let before = glyphs_of("the quick brown fox", 0, CoreStyle::default());
-            let a = sh.shape(&before, &font, None);
+            let a = sh.shape(&before, None);
             // Same text, every offset moved along by one keystroke.
             let after = glyphs_of("the quick brown fox", 1, CoreStyle::default());
-            let b = sh.shape(&after, &font, None);
+            let b = sh.shape(&after, None);
             assert!(
                 Rc::ptr_eq(&a, &b),
                 "text that only moved was re-shaped — typing at the top of a \
@@ -3961,9 +4131,8 @@ mod table_layout_tests {
     #[gpui::test]
     fn different_text_gets_its_own_shape(cx: &mut TestAppContext) {
         with_shaper(cx, |sh| {
-            let font = Font::default();
-            let a = sh.shape(&glyphs_of("alpha", 0, CoreStyle::default()), &font, None);
-            let b = sh.shape(&glyphs_of("beta", 0, CoreStyle::default()), &font, None);
+            let a = sh.shape(&glyphs_of("alpha", 0, CoreStyle::default()), None);
+            let b = sh.shape(&glyphs_of("beta", 0, CoreStyle::default()), None);
             assert!(!Rc::ptr_eq(&a, &b), "two different texts shared one shape");
             assert_eq!(a.text.as_ref(), "alpha");
             assert_eq!(b.text.as_ref(), "beta");
@@ -3975,13 +4144,8 @@ mod table_layout_tests {
         // The style picks the run's font — bold text is a different shape, and
         // reusing the plain one would silently un-bold it.
         with_shaper(cx, |sh| {
-            let font = Font::default();
-            let plain = sh.shape(&glyphs_of("word", 0, CoreStyle::default()), &font, None);
-            let bold = sh.shape(
-                &glyphs_of("word", 0, CoreStyle::default().bold()),
-                &font,
-                None,
-            );
+            let plain = sh.shape(&glyphs_of("word", 0, CoreStyle::default()), None);
+            let bold = sh.shape(&glyphs_of("word", 0, CoreStyle::default().bold()), None);
             assert!(!Rc::ptr_eq(&plain, &bold), "bold reused the plain shape");
         });
     }
@@ -3990,10 +4154,9 @@ mod table_layout_tests {
     fn a_preedit_is_not_served_the_undecorated_shape(cx: &mut TestAppContext) {
         // The IME underlines the composed glyphs, which is part of the shape.
         with_shaper(cx, |sh| {
-            let font = Font::default();
             let g = glyphs_of("word", 0, CoreStyle::default());
-            let plain = sh.shape(&g, &font, None);
-            let composing = sh.shape(&g, &font, Some(&(0..4)));
+            let plain = sh.shape(&g, None);
+            let composing = sh.shape(&g, Some(&(0..4)));
             assert!(
                 !Rc::ptr_eq(&plain, &composing),
                 "a preedit was served the shape without its underline"
@@ -4006,11 +4169,10 @@ mod table_layout_tests {
         // The cache tracks the document as it stands, not everything it has ever
         // been — else typing would grow it without bound for a session.
         with_shaper(cx, |sh| {
-            let font = Font::default();
-            sh.shape(&glyphs_of("gone", 0, CoreStyle::default()), &font, None);
+            sh.shape(&glyphs_of("gone", 0, CoreStyle::default()), None);
             // A new paint: last paint's shapes are the ones up for reuse.
             sh.prev = std::mem::take(&mut sh.fresh);
-            sh.shape(&glyphs_of("kept", 0, CoreStyle::default()), &font, None);
+            sh.shape(&glyphs_of("kept", 0, CoreStyle::default()), None);
             assert_eq!(sh.fresh.len(), 1, "only this paint's shape should survive");
             assert_eq!(sh.prev.len(), 1, "the unused one is still up for eviction");
             // `prev` is what prepaint throws away — the editor only gets `fresh`.
@@ -4044,6 +4206,7 @@ mod table_layout_tests {
                 vec![0],
                 vec![0, 1],
                 1,
+                px(24.0),
             )]);
         });
         editor.update(cx, |e, cx| e.set_doc(b, cx));
@@ -4155,9 +4318,10 @@ mod table_layout_tests {
         // glyphs never could: a rule at the wrong x is a line through a cell's
         // text. Every vertical must sit on a column boundary, and there must be
         // one per boundary — the outer two included, or the table has no box.
-        let (_, geom, _) = lay_out(cx, "chrome", TABLE, 800.0);
+        let (rows, geom, _) = lay_out(cx, "chrome", TABLE, 800.0);
         let style = EditorStyle::default();
-        let (fills, borders) = table_chrome(&geom, px(0.0), px(0.0), px(24.0), &style);
+        let tops = row_tops(&rows);
+        let (fills, borders) = table_chrome(&geom, px(0.0), px(0.0), &tops, &style);
 
         let verticals: Vec<f32> = borders
             .iter()
@@ -4216,6 +4380,86 @@ mod table_layout_tests {
         for word in ["rather", "long", "note", "not", "fit"] {
             assert!(text.contains(word), "{word:?} was lost in the wrap: {text:?}");
         }
+    }
+
+    // ── typographic roles ────────────────────────────────────────────────────
+
+    #[gpui::test]
+    fn a_heading_row_is_taller_than_a_body_row(cx: &mut TestAppContext) {
+        // The whole reason rows are laid out at their own heights: a heading's
+        // larger font needs a taller box, and stacking it on a uniform grid
+        // would overlap the line below. A body row is exactly the line height;
+        // an h1 is bigger, an h6 (its scale is < 1) no smaller than the body.
+        with_shaper(cx, |sh| {
+            let body = glyphs_of("Title", 0, CoreStyle::default());
+            let h1 = glyphs_of("Title", 0, CoreStyle::default().role(Role::Heading(1)));
+            let h6 = glyphs_of("Title", 0, CoreStyle::default().role(Role::Heading(6)));
+            assert_eq!(sh.row_height(&body), px(24.0), "a body row is the line height");
+            assert!(
+                sh.row_height(&h1) > sh.row_height(&body),
+                "an h1 row must be taller than a body row: {:?} vs {:?}",
+                sh.row_height(&h1),
+                sh.row_height(&body),
+            );
+            assert!(
+                sh.row_height(&h6) >= sh.row_height(&body),
+                "an h6 row is never shorter than the body",
+            );
+        });
+    }
+
+    #[test]
+    fn code_uses_the_mono_family_and_a_heading_uses_the_default_color() {
+        use leaf_core::style::Color;
+        let fonts = Fonts { body: gpui::font("Helvetica"), mono: gpui::font("Menlo") };
+
+        // Code is shaped in the mono family — the GUI's answer to `Role::Code`,
+        // where a terminal, already monospace, needs nothing.
+        let code = build_runs(
+            &glyphs_of("x", 0, CoreStyle::default().fg(Color::Green).role(Role::Code)),
+            &fonts,
+            None,
+        );
+        assert_eq!(code[0].font.family, "Menlo", "code should shape in the mono family");
+
+        // A heading keeps the body family but sheds the neutral hue the terminal
+        // uses to tell levels apart: size and weight do the distinguishing, so it
+        // renders in the default text color, not cyan/green/…
+        let heading = build_runs(
+            &glyphs_of("x", 0, CoreStyle::default().fg(Color::Cyan).bold().role(Role::Heading(1))),
+            &fonts,
+            None,
+        );
+        assert_eq!(heading[0].font.family, "Helvetica", "a heading stays in the body family");
+        assert_eq!(heading[0].font.weight, gpui::FontWeight::BOLD, "a heading is still bold");
+        assert_eq!(
+            heading[0].color,
+            crate::style::to_hsla(Color::Default),
+            "a heading renders in the default text color, not its level's hue",
+        );
+    }
+
+    #[test]
+    fn row_tops_sum_heights_and_invert() {
+        // `row_tops` stacks rows by their own heights, and `row_at_y` is its
+        // inverse — the pair the caret, selection, and mouse ride now that a row
+        // is no longer one fixed height.
+        let rows = vec![
+            RowLayout::prose(Default::default(), vec![], vec![0], 0, px(40.0)),
+            RowLayout::prose(Default::default(), vec![], vec![0], 0, px(24.0)),
+            RowLayout::prose(Default::default(), vec![], vec![0], 0, px(24.0)),
+        ];
+        let tops = row_tops(&rows);
+        assert_eq!(tops, vec![px(0.0), px(40.0), px(64.0), px(88.0)]);
+        // A y inside each band resolves to that band's row; the tall first row
+        // owns everything up to 40, which a uniform grid would have split.
+        assert_eq!(row_at_y(&tops, px(0.0)), 0);
+        assert_eq!(row_at_y(&tops, px(39.0)), 0);
+        assert_eq!(row_at_y(&tops, px(40.0)), 1);
+        assert_eq!(row_at_y(&tops, px(63.0)), 1);
+        assert_eq!(row_at_y(&tops, px(64.0)), 2);
+        // Past the bottom clamps to the last real row, not the boundary entry.
+        assert_eq!(row_at_y(&tops, px(999.0)), 2);
     }
 }
 

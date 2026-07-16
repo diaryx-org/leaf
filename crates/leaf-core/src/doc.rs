@@ -759,10 +759,17 @@ impl Doc {
             self.insert("\n");
             return;
         }
-        // Lists: detect from the source marker on the caret's line rather than the
-        // ancestors — twig doesn't report an *empty* `- ` line as a `list_item`,
-        // and we still want Enter there to exit the list.
-        if let Some((line_start, marker)) = self.list_marker_on_line(self.caret) {
+        // Lists: an empty item exits the list, a non-empty one opens the next.
+        // Gate on the AST, not the marker bytes alone — a `- ` line reads as a
+        // list marker byte-for-byte whether or not it is one, and `text\n- \n`
+        // is a *setext heading*, not a list. twig does report an empty item as a
+        // childless `list_item`; the marker text is still read from source to
+        // spell the next item's bullet. Ask the AST at the marker, not the
+        // caret: on a bare `- ` line the caret sits on the trailing newline,
+        // past the item's span, where the enclosing `list_item` is out of reach.
+        if let Some((line_start, marker)) = self.list_marker_on_line(self.caret)
+            && self.is_inside_list(line_start)
+        {
             self.list_newline(line_start, marker);
             return;
         }
@@ -792,6 +799,18 @@ impl Doc {
         } else {
             self.insert(&format!("\n{}", next_list_marker(&marker)));
         }
+    }
+
+    /// Whether `off` falls inside a list item, per the AST — the honest test
+    /// for "is this a list line," which the `- ` marker bytes alone can't answer
+    /// (they read identically in a setext underline). Pass the marker offset,
+    /// not the caret: on a bare `- ` line the caret rests on the trailing
+    /// newline, one past the item's span, where its `list_item` is out of reach.
+    fn is_inside_list(&mut self, off: usize) -> bool {
+        self.editor
+            .ancestors_at(off)
+            .map(|c| c.into_iter().any(|m| m.kind == "list_item" || m.kind == "task_list_item"))
+            .unwrap_or(false)
     }
 
     /// Parse a list marker at the start of `off`'s line, e.g. `"- "`, `"  * "`,
@@ -3053,6 +3072,27 @@ mod tests {
         d.newline();
         d.insert("p");
         assert_eq!(d.source, "- a\n\np\n");
+    }
+
+    #[test]
+    fn wysiwyg_enter_does_not_mistake_a_setext_underline_for_a_list() {
+        // `text\n- \n` is a setext heading — the `- ` is its underline, not a
+        // list item, though it reads as a `- ` marker byte-for-byte. Enter must
+        // not take the list-exit path (which would splice the `- ` away as if
+        // leaving an empty item); the AST guard sends it to a normal break and
+        // leaves the underline intact.
+        let mut d = wysiwyg_doc("wys_setext", "text\n- \n");
+        assert!(
+            d.nodes().iter().any(|n| n.kind == "heading"),
+            "precondition: twig parses this as a heading, not a list",
+        );
+        d.caret = 7; // on the `- ` underline line
+        d.newline();
+        assert!(
+            d.source.contains("- "),
+            "the setext underline survives, not spliced away as a list item: {:?}",
+            d.source,
+        );
     }
 
     #[test]

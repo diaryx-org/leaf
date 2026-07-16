@@ -25,7 +25,7 @@ use twig::{Alignment, FlatNode};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::style::{Color, Style};
+use crate::style::{Color, Role, Style};
 
 /// One rendered character plus the source byte offset it originates from.
 /// Synthetic glyphs (a list bullet, a quote gutter) point at their block's
@@ -473,7 +473,7 @@ impl Builder<'_> {
             "list_item" | "task_list_item" => self.blocks(id, pf, pc),
             "table" => self.table(id, pf, pc),
             "code_block" => {
-                let style = Style::default().fg(Color::Green);
+                let style = Style::default().fg(Color::Green).role(Role::Code);
                 let text = node.text.clone().unwrap_or_default();
                 let lines: Vec<&str> = text.trim_end_matches('\n').split('\n').collect();
                 // Each line at its own source offset, so the caret can walk the
@@ -761,7 +761,7 @@ impl Builder<'_> {
                 // backticks the fence used, which `span.start + 1` only guessed
                 // right for a single one. Fall back to that guess if it's absent.
                 let at = node.content_span.as_ref().map_or(node.span.start + 1, |c| c.start);
-                push_text(out, node.text.as_deref().unwrap_or(""), at, base.fg(Color::Green));
+                push_text(out, node.text.as_deref().unwrap_or(""), at, base.fg(Color::Green).role(Role::Code));
             }
             "link" | "url" | "email" => {
                 let style = base.fg(Color::Cyan).underline();
@@ -1308,7 +1308,10 @@ fn prefix_width(prefix: &[Glyph]) -> usize {
 }
 
 fn heading_style(level: u32) -> Style {
-    let base = Style::default().bold();
+    // The `role` is what a GUI reads to size the heading; the colors are the
+    // terminal's only lever and are left as they were. `level as u8` is safe —
+    // Markdown/Djot cap headings at 6.
+    let base = Style::default().bold().role(Role::Heading(level.min(255) as u8));
     match level {
         1 => base.fg(Color::Cyan).underline(),
         2 => base.fg(Color::Green),

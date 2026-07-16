@@ -29,7 +29,28 @@ pub enum Color {
     DarkGray,
 }
 
-/// A glyph's style: a foreground/background [`Color`] plus emphasis flags.
+/// A glyph's *typographic role* — what kind of text it is, as opposed to what
+/// color it wears. Orthogonal to [`Color`] on purpose: a heading is a heading
+/// because of its role, not its hue, so a frontend can render it larger without
+/// also having to tint it. A terminal, which can only vary color, ignores this
+/// entirely (the [`Color`] roles already carry the whole story there); a GUI
+/// reads it to pick a font size and family.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Role {
+    /// Ordinary prose — the surface's default font at its default size.
+    #[default]
+    Body,
+    /// A heading of the given level (1 = top). A GUI scales the font by level;
+    /// the terminal leaves it be.
+    Heading(u8),
+    /// Code — inline `` `verbatim` `` or a fenced block. A GUI renders it in a
+    /// monospace family so columns line up; the terminal, already monospace,
+    /// only needs the color the [`Color`] role carries.
+    Code,
+}
+
+/// A glyph's style: a foreground/background [`Color`], emphasis flags, and a
+/// typographic [`Role`].
 /// Builder methods (`.fg`, `.bold`, …) mirror the shape of ratatui's `Style`
 /// so the WYSIWYG builder reads the same as it did before the split.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -40,6 +61,10 @@ pub struct Style {
     pub italic: bool,
     pub underline: bool,
     pub strikethrough: bool,
+    /// The typographic role — [`Role::Body`] for ordinary text. A frontend free
+    /// to vary metrics (a GUI) maps this to a font size and family; one that
+    /// can't (the terminal) ignores it.
+    pub role: Role,
 }
 
 impl Style {
@@ -70,6 +95,11 @@ impl Style {
 
     pub const fn strikethrough(mut self) -> Self {
         self.strikethrough = true;
+        self
+    }
+
+    pub const fn role(mut self, r: Role) -> Self {
+        self.role = r;
         self
     }
 }
