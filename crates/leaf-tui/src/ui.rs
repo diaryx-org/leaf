@@ -11,13 +11,13 @@ use ratatui::{
     layout::{Constraint, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Clear, Paragraph},
+    widgets::{Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 
-use leaf_core::{Doc, View};
+use leaf_core::{Doc, InlineKind, View};
 
 use crate::style::wysiwyg_lines;
-use crate::{App, ContextMenu, MENU_ITEMS, TextPrompt};
+use crate::{App, ConflictPrompt, ContextMenu, DirtyAction, DirtyPrompt, MENU_ITEMS, TextPrompt};
 
 pub fn render(f: &mut Frame, doc: &mut Doc, breadcrumb: &str, app: &mut App) {
     let chunks = Layout::vertical([
@@ -29,7 +29,7 @@ pub fn render(f: &mut Frame, doc: &mut Doc, breadcrumb: &str, app: &mut App) {
 
     render_header(f, chunks[0], doc, breadcrumb);
     render_body(f, chunks[1], doc, &mut app.scroll_x);
-    render_footer(f, chunks[2], doc, app.confirm_quit);
+    render_footer(f, chunks[2], doc, app.dirty_prompt.as_ref(), app.conflict.as_ref());
 
     if let Some(menu) = &mut app.context_menu {
         render_context_menu(f, f.area(), menu);
@@ -66,43 +66,63 @@ fn render_header(f: &mut Frame, area: Rect, doc: &Doc, breadcrumb: &str) {
 fn render_body(f: &mut Frame, area: Rect, doc: &mut Doc, scroll_x: &mut usize) {
     let sel = doc.selection();
 
+    // Reserve the rightmost column for the scrollbar so it doesn't paint over
+    // a line's last visible character; everything below reads `content_area`
+    // instead of `area` for exactly that reason (the WYSIWYG soft-wrap width,
+    // the mouse hit-test geometry, the horizontal source follow).
+    let [content_area, scrollbar_area] =
+        Layout::horizontal([Constraint::Min(1), Constraint::Length(1)]).areas(area);
+
     // Build the view's lines. The WYSIWYG map must be built before we read the
     // caret position (which rides it).
     let lines = match doc.view {
         View::Source => build_lines(&doc.source, sel),
         View::Wysiwyg => {
-            doc.build_visual(area.width as usize);
+            doc.build_visual(content_area.width as usize);
             wysiwyg_lines(&doc.vmap, sel)
         }
     };
     let (caret_row, caret_col) = doc.caret_pos();
-    let height = area.height as usize;
-    doc.follow_caret(caret_row, height, lines.len());
+    let height = content_area.height as usize;
+    let line_count = lines.len();
+    doc.follow_caret(caret_row, height, line_count);
 
     // Stash geometry for mouse hit-testing.
-    doc.body_origin = (area.x, area.y);
-    doc.body_height = area.height;
+    doc.body_origin = (content_area.x, content_area.y);
+    doc.body_height = content_area.height;
 
-    // The WYSIWYG view already soft-wraps at `area.width` (`build_visual`
+    // The WYSIWYG view already soft-wraps at `content_area.width` (`build_visual`
     // above), so every column it produces is on screen. Only the source view
     // splits on '\n' alone and can run a line past the right edge, so it's the
     // only one that needs a horizontal follow — the vertical one `doc.scroll`
     // gets from `follow_caret`, but kept in the frontend since it doesn't
     // affect the row/col ↔ offset mapping leaf-core owns.
-    let width = area.width as usize;
+    let width = content_area.width as usize;
     match doc.view {
         View::Source => follow_caret_x(scroll_x, caret_col, width),
         View::Wysiwyg => *scroll_x = 0,
     }
 
     let para = Paragraph::new(lines).scroll((doc.scroll as u16, *scroll_x as u16));
-    f.render_widget(para, area);
+    f.render_widget(para, content_area);
+
+    // A thumb-only affordance (no `<`/`>` end glyphs — there's no click target
+    // for them without a wired-up mouse handler, and a bare thumb over a track
+    // is enough to show how much is above/below without implying it's a
+    // button). `ScrollbarState`'s content length is the same line count
+    // `follow_caret` above was just clamped against, so the two can't disagree
+    // about where the bottom of the document is.
+    let mut sb_state = ScrollbarState::new(line_count).position(doc.scroll);
+    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(None)
+        .end_symbol(None);
+    f.render_stateful_widget(scrollbar, scrollbar_area, &mut sb_state);
 
     // Draw the real terminal caret (only when it's within the viewport).
     let col_visible = caret_col >= *scroll_x && (width == 0 || caret_col < *scroll_x + width);
     if col_visible && caret_row >= doc.scroll && (height == 0 || caret_row < doc.scroll + height) {
-        let x = area.x + (caret_col - *scroll_x) as u16;
-        let y = area.y + (caret_row - doc.scroll) as u16;
+        let x = content_area.x + (caret_col - *scroll_x) as u16;
+        let y = content_area.y + (caret_row - doc.scroll) as u16;
         f.set_cursor_position(Position::new(x, y));
     }
 }
@@ -123,44 +143,50 @@ fn follow_caret_x(scroll_x: &mut usize, caret_col: usize, width: usize) {
     }
 }
 
-fn render_footer(f: &mut Frame, area: Rect, doc: &Doc, confirm_quit: bool) {
+fn render_footer(
+    f: &mut Frame,
+    area: Rect,
+    doc: &mut Doc,
+    dirty_prompt: Option<&DirtyPrompt>,
+    conflict: Option<&ConflictPrompt>,
+) {
     let dim = Style::default().fg(Color::DarkGray);
     let key = Style::default().fg(Color::Cyan);
 
-    // The quit-confirmation prompt takes over both footer lines until the
-    // user answers, so an accidental Ctrl+Q on a dirty document can't lose
-    // work to a stray keystroke.
-    if confirm_quit {
-        let warn = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
-        let line1 = Line::from(Span::styled(
-            "Unsaved changes — quit without saving?",
-            warn,
-        ));
-        let line2 = Line::from(vec![
-            Span::styled("y ", key),
-            Span::styled("quit   ", dim),
-            Span::styled("n/esc ", key),
-            Span::styled("cancel", dim),
-        ]);
-        f.render_widget(Paragraph::new(vec![line1, line2]), area);
+    // Both prompts take over the whole footer until answered, so an
+    // accidental Ctrl+Q/⌥s/^S on a document with something at stake can't
+    // lose or clobber work to a stray keystroke.
+    if let Some(prompt) = dirty_prompt {
+        let verb = match prompt.action {
+            DirtyAction::Quit => "quit",
+            DirtyAction::New => "start a new document",
+        };
+        let lines = choice_prompt_lines(
+            &format!("Unsaved changes — {verb}?"),
+            &["Save", "Discard", "Cancel"],
+            prompt.selected,
+            key,
+            dim,
+        );
+        f.render_widget(Paragraph::new(lines), area);
+        return;
+    }
+    if let Some(prompt) = conflict {
+        let lines = choice_prompt_lines(
+            "File changed on disk since it was opened",
+            &["Overwrite", "Reload", "Cancel"],
+            prompt.selected,
+            key,
+            dim,
+        );
+        f.render_widget(Paragraph::new(lines), area);
         return;
     }
 
     let line1 = if let Some(msg) = &doc.status {
         Line::from(Span::styled(msg.clone(), Style::default().fg(Color::Yellow)))
     } else {
-        Line::from(vec![
-            Span::styled("⌥b/i/c ", key),
-            Span::styled("bold·italic·code   ", dim),
-            Span::styled("⌥m ", key),
-            Span::styled("mark   ", dim),
-            Span::styled("⌥1-6/0 ", key),
-            Span::styled("heading/body   ", dim),
-            Span::styled("⌥7/8/9 ", key),
-            Span::styled("numbered·bulleted·quote   ", dim),
-            Span::styled("⌥k ", key),
-            Span::styled("link", dim),
-        ])
+        format_state_line(doc, key)
     };
     let line2 = Line::from(vec![
         Span::styled("type ", key),
@@ -173,12 +199,90 @@ fn render_footer(f: &mut Frame, area: Rect, doc: &Doc, confirm_quit: bool) {
         Span::styled("all·copy·cut·paste   ", dim),
         Span::styled("⌥w ", key),
         Span::styled("view   ", dim),
-        Span::styled("^s ", key),
-        Span::styled("save   ", dim),
+        Span::styled("^s/⌥s ", key),
+        Span::styled("save·save as   ", dim),
         Span::styled("^q ", key),
         Span::styled("quit", dim),
     ]);
     f.render_widget(Paragraph::new(vec![line1, line2]), area);
+}
+
+/// Line 1's normal (no-status) content: what's active at the caret, read live
+/// off `Doc::active_inline_marks`/`current_heading_level` every frame — the
+/// same thing a mouse-driven toolbar shows by lighting up a button, as text
+/// since there are no buttons here to light. Only what's actually *on* is
+/// listed (a status line states facts; a row of every possible mark grayed
+/// out beside it is the toolbar this deliberately isn't), so a bare caret in
+/// plain body text prints a dim placeholder rather than leaving the line
+/// looking broken or blank.
+fn format_state_line(doc: &mut Doc, key: Style) -> Line<'static> {
+    let heading = doc.current_heading_level();
+    let marks = doc.active_inline_marks();
+    let mut spans = Vec::new();
+    if let Some(level) = heading {
+        spans.push(Span::styled(format!("H{level}"), key.add_modifier(Modifier::BOLD)));
+    }
+    for kind in marks.iter() {
+        if !spans.is_empty() {
+            spans.push(Span::raw("  "));
+        }
+        spans.push(Span::styled(mark_label(kind), mark_style(kind)));
+    }
+    if spans.is_empty() {
+        return Line::from(Span::styled("plain text", Style::default().fg(Color::DarkGray)));
+    }
+    Line::from(spans)
+}
+
+/// The word a mark reads as in the footer — the toolbar-button name, not the
+/// AST node kind `Doc::toggle`/`active_inline_marks` traffic in.
+fn mark_label(kind: InlineKind) -> &'static str {
+    match kind {
+        InlineKind::Strong => "Bold",
+        InlineKind::Emph => "Italic",
+        InlineKind::Verbatim => "Code",
+        InlineKind::Mark => "Mark",
+        InlineKind::Superscript => "Superscript",
+        InlineKind::Subscript => "Subscript",
+        InlineKind::Insert => "Underline",
+        InlineKind::Delete => "Strikethrough",
+    }
+}
+
+/// Style a mark's footer label the way the WYSIWYG view itself renders that
+/// mark (see leaf-core's `wysiwyg::Builder::inline`), so the footer reads as a
+/// mirror of the caret's actual formatting instead of an unrelated palette.
+fn mark_style(kind: InlineKind) -> Style {
+    let base = Style::default();
+    match kind {
+        InlineKind::Strong => base.add_modifier(Modifier::BOLD),
+        InlineKind::Emph => base.add_modifier(Modifier::ITALIC),
+        InlineKind::Verbatim => base.fg(Color::Green),
+        InlineKind::Mark => base.bg(Color::Yellow).fg(Color::Black),
+        InlineKind::Insert => base.add_modifier(Modifier::UNDERLINED),
+        InlineKind::Delete => base.add_modifier(Modifier::CROSSED_OUT),
+        InlineKind::Superscript | InlineKind::Subscript => base.fg(Color::Cyan),
+    }
+}
+
+/// Shared two-line rendering for `dirty_prompt` and `conflict`: a warning
+/// line naming what's at stake, then `items` laid out with `selected`
+/// reversed — arrow-key highlighted the same way the context menu is, plus a
+/// first-letter mnemonic per item (the caller's key handling and this must
+/// agree on what those letters are; there's only three items either prompt
+/// ever has, so they're spelled out in the label rather than derived).
+fn choice_prompt_lines(message: &str, items: &[&str], selected: usize, key: Style, dim: Style) -> Vec<Line<'static>> {
+    let warn = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+    let mut spans = Vec::new();
+    for (i, label) in items.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled("   ", dim));
+        }
+        let style = if i == selected { key.add_modifier(Modifier::REVERSED) } else { key };
+        let mnemonic = label.chars().next().unwrap_or(' ').to_ascii_lowercase();
+        spans.push(Span::styled(format!(" {label} ({mnemonic}) "), style));
+    }
+    vec![Line::from(Span::styled(message.to_string(), warn)), Line::from(spans)]
 }
 
 /// The right-click menu: Cut / Copy / Paste / Select All, anchored at the
