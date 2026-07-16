@@ -28,17 +28,29 @@ mod prompt;
 mod style;
 
 use std::ops::Range;
+use std::path::PathBuf;
+use std::time::Duration;
 
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, ElementInputHandler,
-    Entity, EntityInputHandler, FocusHandle, Focusable, Font, GlobalElementId, Hsla,
+    Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable, Font, GlobalElementId, Hsla,
     InspectorElementId, IntoElement, KeyBinding, KeyDownEvent, LayoutId, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render, ScrollHandle,
-    SharedString, ShapedLine, Style, TextAlign, UTF16Selection, Window, actions, anchored,
-    deferred, div, fill, point, prelude::*, px, relative, rgb, rgba, size,
+    SharedString, ShapedLine, Style, Task, TextAlign, UTF16Selection, UnderlineStyle, Window,
+    actions, anchored, deferred, div, fill, point, prelude::*, px, relative, rgb, rgba, size,
 };
 use leaf_core::style::Style as CoreStyle;
 use prompt::{PromptAction, TextPrompt};
+
+/// How long the caret rests in each blink phase.
+///
+/// A constant, not a platform query: the pinned gpui surfaces no caret-blink
+/// preference at all — neither an interval nor the accessibility "blink off"
+/// switch (grepping `crates/gpui/src` for `blink` finds nothing outside its own
+/// examples), so there is nothing to respect here even though macOS itself has
+/// `NSTextInsertionPointBlinkPeriod`. 500ms is what gpui's own editor example
+/// and Zed's `BlinkManager` both hard-code, and it matches the AppKit default.
+const BLINK_INTERVAL: Duration = Duration::from_millis(500);
 
 /// A formatting / view / history command that can be run programmatically —
 /// e.g. from a native iOS toolbar — equivalent to the corresponding keybound
@@ -95,9 +107,56 @@ impl Default for EditorStyle {
         }
     }
 }
-use leaf_core::{BlockKind, Doc, Glyph, InlineKind, View};
+use leaf_core::{BlockKind, DiskState, Doc, Glyph, InlineKind, InlineMarks, View};
 
 use crate::style::text_run;
+
+/// Something the widget needs its host to do, because only the host can: the
+/// editor owns the document, but the window and the process are the app's.
+/// A host wires these with `cx.subscribe` (see the `leaf` binary).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditorEvent {
+    /// The close question has been answered, and the answer was "go": the
+    /// document is saved, or its loss was deliberately chosen. A host that
+    /// asked with [`Editor::confirm_close`] and got `false` quits when this
+    /// arrives.
+    CloseConfirmed,
+}
+
+impl EventEmitter<EditorEvent> for Editor {}
+
+/// What to do once a dirty document has been dealt with — the reason a dialog
+/// or a Save As prompt is up at all, carried through however many steps that
+/// takes. "Save and quit" on an untitled document is the long way round: a
+/// dialog, then a prompt for the name, then a write, and only then the quit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Pending {
+    /// A plain ⌘S / ⌘⇧S: the save is the whole errand.
+    Nothing,
+    /// Quit once the bytes are down (or deliberately abandoned).
+    Quit,
+    /// Replace the document with a blank one — ⌘N over unsaved work.
+    NewDoc,
+}
+
+/// A question the editor is putting to the user, and the only thing on screen
+/// that can answer it: while one is up, `render` gates every document key and
+/// mouse listener off exactly as it does for the modal prompt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Dialog {
+    /// Unsaved work is about to be dropped on the floor — by a quit, or by ⌘N.
+    /// Save / Discard / Cancel, which is the whole point: the old ⌘Q armed a
+    /// bit and the *second* press discarded the document, with the header left
+    /// to suggest the user go press ⌘S themselves.
+    Discard { then: Pending },
+    /// The file changed under a document with unsaved edits and a save is what
+    /// asked. Saving overwrites their work, reloading discards ours; leaf-core
+    /// deliberately won't choose (see `Doc::disk_state`), so neither will this.
+    Overwrite { then: Pending },
+    /// The file changed under us, noticed on window activation rather than on
+    /// the way to anything.
+    DiskChanged,
+}
 
 actions!(
     leaf,
@@ -123,6 +182,13 @@ actions!(
         // Blockquote / list containers (⌘⇧9/8/7) and the link prompt (⌘K) —
         // the toolbar's remaining format commands, mirroring the TUI's set.
         ToggleBlockquote, ToggleBulletList, ToggleOrderedList, InsertLink,
+        // Indentation (⇥/⇧⇥) and the line kills (⌘⌫/⌃K).
+        Outdent, DeleteToLineStart, DeleteToLineEnd,
+        // Strikethrough / underline — twig's Delete / Insert inline kinds.
+        ToggleStrikethrough, ToggleUnderline,
+        // Document lifecycle the widget owns: Save As (⌘⇧S) and a new blank
+        // document (⌘N). Plain quit/open stay the host's.
+        SaveAs, NewDocument,
     ]
 );
 
@@ -190,6 +256,18 @@ pub fn register_keybindings(cx: &mut App) {
         KeyBinding::new("cmd-shift-8", ToggleBulletList, ctx),
         KeyBinding::new("cmd-shift-7", ToggleOrderedList, ctx),
         KeyBinding::new("cmd-k", InsertLink, ctx),
+        KeyBinding::new("shift-tab", Outdent, ctx),
+        // The line kills, as `NSStandardKeyBindingResponding` spells them:
+        // ⌘⌫ is `deleteToBeginningOfLine:` and ⌃K is `deleteToEndOfLine:`.
+        // ⌃K doesn't clash with the ⌃0-6 headings above — those are digits.
+        KeyBinding::new("cmd-backspace", DeleteToLineStart, ctx),
+        KeyBinding::new("ctrl-k", DeleteToLineEnd, ctx),
+        // ⌘⇧x/u for strike/underline — ⌥ stays word motion, as above. Neither
+        // collides: ⌘⇧u is a letter, where ⌘⇧↑ (SelectDocStart) is a named key.
+        KeyBinding::new("cmd-shift-x", ToggleStrikethrough, ctx),
+        KeyBinding::new("cmd-shift-u", ToggleUnderline, ctx),
+        KeyBinding::new("cmd-shift-s", SaveAs, ctx),
+        KeyBinding::new("cmd-n", NewDocument, ctx),
     ]);
 }
 
@@ -203,6 +281,10 @@ pub struct Editor {
     /// The open document, or `None` when the widget is empty (the host decides
     /// what to show in that case — the app overlays a file-open button).
     doc: Option<Doc>,
+    /// The IME's composition (preedit) span in *source* bytes, while one is up.
+    /// The text is really in the document — twig has no notion of provisional
+    /// bytes — so this is what tells the renderer to underline it and what a
+    /// following composition keystroke replaces. See `EntityInputHandler`.
     marked_range: Option<Range<usize>>,
     is_selecting: bool,
     /// Set while the right-click context menu is open, to the window position
@@ -229,16 +311,30 @@ pub struct Editor {
     /// the host to the on-screen keyboard height on mobile, so the edited line is
     /// never hidden behind the keyboard. `0` on desktop.
     bottom_inset: Pixels,
-    /// Set once [`Self::confirm_close`] has been asked against a dirty document
-    /// and answered "not yet" — a second ask then confirms. Lets a host's
-    /// quit/close guard live entirely behind that one method instead of each
-    /// host tracking its own arm/disarm state.
-    close_armed: bool,
-    /// The modal text prompt (⌘K's link destination today), or `None` when
-    /// none is open. `Some` both drives `render`'s prompt overlay and gates
-    /// every document key/action/mouse listener off, so the prompt owns the
-    /// keyboard until it closes — see the `prompt` module and `render`.
+    /// The modal question on screen, or `None`. Both the close guard
+    /// ([`Self::confirm_close`], which every host's quit *and* window-close
+    /// path goes through) and the disk-conflict checks raise one, so the two
+    /// share this one piece of state rather than each host tracking its own.
+    dialog: Option<Dialog>,
+    /// The modal text prompt (⌘K's link destination, ⌘⇧S's file name), or
+    /// `None` when none is open. `Some` both drives `render`'s prompt overlay
+    /// and gates every document key/action/mouse listener off, so the prompt
+    /// owns the keyboard until it closes — see the `prompt` module and `render`.
     prompt: Option<TextPrompt>,
+    /// The caret's blink phase: `Some(false)` is the half-second it's hidden
+    /// for. `None` means no blink loop is running (nothing is focused, so no
+    /// caret paints anyway) — distinct from `Some(true)`, so a widget that has
+    /// never rendered still shows a caret rather than waiting on a timer.
+    blink_phase: Option<bool>,
+    /// The live blink timer, *held* rather than detached: assigning a new one
+    /// drops this, which cancels it. That's what keeps a run of typing — every
+    /// keystroke restarts the blink — from leaving a stack of loops behind, all
+    /// toggling the same caret at once.
+    blink_task: Task<()>,
+    /// `(caret, source len)` as of the last blink restart. Comparing against it
+    /// is how `sync_blink` spots the edit or motion that has to pause the blink,
+    /// without a `pause_blink()` call threaded through every action handler.
+    blink_caret: Option<(usize, usize)>,
 }
 
 impl Editor {
@@ -262,8 +358,13 @@ impl Editor {
             goal_caret: usize::MAX,
             style: EditorStyle::default(),
             bottom_inset: px(0.0),
-            close_armed: false,
+            dialog: None,
             prompt: None,
+            blink_phase: None,
+            // No caret is focused yet, so there is nothing to blink; the first
+            // `sync_blink` of a focused frame starts the real loop.
+            blink_task: Task::ready(()),
+            blink_caret: None,
         }
     }
 
@@ -332,8 +433,8 @@ impl Editor {
     /// Run a command programmatically (native toolbar, menu, etc.), equivalent
     /// to invoking the corresponding keybound action.
     pub fn run_command(&mut self, cmd: EditorCommand, window: &mut Window, cx: &mut Context<Self>) {
-        if self.prompt.is_some() {
-            return; // the modal prompt owns the keyboard until it closes
+        if self.prompt.is_some() || self.dialog.is_some() {
+            return; // a modal owns the widget until it's answered
         }
         match cmd {
             EditorCommand::ToggleBold => self.toggle_bold(&ToggleBold, window, cx),
@@ -369,32 +470,72 @@ impl Editor {
 
     /// Ask whether it's safe to close the widget right now — the one method a
     /// host's quit/window-close guard should defer to, so every embedder gets
-    /// the same unsaved-changes protection instead of reimplementing it. A clean
-    /// document always answers `true`. A dirty one answers `false` the first
-    /// time (and arms the confirmation, for [`Self::close_armed`] to surface a
-    /// warning), then `true` on a second ask — mirroring the TUI's ^Q guard.
+    /// the same unsaved-changes protection instead of reimplementing it.
+    ///
+    /// A clean document answers `true`: close away. A dirty one answers `false`
+    /// and puts the real question on screen — Save / Discard / Cancel — and the
+    /// host's job is then to do *nothing* and wait: two of those three answers
+    /// end in an [`EditorEvent::CloseConfirmed`], which is the host's cue to
+    /// go. A host that only ever wants the clean/dirty bit can read
+    /// [`Self::is_dirty`] instead and never subscribe.
     pub fn confirm_close(&mut self, cx: &mut Context<Self>) -> bool {
-        if !self.is_dirty() || self.close_armed {
+        if !self.is_dirty() {
             return true;
         }
-        self.close_armed = true; // warn once; a second ask confirms
+        self.dialog = Some(Dialog::Discard { then: Pending::Quit });
         cx.notify();
         false
     }
 
-    /// Clear a pending close confirmation (e.g. a host's Escape/Cancel handler).
-    pub fn cancel_close(&mut self, cx: &mut Context<Self>) {
-        if self.close_armed {
-            self.close_armed = false;
-            cx.notify();
+    /// Dismiss whatever modal question is up, taking no action on it — a host's
+    /// Escape/Cancel handler. Returns whether there was one, so a host chaining
+    /// this after [`Self::cancel_prompt`] knows if it consumed the keystroke.
+    pub fn dismiss_dialog(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.dialog.take().is_none() {
+            return false;
         }
+        cx.notify();
+        true
     }
 
-    /// Whether [`Self::confirm_close`] has been asked once already and is
-    /// waiting on a second ask to confirm — a host's banner/title UI reads this
-    /// alongside [`Self::is_dirty`] to decide whether to show a warning.
-    pub fn close_armed(&self) -> bool {
-        self.close_armed
+    /// Notice a file that has changed underneath the open document and offer the
+    /// reload — the gap that otherwise ends with the next save silently
+    /// clobbering whatever the other writer did.
+    ///
+    /// **Costs a file read and a hash** ([`Doc::disk_state`]), so this is a
+    /// moment to be picked, never a per-frame question. The `leaf` binary calls
+    /// it on window activation (gpui's `observe_window_activation`), which is
+    /// precisely when the user is coming back from the other program that
+    /// touched the file. The *other* moment that matters — immediately before a
+    /// save — the widget owns itself and doesn't need a host to ask for.
+    pub fn check_disk_state(&mut self, cx: &mut Context<Self>) {
+        if self.dialog.is_some() || self.prompt.is_some() {
+            return; // already asking something; don't stack a second question
+        }
+        let Some(doc) = self.doc.as_ref() else { return };
+        // Only `Changed` is a question. `Missing` isn't: a save recreates the
+        // file, which is what the user meant, and nagging about a file someone
+        // moved would be noise. `Unreadable` leaves leaf unable to tell, and it
+        // won't guess (see `DiskState`).
+        if doc.disk_state() != DiskState::Changed {
+            return;
+        }
+        self.dialog = Some(Dialog::DiskChanged);
+        cx.notify();
+    }
+
+    /// The inline marks in force at the caret — what a host's header or toolbar
+    /// lights up (Bold reads active when the caret sits in bold text).
+    ///
+    /// `&mut self` because leaf-core's answer is an AST query, not a cached
+    /// flag. It *is* a per-frame question, unlike [`Self::check_disk_state`]:
+    /// `InlineMarks` is a `Copy` bitset precisely so a toolbar can ask it every
+    /// frame without allocating (see its doc comment).
+    pub fn active_marks(&mut self) -> InlineMarks {
+        self.doc
+            .as_mut()
+            .map(|d| d.active_inline_marks())
+            .unwrap_or_default()
     }
 
     /// The open document's file name, or empty when none is open.
@@ -414,11 +555,128 @@ impl Editor {
         cx.notify();
     }
 
-    /// Persist the open document to its path (the ⌘S default). A host that owns
-    /// saving can rebind `Save` and call this — or not — as its policy dictates.
+    /// Persist the open document to its path, unconditionally and with no
+    /// questions asked — no Save As for an untitled document, no disk-conflict
+    /// check. A host that owns saving outright can rebind `Save` and call this;
+    /// the widget's own ⌘S goes through `try_save`, which asks both.
     pub fn save_document(&mut self) {
         if let Some(doc) = self.doc.as_mut() {
             doc.save();
+        }
+    }
+
+    // ── save / reload / new, and the questions they have to ask first ────────
+
+    /// ⌘S, and everything between the keystroke and the bytes landing.
+    ///
+    /// Two things can stand between them, and both need a human: a document
+    /// with no name yet can't be written anywhere (leaf-core won't invent a
+    /// path — `Doc::save` just says "untitled — save as…"), and a file that
+    /// someone else has written since we read it would be silently clobbered.
+    /// `then` is what happens after the bytes are down, for the callers that
+    /// are on their way somewhere (the quit dialog's Save).
+    fn try_save(&mut self, then: Pending, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_ref() else { return };
+        if doc.is_untitled() {
+            return self.open_save_as(then, window, cx);
+        }
+        // The one moment a stale answer costs someone their work, and the
+        // reason `disk_state`'s file read is affordable here: it's one read per
+        // ⌘S, not per frame. A clean document has nothing of its own to lose,
+        // so it isn't a conflict — `check_disk_state` offers it the reload.
+        if doc.dirty && doc.disk_state() == DiskState::Changed {
+            self.dialog = Some(Dialog::Overwrite { then });
+            cx.notify();
+            return;
+        }
+        self.commit_save(then, cx);
+    }
+
+    /// Write, and go wherever the save was headed — but only if it landed. A
+    /// failed write leaves `dirty` set and a `save failed: …` status, and
+    /// quitting on that would discard the very work the dialog's Save promised
+    /// to keep.
+    fn commit_save(&mut self, then: Pending, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_mut() else { return };
+        doc.save();
+        let saved = !doc.dirty;
+        self.dialog = None;
+        if saved {
+            self.finish(then, cx);
+        }
+        cx.notify();
+    }
+
+    /// Open the Save As prompt, prefilled with the document's current path so
+    /// that saving a copy elsewhere means editing the name rather than retyping
+    /// it — the same prefill rule ⌘K's link prompt follows. An untitled
+    /// document has nothing to offer, and starts blank.
+    fn open_save_as(&mut self, then: Pending, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_ref() else { return };
+        let initial = if doc.is_untitled() {
+            String::new()
+        } else {
+            doc.path.display().to_string()
+        };
+        // The prompt takes the dialog's place: it's the same question, one step
+        // on, and two modals at once would be answering neither.
+        self.dialog = None;
+        self.open_prompt("Save as", initial, PromptAction::SaveAs { then }, window, cx);
+    }
+
+    /// A confirmed Save As: write to the typed path, and go on to whatever the
+    /// Save As was in the way of. `Doc::save_as` *moves* the document to the new
+    /// path, so every later ⌘S writes there too.
+    fn commit_save_as(&mut self, path: &str, then: Pending, cx: &mut Context<Self>) {
+        let path = path.trim();
+        let Some(doc) = self.doc.as_mut() else { return };
+        if path.is_empty() {
+            // An empty name is not a path. `Doc::save_as` would take it and
+            // fail at the filesystem; say what happened instead.
+            doc.status = Some("save as: no file name".into());
+            cx.notify();
+            return;
+        }
+        doc.save_as(PathBuf::from(path));
+        let saved = !doc.dirty;
+        if saved {
+            self.finish(then, cx);
+        }
+        cx.notify();
+    }
+
+    /// Throw the buffer away for what's on disk. Only ever reached from a
+    /// dialog: `Doc::reload` discards unsaved edits *and* the undo history
+    /// without checking anything, on the understanding that the frontend asked
+    /// first (see its doc comment). This is that asking.
+    fn reload_document(&mut self, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_mut() else { return };
+        doc.reload();
+        self.dialog = None;
+        // The caret moved to wherever clamping put it, by no route the sticky
+        // goal x knows about, and the rows under it are different text now.
+        self.goal_x = None;
+        self.scroll_caret_into_view();
+        cx.notify();
+    }
+
+    /// Do the thing the dialog was in front of, now that the document has been
+    /// saved or deliberately abandoned.
+    fn finish(&mut self, then: Pending, cx: &mut Context<Self>) {
+        match then {
+            Pending::Nothing => {}
+            // The widget can't quit — the process is the host's — so this is
+            // the one place the two are stitched together.
+            Pending::Quit => cx.emit(EditorEvent::CloseConfirmed),
+            Pending::NewDoc => self.open_blank(cx),
+        }
+    }
+
+    /// Replace the document with a fresh untitled one.
+    fn open_blank(&mut self, cx: &mut Context<Self>) {
+        match Doc::blank() {
+            Ok(doc) => self.set_doc(doc, cx),
+            Err(e) => eprintln!("leaf: {e}"),
         }
     }
 
@@ -577,7 +835,25 @@ impl Editor {
     }
     fn indent(&mut self, _: &Indent, _: &mut Window, cx: &mut Context<Self>) {
         let Some(doc) = self.doc.as_mut() else { return };
-        doc.insert("    ");
+        doc.indent();
+        self.scroll_caret_into_view();
+        cx.notify();
+    }
+    fn outdent(&mut self, _: &Outdent, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_mut() else { return };
+        doc.outdent();
+        self.scroll_caret_into_view();
+        cx.notify();
+    }
+    fn delete_to_line_start(&mut self, _: &DeleteToLineStart, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_mut() else { return };
+        doc.delete_to_line_start();
+        self.scroll_caret_into_view();
+        cx.notify();
+    }
+    fn delete_to_line_end(&mut self, _: &DeleteToLineEnd, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_mut() else { return };
+        doc.delete_to_line_end();
         self.scroll_caret_into_view();
         cx.notify();
     }
@@ -591,9 +867,23 @@ impl Editor {
         doc.toggle(InlineKind::Emph);
         cx.notify();
     }
-    fn save(&mut self, _: &Save, _: &mut Window, cx: &mut Context<Self>) {
-        self.save_document();
-        cx.notify();
+    fn save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
+        self.try_save(Pending::Nothing, window, cx);
+    }
+    /// ⌘⇧S: name the file, whether or not it already has a name.
+    fn save_as(&mut self, _: &SaveAs, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_save_as(Pending::Nothing, window, cx);
+    }
+    /// ⌘N: a fresh untitled document. leaf is one document in one window, so
+    /// this *replaces* what's open — which makes it a discard, and it goes
+    /// through the same guard as a quit rather than dropping the work quietly.
+    fn new_document(&mut self, _: &NewDocument, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_dirty() {
+            self.dialog = Some(Dialog::Discard { then: Pending::NewDoc });
+            cx.notify();
+            return;
+        }
+        self.open_blank(cx);
     }
     fn doc_start(&mut self, _: &DocStart, _: &mut Window, cx: &mut Context<Self>) {
         self.jump_doc(false, false, cx);
@@ -725,6 +1015,19 @@ impl Editor {
         doc.toggle(InlineKind::Mark);
         cx.notify();
     }
+    /// ⌘⇧X. twig models strikethrough as a `Delete` inline — text marked as
+    /// struck *out*, in the edit-tracking sense the name comes from.
+    fn toggle_strikethrough(&mut self, _: &ToggleStrikethrough, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_mut() else { return };
+        doc.toggle(InlineKind::Delete);
+        cx.notify();
+    }
+    /// ⌘⇧U — `Insert`, the other half of twig's edit-tracking pair.
+    fn toggle_underline(&mut self, _: &ToggleUnderline, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_mut() else { return };
+        doc.toggle(InlineKind::Insert);
+        cx.notify();
+    }
     fn set_paragraph(&mut self, _: &Paragraph, _: &mut Window, cx: &mut Context<Self>) {
         let Some(doc) = self.doc.as_mut() else { return };
         doc.set_block(BlockKind::Paragraph);
@@ -806,7 +1109,7 @@ impl Editor {
             return;
         };
         let Some(doc) = self.doc.as_mut() else { return };
-        doc.insert(&text);
+        doc.paste(&text);
         self.scroll_caret_into_view();
         cx.notify();
     }
@@ -839,12 +1142,15 @@ impl Editor {
     /// then return focus (and the keyboard) to the document.
     fn confirm_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(prompt) = self.prompt.take() else { return };
-        if let Some(doc) = self.doc.as_mut() {
-            match prompt.action {
-                PromptAction::Link => doc.insert_link(&prompt.value),
-            }
-        }
         self.focus_handle.focus(window, cx);
+        match prompt.action {
+            PromptAction::Link => {
+                if let Some(doc) = self.doc.as_mut() {
+                    doc.insert_link(&prompt.value);
+                }
+            }
+            PromptAction::SaveAs { then } => self.commit_save_as(&prompt.value, then, cx),
+        }
         self.scroll_caret_into_view();
         cx.notify();
     }
@@ -1106,6 +1412,184 @@ impl Editor {
         .with_priority(1)
     }
 
+    // ── caret blink ──────────────────────────────────────────────────────────
+
+    /// Keep the blink in step with the focus and the caret.
+    ///
+    /// Called from `render`, which is the one place every path through the
+    /// widget already converges on: an action that edits or moves the caret
+    /// ends in `cx.notify()`, and gpui renders before it paints. So a run of
+    /// typing restarts the blink — leaving the caret solid, as every editor
+    /// does — without a `pause_blink()` call threaded through all thirty-odd
+    /// handlers, each of which would be a place to forget one.
+    fn sync_blink(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Unfocused, no caret paints at all, and a timer still notifying twice
+        // a second would re-render the widget forever for nothing. Dropping the
+        // task cancels it; the next focused frame starts a fresh one.
+        if !self.focus_handle.is_focused(window) {
+            self.blink_task = Task::ready(());
+            self.blink_phase = None;
+            self.blink_caret = None;
+            return;
+        }
+        // `(caret, len)` catches every motion and every edit — including one
+        // that rewrites text without moving the caret. It deliberately misses a
+        // bare format toggle (⌘B on a selection), which isn't typing and has no
+        // blink to pause.
+        let caret = self.doc.as_ref().map(|d| (d.caret, d.source.len()));
+        if self.blink_phase.is_some() && self.blink_caret == caret {
+            return; // nothing moved — let the running loop keep its phase
+        }
+        self.blink_caret = caret;
+        self.blink_phase = Some(true);
+        self.blink_task = Self::spawn_blink(cx);
+    }
+
+    /// The blink loop itself. Assigning the returned task to `blink_task` drops
+    /// whatever was there, which cancels it — see that field.
+    fn spawn_blink(cx: &mut Context<Self>) -> Task<()> {
+        cx.spawn(async move |editor, cx| {
+            loop {
+                cx.background_executor().timer(BLINK_INTERVAL).await;
+                // `Err` is the entity going away — the widget is gone, so is
+                // the loop.
+                let alive = editor.update(cx, |editor, cx| {
+                    if let Some(on) = editor.blink_phase {
+                        editor.blink_phase = Some(!on);
+                        cx.notify();
+                    }
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+        })
+    }
+
+    // ── modal dialog ─────────────────────────────────────────────────────────
+
+    /// One button of a dialog. Same click plumbing as `context_menu_item` —
+    /// including the `stop_propagation` that keeps the click off the document
+    /// underneath — with a button's look instead of a menu row's.
+    fn dialog_button(
+        label: &'static str,
+        cx: &mut Context<Self>,
+        on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) -> impl IntoElement {
+        div()
+            .id(label)
+            .px_3()
+            .py_1()
+            .rounded_md()
+            .border_1()
+            .border_color(gpui::rgb(0xd0d0d0))
+            .bg(gpui::rgb(0xf6f6f6))
+            .cursor(CursorStyle::PointingHand)
+            .hover(|s| s.bg(gpui::rgb(0xe4e4e4)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |editor, _: &MouseDownEvent, window, cx| {
+                    on_click(editor, window, cx);
+                    cx.stop_propagation();
+                }),
+            )
+            .child(label)
+    }
+
+    /// The dialog: the question, and the buttons that are the only way to
+    /// answer it. `deferred`/`anchored` for the same reasons `render_context_menu`
+    /// uses them (paint above the document, get hit-tested before it), at a
+    /// higher priority so it sits above the menu and the prompt too. Parked near
+    /// the top rather than centered for the reason `render_prompt` gives: there
+    /// are no window bounds here to center against.
+    fn render_dialog(
+        dialog: Dialog,
+        name: String,
+        dirty: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let (question, buttons) = match dialog {
+            Dialog::Discard { then } => {
+                // The same three choices either way; only the verb differs, and
+                // it names what actually happens next.
+                let (save, discard) = match then {
+                    Pending::Quit => ("Save and quit", "Discard and quit"),
+                    _ => ("Save", "Discard"),
+                };
+                (
+                    format!("{name} has unsaved changes."),
+                    vec![
+                        Self::dialog_button(save, cx, move |e, w, cx| e.try_save(then, w, cx))
+                            .into_any_element(),
+                        Self::dialog_button(discard, cx, move |e, _, cx| {
+                            e.dialog = None;
+                            e.finish(then, cx);
+                            cx.notify();
+                        })
+                        .into_any_element(),
+                        Self::dialog_button("Cancel", cx, |e, _, cx| {
+                            e.dismiss_dialog(cx);
+                        })
+                        .into_any_element(),
+                    ],
+                )
+            }
+            Dialog::Overwrite { then } => (
+                format!("{name} has changed on disk since you opened it. Saving overwrites those changes."),
+                vec![
+                    Self::dialog_button("Overwrite", cx, move |e, _, cx| e.commit_save(then, cx))
+                        .into_any_element(),
+                    // Reload drops `then` on purpose: whatever this save was on
+                    // the way to, someone choosing to throw their own edits away
+                    // for the file's has plainly stopped to look at it.
+                    Self::dialog_button("Reload, discarding my edits", cx, |e, _, cx| {
+                        e.reload_document(cx)
+                    })
+                    .into_any_element(),
+                    Self::dialog_button("Cancel", cx, |e, _, cx| {
+                        e.dismiss_dialog(cx);
+                    })
+                    .into_any_element(),
+                ],
+            ),
+            Dialog::DiskChanged => (
+                if dirty {
+                    format!("{name} has changed on disk, and you have unsaved changes of your own. Reloading discards yours.")
+                } else {
+                    format!("{name} has changed on disk.")
+                },
+                vec![
+                    Self::dialog_button("Reload", cx, |e, _, cx| e.reload_document(cx))
+                        .into_any_element(),
+                    Self::dialog_button("Keep mine", cx, |e, _, cx| {
+                        e.dismiss_dialog(cx);
+                    })
+                    .into_any_element(),
+                ],
+            ),
+        };
+        deferred(
+            anchored().position(point(px(24.0), px(24.0))).snap_to_window().child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .max_w(px(440.0))
+                    .px_4()
+                    .py_3()
+                    .bg(gpui::white())
+                    .rounded_md()
+                    .shadow_lg()
+                    .border_1()
+                    .border_color(gpui::rgb(0xd0d0d0))
+                    .text_color(gpui::rgb(0x1e1e1e))
+                    .child(question)
+                    .child(div().flex().gap_2().children(buttons)),
+            ),
+        )
+        .with_priority(2)
+    }
+
     /// Hit-test a pixel position to a *source* byte offset, reusing the cached
     /// per-row layout: pick the row by `y`, the character within it by `x`, then
     /// map that character back to the source byte it came from. Because each
@@ -1133,35 +1617,17 @@ impl Editor {
     }
 
     // ── UTF-8 (leaf-core) ⇄ UTF-16 (gpui input) ─────────────────────────────
+    // Thin wrappers over the free functions below, which are split out (the way
+    // `locate_caret_core` is) to be unit-testable without a live document.
     fn offset_from_utf16(&self, target: usize) -> usize {
-        let Some(doc) = self.doc.as_ref() else {
-            return 0;
-        };
-        let mut utf8 = 0;
-        let mut utf16 = 0;
-        for ch in doc.source.chars() {
-            if utf16 >= target {
-                break;
-            }
-            utf16 += ch.len_utf16();
-            utf8 += ch.len_utf8();
-        }
-        utf8
+        self.doc
+            .as_ref()
+            .map_or(0, |d| utf16_to_utf8(&d.source, target))
     }
     fn offset_to_utf16(&self, target: usize) -> usize {
-        let Some(doc) = self.doc.as_ref() else {
-            return 0;
-        };
-        let mut utf16 = 0;
-        let mut utf8 = 0;
-        for ch in doc.source.chars() {
-            if utf8 >= target {
-                break;
-            }
-            utf8 += ch.len_utf8();
-            utf16 += ch.len_utf16();
-        }
-        utf16
+        self.doc
+            .as_ref()
+            .map_or(0, |d| utf8_to_utf16(&d.source, target))
     }
     fn range_to_utf16(&self, r: &Range<usize>) -> Range<usize> {
         self.offset_to_utf16(r.start)..self.offset_to_utf16(r.end)
@@ -1225,39 +1691,111 @@ impl EntityInputHandler for Editor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let range = range_utf16
-            .as_ref()
-            .map(|r| self.range_from_utf16(r))
-            .or(self.marked_range.clone())
-            .unwrap_or_else(|| self.selection_range());
+        let range = match (range_utf16, self.marked_range.clone()) {
+            // Committing a composition (the IME's `insertText:` after a run of
+            // `setMarkedText:`). macOS reports this replacement range relative
+            // to the marked region, so it isn't an offset into this document at
+            // all — and the region it means is exactly the composition we're
+            // replacing. Taking it as absolute splices the finished word over
+            // whatever happens to live at that offset instead.
+            (Some(_), Some(marked)) | (None, Some(marked)) => marked,
+            // No composition: an absolute range, from something like the
+            // Accessibility Keyboard's word completion.
+            (Some(r), None) => self.range_from_utf16(&r),
+            (None, None) => self.selection_range(),
+        };
         if let Some(doc) = self.doc.as_mut() {
             doc.edit(range.start, range.end, new_text);
         }
+        // The composition is over: these bytes are the text the user meant.
         self.marked_range = None;
         self.scroll_caret_into_view();
         cx.notify();
     }
 
+    /// The IME's composition step: `new_text` is a *provisional* reading (the
+    /// kana of a half-typed Japanese word, the `¨` of a dead-key `ö`) that the
+    /// next keystroke will replace outright, and only the last one is the text
+    /// the user meant. It goes into the document like any other edit — twig has
+    /// no notion of provisional bytes — and `marked_range` is what remembers
+    /// which bytes are still up for revision, so the renderer can underline them
+    /// and the next call knows what to overwrite.
     fn replace_and_mark_text_in_range(
         &mut self,
         range_utf16: Option<Range<usize>>,
         new_text: &str,
-        _new_selected: Option<Range<usize>>,
-        window: &mut Window,
+        new_selected: Option<Range<usize>>,
+        _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Scaffold: commit composition text immediately (no visible preedit).
-        self.replace_text_in_range(range_utf16, new_text, window, cx);
+        if self.doc.is_none() {
+            return;
+        }
+        // gpui hands `range_utf16` straight from NSTextInputClient's
+        // `setMarkedText:selectedRange:replacementRange:` — see
+        // `marked_replace_range` for what its basis is and why.
+        let range = {
+            let selection = self.selection_range();
+            let marked = self.marked_range.clone();
+            let source = &self.doc.as_ref().unwrap().source;
+            marked_replace_range(source, range_utf16, marked, selection)
+        };
+
+        self.doc
+            .as_mut()
+            .unwrap()
+            .edit(range.start, range.end, new_text);
+
+        // An empty composition is the IME withdrawing it (⎋ out of a candidate
+        // window): the text is gone, so there's nothing left to mark.
+        self.marked_range = (!new_text.is_empty()).then(|| range.start..range.start + new_text.len());
+
+        // The IME's caret *within* the composition — which syllable a candidate
+        // window is offering to replace. Relative to the text just inserted, not
+        // to the document. Without this the caret sits at the end of the
+        // composition instead of where the IME put it.
+        if let (Some(sel), Some(marked)) = (new_selected, self.marked_range.clone()) {
+            let base = self.offset_to_utf16(marked.start);
+            let want = self.range_from_utf16(&(base + sel.start..base + sel.end));
+            self.doc.as_mut().unwrap().place_caret(want.start, false);
+        }
+
+        self.scroll_caret_into_view();
+        cx.notify();
     }
 
+    /// Where the IME should park its candidate window: the rect of `range_utf16`
+    /// in *window* coordinates, which is what gpui's macOS shim wants —
+    /// `first_rect_for_character_range` adds the window's frame origin and flips
+    /// y for AppKit itself, so anything screen-space here would be wrong twice.
+    /// `element_bounds` is already absolute, so adding the row's offset to its
+    /// origin is the whole conversion.
+    ///
+    /// Returning `None` (as this used to, unconditionally) parks the candidate
+    /// window at the screen's bottom-left corner.
     fn bounds_for_range(
         &mut self,
-        _range_utf16: Range<usize>,
-        _bounds: Bounds<Pixels>,
+        range_utf16: Range<usize>,
+        element_bounds: Bounds<Pixels>,
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        None
+        if self.last_rows.is_empty() {
+            return None; // nothing painted yet; no honest answer to give
+        }
+        let start = self.offset_from_utf16(range_utf16.start);
+        // Empty ranges are the common case, not an edge one: gpui's
+        // `compute_ime_candidate_bounds` probes with `caret..caret` and compares
+        // the y it gets back to find the line the composition sits on.
+        let (r, gi) = locate_caret(&self.last_rows, start);
+        let row = &self.last_rows[r];
+        let gi = gi.min(row.char_byte.len() - 1);
+        let x = row.shaped.x_for_index(row.char_byte[gi]);
+        let lh = self.last_line_height;
+        Some(Bounds::new(
+            element_bounds.origin + point(x, lh * (r as f32)),
+            size(px(2.0), lh),
+        ))
     }
 
     fn character_index_for_point(
@@ -1300,22 +1838,41 @@ struct Prepaint {
     selections: Vec<PaintQuad>,
 }
 
-/// Merge a WYSIWYG row's per-glyph styles into `TextRun`s (adjacent glyphs of
-/// equal style become one run), then map each through `to_gpui`/`text_run`.
-fn build_runs(glyphs: &[Glyph], base: &Font) -> Vec<gpui::TextRun> {
-    let mut segs: Vec<(usize, CoreStyle)> = Vec::new();
+/// Merge a row's per-glyph styles into `TextRun`s (adjacent glyphs of equal
+/// style become one run), then map each through `to_gpui`/`text_run`.
+///
+/// `marked` is the IME's live composition, which underlines the glyphs whose
+/// *source* byte falls inside it — so it segments runs alongside the style, and
+/// rides the glyphs' `src` exactly like everything else here (a preedit in
+/// WYSIWYG is underlined across the visible text, hidden delimiters and all).
+fn build_runs(glyphs: &[Glyph], base: &Font, marked: Option<&Range<usize>>) -> Vec<gpui::TextRun> {
+    let mut segs: Vec<(usize, CoreStyle, bool)> = Vec::new();
     for g in glyphs {
         let bytes = g.ch.len_utf8();
+        let preedit = marked.is_some_and(|m| m.contains(&g.src));
         if let Some(last) = segs.last_mut()
             && last.1 == g.style
+            && last.2 == preedit
         {
             last.0 += bytes;
             continue;
         }
-        segs.push((bytes, g.style));
+        segs.push((bytes, g.style, preedit));
     }
     segs.into_iter()
-        .map(|(len, st)| text_run(len, st, base))
+        .map(|(len, st, preedit)| {
+            let mut run = text_run(len, st, base);
+            if preedit {
+                // `color: None` inherits the run's own text color, so the
+                // underline follows a preedit composed inside styled text.
+                run.underline = Some(UnderlineStyle {
+                    thickness: px(1.0),
+                    color: None,
+                    wavy: false,
+                });
+            }
+            run
+        })
         .collect()
 }
 
@@ -1332,6 +1889,7 @@ fn wrap_logical(
     glyphs: &[Glyph],
     logical_end_src: usize,
     wrap_px: f32,
+    marked: Option<&Range<usize>>,
     out: &mut Vec<RowLayout>,
 ) {
     if glyphs.is_empty() {
@@ -1347,7 +1905,7 @@ fn wrap_logical(
 
     // Shape the whole line once, purely to measure where the breaks fall.
     let (text, char_byte) = row_text(glyphs);
-    let runs = build_runs(glyphs, font);
+    let runs = build_runs(glyphs, font, marked);
     let full = window
         .text_system()
         .shape_line(text.into(), font_size, &runs, None);
@@ -1390,7 +1948,7 @@ fn wrap_logical(
         let ge = starts.get(k + 1).copied().unwrap_or(n);
         let sub = &glyphs[gs..ge];
         let (stext, scb) = row_text(sub);
-        let sruns = build_runs(sub, font);
+        let sruns = build_runs(sub, font, marked);
         let shaped = window
             .text_system()
             .shape_line(stext.into(), font_size, &sruns, None);
@@ -1408,6 +1966,63 @@ fn wrap_logical(
             char_byte: scb,
             end_src,
         });
+    }
+}
+
+/// The UTF-8 byte offset a UTF-16 offset into `source` names — [`Editor::offset_from_utf16`]'s
+/// logic, split out to be unit-testable without a live document.
+fn utf16_to_utf8(source: &str, target: usize) -> usize {
+    let mut utf8 = 0;
+    let mut utf16 = 0;
+    for ch in source.chars() {
+        if utf16 >= target {
+            break;
+        }
+        utf16 += ch.len_utf16();
+        utf8 += ch.len_utf8();
+    }
+    utf8
+}
+
+/// The inverse of [`utf16_to_utf8`] — see [`Editor::offset_to_utf16`].
+fn utf8_to_utf16(source: &str, target: usize) -> usize {
+    let mut utf16 = 0;
+    let mut utf8 = 0;
+    for ch in source.chars() {
+        if utf8 >= target {
+            break;
+        }
+        utf8 += ch.len_utf8();
+        utf16 += ch.len_utf16();
+    }
+    utf16
+}
+
+/// Which source bytes an IME composition step replaces — the subtle half of
+/// `replace_and_mark_text_in_range`, split out to be testable on its own.
+///
+/// The three inputs disagree about their basis on purpose, because AppKit does:
+/// `range_utf16` is relative to the *marked* range when a composition is
+/// already up (that's `setMarkedText:`'s replacement range) and absolute when
+/// one isn't, while `marked` and `selection` are already source bytes. Read it
+/// as absolute in the relative case and the second keystroke of every
+/// composition lands somewhere else in the document.
+fn marked_replace_range(
+    source: &str,
+    range_utf16: Option<Range<usize>>,
+    marked: Option<Range<usize>>,
+    selection: Range<usize>,
+) -> Range<usize> {
+    match (range_utf16, marked) {
+        (Some(r), Some(marked)) => {
+            let base = utf8_to_utf16(source, marked.start);
+            utf16_to_utf8(source, base + r.start)..utf16_to_utf8(source, base + r.end)
+        }
+        (Some(r), None) => utf16_to_utf8(source, r.start)..utf16_to_utf8(source, r.end),
+        // No replacement range with a composition up means "all of it".
+        (None, Some(marked)) => marked,
+        // The first keystroke of a composition replaces whatever was selected.
+        (None, None) => selection,
     }
 }
 
@@ -1560,16 +2175,18 @@ impl Element for TextElement {
         // a mutable window borrow after the document borrow is dropped. A logical
         // line is a whole paragraph (WYSIWYG) or a source line (Source); the pixel
         // wrap that follows turns each into one or more visual rows.
-        let (logical_lines, sel, caret, caret_color, selection_color): (
+        let (logical_lines, sel, caret, caret_color, selection_color, marked): (
             Vec<(Vec<Glyph>, usize)>,
             _,
             usize,
             Hsla,
             Hsla,
+            Option<Range<usize>>,
         ) = {
             let editor = self.editor.read(cx);
             let caret_color = editor.style.caret;
             let selection_color = editor.style.selection;
+            let marked = editor.marked_range.clone();
             let doc = editor.doc.as_ref().unwrap();
             let sel = doc.selection();
             let caret = doc.caret;
@@ -1598,13 +2215,22 @@ impl Element for TextElement {
                     }
                 }
             }
-            (lines, sel, caret, caret_color, selection_color)
+            (lines, sel, caret, caret_color, selection_color, marked)
         };
 
         // Wrap each logical line at the real pixel width.
         let mut rows: Vec<RowLayout> = Vec::new();
         for (glyphs, end_src) in &logical_lines {
-            wrap_logical(window, &font, font_size, glyphs, *end_src, wrap_px, &mut rows);
+            wrap_logical(
+                window,
+                &font,
+                font_size,
+                glyphs,
+                *end_src,
+                wrap_px,
+                marked.as_ref(),
+                &mut rows,
+            );
         }
         if rows.is_empty() {
             let shaped = window.text_system().shape_line("".into(), font_size, &[], None);
@@ -1702,7 +2328,13 @@ impl Element for TextElement {
                 .ok();
         }
 
-        if focus_handle.is_focused(window)
+        // The blink phase decides whether the caret paints this frame; `render`'s
+        // `sync_blink` keeps it solid through a run of typing. `!= Some(false)`
+        // rather than `== Some(true)`: a frame that beats the first `sync_blink`
+        // (phase `None`) should show a caret, not wait half a second for one.
+        let blink_on = self.editor.read(cx).blink_phase != Some(false);
+        if blink_on
+            && focus_handle.is_focused(window)
             && let Some(cursor) = prepaint.cursor.take()
         {
             window.paint_quad(cursor);
@@ -1724,8 +2356,10 @@ impl Render for Editor {
     /// the caret, selection, and an optional right-click menu. No window chrome:
     /// a host places this inside its own layout (see the `leaf` binary for the app that
     /// wraps it with a header and file-open UI).
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_blink(window, cx);
         let style = self.style.clone();
+        let (name, dirty) = (self.file_name(), self.is_dirty());
         div()
             .flex()
             .flex_col()
@@ -1737,15 +2371,16 @@ impl Render for Editor {
             .track_focus(&self.focus_handle(cx))
             .cursor(CursorStyle::IBeam)
             // Every document key binding, action, and mouse listener lives
-            // behind this one gate: while the modal prompt is open (`self.prompt`
-            // is `Some`), none of them are even registered, so a resolved
+            // behind this one gate: while a modal is up (the prompt, or a
+            // dialog), none of them are even registered, so a resolved
             // keystroke that would otherwise hit one of these finds no
             // listener anywhere in the tree, falls through gpui's action
             // dispatch untouched, and reaches the prompt's own raw
             // `on_key_down` instead (see `prompt_key_down`). Simpler and far
-            // less error-prone than threading a `self.prompt.is_some()` guard
-            // through every handler below.
-            .when(self.prompt.is_none(), |el| {
+            // less error-prone than threading a guard through every handler
+            // below — and a dialog's question can't be answered by typing into
+            // the document behind it.
+            .when(self.prompt.is_none() && self.dialog.is_none(), |el| {
                 el.on_action(cx.listener(Self::left))
                     .on_action(cx.listener(Self::right))
                     .on_action(cx.listener(Self::up))
@@ -1762,10 +2397,17 @@ impl Render for Editor {
                     .on_action(cx.listener(Self::delete))
                     .on_action(cx.listener(Self::newline))
                     .on_action(cx.listener(Self::indent))
+                    .on_action(cx.listener(Self::outdent))
+                    .on_action(cx.listener(Self::delete_to_line_start))
+                    .on_action(cx.listener(Self::delete_to_line_end))
                     .on_action(cx.listener(Self::toggle_bold))
                     .on_action(cx.listener(Self::toggle_italic))
+                    .on_action(cx.listener(Self::toggle_strikethrough))
+                    .on_action(cx.listener(Self::toggle_underline))
                     .on_action(cx.listener(Self::toggle_view))
                     .on_action(cx.listener(Self::save))
+                    .on_action(cx.listener(Self::save_as))
+                    .on_action(cx.listener(Self::new_document))
                     .on_action(cx.listener(Self::undo))
                     .on_action(cx.listener(Self::redo))
                     .on_action(cx.listener(Self::doc_start))
@@ -1811,6 +2453,9 @@ impl Render for Editor {
             .when_some(self.prompt.as_ref(), |el, prompt| {
                 el.child(Self::render_prompt(prompt, &mut *cx))
             })
+            .when_some(self.dialog, |el, dialog| {
+                el.child(Self::render_dialog(dialog, name.clone(), dirty, &mut *cx))
+            })
             .child(
                 div()
                     .id("body")
@@ -1836,7 +2481,10 @@ impl Focusable for Editor {
 
 #[cfg(test)]
 mod tests {
-    use super::locate_caret_core;
+    use super::{
+        Glyph, build_runs, locate_caret_core, marked_replace_range, utf16_to_utf8, utf8_to_utf16,
+    };
+    use leaf_core::style::Style as CoreStyle;
 
     // Two paragraphs, the first wrapped across two visual rows:
     //   row 0: "one two "  srcs 0..7   end 8   (soft-wrap boundary at 8)
@@ -1888,5 +2536,100 @@ mod tests {
     #[test]
     fn caret_at_document_end_lands_on_the_last_row() {
         assert_eq!(locate(18), (3, 3));
+    }
+
+    // ── UTF-8 ⇄ UTF-16 (the gpui input seam) ────────────────────────────────
+
+    #[test]
+    fn utf16_offsets_round_trip_through_multibyte_text() {
+        // "é" is 2 UTF-8 bytes / 1 UTF-16 unit; "€" is 3 / 1.
+        let s = "aé€b";
+        for (utf8, utf16) in [(0, 0), (1, 1), (3, 2), (6, 3), (7, 4)] {
+            assert_eq!(utf8_to_utf16(s, utf8), utf16, "utf8 {utf8} → utf16");
+            assert_eq!(utf16_to_utf8(s, utf16), utf8, "utf16 {utf16} → utf8");
+        }
+    }
+
+    #[test]
+    fn an_astral_char_is_one_utf16_surrogate_pair_not_one_unit() {
+        // 😀 is 4 UTF-8 bytes and *two* UTF-16 units — the case that makes the
+        // two offset spaces disagree by more than a constant factor.
+        let s = "a😀b";
+        assert_eq!(utf8_to_utf16(s, 5), 3);
+        assert_eq!(utf16_to_utf8(s, 3), 5);
+        assert_eq!(utf8_to_utf16(s, 6), 4);
+    }
+
+    // ── IME composition ─────────────────────────────────────────────────────
+
+    #[test]
+    fn a_first_composition_keystroke_replaces_the_selection() {
+        // No marked range and no replacement range: the composition lands on
+        // whatever was selected.
+        assert_eq!(marked_replace_range("abc", None, None, 1..3), 1..3);
+    }
+
+    #[test]
+    fn a_replacement_range_is_absolute_while_no_composition_is_up() {
+        assert_eq!(marked_replace_range("a€bc", Some(1..3), None, 0..0), 1..5);
+    }
+
+    #[test]
+    fn a_replacement_range_is_relative_to_the_composition_once_one_is_up() {
+        // "a€" is 4 bytes / 2 UTF-16 units, so a composition marked at bytes
+        // 4..7 starts at UTF-16 offset 2. AppKit's 1..2 is relative to *that*,
+        // meaning UTF-16 3..4 — bytes 5..6. Read as absolute it would be 1..2,
+        // which isn't even inside the composition.
+        let marked = 4..7; // the three bytes of "xyz" in "a€xyz"
+        assert_eq!(
+            marked_replace_range("a€xyz", Some(1..2), Some(marked), 0..0),
+            5..6
+        );
+    }
+
+    #[test]
+    fn no_replacement_range_with_a_composition_up_replaces_all_of_it() {
+        assert_eq!(
+            marked_replace_range("a€xyz", None, Some(4..7), 0..0),
+            4..7
+        );
+    }
+
+    // ── preedit underline ───────────────────────────────────────────────────
+
+    /// Glyphs for `text`, each mapping to its own source byte from `start` — the
+    /// trivial (source-view) mapping, which is all these runs need.
+    fn glyphs(text: &str, start: usize) -> Vec<Glyph> {
+        text.char_indices()
+            .map(|(i, ch)| Glyph {
+                ch,
+                style: CoreStyle::default(),
+                src: start + i,
+                stop: true,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_preedit_underlines_only_the_composed_glyphs() {
+        let font = gpui::font("Helvetica");
+        // "abcde", composition over the source bytes of "cd".
+        let runs = build_runs(&glyphs("abcde", 0), &font, Some(&(2..4)));
+        // One unstyled run either side of the underlined middle — the marked
+        // range has to split runs even though every glyph shares a style.
+        let lens: Vec<usize> = runs.iter().map(|r| r.len).collect();
+        assert_eq!(lens, vec![2, 2, 1]);
+        assert!(runs[0].underline.is_none());
+        assert!(runs[1].underline.is_some());
+        assert!(runs[2].underline.is_none());
+    }
+
+    #[test]
+    fn no_composition_leaves_one_unbroken_run() {
+        let font = gpui::font("Helvetica");
+        let runs = build_runs(&glyphs("abcde", 0), &font, None);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].len, 5);
+        assert!(runs[0].underline.is_none());
     }
 }
