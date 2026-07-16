@@ -1718,31 +1718,38 @@ impl EntityInputHandler for Editor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let range = match (range_utf16, self.marked_range.clone()) {
+        // `typed` separates ordinary keystrokes from a replacement aimed at a
+        // range someone else chose. Both end up splicing over the same bytes, but
+        // only one of them is a *run* the user expects to undo in one press.
+        let (range, typed) = match (range_utf16, self.marked_range.clone()) {
             // Committing a composition (the IME's `insertText:` after a run of
             // `setMarkedText:`). macOS reports this replacement range relative
             // to the marked region, so it isn't an offset into this document at
             // all — and the region it means is exactly the composition we're
             // replacing. Taking it as absolute splices the finished word over
             // whatever happens to live at that offset instead.
-            (Some(_), Some(marked)) | (None, Some(marked)) => marked,
+            (Some(_), Some(marked)) | (None, Some(marked)) => (marked, false),
             // No composition: an absolute range, from something like the
-            // Accessibility Keyboard's word completion.
-            (Some(r), None) => self.range_from_utf16(&r),
-            (None, None) => self.selection_range(),
+            // Accessibility Keyboard's word completion. A finished word arrives
+            // whole and is its own step, not part of a run.
+            (Some(r), None) => (self.range_from_utf16(&r), false),
+            // Plain typing: gpui names no range, so the target is just the
+            // selection — which is the one `insert` resolves for itself.
+            (None, None) => (self.selection_range(), true),
         };
         // A commit that ends a composition is that composition's last step, not a
         // separate edit: folding it into the run is what makes the finished word
         // undo in one press rather than unspooling back through its own reading.
-        // With no composition up this is ordinary text and stays its own edit.
-        let composing = self.marked_range.is_some();
         if let Some(doc) = self.doc.as_mut() {
-            match composing {
-                true => {
-                    doc.edit_composing(range.start, range.end, new_text);
-                    doc.end_composition();
-                }
-                false => doc.edit(range.start, range.end, new_text),
+            if self.marked_range.is_some() {
+                doc.edit_composing(range.start, range.end, new_text);
+                doc.end_composition();
+            } else if typed {
+                // `insert` is the typing path: it coalesces a run of keystrokes
+                // into one undo step, where `edit` makes every character its own.
+                doc.insert(new_text);
+            } else {
+                doc.edit(range.start, range.end, new_text);
             }
         }
         // The composition is over: these bytes are the text the user meant.
