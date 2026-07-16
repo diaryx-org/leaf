@@ -87,6 +87,12 @@ pub struct EditorStyle {
     pub caret: Hsla,
     /// The selection highlight (typically translucent).
     pub selection: Hsla,
+    /// A table's rules, the fill behind its header, and the tint on every other
+    /// body row. The TUI spells a table with box glyphs; here the borders are
+    /// real geometry, so they need real colors.
+    pub table_border: Hsla,
+    pub table_header: Hsla,
+    pub table_stripe: Hsla,
     /// Body font family.
     pub font_family: SharedString,
     /// Body font size and line height.
@@ -101,13 +107,18 @@ impl Default for EditorStyle {
             text: rgb(0x1e1e1e).into(),
             caret: gpui::blue(),
             selection: rgba(0x3311ff30).into(),
+            table_border: rgb(0xd0d0d0).into(),
+            table_header: rgb(0xf0f0f0).into(),
+            table_stripe: rgb(0xf8f8f8).into(),
             font_family: "Helvetica".into(),
             font_size: px(16.0),
             line_height: px(24.0),
         }
     }
 }
-use leaf_core::{BlockKind, DiskState, Doc, Glyph, InlineKind, InlineMarks, View};
+use leaf_core::{
+    Alignment, BlockKind, DiskState, Doc, Glyph, InlineKind, InlineMarks, TableInfo, View,
+};
 
 use crate::style::text_run;
 
@@ -775,11 +786,10 @@ impl Editor {
         // Reuse the sticky x only if the caret hasn't moved by some other path.
         let x = match self.goal_x {
             Some(x) if self.goal_caret == doc.caret => x,
-            _ => rows[r].shaped.x_for_index(rows[r].char_byte[gi]),
+            _ => rows[r].x_at(gi),
         };
         let tr = ((r as i32 + dir).max(0) as usize).min(rows.len() - 1);
-        let byte = rows[tr].shaped.closest_index_for_x(x);
-        Some((src_at(&rows[tr], byte), x))
+        Some((rows[tr].src_at_index(rows[tr].index_for_x(x)), x))
     }
 
     /// Move the caret to the start (`to_end = false`) or end of its *visual* row.
@@ -1628,13 +1638,7 @@ impl Editor {
         let rel_y = f32::from(pos.y - bounds.top()).max(0.0);
         let r = ((rel_y / lh) as usize).min(self.last_rows.len() - 1);
         let row = &self.last_rows[r];
-        let byte = row.shaped.closest_index_for_x(pos.x - bounds.left());
-        let ci = row
-            .char_byte
-            .iter()
-            .position(|&b| b == byte)
-            .unwrap_or(row.char_srcs.len());
-        row.char_srcs.get(ci).copied().unwrap_or(row.end_src)
+        row.src_at_index(row.index_for_x(pos.x - bounds.left()))
     }
 
     // ── UTF-8 (leaf-core) ⇄ UTF-16 (gpui input) ─────────────────────────────
@@ -1838,9 +1842,7 @@ impl EntityInputHandler for Editor {
         // `compute_ime_candidate_bounds` probes with `caret..caret` and compares
         // the y it gets back to find the line the composition sits on.
         let (r, gi) = locate_caret(&self.last_rows, start);
-        let row = &self.last_rows[r];
-        let gi = gi.min(row.char_byte.len() - 1);
-        let x = row.shaped.x_for_index(row.char_byte[gi]);
+        let x = self.last_rows[r].x_at(gi);
         let lh = self.last_line_height;
         Some(Bounds::new(
             element_bounds.origin + point(x, lh * (r as f32)),
@@ -1858,20 +1860,141 @@ impl EntityInputHandler for Editor {
     }
 }
 
-/// One painted row: a shaped line plus the mapping the caret/selection/mouse
-/// code rides on. `char_srcs[i]` is the source byte offset the i-th character
-/// came from; `char_byte[i]` is that character's byte offset *within the row's
-/// own text* (so `char_byte` has `chars + 1` entries — the last is the row end).
-/// `end_src` is the source offset the caret lands on past the last character.
+/// One shaped run of text within a row, placed at a known x from the row's left.
 ///
-/// For a source line these are trivial (each char maps to its own source byte);
-/// for a WYSIWYG row they carry `Glyph::src`, so a hidden delimiter simply has
-/// no character here and the caret steps over it.
-struct RowLayout {
+/// Prose has exactly one of these per row, at x = 0. A table's grid row has one
+/// per column, each placed at its column's own x — which is the whole reason a
+/// row is a list of these rather than a single shaped line: a proportional font
+/// can't be padded to a column with spaces.
+struct RowSegment {
+    x: Pixels,
     shaped: ShapedLine,
-    char_srcs: Vec<usize>,
+    /// The byte offset within *this segment's* text of each of its characters,
+    /// plus a final entry for the text's end (`chars + 1` entries).
     char_byte: Vec<usize>,
+    /// Where this segment's first character sits in the row's flat `char_srcs`.
+    first: usize,
+    /// The span of x this segment answers for a click in — its whole column in a
+    /// table, which is wider than its text: a cell's padding and the border
+    /// beside it belong to that cell, so clicking them lands the caret in it
+    /// rather than in whichever cell's text happens to be nearer. (A short cell
+    /// next to a wide column is exactly the case that gets that wrong.) For prose
+    /// it's just the text, which is moot — there's only ever one segment.
+    field: (Pixels, Pixels),
+}
+
+/// One painted row: its shaped segments plus the mapping the caret/selection/
+/// mouse code rides on. `char_srcs[i]` is the source byte offset the i-th
+/// character came from, flat across the row's segments in document order (a
+/// table row's cells run left to right, and so do their offsets). `end_src` is
+/// the source offset the caret lands on past the last character.
+///
+/// For a source line this is trivial (one segment; each char maps to its own
+/// source byte); for a WYSIWYG row the glyphs carry `Glyph::src`, so a hidden
+/// delimiter simply has no character here and the caret steps over it.
+struct RowLayout {
+    segments: Vec<RowSegment>,
+    char_srcs: Vec<usize>,
     end_src: usize,
+}
+
+impl RowLayout {
+    /// A row of ordinary prose: one segment, flush left.
+    fn prose(shaped: ShapedLine, char_srcs: Vec<usize>, char_byte: Vec<usize>, end_src: usize) -> Self {
+        let field = (px(0.0), shaped.width);
+        RowLayout {
+            segments: vec![RowSegment { x: px(0.0), shaped, char_byte, first: 0, field }],
+            char_srcs,
+            end_src,
+        }
+    }
+
+    /// The segment holding flat character index `gi` — the last one that opens at
+    /// or before it, so `gi == char_srcs.len()` ("past the last character") lands
+    /// on the final segment's end.
+    fn segment_of(&self, gi: usize) -> Option<usize> {
+        (!self.segments.is_empty()).then(|| {
+            self.segments
+                .iter()
+                .rposition(|s| s.first <= gi)
+                .unwrap_or(0)
+        })
+    }
+
+    /// The x the caret draws at for flat character index `gi`.
+    fn x_at(&self, gi: usize) -> Pixels {
+        match self.segment_of(gi) {
+            Some(si) => self.x_in(si, gi),
+            None => px(0.0),
+        }
+    }
+
+    /// The x of flat character index `gi` *within segment `si`* — including the
+    /// spot just past that segment's last character, which `x_at` can't name: an
+    /// index at a segment boundary belongs to the next segment, so asking `x_at`
+    /// where a cell's text *ends* answers with where the next cell's text
+    /// begins, a whole border and two gutters away. Selection highlighting needs
+    /// the end of the run it actually measured.
+    fn x_in(&self, si: usize, gi: usize) -> Pixels {
+        let seg = &self.segments[si];
+        let local = gi.saturating_sub(seg.first).min(seg.char_byte.len() - 1);
+        seg.x + seg.shaped.x_for_index(seg.char_byte[local])
+    }
+
+    /// The flat character index nearest x — where a click lands. x is relative to
+    /// the row's left edge.
+    fn index_for_x(&self, x: Pixels) -> usize {
+        let Some(si) = self.segment_nearest_x(x) else {
+            return 0;
+        };
+        let seg = &self.segments[si];
+        let byte = seg.shaped.closest_index_for_x(x - seg.x);
+        let local = seg
+            .char_byte
+            .iter()
+            .position(|&b| b == byte)
+            .unwrap_or(seg.char_byte.len() - 1);
+        let gi = seg.first + local;
+        // "Past the last character" belongs to the *last* segment only. Anywhere
+        // else that spot is already the next segment's first character — a
+        // different cell — so a click in a cell's right gutter would jump the
+        // caret into its neighbour. A table cell needs no such spot anyway: its
+        // trailing gutter space carries the cell's end stop.
+        match self.segments.get(si + 1) {
+            Some(next) => gi.min(next.first - 1),
+            None => gi,
+        }
+    }
+
+    /// The segment whose field `x` falls in, or the nearest one — measured to the
+    /// field, not the text, so a click in a cell's padding stays in that cell.
+    /// Falling back to the nearest keeps a click past the end of a row (or in a
+    /// ragged row's missing cell) landing somewhere rather than nowhere.
+    fn segment_nearest_x(&self, x: Pixels) -> Option<usize> {
+        self.segments
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                let d = |s: &RowSegment| {
+                    let (l, r) = s.field;
+                    if x < l {
+                        l - x
+                    } else if x > r {
+                        x - r
+                    } else {
+                        px(0.0)
+                    }
+                };
+                d(a).partial_cmp(&d(b)).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(i, _)| i)
+    }
+
+    /// The source offset at flat character index `gi`, or the row's end past the
+    /// last character.
+    fn src_at_index(&self, gi: usize) -> usize {
+        self.char_srcs.get(gi).copied().unwrap_or(self.end_src)
+    }
 }
 
 /// The document body element: builds a [`RowLayout`] per visual row of the
@@ -1886,6 +2009,69 @@ struct Prepaint {
     line_height: Pixels,
     cursor: Option<PaintQuad>,
     selections: Vec<PaintQuad>,
+    /// A table's header/stripe fills, painted under the selection, and its rules,
+    /// painted over it.
+    table_fills: Vec<PaintQuad>,
+    table_borders: Vec<PaintQuad>,
+}
+
+/// One unit of the document as prepaint gathers it: a line of text to be pixel-
+/// wrapped, or a table to be laid out as a grid.
+enum Logical {
+    Line(Vec<Glyph>, usize),
+    Table(TableInfo),
+}
+
+/// Gather the document into the units prepaint lays out: one line per source line
+/// (Source) or per map row (WYSIWYG), and a table wherever the map's *picture* of
+/// one begins — whose rows are skipped, because the GUI draws its own.
+///
+/// Skipping is the whole job. `leaf-core` spells a table with box glyphs on
+/// monospace columns, which is right in a terminal and shears in a proportional
+/// font; letting those rows through would paint the old picture underneath the
+/// new grid.
+fn gather_logical(doc: &Doc) -> Vec<Logical> {
+    let mut lines = Vec::new();
+    match doc.view {
+        View::Source => {
+            let mut start = 0usize;
+            for line in doc.source.split('\n') {
+                let glyphs: Vec<Glyph> = line
+                    .char_indices()
+                    .map(|(i, ch)| Glyph {
+                        ch,
+                        style: CoreStyle::default(),
+                        src: start + i,
+                        // Raw source: every char is real text.
+                        stop: true,
+                    })
+                    .collect();
+                lines.push(Logical::Line(glyphs, start + line.len()));
+                start += line.len() + 1;
+            }
+        }
+        View::Wysiwyg => {
+            // `tables` is already in row order, so one cursor walks it alongside
+            // the rows rather than re-scanning every table for every row.
+            let mut next = doc.vmap.tables.iter().peekable();
+            let mut r = 0usize;
+            while r < doc.vmap.rows.len() {
+                match next.peek().filter(|t| t.rows_span.start == r) {
+                    Some(t) => {
+                        lines.push(Logical::Table((*t).clone()));
+                        r = t.rows_span.end;
+                        next.next();
+                    }
+                    None => {
+                        let vrow = &doc.vmap.rows[r];
+                        lines.push(Logical::Line(vrow.glyphs.clone(), vrow.end_src));
+                        r += 1;
+                    }
+                }
+            }
+        }
+    }
+    lines
 }
 
 /// Merge a row's per-glyph styles into `TextRun`s (adjacent glyphs of equal
@@ -1944,12 +2130,7 @@ fn wrap_logical(
 ) {
     if glyphs.is_empty() {
         let shaped = window.text_system().shape_line("".into(), font_size, &[], None);
-        out.push(RowLayout {
-            shaped,
-            char_srcs: Vec::new(),
-            char_byte: vec![0],
-            end_src: logical_end_src,
-        });
+        out.push(RowLayout::prose(shaped, Vec::new(), vec![0], logical_end_src));
         return;
     }
 
@@ -1984,12 +2165,12 @@ fn wrap_logical(
 
     // The common case — the line fits — reuses the shaped line we already have.
     if starts.len() == 1 {
-        out.push(RowLayout {
-            shaped: full,
-            char_srcs: glyphs.iter().map(|g| g.src).collect(),
+        out.push(RowLayout::prose(
+            full,
+            glyphs.iter().map(|g| g.src).collect(),
             char_byte,
-            end_src: logical_end_src,
-        });
+            logical_end_src,
+        ));
         return;
     }
 
@@ -2010,13 +2191,396 @@ fn wrap_logical(
             let last = &glyphs[ge - 1];
             last.src + last.ch.len_utf8()
         };
-        out.push(RowLayout {
+        out.push(RowLayout::prose(
             shaped,
-            char_srcs: sub.iter().map(|g| g.src).collect(),
-            char_byte: scb,
+            sub.iter().map(|g| g.src).collect(),
+            scb,
             end_src,
-        });
+        ));
     }
+}
+
+// ── tables ───────────────────────────────────────────────────────────────────
+//
+// `leaf-core` draws a table with box glyphs, which is exactly right in a
+// terminal and unfixable here: in a proportional font the `│`s of two rows land
+// at different x and the grid shears. So the GUI reads the table's *structure*
+// (`VisualMap::tables`), skips the rows that picture occupies, and lays the grid
+// out in pixels — measuring each cell, sizing each column to its widest, and
+// painting the borders as quads.
+//
+// The cells stay ordinary text: one `RowSegment` each, so the caret, selection,
+// and IME reach into them by the same path as any paragraph.
+
+/// The border thickness, and the breathing room either side of a cell's text.
+const BORDER: f32 = 1.0;
+const CELL_PAD_X: f32 = 8.0;
+
+/// The narrowest a column may be squeezed — below this a column stops carrying
+/// text and shreds it a letter per line, which is worse than running wide. The
+/// pixel echo of `leaf-core`'s `MIN_COL_WIDTH`.
+const MIN_COL_PX: f32 = 24.0;
+
+/// Where a table's chrome goes: everything needed to paint its borders and fills
+/// once the rows around it have been placed and their y is known.
+struct TableGeom {
+    /// The rows of the flat row list this table's grid lines occupy.
+    rows: Range<usize>,
+    /// The x of every column boundary, `cols + 1` of them: `bounds[0]` is the
+    /// table's left edge and `bounds[cols]` its right, each the *centre* of the
+    /// border drawn there.
+    bounds: Vec<f32>,
+    /// Per logical table row: the grid lines it spans (a wrapped cell makes a row
+    /// taller than one), and whether it's a header.
+    bands: Vec<(Range<usize>, bool)>,
+}
+
+/// Shrink `widths` until the grid fits `avail`, taking from the widest column
+/// each time so the loss is shared rather than falling on whichever column is
+/// last. No column goes below [`MIN_COL_PX`]; a table with more columns than the
+/// surface has room for still overflows, which is the honest outcome — there's
+/// nothing left to give. The pixel counterpart of `leaf-core`'s `fit_widths`.
+fn fit_widths_px(widths: &mut [f32], avail: f32) {
+    // Chrome: every column carries a border and a gutter either side, and one
+    // more border closes the grid.
+    let chrome = widths.len() as f32 * (BORDER + 2.0 * CELL_PAD_X) + BORDER;
+    let budget = (avail - chrome).max(0.0);
+    // A whole pixel at a time: the widths are a few hundred at most, and stepping
+    // keeps the shrink hitting the widest column rather than scaling every column
+    // by a ratio (which would squeeze a narrow column that was already fine).
+    while widths.iter().sum::<f32>() > budget {
+        let Some(w) = widths
+            .iter_mut()
+            .filter(|w| **w > MIN_COL_PX)
+            .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        else {
+            return;
+        };
+        // Clamped, not just decremented: real widths are fractional, so a column
+        // at 24.5 would step straight through a 24.0 floor.
+        *w = (*w - 1.0).max(MIN_COL_PX);
+    }
+}
+
+/// Word-wrap `glyphs` to `width` pixels, hard-breaking any single word too long
+/// to fit.
+///
+/// Unlike a paragraph — where an overlong word just trails off the end of the
+/// line — a table column is a hard boundary: a glyph past it lands on the border
+/// or in the next cell. So the width here is a promise, and a word that won't
+/// keep it is broken. A break only ever falls between grapheme clusters (on a
+/// glyph that opens one), since the caller anchors each line's end stop just past
+/// its last glyph — a line cut mid-cluster would put a caret stop inside a
+/// character, and the next Backspace would take it apart from the middle.
+fn wrap_glyphs_px(
+    window: &mut Window,
+    font: &Font,
+    font_size: Pixels,
+    glyphs: &[Glyph],
+    width: f32,
+) -> Vec<Vec<Glyph>> {
+    if glyphs.is_empty() {
+        return vec![Vec::new()];
+    }
+    let (text, char_byte) = row_text(glyphs);
+    let runs = build_runs(glyphs, font, None);
+    let shaped = window
+        .text_system()
+        .shape_line(text.into(), font_size, &runs, None);
+    let x = |i: usize| f32::from(shaped.x_for_index(char_byte[i]));
+
+    let n = glyphs.len();
+    let mut lines: Vec<Vec<Glyph>> = Vec::new();
+    let mut start = 0usize;
+    while start < n {
+        // The furthest this line can reach.
+        let mut end = start;
+        while end < n && x(end + 1) - x(start) <= width {
+            end += 1;
+        }
+        // One glyph always goes on, however narrow the column: a line that took
+        // nothing would never advance.
+        end = end.max(start + 1);
+        if end < n {
+            // Prefer a word boundary, and drop the space it breaks at — its
+            // offset isn't lost, the caller's end stop sits exactly there.
+            if let Some(sp) = glyphs[start..end].iter().rposition(|g| g.ch == ' ')
+                && sp > 0
+            {
+                lines.push(glyphs[start..start + sp].to_vec());
+                start += sp + 1;
+                continue;
+            }
+            // Breaking mid-word: back up to the start of a grapheme cluster.
+            while end > start + 1 && !glyphs[end].stop {
+                end -= 1;
+            }
+        }
+        lines.push(glyphs[start..end].to_vec());
+        start = end;
+    }
+    lines
+}
+
+/// Lay a table out in pixels and push a [`RowLayout`] per grid line, returning
+/// the geometry its chrome is painted from.
+///
+/// Columns are sized to content — each as wide as its widest cell — and only
+/// squeezed if the grid won't fit, at which point cells wrap into what's left.
+fn layout_table(
+    window: &mut Window,
+    font: &Font,
+    font_size: Pixels,
+    info: &TableInfo,
+    avail: f32,
+    marked: Option<&Range<usize>>,
+    out: &mut Vec<RowLayout>,
+) -> Option<TableGeom> {
+    let cols = info.grid.iter().map(|r| r.cells.len()).max().unwrap_or(0);
+    if cols == 0 || info.grid.is_empty() {
+        return None;
+    }
+
+    // The block prefix — a quote's gutter, a list's indent — is drawn on every
+    // grid row and the table starts past it, the way the picture does it.
+    let prefix = shape_glyphs(window, font, font_size, &info.prefix, marked);
+    let indent = f32::from(prefix.as_ref().map_or(px(0.0), |p| p.1.width));
+
+    // Every cell renders a trailing gutter space, which carries its end stop —
+    // so it's part of what a column has to hold, and part of what a wrapped line
+    // has to leave room for.
+    let space = measure_glyphs(window, font, font_size, &[]);
+
+    // Every column at its widest cell is the wish; `fit_widths_px` is what the
+    // surface can actually give. The measurements are kept: a cell that already
+    // fits its column needs no second pass to find out where it wraps.
+    let mut widths = vec![0f32; cols];
+    let measured: Vec<Vec<f32>> = info
+        .grid
+        .iter()
+        .map(|row| {
+            row.cells
+                .iter()
+                .map(|cell| measure_glyphs(window, font, font_size, &cell.glyphs))
+                .collect()
+        })
+        .collect();
+    for row in &measured {
+        for (c, &w) in row.iter().enumerate() {
+            widths[c] = widths[c].max(w);
+        }
+    }
+    fit_widths_px(&mut widths, avail - indent);
+
+    // Column boundaries, each the centre of the border drawn there.
+    let mut bounds = vec![indent; cols + 1];
+    for c in 0..cols {
+        bounds[c + 1] = bounds[c] + BORDER + CELL_PAD_X + widths[c] + CELL_PAD_X;
+    }
+
+    let rows_start = out.len();
+    let mut bands = Vec::new();
+    for (ri, row) in info.grid.iter().enumerate() {
+        let band_start = out.len();
+        // Each cell wraps into its own column, and they run out at their own
+        // heights; the row is as tall as the tallest.
+        let laid: Vec<Vec<Vec<Glyph>>> = (0..cols)
+            .map(|c| match row.cells.get(c) {
+                // The common case is a cell that already fits, which is its own
+                // single line — no need to shape it again to discover that.
+                Some(cell) if measured[ri][c] <= widths[c] => vec![cell.glyphs.clone()],
+                // The wrap width leaves room for the gutter space appended
+                // below, or the line plus its space would overrun the column.
+                Some(cell) => wrap_glyphs_px(
+                    window,
+                    font,
+                    font_size,
+                    &cell.glyphs,
+                    (widths[c] - space).max(1.0),
+                ),
+                None => vec![Vec::new()],
+            })
+            .collect();
+        let height = laid.iter().map(|l| l.len()).max().unwrap_or(1).max(1);
+
+        for j in 0..height {
+            let mut segments = Vec::new();
+            let mut char_srcs: Vec<usize> = Vec::new();
+            // The prefix opens every grid row, before the grid itself — its
+            // glyphs point at the enclosing block, so a click in the gutter lands
+            // there rather than in a cell.
+            if let Some((glyphs, shaped, char_byte)) = prefix.clone() {
+                segments.push(RowSegment {
+                    x: px(0.0),
+                    shaped,
+                    char_byte,
+                    first: 0,
+                    field: (px(0.0), px(indent)),
+                });
+                char_srcs.extend(glyphs.iter().map(|g| g.src));
+            }
+            for c in 0..cols {
+                let (Some(cell), Some(line)) = (row.cells.get(c), laid[c].get(j)) else {
+                    continue; // a ragged row, or a column that ran dry higher up
+                };
+                // The offset the caret lands on past this line's text: the cell's
+                // end on its last line, else the space the wrap consumed.
+                let last = laid[c].len() == j + 1;
+                let end = match last {
+                    true => cell.end,
+                    false => line
+                        .last()
+                        .map(|g| g.src + g.ch.len_utf8())
+                        .unwrap_or(cell.end),
+                };
+                // A trailing space carries that end stop, so there is always
+                // somewhere to put the "after the last character" caret — the
+                // same trick `leaf-core` plays with a cell's gutter.
+                let mut gs = line.clone();
+                gs.push(Glyph {
+                    ch: ' ',
+                    style: CoreStyle::default(),
+                    src: end,
+                    stop: true,
+                });
+                let (text, char_byte) = row_text(&gs);
+                let runs = build_runs(&gs, font, marked);
+                let shaped = window
+                    .text_system()
+                    .shape_line(text.into(), font_size, &runs, None);
+
+                let slack = (widths[c] - f32::from(shaped.width)).max(0.0);
+                let lead = match cell.align {
+                    Alignment::Right => slack,
+                    Alignment::Center => slack / 2.0,
+                    _ => 0.0,
+                };
+                segments.push(RowSegment {
+                    x: px(bounds[c] + BORDER + CELL_PAD_X + lead),
+                    shaped,
+                    char_byte,
+                    first: char_srcs.len(),
+                    // The cell answers for its whole column, borders included.
+                    field: (px(bounds[c]), px(bounds[c + 1])),
+                });
+                char_srcs.extend(gs.iter().map(|g| g.src));
+            }
+            // The row ends where its last cell's end stop does.
+            let end_src = char_srcs.last().copied().unwrap_or(info.end_src);
+            out.push(RowLayout { segments, char_srcs, end_src });
+        }
+        bands.push((band_start..out.len(), row.head));
+    }
+
+    Some(TableGeom {
+        rows: rows_start..out.len(),
+        bounds,
+        bands,
+    })
+}
+
+/// Build a table's fills and borders, now that the rows around it have been
+/// placed and their y is known.
+///
+/// Returned as (fills, borders) so they can be painted either side of the
+/// selection: a header or stripe belongs *under* the selection highlight, and
+/// the rules belong *over* it, or a selection spanning a cell boundary would
+/// swallow the grid.
+fn table_chrome(
+    geom: &TableGeom,
+    left: Pixels,
+    top: Pixels,
+    line_height: Pixels,
+    style: &EditorStyle,
+) -> (Vec<PaintQuad>, Vec<PaintQuad>) {
+    let y = |row: usize| top + line_height * (row as f32);
+    let x = |v: f32| left + px(v);
+    let (x0, x1) = (x(geom.bounds[0]), x(*geom.bounds.last().unwrap()));
+    let (y0, y1) = (y(geom.rows.start), y(geom.rows.end));
+
+    // The header's fill, then a tint on every other body row. Striping counts
+    // *bands*, not grid lines, so a row with a wrapped cell is one stripe rather
+    // than two — the banding follows the table, not the text that overflowed.
+    let mut fills = Vec::new();
+    let mut body = 0usize;
+    for (band, head) in &geom.bands {
+        let bg = match head {
+            true => Some(style.table_header),
+            false => {
+                body += 1;
+                // The first body row stays clear, so the header is the only
+                // filled row at the top rather than one of two.
+                (body % 2 == 0).then_some(style.table_stripe)
+            }
+        };
+        if let Some(bg) = bg {
+            fills.push(fill(
+                Bounds::from_corners(
+                    point(x0, y(band.start)),
+                    point(x1 + px(BORDER), y(band.end)),
+                ),
+                bg,
+            ));
+        }
+    }
+
+    let mut borders = Vec::new();
+    let mut rule = |a: Point<Pixels>, b: Point<Pixels>| {
+        borders.push(fill(Bounds::from_corners(a, b), style.table_border));
+    };
+    // Verticals: every column boundary, the outer two included.
+    for &b in &geom.bounds {
+        rule(point(x(b), y0), point(x(b) + px(BORDER), y1));
+    }
+    // Horizontals: the table's top and bottom, and a rule between bands.
+    let mut edges: Vec<usize> = vec![geom.rows.start, geom.rows.end];
+    edges.extend(geom.bands.iter().skip(1).map(|(r, _)| r.start));
+    for e in edges {
+        let ey = y(e).min(y1 - px(BORDER));
+        rule(point(x0, ey), point(x1 + px(BORDER), ey + px(BORDER)));
+    }
+    (fills, borders)
+}
+
+/// Shape `glyphs` as one run, or `None` if there are none — the shape a prefix
+/// segment is built from. Returns the glyphs alongside, since the caller needs
+/// their source offsets to go on carrying the caret.
+#[allow(clippy::type_complexity)]
+fn shape_glyphs(
+    window: &mut Window,
+    font: &Font,
+    font_size: Pixels,
+    glyphs: &[Glyph],
+    marked: Option<&Range<usize>>,
+) -> Option<(Vec<Glyph>, ShapedLine, Vec<usize>)> {
+    if glyphs.is_empty() {
+        return None;
+    }
+    let (text, char_byte) = row_text(glyphs);
+    let runs = build_runs(glyphs, font, marked);
+    let shaped = window
+        .text_system()
+        .shape_line(text.into(), font_size, &runs, None);
+    Some((glyphs.to_vec(), shaped, char_byte))
+}
+
+/// The width `glyphs` shape to, plus the trailing gutter space every cell
+/// renders — what a column has to be to hold this cell. Passing no glyphs
+/// measures the gutter space alone.
+fn measure_glyphs(window: &mut Window, font: &Font, font_size: Pixels, glyphs: &[Glyph]) -> f32 {
+    let mut gs = glyphs.to_vec();
+    gs.push(Glyph {
+        ch: ' ',
+        style: CoreStyle::default(),
+        src: 0,
+        stop: true,
+    });
+    let (text, _) = row_text(&gs);
+    let runs = build_runs(&gs, font, None);
+    let shaped = window
+        .text_system()
+        .shape_line(text.into(), font_size, &runs, None);
+    f32::from(shaped.width)
 }
 
 /// The UTF-8 byte offset a UTF-16 offset into `source` names — [`Editor::offset_from_utf16`]'s
@@ -2145,17 +2709,6 @@ fn row_text(glyphs: &[Glyph]) -> (String, Vec<usize>) {
     (text, char_byte)
 }
 
-/// The source byte offset for a byte index within a row's text (the inverse of
-/// `char_byte`): the glyph starting at `byte`, or the row's end past the last.
-fn src_at(row: &RowLayout, byte: usize) -> usize {
-    let ci = row
-        .char_byte
-        .iter()
-        .position(|&b| b == byte)
-        .unwrap_or(row.char_srcs.len());
-    row.char_srcs.get(ci).copied().unwrap_or(row.end_src)
-}
-
 /// Locate the caret's visual `(row, glyph column)` for source offset `caret`
 /// against the painted rows. Thin wrapper over [`locate_caret_core`], which is
 /// split out to be unit-testable without a live text system.
@@ -2166,30 +2719,51 @@ fn locate_caret(rows: &[RowLayout], caret: usize) -> (usize, usize) {
 }
 
 /// Map a source offset to `(visual row, glyph column)`. The column may equal the
-/// row's glyph count, meaning "just past the last glyph". At a soft-wrap boundary
-/// one offset is both the end of a row and the start of the next; we bias to the
-/// next row's start so the caret rides the wrapped line rather than its far edge.
+/// row's glyph count, meaning "just past the last glyph".
+///
+/// The rule is the *nearest* offset at or past the caret, across every row —
+/// each row offering its first glyph at or past it, or failing that its own end.
+/// Taking the first row that has any such glyph would be the same answer on
+/// ordinary prose, where rows ascend, and the wrong one in a table: a wrapped
+/// cell puts column 1's second line *below* column 2's first while holding
+/// smaller offsets, so the first row to match is the cell to the right rather
+/// than the line underneath. This mirrors `leaf-core`'s `pos_of_offset`, which
+/// the TUI has always ridden.
+///
+/// A tie goes to the *later* row. The only offset two rows both hold is a
+/// soft-wrap boundary — the row above ends where the row below opens — and it
+/// belongs to the row below: the row above's far edge is a phantom the caret can
+/// be drawn at but never sent to. A block gap can't tie, since its blank row is
+/// anchored past the end of the block above it.
 fn locate_caret_core(row_srcs: &[&[usize]], row_end: &[usize], caret: usize) -> (usize, usize) {
-    let n = row_srcs.len();
-    for r in 0..n {
-        let srcs = row_srcs[r];
-        match srcs.iter().position(|&s| s >= caret) {
-            Some(gi) => return (r, gi),
-            None => {
-                if caret <= row_end[r] {
-                    if caret == row_end[r]
-                        && r + 1 < n
-                        && row_srcs[r + 1].first() == Some(&caret)
-                    {
-                        continue; // soft-wrap boundary → next row's start
-                    }
-                    return (r, srcs.len());
-                }
-            }
+    let mut best: Option<(usize, usize, usize)> = None; // (src, row, glyph column)
+    for (r, srcs) in row_srcs.iter().enumerate() {
+        let cand = srcs
+            .iter()
+            .position(|&s| s >= caret)
+            .map(|gi| (srcs[gi], r, gi))
+            .or_else(|| (row_end[r] >= caret).then_some((row_end[r], r, srcs.len())));
+        if let Some(c) = cand
+            && best.is_none_or(|b| c.0 <= b.0)
+        {
+            best = Some(c);
+        }
+        // A row's first glyph never opens earlier than the row above's — true
+        // even across a table's wrapped cells, whose lines run downward. So once
+        // a row opens past the best found, no later row can beat it.
+        if let (Some(b), Some(&first)) = (best, srcs.first())
+            && first > b.0
+        {
+            break;
         }
     }
-    let r = n.saturating_sub(1);
-    (r, row_srcs.get(r).map(|s| s.len()).unwrap_or(0))
+    match best {
+        Some((_, r, gi)) => (r, gi),
+        None => {
+            let r = row_srcs.len().saturating_sub(1);
+            (r, row_srcs.get(r).map(|s| s.len()).unwrap_or(0))
+        }
+    }
 }
 
 impl IntoElement for TextElement {
@@ -2256,15 +2830,12 @@ impl Element for TextElement {
                 .text_system()
                 .shape_line("".into(), font_size, &[], None);
             return Prepaint {
-                rows: vec![RowLayout {
-                    shaped,
-                    char_srcs: Vec::new(),
-                    char_byte: vec![0],
-                    end_src: 0,
-                }],
+                rows: vec![RowLayout::prose(shaped, Vec::new(), vec![0], 0)],
                 line_height,
                 cursor: None,
                 selections: Vec::new(),
+                table_fills: Vec::new(),
+                table_borders: Vec::new(),
             };
         }
 
@@ -2280,71 +2851,57 @@ impl Element for TextElement {
         // a mutable window borrow after the document borrow is dropped. A logical
         // line is a whole paragraph (WYSIWYG) or a source line (Source); the pixel
         // wrap that follows turns each into one or more visual rows.
-        let (logical_lines, sel, caret, caret_color, selection_color, marked): (
-            Vec<(Vec<Glyph>, usize)>,
+        let (logical_lines, sel, caret, style, marked): (
+            Vec<Logical>,
             _,
             usize,
-            Hsla,
-            Hsla,
+            EditorStyle,
             Option<Range<usize>>,
         ) = {
             let editor = self.editor.read(cx);
-            let caret_color = editor.style.caret;
-            let selection_color = editor.style.selection;
+            let style = editor.style.clone();
             let marked = editor.marked_range.clone();
             let doc = editor.doc.as_ref().unwrap();
             let sel = doc.selection();
             let caret = doc.caret;
-            let mut lines: Vec<(Vec<Glyph>, usize)> = Vec::new();
-            match doc.view {
-                View::Source => {
-                    let mut start = 0usize;
-                    for line in doc.source.split('\n') {
-                        let glyphs: Vec<Glyph> = line
-                            .char_indices()
-                            .map(|(i, ch)| Glyph {
-                                ch,
-                                style: CoreStyle::default(),
-                                src: start + i,
-                                // Raw source: every char is real text.
-                                stop: true,
-                            })
-                            .collect();
-                        lines.push((glyphs, start + line.len()));
-                        start += line.len() + 1;
-                    }
-                }
-                View::Wysiwyg => {
-                    for vrow in &doc.vmap.rows {
-                        lines.push((vrow.glyphs.clone(), vrow.end_src));
+            (gather_logical(doc), sel, caret, style, marked)
+        };
+        let (caret_color, selection_color) = (style.caret, style.selection);
+
+        // Wrap each logical line at the real pixel width; lay each table out as a
+        // grid, keeping the geometry its chrome is painted from.
+        let mut rows: Vec<RowLayout> = Vec::new();
+        let mut geoms: Vec<TableGeom> = Vec::new();
+        for logical in &logical_lines {
+            match logical {
+                Logical::Line(glyphs, end_src) => wrap_logical(
+                    window,
+                    &font,
+                    font_size,
+                    glyphs,
+                    *end_src,
+                    wrap_px,
+                    marked.as_ref(),
+                    &mut rows,
+                ),
+                Logical::Table(info) => {
+                    if let Some(g) = layout_table(
+                        window,
+                        &font,
+                        font_size,
+                        info,
+                        wrap_px,
+                        marked.as_ref(),
+                        &mut rows,
+                    ) {
+                        geoms.push(g);
                     }
                 }
             }
-            (lines, sel, caret, caret_color, selection_color, marked)
-        };
-
-        // Wrap each logical line at the real pixel width.
-        let mut rows: Vec<RowLayout> = Vec::new();
-        for (glyphs, end_src) in &logical_lines {
-            wrap_logical(
-                window,
-                &font,
-                font_size,
-                glyphs,
-                *end_src,
-                wrap_px,
-                marked.as_ref(),
-                &mut rows,
-            );
         }
         if rows.is_empty() {
             let shaped = window.text_system().shape_line("".into(), font_size, &[], None);
-            rows.push(RowLayout {
-                shaped,
-                char_srcs: Vec::new(),
-                char_byte: vec![0],
-                end_src: 0,
-            });
+            rows.push(RowLayout::prose(shaped, Vec::new(), vec![0], 0));
         }
 
         let left = bounds.left();
@@ -2356,8 +2913,7 @@ impl Element for TextElement {
         // longer matches the rows on screen.
         let (cr, cgi) = locate_caret(&rows, caret);
         let cr = cr.min(rows.len() - 1);
-        let cgi = cgi.min(rows[cr].char_byte.len() - 1);
-        let caret_x = rows[cr].shaped.x_for_index(rows[cr].char_byte[cgi]);
+        let caret_x = rows[cr].x_at(cgi);
         let cursor = if sel.is_none() {
             Some(fill(
                 Bounds::new(point(left + caret_x, row_top(cr)), size(px(2.0), line_height)),
@@ -2367,31 +2923,46 @@ impl Element for TextElement {
             None
         };
 
-        // Selection: highlight, per row, the run of characters whose source byte
-        // falls in the selection — visible-space, so hidden delimiters are skipped.
+        // Selection: highlight, per segment, the run of characters whose source
+        // byte falls in the selection — visible-space, so hidden delimiters are
+        // skipped. Per segment rather than per row because a table row's cells
+        // are far apart: one quad spanning them would paint over the borders and
+        // the gutters between, claiming text that isn't selected.
         let mut selections = Vec::new();
         if let Some((s0, s1)) = sel {
             for (r, row) in rows.iter().enumerate() {
-                let mut a: Option<usize> = None;
-                let mut b = 0usize;
-                for (i, &src) in row.char_srcs.iter().enumerate() {
-                    if src >= s0 && src < s1 {
-                        a.get_or_insert(i);
-                        b = i + 1;
+                for (si, seg) in row.segments.iter().enumerate() {
+                    let upto = row
+                        .segments
+                        .get(si + 1)
+                        .map_or(row.char_srcs.len(), |n| n.first);
+                    let mut a: Option<usize> = None;
+                    let mut b = 0usize;
+                    for i in seg.first..upto {
+                        let src = row.char_srcs[i];
+                        if src >= s0 && src < s1 {
+                            a.get_or_insert(i);
+                            b = i + 1;
+                        }
+                    }
+                    if let Some(a) = a {
+                        selections.push(fill(
+                            Bounds::from_corners(
+                                point(left + row.x_in(si, a), row_top(r)),
+                                point(left + row.x_in(si, b), row_top(r) + line_height),
+                            ),
+                            selection_color,
+                        ));
                     }
                 }
-                if let Some(a) = a {
-                    let x0 = row.shaped.x_for_index(row.char_byte[a]);
-                    let x1 = row.shaped.x_for_index(row.char_byte[b]);
-                    selections.push(fill(
-                        Bounds::from_corners(
-                            point(left + x0, row_top(r)),
-                            point(left + x1, row_top(r) + line_height),
-                        ),
-                        selection_color,
-                    ));
-                }
             }
+        }
+
+        let (mut table_fills, mut table_borders) = (Vec::new(), Vec::new());
+        for g in &geoms {
+            let (f, b) = table_chrome(g, left, top, line_height, &style);
+            table_fills.extend(f);
+            table_borders.extend(b);
         }
 
         Prepaint {
@@ -2399,6 +2970,8 @@ impl Element for TextElement {
             line_height,
             cursor,
             selections,
+            table_fills,
+            table_borders,
         }
     }
 
@@ -2419,7 +2992,15 @@ impl Element for TextElement {
             cx,
         );
 
+        // A table's fills go under the selection; its rules go over it, so a
+        // selection running across a cell boundary doesn't swallow the grid.
+        for quad in prepaint.table_fills.drain(..) {
+            window.paint_quad(quad);
+        }
         for quad in prepaint.selections.drain(..) {
+            window.paint_quad(quad);
+        }
+        for quad in prepaint.table_borders.drain(..) {
             window.paint_quad(quad);
         }
 
@@ -2427,10 +3008,12 @@ impl Element for TextElement {
         let left = bounds.left();
         let top = bounds.top();
         for (r, row) in prepaint.rows.iter().enumerate() {
-            let origin = point(left, top + lh * (r as f32));
-            row.shaped
-                .paint(origin, lh, TextAlign::Left, None, window, cx)
-                .ok();
+            let y = top + lh * (r as f32);
+            for seg in &row.segments {
+                seg.shaped
+                    .paint(point(left + seg.x, y), lh, TextAlign::Left, None, window, cx)
+                    .ok();
+            }
         }
 
         // The blink phase decides whether the caret paints this frame; `render`'s
@@ -2639,6 +3222,40 @@ mod tests {
         assert_eq!(locate(14), (2, 0));
     }
 
+    /// A two-column table whose first cell wraps, so the rows run *out* of source
+    /// order — the shape that breaks a first-match scan:
+    ///   row 0: "aa" (col 1, srcs 0..1)  "cc" (col 2, srcs 6..7)   end 8
+    ///   row 1: "bb" (col 1, srcs 3..4)                            end 5
+    /// Offset 3 is on row 1, but row 0 is the first row holding an offset at or
+    /// past it (6, over in column 2).
+    fn table_fixture() -> (Vec<Vec<usize>>, Vec<usize>) {
+        (vec![vec![0, 1, 6, 7], vec![3, 4]], vec![8, 5])
+    }
+
+    fn locate_table(caret: usize) -> (usize, usize) {
+        let (srcs, ends) = table_fixture();
+        let refs: Vec<&[usize]> = srcs.iter().map(|v| v.as_slice()).collect();
+        locate_caret_core(&refs, &ends, caret)
+    }
+
+    #[test]
+    fn a_wrapped_table_cell_puts_the_caret_below_not_in_the_next_column() {
+        // The bug a first-match scan has: it would answer (0, 2) — the caret
+        // teleports into column 2 the moment you step into a wrapped cell's
+        // second line.
+        assert_eq!(locate_table(3), (1, 0));
+        assert_eq!(locate_table(4), (1, 1));
+        // Column 2's own text still resolves to column 2.
+        assert_eq!(locate_table(6), (0, 2));
+    }
+
+    #[test]
+    fn a_table_cells_end_resolves_to_that_cell_not_a_later_row() {
+        // Offset 5 ends "bb" on row 1. Row 0 offers nothing at or past 5 before
+        // its own end (8), so the nearer candidate is row 1's end.
+        assert_eq!(locate_table(5), (1, 2));
+    }
+
     #[test]
     fn caret_at_document_end_lands_on_the_last_row() {
         assert_eq!(locate(18), (3, 3));
@@ -2738,4 +3355,426 @@ mod tests {
         assert_eq!(runs[0].len, 5);
         assert!(runs[0].underline.is_none());
     }
+
+    // ── table column fitting ─────────────────────────────────────────────────
+
+    use super::{BORDER, CELL_PAD_X, MIN_COL_PX, fit_widths_px};
+
+    /// What the columns plus their chrome actually occupy.
+    fn grid_width(widths: &[f32]) -> f32 {
+        widths.iter().sum::<f32>() + widths.len() as f32 * (BORDER + 2.0 * CELL_PAD_X) + BORDER
+    }
+
+    #[test]
+    fn columns_that_already_fit_are_left_alone() {
+        let mut w = [100.0, 50.0];
+        fit_widths_px(&mut w, 1000.0);
+        assert_eq!(w, [100.0, 50.0], "a table that fits must not be stretched");
+    }
+
+    #[test]
+    fn an_overwide_grid_is_taken_from_the_widest_column() {
+        // The narrow column is already carrying its content; the loss belongs to
+        // the one with room to give.
+        let mut w = [400.0, 40.0];
+        fit_widths_px(&mut w, 300.0);
+        assert!(grid_width(&w) <= 300.0, "still overflows: {w:?}");
+        assert_eq!(w[1], 40.0, "the narrow column should not have been touched");
+    }
+
+    #[test]
+    fn shrinking_levels_the_widest_columns_rather_than_gutting_one() {
+        let mut w = [400.0, 380.0, 30.0];
+        fit_widths_px(&mut w, 400.0);
+        assert!(grid_width(&w) <= 400.0, "still overflows: {w:?}");
+        assert!(
+            (w[0] - w[1]).abs() <= 1.0,
+            "two equally greedy columns should end up level, got {w:?}"
+        );
+    }
+
+    #[test]
+    fn a_column_is_never_squeezed_below_the_floor() {
+        // More columns than the surface can hold: every column bottoms out and
+        // the grid overflows, which is the honest outcome — there is nothing left
+        // to give, and shredding text one letter per line is worse.
+        let mut w = [200.0; 8];
+        fit_widths_px(&mut w, 100.0);
+        assert!(
+            w.iter().all(|&c| c >= MIN_COL_PX),
+            "a column went below the floor: {w:?}"
+        );
+    }
 }
+
+/// The table grid, measured through a real text system.
+///
+/// Everything the widget draws goes through `shape_line`, and a `Window` is the
+/// only way to reach one — so these drive gpui's test harness, which hands out a
+/// real window with no platform surface on screen. Its text system gives each
+/// character its own advance, which is what makes these tests worth running: the
+/// bug being pinned is a *proportional* one, invisible under a monospace font.
+#[cfg(test)]
+mod table_layout_tests {
+    use super::*;
+    use gpui::TestAppContext;
+    use gpui::VisualTestContext;
+    use leaf_core::{Doc, View};
+
+    /// `| Name | Qty |` with Name left-aligned and Qty right-aligned.
+    const TABLE: &str = "| Name | Qty |\n|:-----|----:|\n| Pear | 3 |\n| Fig | 12 |\n";
+
+    fn doc_with(name: &str, body: &str) -> Doc {
+        // The fixture name doubles as the temp file's; the counter keeps two
+        // tests picking the same one from reading each other's body under the
+        // parallel runner.
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut p = std::env::temp_dir();
+        p.push(format!("leaf_gpui_test_{name}_{seq}.md"));
+        std::fs::write(&p, body).unwrap();
+        let mut doc = Doc::open(p).unwrap();
+        doc.view = View::Wysiwyg;
+        doc.build_visual_unwrapped();
+        doc
+    }
+
+    /// Lay `body`'s first table out at `avail` pixels wide, exactly as prepaint
+    /// would, and hand back the rows and the geometry its chrome is drawn from.
+    fn lay_out(
+        cx: &mut TestAppContext,
+        name: &str,
+        body: &str,
+        avail: f32,
+    ) -> (Vec<RowLayout>, TableGeom, TableInfo) {
+        let doc = doc_with(name, body);
+        let info = doc.vmap.tables.first().expect("a table").clone();
+        let window = cx.add_window(|_, _| gpui::Empty);
+        let mut vcx = VisualTestContext::from_window(window.into(), cx);
+        vcx.update(|window, _| {
+            let font = window.text_style().font();
+            let font_size = px(16.0);
+            let mut rows = Vec::new();
+            let geom = layout_table(window, &font, font_size, &info, avail, None, &mut rows)
+                .expect("the table should lay out");
+            (rows, geom, info)
+        })
+    }
+
+    /// The x each segment of `row` is placed at.
+    fn xs(row: &RowLayout) -> Vec<f32> {
+        row.segments.iter().map(|s| f32::from(s.x)).collect()
+    }
+
+    #[gpui::test]
+    fn a_columns_cells_all_start_at_the_same_x(cx: &mut TestAppContext) {
+        // The whole point. leaf-core pads cells with spaces to a monospace column
+        // count, so in a proportional font "Pear" and "Fig" push their row's `│`
+        // to different x and the grid shears. Placing each cell at its column's
+        // computed x is what fixes it — and a left-aligned column is the one
+        // whose text starts flush at that x, so it's the honest thing to assert.
+        let (rows, _, _) = lay_out(cx, "square", TABLE, 800.0);
+        let col0: Vec<f32> = rows.iter().map(|r| xs(r)[0]).collect();
+        assert!(
+            col0.windows(2).all(|w| (w[0] - w[1]).abs() < 0.01),
+            "column 1 shears across rows: {col0:?}"
+        );
+    }
+
+    #[gpui::test]
+    fn a_right_aligned_column_ends_flush(cx: &mut TestAppContext) {
+        // "3" and "12" are different widths; right alignment means their *ends*
+        // line up, not their starts. The delimiter row (`|----:|`) is the only
+        // place that alignment is recorded, so this also proves it survived the
+        // trip through leaf-core's structure.
+        let (rows, _, _) = lay_out(cx, "align", TABLE, 800.0);
+        let right_edge = |r: &RowLayout| {
+            let s = &r.segments[1];
+            f32::from(s.x + s.shaped.width)
+        };
+        let (pear, fig) = (right_edge(&rows[1]), right_edge(&rows[2]));
+        assert!(
+            (pear - fig).abs() < 0.01,
+            "right-aligned cells should end flush: {pear} vs {fig}"
+        );
+        // And they must not *start* flush, or the alignment did nothing.
+        assert!(
+            (xs(&rows[1])[1] - xs(&rows[2])[1]).abs() > 0.01,
+            "a right-aligned column whose cells start flush isn't aligned at all"
+        );
+    }
+
+    /// Assert every segment's text sits inside the column it answers for. Uses
+    /// each segment's own `field` rather than indexing `geom.bounds`, because a
+    /// column that ran dry contributes no segment to a row — so a segment's
+    /// position in the row is not its column number.
+    fn assert_cells_stay_in_their_columns(rows: &[RowLayout]) {
+        for (r, row) in rows.iter().enumerate() {
+            for (i, seg) in row.segments.iter().enumerate() {
+                let (lo, hi) = (f32::from(seg.field.0), f32::from(seg.field.1));
+                let (x0, x1) = (f32::from(seg.x), f32::from(seg.x + seg.shaped.width));
+                assert!(
+                    x0 >= lo - 0.01 && x1 <= hi + 0.01,
+                    "row {r} segment {i}: text {x0}..{x1} escapes its column {lo}..{hi}"
+                );
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn every_cell_is_inside_its_own_column(cx: &mut TestAppContext) {
+        // A cell that overhangs its column lands on the border or in the next
+        // cell — the failure the box-drawn version had no way to prevent.
+        let (rows, _, _) = lay_out(cx, "bounds", TABLE, 800.0);
+        assert_cells_stay_in_their_columns(&rows);
+    }
+
+    #[gpui::test]
+    fn a_click_in_a_cell_lands_in_that_cell(cx: &mut TestAppContext) {
+        // The caret has to survive the trip into a cell laid out this way. Click
+        // the middle, the left edge, and past the right edge of each cell of the
+        // "Pear | 3" row: every one belongs to the cell clicked. This is the
+        // round-trip the whole segment model exists to keep.
+        let (rows, geom, info) = lay_out(cx, "click", TABLE, 800.0);
+        let row = &rows[1]; // row 0 is the header; the borders aren't rows here
+        for c in 0..2 {
+            let cell = &info.grid[1].cells[c];
+            let seg = &row.segments[c];
+            let probes = [
+                ("its left edge", seg.x),
+                ("its middle", seg.x + seg.shaped.width / 2.0),
+                // Past the text but still inside the column: the gutter, which
+                // is where a click "after the last character" of a cell falls.
+                ("its right gutter", px(geom.bounds[c + 1] - 1.0)),
+            ];
+            for (where_, x) in probes {
+                let off = row.src_at_index(row.index_for_x(x));
+                assert!(
+                    off >= cell.start && off <= cell.end,
+                    "a click at {where_} of column {c} landed at {off}, outside \
+                     that cell's {}..{}",
+                    cell.start,
+                    cell.end
+                );
+            }
+            // The left edge is the cell's own start, not merely inside it.
+            assert_eq!(
+                row.src_at_index(row.index_for_x(seg.x)),
+                cell.start,
+                "clicking a cell's left edge should land at its start"
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn down_from_a_cell_lands_in_the_cell_below_not_the_column_beside(
+        cx: &mut TestAppContext,
+    ) {
+        // Vertical motion is index arithmetic over rows, and a table row is one
+        // row however many cells it has — so Down from "Pear" must reach "Fig",
+        // keeping its column. This is what the segment model buys: were each cell
+        // its own row, Down from "Pear" would land on "3".
+        let (rows, _, _) = lay_out(cx, "down", TABLE, 800.0);
+        let from = &rows[1];
+        let x = from.x_at(from.segments[0].first);
+        let to = &rows[2];
+        let off = to.src_at_index(to.index_for_x(x));
+        assert_eq!(
+            TABLE[off..].chars().next(),
+            Some('F'),
+            "Down from \"Pear\" should reach \"Fig\", landed at offset {off}"
+        );
+    }
+
+    #[test]
+    fn no_box_drawing_reaches_the_gui() {
+        // The bug, stated as the user sees it: a table drawn as *text*. Every
+        // border leaf-core spells with a box glyph has to be gone from what the
+        // GUI shapes — if any of those rows leak through they paint the old
+        // sheared picture underneath the real grid.
+        let doc = doc_with("no_box", &format!("intro\n\n{TABLE}\noutro\n"));
+        let logical = gather_logical(&doc);
+        let mut tables = 0;
+        for l in &logical {
+            match l {
+                Logical::Table(_) => tables += 1,
+                Logical::Line(glyphs, _) => {
+                    let text: String = glyphs.iter().map(|g| g.ch).collect();
+                    assert!(
+                        !text.contains(['┌', '┬', '┐', '├', '┼', '┤', '└', '┴', '┘', '│', '─']),
+                        "box drawing leaked into a line the GUI will shape: {text:?}"
+                    );
+                }
+            }
+        }
+        assert_eq!(tables, 1, "the table should have been gathered as a table");
+        // And the prose around it still came through.
+        let prose: Vec<String> = logical
+            .iter()
+            .filter_map(|l| match l {
+                Logical::Line(g, _) => Some(g.iter().map(|x| x.ch).collect::<String>()),
+                _ => None,
+            })
+            .filter(|s| !s.is_empty())
+            .collect();
+        assert_eq!(prose, ["intro", "outro"], "the prose around the table was lost");
+    }
+
+    #[test]
+    fn the_source_view_still_shows_a_table_as_the_text_it_is() {
+        // The grid is a WYSIWYG idea. In the source view a table is raw Markdown
+        // — pipes and dashes the caret edits directly — and must not be caught by
+        // the table path.
+        let mut doc = doc_with("source_view", TABLE);
+        doc.view = View::Source;
+        let logical = gather_logical(&doc);
+        assert!(
+            logical.iter().all(|l| matches!(l, Logical::Line(..))),
+            "the source view must not build a grid"
+        );
+        let first: String = match &logical[0] {
+            Logical::Line(g, _) => g.iter().map(|x| x.ch).collect(),
+            _ => unreachable!(),
+        };
+        assert_eq!(first, "| Name | Qty |", "the source view shows the source");
+    }
+
+    #[gpui::test]
+    fn a_selected_cell_is_highlighted_only_as_far_as_its_own_text(cx: &mut TestAppContext) {
+        // The right edge of a cell's selection quad is the end of *its* text. It
+        // is tempting to ask the row where flat index `b` sits, but at a cell
+        // boundary that index is already the next cell's first character — the
+        // quad would run across the border and both gutters, highlighting a
+        // neighbour that isn't selected.
+        let (rows, _, _) = lay_out(cx, "sel", TABLE, 800.0);
+        let row = &rows[1];
+        let (seg0, seg1) = (&row.segments[0], &row.segments[1]);
+        let b = seg1.first; // one past cell 0's last character
+
+        let ends = row.x_in(0, b);
+        assert!(
+            (f32::from(ends) - f32::from(seg0.x + seg0.shaped.width)).abs() < 0.01,
+            "a cell's selection should end at its own text ({:?}), got {ends:?}",
+            seg0.x + seg0.shaped.width
+        );
+        assert!(
+            ends < seg1.x,
+            "the highlight reached into the next cell: {ends:?} >= {:?}",
+            seg1.x
+        );
+    }
+
+    #[gpui::test]
+    fn a_table_in_a_blockquote_keeps_its_gutter(cx: &mut TestAppContext) {
+        // A table nested in a quote has to render the quote's gutter and start
+        // past it. Drawing the grid flush at the left margin would take the table
+        // out of the quote it is plainly inside.
+        let body = "> | a | b |\n> |---|---|\n> | c | d |\n";
+        let (rows, geom, info) = lay_out(cx, "bq", body, 800.0);
+        assert!(!info.prefix.is_empty(), "the quote's prefix should be carried");
+        assert!(
+            geom.bounds[0] > 0.0,
+            "the grid should start past the gutter, not at {}",
+            geom.bounds[0]
+        );
+        // Every grid row draws the gutter, and it opens the row.
+        for (r, row) in rows.iter().enumerate() {
+            let first = &row.segments[0];
+            assert_eq!(
+                f32::from(first.x),
+                0.0,
+                "row {r}'s gutter should open the row"
+            );
+            assert!(
+                first.shaped.text.contains('│'),
+                "row {r} lost the quote gutter: {:?}",
+                first.shaped.text
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn a_wrapped_cell_still_fits_inside_its_column(cx: &mut TestAppContext) {
+        // Cells wrap to their column, then a gutter space is appended to carry
+        // the end stop. Wrapping to the full column width would let that space
+        // push the line past it — a glyph landing on the border or in the next
+        // cell, which is exactly what a column is supposed to prevent.
+        let body = "| K | Notes |\n|---|-------|\n| a | a rather long note that has to wrap somewhere |\n";
+        let (rows, geom, _) = lay_out(cx, "wrapfit", body, 240.0);
+        assert!(
+            geom.bands[1].0.len() > 1,
+            "the note should have wrapped, else this proves nothing"
+        );
+        assert_cells_stay_in_their_columns(&rows);
+    }
+
+    #[gpui::test]
+    fn the_chrome_closes_the_grid_it_was_measured_from(cx: &mut TestAppContext) {
+        // The borders are real geometry now, so they can be wrong in ways box
+        // glyphs never could: a rule at the wrong x is a line through a cell's
+        // text. Every vertical must sit on a column boundary, and there must be
+        // one per boundary — the outer two included, or the table has no box.
+        let (_, geom, _) = lay_out(cx, "chrome", TABLE, 800.0);
+        let style = EditorStyle::default();
+        let (fills, borders) = table_chrome(&geom, px(0.0), px(0.0), px(24.0), &style);
+
+        let verticals: Vec<f32> = borders
+            .iter()
+            .filter(|q| q.bounds.size.width <= px(BORDER))
+            .map(|q| f32::from(q.bounds.origin.x))
+            .collect();
+        assert_eq!(
+            verticals, geom.bounds,
+            "every column boundary should carry a rule, and nothing else should"
+        );
+
+        // The head is filled and the single body-row pair leaves the first clear:
+        // with a header plus two body rows, exactly one fill each.
+        assert_eq!(fills.len(), 2, "expected a header fill and one stripe");
+        assert_eq!(
+            fills[0].background,
+            style.table_header.into(),
+            "the first fill should be the header's"
+        );
+
+        // The bottom rule stays inside the table rather than bleeding onto the
+        // row below it.
+        let bottom = borders
+            .iter()
+            .filter(|q| q.bounds.size.height <= px(BORDER))
+            .map(|q| f32::from(q.bounds.origin.y))
+            .fold(0.0f32, f32::max);
+        let table_bottom = 24.0 * geom.rows.end as f32;
+        assert!(
+            bottom <= table_bottom - BORDER,
+            "the bottom rule at {bottom} escapes the table's {table_bottom}"
+        );
+    }
+
+    #[gpui::test]
+    fn an_overwide_table_wraps_its_cells_rather_than_running_off(cx: &mut TestAppContext) {
+        // Sized to content the grid would run past the surface, where no amount
+        // of caret motion reaches it. It has to come back inside — and the text
+        // has to still be there, wrapped, not clipped.
+        let body = "| Name | Notes |\n|------|-------|\n| Pear | a rather long note that will not fit |\n";
+        let (rows, geom, _) = lay_out(cx, "overwide", body, 260.0);
+        assert!(
+            *geom.bounds.last().unwrap() <= 260.0,
+            "the grid still overflows: right edge {}",
+            geom.bounds.last().unwrap()
+        );
+        assert!(
+            geom.bands[1].0.len() > 1,
+            "the long cell should have wrapped onto more than one line"
+        );
+        // Every character of the note survived the wrap.
+        let text: String = rows[geom.bands[1].0.clone()]
+            .iter()
+            .flat_map(|r| r.segments.iter().map(|s| s.shaped.text.to_string()))
+            .collect();
+        for word in ["rather", "long", "note", "not", "fit"] {
+            assert!(text.contains(word), "{word:?} was lost in the wrap: {text:?}");
+        }
+    }
+}
+

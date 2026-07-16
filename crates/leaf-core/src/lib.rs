@@ -20,8 +20,9 @@ pub mod wysiwyg;
 
 pub use doc::{DiskState, Doc, InlineMarks, View};
 pub use style::{Color, Style};
-pub use wysiwyg::{Glyph, VRow, VisualMap};
+pub use wysiwyg::{Glyph, TableCell, TableInfo, TableRow, VRow, VisualMap};
 
 // Re-export the twig types a frontend needs to name when calling into a `Doc`
 // (the toolbar's block/inline kinds), so frontends don't each depend on twig.
-pub use twig::{BlockKind, InlineKind};
+// `Alignment` comes with `TableCell`, which carries one.
+pub use twig::{Alignment, BlockKind, InlineKind};

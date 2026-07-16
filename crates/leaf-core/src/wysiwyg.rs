@@ -86,6 +86,9 @@ pub struct VisualMap {
     /// a caret means — and on every row that *is* in order the two agree anyway,
     /// so nothing else has to change.
     stops: Vec<usize>,
+    /// Every table in the document, in order, described structurally rather than
+    /// drawn — see [`TableInfo`] for why both exist.
+    pub tables: Vec<TableInfo>,
 }
 
 impl VisualMap {
@@ -322,6 +325,7 @@ pub fn build(nodes: &[FlatNode], source: &str, wrap: Option<usize>) -> VisualMap
         source,
         wrap: wrap.map(|w| w.max(8)),
         rows: Vec::new(),
+        tables: Vec::new(),
         last_off: 0,
     };
     b.blocks(doc, &[], &[]);
@@ -332,6 +336,7 @@ pub fn build(nodes: &[FlatNode], source: &str, wrap: Option<usize>) -> VisualMap
         rows: b.rows,
         content_start,
         stops,
+        tables: b.tables,
     }
 }
 
@@ -359,6 +364,8 @@ struct Builder<'a> {
     /// unwrapped row (the frontend wraps).
     wrap: Option<usize>,
     rows: Vec<VRow>,
+    /// Built alongside `rows`, never instead of them — see [`TableInfo`].
+    tables: Vec<TableInfo>,
     /// The end offset of the last content emitted — the anchor for blank
     /// separator rows so the caret never snaps onto one.
     last_off: usize,
@@ -565,6 +572,10 @@ impl Builder<'_> {
             fit_widths(&mut widths, w.saturating_sub(prefix_width(pc)));
         }
 
+        // Where the picture starts, so a frontend drawing its own grid knows
+        // which rows to skip. Recorded before the first border goes down.
+        let rows_start = self.rows.len();
+
         let anchor = grid[0].first().map(|c| c.start).unwrap_or(node_end);
         self.push_rule(&rule_text(&widths, '┌', '┬', '┐'), anchor, pf);
         for (ri, row) in grid.iter().enumerate() {
@@ -577,6 +588,22 @@ impl Builder<'_> {
             }
         }
         self.push_rule(&rule_text(&widths, '└', '┴', '┘'), node_end, pc);
+
+        // The same cells the picture above was drawn from, published unwrapped
+        // and unpadded for a frontend that lays them out in pixels.
+        self.tables.push(TableInfo {
+            rows_span: rows_start..self.rows.len(),
+            end_src: node_end,
+            // The *continuation* prefix: `pf` opens the block and only its first
+            // row wears it, but every row of a grid is a continuation of the
+            // block the table sits in.
+            prefix: pc.to_vec(),
+            grid: grid
+                .into_iter()
+                .zip(heads)
+                .map(|(cells, head)| TableRow { head, cells })
+                .collect(),
+        });
         // The table's own end anchors whatever separator follows it; the border
         // rows deliberately don't move `last_off` (they hold no content).
         self.last_off = node_end;
@@ -1063,11 +1090,55 @@ impl VRow {
 /// One laid-out table cell: its rendered text, the source range that text
 /// occupies (`start`/`end` are the caret anchors decoration points at), and the
 /// column alignment its padding honours.
-struct TableCell {
-    glyphs: Vec<Glyph>,
-    start: usize,
-    end: usize,
-    align: Alignment,
+///
+/// `glyphs` is the cell's inline content *unwrapped* — the box-drawn rows wrap
+/// it to a column width, but a frontend laying the grid out itself needs the
+/// text before that decision was made.
+#[derive(Clone)]
+pub struct TableCell {
+    pub glyphs: Vec<Glyph>,
+    pub start: usize,
+    pub end: usize,
+    pub align: Alignment,
+}
+
+/// One row of a table's grid, as the document spells it — not as it's drawn.
+#[derive(Clone)]
+pub struct TableRow {
+    /// A header row: drawn bold, and ruled off from the body below it.
+    pub head: bool,
+    pub cells: Vec<TableCell>,
+}
+
+/// A table's structure, published alongside the box-drawn rows that spell it.
+///
+/// The rows in [`VisualMap::rows`] are a *terminal's* picture of a table: every
+/// border a `│`, every column a whole number of character cells. That picture is
+/// exactly right where a cell is a cell, and unfixable anywhere else — in a
+/// proportional font the `│`s of two rows land at different x and the grid
+/// shears. So a frontend that draws its own geometry reads this instead: the
+/// cells, their alignment, and which rows are the head, with no opinion about
+/// how wide a column is or what a border looks like.
+///
+/// Both are always built. The TUI paints `rows` and ignores this; the GUI skips
+/// `rows` for the span in `rows_span` and draws from here. They describe the
+/// same cells, so the caret lands on the same offsets either way.
+#[derive(Clone)]
+pub struct TableInfo {
+    /// The `VisualMap::rows` this table's picture occupies, borders included —
+    /// what a frontend drawing its own table skips over.
+    pub rows_span: Range<usize>,
+    /// The source span of the table node, and the offset its trailing caret
+    /// stop sits at.
+    pub end_src: usize,
+    /// The block prefix every row of this table carries — a blockquote's `│ `
+    /// gutter, a list item's indent. Empty for a table at the top level.
+    ///
+    /// A frontend drawing its own grid has to render this and start the table
+    /// past it, exactly as the picture does; a table nested in a quote that
+    /// draws flush at the left margin has left the quote.
+    pub prefix: Vec<Glyph>,
+    pub grid: Vec<TableRow>,
 }
 
 /// The narrowest a column may be squeezed. Below a few characters a column
@@ -1542,6 +1613,92 @@ mod tests {
         let m = map("a **bold** c\n");
         let (r, c) = m.pos_of_offset(7);
         assert_eq!(m.offset_of_pos(r, c + 1), 10);
+    }
+
+    // ── the structural view of a table ───────────────────────────────────────
+
+    #[test]
+    fn a_table_is_published_structurally_beside_its_picture() {
+        let m = map(TABLE);
+        let t = &m.tables[0];
+        let cell = |r: usize, c: usize| -> String {
+            t.grid[r].cells[c].glyphs.iter().map(|g| g.ch).collect()
+        };
+        assert_eq!(t.grid.len(), 3, "head + two body rows");
+        assert_eq!(
+            (cell(0, 0), cell(0, 1), cell(1, 0), cell(2, 1)),
+            ("Name".into(), "Qty".into(), "Pear".into(), "12".into())
+        );
+        assert_eq!(
+            t.grid.iter().map(|r| r.head).collect::<Vec<_>>(),
+            [true, false, false]
+        );
+        // The alignment the delimiter row spelled, carried per cell — the only
+        // place it survives, since the parser consumes that row.
+        assert!(matches!(t.grid[1].cells[0].align, Alignment::Left));
+        assert!(matches!(t.grid[1].cells[1].align, Alignment::Right));
+    }
+
+    #[test]
+    fn the_structural_table_spans_exactly_its_drawn_rows() {
+        // A frontend drawing its own grid skips `rows_span` and renders from
+        // `grid`. If the span were short the leftover border rows would be
+        // painted as text under the real table; if long it would eat a
+        // neighbouring paragraph. Both are silent, so pin it to the picture.
+        let m = map(&format!("before\n\n{TABLE}\nafter\n"));
+        let t = &m.tables[0];
+        let row_text = |r: usize| -> String { m.rows[r].glyphs.iter().map(|g| g.ch).collect() };
+        assert!(row_text(t.rows_span.start).starts_with('┌'), "opens on the top border");
+        assert!(
+            row_text(t.rows_span.end - 1).starts_with('└'),
+            "closes on the bottom border"
+        );
+        assert!(
+            !row_text(t.rows_span.start - 1).contains('┌'),
+            "the row before the span is not the table's"
+        );
+        assert_eq!(row_text(t.rows_span.end), "", "the span ends before the gap row");
+    }
+
+    #[test]
+    fn a_nested_tables_structure_carries_the_block_prefix() {
+        // The picture puts the quote's gutter on every row of the grid. A
+        // frontend drawing its own table has to draw that too and start past it,
+        // so the prefix has to travel with the structure — without it a quoted
+        // table renders flush at the margin and leaves the quote it's in.
+        let m = map("> | a | b |\n> |---|---|\n> | c | d |\n");
+        let t = &m.tables[0];
+        let prefix: String = t.prefix.iter().map(|g| g.ch).collect();
+        assert_eq!(prefix, "│ ", "the quote's gutter should ride the structure");
+        // And it matches what the picture actually drew.
+        let drawn: String = m.rows[t.rows_span.start].glyphs.iter().map(|g| g.ch).collect();
+        assert!(drawn.starts_with(&prefix), "picture and structure disagree: {drawn:?}");
+    }
+
+    #[test]
+    fn a_top_level_table_carries_no_prefix() {
+        assert!(map(TABLE).tables[0].prefix.is_empty());
+    }
+
+    #[test]
+    fn structural_cells_are_unwrapped_even_when_the_picture_wraps_them() {
+        // The picture wraps a cell to its column; a frontend laying the grid out
+        // in pixels needs the text as the document spells it, before that
+        // decision. Narrow enough that the drawn cell must break.
+        let src = "| Name |\n|------|\n| alpha beta gamma |\n";
+        let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
+        let m = build(&ed.nodes().unwrap(), src, Some(12));
+        let drawn = rendered(&m);
+        let cell: String = m.tables[0].grid[1].cells[0]
+            .glyphs
+            .iter()
+            .map(|g| g.ch)
+            .collect();
+        assert_eq!(cell, "alpha beta gamma", "structure must not carry the wrap");
+        assert!(
+            drawn.lines().count() > 5,
+            "the picture should have wrapped, else this proves nothing:\n{drawn}"
+        );
     }
 
     // ── display columns ──────────────────────────────────────────────────────
