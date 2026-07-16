@@ -371,6 +371,17 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
             KeyCode::Char('7') => toggle_list(doc, true),
             KeyCode::Char('8') => toggle_list(doc, false),
             KeyCode::Char('9') => doc.toggle_blockquote(),
+            // Paste the plain flavor, where ^V prefers the rich one.
+            //
+            // ⌥V and not ^⇧V, which is the obvious pick and the wrong one: a
+            // terminal sends the same control byte for ^V and ^⇧V unless the
+            // kitty keyboard protocol is negotiated (leaf doesn't), so the shift
+            // is invisible here and the binding would just be ^V — and ^⇧V is
+            // the *terminal emulator's* own paste on much of the world, which
+            // means leaf would never see the keystroke anyway. ⌥ is already this
+            // frontend's modifier for the editing surface, ⌥V was free, and its
+            // letter is the one the user is reaching for.
+            KeyCode::Char('v') => clipboard_paste_plain(doc),
             KeyCode::Char('k') => open_link_prompt(doc, app),
             KeyCode::Char('s') => open_save_as_prompt(doc, app),
             KeyCode::Char('n') => {
@@ -707,14 +718,14 @@ fn resolve_conflict(doc: &mut Doc, app: &mut App, choice: usize) -> Flow {
     }
 }
 
-/// Copy the current selection to the system clipboard.
+/// Copy the current selection to the system clipboard, in both flavors.
 fn clipboard_copy(doc: &mut Doc) {
-    let Some(text) = doc.selected_text() else {
+    let Some(text) = doc.selected_text().map(str::to_string) else {
         doc.status = Some("nothing selected".into());
         return;
     };
-    let text = text.to_string();
-    doc.status = Some(match set_clipboard_text(text) {
+    let html = doc.selection_html();
+    doc.status = Some(match set_clipboard(text, html) {
         Ok(()) => "copied".into(),
         Err(_) => "clipboard unavailable".into(),
     });
@@ -722,12 +733,12 @@ fn clipboard_copy(doc: &mut Doc) {
 
 /// Copy the current selection to the system clipboard, then delete it.
 fn clipboard_cut(doc: &mut Doc) {
-    let Some(text) = doc.selected_text() else {
+    let Some(text) = doc.selected_text().map(str::to_string) else {
         doc.status = Some("nothing selected".into());
         return;
     };
-    let text = text.to_string();
-    match set_clipboard_text(text) {
+    let html = doc.selection_html();
+    match set_clipboard(text, html) {
         Ok(()) => {
             doc.insert(""); // replaces the (still active) selection with nothing
             doc.status = Some("cut".into());
@@ -736,8 +747,25 @@ fn clipboard_cut(doc: &mut Doc) {
     }
 }
 
-/// Insert the system clipboard's text contents at the caret.
+/// Insert the clipboard at the caret, preferring its rich flavor: HTML carries
+/// the formatting a `text/plain` copy out of another app has already lost.
+///
+/// Falls through to plain on every kind of no — no HTML on the pasteboard, or
+/// HTML that [`Doc::paste_html`] won't convert (see `leaf_core::html`) — because
+/// the two flavors describe the same content and the plain one always exists.
 fn clipboard_paste(doc: &mut Doc) {
+    if let Ok(html) = get_clipboard_html() {
+        if doc.paste_html(&html) {
+            doc.status = Some("pasted".into());
+            return;
+        }
+    }
+    clipboard_paste_plain(doc);
+}
+
+/// Insert the clipboard's plain flavor, whatever else it carries (⌥V) — the
+/// escape hatch for pasting the *source* of something rich.
+fn clipboard_paste_plain(doc: &mut Doc) {
     match get_clipboard_text() {
         Ok(text) => {
             doc.paste(&text);
@@ -749,15 +777,27 @@ fn clipboard_paste(doc: &mut Doc) {
 
 // A fresh `arboard::Clipboard` is opened per call rather than cached on `App`:
 // it's cheap, and it sidesteps holding a pasteboard handle stale across focus
-// changes. Both helpers collapse arboard's error type so callers only need to
+// changes. These helpers collapse arboard's error type so callers only need to
 // decide between a status message and a panic (never the latter).
 
-fn set_clipboard_text(text: String) -> Result<(), arboard::Error> {
-    arboard::Clipboard::new()?.set_text(text)
+/// Publish both flavors. `html` is optional and `plain` is not: a selection that
+/// doesn't render is still text the user asked for, and arboard writes the two
+/// in one clear-and-set, so this can't leave a stale flavor behind from an
+/// earlier copy for a paste to find and prefer.
+fn set_clipboard(plain: String, html: Option<String>) -> Result<(), arboard::Error> {
+    let mut clipboard = arboard::Clipboard::new()?;
+    match html {
+        Some(html) => clipboard.set().html(html, Some(plain)),
+        None => clipboard.set_text(plain),
+    }
 }
 
 fn get_clipboard_text() -> Result<String, arboard::Error> {
     arboard::Clipboard::new()?.get_text()
+}
+
+fn get_clipboard_html() -> Result<String, arboard::Error> {
+    arboard::Clipboard::new()?.get().html()
 }
 
 #[cfg(test)]
@@ -1414,12 +1454,13 @@ mod tests {
 
     #[test]
     fn clipboard_paste_uses_doc_paste_not_doc_insert() {
+        let _clip = clipboard_lock();
         // `Doc::paste` (unlike `insert`) is always its own undo step, even for
         // one character — the observable difference is that a paste right
         // after typing does *not* coalesce into that typing run's undo.
         let mut doc = doc_with("paste_coalesce", "");
         doc.insert("a"); // a one-character typing run
-        set_clipboard_text("b".into()).ok(); // best-effort: skip if no clipboard
+        set_clipboard("b".into(), None).ok(); // best-effort: skip if no clipboard
         clipboard_paste(&mut doc);
         if doc.status.as_deref() == Some("clipboard unavailable") {
             return; // headless CI/sandbox with no system clipboard
@@ -1427,6 +1468,88 @@ mod tests {
         assert_eq!(doc.source, "ab");
         doc.undo();
         assert_eq!(doc.source, "a", "undo should peel off only the pasted 'b'");
+    }
+
+    /// Put both flavors on the pasteboard, or `false` when there isn't one to
+    /// put them on — the clipboard tests run wherever the suite does, including
+    /// a headless box with no pasteboard at all, and a skip beats a flake.
+    fn seed_clipboard(plain: &str, html: &str) -> bool {
+        set_clipboard(plain.into(), Some(html.into())).is_ok()
+    }
+
+    /// The system pasteboard is one object shared by the whole machine, and the
+    /// test runner is threaded: two tests in it at once is not a flake but a
+    /// SIGSEGV out of AppKit, and even without the crash they would read each
+    /// other's clipboard and pass for the wrong reason. Every test that touches
+    /// the real pasteboard takes this first.
+    ///
+    /// The app itself needs no such lock — a frontend does clipboard work on the
+    /// one thread its event loop runs on.
+    static CLIPBOARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn clipboard_lock() -> std::sync::MutexGuard<'static, ()> {
+        // A test that panics mid-clipboard poisons this; the data is `()`, so
+        // there is no invariant left broken for the next test to trip over.
+        CLIPBOARD.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn paste_prefers_the_html_flavor_and_converts_it() {
+        let _clip = clipboard_lock();
+        let mut doc = doc_with("paste_rich", "");
+        if !seed_clipboard("bold", "<p>a <strong>b</strong> c</p>") {
+            return; // no pasteboard here
+        }
+        clipboard_paste(&mut doc);
+        if doc.status.as_deref() == Some("clipboard unavailable") {
+            return;
+        }
+        assert_eq!(doc.source, "a **b** c", "the rich flavor, as Markdown");
+    }
+
+    #[test]
+    fn paste_falls_back_to_plain_when_the_html_will_not_convert() {
+        let _clip = clipboard_lock();
+        let mut doc = doc_with("paste_fallback", "");
+        // twig builds no table from HTML: the plain flavor is the better answer.
+        if !seed_clipboard("a\tb", "<table><tr><td>a</td><td>b</td></tr></table>") {
+            return;
+        }
+        clipboard_paste(&mut doc);
+        if doc.status.as_deref() == Some("clipboard unavailable") {
+            return;
+        }
+        assert_eq!(doc.source, "a\tb");
+    }
+
+    #[test]
+    fn alt_v_pastes_the_plain_flavor_even_when_html_is_there() {
+        let _clip = clipboard_lock();
+        let mut doc = doc_with("paste_plain", "");
+        let mut app = App::default();
+        if !seed_clipboard("a **b** c", "<p>a <strong>b</strong> c</p>") {
+            return;
+        }
+        handle_key(&mut doc, alt('v'), &mut app);
+        if doc.status.as_deref() == Some("clipboard unavailable") {
+            return;
+        }
+        assert_eq!(doc.source, "a **b** c", "the source, not the rich flavor");
+    }
+
+    #[test]
+    fn copy_publishes_both_flavors() {
+        let _clip = clipboard_lock();
+        let mut doc = doc_with("copy_both", "a **bold** c\n");
+        doc.anchor = Some(2);
+        doc.caret = 10; // `**bold**`
+        clipboard_copy(&mut doc);
+        if doc.status.as_deref() == Some("clipboard unavailable") {
+            return;
+        }
+        assert_eq!(get_clipboard_text().ok().as_deref(), Some("**bold**"), "the source");
+        let html = get_clipboard_html().expect("html flavor");
+        assert!(html.contains("<strong>bold</strong>"), "{html:?}");
     }
 
     // ── drag autoscroll ──────────────────────────────────────────────────────

@@ -20,6 +20,7 @@ use anyhow::{Context, Result, anyhow};
 use twig::{BlockContainerKind, BlockKind, Change, Editor, FlatNode, Format, InlineKind};
 use unicode_segmentation::GraphemeCursor;
 
+use crate::html;
 use crate::wysiwyg::{self, VisualMap};
 
 /// Which view the body shows.
@@ -128,6 +129,12 @@ impl FromIterator<InlineKind> for InlineMarks {
 enum EditKind {
     Insert,
     Delete,
+    /// One step of an IME composition — see [`Doc::edit_composing`]. Its own kind
+    /// rather than `Insert`'s because a composition is not typing: each step
+    /// *replaces* the last (`か` → `かん` → `感`), so the run has to coalesce even
+    /// though no two steps insert the same bytes, and it must not fold into the
+    /// typed characters on either side of it.
+    Compose,
     Other,
 }
 
@@ -430,6 +437,121 @@ impl Doc {
     pub fn paste(&mut self, text: &str) {
         let (s, e) = self.selection().unwrap_or((self.caret, self.caret));
         self.splice(s, e, text, EditKind::Other);
+    }
+
+    /// Replace `[start, end)` with `text` as one step of an IME composition —
+    /// the same splice as [`edit`](Self::edit), but marked so the run of steps
+    /// folds into a single undo.
+    ///
+    /// A composition is *one* act of writing. Typing `かんじ` and picking 感じ is a
+    /// dozen calls here, each replacing the last one's provisional bytes, and an
+    /// undo step per call means undoing a word means pressing ⌘Z until the reading
+    /// unspools backwards through kana — the intermediate states were never text
+    /// the user wrote. Only the frontend knows a call is provisional (the bytes
+    /// look like any other edit), so the door the caller comes through is what
+    /// says so, exactly as it is for [`paste`](Self::paste) versus
+    /// [`insert`](Self::insert).
+    ///
+    /// Pair with [`end_composition`](Self::end_composition), or the *next*
+    /// composition folds into this one.
+    pub fn edit_composing(&mut self, start: usize, end: usize, text: &str) {
+        self.splice(start, end, text, EditKind::Compose);
+    }
+
+    /// Close the open composition run, so the next one is its own undo step.
+    /// Call when the IME commits or withdraws a composition.
+    ///
+    /// Only clears a *composition* run: a frontend that reports an end it never
+    /// began (some IMEs unmark unprompted) would otherwise split the run of
+    /// typing around it into two undo steps for no reason the user can see.
+    pub fn end_composition(&mut self) {
+        if self.last_edit_kind == Some(EditKind::Compose) {
+            self.last_edit_kind = None;
+        }
+    }
+
+    // ── the clipboard's rich flavor ──────────────────────────────────────────
+
+    /// The selection rendered as HTML, for the clipboard's `text/html` flavor —
+    /// what lets a paste into Docs/Mail/Slack keep its formatting. `None` when
+    /// nothing is selected, or when the selection doesn't render (the caller
+    /// still has [`selected_text`](Self::selected_text), which is what to publish
+    /// as `text/plain` either way).
+    ///
+    /// **The fragment is a source substring, and that is the honest limit here.**
+    /// It's parsed standalone, so a selection whose meaning depends on its
+    /// surroundings converts as what it literally says rather than what it looks
+    /// like on screen: half a list item is a paragraph, a row torn out of a table
+    /// is the text of a row, the `**` of a bold run selected without its closing
+    /// `**` is two asterisks. Every one of those still *renders* — there's no
+    /// error to report — it just renders as the fragment and not as the document.
+    /// Widening the range to whole blocks would publish text the user didn't
+    /// select, which is a worse lie than a fragment being a fragment; the plain
+    /// flavor has the same substring, so the two flavors at least agree.
+    pub fn selection_html(&mut self) -> Option<String> {
+        let (start, end) = self.selection()?;
+        let inline = self.selection_is_inline(start, end);
+        let html = html::render_fragment(&self.source[start..end], self.format)?;
+        Some(match inline {
+            true => html::strip_sole_paragraph(html),
+            false => html,
+        })
+    }
+
+    /// Paste the clipboard's `text/html` flavor, converting it to this document's
+    /// format first. Its own undo step, like any [`paste`](Self::paste).
+    ///
+    /// Returns whether it landed. `false` means the HTML didn't convert to
+    /// anything worth pasting — the caller should fall back to the plain flavor
+    /// rather than treat it as an error. The `html` module has the full list of
+    /// what that covers: a table twig won't build, markup it doesn't recognise,
+    /// an empty result.
+    pub fn paste_html(&mut self, html: &str) -> bool {
+        match html::parse_fragment(html, self.format) {
+            Some(source) => {
+                self.paste(&source);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Does the selection live *inside* a single top-level block?
+    ///
+    /// The question [`selection_html`](Self::selection_html) needs and the
+    /// fragment can't answer: `**bold**` renders as `<p><strong>bold</strong></p>`
+    /// whether the user selected one word of a sentence or a whole paragraph, and
+    /// only the document knows which. Selecting a word and pasting into Docs
+    /// should extend the line you paste into; selecting the paragraph should make
+    /// a paragraph. So a selection strictly within one block is inline (its `<p>`
+    /// is an artifact of standalone parsing), and one that covers a whole block —
+    /// or spans two — keeps its structure.
+    ///
+    /// Reads the block from twig rather than guessing from the bytes:
+    /// `ancestors_at` is `[doc, block, …inline]`, so index 1 is the top-level
+    /// block containing an offset, and two ends inside the same one cannot have
+    /// crossed a block boundary.
+    fn selection_is_inline(&mut self, start: usize, end: usize) -> bool {
+        // The last *character*, not `end - 1`: the selection's end is exclusive
+        // and may sit mid-codepoint's-worth of bytes past the last char.
+        let Some((off, _)) = self.source[start..end].char_indices().next_back() else {
+            return false;
+        };
+        let (Some(head), Some(tail)) = (self.top_block_span(start), self.top_block_span(start + off))
+        else {
+            return false;
+        };
+        head == tail && !(start <= head.start && end >= head.end)
+    }
+
+    /// The byte span of the top-level block containing `offset`, or `None` at an
+    /// offset that belongs to no block (the blank line between two of them).
+    fn top_block_span(&mut self, offset: usize) -> Option<std::ops::Range<usize>> {
+        self.editor
+            .ancestors_at(offset)
+            .ok()?
+            .get(1)
+            .map(|m| m.span.clone())
     }
 
     // ── indentation ──────────────────────────────────────────────────────────
@@ -3337,6 +3459,159 @@ mod tests {
         d.undo(); // nothing left — the run was one step
         assert_eq!(d.source, "\n");
         assert_eq!(d.status.as_deref(), Some("nothing to undo"));
+    }
+
+    // ── IME composition ──────────────────────────────────────────────────────
+
+    #[test]
+    fn a_composition_run_undoes_as_one_step() {
+        let mut d = doc_with("compose", "\n");
+        d.caret = 0;
+        // What an IME does: each step replaces the last one's provisional bytes.
+        d.edit_composing(0, 0, "k");
+        d.edit_composing(0, 1, "か");
+        d.edit_composing(0, 3, "かん");
+        d.edit_composing(0, 6, "感"); // the commit
+        d.end_composition();
+        assert_eq!(d.source, "感\n");
+        d.undo(); // the whole composition, not its last keystroke
+        assert_eq!(d.source, "\n");
+        assert_eq!(d.status.as_deref(), None, "the run was a single step");
+    }
+
+    #[test]
+    fn two_compositions_are_two_undo_steps() {
+        let mut d = doc_with("compose_two", "\n");
+        d.caret = 0;
+        d.edit_composing(0, 0, "か");
+        d.edit_composing(0, 3, "蚊");
+        d.end_composition();
+        d.edit_composing(3, 3, "き");
+        d.edit_composing(3, 6, "木");
+        d.end_composition();
+        assert_eq!(d.source, "蚊木\n");
+        d.undo();
+        assert_eq!(d.source, "蚊\n", "only the second composition");
+        d.undo();
+        assert_eq!(d.source, "\n");
+    }
+
+    #[test]
+    fn a_composition_does_not_fold_into_the_typing_around_it() {
+        let mut d = doc_with("compose_typing", "\n");
+        d.caret = 0;
+        d.insert("a");
+        d.insert("b");
+        d.edit_composing(2, 2, "か");
+        d.edit_composing(2, 5, "蚊");
+        d.end_composition();
+        d.insert("c");
+        assert_eq!(d.source, "ab蚊c\n");
+        d.undo();
+        assert_eq!(d.source, "ab蚊\n");
+        d.undo();
+        assert_eq!(d.source, "ab\n");
+        d.undo();
+        assert_eq!(d.source, "\n");
+    }
+
+    #[test]
+    fn ending_a_composition_that_never_began_leaves_a_typing_run_alone() {
+        let mut d = doc_with("compose_spurious", "\n");
+        d.caret = 0;
+        d.insert("a");
+        d.end_composition(); // an IME unmarking unprompted
+        d.insert("b");
+        assert_eq!(d.source, "ab\n");
+        d.undo();
+        assert_eq!(d.source, "\n", "still one typed run");
+    }
+
+    // ── the clipboard's rich flavor ──────────────────────────────────────────
+
+    #[test]
+    fn an_inline_selection_publishes_html_without_a_paragraph_wrapper() {
+        let mut d = doc_with("sel_inline", "a **bold** c\n");
+        d.anchor = Some(2);
+        d.caret = 10; // `**bold**`, inside the paragraph
+        assert_eq!(d.selection_html().as_deref(), Some("<strong>bold</strong>"));
+    }
+
+    #[test]
+    fn a_whole_block_selection_keeps_its_paragraph() {
+        let mut d = doc_with("sel_block", "a **bold** c\n");
+        d.anchor = Some(0);
+        d.caret = 12; // the entire paragraph
+        assert_eq!(
+            d.selection_html().as_deref(),
+            Some("<p>a <strong>bold</strong> c</p>")
+        );
+    }
+
+    #[test]
+    fn a_multi_block_selection_keeps_its_structure() {
+        let mut d = doc_with("sel_multi", "para\n\n- one\n- two\n");
+        d.select_all();
+        let html = d.selection_html().expect("renders");
+        assert!(html.contains("<p>para</p>"), "{html:?}");
+        assert!(html.contains("<li>one</li>"), "{html:?}");
+    }
+
+    #[test]
+    fn a_word_inside_a_heading_publishes_as_text_not_a_heading() {
+        // The fragment `Head` is a paragraph standalone; the *document* says it
+        // sits inside one block, so the wrapper is an artifact either way.
+        let mut d = doc_with("sel_heading", "# Head line\n");
+        d.anchor = Some(2);
+        d.caret = 6;
+        assert_eq!(d.selection_html().as_deref(), Some("Head"));
+    }
+
+    #[test]
+    fn no_selection_publishes_no_html() {
+        let mut d = doc_with("sel_none", "a b\n");
+        d.caret = 1;
+        assert_eq!(d.selection_html(), None);
+    }
+
+    #[test]
+    fn pasting_html_converts_it_and_is_one_undo_step() {
+        let mut d = doc_with("paste_html", "x\n");
+        d.caret = 1;
+        assert!(d.paste_html("<p>a <strong>b</strong> c</p>"));
+        assert_eq!(d.source, "xa **b** c\n");
+        d.undo();
+        assert_eq!(d.source, "x\n", "the whole paste, in one step");
+    }
+
+    #[test]
+    fn pasting_html_replaces_the_selection() {
+        let mut d = doc_with("paste_html_sel", "keep drop\n");
+        d.anchor = Some(5);
+        d.caret = 9;
+        assert!(d.paste_html("<em>new</em>"));
+        assert_eq!(d.source, "keep *new*\n");
+    }
+
+    #[test]
+    fn html_that_would_paste_garbage_declines_so_the_caller_falls_back() {
+        let mut d = doc_with("paste_html_bad", "x\n");
+        d.caret = 1;
+        // twig builds no table from HTML; raw `<table>` in prose is worse than
+        // the plain flavor the caller still holds.
+        assert!(!d.paste_html("<table><tr><td>a</td></tr></table>"));
+        assert_eq!(d.source, "x\n", "declined edits nothing");
+    }
+
+    #[test]
+    fn copy_then_paste_round_trips_through_the_html_flavor() {
+        let mut d = doc_with("clip_round", "a **b** and [l](https://x.dev)\n");
+        d.select_all();
+        let html = d.selection_html().expect("renders");
+        let mut into = doc_with("clip_round_dst", "\n");
+        into.caret = 0;
+        assert!(into.paste_html(&html));
+        assert_eq!(into.source, "a **b** and [l](https://x.dev)\n");
     }
 
     #[test]
