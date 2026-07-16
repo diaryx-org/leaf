@@ -32,8 +32,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui::{
-    App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, ElementInputHandler,
-    Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable, Font, GlobalElementId, Hsla,
+    App, Bounds, Context, CursorStyle, Element, ElementId, ElementInputHandler, Entity,
+    EntityInputHandler, EventEmitter, FocusHandle, Focusable, Font, GlobalElementId, Hsla,
     InspectorElementId, IntoElement, KeyBinding, KeyDownEvent, LayoutId, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render, ScrollHandle,
     SharedString, ShapedLine, Style, Task, TextAlign, UTF16Selection, UnderlineStyle, Window,
@@ -172,8 +172,9 @@ actions!(
         // block kind. The GUI keeps ⌥ for word motion, so these ride ⌘⇧ / ⌃.
         ToggleCode, ToggleMark, Paragraph, Heading1, Heading2, Heading3, Heading4, Heading5,
         Heading6,
-        // Clipboard (⌘C/⌘X/⌘V), backed by gpui's own clipboard — no external crate.
-        Copy, Cut, Paste,
+        // Clipboard (⌘C/⌘X/⌘V), plus ⌘⇧V for the plain flavor. Backed by arboard
+        // on the desktop, not by gpui's clipboard — see `set_clipboard`.
+        Copy, Cut, Paste, PasteAsPlainText,
         // History (⌘Z / ⇧⌘Z).
         Undo, Redo,
         // Document start/end (⌘↑ / ⌘↓) and page motion, with ⇧ selecting.
@@ -242,6 +243,7 @@ pub fn register_keybindings(cx: &mut App) {
         KeyBinding::new("cmd-c", Copy, ctx),
         KeyBinding::new("cmd-x", Cut, ctx),
         KeyBinding::new("cmd-v", Paste, ctx),
+        KeyBinding::new("cmd-shift-v", PasteAsPlainText, ctx),
         KeyBinding::new("cmd-up", DocStart, ctx),
         KeyBinding::new("cmd-down", DocEnd, ctx),
         KeyBinding::new("cmd-shift-up", SelectDocStart, ctx),
@@ -1089,25 +1091,44 @@ impl Editor {
         let initial = doc.link_destination_at_caret().unwrap_or_default();
         self.open_prompt("Link destination", initial, PromptAction::Link, window, cx);
     }
-    // ── clipboard (gpui's own, not an external crate) ───────────────────────
+    // ── clipboard (arboard, not gpui's — see `set_clipboard`) ───────────────
+
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(doc) = self.doc.as_ref() else { return };
-        if let Some(text) = doc.selected_text() {
-            cx.write_to_clipboard(ClipboardItem::new_string(text.to_string()));
-        }
+        let Some(doc) = self.doc.as_mut() else { return };
+        let Some(text) = doc.selected_text().map(str::to_string) else { return };
+        let html = doc.selection_html();
+        set_clipboard(text, html, cx);
     }
+
     fn cut(&mut self, _: &Cut, _: &mut Window, cx: &mut Context<Self>) {
         let Some(doc) = self.doc.as_mut() else { return };
         let Some(text) = doc.selected_text().map(str::to_string) else { return };
-        cx.write_to_clipboard(ClipboardItem::new_string(text));
-        doc.backspace();
+        let html = doc.selection_html();
+        set_clipboard(text, html, cx);
+        self.doc.as_mut().unwrap().backspace();
         self.scroll_caret_into_view();
         cx.notify();
     }
-    fn paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
+
+    /// ⌘V: the rich flavor where the pasteboard has one, the plain flavor
+    /// otherwise — including when the HTML won't convert to anything worth
+    /// pasting (see `leaf_core::html`), because the two flavors describe the
+    /// same content and the plain one always exists.
+    fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
+        let pasted = get_clipboard_html(cx)
+            .is_some_and(|html| self.doc.as_mut().is_some_and(|doc| doc.paste_html(&html)));
+        if pasted {
+            self.scroll_caret_into_view();
+            cx.notify();
             return;
-        };
+        }
+        self.paste_as_plain_text(&PasteAsPlainText, window, cx);
+    }
+
+    /// ⌘⇧V: the plain flavor, whatever else the pasteboard carries — the escape
+    /// hatch for pasting the *source* of something rich.
+    fn paste_as_plain_text(&mut self, _: &PasteAsPlainText, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(text) = get_clipboard_text(cx) else { return };
         let Some(doc) = self.doc.as_mut() else { return };
         doc.paste(&text);
         self.scroll_caret_into_view();
@@ -1682,6 +1703,12 @@ impl EntityInputHandler for Editor {
 
     fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {
         self.marked_range = None;
+        // The IME dropping its composition without committing it: the bytes it
+        // already spliced stay, but the run they belong to is closed, so the next
+        // composition doesn't undo together with this one.
+        if let Some(doc) = self.doc.as_mut() {
+            doc.end_composition();
+        }
     }
 
     fn replace_text_in_range(
@@ -1704,8 +1731,19 @@ impl EntityInputHandler for Editor {
             (Some(r), None) => self.range_from_utf16(&r),
             (None, None) => self.selection_range(),
         };
+        // A commit that ends a composition is that composition's last step, not a
+        // separate edit: folding it into the run is what makes the finished word
+        // undo in one press rather than unspooling back through its own reading.
+        // With no composition up this is ordinary text and stays its own edit.
+        let composing = self.marked_range.is_some();
         if let Some(doc) = self.doc.as_mut() {
-            doc.edit(range.start, range.end, new_text);
+            match composing {
+                true => {
+                    doc.edit_composing(range.start, range.end, new_text);
+                    doc.end_composition();
+                }
+                false => doc.edit(range.start, range.end, new_text),
+            }
         }
         // The composition is over: these bytes are the text the user meant.
         self.marked_range = None;
@@ -1744,11 +1782,16 @@ impl EntityInputHandler for Editor {
         self.doc
             .as_mut()
             .unwrap()
-            .edit(range.start, range.end, new_text);
+            .edit_composing(range.start, range.end, new_text);
 
         // An empty composition is the IME withdrawing it (⎋ out of a candidate
         // window): the text is gone, so there's nothing left to mark.
         self.marked_range = (!new_text.is_empty()).then(|| range.start..range.start + new_text.len());
+        if self.marked_range.is_none() {
+            // Withdrawn, so the run is over — and it is still one undo step,
+            // which now undoes back to before the composition started.
+            self.doc.as_mut().unwrap().end_composition();
+        }
 
         // The IME's caret *within* the composition — which syllable a candidate
         // window is offering to replace. Relative to the text just inserted, not
@@ -1996,6 +2039,61 @@ fn utf8_to_utf16(source: &str, target: usize) -> usize {
         utf16 += ch.len_utf16();
     }
     utf16
+}
+
+// ── the system clipboard ─────────────────────────────────────────────────────
+//
+// arboard, and deliberately not gpui's clipboard, which cannot carry HTML: a
+// `ClipboardEntry` is `String | Image | ExternalPaths`, and the `metadata` a
+// `ClipboardString` also holds is written by the macOS backend as a *private*
+// pasteboard type beside `NSPasteboardTypeString` — never
+// `NSPasteboardTypeHTML`, so no other application can ever read it. A rich
+// clipboard is exactly the flavor gpui has no way to publish, so the desktop
+// build goes around it to the same `NSPasteboard` arboard talks to. That it is
+// also the crate leaf-tui uses is the other half of the win: one clipboard
+// implementation for both frontends instead of a frontend divergence.
+//
+// Mobile keeps gpui's clipboard (arboard has no iOS backend — see the `desktop`
+// feature), and so keeps the plain flavor only. `cx` is what makes that
+// fallback possible and is unused on the desktop.
+//
+// A fresh `Clipboard` per operation and every failure degrading to doing
+// nothing, the same discipline as leaf-tui.
+
+#[cfg(feature = "desktop")]
+fn set_clipboard(plain: String, html: Option<String>, _cx: &mut App) {
+    let Ok(mut clipboard) = arboard::Clipboard::new() else { return };
+    // One clear-and-set writes both flavors, so a copy can't leave a stale HTML
+    // flavor from an earlier one behind for a paste to find and prefer.
+    let _ = match html {
+        Some(html) => clipboard.set().html(html, Some(plain)),
+        None => clipboard.set_text(plain),
+    };
+}
+
+#[cfg(not(feature = "desktop"))]
+fn set_clipboard(plain: String, _html: Option<String>, cx: &mut App) {
+    cx.write_to_clipboard(gpui::ClipboardItem::new_string(plain));
+}
+
+#[cfg(feature = "desktop")]
+fn get_clipboard_text(_cx: &mut App) -> Option<String> {
+    arboard::Clipboard::new().ok()?.get_text().ok()
+}
+
+#[cfg(not(feature = "desktop"))]
+fn get_clipboard_text(cx: &mut App) -> Option<String> {
+    cx.read_from_clipboard().and_then(|item| item.text())
+}
+
+#[cfg(feature = "desktop")]
+fn get_clipboard_html(_cx: &mut App) -> Option<String> {
+    arboard::Clipboard::new().ok()?.get().html().ok()
+}
+
+#[cfg(not(feature = "desktop"))]
+fn get_clipboard_html(_cx: &mut App) -> Option<String> {
+    None // gpui's clipboard has no HTML flavor to prefer.
 }
 
 /// Which source bytes an IME composition step replaces — the subtle half of
@@ -2441,6 +2539,7 @@ impl Render for Editor {
                     .on_action(cx.listener(Self::copy))
                     .on_action(cx.listener(Self::cut))
                     .on_action(cx.listener(Self::paste))
+                    .on_action(cx.listener(Self::paste_as_plain_text))
                     .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
                     .on_mouse_down(MouseButton::Right, cx.listener(Self::on_right_mouse_down))
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))

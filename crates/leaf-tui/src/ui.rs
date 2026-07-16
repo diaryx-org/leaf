@@ -197,6 +197,8 @@ fn render_footer(
         Span::styled("word   ", dim),
         Span::styled("^a/c/x/v ", key),
         Span::styled("all·copy·cut·paste   ", dim),
+        Span::styled("⌥v ", key),
+        Span::styled("paste plain   ", dim),
         Span::styled("⌥w ", key),
         Span::styled("view   ", dim),
         Span::styled("^s/⌥s ", key),

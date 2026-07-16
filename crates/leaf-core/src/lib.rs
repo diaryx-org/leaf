@@ -14,6 +14,7 @@
 //! parts instead of re-deriving them.
 
 pub mod doc;
+mod html;
 pub mod style;
 pub mod wysiwyg;
 
