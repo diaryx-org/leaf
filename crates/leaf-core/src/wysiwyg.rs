@@ -481,7 +481,10 @@ impl Builder<'_> {
                 // lines can't be lined up with the source there's no honest
                 // offset to give, so the block maps coarsely to its start (and
                 // stays a source-view job, as all of it once was).
-                let offs = self.code_line_offsets(&node.span, &lines);
+                let offs = node
+                    .content_span
+                    .as_ref()
+                    .and_then(|c| self.code_line_offsets(c, &lines));
                 for (i, raw) in lines.iter().enumerate() {
                     let at = offs.as_ref().map_or(node.span.start, |o| o[i]);
                     let gutter = synth("▏ ", Color::DarkGray, at);
@@ -754,8 +757,11 @@ impl Builder<'_> {
             "delete" => self.recurse(id, base.strikethrough(), out),
             "superscript" | "subscript" => self.recurse(id, base, out),
             "verbatim" | "inline_math" => {
-                // No content_span; map the interior to just after the opener.
-                push_text(out, node.text.as_deref().unwrap_or(""), node.span.start + 1, base.fg(Color::Green));
+                // The interior begins at `content_span.start` — past however many
+                // backticks the fence used, which `span.start + 1` only guessed
+                // right for a single one. Fall back to that guess if it's absent.
+                let at = node.content_span.as_ref().map_or(node.span.start + 1, |c| c.start);
+                push_text(out, node.text.as_deref().unwrap_or(""), at, base.fg(Color::Green));
             }
             "link" | "url" | "email" => {
                 let style = base.fg(Color::Cyan).underline();
@@ -845,41 +851,30 @@ impl Builder<'_> {
 
     /// The source offset of each line of a code block's `text`.
     ///
-    /// twig gives a code block no `content_span`, and its `text` isn't a
-    /// verbatim slice of the source: a fenced block has had its fences removed,
-    /// an indented one its four-space indent stripped. So the lines are re-found
-    /// — the run of source lines they align with is located, and each line is
-    /// anchored at the *end* of its source line, which places it past whatever
-    /// indent was stripped without having to know how much there was.
+    /// `content` is the block's `content_span` — where twig says the body lives
+    /// in the source, fences already excluded. Its lines run 1:1 with the
+    /// rendered `text` lines, so no search is needed; each is anchored at the
+    /// *end* of its source line, which places it past whatever indent `text` had
+    /// stripped (a fenced block's fences, an indented one's leading spaces)
+    /// without having to know how much there was.
     ///
-    /// The search runs backwards because the ambiguity is always at the front: a
-    /// block fenced ```` ```rust ```` whose first line of code is `rust` matches
-    /// its own opening fence. Nothing follows the code but the closing fence, so
-    /// coming from the end finds the content first.
-    ///
-    /// `None` when the text can't be lined up at all.
-    fn code_line_offsets(&self, span: &Range<usize>, lines: &[&str]) -> Option<Vec<usize>> {
+    /// `None` when the body and the rendered lines don't line up — a coarse
+    /// fallback the caller turns into the block's start offset.
+    fn code_line_offsets(&self, content: &Range<usize>, lines: &[&str]) -> Option<Vec<usize>> {
         let mut src_lines: Vec<(usize, &str)> = Vec::new();
-        let mut at = span.start;
-        for l in self.source.get(span.start..span.end)?.split('\n') {
+        let mut at = content.start;
+        for l in self.source.get(content.start..content.end)?.split('\n') {
             src_lines.push((at, l));
             at += l.len() + 1;
         }
-        let last = src_lines.len().checked_sub(lines.len())?;
-        let base = (0..=last).rev().find(|&b| {
-            lines.iter().enumerate().all(|(i, l)| {
-                let (_, sl) = src_lines[b + i];
-                sl.len() >= l.len() && sl.ends_with(l)
-            })
-        })?;
+        if src_lines.len() != lines.len() {
+            return None;
+        }
         Some(
             lines
                 .iter()
-                .enumerate()
-                .map(|(i, l)| {
-                    let (start, sl) = src_lines[base + i];
-                    start + sl.len() - l.len()
-                })
+                .zip(&src_lines)
+                .map(|(l, (start, sl))| start + sl.len().saturating_sub(l.len()))
                 .collect(),
         )
     }

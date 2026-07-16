@@ -140,22 +140,39 @@ enum EditKind {
 
 /// The caret and selection at one moment — the part of a history step twig's
 /// `Change` cannot carry, because the caret is leaf's state and twig only knows
-/// about bytes.
+/// about bytes. leaf serializes it into the opaque per-state blob twig now
+/// stores in its own undo history (see `record_caret`), so undo and redo hand
+/// back the caret that matches the source they restore.
 #[derive(Clone, Copy)]
 struct CaretState {
     caret: usize,
     anchor: Option<usize>,
 }
 
-/// The leaf-side half of one undo step, sitting at the same depth as twig's:
-/// `before` is where the caret was when the edit began, `after` where the edit
-/// left it. Undo restores `before`, redo `after` — an edit is only truly
-/// reversed when the caret comes back too, and where the caret *was* is not
-/// something the bytes remember.
-#[derive(Clone, Copy)]
-struct CaretStep {
-    before: CaretState,
-    after: CaretState,
+impl CaretState {
+    /// Pack into the fixed 17-byte blob leaf hands twig: the caret as a u64,
+    /// then an anchor-present flag and the anchor. twig copies these bytes and
+    /// never reads them.
+    fn to_blob(self) -> [u8; 17] {
+        let mut b = [0u8; 17];
+        b[..8].copy_from_slice(&(self.caret as u64).to_le_bytes());
+        if let Some(a) = self.anchor {
+            b[8] = 1;
+            b[9..].copy_from_slice(&(a as u64).to_le_bytes());
+        }
+        b
+    }
+
+    /// Recover a state from twig's blob, or `None` when it is empty or the wrong
+    /// length — a state twig restored that never had a caret set on it, which
+    /// leaves the caller to fall back to the edit site.
+    fn from_blob(b: &[u8]) -> Option<Self> {
+        let b: &[u8; 17] = b.try_into().ok()?;
+        let caret = u64::from_le_bytes(b[..8].try_into().unwrap()) as usize;
+        let anchor =
+            (b[8] != 0).then(|| u64::from_le_bytes(b[9..].try_into().unwrap()) as usize);
+        Some(CaretState { caret, anchor })
+    }
 }
 
 pub struct Doc {
@@ -176,17 +193,6 @@ pub struct Doc {
     /// (see `undo`/`redo`), but "what counts as one undo step" is a frontend-UX
     /// call, so leaf decides when a run continues and tells twig to coalesce.
     last_edit_kind: Option<EditKind>,
-    /// Caret/selection states running in lockstep with twig's undo and redo
-    /// stacks — `caret_undo[i]` belongs to twig's i-th undo step, and the two
-    /// are pushed, popped, coalesced, and truncated together or not at all.
-    ///
-    /// Drift here is silent and awful: the stacks stay the same *depth* while
-    /// holding states from different timelines, so undo puts the caret somewhere
-    /// plausible from an edit that never happened. Every twig history mutation
-    /// therefore has exactly one counterpart here — see `push_history` (which
-    /// owns the redo truncation a fresh edit forces) and `after_history`.
-    caret_undo: Vec<CaretStep>,
-    caret_redo: Vec<CaretStep>,
     /// The source as of the last open/save — `dirty` is `source != clean_source`,
     /// so undoing back to the saved state correctly clears the modified flag.
     clean_source: String,
@@ -299,8 +305,6 @@ impl Doc {
             // toggles at runtime.
             view: View::Wysiwyg,
             last_edit_kind: None,
-            caret_undo: Vec::new(),
-            caret_redo: Vec::new(),
             goal_col: None,
             vmap: VisualMap::default(),
             revision: 0,
@@ -708,12 +712,12 @@ impl Doc {
         }
         // `splice` re-anchors to the end of the `Change`, which for a whole-region
         // rewrite is the last line's end — nowhere the caret was. Place it, then
-        // tell the history where it really ended up, or a redo would replay the
-        // caret splice left behind instead of this one.
+        // re-record the caret so this is the state redo restores, not the one
+        // `splice` left behind from the `Change`.
         self.caret = placed.0.min(self.source.len());
         self.anchor = placed.1;
         self.clamp_caret();
-        self.sync_history_after();
+        self.record_caret();
     }
 
     /// The Enter key.
@@ -968,7 +972,9 @@ impl Doc {
         // run of the same kind (typing, deleting), tell twig to fold it into the
         // step before it so the whole run undoes at once.
         let coalesce = kind != EditKind::Other && self.last_edit_kind == Some(kind);
-        let before = self.snapshot();
+        // Hand twig the pre-edit caret before the splice, so the undo step it
+        // retires carries where the caret was standing.
+        self.record_caret();
         match self.editor.edit_range(start, end, text) {
             Ok(change) => {
                 if coalesce {
@@ -981,7 +987,8 @@ impl Doc {
                 self.goal_col = None;
                 self.dirty = self.source != self.clean_source;
                 self.status = None;
-                self.push_history(before, coalesce);
+                // And the post-edit caret, so a later redo restores it.
+                self.record_caret();
                 true
             }
             // The edit was rolled back, so twig's history did not move and
@@ -1001,36 +1008,18 @@ impl Doc {
         }
     }
 
-    /// Record the caret state around one successful twig edit. `before` is the
-    /// snapshot taken before the op ran; the caret as it stands *now* is the
-    /// step's `after`, so call this once the op has placed the caret where it
-    /// finally means to leave it.
+    /// Hand twig the current caret and selection as the blob for the live
+    /// document state. Called before an edit — so the step twig retires records
+    /// where the caret was, and undo can restore it — and again once the op has
+    /// placed the caret, so redo restores where the edit left it.
     ///
-    /// `coalesce` must be the same flag handed to twig's `coalesce_last_undo`:
-    /// folding two twig steps into one has to fold two of ours into one as well,
-    /// which is a matter of *not* pushing and instead stretching the open step's
-    /// `after` over the new edit. The run's original `before` stays put — a
-    /// coalesced run undoes as one step, so it restores the caret from before
-    /// the whole run, not before its last keystroke.
-    fn push_history(&mut self, before: CaretState, coalesce: bool) {
-        let after = self.snapshot();
-        // Any fresh edit makes twig drop its redo stack; ours goes with it, or a
-        // later redo would replay a caret from the branch that edit abandoned.
-        self.caret_redo.clear();
-        match self.caret_undo.last_mut().filter(|_| coalesce) {
-            Some(open) => open.after = after,
-            None => self.caret_undo.push(CaretStep { before, after }),
-        }
-    }
-
-    /// Re-point the open history step's `after` at the caret as it now stands —
-    /// for an op that splices and then places the caret itself, whose final
-    /// caret isn't the one `splice` re-anchored from the `Change`.
-    fn sync_history_after(&mut self) {
-        let after = self.snapshot();
-        if let Some(open) = self.caret_undo.last_mut() {
-            open.after = after;
-        }
+    /// This is the whole of leaf's undo-caret bookkeeping now. twig carries the
+    /// caret through its own history, so coalescing falls out for free (folding
+    /// two twig steps into one drops the intermediate blob, keeping the run's
+    /// first) and the parallel stacks that had to march in lockstep — and could
+    /// silently drift out of it — are gone.
+    fn record_caret(&mut self) {
+        let _ = self.editor.set_caret_blob(&self.snapshot().to_blob());
     }
 
     /// Toggle an inline mark over the selection (Bold / Italic / Code / …). Keeps
@@ -1040,7 +1029,7 @@ impl Doc {
             self.status = Some("select text first".into());
             return;
         };
-        let before = self.snapshot();
+        self.record_caret();
         match self.editor.toggle_inline(s, e, kind) {
             Ok(change) => {
                 self.last_edit_kind = None; // structural edit is its own undo step
@@ -1049,7 +1038,7 @@ impl Doc {
                 self.caret = change.new.end;
                 self.dirty = self.source != self.clean_source;
                 self.status = None;
-                self.push_history(before, false);
+                self.record_caret();
             }
             Err(e) => self.status = Some(format!("{kind:?}: {e}")),
         }
@@ -1057,7 +1046,7 @@ impl Doc {
 
     /// Convert the block at the caret to a heading level or paragraph.
     pub fn set_block(&mut self, kind: BlockKind) {
-        let before = self.snapshot();
+        self.record_caret();
         match self.block_offset_for_caret() {
             Some(offset) => match self.editor.set_block(offset, kind) {
                 Ok(_) => {
@@ -1067,7 +1056,7 @@ impl Doc {
                     self.anchor = None;
                     self.dirty = self.source != self.clean_source;
                     self.status = None;
-                    self.push_history(before, false);
+                    self.record_caret();
                 }
                 Err(e) => self.status = Some(format!("{kind:?}: {e}")),
             },
@@ -1255,7 +1244,7 @@ impl Doc {
                 (off, off)
             }
         };
-        let before = self.snapshot();
+        self.record_caret();
         match self.editor.toggle_block_container(start, end, kind) {
             Ok(change) => {
                 // Read the caret's place out of the *pre-edit* source, before
@@ -1282,7 +1271,7 @@ impl Doc {
                 self.dirty = self.source != self.clean_source;
                 self.status = None;
                 self.clamp_caret();
-                self.push_history(before, false);
+                self.record_caret();
             }
             Err(e) => self.status = Some(format!("{kind:?}: {e}")),
         }
@@ -1342,7 +1331,7 @@ impl Doc {
     /// as an error rather than a quietly rewritten URL.
     pub fn insert_link(&mut self, destination: &str) {
         let (start, end) = self.selection().unwrap_or((self.caret, self.caret));
-        let before = self.snapshot();
+        self.record_caret();
         match self.editor.insert_link(start, end, destination) {
             Ok(change) => {
                 self.last_edit_kind = None;
@@ -1366,7 +1355,7 @@ impl Doc {
                 self.dirty = self.source != self.clean_source;
                 self.status = None;
                 self.clamp_caret();
-                self.push_history(before, false);
+                self.record_caret();
             }
             Err(e) => self.status = Some(format!("link: {e}")),
         }
@@ -1402,23 +1391,17 @@ impl Doc {
     }
 
     // ── undo / redo ───────────────────────────────────────────────────────────
-    // twig owns the history of *bytes* (it owns the buffer); leaf drives it and
-    // keeps the matching history of *carets*, which twig's `Change` can't carry
-    // because the caret was never twig's to know. The two stacks move as one —
-    // see `push_history` for the pushing, coalescing, and redo truncation, and
-    // `splice` for how a run of keystrokes becomes a single step.
+    // twig owns the history of *bytes* (it owns the buffer) and now carries the
+    // caret through it too: `record_caret` stashes each state's caret in twig's
+    // opaque per-step blob, and undo/redo hand it back with the source they
+    // restore. So leaf keeps no history of its own — no parallel stacks to march
+    // in lockstep and silently drift out of it.
 
     /// Undo the last edit step (⌘Z / ^Z), putting the caret and selection back
     /// where they were when that step began.
     pub fn undo(&mut self) {
         match self.editor.undo() {
-            Ok(Some(change)) => {
-                let step = self.caret_undo.pop();
-                self.after_history(change, step.map(|s| s.before));
-                if let Some(step) = step {
-                    self.caret_redo.push(step);
-                }
-            }
+            Ok(Some(change)) => self.after_history(change),
             Ok(None) => self.status = Some("nothing to undo".into()),
             Err(e) => self.status = Some(format!("undo: {e}")),
         }
@@ -1428,13 +1411,7 @@ impl Doc {
     /// selection back where that step originally left them.
     pub fn redo(&mut self) {
         match self.editor.redo() {
-            Ok(Some(change)) => {
-                let step = self.caret_redo.pop();
-                self.after_history(change, step.map(|s| s.after));
-                if let Some(step) = step {
-                    self.caret_undo.push(step);
-                }
-            }
+            Ok(Some(change)) => self.after_history(change),
             Ok(None) => self.status = Some("nothing to redo".into()),
             Err(e) => self.status = Some(format!("redo: {e}")),
         }
@@ -1443,16 +1420,16 @@ impl Doc {
     /// Refresh the cached source and put the caret back where the step being
     /// undone/redone had it, clearing any active run.
     ///
-    /// `restore` is that remembered state; `change` is only the fallback for a
-    /// step with no record of its own — a caret at the end of the restored text,
-    /// which is where this always landed before the states were kept. It is the
-    /// edit site, not where the user was standing, so it's a floor and not the
-    /// behaviour: undoing should hand back the document *and* the place you were
-    /// working, which for an edit made anywhere but under the caret are two
-    /// different places.
-    fn after_history(&mut self, change: Change, restore: Option<CaretState>) {
+    /// The caret comes from twig's blob for the restored state (what
+    /// `record_caret` stored). `change` is only the fallback for a state with no
+    /// blob — a caret at the end of the restored text, which is where this always
+    /// landed before the blobs were kept. It is the edit site, not where the user
+    /// was standing, so it's a floor and not the behaviour: undoing should hand
+    /// back the document *and* the place you were working, which for an edit made
+    /// anywhere but under the caret are two different places.
+    fn after_history(&mut self, change: Change) {
         self.refresh();
-        match restore {
+        match self.editor.caret_blob().ok().and_then(|b| CaretState::from_blob(&b)) {
             Some(state) => {
                 self.caret = state.caret.min(self.source.len());
                 self.anchor = state.anchor.map(|a| a.min(self.source.len()));
@@ -3952,8 +3929,6 @@ mod tests {
             d.caret = 0;
             d.insert("X"); // diverges: A's redo is gone from twig
             assert_eq!(d.source, "Xhello world\n");
-            assert_eq!(d.caret_undo.len(), 1, "A's step went with A's redo");
-            assert!(d.caret_redo.is_empty(), "the abandoned branch is gone");
 
             d.redo();
             assert_eq!(d.source, "Xhello world\n", "nothing to redo onto");
@@ -4032,7 +4007,9 @@ mod tests {
             d.outdent();
             assert_eq!(d.source, "hello\n");
             assert!(!d.dirty, "a no-op is not a modification");
-            assert!(d.caret_undo.is_empty(), "and spends no undo step");
+            d.undo();
+            assert_eq!(d.status.as_deref(), Some("nothing to undo"), "spends no undo step");
+            assert_eq!(d.source, "hello\n");
         }
     }
 
