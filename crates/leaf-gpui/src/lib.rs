@@ -27,6 +27,7 @@
 mod prompt;
 mod style;
 
+use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
 use std::path::PathBuf;
@@ -321,6 +322,11 @@ pub struct Editor {
     /// activation all repaint a document that hasn't moved a byte. Every one of
     /// those used to re-shape the whole thing.
     layout_key: Option<LayoutKey>,
+    /// Shapes kept from the last paint, so an edit re-shapes only the text that
+    /// actually changed — see [`Shaper`].
+    shape_cache: HashMap<u64, Rc<ShapedLine>>,
+    /// Where each logical line wraps — see [`Shaper::breaks`].
+    break_cache: HashMap<(u64, u32), Rc<Vec<usize>>>,
     last_line_height: Pixels,
     last_bounds: Option<Bounds<Pixels>>,
     /// Visual-row count from the last paint — request_layout reserves height for
@@ -380,6 +386,8 @@ impl Editor {
             last_rows: Rc::new(Vec::new()),
             last_geoms: Rc::new(Vec::new()),
             layout_key: None,
+            shape_cache: HashMap::new(),
+            break_cache: HashMap::new(),
             last_line_height: px(24.0),
             last_bounds: None,
             last_row_count: 0,
@@ -601,6 +609,10 @@ impl Editor {
     /// it, so those paths say so here.
     fn invalidate_layout(&mut self) {
         self.layout_key = None;
+        // The shapes and the breaks both carry the font they were measured
+        // with, so they go too.
+        self.shape_cache.clear();
+        self.break_cache.clear();
     }
 
     /// Persist the open document to its path, unconditionally and with no
@@ -1895,6 +1907,146 @@ impl EntityInputHandler for Editor {
     }
 }
 
+/// Shapes lines, and remembers what it shaped.
+///
+/// A [`ShapedLine`] is a pure function of its text, its runs, and the font. It
+/// holds no source offsets — it doesn't know where in the document its text came
+/// from. That is the whole reason this can survive typing.
+///
+/// An edit shifts every source offset after it, so a cache of *rows* misses on
+/// every paragraph below the caret even though their text is untouched; that's
+/// what makes typing at the top of a file as expensive as opening it. But the
+/// shapes of those paragraphs are bit-for-bit identical, and shaping is the
+/// expensive part — 37 ms of a 68 ms paint on a 1 MB document. So the offsets
+/// come free from the rebuilt map, and only the shapes are remembered, keyed by
+/// what they are actually made of.
+///
+/// Entries live one paint. `prev` is the last paint's; a shape that gets used
+/// moves across into `fresh`, and whatever is still in `prev` at the end was not
+/// used and is dropped. So the cache tracks the document as it stands rather
+/// than growing with everything it has ever been.
+struct Shaper<'w> {
+    window: &'w mut Window,
+    font_size: Pixels,
+    prev: HashMap<u64, Rc<ShapedLine>>,
+    fresh: HashMap<u64, Rc<ShapedLine>>,
+    /// Where a logical line wraps, keyed by its content *and the width it was
+    /// wrapped at*.
+    ///
+    /// Finding the breaks means shaping the whole line, but that shape is then
+    /// thrown away — the rows are built from the shorter lines it breaks into.
+    /// Retaining it alongside them cost 150 MB on a 1 MB document, for a shape
+    /// nothing paints. The breaks are a handful of integers and answer the same
+    /// question, so a line whose text hasn't changed is never measured twice.
+    breaks: HashMap<(u64, u32), Rc<Vec<usize>>>,
+    prev_breaks: HashMap<(u64, u32), Rc<Vec<usize>>>,
+}
+
+impl Shaper<'_> {
+    /// Shape `glyphs`, reusing an identical shape from the last paint if there
+    /// is one.
+    fn shape(&mut self, glyphs: &[Glyph], font: &Font, marked: Option<&Range<usize>>) -> Rc<ShapedLine> {
+        let key = shape_key(glyphs, marked);
+        self.shape_keyed(key, glyphs, font, marked)
+    }
+
+    /// [`Shaper::shape`] for a caller that has already hashed these glyphs —
+    /// the wrap path needs the same key to look up where the line breaks, and
+    /// hashing a megabyte of text twice a keystroke is its own bottleneck.
+    fn shape_keyed(
+        &mut self,
+        key: u64,
+        glyphs: &[Glyph],
+        font: &Font,
+        marked: Option<&Range<usize>>,
+    ) -> Rc<ShapedLine> {
+        // A hash names the entry; the text confirms it. That pairing is what
+        // lets `shape_key` be a fast, weak hash rather than a strong one: a
+        // collision costs a re-shape here, where unchecked it would render one
+        // paragraph's glyphs in another's place. Verifying is a comparison
+        // against the shape's own text — no allocation, and cheap either way.
+        if let Some(line) = self.prev.remove(&key).filter(|l| text_is(l, glyphs)) {
+            self.fresh.insert(key, line.clone());
+            return line;
+        }
+        if let Some(line) = self.fresh.get(&key).filter(|l| text_is(l, glyphs)) {
+            return line.clone();
+        }
+        let text: String = glyphs.iter().map(|g| g.ch).collect();
+        let runs = build_runs(glyphs, font, marked);
+        let line = Rc::new(
+            self.window
+                .text_system()
+                .shape_line(text.into(), self.font_size, &runs, None),
+        );
+        self.fresh.insert(key, line.clone());
+        line
+    }
+
+    /// The empty line, for a row with nothing on it.
+    fn empty(&mut self) -> Rc<ShapedLine> {
+        self.shape(&[], &Font::default(), None)
+    }
+
+    /// Stop retaining a shape — for one that was only ever measured through.
+    fn forget(&mut self, key: u64) {
+        self.fresh.remove(&key);
+    }
+
+    /// The breaks remembered for this line at this width, if it has been
+    /// measured before.
+    fn cached_breaks(&mut self, key: (u64, u32)) -> Option<Rc<Vec<usize>>> {
+        if let Some(b) = self.prev_breaks.remove(&key) {
+            self.breaks.insert(key, b.clone());
+            return Some(b);
+        }
+        self.breaks.get(&key).cloned()
+    }
+}
+
+/// Whether `line` was shaped from exactly these glyphs' characters — the check
+/// that makes a 64-bit key exact in practice rather than merely unlikely to be
+/// wrong.
+fn text_is(line: &ShapedLine, glyphs: &[Glyph]) -> bool {
+    line.text.chars().eq(glyphs.iter().map(|g| g.ch))
+}
+
+/// Everything a shape is made of, as one number: the characters, the styling
+/// that picks each run's font and colour, and whether the IME is underlining it.
+/// Deliberately *not* the source offsets — those are what shift under an edit,
+/// and the shape doesn't depend on them.
+///
+/// This runs over every glyph on screen, twice a keystroke, so it is written to
+/// be cheap rather than to be a good hash: everything a glyph contributes packs
+/// into one `u64`, and each one costs a rotate, an xor, and a multiply. The
+/// standard hasher is SipHash, which is built to resist an adversary choosing
+/// the keys — there is no adversary here, and paying for that over a megabyte of
+/// text cost more than the shaping it was saving.
+fn shape_key(glyphs: &[Glyph], marked: Option<&Range<usize>>) -> u64 {
+    // FxHash's multiplier, and its rotate-xor-multiply step.
+    const K: u64 = 0x51_7c_c1_b7_27_22_0a_95;
+    let mut h: u64 = glyphs.len() as u64;
+    for g in glyphs {
+        let preedit = marked.is_some_and(|m| m.contains(&g.src));
+        let packed = (g.ch as u64)
+            | ((style_bits(g.style) as u64) << 32)
+            | ((preedit as u64) << 48);
+        h = (h.rotate_left(5) ^ packed).wrapping_mul(K);
+    }
+    h
+}
+
+/// A style packed into the bits that reach the font: colour and the emphasis
+/// flags. `Style` is `Eq` but not `Hash`, and this is the part that matters.
+fn style_bits(s: CoreStyle) -> u16 {
+    (s.fg as u16)
+        | ((s.bg as u16) << 4)
+        | ((s.bold as u16) << 8)
+        | ((s.italic as u16) << 9)
+        | ((s.underline as u16) << 10)
+        | ((s.strikethrough as u16) << 11)
+}
+
 /// One shaped run of text within a row, placed at a known x from the row's left.
 ///
 /// Prose has exactly one of these per row, at x = 0. A table's grid row has one
@@ -1903,7 +2055,9 @@ impl EntityInputHandler for Editor {
 /// can't be padded to a column with spaces.
 struct RowSegment {
     x: Pixels,
-    shaped: ShapedLine,
+    /// Shared with the shape cache — the same shape may be on several rows, and
+    /// on the same row across paints.
+    shaped: Rc<ShapedLine>,
     /// The byte offset within *this segment's* text of each of its characters,
     /// plus a final entry for the text's end (`chars + 1` entries).
     char_byte: Vec<usize>,
@@ -1935,7 +2089,12 @@ struct RowLayout {
 
 impl RowLayout {
     /// A row of ordinary prose: one segment, flush left.
-    fn prose(shaped: ShapedLine, char_srcs: Vec<usize>, char_byte: Vec<usize>, end_src: usize) -> Self {
+    fn prose(
+        shaped: Rc<ShapedLine>,
+        char_srcs: Vec<usize>,
+        char_byte: Vec<usize>,
+        end_src: usize,
+    ) -> Self {
         let field = (px(0.0), shaped.width);
         RowLayout {
             segments: vec![RowSegment { x: px(0.0), shaped, char_byte, first: 0, field }],
@@ -2172,9 +2331,8 @@ fn build_runs(glyphs: &[Glyph], base: &Font, marked: Option<&Range<usize>>) -> V
 /// boundaries wherever the measured width exceeds `wrap_px`. A line that doesn't
 /// need to wrap reuses its single shaped line as-is (no re-shaping).
 fn wrap_logical(
-    window: &mut Window,
+    shaper: &mut Shaper,
     font: &Font,
-    font_size: Pixels,
     glyphs: &[Glyph],
     logical_end_src: usize,
     wrap_px: f32,
@@ -2182,44 +2340,65 @@ fn wrap_logical(
     out: &mut Vec<RowLayout>,
 ) {
     if glyphs.is_empty() {
-        let shaped = window.text_system().shape_line("".into(), font_size, &[], None);
+        let shaped = shaper.empty();
         out.push(RowLayout::prose(shaped, Vec::new(), vec![0], logical_end_src));
         return;
     }
 
-    // Shape the whole line once, purely to measure where the breaks fall.
-    let (text, char_byte) = row_text(glyphs);
-    let runs = build_runs(glyphs, font, marked);
-    let full = window
-        .text_system()
-        .shape_line(text.into(), font_size, &runs, None);
-    let x = |byte: usize| f32::from(full.x_for_index(byte));
-
-    // Greedy word wrap: walk maximal non-space runs, breaking before a word when
-    // the line up to that word's end would overflow.
+    let char_byte = char_bytes(glyphs);
     let n = glyphs.len();
-    let mut starts = vec![0usize]; // glyph index each visual row starts at
-    let mut line_start = 0usize;
-    let mut j = 0usize;
-    while j < n {
-        if glyphs[j].ch == ' ' {
-            j += 1;
-            continue;
-        }
-        let word_start = j;
-        while j < n && glyphs[j].ch != ' ' {
-            j += 1;
-        }
-        if x(char_byte[j]) - x(char_byte[line_start]) > wrap_px && word_start > line_start {
-            starts.push(word_start);
-            line_start = word_start;
-        }
-    }
+    let hash = shape_key(glyphs, marked);
+    let key = (hash, wrap_px.to_bits());
 
-    // The common case — the line fits — reuses the shaped line we already have.
+    // Where this line breaks. Known already unless its text or the width moved —
+    // which is the difference between a keystroke re-measuring the paragraph it
+    // landed in and re-measuring the whole document.
+    let starts = match shaper.cached_breaks(key) {
+        Some(starts) => starts,
+        None => {
+            // Shape the whole line once, purely to measure where the breaks
+            // fall.
+            let full = shaper.shape_keyed(hash, glyphs, font, marked);
+            let x = |byte: usize| f32::from(full.x_for_index(byte));
+
+            // Greedy word wrap: walk maximal non-space runs, breaking before a
+            // word when the line up to that word's end would overflow.
+            let mut starts = vec![0usize]; // glyph index each visual row starts at
+            let mut line_start = 0usize;
+            let mut j = 0usize;
+            while j < n {
+                if glyphs[j].ch == ' ' {
+                    j += 1;
+                    continue;
+                }
+                let word_start = j;
+                while j < n && glyphs[j].ch != ' ' {
+                    j += 1;
+                }
+                if x(char_byte[j]) - x(char_byte[line_start]) > wrap_px && word_start > line_start {
+                    starts.push(word_start);
+                    line_start = word_start;
+                }
+            }
+            drop(full);
+            if starts.len() > 1 {
+                // It wraps, so the rows are built from the shorter lines below
+                // and nothing will ever paint the whole-line shape. Keeping it
+                // would double the memory the cache holds for every paragraph on
+                // screen; the breaks say all we needed it for.
+                shaper.forget(hash);
+            }
+            let starts = Rc::new(starts);
+            shaper.breaks.insert(key, starts.clone());
+            starts
+        }
+    };
+
+    // The common case — the line fits — is its own single row, and the shape
+    // measured above is the one it paints.
     if starts.len() == 1 {
         out.push(RowLayout::prose(
-            full,
+            shaper.shape_keyed(hash, glyphs, font, marked),
             glyphs.iter().map(|g| g.src).collect(),
             char_byte,
             logical_end_src,
@@ -2231,11 +2410,8 @@ fn wrap_logical(
         let gs = starts[k];
         let ge = starts.get(k + 1).copied().unwrap_or(n);
         let sub = &glyphs[gs..ge];
-        let (stext, scb) = row_text(sub);
-        let sruns = build_runs(sub, font, marked);
-        let shaped = window
-            .text_system()
-            .shape_line(stext.into(), font_size, &sruns, None);
+        let scb = char_bytes(sub);
+        let shaped = shaper.shape(sub, font, marked);
         // The offset the caret lands on past this row: the block's end on the
         // last row, else the start of the next row's first glyph.
         let end_src = if ge == n {
@@ -2326,20 +2502,17 @@ fn fit_widths_px(widths: &mut [f32], avail: f32) {
 /// its last glyph — a line cut mid-cluster would put a caret stop inside a
 /// character, and the next Backspace would take it apart from the middle.
 fn wrap_glyphs_px(
-    window: &mut Window,
+    shaper: &mut Shaper,
     font: &Font,
-    font_size: Pixels,
     glyphs: &[Glyph],
     width: f32,
 ) -> Vec<Vec<Glyph>> {
     if glyphs.is_empty() {
         return vec![Vec::new()];
     }
-    let (text, char_byte) = row_text(glyphs);
-    let runs = build_runs(glyphs, font, None);
-    let shaped = window
-        .text_system()
-        .shape_line(text.into(), font_size, &runs, None);
+    let char_byte = char_bytes(glyphs);
+    let hash = shape_key(glyphs, None);
+    let shaped = shaper.shape_keyed(hash, glyphs, font, None);
     let x = |i: usize| f32::from(shaped.x_for_index(char_byte[i]));
 
     let n = glyphs.len();
@@ -2372,6 +2545,12 @@ fn wrap_glyphs_px(
         lines.push(glyphs[start..end].to_vec());
         start = end;
     }
+    if lines.len() > 1 {
+        // Wrapped: the cell is painted from the shorter lines, so the whole-cell
+        // shape was only ever a measurement — see `Shaper::breaks`.
+        drop(shaped);
+        shaper.forget(hash);
+    }
     lines
 }
 
@@ -2381,9 +2560,8 @@ fn wrap_glyphs_px(
 /// Columns are sized to content — each as wide as its widest cell — and only
 /// squeezed if the grid won't fit, at which point cells wrap into what's left.
 fn layout_table(
-    window: &mut Window,
+    shaper: &mut Shaper,
     font: &Font,
-    font_size: Pixels,
     info: &TableInfo,
     avail: f32,
     marked: Option<&Range<usize>>,
@@ -2396,13 +2574,13 @@ fn layout_table(
 
     // The block prefix — a quote's gutter, a list's indent — is drawn on every
     // grid row and the table starts past it, the way the picture does it.
-    let prefix = shape_glyphs(window, font, font_size, &info.prefix, marked);
+    let prefix = shape_glyphs(shaper, font, &info.prefix, marked);
     let indent = f32::from(prefix.as_ref().map_or(px(0.0), |p| p.1.width));
 
     // Every cell renders a trailing gutter space, which carries its end stop —
     // so it's part of what a column has to hold, and part of what a wrapped line
     // has to leave room for.
-    let space = measure_glyphs(window, font, font_size, &[]);
+    let space = measure_glyphs(shaper, font, &[]);
 
     // Every column at its widest cell is the wish; `fit_widths_px` is what the
     // surface can actually give. The measurements are kept: a cell that already
@@ -2414,7 +2592,7 @@ fn layout_table(
         .map(|row| {
             row.cells
                 .iter()
-                .map(|cell| measure_glyphs(window, font, font_size, &cell.glyphs))
+                .map(|cell| measure_glyphs(shaper, font, &cell.glyphs))
                 .collect()
         })
         .collect();
@@ -2444,13 +2622,9 @@ fn layout_table(
                 Some(cell) if measured[ri][c] <= widths[c] => vec![cell.glyphs.clone()],
                 // The wrap width leaves room for the gutter space appended
                 // below, or the line plus its space would overrun the column.
-                Some(cell) => wrap_glyphs_px(
-                    window,
-                    font,
-                    font_size,
-                    &cell.glyphs,
-                    (widths[c] - space).max(1.0),
-                ),
+                Some(cell) => {
+                    wrap_glyphs_px(shaper, font, &cell.glyphs, (widths[c] - space).max(1.0))
+                }
                 None => vec![Vec::new()],
             })
             .collect();
@@ -2496,11 +2670,8 @@ fn layout_table(
                     src: end,
                     stop: true,
                 });
-                let (text, char_byte) = row_text(&gs);
-                let runs = build_runs(&gs, font, marked);
-                let shaped = window
-                    .text_system()
-                    .shape_line(text.into(), font_size, &runs, None);
+                let char_byte = char_bytes(&gs);
+                let shaped = shaper.shape(&gs, font, marked);
 
                 let slack = (widths[c] - f32::from(shaped.width)).max(0.0);
                 let lead = match cell.align {
@@ -2600,27 +2771,25 @@ fn table_chrome(
 /// their source offsets to go on carrying the caret.
 #[allow(clippy::type_complexity)]
 fn shape_glyphs(
-    window: &mut Window,
+    shaper: &mut Shaper,
     font: &Font,
-    font_size: Pixels,
     glyphs: &[Glyph],
     marked: Option<&Range<usize>>,
-) -> Option<(Vec<Glyph>, ShapedLine, Vec<usize>)> {
+) -> Option<(Vec<Glyph>, Rc<ShapedLine>, Vec<usize>)> {
     if glyphs.is_empty() {
         return None;
     }
-    let (text, char_byte) = row_text(glyphs);
-    let runs = build_runs(glyphs, font, marked);
-    let shaped = window
-        .text_system()
-        .shape_line(text.into(), font_size, &runs, None);
-    Some((glyphs.to_vec(), shaped, char_byte))
+    Some((
+        glyphs.to_vec(),
+        shaper.shape(glyphs, font, marked),
+        char_bytes(glyphs),
+    ))
 }
 
 /// The width `glyphs` shape to, plus the trailing gutter space every cell
 /// renders — what a column has to be to hold this cell. Passing no glyphs
 /// measures the gutter space alone.
-fn measure_glyphs(window: &mut Window, font: &Font, font_size: Pixels, glyphs: &[Glyph]) -> f32 {
+fn measure_glyphs(shaper: &mut Shaper, font: &Font, glyphs: &[Glyph]) -> f32 {
     let mut gs = glyphs.to_vec();
     gs.push(Glyph {
         ch: ' ',
@@ -2628,12 +2797,7 @@ fn measure_glyphs(window: &mut Window, font: &Font, font_size: Pixels, glyphs: &
         src: 0,
         stop: true,
     });
-    let (text, _) = row_text(&gs);
-    let runs = build_runs(&gs, font, None);
-    let shaped = window
-        .text_system()
-        .shape_line(text.into(), font_size, &runs, None);
-    f32::from(shaped.width)
+    f32::from(shaper.shape(&gs, font, None).width)
 }
 
 /// The UTF-8 byte offset a UTF-16 offset into `source` names — [`Editor::offset_from_utf16`]'s
@@ -2750,16 +2914,14 @@ fn marked_replace_range(
 
 /// A glyph run's concatenated text and its per-glyph cumulative byte offsets
 /// (`chars + 1` entries, the last being the total length).
-fn row_text(glyphs: &[Glyph]) -> (String, Vec<usize>) {
-    let mut text = String::new();
+fn char_bytes(glyphs: &[Glyph]) -> Vec<usize> {
     let mut char_byte = vec![0usize];
     let mut acc = 0usize;
     for g in glyphs {
-        text.push(g.ch);
         acc += g.ch.len_utf8();
         char_byte.push(acc);
     }
-    (text, char_byte)
+    char_byte
 }
 
 /// Locate the caret's visual `(row, glyph column)` for source offset `caret`
@@ -2879,9 +3041,11 @@ impl Element for TextElement {
         // No document open: nothing to lay out (the `+` button is rendered
         // elsewhere, so this element is empty). Return a single blank row.
         if self.editor.read(cx).doc.is_none() {
-            let shaped = window
-                .text_system()
-                .shape_line("".into(), font_size, &[], None);
+            let shaped = Rc::new(
+                window
+                    .text_system()
+                    .shape_line("".into(), font_size, &[], None),
+            );
             return Prepaint {
                 rows: Rc::new(vec![RowLayout::prose(shaped, Vec::new(), vec![0], 0)]),
                 line_height,
@@ -2940,14 +3104,31 @@ impl Element for TextElement {
                     let editor = self.editor.read(cx);
                     gather_logical(editor.doc.as_ref().unwrap())
                 };
+                // The shape cache rides with the editor between paints; take
+                // it for the duration, since shaping needs the window mutably
+                // and the editor can't be borrowed across that.
+                let (prev, prev_breaks) = self.editor.update(cx, |e, _| {
+                    (
+                        std::mem::take(&mut e.shape_cache),
+                        std::mem::take(&mut e.break_cache),
+                    )
+                });
+                let mut shaper = Shaper {
+                    window,
+                    font_size,
+                    prev,
+                    fresh: HashMap::new(),
+                    breaks: HashMap::new(),
+                    prev_breaks,
+                };
+
                 let mut rows: Vec<RowLayout> = Vec::new();
                 let mut geoms: Vec<TableGeom> = Vec::new();
                 for logical in &logical_lines {
                     match logical {
                         Logical::Line(glyphs, end_src) => wrap_logical(
-                            window,
+                            &mut shaper,
                             &font,
-                            font_size,
                             glyphs,
                             *end_src,
                             wrap_px,
@@ -2955,30 +3136,30 @@ impl Element for TextElement {
                             &mut rows,
                         ),
                         Logical::Table(info) => {
-                            if let Some(g) = layout_table(
-                                window,
-                                &font,
-                                font_size,
-                                info,
-                                wrap_px,
-                                marked.as_ref(),
-                                &mut rows,
-                            ) {
+                            if let Some(g) =
+                                layout_table(&mut shaper, &font, info, wrap_px, marked.as_ref(), &mut rows)
+                            {
                                 geoms.push(g);
                             }
                         }
                     }
                 }
                 if rows.is_empty() {
-                    let shaped = window.text_system().shape_line("".into(), font_size, &[], None);
+                    let shaped = shaper.empty();
                     rows.push(RowLayout::prose(shaped, Vec::new(), vec![0], 0));
                 }
+
+                // Whatever is still in `prev` was not used by this paint: text
+                // that has been edited away. Only `fresh` goes back.
+                let (shapes, breaks) = (shaper.fresh, shaper.breaks);
                 let (rows, geoms) = (Rc::new(rows), Rc::new(geoms));
                 self.editor.update(cx, |e, _| {
                     e.last_rows = rows.clone();
                     e.last_geoms = geoms.clone();
                     e.layout_key = Some(key);
                     e.last_row_count = rows.len();
+                    e.shape_cache = shapes;
+                    e.break_cache = breaks;
                 });
                 (rows, geoms)
             }
@@ -3533,9 +3714,16 @@ mod table_layout_tests {
         let mut vcx = VisualTestContext::from_window(window.into(), cx);
         vcx.update(|window, _| {
             let font = window.text_style().font();
-            let font_size = px(16.0);
+            let mut shaper = Shaper {
+                window,
+                font_size: px(16.0),
+                prev: HashMap::new(),
+                fresh: HashMap::new(),
+                breaks: HashMap::new(),
+                prev_breaks: HashMap::new(),
+            };
             let mut rows = Vec::new();
-            let geom = layout_table(window, &font, font_size, &info, avail, None, &mut rows)
+            let geom = layout_table(&mut shaper, &font, &info, avail, None, &mut rows)
                 .expect("the table should lay out");
             (rows, geom, info)
         })
@@ -3717,6 +3905,116 @@ mod table_layout_tests {
             _ => unreachable!(),
         };
         assert_eq!(first, "| Name | Qty |", "the source view shows the source");
+    }
+
+    // ── the shape cache ──────────────────────────────────────────────────────
+    //
+    // `Rc::ptr_eq` is the whole reason these can be tests rather than claims: it
+    // says whether the *same* shape came back, which is exactly what a hit and a
+    // miss differ by and nothing else can see.
+
+    fn glyphs_of(text: &str, start: usize, style: CoreStyle) -> Vec<Glyph> {
+        text.char_indices()
+            .map(|(i, ch)| Glyph { ch, style, src: start + i, stop: true })
+            .collect()
+    }
+
+    /// Run `f` with a shaper over a real window.
+    fn with_shaper<R>(cx: &mut TestAppContext, f: impl FnOnce(&mut Shaper) -> R) -> R {
+        let window = cx.add_window(|_, _| gpui::Empty);
+        let mut vcx = VisualTestContext::from_window(window.into(), cx);
+        vcx.update(|window, _| {
+            let mut shaper = Shaper {
+                window,
+                font_size: px(16.0),
+                prev: HashMap::new(),
+                fresh: HashMap::new(),
+                breaks: HashMap::new(),
+                prev_breaks: HashMap::new(),
+            };
+            f(&mut shaper)
+        })
+    }
+
+    #[gpui::test]
+    fn text_that_only_moved_is_not_reshaped(cx: &mut TestAppContext) {
+        // The point of the whole design. An edit shifts every source offset
+        // after it, so the *same paragraph* arrives with different `src` values
+        // — and a cache that noticed would re-shape the entire document below
+        // the caret on every keystroke. A shape doesn't depend on where its text
+        // came from, so this must be a hit.
+        with_shaper(cx, |sh| {
+            let font = Font::default();
+            let before = glyphs_of("the quick brown fox", 0, CoreStyle::default());
+            let a = sh.shape(&before, &font, None);
+            // Same text, every offset moved along by one keystroke.
+            let after = glyphs_of("the quick brown fox", 1, CoreStyle::default());
+            let b = sh.shape(&after, &font, None);
+            assert!(
+                Rc::ptr_eq(&a, &b),
+                "text that only moved was re-shaped — typing at the top of a \
+                 file would re-shape everything below it"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn different_text_gets_its_own_shape(cx: &mut TestAppContext) {
+        with_shaper(cx, |sh| {
+            let font = Font::default();
+            let a = sh.shape(&glyphs_of("alpha", 0, CoreStyle::default()), &font, None);
+            let b = sh.shape(&glyphs_of("beta", 0, CoreStyle::default()), &font, None);
+            assert!(!Rc::ptr_eq(&a, &b), "two different texts shared one shape");
+            assert_eq!(a.text.as_ref(), "alpha");
+            assert_eq!(b.text.as_ref(), "beta");
+        });
+    }
+
+    #[gpui::test]
+    fn the_same_text_in_a_different_style_is_shaped_again(cx: &mut TestAppContext) {
+        // The style picks the run's font — bold text is a different shape, and
+        // reusing the plain one would silently un-bold it.
+        with_shaper(cx, |sh| {
+            let font = Font::default();
+            let plain = sh.shape(&glyphs_of("word", 0, CoreStyle::default()), &font, None);
+            let bold = sh.shape(
+                &glyphs_of("word", 0, CoreStyle::default().bold()),
+                &font,
+                None,
+            );
+            assert!(!Rc::ptr_eq(&plain, &bold), "bold reused the plain shape");
+        });
+    }
+
+    #[gpui::test]
+    fn a_preedit_is_not_served_the_undecorated_shape(cx: &mut TestAppContext) {
+        // The IME underlines the composed glyphs, which is part of the shape.
+        with_shaper(cx, |sh| {
+            let font = Font::default();
+            let g = glyphs_of("word", 0, CoreStyle::default());
+            let plain = sh.shape(&g, &font, None);
+            let composing = sh.shape(&g, &font, Some(&(0..4)));
+            assert!(
+                !Rc::ptr_eq(&plain, &composing),
+                "a preedit was served the shape without its underline"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn shapes_no_longer_on_screen_are_dropped(cx: &mut TestAppContext) {
+        // The cache tracks the document as it stands, not everything it has ever
+        // been — else typing would grow it without bound for a session.
+        with_shaper(cx, |sh| {
+            let font = Font::default();
+            sh.shape(&glyphs_of("gone", 0, CoreStyle::default()), &font, None);
+            // A new paint: last paint's shapes are the ones up for reuse.
+            sh.prev = std::mem::take(&mut sh.fresh);
+            sh.shape(&glyphs_of("kept", 0, CoreStyle::default()), &font, None);
+            assert_eq!(sh.fresh.len(), 1, "only this paint's shape should survive");
+            assert_eq!(sh.prev.len(), 1, "the unused one is still up for eviction");
+            // `prev` is what prepaint throws away — the editor only gets `fresh`.
+        });
     }
 
     // ── the layout cache ─────────────────────────────────────────────────────
