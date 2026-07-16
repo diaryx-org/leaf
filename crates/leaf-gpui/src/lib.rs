@@ -28,6 +28,7 @@ mod prompt;
 mod style;
 
 use std::ops::Range;
+use std::rc::Rc;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -306,7 +307,20 @@ pub struct Editor {
     /// Scroll offset of the document body; lets the view exceed the window.
     scroll_handle: ScrollHandle,
     // Filled by the element each paint; read by mouse handlers to hit-test.
-    last_rows: Vec<RowLayout>,
+    // `Rc` so a paint that can reuse them costs a refcount rather than a copy of
+    // every shaped line in the document.
+    last_rows: Rc<Vec<RowLayout>>,
+    /// The geometry the last paint's table chrome was drawn from, kept with the
+    /// rows it was measured against.
+    last_geoms: Rc<Vec<TableGeom>>,
+    /// What `last_rows` was built from, or `None` before the first paint.
+    ///
+    /// The rows are a pure function of this key, and shaping them is
+    /// O(document) — 37 ms on a 1 MB file. A repaint is not an edit: the caret
+    /// blinks twice a second, and scrolling, focus changes, and window
+    /// activation all repaint a document that hasn't moved a byte. Every one of
+    /// those used to re-shape the whole thing.
+    layout_key: Option<LayoutKey>,
     last_line_height: Pixels,
     last_bounds: Option<Bounds<Pixels>>,
     /// Visual-row count from the last paint — request_layout reserves height for
@@ -363,7 +377,9 @@ impl Editor {
             is_selecting: false,
             context_menu: None,
             scroll_handle: ScrollHandle::new(),
-            last_rows: Vec::new(),
+            last_rows: Rc::new(Vec::new()),
+            last_geoms: Rc::new(Vec::new()),
+            layout_key: None,
             last_line_height: px(24.0),
             last_bounds: None,
             last_row_count: 0,
@@ -412,6 +428,10 @@ impl Editor {
     /// Replace the widget's theme (colors, font) to match the host application.
     pub fn set_style(&mut self, style: EditorStyle, cx: &mut Context<Self>) {
         self.style = style;
+        // The font and its size are shaped *into* the rows, so a theme change
+        // that only recolours is indistinguishable here from one that changes
+        // the typeface. Re-shape rather than guess.
+        self.invalidate_layout();
         cx.notify();
     }
 
@@ -565,7 +585,22 @@ impl Editor {
     pub fn set_doc(&mut self, doc: Doc, cx: &mut Context<Self>) {
         self.doc = Some(doc);
         self.goal_x = None;
+        // A revision only counts edits *within* one document — every freshly
+        // opened one starts at zero. So the key for a new document can equal the
+        // key for the old one, and without this the editor would open a file and
+        // paint the previous one's text. The revision can't see this; only the
+        // swap itself can.
+        self.invalidate_layout();
         cx.notify();
+    }
+
+    /// Drop the shaped rows, for a change the layout key can't describe.
+    ///
+    /// The key covers what the *document* contributes. Everything else the rows
+    /// depend on — which document it is, what font it's in — changes underneath
+    /// it, so those paths say so here.
+    fn invalidate_layout(&mut self) {
+        self.layout_key = None;
     }
 
     /// Persist the open document to its path, unconditionally and with no
@@ -2005,7 +2040,9 @@ struct TextElement {
 }
 
 struct Prepaint {
-    rows: Vec<RowLayout>,
+    /// Shared with the editor's `last_rows` — the same shaped lines the mouse
+    /// hit-tests against, not a copy of them.
+    rows: Rc<Vec<RowLayout>>,
     line_height: Pixels,
     cursor: Option<PaintQuad>,
     selections: Vec<PaintQuad>,
@@ -2013,6 +2050,22 @@ struct Prepaint {
     /// painted over it.
     table_fills: Vec<PaintQuad>,
     table_borders: Vec<PaintQuad>,
+}
+
+/// Everything the painted rows are a function of. Two paints with equal keys
+/// would shape identical rows, so the second one doesn't.
+///
+/// The width is carried as raw bits because `f32` isn't `Eq` — and a width that
+/// differs by a fraction of a pixel really does re-wrap, so rounding it would be
+/// a bug rather than a tolerance.
+#[derive(PartialEq, Eq, Clone)]
+struct LayoutKey {
+    /// `Doc::revision` — every edit, undo, redo, and reload; no motion, no save.
+    revision: u64,
+    width: u32,
+    source_view: bool,
+    /// The IME preedit underlines glyphs, so it changes what gets shaped.
+    marked: Option<Range<usize>>,
 }
 
 /// One unit of the document as prepaint gathers it: a line of text to be pixel-
@@ -2830,7 +2883,7 @@ impl Element for TextElement {
                 .text_system()
                 .shape_line("".into(), font_size, &[], None);
             return Prepaint {
-                rows: vec![RowLayout::prose(shaped, Vec::new(), vec![0], 0)],
+                rows: Rc::new(vec![RowLayout::prose(shaped, Vec::new(), vec![0], 0)]),
                 line_height,
                 cursor: None,
                 selections: Vec::new(),
@@ -2840,69 +2893,96 @@ impl Element for TextElement {
         }
 
         // The WYSIWYG map must be current before we read caret/selection, since
-        // both ride it. Rebuild at the real width now that we have bounds.
+        // both ride it. `build_visual_unwrapped` is itself cached on the
+        // document's revision, so this is free unless the text moved.
         let view = self.editor.read(cx).doc.as_ref().unwrap().view;
         if view == View::Wysiwyg {
             self.editor
                 .update(cx, |e, _| e.doc.as_mut().unwrap().build_visual_unwrapped());
         }
 
-        // Gather the logical lines (glyphs owned) so we can shape them below with
-        // a mutable window borrow after the document borrow is dropped. A logical
-        // line is a whole paragraph (WYSIWYG) or a source line (Source); the pixel
-        // wrap that follows turns each into one or more visual rows.
-        let (logical_lines, sel, caret, style, marked): (
-            Vec<Logical>,
-            _,
-            usize,
-            EditorStyle,
-            Option<Range<usize>>,
-        ) = {
+        let (key, sel, caret, style, marked, cached) = {
             let editor = self.editor.read(cx);
-            let style = editor.style.clone();
-            let marked = editor.marked_range.clone();
             let doc = editor.doc.as_ref().unwrap();
-            let sel = doc.selection();
-            let caret = doc.caret;
-            (gather_logical(doc), sel, caret, style, marked)
+            let key = LayoutKey {
+                revision: doc.revision(),
+                width: wrap_px.to_bits(),
+                source_view: doc.view == View::Source,
+                marked: editor.marked_range.clone(),
+            };
+            // Reusing the rows is only sound if they're really there: the first
+            // paint has the key unset.
+            let cached = (editor.layout_key.as_ref() == Some(&key) && !editor.last_rows.is_empty())
+                .then(|| (editor.last_rows.clone(), editor.last_geoms.clone()));
+            (
+                key,
+                doc.selection(),
+                doc.caret,
+                editor.style.clone(),
+                editor.marked_range.clone(),
+                cached,
+            )
         };
         let (caret_color, selection_color) = (style.caret, style.selection);
 
-        // Wrap each logical line at the real pixel width; lay each table out as a
-        // grid, keeping the geometry its chrome is painted from.
-        let mut rows: Vec<RowLayout> = Vec::new();
-        let mut geoms: Vec<TableGeom> = Vec::new();
-        for logical in &logical_lines {
-            match logical {
-                Logical::Line(glyphs, end_src) => wrap_logical(
-                    window,
-                    &font,
-                    font_size,
-                    glyphs,
-                    *end_src,
-                    wrap_px,
-                    marked.as_ref(),
-                    &mut rows,
-                ),
-                Logical::Table(info) => {
-                    if let Some(g) = layout_table(
-                        window,
-                        &font,
-                        font_size,
-                        info,
-                        wrap_px,
-                        marked.as_ref(),
-                        &mut rows,
-                    ) {
-                        geoms.push(g);
+        // Shape the document, unless the last paint already shaped this exact
+        // one. The caret and selection below are recomputed either way — they
+        // move without the text moving, and they're cheap next to shaping.
+        let (rows, geoms) = match cached {
+            Some(hit) => hit,
+            None => {
+                // Gather the logical lines (glyphs owned) so we can shape them
+                // with a mutable window borrow after the document borrow is
+                // dropped. A logical line is a whole paragraph (WYSIWYG) or a
+                // source line (Source); the pixel wrap that follows turns each
+                // into one or more visual rows.
+                let logical_lines = {
+                    let editor = self.editor.read(cx);
+                    gather_logical(editor.doc.as_ref().unwrap())
+                };
+                let mut rows: Vec<RowLayout> = Vec::new();
+                let mut geoms: Vec<TableGeom> = Vec::new();
+                for logical in &logical_lines {
+                    match logical {
+                        Logical::Line(glyphs, end_src) => wrap_logical(
+                            window,
+                            &font,
+                            font_size,
+                            glyphs,
+                            *end_src,
+                            wrap_px,
+                            marked.as_ref(),
+                            &mut rows,
+                        ),
+                        Logical::Table(info) => {
+                            if let Some(g) = layout_table(
+                                window,
+                                &font,
+                                font_size,
+                                info,
+                                wrap_px,
+                                marked.as_ref(),
+                                &mut rows,
+                            ) {
+                                geoms.push(g);
+                            }
+                        }
                     }
                 }
+                if rows.is_empty() {
+                    let shaped = window.text_system().shape_line("".into(), font_size, &[], None);
+                    rows.push(RowLayout::prose(shaped, Vec::new(), vec![0], 0));
+                }
+                let (rows, geoms) = (Rc::new(rows), Rc::new(geoms));
+                self.editor.update(cx, |e, _| {
+                    e.last_rows = rows.clone();
+                    e.last_geoms = geoms.clone();
+                    e.layout_key = Some(key);
+                    e.last_row_count = rows.len();
+                });
+                (rows, geoms)
             }
-        }
-        if rows.is_empty() {
-            let shaped = window.text_system().shape_line("".into(), font_size, &[], None);
-            rows.push(RowLayout::prose(shaped, Vec::new(), vec![0], 0));
-        }
+        };
 
         let left = bounds.left();
         let top = bounds.top();
@@ -2958,8 +3038,10 @@ impl Element for TextElement {
             }
         }
 
+        // Chrome is quads, not text — rebuilt each paint because it's cheap and
+        // rides `bounds`, which the cache key doesn't cover.
         let (mut table_fills, mut table_borders) = (Vec::new(), Vec::new());
-        for g in &geoms {
+        for g in geoms.iter() {
             let (f, b) = table_chrome(g, left, top, line_height, &style);
             table_fills.extend(f);
             table_borders.extend(b);
@@ -3028,11 +3110,9 @@ impl Element for TextElement {
             window.paint_quad(cursor);
         }
 
-        // Cache the layout so mouse handlers can hit-test back to source offsets.
-        let rows = std::mem::take(&mut prepaint.rows);
+        // The rows are already the editor's — prepaint stored them under their
+        // key. Only what the mouse needs to turn a pixel into a row is left.
         self.editor.update(cx, |editor, _| {
-            editor.last_row_count = rows.len();
-            editor.last_rows = rows;
             editor.last_line_height = lh;
             editor.last_bounds = Some(bounds);
         });
@@ -3637,6 +3717,69 @@ mod table_layout_tests {
             _ => unreachable!(),
         };
         assert_eq!(first, "| Name | Qty |", "the source view shows the source");
+    }
+
+    // ── the layout cache ─────────────────────────────────────────────────────
+
+    #[gpui::test]
+    fn opening_another_document_does_not_paint_the_last_one(cx: &mut TestAppContext) {
+        // A revision counts edits *within* a document, so every freshly opened
+        // one starts at zero. Two different files therefore produce the *same*
+        // layout key — and a cache that trusted the key alone would open the
+        // second file and paint the first. Nothing about the key can catch this;
+        // only the swap can.
+        let a = doc_with("swap_a", "alpha alpha alpha\n");
+        let b = doc_with("swap_b", "beta beta beta\n");
+        assert_eq!(a.revision(), b.revision(), "the premise: equal revisions");
+
+        let editor = cx.new(|cx| Editor::new(cx, Some(a)));
+        editor.update(cx, |e, _| {
+            // Stand in for a paint having cached rows for document A.
+            e.layout_key = Some(LayoutKey {
+                revision: 0,
+                width: 800f32.to_bits(),
+                source_view: true,
+                marked: None,
+            });
+            e.last_rows = Rc::new(vec![RowLayout::prose(
+                Default::default(),
+                vec![0],
+                vec![0, 1],
+                1,
+            )]);
+        });
+        editor.update(cx, |e, cx| e.set_doc(b, cx));
+        editor.read_with(cx, |e, _| {
+            assert!(
+                e.layout_key.is_none(),
+                "swapping the document must drop the last one's rows"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn restyling_reshapes_rather_than_repainting_the_old_font(cx: &mut TestAppContext) {
+        // The font is shaped into the rows; the key can't see it.
+        let editor = cx.new(|cx| Editor::new(cx, Some(doc_with("restyle", "text\n"))));
+        editor.update(cx, |e, _| {
+            e.layout_key = Some(LayoutKey {
+                revision: 0,
+                width: 800f32.to_bits(),
+                source_view: true,
+                marked: None,
+            });
+        });
+        editor.update(cx, |e, cx| {
+            let mut s = EditorStyle::default();
+            s.font_family = "Courier".into();
+            e.set_style(s, cx);
+        });
+        editor.read_with(cx, |e, _| {
+            assert!(
+                e.layout_key.is_none(),
+                "a font change must re-shape, not reuse the old font's rows"
+            );
+        });
     }
 
     #[gpui::test]

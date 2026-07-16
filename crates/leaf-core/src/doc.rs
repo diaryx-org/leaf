@@ -215,9 +215,17 @@ pub struct Doc {
     /// a wide character on the target line, the mapping resolves it to that
     /// character — the caret lands on it rather than between its cells.
     goal_col: Option<usize>,
-    /// The rendered map for the WYSIWYG view, rebuilt each frame; empty in the
-    /// source view. Movement and clicks read it to stay in visible space.
+    /// The rendered map for the WYSIWYG view; empty in the source view. Movement
+    /// and clicks read it to stay in visible space.
     pub vmap: VisualMap,
+    /// Everything the map is built from, as one number: bumped whenever the
+    /// document's text changes, and never by a motion, a selection, or a save.
+    /// A frontend can hold work against it — see [`Doc::revision`].
+    revision: u64,
+    /// What `vmap` was built from, or `None` before the first build. The map is
+    /// a pure function of `(revision, wrap)`, so when those haven't moved,
+    /// rebuilding it produces the identical map — see [`Doc::build_visual`].
+    vmap_key: Option<(u64, Option<usize>)>,
 
     // View geometry the renderer stamps each frame, so mouse events can map a
     // screen cell back to a byte offset.
@@ -295,6 +303,9 @@ impl Doc {
             caret_redo: Vec::new(),
             goal_col: None,
             vmap: VisualMap::default(),
+            revision: 0,
+            // No map yet — the first `build_visual` always builds.
+            vmap_key: None,
             scroll: 0,
             body_origin: (0, 0),
             body_height: 0,
@@ -331,18 +342,51 @@ impl Doc {
 
     /// Rebuild the WYSIWYG visual map for the current tree at `width` columns
     /// (called by the renderer each frame it's in the WYSIWYG view).
+    /// Build the WYSIWYG map, wrapped at `width` display columns.
+    ///
+    /// Cheap to call every frame, which is what both frontends do: the map is a
+    /// pure function of the document and the wrap width, so a call that would
+    /// rebuild the same map returns the one already built. Only an edit (or a
+    /// resize) pays.
+    ///
+    /// That isn't a micro-optimisation. A frontend repaints for reasons that have
+    /// nothing to do with the text — a blinking caret, a scroll, a focus change —
+    /// and rebuilding here is O(document): 23 ms on a 1 MB file, of which 5 ms is
+    /// marshalling twig's AST across the C ABI. Paid twice a second by the GUI's
+    /// blink timer, that was 14% of a core spent redrawing an unchanged document.
+    /// (`cargo run --release -p leaf-core --example bench` for the numbers.)
     pub fn build_visual(&mut self, width: usize) {
-        let nodes = self.nodes();
-        self.vmap = wysiwyg::build(&nodes, &self.source, Some(width));
-        self.clamp_caret();
+        self.build_map(Some(width));
     }
 
     /// Build the WYSIWYG map with each block as a single unwrapped row — for a
     /// frontend (the GUI) that wraps at its own proportional pixel width rather
     /// than a fixed character column.
     pub fn build_visual_unwrapped(&mut self) {
-        let nodes = self.nodes();
-        self.vmap = wysiwyg::build(&nodes, &self.source, None);
+        self.build_map(None);
+    }
+
+    /// The revision the document's text is at — bumped by every edit, undo,
+    /// redo, and reload, and by nothing else. A frontend caches against this to
+    /// tell a repaint that needs new work from one that doesn't.
+    ///
+    /// It counts *edits*, not distinct texts: typing `x` and deleting it again
+    /// lands on the same text two revisions later. Work is only ever rebuilt
+    /// needlessly, never wrongly reused.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// The map, built at most once per `(revision, wrap)`. `clamp_caret` still
+    /// runs on every call: the caret moves without the document changing, and
+    /// keeping it on a legal stop is this function's job either way.
+    fn build_map(&mut self, wrap: Option<usize>) {
+        let key = (self.revision, wrap);
+        if self.vmap_key != Some(key) {
+            let nodes = self.nodes();
+            self.vmap = wysiwyg::build(&nodes, &self.source, wrap);
+            self.vmap_key = Some(key);
+        }
         self.clamp_caret();
     }
 
@@ -1570,6 +1614,10 @@ impl Doc {
         self.disk_hash = Some(hash_bytes(source.as_bytes()));
         self.clean_source = source.clone();
         self.source = source;
+        // Reload replaces the text without going through `refresh`, so it has to
+        // move the revision itself or every frontend would keep painting the old
+        // file from cache.
+        self.revision += 1;
         self.caret = self.caret.min(self.source.len());
         self.anchor = None;
         self.goal_col = None;
@@ -1579,10 +1627,14 @@ impl Doc {
         self.clamp_caret();
     }
 
+    /// Re-read the source from twig after it has changed the document. The one
+    /// funnel every edit, undo, and redo comes through — so it's where the
+    /// revision moves, and anything cached against the text dies here.
     fn refresh(&mut self) {
         if let Ok(s) = self.editor.source_str() {
             self.source = s;
         }
+        self.revision += 1;
         self.clamp_caret();
     }
 
@@ -2491,6 +2543,112 @@ mod tests {
     // `wysiwyg_doc` builds the rich-text variant on top of this.
     fn doc_with(name: &str, body: &str) -> Doc {
         doc_in(View::Source, name, body)
+    }
+
+    // ── the map is built at most once per (revision, wrap) ───────────────────
+    //
+    // A frontend repaints for reasons that have nothing to do with the text — a
+    // blinking caret, a scroll — and rebuilding the map is O(document). These
+    // pin *that the cache fires*, which a passing suite can't tell you: a cache
+    // that never hits is invisible to every other test in this file.
+    //
+    // The probe is to wreck the built map and ask for it again. A rebuild
+    // repairs it; a cache hit hands the wreckage straight back. Nothing else
+    // can distinguish the two from outside.
+
+    #[test]
+    fn a_rebuild_with_nothing_changed_reuses_the_map() {
+        let mut d = doc_in(View::Wysiwyg, "cache_hit", "# Title\n\nbody\n");
+        d.build_visual(80);
+        assert!(!d.vmap.rows.is_empty());
+        d.vmap.rows.clear(); // wreck it
+        d.build_visual(80);
+        assert!(
+            d.vmap.rows.is_empty(),
+            "the map was rebuilt though nothing changed — the cache never fired"
+        );
+    }
+
+    #[test]
+    fn an_edit_rebuilds_the_map() {
+        let mut d = doc_in(View::Wysiwyg, "cache_edit", "# Title\n\nbody\n");
+        d.build_visual(80);
+        let before = d.revision();
+        d.vmap.rows.clear();
+        d.insert("x");
+        d.build_visual(80);
+        assert!(d.revision() > before, "an edit must move the revision");
+        assert!(
+            !d.vmap.rows.is_empty(),
+            "an edited document must not paint from a stale map"
+        );
+    }
+
+    #[test]
+    fn a_width_change_rebuilds_the_map() {
+        // The map is a function of the wrap width too, so a resize is a miss
+        // even though the text is untouched.
+        let mut d = doc_in(View::Wysiwyg, "cache_width", "one two three four five six\n");
+        d.build_visual(80);
+        d.vmap.rows.clear();
+        d.build_visual(12);
+        assert!(!d.vmap.rows.is_empty(), "a resize must rebuild the map");
+        // And the unwrapped map is its own key, not the same as any width.
+        d.vmap.rows.clear();
+        d.build_visual_unwrapped();
+        assert!(!d.vmap.rows.is_empty(), "unwrapped is a different map");
+    }
+
+    #[test]
+    fn a_motion_does_not_rebuild_the_map() {
+        // The whole point: moving the caret changes nothing the map is built
+        // from. If a motion bumped the revision, every arrow key would cost a
+        // full rebuild and the cache would be worthless.
+        let mut d = doc_in(View::Wysiwyg, "cache_motion", "# Title\n\nbody text\n");
+        d.build_visual(80);
+        let rev = d.revision();
+        d.move_right(false);
+        d.move_right(true);
+        d.move_down(false);
+        assert_eq!(d.revision(), rev, "a motion must not move the revision");
+        d.vmap.rows.clear();
+        d.build_visual(80);
+        assert!(d.vmap.rows.is_empty(), "a motion should not rebuild the map");
+    }
+
+    #[test]
+    fn saving_does_not_rebuild_the_map() {
+        // Saving changes `dirty`, not the text.
+        let mut d = doc_in(View::Wysiwyg, "cache_save", "# Title\n\nbody\n");
+        d.insert("x");
+        d.build_visual(80);
+        let rev = d.revision();
+        d.save();
+        assert_eq!(d.revision(), rev, "a save must not move the revision");
+        assert!(!d.dirty, "the save should have cleaned the document");
+    }
+
+    #[test]
+    fn a_reload_rebuilds_the_map() {
+        // Reload replaces the text without going through `refresh`, so it has to
+        // move the revision itself — else the editor paints the old file.
+        let mut d = doc_in(View::Wysiwyg, "cache_reload", "# Title\n\nbody\n");
+        d.build_visual(80);
+        let rev = d.revision();
+        std::fs::write(&d.path, "# Other\n\nwholly new\n").unwrap();
+        d.reload();
+        assert!(d.revision() > rev, "a reload must move the revision");
+        d.build_visual(80);
+        let text: String = d
+            .vmap
+            .rows
+            .iter()
+            .flat_map(|r| r.glyphs.iter().map(|g| g.ch))
+            .collect();
+        assert!(
+            text.contains("wholly new"),
+            "the reloaded text should be on screen, got {text:?}"
+        );
     }
 
     // ── golden-case harness ──────────────────────────────────────────────────
