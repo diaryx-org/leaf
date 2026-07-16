@@ -22,7 +22,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use twig::{Alignment, FlatNode};
+use twig::{Alignment, FlatNode, QueryMatch};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -345,23 +345,25 @@ pub fn build(nodes: &[FlatNode], source: &str, wrap: Option<usize>) -> VisualMap
     }
 }
 
-/// Like [`build`], but reuses a persistent [`BlockCache`] across calls so an
-/// edit re-renders only the top-level blocks whose source bytes changed and
-/// reuses the rest. The result is byte-for-byte identical to [`build`] on the
-/// same input — the cache changes only how fast the map is produced, never what
-/// it contains (the `build_cached_matches_build` test pins this). This is the
-/// entry point [`crate::Doc`] uses; `build` stays the cache-free reference.
+/// Like [`build`], but reuses a persistent [`BlockCache`] so an edit re-renders
+/// only the top-level blocks whose source bytes changed *and* marshals only
+/// those blocks from twig instead of the whole arena.
+///
+/// `top` is the document's top-level blocks — twig's `child_spans` of the doc
+/// root: `(node_id, kind, span)` for each, in order. `fetch_subtree(node_id)`
+/// marshals one block's subtree (local-indexed, root at 0) and is called *only*
+/// for a block that missed the cache, i.e. one that actually changed. So a
+/// keystroke marshals one small subtree, not ~20k nodes. The result is
+/// byte-for-byte identical to [`build`] on the same document (the
+/// `build_cached_matches_build` test pins this); [`build`] stays the cache-free,
+/// whole-arena reference. This is the entry point [`crate::Doc`] uses.
 pub fn build_cached(
-    nodes: &[FlatNode],
+    top: &[QueryMatch],
     source: &str,
     wrap: Option<usize>,
     cache: &mut BlockCache,
+    mut fetch_subtree: impl FnMut(u32) -> Vec<FlatNode>,
 ) -> VisualMap {
-    let Some(doc) = nodes.iter().position(|n| n.kind == "doc") else {
-        // No doc root: nothing to render, and nothing to learn — leave the cache
-        // untouched rather than bump a generation that would evict everything.
-        return VisualMap::default();
-    };
     let wrap = wrap.map(|w| w.max(8));
 
     // Wrapping is a function of the width, so a width change makes every cached
@@ -372,15 +374,76 @@ pub fn build_cached(
     }
     cache.generation = cache.generation.wrapping_add(1);
 
+    // Frontmatter (a leading `metadata` block) is document metadata, not prose:
+    // hidden in the rich view exactly as [`Builder::blocks`] skips it.
+    let blocks: Vec<&QueryMatch> = top.iter().filter(|m| m.kind != "metadata").collect();
+
+    // The outer builder only accumulates rows/tables and spells block boundaries
+    // — both a function of the source and `last_off`, never of a node array — so
+    // it carries an empty `nodes`. Each changed block is rendered by a *fresh*
+    // builder over that block's subtree.
     let mut b = Builder {
-        nodes,
+        nodes: &[],
         source,
         wrap,
         rows: Vec::new(),
         tables: Vec::new(),
         last_off: 0,
     };
-    b.top_blocks_cached(doc, cache);
+
+    for (i, block) in blocks.iter().enumerate() {
+        let start = block.span.start;
+        if i > 0 {
+            b.emit_separators_before(start, &[]);
+        }
+        let bytes = source.as_bytes().get(block.span.clone()).unwrap_or(&[]);
+        let hash = block_hash(bytes);
+
+        // Hit: clone the block's rows shifted to its current offset and restore
+        // the (shifted) `last_off` so the next separator lands right — no marshal.
+        if let Some(hit) = cache.reuse(hash, bytes) {
+            let delta = start as isize - hit.built_start as isize;
+            for row in &hit.rows {
+                b.rows.push(shift_row(row, delta));
+            }
+            b.last_off = (hit.last_off as isize + delta) as usize;
+            continue;
+        }
+
+        // Miss: marshal just this block's subtree and render it. A subtree is
+        // self-contained with local ids (root at 0) and absolute spans, so a
+        // fresh builder over it produces the same rows the whole-arena path would.
+        let subtree = fetch_subtree(block.node_id);
+        if subtree.is_empty() {
+            continue; // a block twig couldn't hand back — skip rather than panic
+        }
+        let mut sub = Builder {
+            nodes: &subtree,
+            source,
+            wrap,
+            rows: Vec::new(),
+            tables: Vec::new(),
+            last_off: 0,
+        };
+        sub.block(0, &[], &[]);
+        let last_off = sub.last_off;
+        if sub.tables.is_empty() {
+            // Cacheable: store the rows and reuse them (shifted) next time.
+            cache.store(hash, bytes, start, sub.rows.clone(), last_off);
+            b.rows.extend(sub.rows);
+        } else {
+            // A table block is never cached; rebase its row-index bookkeeping
+            // onto the combined row vector and append.
+            let base = b.rows.len();
+            for t in &mut sub.tables {
+                t.rows_span = (t.rows_span.start + base)..(t.rows_span.end + base);
+            }
+            b.rows.extend(sub.rows);
+            b.tables.extend(sub.tables);
+        }
+        b.last_off = last_off;
+    }
+
     b.emit_trailing_blank_lines();
 
     // Evict every entry no block reused this build, so the cache tracks the
@@ -391,7 +454,10 @@ pub fn build_cached(
         !bucket.is_empty()
     });
 
-    let content_start = first_content_offset(nodes, doc);
+    // The first rendered offset is the first non-metadata block's start (0 when
+    // the document is empty or all frontmatter) — the analogue of
+    // [`first_content_offset`] for the top-level list.
+    let content_start = blocks.first().map_or(0, |m| m.span.start);
     let stops = collect_stops(&b.rows);
     VisualMap {
         rows: b.rows,
@@ -408,12 +474,17 @@ pub fn build_cached(
 /// the rest" instead of re-rendering the whole document.
 ///
 /// A top-level block's rows are a pure function of its source bytes and the wrap
-/// width (its rendering never reads where it sits in the document — see
-/// [`Builder::top_blocks_cached`]), so an unchanged block's rows are cloned and
-/// their source offsets shifted by the edit's byte delta rather than rebuilt
-/// glyph by glyph. Keyed by a fast hash of the block's bytes with the bytes kept
-/// for a verify-on-hit — exactly the shape cache's weak-hash-then-compare, so a
-/// collision costs a re-render, never a wrong row.
+/// width, so an unchanged block's rows are cloned and their source offsets
+/// shifted by the edit's byte delta rather than rebuilt glyph by glyph. Two
+/// things make that purity hold: at the top level the render prefix is always
+/// empty (nesting prefixes — a quote gutter, a list indent — exist only *inside*
+/// a top-level block, within its cached unit), and a block's output never reads
+/// the incoming `last_off` (it writes `last_off` from its own content before any
+/// nested separator reads it). So the only thing that differs between two
+/// positions of an unchanged block is a uniform offset shift. Keyed by a fast
+/// hash of the block's bytes with the bytes kept for a verify-on-hit — exactly
+/// the shape cache's weak-hash-then-compare, so a collision costs a re-render,
+/// never a wrong row.
 ///
 /// Tables are never cached (a block that emits any table row is always rebuilt):
 /// their rows are cross-referenced from the map's `tables` side-table by row
@@ -627,60 +698,6 @@ impl Builder<'_> {
                 end_src,
                 decoration: k == 0 || k == last,
             });
-        }
-    }
-
-    /// Walk the document's top-level blocks, reusing each block's cached rows
-    /// when its bytes are unchanged and rendering (and caching) it otherwise.
-    /// Mirrors [`Builder::blocks`] for the `doc` root — the same `metadata` skip
-    /// and the same separators — with the per-block cache in the loop. Feeds
-    /// [`build_cached`]; [`build`] uses the plain [`Builder::blocks`].
-    ///
-    /// Reuse is sound because a *top-level* block renders to rows that depend
-    /// only on its own bytes and the wrap width. Two things guarantee that: the
-    /// prefix at the top level is always empty (nesting prefixes — a quote
-    /// gutter, a list indent — only exist below a top-level block, inside its
-    /// cached unit), and a block's output never reads the incoming `last_off`
-    /// (it writes `last_off` from its own content before any nested separator
-    /// reads it). So the only thing that differs between two positions of an
-    /// unchanged block is a uniform shift of every source offset it carries —
-    /// which [`shift_row`] applies on reuse.
-    fn top_blocks_cached(&mut self, doc: usize, cache: &mut BlockCache) {
-        let kids: Vec<usize> = self
-            .children(doc)
-            .into_iter()
-            .filter(|&c| self.nodes[c].kind != "metadata")
-            .collect();
-        for (i, child) in kids.into_iter().enumerate() {
-            let start = self.nodes[child].span.start;
-            if i > 0 {
-                self.emit_separators_before(start, &[]);
-            }
-            let span = self.nodes[child].span.clone();
-            let bytes = self.source.as_bytes().get(span.start..span.end).unwrap_or(&[]);
-            let hash = block_hash(bytes);
-
-            // Hit: clone the block's rows shifted to its current offset, and
-            // restore the (shifted) `last_off` so the next separator lands right.
-            if let Some(hit) = cache.reuse(hash, bytes) {
-                let delta = start as isize - hit.built_start as isize;
-                for row in &hit.rows {
-                    self.rows.push(shift_row(row, delta));
-                }
-                self.last_off = (hit.last_off as isize + delta) as usize;
-                continue;
-            }
-
-            // Miss: render the block fresh, then cache it — unless it produced a
-            // table row, which the cache deliberately never stores (see
-            // [`BlockCache`]).
-            let rows_before = self.rows.len();
-            let tables_before = self.tables.len();
-            self.block(child, &[], &[]);
-            if self.tables.len() == tables_before {
-                let rows = self.rows[rows_before..].to_vec();
-                cache.store(hash, bytes, start, rows, self.last_off);
-            }
         }
     }
 
@@ -1570,7 +1587,7 @@ pub(crate) fn is_inline(kind: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use twig::{Editor, Format};
+    use twig::{Editor, Format, NodeId};
 
     fn map(src: &str) -> VisualMap {
         let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
@@ -1610,10 +1627,28 @@ mod tests {
         }
     }
 
+    /// Render a source both ways: `build` over the whole marshalled arena (the
+    /// reference), and `build_cached` driven the way [`crate::Doc`] drives it —
+    /// top-level blocks from `child_spans`, per-block subtrees on a miss.
+    fn render_both(
+        ed: &mut Editor,
+        src: &str,
+        wrap: Option<usize>,
+        cache: &mut BlockCache,
+    ) -> (VisualMap, VisualMap) {
+        let all = ed.nodes().unwrap();
+        let plain = build(&all, src, wrap);
+        let top = ed.child_spans(None).unwrap();
+        let cached = build_cached(&top, src, wrap, cache, |id| {
+            ed.subtree(NodeId(id)).unwrap_or_default()
+        });
+        (plain, cached)
+    }
+
     /// The whole correctness claim of the block cache: `build_cached` produces a
     /// byte-identical map to `build`, on a fresh cache *and* — the case that
-    /// actually exercises reuse-and-shift — on a warm cache after the source has
-    /// been edited underneath it.
+    /// actually exercises reuse-and-shift plus per-block subtree marshalling — on
+    /// a warm cache after the source has been edited underneath it.
     #[test]
     fn build_cached_matches_build() {
         let docs = [
@@ -1631,31 +1666,26 @@ mod tests {
                 let mut cache = BlockCache::default();
 
                 // 1) Fresh cache equals the cache-free build.
-                let nodes = ed.nodes().unwrap();
-                let plain = build(&nodes, src, wrap);
-                let cached = build_cached(&nodes, src, wrap, &mut cache);
+                let (plain, cached) = render_both(&mut ed, src, wrap, &mut cache);
                 assert_map_eq(&plain, &cached, &format!("fresh {ctx}"));
 
                 // 2) Type a char mid-document, reparse, rebuild with the now-warm
-                //    cache: every block below the edit is reused shifted, and the
-                //    result must still match a from-scratch build.
+                //    cache: the edited block is re-marshalled and re-rendered,
+                //    every block below it is reused shifted, and the result must
+                //    still match a from-scratch build.
                 let at = (src.len() / 2..=src.len())
                     .find(|&i| src.is_char_boundary(i))
                     .unwrap();
                 ed.edit_range(at, at, "Z").unwrap();
                 let src2 = ed.source_str().unwrap();
-                let nodes2 = ed.nodes().unwrap();
-                let plain2 = build(&nodes2, &src2, wrap);
-                let cached2 = build_cached(&nodes2, &src2, wrap, &mut cache);
+                let (plain2, cached2) = render_both(&mut ed, &src2, wrap, &mut cache);
                 assert_map_eq(&plain2, &cached2, &format!("after insert {ctx}"));
 
                 // 3) Delete it again: offsets shift back the other way, and the
                 //    warm cache must not hand back stale shifted rows.
                 ed.edit_range(at, at + 1, "").unwrap();
                 let src3 = ed.source_str().unwrap();
-                let nodes3 = ed.nodes().unwrap();
-                let plain3 = build(&nodes3, &src3, wrap);
-                let cached3 = build_cached(&nodes3, &src3, wrap, &mut cache);
+                let (plain3, cached3) = render_both(&mut ed, &src3, wrap, &mut cache);
                 assert_map_eq(&plain3, &cached3, &format!("after delete {ctx}"));
             }
         }

@@ -49,13 +49,22 @@ fn main() {
         {
             // The incremental path with a warm cache and nothing changed: the
             // floor cost the block cache adds even on a pure repaint — hash every
-            // block, clone every reused row, recollect stops. The real keystroke
-            // win shows up in "Doc::insert + rebuild" below, which reuses all but
-            // the edited block.
+            // block, clone every reused row, recollect stops. No subtree is
+            // marshalled (every block hits). The real keystroke win shows up in
+            // "Doc::insert + rebuild" below, which re-marshals only the edited
+            // block and reuses the rest.
             let mut cache = wysiwyg::BlockCache::default();
-            let _ = wysiwyg::build_cached(&nodes, &src, None, &mut cache);
+            let top = ed.child_spans(None).unwrap();
+            let _ = wysiwyg::build_cached(&top, &src, None, &mut cache, |id| {
+                ed.subtree(twig::NodeId(id)).unwrap_or_default()
+            });
             time("wysiwyg::build_cached (all reused)", 5, || {
-                wysiwyg::build_cached(&nodes, &src, None, &mut cache).rows.len()
+                let top = ed.child_spans(None).unwrap();
+                wysiwyg::build_cached(&top, &src, None, &mut cache, |id| {
+                    ed.subtree(twig::NodeId(id)).unwrap_or_default()
+                })
+                .rows
+                .len()
             });
         }
 

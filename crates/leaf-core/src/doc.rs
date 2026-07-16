@@ -17,7 +17,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
-use twig::{BlockContainerKind, BlockKind, Change, Editor, FlatNode, Format, InlineKind};
+use twig::{BlockContainerKind, BlockKind, Change, Editor, FlatNode, Format, InlineKind, NodeId};
 use unicode_segmentation::GraphemeCursor;
 
 use crate::html;
@@ -393,8 +393,19 @@ impl Doc {
     fn build_map(&mut self, wrap: Option<usize>) {
         let key = (self.revision, wrap);
         if self.vmap_key != Some(key) {
-            let nodes = self.nodes();
-            self.vmap = wysiwyg::build_cached(&nodes, &self.source, wrap, &mut self.block_cache);
+            // Enumerate the top-level blocks cheaply — no whole-arena marshal.
+            // The block cache then pulls a subtree only for a block that actually
+            // changed (a keystroke touches one), so the FFI marshal shrinks from
+            // O(document) to O(edited block). Fields are borrowed split so the
+            // subtree fetcher can hold `&mut editor` alongside source and cache.
+            let top = self.editor.child_spans(None).unwrap_or_default();
+            let source = &self.source;
+            let cache = &mut self.block_cache;
+            let editor = &mut self.editor;
+            let map = wysiwyg::build_cached(&top, source, wrap, cache, |id| {
+                editor.subtree(NodeId(id)).unwrap_or_default()
+            });
+            self.vmap = map;
             self.vmap_key = Some(key);
         }
         self.clamp_caret();
