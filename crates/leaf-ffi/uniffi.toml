@@ -1,0 +1,9 @@
+# UniFFI Swift binding config. The defaults already produce a clean surface
+# (`LeafDoc`, `DocView`/`Row`/`Run`, `LeafError`); this only pins names so the
+# xcframework and the Swift package layer stay stable if the crate is renamed.
+[bindings.swift]
+# The C-shim module the generated Swift imports (`import leaf_ffiFFI`). Matches
+# the modulemap the build script bundles into the xcframework's Headers dir.
+ffi_module_name = "leaf_ffiFFI"
+# The dylib/staticlib symbol prefix — must match the crate's lib name.
+cdylib_name = "leaf_ffi"

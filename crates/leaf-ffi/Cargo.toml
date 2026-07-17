@@ -1,0 +1,40 @@
+[package]
+name = "leaf-ffi"
+version.workspace = true
+edition.workspace = true
+description = "C-ABI / Swift frontend binding for leaf: wraps the filesystem-free leaf-core Doc behind UniFFI so an AppKit/SwiftUI app can drive the byte-offset caret model and render the VisualMap as style runs — the native-Apple peer of leaf-wasm."
+publish = false
+
+# staticlib -> the .a linked into the xcframework for device/simulator.
+# cdylib    -> a .dylib for a host-side macOS build and for `uniffi-bindgen
+#              --library` to introspect.
+# lib       -> lets `cargo test` and the in-tree bindgen bin see the crate.
+[lib]
+crate-type = ["staticlib", "cdylib", "lib"]
+
+# The bindings generator. Run as `cargo run -p leaf-ffi --bin uniffi-bindgen --
+# generate --library <path-to-dylib> --language swift --out-dir <dir>`; the build
+# script below wraps that. Kept in-tree (rather than the standalone
+# `uniffi-bindgen` crate) so the generator version can never drift from the
+# `uniffi` runtime this crate links.
+[[bin]]
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
+
+[dependencies]
+# The document model, filesystem-free — same contract leaf-wasm builds against: a
+# sandboxed embed has no path to read and persists bytes its own way, so `fs` is
+# off and the host drives `Doc::from_source` + the public `source` field +
+# `mark_saved`.
+leaf-core = { path = "../leaf-core", default-features = false }
+
+# The FFI machinery: `proc-macro` mode (no .udl file) — the view structs derive
+# `Record`, the handle derives `Object`, and `setup_scaffolding!()` emits the C
+# ABI. `cli` pulls in `uniffi_bindgen_main` for the bin target above.
+uniffi = { version = "0.28", features = ["cli"] }
+thiserror = "1"
+
+# A visual column is a display cell; a native text run (NSAttributedString /
+# NSTextView) counts UTF-16 units — the two drift by a cell per wide glyph (CJK,
+# emoji). Same crate/version leaf-core segments with, so cluster boundaries agree.
+unicode-segmentation = "1.13.3"

@@ -1,3 +1,8 @@
 /target
 /.obsidian
 /.claude/
+.playwright-mcp/
+
+# Build products of scripts/build-xcframework.sh — the xcframework and the
+# UniFFI-generated Swift are regenerated from crates/leaf-ffi, never committed.
+/crates/leaf-ffi/generated/
