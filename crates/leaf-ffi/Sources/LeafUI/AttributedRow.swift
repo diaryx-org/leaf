@@ -8,9 +8,15 @@
 //  order core measured them (and `code_lang` chrome is deliberately excluded, so
 //  it never shifts an offset).
 
-#if canImport(AppKit)
-import AppKit
+import CoreGraphics
+import Foundation
 import LeafFFI
+
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 
 enum AttributedRow {
     /// Build the attributed text for one visual row. `theme` supplies fonts and
@@ -86,4 +92,3 @@ enum AttributedRow {
         return attrs
     }
 }
-#endif

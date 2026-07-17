@@ -1,32 +1,21 @@
 //  LeafEditorView.swift
 //
-//  The SwiftUI face of the editor. `LeafEditorModel` is an `ObservableObject`
-//  that owns the `LeafDoc` and exposes leaf-core's commands + the live toolbar
-//  state; `LeafEditor` is the `NSViewRepresentable` that hosts the `LeafTextView`
-//  in a scroll view and keeps the model's `state` in step after every repaint.
+//  The SwiftUI face of the editor, shared across macOS and iOS. `LeafEditorModel`
+//  is a platform-neutral `ObservableObject` that owns the `LeafDoc` and exposes
+//  leaf-core's commands + the live toolbar state. `LeafEditor` is the
+//  representable that hosts the platform `LeafTextView` and keeps the model's
+//  `state` in step after every repaint.
 //
 //  Usage:
 //      @StateObject private var editor = try! LeafEditorModel(
 //          source: "# Hello\n\nSome *text*.", format: "markdown")
 //
 //      var body: some View {
-//          VStack(spacing: 0) {
-//              toolbar                       // reads editor.state, calls editor.toggleBold() …
-//              LeafEditor(model: editor)
-//          }
+//          VStack(spacing: 0) { toolbar; LeafEditor(model: editor) }
 //      }
 
-#if canImport(AppKit)
-import AppKit
 import SwiftUI
 import LeafFFI
-
-extension EditorState {
-    /// Project a full `DocView` down to the chrome-facing state.
-    init(_ v: DocView) {
-        self.init(view: v.view, dirty: v.dirty, heading: v.heading, active: v.active)
-    }
-}
 
 /// The observable owner of a document. Hold it with `@StateObject`; bind a
 /// toolbar to `state` and call the command methods from buttons.
@@ -46,10 +35,7 @@ public final class LeafEditorModel: ObservableObject {
 
     // ── host-facing model access ──────────────────────────────────────────────
 
-    /// The current source text — for save / export / a source panel.
     public func source() -> String { doc.source() }
-
-    /// Clear the dirty flag after persisting `source()` the host's own way.
     public func markSaved() { textView?.markSaved() }
 
     // ── formatting commands (mirror leaf-gpui's EditorCommand) ────────────────
@@ -61,15 +47,12 @@ public final class LeafEditorModel: ObservableObject {
     public func toggleUnderline()  { run { $0.toggleUnderline() } }
     public func toggleStrike()     { run { $0.toggleStrike() } }
     public func setParagraph()     { run { $0.setParagraph() } }
-    /// Toggle the block to a heading of `level` (1–6); the active level toggles
-    /// off to a paragraph, per core.
     public func setHeading(_ level: UInt32) { run { $0.setHeading(level: level) } }
     public func toggleBlockquote() { run { $0.toggleBlockquote() } }
     public func toggleList(ordered: Bool) { run { $0.toggleList(ordered: ordered) } }
     public func insertLink(_ destination: String) { run { $0.insertLink(destination: destination) } }
     public func undo() { run { $0.undo() } }
     public func redo() { run { $0.redo() } }
-    /// Switch between the rendered WYSIWYG surface and the raw source.
     public func toggleView() { run { $0.toggleView() } }
 
     // ── convenience toolbar queries ───────────────────────────────────────────
@@ -77,39 +60,36 @@ public final class LeafEditorModel: ObservableObject {
     public func isActive(_ mark: String) -> Bool { state.active.contains(mark) }
     public var isSource: Bool { state.view == "source" }
 
-    /// Route a command through the text view so the single repaint path (caret,
-    /// scroll, state push) runs. No-op until the view is mounted.
     private func run(_ op: @escaping (LeafDoc) -> DocView) { textView?.command(op) }
-
-    /// The view pushes each repaint's state here (its `state` setter is private).
     fileprivate func updateState(_ s: EditorState) { state = s }
 }
 
-/// Hosts the `LeafTextView` in a scrolling viewport and wires its state back to
-/// the model. Place it in a SwiftUI hierarchy like any other view.
+#if canImport(AppKit) && !targetEnvironment(macCatalyst)
+import AppKit
+
+/// Hosts the `LeafTextView` in a scrolling viewport (macOS) and wires its state
+/// back to the model.
 public struct LeafEditor: NSViewRepresentable {
     @ObservedObject private var model: LeafEditorModel
     private let theme: EditorTheme
 
     public init(model: LeafEditorModel, theme: EditorTheme = .default) {
-        self.model = model
-        self.theme = theme
+        self.model = model; self.theme = theme
     }
 
     public func makeNSView(context: Context) -> NSScrollView {
         let textView = LeafTextView(doc: model.doc, theme: theme)
-        textView.onStateChange = { [weak model] s in model?.updateState(s) }
+        // Defer the publish: `render()` can fire during a SwiftUI layout pass, and
+        // mutating an `@Published` mid-update loops the view system.
+        textView.onStateChange = { [weak model] s in
+            DispatchQueue.main.async { model?.updateState(s) }
+        }
         model.textView = textView
 
         let scroll = NSScrollView()
         scroll.documentView = textView
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
-        scroll.automaticallyAdjustsContentInsets = false
-
-        // The document view fills the clip width and grows in height; horizontal
-        // scrolling is off (core rewraps to the width instead).
-        textView.translatesAutoresizingMaskIntoConstraints = true
         textView.autoresizingMask = [.width]
         textView.frame = CGRect(origin: .zero, size: CGSize(width: scroll.contentSize.width, height: 0))
 
@@ -118,8 +98,51 @@ public struct LeafEditor: NSViewRepresentable {
     }
 
     public func updateNSView(_ scroll: NSScrollView, context: Context) {
-        guard let textView = scroll.documentView as? LeafTextView else { return }
-        textView.theme = theme
+        (scroll.documentView as? LeafTextView)?.theme = theme
+    }
+}
+
+#elseif canImport(UIKit)
+import UIKit
+
+/// Hosts the `LeafTextView` in a scrolling viewport (iOS) and wires its state
+/// back to the model.
+public struct LeafEditor: UIViewRepresentable {
+    @ObservedObject private var model: LeafEditorModel
+    private let theme: EditorTheme
+
+    public init(model: LeafEditorModel, theme: EditorTheme = .default) {
+        self.model = model; self.theme = theme
+    }
+
+    public func makeUIView(context: Context) -> UIScrollView {
+        let textView = LeafTextView(doc: model.doc, theme: theme)
+        // Defer the publish: `render()` can fire during a SwiftUI layout pass, and
+        // mutating an `@Published` mid-update loops the view system.
+        textView.onStateChange = { [weak model] s in
+            DispatchQueue.main.async { model?.updateState(s) }
+        }
+        model.textView = textView
+
+        let scroll = UIScrollView()
+        scroll.alwaysBounceVertical = true
+        scroll.keyboardDismissMode = .interactive
+        scroll.addSubview(textView)
+        textView.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            textView.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+            textView.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+            textView.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+            textView.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+            textView.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor),
+        ])
+
+        DispatchQueue.main.async { _ = textView.becomeFirstResponder() }
+        return scroll
+    }
+
+    public func updateUIView(_ scroll: UIScrollView, context: Context) {
+        (scroll.subviews.first { $0 is LeafTextView } as? LeafTextView)?.theme = theme
     }
 }
 #endif

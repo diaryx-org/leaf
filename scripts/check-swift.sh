@@ -31,11 +31,31 @@ swiftc -emit-module -module-name LeafFFI \
   -sdk "$SDK" \
   -I "$WORK/headers" -Xcc -fmodule-map-file="$WORK/headers/module.modulemap"
 
-echo "▸ Type-checking LeafUI…"
+echo "▸ Type-checking LeafUI (macOS / AppKit)…"
 swiftc -typecheck -module-name LeafUI \
   "$ROOT"/crates/leaf-ffi/Sources/LeafUI/*.swift \
   -sdk "$SDK" \
   -I "$WORK" \
   -I "$WORK/headers" -Xcc -fmodule-map-file="$WORK/headers/module.modulemap"
+echo "  ✓ macOS"
 
-echo "✓ LeafUI type-checks against the generated LeafFFI binding."
+# The generated binding is arch-neutral source, but a .swiftmodule is triple-
+# specific, so emit a fresh LeafFFI for the iOS-simulator triple and check the
+# UIKit path against it.
+SDK_IOS="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+TARGET_IOS="arm64-apple-ios16.0-simulator"
+mkdir -p "$WORK/ios"
+echo "▸ Type-checking LeafUI (iOS / UIKit)…"
+swiftc -emit-module -module-name LeafFFI \
+  -emit-module-path "$WORK/ios/LeafFFI.swiftmodule" \
+  "$WORK/gen/leaf_ffi.swift" \
+  -sdk "$SDK_IOS" -target "$TARGET_IOS" \
+  -I "$WORK/headers" -Xcc -fmodule-map-file="$WORK/headers/module.modulemap"
+swiftc -typecheck -module-name LeafUI \
+  "$ROOT"/crates/leaf-ffi/Sources/LeafUI/*.swift \
+  -sdk "$SDK_IOS" -target "$TARGET_IOS" \
+  -I "$WORK/ios" \
+  -I "$WORK/headers" -Xcc -fmodule-map-file="$WORK/headers/module.modulemap"
+echo "  ✓ iOS"
+
+echo "✓ LeafUI type-checks against the generated LeafFFI binding (macOS + iOS)."

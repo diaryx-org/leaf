@@ -135,6 +135,16 @@ pub struct DocView {
     pub active: Vec<String>,
 }
 
+/// A visual position: a row index plus a UTF-16 offset within that row's text —
+/// the coordinate the geometry side (Core Text) draws from. Returned by
+/// [`LeafDoc::pos_for_offset`], the bridge from a source offset (what a
+/// `UITextPosition` wraps) to where it sits on screen.
+#[derive(uniffi::Record)]
+pub struct RowCol {
+    pub row: u32,
+    pub ch: u32,
+}
+
 /// A live leaf document bound for a native Apple frontend: `leaf_core::Doc` plus
 /// the wrap width the current viewport implies, behind a mutex. Constructed from
 /// an in-memory string and driven entirely through method calls — there is no
@@ -210,6 +220,100 @@ impl Inner {
         let col = utf16_to_col(&self.row_text(row), ch);
         self.doc.click(row, col, false);
         self.doc.caret
+    }
+
+    // ── position mapping for UITextInput (non-mutating; caret untouched) ───────
+    // These branch by view exactly as `pos_of_offset` does, so the WYSIWYG map and
+    // the raw-source grid each answer in their own coordinates.
+
+    /// The source offset of display column `col` on visual `row` — the inverse of
+    /// [`Self::pos_of_offset`] in column space.
+    fn offset_of_col(&self, row: usize, col: usize) -> usize {
+        match self.doc.view {
+            View::Wysiwyg => self.doc.vmap.offset_of_pos(row, col),
+            View::Source => {
+                let line = self.row_text(row);
+                let (mut c, mut b) = (0usize, 0usize);
+                for g in line.graphemes(true) {
+                    if c >= col {
+                        break;
+                    }
+                    c += text_width(g);
+                    b += g.len();
+                }
+                self.source_line_start(row) + b
+            }
+        }
+    }
+
+    /// The byte offset where visual `row` begins in the source view.
+    fn source_line_start(&self, row: usize) -> usize {
+        self.doc.source.split('\n').take(row).map(|l| l.len() + 1).sum()
+    }
+
+    /// The next caret stop after `off`, or `None` at the end.
+    fn stop_after(&self, off: usize) -> Option<usize> {
+        match self.doc.view {
+            View::Wysiwyg => self.doc.vmap.stop_after(off),
+            View::Source => {
+                let s = &self.doc.source;
+                if off >= s.len() {
+                    None
+                } else {
+                    Some(s[off..].grapheme_indices(true).nth(1).map_or(s.len(), |(i, _)| off + i))
+                }
+            }
+        }
+    }
+
+    /// The previous caret stop before `off`, or `None` at the start.
+    fn stop_before(&self, off: usize) -> Option<usize> {
+        match self.doc.view {
+            View::Wysiwyg => self.doc.vmap.stop_before(off),
+            View::Source => {
+                let s = &self.doc.source;
+                let off = off.min(s.len());
+                if off == 0 {
+                    None
+                } else {
+                    s[..off].grapheme_indices(true).next_back().map(|(i, _)| i)
+                }
+            }
+        }
+    }
+
+    /// Snap `off` to a valid caret stop (WYSIWYG) / char boundary (source).
+    fn snap_stop(&self, off: usize) -> usize {
+        let s = &self.doc.source;
+        let mut off = off.min(s.len());
+        match self.doc.view {
+            View::Wysiwyg => self.doc.vmap.snap_to_stop(off),
+            View::Source => {
+                while off > 0 && !s.is_char_boundary(off) {
+                    off -= 1;
+                }
+                off
+            }
+        }
+    }
+
+    /// The navigable visual row above `row`, if any.
+    fn nav_above(&self, row: usize) -> Option<usize> {
+        match self.doc.view {
+            View::Wysiwyg => self.doc.vmap.navigable_above(row),
+            View::Source => (row > 0).then(|| row - 1),
+        }
+    }
+
+    /// The navigable visual row below `row`, if any.
+    fn nav_below(&self, row: usize) -> Option<usize> {
+        match self.doc.view {
+            View::Wysiwyg => self.doc.vmap.navigable_below(row),
+            View::Source => {
+                let n = self.doc.source.split('\n').count();
+                (row + 1 < n).then_some(row + 1)
+            }
+        }
     }
 
     /// Resolve the current document to a renderable frame of style runs. Called
@@ -606,6 +710,150 @@ impl LeafDoc {
     pub fn toggle_view(&self) -> DocView {
         let mut g = self.lock();
         g.doc.toggle_view();
+        g.view()
+    }
+}
+
+// ── UITextInput support ──────────────────────────────────────────────────────
+// A `UITextPosition` on the Swift side wraps a source byte offset; these are the
+// offset↔geometry, stepping, and range-editing primitives the protocol needs.
+// Queries never move the caret — they only read the (synced) visual map — so the
+// system can probe positions freely while the model's selection stays put.
+#[uniffi::export]
+impl LeafDoc {
+    /// The caret's source offset (the selection's moving end).
+    pub fn caret_offset(&self) -> u32 {
+        self.lock().doc.caret as u32
+    }
+
+    /// The selection's fixed end (equals the caret when there's no selection).
+    pub fn anchor_offset(&self) -> u32 {
+        let g = self.lock();
+        g.doc.anchor.unwrap_or(g.doc.caret) as u32
+    }
+
+    /// The last caret stop in the document — `UITextInput.endOfDocument`.
+    pub fn doc_end_offset(&self) -> u32 {
+        let mut g = self.lock();
+        g.sync();
+        let end = g.doc.source.len();
+        g.snap_stop(end) as u32
+    }
+
+    /// Snap an arbitrary offset to the nearest valid caret stop.
+    pub fn snap_offset(&self, off: u32) -> u32 {
+        let mut g = self.lock();
+        g.sync();
+        g.snap_stop(off as usize) as u32
+    }
+
+    /// Where a source offset sits on screen: its visual `(row, ch)`.
+    pub fn pos_for_offset(&self, off: u32) -> RowCol {
+        let mut g = self.lock();
+        g.sync();
+        let (row, col) = g.pos_of_offset(off as usize);
+        let ch = col_to_utf16(&g.row_text(row), col);
+        RowCol { row: row as u32, ch: ch as u32 }
+    }
+
+    /// The source offset at visual `(row, ch)` — the inverse of
+    /// [`Self::pos_for_offset`], for hit-testing a point to a position.
+    pub fn offset_for_pos(&self, row: u32, ch: u32) -> u32 {
+        let mut g = self.lock();
+        g.sync();
+        let col = utf16_to_col(&g.row_text(row as usize), ch as usize);
+        g.offset_of_col(row as usize, col) as u32
+    }
+
+    /// Move `off` by `delta` caret stops (negative = left) — `position(from:offset:)`.
+    pub fn step_offset(&self, off: u32, delta: i32) -> u32 {
+        let mut g = self.lock();
+        g.sync();
+        let mut o = g.snap_stop(off as usize);
+        if delta >= 0 {
+            for _ in 0..delta {
+                match g.stop_after(o) {
+                    Some(n) => o = n,
+                    None => break,
+                }
+            }
+        } else {
+            for _ in 0..(-delta) {
+                match g.stop_before(o) {
+                    Some(p) => o = p,
+                    None => break,
+                }
+            }
+        }
+        o as u32
+    }
+
+    /// The count of caret stops between two offsets (signed) — `offset(from:to:)`.
+    pub fn distance_offset(&self, from: u32, to: u32) -> i32 {
+        let mut g = self.lock();
+        g.sync();
+        let (from, to) = (from as usize, to as usize);
+        let (mut a, b, sign) = if from <= to { (from, to, 1i32) } else { (to, from, -1i32) };
+        a = g.snap_stop(a);
+        let mut n = 0i32;
+        while a < b {
+            match g.stop_after(a) {
+                Some(x) => {
+                    a = x;
+                    n += 1;
+                }
+                None => break,
+            }
+        }
+        n * sign
+    }
+
+    /// The offset one navigable row up/down from `off`, keeping its column —
+    /// `position(from:in: .up/.down)`. `None` at the top/bottom edge.
+    pub fn vertical_offset(&self, off: u32, down: bool) -> Option<u32> {
+        let mut g = self.lock();
+        g.sync();
+        let (row, col) = g.pos_of_offset(off as usize);
+        let target = if down { g.nav_below(row) } else { g.nav_above(row) };
+        target.map(|r| g.offset_of_col(r, col) as u32)
+    }
+
+    /// The source text between two offsets — `text(in:)`.
+    pub fn text_in_range(&self, from: u32, to: u32) -> String {
+        let g = self.lock();
+        let s = &g.doc.source;
+        let (mut a, mut b) = ((from as usize).min(s.len()), (to as usize).min(s.len()));
+        if a > b {
+            std::mem::swap(&mut a, &mut b);
+        }
+        while a > 0 && !s.is_char_boundary(a) {
+            a -= 1;
+        }
+        while b < s.len() && !s.is_char_boundary(b) {
+            b += 1;
+        }
+        s[a..b].to_string()
+    }
+
+    /// Set the selection to `[anchor, focus]` by source offsets — the setter behind
+    /// `UITextInput.selectedTextRange` and handle dragging.
+    pub fn set_selection_offsets(&self, anchor: u32, focus: u32) -> DocView {
+        let mut g = self.lock();
+        g.doc.place_caret(anchor as usize, false);
+        if focus != anchor {
+            g.doc.place_caret(focus as usize, true);
+        }
+        g.view()
+    }
+
+    /// Replace the source range `[from, to]` with `text` — `replace(_:withText:)`.
+    pub fn replace_range(&self, from: u32, to: u32, text: String) -> DocView {
+        let mut g = self.lock();
+        g.doc.place_caret(from as usize, false);
+        if to != from {
+            g.doc.place_caret(to as usize, true);
+        }
+        g.doc.insert(&text);
         g.view()
     }
 }

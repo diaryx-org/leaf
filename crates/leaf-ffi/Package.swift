@@ -1,20 +1,26 @@
 // swift-tools-version:5.9
 //
-// The Swift package an AppKit/SwiftUI app links to drive leaf-core. It stitches
-// together the two products of `scripts/build-xcframework.sh` (both under
-// `generated/`, git-ignored — run that script once before building):
+// The Swift package an AppKit/SwiftUI app links to drive leaf-core. It builds the
+// UniFFI binding + the LeafUI renderer **from source**; the Rust staticlib itself
+// is linked by the consuming app via a `-force_load` linker flag and (re)built by
+// a pre-build step — see `examples/ios/project.yml`, which does exactly that so an
+// Xcode build always picks up fresh Rust changes (a prebuilt xcframework would be
+// cached instead). `bootstrap.sh` generates the two `generated/` inputs below.
 //
-//   • LeafFFI.xcframework   the Rust staticlib (C ABI) for every Apple slice
-//   • Sources/LeafFFI/…     the UniFFI-generated Swift over that C ABI
+//   • generated/headers/            the C ABI header + module map (the `leaf_ffiFFI`
+//                                   clang module the generated Swift imports)
+//   • generated/Sources/LeafFFI/    the UniFFI-generated Swift over that C ABI
 //
-// Consume it from an app by adding this directory as a local package:
-//   .package(path: "../leaf/crates/leaf-ffi")
-// then `import LeafFFI` and construct `try LeafDoc(source:, format:)`.
+// A consumer adds this directory as a local package and links the staticlib:
+//   .package(path: "…/crates/leaf-ffi")            // import LeafUI
+//   OTHER_LDFLAGS = -force_load <path>/libleaf_ffi.a
+// (`scripts/build-xcframework.sh` still exists to produce a *distributable*
+// prebuilt xcframework, but the package no longer depends on one.)
 import PackageDescription
 
 let package = Package(
     name: "LeafFFI",
-    platforms: [.macOS(.v12), .iOS(.v15)],
+    platforms: [.macOS(.v12), .iOS(.v16)],
     products: [
         // The low-level binding: `LeafDoc` + the `DocView`/`Row`/`Run` value types.
         .library(name: "LeafFFI", targets: ["LeafFFI"]),
@@ -22,7 +28,11 @@ let package = Package(
         .library(name: "LeafUI", targets: ["LeafUI"]),
     ],
     targets: [
-        // The generated Swift, compiled against the C shim inside the xcframework.
+        // The C ABI as a clang module (`import leaf_ffiFFI`). No library to link
+        // here — the app force-loads the Rust `.a`, so the symbols the generated
+        // Swift references stay undefined until the final executable link.
+        .systemLibrary(name: "leaf_ffiFFI", path: "generated/headers"),
+        // The generated Swift, compiled against that C module.
         .target(
             name: "LeafFFI",
             dependencies: ["leaf_ffiFFI"],
@@ -33,11 +43,6 @@ let package = Package(
             name: "LeafUI",
             dependencies: ["LeafFFI"],
             path: "Sources/LeafUI"
-        ),
-        // The prebuilt Rust core, C ABI + headers, one binary for macOS + iOS.
-        .binaryTarget(
-            name: "leaf_ffiFFI",
-            path: "generated/LeafFFI.xcframework"
         ),
     ]
 )
