@@ -16,7 +16,7 @@ use ratatui::{
 
 use leaf_core::{Doc, InlineKind, View};
 
-use crate::style::{CODE_BG, CODE_BORDER, CODE_INSET, wysiwyg_lines};
+use crate::style::{CODE_BG, CODE_BORDER, CODE_INSET, IMAGE_BORDER, wysiwyg_lines};
 use crate::{App, ConflictPrompt, ContextMenu, DirtyAction, DirtyPrompt, MENU_ITEMS, TextPrompt};
 
 pub fn render(f: &mut Frame, doc: &mut Doc, breadcrumb: &str, app: &mut App) {
@@ -75,10 +75,27 @@ fn render_body(f: &mut Frame, area: Rect, doc: &mut Doc, app: &mut App) {
     let width = content_area.width as usize;
     let height = content_area.height as usize;
 
+    // The document's directory — what a relative image path resolves against.
+    // `Doc::open` stores an absolute path, so this is set for any real file and
+    // empty only for an untitled buffer (where a relative image can't resolve).
+    let doc_dir = doc
+        .path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_path_buf());
+
     // The WYSIWYG map must be built before we read the caret position (which
     // rides it). Code lines don't wrap — the map keeps them full length — so a
     // long one scrolls inside its box (below) rather than folding.
     if doc.view == View::Wysiwyg {
+        // Build once to learn which images the document has, decode and measure
+        // them, tell core how many rows each reserves, then rebuild at those
+        // heights. The second build is a cache hit whenever nothing changed, so a
+        // steady frame pays for one build; only a new image or a resize rebuilds.
+        doc.build_visual(width);
+        let heights =
+            app.images.reserve(&doc.vmap.images, doc_dir.as_deref(), width as u16, height as u16);
+        doc.set_image_rows(heights);
         doc.build_visual(width);
     }
     let (caret_row, caret_col) = doc.caret_pos();
@@ -167,6 +184,72 @@ fn render_body(f: &mut Frame, area: Rect, doc: &mut Doc, app: &mut App) {
                     }
                 }
                 f.render_widget(block, rect);
+            }
+        }
+    }
+
+    // Each block image: a bordered box around the rows core reserved for it, the
+    // raster painted inside when the whole box is on screen. The border is drawn
+    // from cells, so it clips cleanly at the viewport edge and stands in as a
+    // "picture goes here" placeholder whenever the graphics-protocol raster can't
+    // be shown — a remote/unresolved image, or one only partly scrolled into view
+    // (a protocol image can't be clipped; see `Images::paint_raster`). Drawn after
+    // the paragraph so it covers the `🖼 alt` text core laid down underneath.
+    if doc.view == View::Wysiwyg {
+        for info in &doc.vmap.images {
+            let span = &info.rows_span;
+            // The picture's cell size when it loaded; `None` for an image that
+            // isn't a loadable local file — still framed, just as an empty box.
+            let picture = app.images.picture_cells(info, doc_dir.as_deref());
+            let box_w = match picture {
+                Some((cols, _)) => cols as usize + 2,
+                None => (info.alt.chars().count() + 4).clamp(CODE_INSET + 2, width),
+            };
+            let Some((rect, borders)) =
+                code_box(span, doc.vmap.rows.len(), content_area, doc.scroll, box_w)
+            else {
+                continue;
+            };
+            // The frame, captioned with the alt text the way a code box is
+            // captioned with its language (only where the top border is drawn).
+            let mut block = Block::default()
+                .borders(borders)
+                .border_style(Style::default().fg(IMAGE_BORDER));
+            if borders.contains(Borders::TOP) {
+                let caption = if info.alt.is_empty() {
+                    " 🖼 image ".to_string()
+                } else {
+                    format!(" 🖼 {} ", info.alt)
+                };
+                block = block.title(Line::from(Span::styled(
+                    caption,
+                    Style::default().fg(IMAGE_BORDER),
+                )));
+            }
+            // Wipe the interior so core's `🖼 alt` text (drawn by the paragraph)
+            // doesn't show through the frame — the caption already names it, and a
+            // painted raster or a bare placeholder box is what belongs inside.
+            let inner = block.inner(rect);
+            f.render_widget(Clear, inner);
+            f.render_widget(block, rect);
+
+            // Paint the raster only when the whole reserved span is on screen, so
+            // its size is fixed (see `Images::paint_raster`). Its rows sit inside
+            // the box's side borders, at the box's own vertical position; anything
+            // less leaves the empty framed box as the placeholder.
+            let fully_visible = span.start >= doc.scroll && span.end <= doc.scroll + height;
+            if fully_visible {
+                if let Some((cols, rows)) = picture {
+                    let interior = Rect {
+                        x: rect.x + 1,
+                        y: content_area.y + (span.start - doc.scroll) as u16,
+                        width: cols.min(rect.width.saturating_sub(2)),
+                        height: rows.min(rect.height),
+                    };
+                    if interior.width > 0 && interior.height > 0 {
+                        app.images.paint_raster(f, info, doc_dir.as_deref(), interior);
+                    }
+                }
             }
         }
     }

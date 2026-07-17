@@ -60,6 +60,11 @@ public final class LeafEditorModel: ObservableObject {
     public func isActive(_ mark: String) -> Bool { state.active.contains(mark) }
     public var isSource: Bool { state.view == "source" }
 
+    /// TEMP DEBUG: seed a selection by source offsets, to inspect highlight alignment.
+    public func debugSelect(anchor: UInt32, focus: UInt32) {
+        run { $0.setSelectionOffsets(anchor: anchor, focus: focus) }
+    }
+
     private func run(_ op: @escaping (LeafDoc) -> DocView) { textView?.command(op) }
     fileprivate func updateState(_ s: EditorState) { state = s }
 }

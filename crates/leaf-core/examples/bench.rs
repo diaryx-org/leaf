@@ -2,6 +2,7 @@
 //!
 //! `cargo run --release -p leaf-core --example bench`
 use leaf_core::{Doc, View, wysiwyg};
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::time::Instant;
 use twig::{Editor, Format};
@@ -37,7 +38,7 @@ fn main() {
 
         let mut ed = Editor::new_str(&src, Format::Markdown).unwrap();
         let nodes = ed.nodes().unwrap();
-        let map = wysiwyg::build(&nodes, &src, None);
+        let map = wysiwyg::build(&nodes, &src, None, &HashMap::new());
         println!("  ({} AST nodes, {} map rows)", nodes.len(), map.rows.len());
 
         println!("  -- per edit (unavoidable today) --");
@@ -45,7 +46,7 @@ fn main() {
             ed.edit_range(src.len() / 2, src.len() / 2, "x").is_ok()
         });
         time("twig nodes() FFI marshal", 5, || ed.nodes().unwrap().len());
-        time("wysiwyg::build", 5, || wysiwyg::build(&nodes, &src, None).rows.len());
+        time("wysiwyg::build", 5, || wysiwyg::build(&nodes, &src, None, &HashMap::new()).rows.len());
         {
             // The incremental path with a warm cache and nothing changed: the
             // floor cost the block cache adds even on a pure repaint — hash every
@@ -55,12 +56,12 @@ fn main() {
             // block and reuses the rest.
             let mut cache = wysiwyg::BlockCache::default();
             let top = ed.child_spans(None).unwrap();
-            let _ = wysiwyg::build_cached(&top, &src, None, &mut cache, |id| {
+            let _ = wysiwyg::build_cached(&top, &src, None, &HashMap::new(), &mut cache, |id| {
                 ed.subtree(twig::NodeId(id)).unwrap_or_default()
             });
             time("wysiwyg::build_cached (all reused)", 5, || {
                 let top = ed.child_spans(None).unwrap();
-                wysiwyg::build_cached(&top, &src, None, &mut cache, |id| {
+                wysiwyg::build_cached(&top, &src, None, &HashMap::new(), &mut cache, |id| {
                     ed.subtree(twig::NodeId(id)).unwrap_or_default()
                 })
                 .rows

@@ -30,17 +30,20 @@ mod style;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use std::sync::Arc;
+
 use gpui::{
-    App, BorderStyle, Bounds, ContentMask, Context, CursorStyle, Element, ElementId,
+    App, BorderStyle, Bounds, ContentMask, Context, Corners, CursorStyle, DevicePixels, Element,
+    ElementId,
     ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable, Font,
     GlobalElementId, Hsla, InspectorElementId, IntoElement, KeyBinding, KeyDownEvent, LayoutId,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render,
-    ScrollHandle, SharedString, ShapedLine, Style, Task, TextAlign, UTF16Selection, UnderlineStyle,
-    Window, actions, anchored, deferred, div, fill, point, prelude::*, px, quad, relative, rgb,
-    rgba, size,
+    RenderImage, ScrollHandle, SharedString, ShapedLine, Size, Style, Task, TextAlign,
+    UTF16Selection, UnderlineStyle, Window, actions, anchored, deferred, div, fill, point,
+    prelude::*, px, quad, relative, rgb, rgba, size,
 };
 use leaf_core::style::{Role, Style as CoreStyle};
 use prompt::{PromptAction, TextPrompt};
@@ -155,7 +158,8 @@ impl Default for EditorStyle {
     }
 }
 use leaf_core::{
-    Alignment, BlockKind, DiskState, Doc, Glyph, InlineKind, InlineMarks, TableInfo, View,
+    Alignment, BlockKind, DiskState, Doc, Glyph, ImageInfo, InlineKind, InlineMarks, TableInfo,
+    View,
 };
 
 use crate::style::{RunStyle, heading_scale, text_run};
@@ -357,6 +361,16 @@ pub struct Editor {
     /// which output rows each occupies, so the mouse can tell a click landed in a
     /// scrolled code block and undo its horizontal offset.
     last_code_geoms: Rc<Vec<CodeGeom>>,
+    /// The block images the last paint reserved rows for, kept with the rows so a
+    /// repaint that reuses them (a blink, a scroll) re-draws each raster without
+    /// re-laying-out. Rides the row cache alongside [`Self::last_geoms`].
+    last_image_geoms: Rc<Vec<ImageGeom>>,
+    /// Decoded rasters keyed by resolved file path, so an image is read and
+    /// decoded once per document session rather than every relayout. `None` marks
+    /// a path that failed to load (missing, unsupported), so a broken image is
+    /// retried at most once per session, not every frame. The stable `RenderImage`
+    /// id also keeps gpui's sprite-atlas upload cached across frames.
+    image_cache: HashMap<PathBuf, Option<Arc<RenderImage>>>,
     /// The horizontal pixel delta added to each row's text when it was painted —
     /// a code block's indent-minus-scroll, zero for ordinary rows. Parallel to
     /// [`Self::last_rows`]; the mouse subtracts it to hit-test a scrolled row.
@@ -443,6 +457,8 @@ impl Editor {
             last_rows: Rc::new(Vec::new()),
             last_geoms: Rc::new(Vec::new()),
             last_code_geoms: Rc::new(Vec::new()),
+            last_image_geoms: Rc::new(Vec::new()),
+            image_cache: HashMap::new(),
             last_row_x: Rc::new(Vec::new()),
             layout_key: None,
             shape_cache: HashMap::new(),
@@ -2211,6 +2227,7 @@ fn style_bits(s: CoreStyle) -> u16 {
         Role::Mark => 3,
         Role::ListMarker => 4,
         Role::QuoteGutter => 5,
+        Role::Image => 6,
         Role::Rule => 7,
         Role::Heading(l) => 8 + l.min(7) as u16, // 8..=15, four bits
     };
@@ -2434,6 +2451,9 @@ struct Prepaint {
     code_labels: Vec<(Rc<ShapedLine>, Point<Pixels>, Bounds<Pixels>)>,
     /// The label chip's line height, for painting the shaped label.
     code_label_h: Pixels,
+    /// Each block image's on-screen box and the raster to paint into it — the
+    /// rects resolved from the row tops this paint. Drawn over the text pass.
+    images: Vec<(Bounds<Pixels>, Arc<RenderImage>)>,
 }
 
 /// Everything the painted rows are a function of. Two paints with equal keys
@@ -2463,6 +2483,13 @@ struct LayoutKey {
 enum Logical {
     Line { glyphs: Vec<Glyph>, end_src: usize, code: Option<usize> },
     Table(TableInfo),
+    /// A block-level image, whose placeholder row (the `🖼 alt` picture core
+    /// draws) is skipped the way a table's box rows are — the GUI paints the real
+    /// raster instead. `glyphs`/`end_src` are copied from that placeholder row so
+    /// the reserved row still carries the image's caret stops (a home in front of
+    /// it and one just past it); `info` carries the destination to load and the
+    /// alt text to fall back to.
+    Image { info: ImageInfo, glyphs: Vec<Glyph>, end_src: usize },
 }
 
 /// Gather the document into the units prepaint lays out: one line per source line
@@ -2494,17 +2521,35 @@ fn gather_logical(doc: &Doc) -> Vec<Logical> {
             }
         }
         View::Wysiwyg => {
-            // `tables` and `code_blocks` are both already in row order, so one
+            // `tables`, `code_blocks`, and `images` are all in row order, so one
             // cursor apiece walks them alongside the rows rather than re-scanning.
             let mut next_table = doc.vmap.tables.iter().peekable();
+            let mut next_image = doc.vmap.images.iter().peekable();
             let mut code = doc.vmap.code_blocks.iter().enumerate().peekable();
             let mut r = 0usize;
             while r < doc.vmap.rows.len() {
+                // An image never sits inside a table or code block, so the image
+                // cursor only needs to stay abreast of `r`.
+                while next_image.peek().is_some_and(|im| im.rows_span.end <= r) {
+                    next_image.next();
+                }
                 match next_table.peek().filter(|t| t.rows_span.start == r) {
                     Some(t) => {
                         lines.push(Logical::Table((*t).clone()));
                         r = t.rows_span.end;
                         next_table.next();
+                    }
+                    _ if next_image.peek().is_some_and(|im| im.rows_span.start == r) => {
+                        // Skip the placeholder picture like a table's box rows; the
+                        // reserved row keeps the caret stops the vrow carries.
+                        let im = next_image.next().unwrap();
+                        let vrow = &doc.vmap.rows[r];
+                        lines.push(Logical::Image {
+                            info: im.clone(),
+                            glyphs: vrow.glyphs.clone(),
+                            end_src: vrow.end_src,
+                        });
+                        r = im.rows_span.end;
                     }
                     None => {
                         // Which code block, if any, this row falls inside — the
@@ -2738,6 +2783,90 @@ struct CodeGeom {
     /// bare fence or indented block. Carried here so it rides the row cache with
     /// the geometry it labels.
     lang: Option<String>,
+}
+
+/// Where a block-level image's raster is painted: the output row it reserves and
+/// the decoded frame, plus the box size (an aspect-preserving fit within the
+/// editor width). Like a [`CodeGeom`] it rides the row cache; the on-screen rect
+/// is recomputed each paint from the row tops, since it depends on `bounds` —
+/// which the row-cache key doesn't cover.
+#[derive(Clone)]
+struct ImageGeom {
+    row: usize,
+    image: Arc<RenderImage>,
+    /// The painted box size, in logical pixels.
+    size: Size<Pixels>,
+}
+
+/// The tallest a block image is drawn, in logical pixels — a very tall image is
+/// scaled down to this so a single picture can't push the whole document
+/// off-screen.
+const IMAGE_MAX_H: f32 = 480.0;
+/// Vertical breathing room above and below an image's box.
+const IMAGE_PAD_Y: f32 = 6.0;
+
+/// Resolve an image destination to a readable local file path, or `None` when it
+/// isn't one this synchronous loader can handle: a remote URL (`http(s):`), a
+/// `data:` URI, a protocol-relative `//host/…`, or a relative path with no
+/// document directory to resolve it against (an untitled buffer). A relative path
+/// is joined to the document's directory; an absolute path is taken as-is. Those
+/// unsupported cases fall back to the `🖼 alt` text placeholder, painted the way
+/// core's default rendering already spells them.
+fn resolve_image_path(dest: &str, doc_dir: Option<&Path>) -> Option<PathBuf> {
+    let dest = dest.trim();
+    if dest.is_empty() {
+        return None;
+    }
+    let lower = dest.to_ascii_lowercase();
+    if lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("data:")
+        || dest.starts_with("//")
+    {
+        return None;
+    }
+    // A `file:` URL is just a path wearing a scheme.
+    let raw = dest.strip_prefix("file://").unwrap_or(dest);
+    let path = Path::new(raw);
+    if path.is_absolute() {
+        Some(path.to_path_buf())
+    } else {
+        doc_dir.map(|d| d.join(path))
+    }
+}
+
+/// Decode an image file to a gpui [`RenderImage`], or `None` on any failure (a
+/// missing/unreadable file, an unsupported or corrupt format, or an SVG — which
+/// the `image` crate doesn't rasterize). gpui paints **BGRA** while `image`
+/// decodes **RGBA**, so every pixel's R and B bytes are swapped before the frame
+/// is handed over — the same swap gpui itself does everywhere it builds a
+/// `RenderImage`.
+fn load_image_file(path: &Path) -> Option<Arc<RenderImage>> {
+    let bytes = std::fs::read(path).ok()?;
+    let format = image::guess_format(&bytes).ok()?;
+    let mut rgba = image::load_from_memory_with_format(&bytes, format)
+        .ok()?
+        .into_rgba8();
+    for px in rgba.chunks_exact_mut(4) {
+        px.swap(0, 2); // RGBA → BGRA
+    }
+    Some(Arc::new(RenderImage::new(vec![image::Frame::new(rgba)])))
+}
+
+/// Fit an image's intrinsic pixel size into a box no wider than `avail` and no
+/// taller than [`IMAGE_MAX_H`], preserving aspect ratio and never upscaling past
+/// the intrinsic size.
+fn image_box_size(intrinsic: Size<DevicePixels>, avail: f32) -> Size<Pixels> {
+    let iw = intrinsic.width.0.max(1) as f32;
+    let ih = intrinsic.height.0.max(1) as f32;
+    // Never wider than the editor, never upscaled past the source.
+    let mut w = iw.min(avail.max(1.0));
+    let mut h = w * ih / iw;
+    if h > IMAGE_MAX_H {
+        h = IMAGE_MAX_H;
+        w = h * iw / ih;
+    }
+    size(px(w), px(h))
 }
 
 /// Shrink `widths` until the grid fits `avail`, taking from the widest column
@@ -3350,6 +3479,7 @@ impl Element for TextElement {
                 code_boxes: Vec::new(),
                 code_labels: Vec::new(),
                 code_label_h: line_height,
+                images: Vec::new(),
             };
         }
 
@@ -3362,7 +3492,7 @@ impl Element for TextElement {
                 .update(cx, |e, _| e.doc.as_mut().unwrap().build_visual_unwrapped());
         }
 
-        let (key, sel, caret, style, marked, cached) = {
+        let (key, sel, caret, style, marked, cached, doc_dir) = {
             let editor = self.editor.read(cx);
             let doc = editor.doc.as_ref().unwrap();
             let key = LayoutKey {
@@ -3379,8 +3509,13 @@ impl Element for TextElement {
                         editor.last_rows.clone(),
                         editor.last_geoms.clone(),
                         editor.last_code_geoms.clone(),
+                        editor.last_image_geoms.clone(),
                     )
                 });
+            // The document's directory — what a relative image path resolves
+            // against. Empty for an untitled buffer, where a relative path can't
+            // resolve and falls back to the text placeholder.
+            let doc_dir = doc.path.parent().map(|p| p.to_path_buf()).filter(|p| !p.as_os_str().is_empty());
             (
                 key,
                 doc.selection(),
@@ -3388,6 +3523,7 @@ impl Element for TextElement {
                 editor.style.clone(),
                 editor.marked_range.clone(),
                 cached,
+                doc_dir,
             )
         };
         let (caret_color, selection_color) = (style.caret, style.selection);
@@ -3395,7 +3531,7 @@ impl Element for TextElement {
         // Shape the document, unless the last paint already shaped this exact
         // one. The caret and selection below are recomputed either way — they
         // move without the text moving, and they're cheap next to shaping.
-        let (rows, geoms, code_geoms) = match cached {
+        let (rows, geoms, code_geoms, image_geoms) = match cached {
             Some(hit) => hit,
             None => {
                 // Gather the logical lines (glyphs owned) so we can shape them
@@ -3412,6 +3548,33 @@ impl Element for TextElement {
                     let langs: Vec<Option<String>> =
                         doc.vmap.code_blocks.iter().map(|c| c.lang.clone()).collect();
                     (gather_logical(doc), langs)
+                };
+                // Decode every block image up front, before the shaper borrows
+                // the window — decoding needs only `cx` and the editor's cache.
+                // Each raster is cached on the editor by resolved path, so a
+                // relayout neither re-reads nor re-decodes it. `loaded` maps a
+                // destination to its raster for the shaping loop; `None` means the
+                // destination isn't a loadable local file (or failed to decode),
+                // and the row falls back to core's `🖼 alt` text placeholder.
+                let loaded: HashMap<String, Option<Arc<RenderImage>>> = {
+                    let mut loaded = HashMap::new();
+                    for logical in &logical_lines {
+                        let Logical::Image { info, .. } = logical else { continue };
+                        if loaded.contains_key(&info.destination) {
+                            continue;
+                        }
+                        let img = match resolve_image_path(&info.destination, doc_dir.as_deref()) {
+                            Some(path) => self.editor.update(cx, |e, _| {
+                                e.image_cache
+                                    .entry(path.clone())
+                                    .or_insert_with(|| load_image_file(&path))
+                                    .clone()
+                            }),
+                            None => None,
+                        };
+                        loaded.insert(info.destination.clone(), img);
+                    }
+                    loaded
                 };
                 // The shape cache rides with the editor between paints; take
                 // it for the duration, since shaping needs the window mutably
@@ -3451,6 +3614,7 @@ impl Element for TextElement {
                 let mut rows: Vec<RowLayout> = Vec::new();
                 let mut geoms: Vec<TableGeom> = Vec::new();
                 let mut code_geoms: Vec<CodeGeom> = Vec::new();
+                let mut image_geoms: Vec<ImageGeom> = Vec::new();
                 for logical in &logical_lines {
                     match logical {
                         Logical::Line { glyphs, end_src, code } => {
@@ -3478,6 +3642,45 @@ impl Element for TextElement {
                                 geoms.push(g);
                             }
                         }
+                        Logical::Image { info, glyphs, end_src } => {
+                            match loaded.get(&info.destination).cloned().flatten() {
+                                Some(image) => {
+                                    // A loaded raster: reserve one row as tall as
+                                    // its fitted box (plus padding), carrying the
+                                    // caret stop in front of the image and one just
+                                    // past it, and record the geom painted over it.
+                                    let box_size = image_box_size(image.size(0), wrap_px);
+                                    let height = box_size.height + px(2.0 * IMAGE_PAD_Y);
+                                    let start = glyphs.first().map_or(*end_src, |g| g.src);
+                                    let shaped = shaper.empty();
+                                    rows.push(RowLayout::prose(
+                                        shaped,
+                                        vec![start],
+                                        vec![0, 0],
+                                        *end_src,
+                                        height,
+                                    ));
+                                    image_geoms.push(ImageGeom {
+                                        row: rows.len() - 1,
+                                        image,
+                                        size: box_size,
+                                    });
+                                }
+                                None => {
+                                    // Not a loadable local image: fall back to
+                                    // core's `🖼 alt` placeholder, wrapped like any
+                                    // other prose line.
+                                    wrap_logical(
+                                        &mut shaper,
+                                        glyphs,
+                                        *end_src,
+                                        wrap_px,
+                                        marked.as_ref(),
+                                        &mut rows,
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
                 if rows.is_empty() {
@@ -3489,18 +3692,23 @@ impl Element for TextElement {
                 // Whatever is still in `prev` was not used by this paint: text
                 // that has been edited away. Only `fresh` goes back.
                 let (shapes, breaks) = (shaper.fresh, shaper.breaks);
-                let (rows, geoms, code_geoms) =
-                    (Rc::new(rows), Rc::new(geoms), Rc::new(code_geoms));
+                let (rows, geoms, code_geoms, image_geoms) = (
+                    Rc::new(rows),
+                    Rc::new(geoms),
+                    Rc::new(code_geoms),
+                    Rc::new(image_geoms),
+                );
                 self.editor.update(cx, |e, _| {
                     e.last_rows = rows.clone();
                     e.last_geoms = geoms.clone();
                     e.last_code_geoms = code_geoms.clone();
+                    e.last_image_geoms = image_geoms.clone();
                     e.layout_key = Some(key);
                     e.last_row_count = rows.len();
                     e.shape_cache = shapes;
                     e.break_cache = breaks;
                 });
-                (rows, geoms, code_geoms)
+                (rows, geoms, code_geoms, image_geoms)
             }
         };
 
@@ -3666,6 +3874,18 @@ impl Element for TextElement {
             })
             .collect();
 
+        // Each block image's on-screen box: its reserved row's top plus the
+        // vertical padding, left-aligned, at the fitted size. The rect rides
+        // `bounds` (via the row tops), so it's resolved here rather than cached.
+        let images: Vec<(Bounds<Pixels>, Arc<RenderImage>)> = image_geoms
+            .iter()
+            .filter(|g| g.row + 1 < tops.len())
+            .map(|g| {
+                let origin = point(left, row_top(g.row) + px(IMAGE_PAD_Y));
+                (Bounds::new(origin, g.size), g.image.clone())
+            })
+            .collect();
+
         Prepaint {
             rows,
             tops,
@@ -3679,6 +3899,7 @@ impl Element for TextElement {
             code_boxes,
             code_labels: code_labels_out,
             code_label_h: label_h,
+            images,
         }
     }
 
@@ -3757,6 +3978,15 @@ impl Element for TextElement {
                 }),
                 None => paint_row(window, cx),
             }
+        }
+
+        // Block images, painted over their reserved (empty) rows. `paint_image`
+        // uploads to the sprite atlas lazily and caches by the frame's id, so
+        // reusing the same `Arc<RenderImage>` across frames re-uploads nothing.
+        for (rect, image) in prepaint.images.drain(..) {
+            window
+                .paint_image(rect, Corners::default(), image, 0, false)
+                .ok();
         }
 
         // The blink phase decides whether the caret paints this frame; `render`'s
@@ -4383,6 +4613,54 @@ mod table_layout_tests {
         );
     }
 
+    /// Write a tiny solid-colour PNG to a uniquely-named temp file and return its
+    /// path — a real on-disk image for the loader to decode.
+    fn write_test_png(name: &str, w: u32, h: u32) -> PathBuf {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut path = std::env::temp_dir();
+        path.push(format!("leaf_gpui_test_img_{name}_{seq}.png"));
+        let img = image::RgbaImage::from_pixel(w, h, image::Rgba([200, 40, 40, 255]));
+        img.save_with_format(&path, image::ImageFormat::Png).unwrap();
+        path
+    }
+
+    #[test]
+    fn load_image_file_decodes_a_real_png_to_a_render_image() {
+        // The whole decode path: read → guess format → decode → RGBA→BGRA swap →
+        // RenderImage. A real PNG on disk exercises it end to end (short of the
+        // GPU upload, which `painting_a_block_image_does_not_panic` drives).
+        let path = write_test_png("decode", 6, 4);
+        let img = load_image_file(&path).expect("the PNG should decode");
+        let size = img.size(0);
+        assert_eq!((size.width.0, size.height.0), (6, 4), "intrinsic size survives");
+        // A bogus path fails cleanly rather than panicking.
+        assert!(load_image_file(Path::new("/no/such/file.png")).is_none());
+    }
+
+    #[gpui::test]
+    fn painting_a_block_image_does_not_panic(cx: &mut TestAppContext) {
+        // Drives the real prepaint+paint over a block image: resolve → decode →
+        // reserve the box row → `Window::paint_image` (which uploads the BGRA
+        // frame to the sprite atlas). A regression in the decode, the sizing, or
+        // the paint call panics here. A missing image and a remote URL exercise
+        // the text-placeholder fallback in the same pass.
+        let png = write_test_png("paint", 800, 400);
+        let body = format!(
+            "text\n\n![a photo]({})\n\nmiddle\n\n![gone](nope.png)\n\n![remote](https://x.dev/a.png)\n\nafter\n",
+            png.display()
+        );
+        let doc = doc_with("paint_image", &body);
+        let window = cx.add_window(|_, cx| Editor::new(cx, Some(doc)));
+        let editor = window.root(cx).unwrap();
+        let mut vcx = VisualTestContext::from_window(window.into(), cx);
+        vcx.draw(
+            gpui::point(px(0.0), px(0.0)),
+            gpui::size(px(240.0), px(600.0)),
+            |_, _| TextElement { editor: editor.clone() },
+        );
+    }
+
     #[test]
     fn gather_logical_tags_code_rows_and_carries_the_language() {
         // A fenced block's code lines are gathered as `Line`s tagged with their
@@ -4417,6 +4695,7 @@ mod table_layout_tests {
         for l in &logical {
             match l {
                 Logical::Table(_) => tables += 1,
+                Logical::Image { .. } => {}
                 Logical::Line { glyphs, .. } => {
                     let text: String = glyphs.iter().map(|g| g.ch).collect();
                     assert!(
@@ -4437,6 +4716,70 @@ mod table_layout_tests {
             .filter(|s| !s.is_empty())
             .collect();
         assert_eq!(prose, ["intro", "outro"], "the prose around the table was lost");
+    }
+
+    #[test]
+    fn a_block_image_is_gathered_as_an_image_not_a_line() {
+        // A block image's placeholder row is pulled out as `Logical::Image`, its
+        // box-picture skipped the way a table's is — so the GUI paints a raster
+        // there instead of shaping the `🖼 alt` label as prose.
+        let doc = doc_with("gather_img", "intro\n\n![a cat](cat.png)\n\noutro\n");
+        let logical = gather_logical(&doc);
+        let imgs: Vec<&ImageInfo> = logical
+            .iter()
+            .filter_map(|l| match l {
+                Logical::Image { info, .. } => Some(info),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(imgs.len(), 1, "the image should be gathered as an image");
+        assert_eq!(imgs[0].destination, "cat.png");
+        assert_eq!(imgs[0].alt, "a cat");
+        // The prose around it still came through as lines.
+        let prose: Vec<String> = logical
+            .iter()
+            .filter_map(|l| match l {
+                Logical::Line { glyphs, .. } => Some(glyphs.iter().map(|x| x.ch).collect::<String>()),
+                _ => None,
+            })
+            .filter(|s| !s.is_empty())
+            .collect();
+        assert_eq!(prose, ["intro", "outro"]);
+    }
+
+    #[test]
+    fn resolve_image_path_handles_local_relative_and_rejects_remote() {
+        let dir = Path::new("/docs/notes");
+        assert_eq!(
+            resolve_image_path("pics/cat.png", Some(dir)),
+            Some(PathBuf::from("/docs/notes/pics/cat.png")),
+            "a relative path joins the document directory"
+        );
+        assert_eq!(
+            resolve_image_path("/abs/cat.png", Some(dir)),
+            Some(PathBuf::from("/abs/cat.png")),
+            "an absolute path is taken as-is"
+        );
+        // Remote and data URIs, and a relative path with no doc dir, are not
+        // synchronously loadable — they fall back to the text placeholder.
+        assert_eq!(resolve_image_path("https://x.dev/a.png", Some(dir)), None);
+        assert_eq!(resolve_image_path("data:image/png;base64,AAAA", Some(dir)), None);
+        assert_eq!(resolve_image_path("cat.png", None), None);
+    }
+
+    #[test]
+    fn image_box_size_fits_width_and_caps_height_without_upscaling() {
+        let dp = |w: i32, h: i32| Size { width: DevicePixels(w), height: DevicePixels(h) };
+        // Wider than the editor: scaled down to the width, aspect preserved.
+        let s = image_box_size(dp(800, 400), 400.0);
+        assert_eq!((f32::from(s.width), f32::from(s.height)), (400.0, 200.0));
+        // Smaller than the editor: never upscaled.
+        let s = image_box_size(dp(100, 50), 400.0);
+        assert_eq!((f32::from(s.width), f32::from(s.height)), (100.0, 50.0));
+        // Very tall: capped at IMAGE_MAX_H, aspect preserved.
+        let s = image_box_size(dp(100, 2000), 400.0);
+        assert_eq!(f32::from(s.height), IMAGE_MAX_H);
+        assert!(f32::from(s.width) < 100.0);
     }
 
     #[test]

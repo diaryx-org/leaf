@@ -6,6 +6,7 @@
 //! offset-addressed twig edit that reparses live. You type into a document that
 //! stays a valid AST the whole time.
 
+mod image;
 mod style;
 mod ui;
 
@@ -89,6 +90,10 @@ struct App {
     /// `handle_mouse` knows which rows carry `code_scroll_x` and which are a
     /// different, unscrolled block.
     code_caret_span: Option<std::ops::Range<usize>>,
+    /// Block-image rendering: the graphics-protocol picker and the per-path cache
+    /// of decoded rasters. Defaults to half-blocks; `run` calls `query` once the
+    /// terminal is in raw mode to upgrade to kitty/iTerm2/sixel where available.
+    images: image::Images,
 }
 
 struct ClickState {
@@ -180,6 +185,10 @@ struct ConflictPrompt {
 
 fn run(terminal: &mut ratatui::DefaultTerminal, doc: &mut Doc) -> Result<()> {
     let mut app = App::default();
+    // Probe the terminal for its graphics protocol now that `ratatui::init` has
+    // put it in raw mode — the query reads escape-sequence replies. A terminal
+    // that can't answer keeps the half-blocks fallback.
+    app.images.query();
     loop {
         let breadcrumb = doc.breadcrumb();
         terminal.draw(|f| ui::render(f, doc, &breadcrumb, &mut app))?;

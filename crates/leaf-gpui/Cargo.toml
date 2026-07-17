@@ -32,6 +32,14 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "bd729195
 # is what lets both frontends carry the same two flavors.
 arboard = { version = "3", optional = true }
 
+# Decoding block-level images to the BGRA frames gpui's `RenderImage` paints.
+# Pinned to the SAME version gpui itself uses (0.25) so the `image::Frame` type we
+# hand `RenderImage::new` is the exact one gpui expects — a version skew here is a
+# type mismatch, not just a rebuild. `smallvec` likewise matches gpui's, for the
+# `SmallVec<[Frame; 1]>` its constructor takes.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"] }
+smallvec = "1"
+
 [dev-dependencies]
 # gpui's own test harness, which hands out a real `Window` (and so a text system
 # that shapes lines) with no platform window on screen. That's what lets the

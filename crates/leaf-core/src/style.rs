@@ -41,6 +41,13 @@ pub enum Role {
     /// A drawn rule: a thematic break (`───`) or a table's borders. A GUI that
     /// draws its own tables ignores the border glyphs; the rule still reaches it.
     Rule,
+    /// A block-level image's placeholder text (`🖼 alt`). The glyphs are a
+    /// *default* rendering any surface can paint as-is (a terminal shows the
+    /// label); an image-capable frontend skips the placeholder row named by the
+    /// map's [`ImageInfo`](crate::wysiwyg::ImageInfo) `rows_span` and paints the
+    /// real picture in its place — the same skip-the-picture contract
+    /// [`Role::Rule`] table borders use.
+    Image,
 }
 
 /// A glyph's style: a typographic [`Role`] plus the compositional emphasis flags

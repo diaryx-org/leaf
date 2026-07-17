@@ -14,6 +14,20 @@ leaf-core.workspace = true
 anyhow.workspace = true
 # TUI framework; we use its re-exported crossterm so backend versions can't skew.
 ratatui = "0.29"
+# Block-level images painted with the terminal's own graphics protocol (kitty,
+# iTerm2, sixel) and a unicode-halfblock fallback everywhere else. Version 9 is
+# the line built against ratatui 0.29 — 10+ require ratatui 0.30, which would
+# skew the backend. See https://github.com/benjajaja/ratatui-image.
+#
+# `default-features = false` drops the `chafa-dyn` default, which links system
+# libchafa via pkg-config (a build-time C dependency we don't want just to render
+# a picture); the built-in kitty/iTerm2/sixel/halfblocks encoders need no C libs.
+# `crossterm` matches the backend ratatui already uses here.
+ratatui-image = { version = "9", default-features = false, features = ["crossterm"] }
+# Decoding image files to the `DynamicImage` ratatui-image rasterizes. Same 0.25
+# line ratatui-image and leaf-gpui pin, so the `image` types line up across the
+# workspace's one resolved version.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"] }
 # System clipboard for Ctrl+C/X/V. Opened fresh per operation (cheap, and
 # avoids holding a stale pasteboard handle across app focus changes) and
 # guarded so a headless/unavailable clipboard degrades to a status message

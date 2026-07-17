@@ -16,6 +16,7 @@
 
 // `PathBuf` names the `path` field and the untitled marker on every build;
 // `Path` is only touched by the filesystem I/O gated behind the `fs` feature.
+use std::collections::HashMap;
 use std::path::PathBuf;
 #[cfg(feature = "fs")]
 use std::path::Path;
@@ -243,6 +244,14 @@ pub struct Doc {
     /// the rest are reused shifted (see [`wysiwyg::BlockCache`]). Persists across
     /// builds; a pure accelerator, so it's never read for correctness.
     block_cache: wysiwyg::BlockCache,
+    /// How many visual rows each block image reserves, keyed by its destination —
+    /// set by the frontend through [`Doc::set_image_rows`] once it has decoded and
+    /// measured the pictures. Core does no image I/O, so this is the only way it
+    /// learns a picture's height; a destination not in the map reserves the bare
+    /// one-row placeholder. Threaded into the builder so [`wysiwyg::build_cached`]
+    /// sizes each placeholder, and folded into `vmap_key` so a height change
+    /// rebuilds the map.
+    image_rows: HashMap<String, usize>,
 
     // View geometry the renderer stamps each frame, so mouse events can map a
     // screen cell back to a byte offset.
@@ -268,6 +277,14 @@ impl Doc {
         let editor = Editor::new(&bytes, format).map_err(|e| anyhow!("twig parse: {e}"))?;
         let source = String::from_utf8(bytes).map_err(|_| anyhow!("document is not UTF-8"))?;
         let disk_hash = Some(hash_bytes(source.as_bytes()));
+        // Store the document's *absolute* path. A relative one (`leaf README.md`)
+        // has an empty parent, so a frontend can't resolve a relative image
+        // destination (`![](pic.png)`) against the document's directory and the
+        // picture silently falls back to its text placeholder. `absolute` is
+        // purely lexical — it prefixes the current directory and normalizes, but
+        // reads nothing and resolves no symlinks — so `file_name` and save are
+        // unchanged; it only gives `path.parent()` something to join against.
+        let path = std::path::absolute(&path).unwrap_or(path);
         Ok(Doc::from_parts(editor, format, path, source, disk_hash))
     }
 
@@ -337,6 +354,7 @@ impl Doc {
             // No map yet — the first `build_visual` always builds.
             vmap_key: None,
             block_cache: wysiwyg::BlockCache::default(),
+            image_rows: HashMap::new(),
             scroll: 0,
             body_origin: (0, 0),
             body_height: 0,
@@ -397,6 +415,33 @@ impl Doc {
         self.build_map(None);
     }
 
+    /// Tell the model how many visual rows each block image should reserve, keyed
+    /// by the image's destination. A terminal frontend calls this once it has
+    /// decoded and measured its pictures — core does no image I/O, so this is the
+    /// only way it learns a height — and the next [`Doc::build_visual`] lays each
+    /// placeholder out that tall (the label row plus blank filler rows the
+    /// frontend paints the raster over). A destination left out of the map falls
+    /// back to the bare one-row placeholder, which is also what a frontend that
+    /// can't draw pictures (or lays them out in its own units, like the GUI) gets
+    /// by never calling this.
+    ///
+    /// Cheap to call every frame with the same map: only a *change* invalidates
+    /// the built map (and the block-row cache, since a height isn't part of a
+    /// block's bytes and so wouldn't otherwise re-render it). Steady state is a
+    /// no-op, so a frontend can just hand over its current measurements each frame.
+    pub fn set_image_rows(&mut self, rows: HashMap<String, usize>) {
+        if self.image_rows == rows {
+            return;
+        }
+        self.image_rows = rows;
+        // A height lives outside the block's source bytes, so the content-keyed
+        // block cache would hand back the old-height rows on a hit. Drop it (and
+        // the splice layout it carries) so the next build re-renders every block
+        // at the new heights, and force that build by clearing the map key.
+        self.block_cache = wysiwyg::BlockCache::default();
+        self.vmap_key = None;
+    }
+
     /// The revision the document's text is at — bumped by every edit, undo,
     /// redo, and reload, and by nothing else. A frontend caches against this to
     /// tell a repaint that needs new work from one that doesn't.
@@ -430,8 +475,9 @@ impl Doc {
                     let prev = std::mem::take(&mut self.vmap);
                     let source = &self.source;
                     let cache = &mut self.block_cache;
+                    let image_rows = &self.image_rows;
                     let editor = &mut self.editor;
-                    wysiwyg::build_spliced(prev, source, wrap, &top, dirty, cache, |id| {
+                    wysiwyg::build_spliced(prev, source, wrap, &top, dirty, image_rows, cache, |id| {
                         editor.subtree(NodeId(id)).unwrap_or_default()
                     })
                 }
@@ -440,8 +486,9 @@ impl Doc {
             self.vmap = spliced.unwrap_or_else(|| {
                 let source = &self.source;
                 let cache = &mut self.block_cache;
+                let image_rows = &self.image_rows;
                 let editor = &mut self.editor;
-                wysiwyg::build_cached(&top, source, wrap, cache, |id| {
+                wysiwyg::build_cached(&top, source, wrap, image_rows, cache, |id| {
                     editor.subtree(NodeId(id)).unwrap_or_default()
                 })
             });
@@ -1438,6 +1485,33 @@ impl Doc {
         }
     }
 
+    /// Insert a block-level image at the caret: `![alt](destination)`. Any
+    /// selection becomes the alt text (so "select a caption, insert image" labels
+    /// it); with no selection, `alt` is used — empty for none. The caret lands
+    /// just past the inserted image.
+    ///
+    /// Markdown and Djot spell an image identically, so this is a plain
+    /// span-splice through [`edit`](Self::edit) rather than a twig editor op —
+    /// there is no `insert_image` in twig's surface the way there is an
+    /// `insert_link`. One consequence: `destination` and `alt` are inserted
+    /// verbatim, so a `]`/`)` in either can break the markup. A frontend that
+    /// takes these from a prompt should keep them tame; format-correct escaping
+    /// (which twig's `insert_link` does because it owns the spelling) is a future
+    /// refinement.
+    pub fn insert_image(&mut self, destination: &str, alt: &str) {
+        let (start, end) = self.selection().unwrap_or((self.caret, self.caret));
+        // A selection is the alt text; otherwise the caller's `alt`.
+        let alt_text = self
+            .selected_text()
+            .map(str::to_string)
+            .unwrap_or_else(|| alt.to_string());
+        let markup = format!("![{alt_text}]({destination})");
+        // `edit` (via `splice`) records the undo caret, refreshes, and lands the
+        // caret at the end of the inserted text — just past the image, which is
+        // where a caret belongs after inserting one.
+        self.edit(start, end, &markup);
+    }
+
     /// The destination of the link under the caret — what a Link prompt shows so
     /// ⌘K on an existing link edits its URL instead of asking for it again.
     /// `None` when the caret stands in no link.
@@ -1452,6 +1526,23 @@ impl Doc {
             .filter(|n| n.span.start <= off && off < n.span.end)
             .max_by_key(|n| n.span.start)
             .and_then(|n| n.destination.or(n.text))
+    }
+
+    /// The destination of the image under the caret — what an image prompt shows
+    /// so editing an existing image starts from its current URL instead of blank,
+    /// the image analogue of [`link_destination_at_caret`](Self::link_destination_at_caret).
+    /// `None` when the caret stands in no image. A caret resting just after a
+    /// block image (its trailing stop) is still "in" it — the half-open span test
+    /// excludes that offset, which is the intended precision: past the image is
+    /// past it.
+    pub fn image_destination_at_caret(&mut self) -> Option<String> {
+        let off = self.caret;
+        self.nodes()
+            .into_iter()
+            .filter(|n| n.kind == "image")
+            .filter(|n| n.span.start <= off && off < n.span.end)
+            .max_by_key(|n| n.span.start)
+            .and_then(|n| n.destination)
     }
 
     /// The language of the fenced code block the caret stands in — what a
@@ -3364,6 +3455,95 @@ mod tests {
     }
 
     #[test]
+    fn insert_image_at_the_caret_spells_the_markup_and_lands_past_it() {
+        let mut d = doc_with("img_caret", "before after\n");
+        d.caret = 7; // between "before " and "after"
+        d.insert_image("cat.png", "a cat");
+        assert_eq!(d.source, "before ![a cat](cat.png)after\n");
+        // The caret sits just past the inserted image, nothing selected.
+        assert_eq!(d.selection(), None);
+        assert_eq!(d.caret, 7 + "![a cat](cat.png)".len());
+    }
+
+    #[test]
+    fn insert_image_uses_the_selection_as_alt_text() {
+        let mut d = doc_with("img_sel", "caption here\n");
+        d.anchor = Some(0);
+        d.caret = 7; // "caption"
+        d.insert_image("p.png", "ignored fallback");
+        assert_eq!(d.source, "![caption](p.png) here\n");
+    }
+
+    #[test]
+    fn insert_image_with_no_alt_leaves_empty_brackets() {
+        let mut d = doc_with("img_noalt", "\n");
+        d.caret = 0;
+        d.insert_image("logo.svg", "");
+        assert_eq!(d.source, "![](logo.svg)\n");
+    }
+
+    #[test]
+    fn image_destination_at_caret_reads_the_image_under_the_caret() {
+        let mut d = doc_with("img_read", "![a cat](cat.png)\n");
+        d.caret = 3; // inside the image markup
+        assert_eq!(d.image_destination_at_caret(), Some("cat.png".to_string()));
+        // Past the image, the caret is in no image.
+        d.caret = "![a cat](cat.png)".len();
+        assert_eq!(d.image_destination_at_caret(), None);
+    }
+
+    #[test]
+    fn set_image_rows_reserves_blank_filler_rows_the_frontend_paints_over() {
+        // The image is one placeholder row by default, and `set_image_rows` grows
+        // it to the height the frontend measured: the label row plus blank
+        // `decoration` fillers that hold the vertical space a raster is drawn into.
+        let mut d = wysiwyg_doc("img_rows", "intro\n\n![a cat](cat.png)\n\nend\n");
+        assert_eq!(d.vmap.images.len(), 1);
+        let img_row = d.vmap.images[0].rows_span.start;
+        assert_eq!(d.vmap.images[0].rows_span, img_row..img_row + 1, "default is one row");
+
+        d.set_image_rows(HashMap::from([("cat.png".to_string(), 4)]));
+        d.build_visual(80);
+        assert_eq!(d.vmap.images.len(), 1, "still one image, now taller");
+        let span = d.vmap.images[0].rows_span.clone();
+        assert_eq!(span.end - span.start, 4, "reserves the four rows asked for");
+        // The label row carries the mark and its glyphs; the three below are blank
+        // decoration — drawn, but no caret and no text.
+        assert!(d.vmap.rows[span.start].image.is_some(), "mark rides the first row");
+        for r in (span.start + 1)..span.end {
+            assert!(d.vmap.rows[r].decoration, "filler row {r} is decoration");
+            assert!(d.vmap.rows[r].glyphs.is_empty(), "filler row {r} is blank");
+            assert!(d.vmap.rows[r].image.is_none(), "only the first row is marked");
+        }
+    }
+
+    #[test]
+    fn a_taller_image_adds_no_caret_stops_and_motion_steps_over_its_fillers() {
+        // The extra rows are pure spacers: the caret's only homes stay the stop in
+        // front of the image and the one just past it, so walking the document top
+        // to bottom visits the same offsets whether the image is 1 row or 5.
+        let body = "ab\n\n![x](p.png)\n\ncd\n";
+        let stops_at = |rows: usize| -> Vec<usize> {
+            let mut d = wysiwyg_doc("img_stops", body);
+            if rows > 1 {
+                d.set_image_rows(HashMap::from([("p.png".to_string(), rows)]));
+                d.build_visual(80);
+            }
+            d.caret = 0;
+            let mut seen = vec![d.caret];
+            loop {
+                d.move_right(false);
+                if *seen.last().unwrap() == d.caret {
+                    break;
+                }
+                seen.push(d.caret);
+            }
+            seen
+        };
+        assert_eq!(stops_at(1), stops_at(5), "reserving rows must not add stops");
+    }
+
+    #[test]
     fn insert_link_repoints_the_link_at_a_bare_caret() {
         let mut d = doc_with("link_repoint", "[word](http://x.dev)\n");
         d.caret = 3; // in the link's text, nothing selected
@@ -3545,7 +3725,7 @@ mod tests {
     fn reference_map(source: &str) -> crate::wysiwyg::VisualMap {
         let mut ed = twig::Editor::new_str(source, Format::Markdown).unwrap();
         let nodes = ed.nodes().unwrap();
-        crate::wysiwyg::build(&nodes, source, None)
+        crate::wysiwyg::build(&nodes, source, None, &std::collections::HashMap::new())
     }
 
     fn maps_differ(a: &crate::wysiwyg::VisualMap, b: &crate::wysiwyg::VisualMap) -> bool {

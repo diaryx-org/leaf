@@ -185,6 +185,7 @@ fn role_name(r: Role) -> String {
         Role::ListMarker => "list".into(),
         Role::QuoteGutter => "quote".into(),
         Role::Rule => "rule".into(),
+        Role::Image => "image".into(),
     }
 }
 

@@ -21,6 +21,13 @@ use ratatui::{
 pub const CODE_BG: Color = Color::Indexed(235);
 pub const CODE_BORDER: Color = Color::Indexed(240);
 
+/// The frame drawn around a block image's reserved area — the picture sits inside
+/// it, and it stands alone as the "picture goes here" placeholder when the raster
+/// can't be painted (a remote/unresolved image, or one scrolled so it doesn't
+/// fully fit — a graphics-protocol image can't be clipped, but this cell-drawn
+/// border can). A muted magenta, kin to the `🖼` [`Role::Image`] label.
+pub const IMAGE_BORDER: Color = Color::Indexed(96);
+
 /// How far a fenced code block's text is inset from the left edge of its box —
 /// one column, the room the box's left border sits in. The caret and mouse math
 /// in `ui` shift a code row's columns by this same amount.
@@ -60,6 +67,10 @@ fn role_style(role: Role) -> Style {
         Role::QuoteGutter => s.fg(Color::Green),
         // Thematic breaks and table rules are quiet grey.
         Role::Rule => s.fg(Color::DarkGray),
+        // A block image's `🖼 alt` placeholder: the terminal has no raster
+        // primitive, so it paints the label — dim magenta to read as a
+        // stand-in for content it can't draw, not as prose.
+        Role::Image => s.fg(Color::Magenta).add_modifier(Modifier::DIM),
     }
 }
 

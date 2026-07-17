@@ -86,6 +86,40 @@ pub struct VRow {
     /// display string, not a source slice, so it needs no offset shifting; the
     /// label re-derives from twig on the next build.
     pub code_lang: Option<String>,
+    /// Set on the single placeholder row a block-level image renders to, carrying
+    /// the image's destination and alt text; `None` on every other row. The row's
+    /// glyphs are the default `🖼 alt` label (which a plain surface paints as-is);
+    /// an image-capable frontend reads this to paint the real picture instead,
+    /// skipping the row named by [`ImageInfo::rows_span`]. Like
+    /// [`code_lang`](Self::code_lang) it's plain display strings, not source
+    /// slices, so it rides row reuse and needs no offset shifting; the map's
+    /// [`images`](VisualMap::images) side-table is derived from it once the rows
+    /// are final, the same way [`code_blocks`](VisualMap::code_blocks) is.
+    pub image: Option<ImageMark>,
+}
+
+/// The destination and alt text a block-level image placeholder row carries, so
+/// an image-capable frontend can resolve and paint the picture. Plain strings
+/// (no source offsets), so they survive the row shuffling of [`BlockCache`]
+/// reuse and [`build_spliced`] untouched — see [`VRow::image`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImageMark {
+    /// The image's link destination — a path, URL, or `data:` URI, verbatim from
+    /// the AST. A frontend resolves a relative path against the document's
+    /// directory itself; core holds no I/O.
+    pub destination: String,
+    /// The image's alt text (its rendered inline children, flattened), or empty
+    /// when it has none. Also what the placeholder label shows.
+    pub alt: String,
+    /// How many visual rows this image reserves — the placeholder label row plus
+    /// the blank filler rows below it, so a frontend that paints a real raster has
+    /// the vertical room to draw it. `1` is the bare placeholder (a frontend that
+    /// can't draw pictures, or an image it couldn't resolve). A terminal frontend
+    /// asks for as many rows as the fitted picture is tall; the pixel-laid-out GUI
+    /// ignores this and sets its own row height, so it always leaves it `1`. The
+    /// count comes from the frontend (via [`crate::Doc::set_image_rows`]) because
+    /// core does no I/O and can't measure the image itself. See [`VRow::image`].
+    pub rows: usize,
 }
 
 /// The rendered document plus the offset⇄position mapping the caret rides on.
@@ -133,6 +167,12 @@ pub struct VisualMap {
     ///
     /// [`rows`]: VisualMap::rows
     pub code_blocks: Vec<CodeBlockInfo>,
+    /// Every block-level image in the document, in order — one per placeholder
+    /// row a frontend replaces with a real picture. Derived from the per-row
+    /// [`VRow::image`] mark once the rows are final (so it survives incremental
+    /// row reuse), the same way [`code_blocks`](VisualMap::code_blocks) is
+    /// derived from [`VRow::code`].
+    pub images: Vec<ImageInfo>,
 }
 
 impl VisualMap {
@@ -390,6 +430,27 @@ fn code_block_spans(rows: &[VRow]) -> Vec<CodeBlockInfo> {
     blocks
 }
 
+/// Collect one [`ImageInfo`] per row carrying an [`VRow::image`] mark — the
+/// block-level view a frontend needs to replace each placeholder row with a real
+/// picture. The mark rides the block's *first* row and names how many rows the
+/// image reserves ([`ImageMark::rows`]); the rows below it are blank
+/// [`decoration`](VRow::decoration) fillers that hold the vertical space and no
+/// caret. So the span runs from the marked row across those fillers. Derived from
+/// the final rows rather than tracked through the builder so it survives however
+/// [`build_cached`] and [`build_spliced`] shuffle rows around.
+fn image_spans(rows: &[VRow]) -> Vec<ImageInfo> {
+    rows.iter()
+        .enumerate()
+        .filter_map(|(i, row)| {
+            row.image.as_ref().map(|m| ImageInfo {
+                rows_span: i..i + m.rows.max(1),
+                destination: m.destination.clone(),
+                alt: m.alt.clone(),
+            })
+        })
+        .collect()
+}
+
 /// The source range of a fenced code block's info string — everything on the
 /// opening line past the fence (`` ```rust `` → the `rust`). `block_start` is the
 /// code block node's `span.start`. `None` for an indented code block, which
@@ -437,7 +498,12 @@ const UNWRAPPED_RULE_WIDTH: usize = 40;
 /// block — the GUI does its own proportional pixel wrapping over these rows.
 /// Text and offsets come from the AST (`str` nodes carry the verbatim source
 /// slice and an exact span), so the original source string isn't needed here.
-pub fn build(nodes: &[FlatNode], source: &str, wrap: Option<usize>) -> VisualMap {
+pub fn build(
+    nodes: &[FlatNode],
+    source: &str,
+    wrap: Option<usize>,
+    image_rows: &HashMap<String, usize>,
+) -> VisualMap {
     let Some(doc) = nodes.iter().position(|n| n.kind == "doc") else {
         return VisualMap::default();
     };
@@ -448,18 +514,21 @@ pub fn build(nodes: &[FlatNode], source: &str, wrap: Option<usize>) -> VisualMap
         rows: Vec::new(),
         tables: Vec::new(),
         last_off: 0,
+        image_rows,
     };
     b.blocks(doc, &[], &[]);
     b.emit_trailing_blank_lines();
     let content_start = first_content_offset(nodes, doc);
     let stops = collect_stops(&b.rows);
     let code_blocks = code_block_spans(&b.rows);
+    let images = image_spans(&b.rows);
     VisualMap {
         rows: b.rows,
         content_start,
         stops,
         tables: b.tables,
         code_blocks,
+        images,
     }
 }
 
@@ -479,6 +548,7 @@ pub fn build_cached(
     top: &[QueryMatch],
     source: &str,
     wrap: Option<usize>,
+    image_rows: &HashMap<String, usize>,
     cache: &mut BlockCache,
     mut fetch_subtree: impl FnMut(u32) -> Vec<FlatNode>,
 ) -> VisualMap {
@@ -507,6 +577,7 @@ pub fn build_cached(
         rows: Vec::new(),
         tables: Vec::new(),
         last_off: 0,
+        image_rows,
     };
 
     // Record the per-block row decomposition as we go, so a later
@@ -547,6 +618,7 @@ pub fn build_cached(
                     rows: Vec::new(),
                     tables: Vec::new(),
                     last_off: 0,
+                    image_rows,
                 };
                 sub.block(0, &[], &[]);
                 let last_off = sub.last_off;
@@ -608,12 +680,14 @@ pub fn build_cached(
     let content_start = blocks.first().map_or(0, |m| m.span.start);
     let stops = collect_stops(&b.rows);
     let code_blocks = code_block_spans(&b.rows);
+    let images = image_spans(&b.rows);
     VisualMap {
         rows: b.rows,
         content_start,
         stops,
         tables: b.tables,
         code_blocks,
+        images,
     }
 }
 
@@ -647,6 +721,7 @@ pub fn build_spliced(
     wrap: Option<usize>,
     top: &[QueryMatch],
     dirty: Range<usize>,
+    image_rows: &HashMap<String, usize>,
     cache: &mut BlockCache,
     mut fetch_subtree: impl FnMut(u32) -> Vec<FlatNode>,
 ) -> Option<VisualMap> {
@@ -721,6 +796,7 @@ pub fn build_spliced(
         rows: Vec::new(),
         tables: Vec::new(),
         last_off: 0,
+        image_rows,
     };
     sub.block(0, &[], &[]);
     // A table, or content that renders outside the block's span (a degenerate
@@ -785,12 +861,14 @@ pub fn build_spliced(
     };
 
     let code_blocks = code_block_spans(&rows);
+    let images = image_spans(&rows);
     Some(VisualMap {
         rows,
         content_start: blocks[0].span.start,
         stops,
         tables: Vec::new(),
         code_blocks,
+        images,
     })
 }
 
@@ -958,6 +1036,7 @@ fn shift_row(row: &VRow, delta: isize) -> VRow {
         decoration: row.decoration,
         code: row.code,
         code_lang: row.code_lang.clone(),
+        image: row.image.clone(),
     }
 }
 
@@ -1017,6 +1096,13 @@ struct Builder<'a> {
     /// The end offset of the last content emitted — the anchor for blank
     /// separator rows so the caret never snaps onto one.
     last_off: usize,
+    /// How many rows each block image reserves, keyed by its destination — the
+    /// frontend's per-image height, threaded in from [`crate::Doc::set_image_rows`]
+    /// so [`Builder::block_image`] can size the placeholder without core doing any
+    /// I/O. A destination absent from the map (or a `0`/`1` entry) reserves the
+    /// bare one-row placeholder, which is the whole-document default and what
+    /// every existing test — passing an empty map — still gets.
+    image_rows: &'a HashMap<String, usize>,
 }
 
 impl Builder<'_> {
@@ -1095,6 +1181,7 @@ impl Builder<'_> {
                 decoration: k == 0 || k == last,
                 code: false,
                 code_lang: None,
+                image: None,
             });
         }
     }
@@ -1192,6 +1279,18 @@ impl Builder<'_> {
             _ => {
                 // A container of blocks, or an inline-bearing paragraph.
                 let kids = self.children(id);
+                // A block-level image: a paragraph whose sole child is an
+                // `image` node (`![alt](url)` on its own line). Render it as a
+                // placeholder row + record an [`ImageInfo`] a capable frontend
+                // replaces. An image mixed with other inline content on the line
+                // isn't block-level and falls through to the inline path below,
+                // where it still renders as its alt text.
+                if let [only] = kids[..] {
+                    if self.nodes[only].kind == "image" {
+                        self.block_image(only, pf);
+                        return;
+                    }
+                }
                 let inline = !kids.is_empty() && kids.iter().all(|&c| is_inline(&self.nodes[c].kind));
                 if inline || kids.is_empty() {
                     let glyphs = self.inline_children(id, Style::default());
@@ -1326,6 +1425,7 @@ impl Builder<'_> {
             decoration: true,
             code: false,
             code_lang: None,
+            image: None,
         });
     }
 
@@ -1402,7 +1502,85 @@ impl Builder<'_> {
                 .rev()
                 .find(|g| g.stop)
                 .map_or(fallback, |g| g.src);
-            self.rows.push(VRow { glyphs, end_src, decoration: false, code: false, code_lang: None });
+            self.rows.push(VRow { glyphs, end_src, decoration: false, code: false, code_lang: None, image: None });
+        }
+    }
+
+    /// Render a block-level image as one placeholder row: the `🖼 alt` label
+    /// styled [`Role::Image`], every glyph mapped to the image's start offset and
+    /// a caret stop there (they share the offset, so the stop table dedups them to
+    /// a single home in front of the image, as a rule's dashes do), and the row's
+    /// end stop set past the image so the caret can also rest after it. The row
+    /// carries an [`ImageMark`] so [`image_spans`] publishes it as an
+    /// [`ImageInfo`] a capable frontend replaces with the real picture; a plain
+    /// surface paints the label as-is. `pf` is the block prefix (a list indent, a
+    /// quote gutter) the row opens with, exactly as every other block honours it.
+    fn block_image(&mut self, img: usize, pf: &[Glyph]) {
+        let node = &self.nodes[img];
+        let start = node.span.start;
+        let end = node.span.end;
+        let destination = node.destination.clone().unwrap_or_default();
+        let alt = self.image_alt(img);
+        let label = if alt.is_empty() {
+            format!("🖼 {}", image_label(&destination))
+        } else {
+            format!("🖼 {alt}")
+        };
+        let style = Style::default().role(Role::Image);
+        let mut glyphs = pf.to_vec();
+        for ch in label.chars() {
+            glyphs.push(Glyph { ch, style, src: start, stop: true });
+        }
+        // How many rows the frontend wants for this picture: the label row plus
+        // the blank fillers below it. Absent (a GUI that lays images out in
+        // pixels, an image that didn't resolve, or a plain surface) means the
+        // bare one-row placeholder.
+        let rows = self.image_rows.get(&destination).copied().unwrap_or(1).max(1);
+        // End past the image so the caret has a stop after it: the last glyph's
+        // offset is the image *start*, not its extent, so `push_row`'s
+        // last-glyph rule would strand the end stop inside the markup.
+        self.push_row_at(glyphs, end);
+        if let Some(row) = self.rows.last_mut() {
+            row.image = Some(ImageMark { destination, alt, rows });
+        }
+        // Reserve the picture's remaining height as blank `decoration` rows: drawn
+        // (so the frontend has the vertical room to paint the raster over them),
+        // but holding no caret and contributing no stops — vertical motion steps
+        // over them and the caret's only homes stay the stop in front of the image
+        // and the one just past it, both on the label row above. They anchor at the
+        // image's end offset so a click on the picture's lower half lands after it,
+        // the nearest caret home. Mirrors how a table's box-rule rows reserve space
+        // without ever holding the caret.
+        for _ in 1..rows {
+            self.rows.push(VRow {
+                glyphs: Vec::new(),
+                end_src: end,
+                decoration: true,
+                code: false,
+                code_lang: None,
+                image: None,
+            });
+        }
+        self.last_off = end;
+    }
+
+    /// An image's alt text: the flattened text of its inline descendants (an
+    /// image's children *are* its alt content), empty when it has none.
+    fn image_alt(&self, id: usize) -> String {
+        let mut out = String::new();
+        self.collect_text(id, &mut out);
+        out
+    }
+
+    /// Append every descendant's `text` to `out`, in document order. Inline text
+    /// (`str`) nodes are leaves, so a node never contributes both its own text and
+    /// a child's — no double counting.
+    fn collect_text(&self, id: usize, out: &mut String) {
+        for c in self.children(id) {
+            if let Some(t) = &self.nodes[c].text {
+                out.push_str(t);
+            }
+            self.collect_text(c, out);
         }
     }
 
@@ -1573,7 +1751,7 @@ impl Builder<'_> {
     /// extent better than its last glyph does.
     fn push_row_at(&mut self, glyphs: Vec<Glyph>, end_src: usize) {
         self.last_off = end_src;
-        self.rows.push(VRow { glyphs, end_src, decoration: false, code: false, code_lang: None });
+        self.rows.push(VRow { glyphs, end_src, decoration: false, code: false, code_lang: None, image: None });
     }
 
     /// The source offset the caret rests at on the blank line separating a block
@@ -1658,6 +1836,7 @@ impl Builder<'_> {
                 decoration: k == 1,
                 code: false,
                 code_lang: None,
+                image: None,
             });
         }
     }
@@ -1841,6 +2020,29 @@ pub struct CodeBlockInfo {
     pub lang: Option<String>,
 }
 
+/// A block-level image (`![alt](url)` on its own line), named by the single
+/// [`VisualMap::rows`] row it occupies.
+///
+/// Like [`CodeBlockInfo`], the row *is* the block's default rendering — a plain
+/// surface paints the `🖼 alt` placeholder glyphs as-is. An image-capable
+/// frontend instead **skips the row in `rows_span`** and paints the resolved
+/// picture there, exactly as it skips a [`TableInfo`]'s box-drawn rows. Derived
+/// from [`VRow::image`] by [`image_spans`], so it survives the row reuse of
+/// [`BlockCache`] and [`build_spliced`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImageInfo {
+    /// The single [`VisualMap::rows`] row this image's placeholder occupies —
+    /// what an image-capable frontend replaces with the picture.
+    pub rows_span: Range<usize>,
+    /// The image's link destination — a path, URL, or `data:` URI, verbatim from
+    /// the AST. A frontend resolves a relative path against the document's own
+    /// directory; core does no I/O.
+    pub destination: String,
+    /// The image's alt text, flattened from its inline children (empty when it
+    /// has none).
+    pub alt: String,
+}
+
 /// The narrowest a column may be squeezed. Below a few characters a column
 /// stops carrying text and just shreds it one letter per line, which is worse
 /// than letting the grid run wide.
@@ -2012,6 +2214,23 @@ fn prefix_width(prefix: &[Glyph]) -> usize {
     glyphs_width(prefix)
 }
 
+/// The label shown for an image with no alt text: the final path segment of its
+/// destination (`img/cat.png` → `cat.png`), the whole destination when it has no
+/// separator, and `"image"` when it's empty. A `data:` URI (which has no useful
+/// tail) shows its scheme so the placeholder isn't a wall of base64.
+fn image_label(dest: &str) -> String {
+    if dest.is_empty() {
+        return "image".to_string();
+    }
+    if dest.starts_with("data:") {
+        return "data:…".to_string();
+    }
+    // Trim a query/fragment so a URL's `?v=2#frag` doesn't ride along.
+    let clean = dest.split(['?', '#']).next().unwrap_or(dest);
+    let tail = clean.trim_end_matches('/').rsplit(['/', '\\']).next().unwrap_or(clean);
+    if tail.is_empty() { dest.to_string() } else { tail.to_string() }
+}
+
 fn heading_style(level: u32) -> Style {
     // Just the role — a frontend decides how a heading of this level *looks*
     // (the terminal cycles a color and bolds it, the GUI scales the font). The
@@ -2058,6 +2277,7 @@ pub(crate) fn assert_maps_eq(a: &VisualMap, b: &VisualMap, ctx: &str) {
         assert_eq!(ta.end_src, tb.end_src, "table {i} end_src ({ctx})");
     }
     assert_eq!(a.code_blocks, b.code_blocks, "code_blocks ({ctx})");
+    assert_eq!(a.images, b.images, "images ({ctx})");
 }
 
 #[cfg(test)]
@@ -2067,7 +2287,14 @@ mod tests {
 
     fn map(src: &str) -> VisualMap {
         let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
-        build(&ed.nodes().unwrap(), src, Some(80))
+        build_t(&ed.nodes().unwrap(), src, Some(80))
+    }
+
+    /// The cache-free reference [`build`], with no per-image height overrides —
+    /// every block image stays its default one-row placeholder. The tests that
+    /// need a taller image drive it through [`crate::Doc::set_image_rows`] instead.
+    fn build_t(nodes: &[FlatNode], src: &str, wrap: Option<usize>) -> VisualMap {
+        build(nodes, src, wrap, &HashMap::new())
     }
 
     fn rendered(m: &VisualMap) -> String {
@@ -2088,9 +2315,10 @@ mod tests {
         cache: &mut BlockCache,
     ) -> (VisualMap, VisualMap) {
         let all = ed.nodes().unwrap();
-        let plain = build(&all, src, wrap);
+        let image_rows = HashMap::new();
+        let plain = build(&all, src, wrap, &image_rows);
         let top = ed.child_spans(None).unwrap();
-        let cached = build_cached(&top, src, wrap, cache, |id| {
+        let cached = build_cached(&top, src, wrap, &image_rows, cache, |id| {
             ed.subtree(NodeId(id)).unwrap_or_default()
         });
         (plain, cached)
@@ -2109,6 +2337,8 @@ mod tests {
             "| a | b |\n|---|---|\n| 1 | 2 |\n\ntext after a table\n",
             "line\n- \nsetext?\n\nreal para\n\n\n\ntrailing blanks\n",
             "> quote with **bold** and a [link](https://x.dev)\n>\n> - item\n> - item2\n\ntail\n",
+            "intro\n\n![a cat](img/cat.png)\n\nbetween\n\n![](https://x.dev/logo.svg)\n\nend\n",
+            "- text item\n- ![alt](pic.png)\n- more text\n",
         ];
         for wrap in [None, Some(80usize), Some(20)] {
             for src in docs {
@@ -2183,8 +2413,8 @@ mod tests {
         // row when wrap is None (the GUI wraps it at pixel width instead).
         let long = "one two three four five six seven eight nine ten eleven twelve\n";
         let mut ed = Editor::new_str(long, Format::Markdown).unwrap();
-        let wrapped = build(&ed.nodes().unwrap(), long, Some(12));
-        let unwrapped = build(&ed.nodes().unwrap(), long, None);
+        let wrapped = build_t(&ed.nodes().unwrap(), long, Some(12));
+        let unwrapped = build_t(&ed.nodes().unwrap(), long, None);
         assert!(wrapped.num_rows() > 1, "narrow column should wrap");
         assert_eq!(unwrapped.num_rows(), 1, "no budget should keep it one row");
         // Every glyph's source byte is preserved in the single row.
@@ -2310,7 +2540,7 @@ mod tests {
         let src = "| Ingredient | Notes |\n|---|---:|\n\
                    | flour milled coarse | sift it twice |\n| salt | a pinch |\n";
         let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
-        let m = build(&ed.nodes().unwrap(), src, Some(30));
+        let m = build_t(&ed.nodes().unwrap(), src, Some(30));
         let text = rendered(&m);
         assert_eq!(
             text,
@@ -2334,7 +2564,7 @@ mod tests {
         // table column can't — a glyph past the border lands on the border.
         let src = "| A | B |\n|---|---|\n| antidisestablishmentarianism | x |\n";
         let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
-        let m = build(&ed.nodes().unwrap(), src, Some(20));
+        let m = build_t(&ed.nodes().unwrap(), src, Some(20));
         for (r, row) in m.rows.iter().enumerate() {
             assert!(row.glyphs.len() <= 20, "row {r} overflows: {}", row.glyphs.len());
         }
@@ -2489,6 +2719,71 @@ mod tests {
     }
 
     #[test]
+    fn a_block_image_is_published_structurally_beside_its_placeholder() {
+        let m = map("intro\n\n![a cat](img/cat.png)\n\nend\n");
+        assert_eq!(m.images.len(), 1, "one block image");
+        let img = &m.images[0];
+        assert_eq!(img.destination, "img/cat.png");
+        assert_eq!(img.alt, "a cat");
+        // The placeholder row named by `rows_span` carries the label a plain
+        // surface paints and a capable frontend replaces.
+        let row_text = |r: usize| -> String {
+            m.rows[r].glyphs.iter().map(|g| g.ch).collect()
+        };
+        assert_eq!(img.rows_span.end - img.rows_span.start, 1, "one placeholder row");
+        assert_eq!(row_text(img.rows_span.start), "🖼 a cat");
+        // The row carries the mark `image_spans` derives the side-table from.
+        assert!(m.rows[img.rows_span.start].image.is_some());
+    }
+
+    #[test]
+    fn an_image_without_alt_labels_itself_with_its_filename() {
+        let m = map("![](photos/beach.jpg)\n");
+        let row = &m.rows[m.images[0].rows_span.start];
+        assert_eq!(row.glyphs.iter().map(|g| g.ch).collect::<String>(), "🖼 beach.jpg");
+        assert_eq!(m.images[0].alt, "");
+    }
+
+    #[test]
+    fn a_block_image_gives_the_caret_a_home_before_and_after_it() {
+        // `![x](y)` on its own line: the caret can rest in front of the image
+        // (its start) and just past it (the row end), and nowhere inside the
+        // markup — the same coarse mapping a thematic break uses.
+        let src = "![x](y.png)\n";
+        let m = map(src);
+        let img = &m.rows[m.images[0].rows_span.start];
+        let start = 0; // the image opens the document
+        let end = "![x](y.png)".len();
+        // Every placeholder glyph maps to the image start and is a stop there.
+        assert!(img.glyphs.iter().all(|g| g.src == start && g.stop));
+        assert_eq!(img.end_src, end, "the row ends past the image");
+        assert_eq!(m.stops.first(), Some(&start));
+        assert!(m.stops.contains(&end), "a stop sits after the image");
+        // Nothing inside the markup is a stop.
+        assert!(!m.stops.iter().any(|&s| s > start && s < end));
+    }
+
+    #[test]
+    fn an_inline_image_amid_text_is_not_a_block_image() {
+        // An image sharing its line with prose isn't block-level: it stays in the
+        // inline path (rendered as its alt text), and publishes no ImageInfo.
+        let m = map("see ![a cat](cat.png) here\n");
+        assert!(m.images.is_empty(), "not a block image");
+        assert!(rendered(&m).contains("a cat"), "alt text still renders inline");
+    }
+
+    #[test]
+    fn a_block_image_carries_its_list_prefix() {
+        // An image that is a list item's body opens past the bullet, like every
+        // other block does.
+        let m = map("- ![alt](p.png)\n");
+        let row = &m.rows[m.images[0].rows_span.start];
+        let text: String = row.glyphs.iter().map(|g| g.ch).collect();
+        assert!(text.starts_with("• "), "the list marker prefixes the image row: {text:?}");
+        assert!(text.contains("🖼 alt"));
+    }
+
+    #[test]
     fn the_structural_table_spans_exactly_its_drawn_rows() {
         // A frontend drawing its own grid skips `rows_span` and renders from
         // `grid`. If the span were short the leftover border rows would be
@@ -2536,7 +2831,7 @@ mod tests {
         // decision. Narrow enough that the drawn cell must break.
         let src = "| Name |\n|------|\n| alpha beta gamma |\n";
         let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
-        let m = build(&ed.nodes().unwrap(), src, Some(12));
+        let m = build_t(&ed.nodes().unwrap(), src, Some(12));
         let drawn = rendered(&m);
         let cell: String = m.tables[0].grid[1].cells[0]
             .glyphs
@@ -2584,7 +2879,7 @@ mod tests {
         // cluster apart from the middle.
         let src = "| A |\n|---|\n| 👨‍👩‍👧👨‍👩‍👧 |\n";
         let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
-        let m = build(&ed.nodes().unwrap(), src, Some(8));
+        let m = build_t(&ed.nodes().unwrap(), src, Some(8));
         let boundaries: Vec<usize> = src
             .grapheme_indices(true)
             .map(|(i, _)| i)
@@ -2606,7 +2901,7 @@ mod tests {
         // which is not what a count of glyphs measures.
         let src = "| A |\n|---|\n| 你好世界漢字 |\n";
         let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
-        let m = build(&ed.nodes().unwrap(), src, Some(14));
+        let m = build_t(&ed.nodes().unwrap(), src, Some(14));
         for r in &m.rows {
             assert_eq!(r.width(), 14, "{:?} is not drawn to the grid", rendered(&m));
         }
