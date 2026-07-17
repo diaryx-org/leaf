@@ -27,6 +27,8 @@ use crate::Pending;
 pub(crate) enum PromptAction {
     /// Link the selection, or the block at the caret, to the entered destination.
     Link,
+    /// Set the language of the fenced code block at the caret (`Doc::set_code_language`).
+    SetLanguage,
     /// Write the document to the entered path (`Doc::save_as`). `then` is what
     /// the Save As was on the way to: an untitled document reaches this from a
     /// plain ⌘S (nothing follows), but also from the quit dialog's Save, and

@@ -38,8 +38,6 @@ pub enum Role {
     ListMarker,
     /// A block quote's gutter (`│`), drawn down its left edge.
     QuoteGutter,
-    /// A fenced code block's gutter (`▏`), marking the block's extent.
-    CodeFence,
     /// A drawn rule: a thematic break (`───`) or a table's borders. A GUI that
     /// draws its own tables ignores the border glyphs; the rule still reaches it.
     Rule,

@@ -14,6 +14,18 @@ use ratatui::{
     text::{Line, Span},
 };
 
+/// The tint behind code — the pill behind an inline `` `code` `` run and the
+/// fill of a fenced block's box — and the block box's border. Quiet 256-colour
+/// greys so they read as a subtle panel on a dark terminal and degrade to
+/// nothing alarming elsewhere; the code text stays its own green on top.
+pub const CODE_BG: Color = Color::Indexed(235);
+pub const CODE_BORDER: Color = Color::Indexed(240);
+
+/// How far a fenced code block's text is inset from the left edge of its box —
+/// one column, the room the box's left border sits in. The caret and mouse math
+/// in `ui` shift a code row's columns by this same amount.
+pub const CODE_INSET: usize = 1;
+
 /// The terminal's palette, keyed on a glyph's semantic [`Role`]. This is the
 /// presentation core used to bake in and no longer does: a terminal can only
 /// tell a heading from body text by *color*, so the choice of which color lives
@@ -39,13 +51,15 @@ fn role_style(role: Role) -> Style {
                 _ => base.fg(Color::Gray),
             }
         }
-        Role::Code => s.fg(Color::Green),
+        // Code reads green on the code tint — inline it's the whole pill, in a
+        // fenced block the box's fill matches so the two blend.
+        Role::Code => s.fg(Color::Green).bg(CODE_BG),
         Role::Link => s.fg(Color::Cyan).add_modifier(Modifier::UNDERLINED),
         Role::Mark => s.fg(Color::Black).bg(Color::Yellow),
         Role::ListMarker => s.fg(Color::Yellow),
         Role::QuoteGutter => s.fg(Color::Green),
-        // The code fence, thematic breaks, and table rules are all quiet grey.
-        Role::CodeFence | Role::Rule => s.fg(Color::DarkGray),
+        // Thematic breaks and table rules are quiet grey.
+        Role::Rule => s.fg(Color::DarkGray),
     }
 }
 
@@ -71,15 +85,46 @@ pub fn to_ratatui(s: LStyle) -> Style {
 /// Styled ratatui lines for the WYSIWYG map, drawing any glyph whose source
 /// offset is within the `[start, end)` selection reversed. Adjacent glyphs of
 /// equal style are merged into one span.
-pub fn wysiwyg_lines(vmap: &VisualMap, sel: Option<(usize, usize)>) -> Vec<Line<'static>> {
+///
+/// `code_shift(row)` returns `Some(scroll)` for a fenced code-block row — the
+/// display columns to scroll it left inside its box — and `None` for ordinary
+/// text. A code row is drawn inset by [`CODE_INSET`] (room for the box's left
+/// border) and scrolled: the leading `scroll` columns are dropped so a long line
+/// slides under the box rather than wrapping or running off the right edge. The
+/// caret and mouse in `ui` mirror this exact shift, so a code column still round-
+/// trips to its source byte.
+pub fn wysiwyg_lines(
+    vmap: &VisualMap,
+    sel: Option<(usize, usize)>,
+    code_shift: impl Fn(usize) -> Option<usize>,
+) -> Vec<Line<'static>> {
     let (ss, se) = sel.unwrap_or((usize::MAX, usize::MAX));
     vmap.rows
         .iter()
-        .map(|row| {
+        .enumerate()
+        .map(|(r, row)| {
+            let shift = code_shift(r);
             let mut spans: Vec<Span<'static>> = Vec::new();
+            // A code row opens with its inset: the columns the box's left border
+            // lands on, tinted so the fill runs edge to edge under the border.
+            if shift.is_some() {
+                spans.push(Span::styled(
+                    " ".repeat(CODE_INSET),
+                    Style::default().bg(CODE_BG),
+                ));
+            }
             let mut buf = String::new();
             let mut cur: Option<Style> = None;
+            // Column of the current glyph within the row, to drop the ones a code
+            // row has scrolled off its left edge.
+            let mut col = 0usize;
             for g in &row.glyphs {
+                let w = char_cols(g.ch);
+                let hidden = shift.is_some_and(|scroll| col < scroll);
+                col += w;
+                if hidden {
+                    continue;
+                }
                 let mut style = to_ratatui(g.style);
                 if g.src >= ss && g.src < se {
                     style = style.add_modifier(Modifier::REVERSED);
@@ -103,4 +148,11 @@ pub fn wysiwyg_lines(vmap: &VisualMap, sel: Option<(usize, usize)>) -> Vec<Line<
             Line::from(spans)
         })
         .collect()
+}
+
+/// The display-column width of one glyph — the terminal's own measure, matched
+/// to how `leaf-core` lays a row out into columns so a scrolled code column and
+/// its caret can't drift apart.
+fn char_cols(ch: char) -> usize {
+    leaf_core::wysiwyg::text_width(ch.encode_utf8(&mut [0u8; 4]))
 }

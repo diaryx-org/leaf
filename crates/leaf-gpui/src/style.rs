@@ -29,6 +29,10 @@ pub struct RunStyle {
     pub muted: Hsla,
     /// The highlight behind marked (`==mark==`) text.
     pub mark_bg: Hsla,
+    /// The tint behind an inline `` `code` `` run — the pill that sets it apart
+    /// mid-sentence. A fenced block gets a drawn border box instead (geometry the
+    /// element paints), but an inline run can only carry a background color.
+    pub code_bg: Hsla,
 }
 
 /// How much larger than the body a heading of `level` (1-based) is drawn, given
@@ -67,11 +71,18 @@ pub fn text_run(len: usize, s: LStyle, rs: &RunStyle) -> TextRun {
     }
     let color = match s.role {
         Role::Link => rs.link,
-        Role::ListMarker | Role::QuoteGutter | Role::CodeFence | Role::Rule => rs.muted,
+        Role::ListMarker | Role::QuoteGutter | Role::Rule => rs.muted,
         // Body, Heading, Code, Mark all read in the default text color.
         _ => rs.text,
     };
-    let background_color = matches!(s.role, Role::Mark).then_some(rs.mark_bg);
+    // Marked text gets its highlight; inline code gets its pill tint. A fenced
+    // code block's rows get the same tint from a quad the element paints behind
+    // them, so the per-run background here reads the same either way.
+    let background_color = match s.role {
+        Role::Mark => Some(rs.mark_bg),
+        Role::Code => Some(rs.code_bg),
+        _ => None,
+    };
     // Links are underlined; so is anything the author marked as an insertion
     // (`{+ins+}` sets the underline flag). `color: None` follows the run's color.
     let underline = (matches!(s.role, Role::Link) || s.underline)

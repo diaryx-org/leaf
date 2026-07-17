@@ -34,12 +34,13 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui::{
-    App, Bounds, Context, CursorStyle, Element, ElementId, ElementInputHandler, Entity,
-    EntityInputHandler, EventEmitter, FocusHandle, Focusable, Font, GlobalElementId, Hsla,
-    InspectorElementId, IntoElement, KeyBinding, KeyDownEvent, LayoutId, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render, ScrollHandle,
-    SharedString, ShapedLine, Style, Task, TextAlign, UTF16Selection, UnderlineStyle, Window,
-    actions, anchored, deferred, div, fill, point, prelude::*, px, relative, rgb, rgba, size,
+    App, BorderStyle, Bounds, ContentMask, Context, CursorStyle, Element, ElementId,
+    ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable, Font,
+    GlobalElementId, Hsla, InspectorElementId, IntoElement, KeyBinding, KeyDownEvent, LayoutId,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render,
+    ScrollHandle, SharedString, ShapedLine, Style, Task, TextAlign, UTF16Selection, UnderlineStyle,
+    Window, actions, anchored, deferred, div, fill, point, prelude::*, px, quad, relative, rgb,
+    rgba, size,
 };
 use leaf_core::style::{Role, Style as CoreStyle};
 use prompt::{PromptAction, TextPrompt};
@@ -95,6 +96,11 @@ pub struct EditorStyle {
     pub table_border: Hsla,
     pub table_header: Hsla,
     pub table_stripe: Hsla,
+    /// A code block's border and the tint behind it — the box a fenced or
+    /// indented block is set apart by now that core draws no gutter. The same
+    /// `code_background` also fills the pill behind an inline `` `code` `` run.
+    pub code_border: Hsla,
+    pub code_background: Hsla,
     /// The GUI's palette for leaf-core's semantic roles (see [`crate::style`]).
     /// Core no longer bakes colors in — a role is all it records — so a heading,
     /// code, and body text all read in [`Self::text`]; only these three roles
@@ -134,6 +140,8 @@ impl Default for EditorStyle {
             table_border: rgb(0xd0d0d0).into(),
             table_header: rgb(0xf0f0f0).into(),
             table_stripe: rgb(0xf8f8f8).into(),
+            code_border: rgb(0xe0e0e0).into(),
+            code_background: rgb(0xf5f5f5).into(),
             link: rgb(0x1e66f5).into(),
             muted: rgb(0x9a9a9a).into(),
             mark_background: rgb(0xfaf0a0).into(),
@@ -224,6 +232,8 @@ actions!(
         // Blockquote / list containers (⌘⇧9/8/7) and the link prompt (⌘K) —
         // the toolbar's remaining format commands, mirroring the TUI's set.
         ToggleBlockquote, ToggleBulletList, ToggleOrderedList, InsertLink,
+        // Set the language of the fenced code block at the caret (⌘⇧L).
+        SetLanguage,
         // Indentation (⇥/⇧⇥) and the line kills (⌘⌫/⌃K).
         Outdent, DeleteToLineStart, DeleteToLineEnd,
         // Strikethrough / underline — twig's Delete / Insert inline kinds.
@@ -299,6 +309,7 @@ pub fn register_keybindings(cx: &mut App) {
         KeyBinding::new("cmd-shift-8", ToggleBulletList, ctx),
         KeyBinding::new("cmd-shift-7", ToggleOrderedList, ctx),
         KeyBinding::new("cmd-k", InsertLink, ctx),
+        KeyBinding::new("cmd-shift-l", SetLanguage, ctx),
         KeyBinding::new("shift-tab", Outdent, ctx),
         // The line kills, as `NSStandardKeyBindingResponding` spells them:
         // ⌘⌫ is `deleteToBeginningOfLine:` and ⌃K is `deleteToEndOfLine:`.
@@ -342,6 +353,14 @@ pub struct Editor {
     /// The geometry the last paint's table chrome was drawn from, kept with the
     /// rows it was measured against.
     last_geoms: Rc<Vec<TableGeom>>,
+    /// The code blocks the last paint drew a box around, kept with the rows —
+    /// which output rows each occupies, so the mouse can tell a click landed in a
+    /// scrolled code block and undo its horizontal offset.
+    last_code_geoms: Rc<Vec<CodeGeom>>,
+    /// The horizontal pixel delta added to each row's text when it was painted —
+    /// a code block's indent-minus-scroll, zero for ordinary rows. Parallel to
+    /// [`Self::last_rows`]; the mouse subtracts it to hit-test a scrolled row.
+    last_row_x: Rc<Vec<Pixels>>,
     /// What `last_rows` was built from, or `None` before the first paint.
     ///
     /// The rows are a pure function of this key, and shaping them is
@@ -423,6 +442,8 @@ impl Editor {
             scroll_handle: ScrollHandle::new(),
             last_rows: Rc::new(Vec::new()),
             last_geoms: Rc::new(Vec::new()),
+            last_code_geoms: Rc::new(Vec::new()),
+            last_row_x: Rc::new(Vec::new()),
             layout_key: None,
             shape_cache: HashMap::new(),
             break_cache: HashMap::new(),
@@ -1187,6 +1208,19 @@ impl Editor {
         let initial = doc.link_destination_at_caret().unwrap_or_default();
         self.open_prompt("Link destination", initial, PromptAction::Link, window, cx);
     }
+
+    /// ⌘⇧L: set the language of the fenced code block the caret is in, prefilled
+    /// with its current language — the code-block analogue of ⌘K, editing the
+    /// fence's info string through a prompt rather than exposing fence markup as
+    /// an editable row. A no-op when the caret is in no fenced block.
+    fn set_language(&mut self, _: &SetLanguage, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_mut() else { return };
+        if !doc.caret_in_fenced_code() {
+            return;
+        }
+        let initial = doc.code_language_at_caret().unwrap_or_default();
+        self.open_prompt("Code language", initial, PromptAction::SetLanguage, window, cx);
+    }
     // ── clipboard (arboard, not gpui's — see `set_clipboard`) ───────────────
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
@@ -1264,6 +1298,11 @@ impl Editor {
             PromptAction::Link => {
                 if let Some(doc) = self.doc.as_mut() {
                     doc.insert_link(&prompt.value);
+                }
+            }
+            PromptAction::SetLanguage => {
+                if let Some(doc) = self.doc.as_mut() {
+                    doc.set_code_language(&prompt.value);
                 }
             }
             PromptAction::SaveAs { then } => self.commit_save_as(&prompt.value, then, cx),
@@ -1730,7 +1769,10 @@ impl Editor {
         let rel_y = (pos.y - bounds.top()).max(px(0.0));
         let r = row_at_y(&self.last_row_tops, rel_y).min(self.last_rows.len() - 1);
         let row = &self.last_rows[r];
-        row.src_at_index(row.index_for_x(pos.x - bounds.left()))
+        // Undo the row's paint-time x shift (a code block's indent-minus-scroll)
+        // so the click maps against the same coordinates the text was drawn in.
+        let dx = self.last_row_x.get(r).copied().unwrap_or(px(0.0));
+        row.src_at_index(row.index_for_x(pos.x - bounds.left() - dx))
     }
 
     // ── UTF-8 (leaf-core) ⇄ UTF-16 (gpui input) ─────────────────────────────
@@ -1934,7 +1976,7 @@ impl EntityInputHandler for Editor {
         // `compute_ime_candidate_bounds` probes with `caret..caret` and compares
         // the y it gets back to find the line the composition sits on.
         let (r, gi) = locate_caret(&self.last_rows, start);
-        let x = self.last_rows[r].x_at(gi);
+        let x = self.last_rows[r].x_at(gi) + self.last_row_x.get(r).copied().unwrap_or(px(0.0));
         // The row's top and height from the cumulative tops (variable per row),
         // falling back to the body line height if they're somehow absent.
         let tops = &self.last_row_tops;
@@ -2136,7 +2178,6 @@ fn style_bits(s: CoreStyle) -> u16 {
         Role::Mark => 3,
         Role::ListMarker => 4,
         Role::QuoteGutter => 5,
-        Role::CodeFence => 6,
         Role::Rule => 7,
         Role::Heading(l) => 8 + l.min(7) as u16, // 8..=15, four bits
     };
@@ -2339,6 +2380,9 @@ struct Prepaint {
     /// The cumulative row tops (see [`row_tops`]) — where each row is painted,
     /// and what the editor keeps for the next frame's mouse/scroll math.
     tops: Rc<Vec<Pixels>>,
+    /// The horizontal delta added to each row's text — a code block's
+    /// indent-minus-scroll, zero for prose. Kept for the editor's mouse math.
+    row_x: Rc<Vec<Pixels>>,
     /// A representative body line height, stored back for page up/down.
     line_height: Pixels,
     cursor: Option<PaintQuad>,
@@ -2347,6 +2391,16 @@ struct Prepaint {
     /// painted over it.
     table_fills: Vec<PaintQuad>,
     table_borders: Vec<PaintQuad>,
+    /// A code block's border-and-tint box, painted under the selection and text.
+    code_fills: Vec<PaintQuad>,
+    /// Each code block's rows and box rect — the rect clips its (scrolled) text
+    /// during paint so nothing spills past the box.
+    code_boxes: Vec<(Range<usize>, Bounds<Pixels>)>,
+    /// Each code block's language label: the shaped chip, its text origin, and
+    /// the chip's background rect. Painted over the box border.
+    code_labels: Vec<(Rc<ShapedLine>, Point<Pixels>, Bounds<Pixels>)>,
+    /// The label chip's line height, for painting the shaped label.
+    code_label_h: Pixels,
 }
 
 /// Everything the painted rows are a function of. Two paints with equal keys
@@ -2367,8 +2421,14 @@ struct LayoutKey {
 
 /// One unit of the document as prepaint gathers it: a line of text to be pixel-
 /// wrapped, or a table to be laid out as a grid.
+///
+/// A `Line`'s `code` is the index of the code block it belongs to (in
+/// [`VisualMap::code_blocks`] order), or `None` for ordinary prose. A code line
+/// isn't wrapped — it scrolls horizontally inside its box instead — and the
+/// output rows it produces are gathered into that block's on-screen span so the
+/// element can draw one border-and-tint box around the whole run.
 enum Logical {
-    Line(Vec<Glyph>, usize),
+    Line { glyphs: Vec<Glyph>, end_src: usize, code: Option<usize> },
     Table(TableInfo),
 }
 
@@ -2396,25 +2456,39 @@ fn gather_logical(doc: &Doc) -> Vec<Logical> {
                         stop: true,
                     })
                     .collect();
-                lines.push(Logical::Line(glyphs, start + line.len()));
+                lines.push(Logical::Line { glyphs, end_src: start + line.len(), code: None });
                 start += line.len() + 1;
             }
         }
         View::Wysiwyg => {
-            // `tables` is already in row order, so one cursor walks it alongside
-            // the rows rather than re-scanning every table for every row.
-            let mut next = doc.vmap.tables.iter().peekable();
+            // `tables` and `code_blocks` are both already in row order, so one
+            // cursor apiece walks them alongside the rows rather than re-scanning.
+            let mut next_table = doc.vmap.tables.iter().peekable();
+            let mut code = doc.vmap.code_blocks.iter().enumerate().peekable();
             let mut r = 0usize;
             while r < doc.vmap.rows.len() {
-                match next.peek().filter(|t| t.rows_span.start == r) {
+                match next_table.peek().filter(|t| t.rows_span.start == r) {
                     Some(t) => {
                         lines.push(Logical::Table((*t).clone()));
                         r = t.rows_span.end;
-                        next.next();
+                        next_table.next();
                     }
                     None => {
+                        // Which code block, if any, this row falls inside — the
+                        // cursor advances past a block once its rows are behind us.
+                        while code.peek().is_some_and(|(_, c)| c.rows_span.end <= r) {
+                            code.next();
+                        }
+                        let in_code = code
+                            .peek()
+                            .filter(|(_, c)| c.rows_span.contains(&r))
+                            .map(|(i, _)| *i);
                         let vrow = &doc.vmap.rows[r];
-                        lines.push(Logical::Line(vrow.glyphs.clone(), vrow.end_src));
+                        lines.push(Logical::Line {
+                            glyphs: vrow.glyphs.clone(),
+                            end_src: vrow.end_src,
+                            code: in_code,
+                        });
                         r += 1;
                     }
                 }
@@ -2587,6 +2661,21 @@ fn wrap_logical(
 const BORDER: f32 = 1.0;
 const CELL_PAD_X: f32 = 8.0;
 
+/// A fenced code block's box: the border thickness, the horizontal breathing
+/// room between the border and the code (the text is indented this far and its
+/// scroll keeps it clear of both edges), and the vertical padding the box grows
+/// past its rows into the blank separator lines above and below. The rounded
+/// corner radius softens the box the way an inline code pill is soft.
+const CODE_BORDER: f32 = 1.0;
+const CODE_PAD_X: f32 = 8.0;
+const CODE_PAD_Y: f32 = 4.0;
+const CODE_RADIUS: f32 = 4.0;
+/// How far the caret is kept from the right edge of a code block as it scrolls —
+/// a little runway so the next character typed is already visible.
+const CODE_CARET_MARGIN: f32 = 24.0;
+/// The language label's font size relative to the body — a small chip on the box.
+const CODE_LABEL_SCALE: f32 = 0.8;
+
 /// The narrowest a column may be squeezed — below this a column stops carrying
 /// text and shreds it a letter per line, which is worse than running wide. The
 /// pixel echo of `leaf-core`'s `MIN_COL_WIDTH`.
@@ -2604,6 +2693,18 @@ struct TableGeom {
     /// Per logical table row: the grid lines it spans (a wrapped cell makes a row
     /// taller than one), and whether it's a header.
     bands: Vec<(Range<usize>, bool)>,
+}
+
+/// Where a code block's box goes: the flat output rows its lines occupy, filled
+/// once their y is known. Its horizontal scroll is not stored here — it's
+/// recomputed each paint from the caret, since the caret moves without the rows
+/// re-shaping (so it can't ride the row cache).
+struct CodeGeom {
+    rows: Range<usize>,
+    /// The block's language, painted as a small label on the box — `None` for a
+    /// bare fence or indented block. Carried here so it rides the row cache with
+    /// the geometry it labels.
+    lang: Option<String>,
 }
 
 /// Shrink `widths` until the grid fits `avail`, taking from the widest column
@@ -3202,14 +3303,20 @@ impl Element for TextElement {
             );
             let rows = Rc::new(vec![RowLayout::prose(shaped, Vec::new(), vec![0], 0, line_height)]);
             let tops = Rc::new(row_tops(&rows));
+            let row_x = Rc::new(vec![px(0.0); rows.len()]);
             return Prepaint {
                 rows,
                 tops,
+                row_x,
                 line_height,
                 cursor: None,
                 selections: Vec::new(),
                 table_fills: Vec::new(),
                 table_borders: Vec::new(),
+                code_fills: Vec::new(),
+                code_boxes: Vec::new(),
+                code_labels: Vec::new(),
+                code_label_h: line_height,
             };
         }
 
@@ -3234,7 +3341,13 @@ impl Element for TextElement {
             // Reusing the rows is only sound if they're really there: the first
             // paint has the key unset.
             let cached = (editor.layout_key.as_ref() == Some(&key) && !editor.last_rows.is_empty())
-                .then(|| (editor.last_rows.clone(), editor.last_geoms.clone()));
+                .then(|| {
+                    (
+                        editor.last_rows.clone(),
+                        editor.last_geoms.clone(),
+                        editor.last_code_geoms.clone(),
+                    )
+                });
             (
                 key,
                 doc.selection(),
@@ -3249,7 +3362,7 @@ impl Element for TextElement {
         // Shape the document, unless the last paint already shaped this exact
         // one. The caret and selection below are recomputed either way — they
         // move without the text moving, and they're cheap next to shaping.
-        let (rows, geoms) = match cached {
+        let (rows, geoms, code_geoms) = match cached {
             Some(hit) => hit,
             None => {
                 // Gather the logical lines (glyphs owned) so we can shape them
@@ -3257,9 +3370,15 @@ impl Element for TextElement {
                 // dropped. A logical line is a whole paragraph (WYSIWYG) or a
                 // source line (Source); the pixel wrap that follows turns each
                 // into one or more visual rows.
-                let logical_lines = {
+                let (logical_lines, code_langs) = {
                     let editor = self.editor.read(cx);
-                    gather_logical(editor.doc.as_ref().unwrap())
+                    let doc = editor.doc.as_ref().unwrap();
+                    // The language label of each code block, in the same order
+                    // `gather_logical` numbers them, so a `CodeGeom` can carry its
+                    // own once built.
+                    let langs: Vec<Option<String>> =
+                        doc.vmap.code_blocks.iter().map(|c| c.lang.clone()).collect();
+                    (gather_logical(doc), langs)
                 };
                 // The shape cache rides with the editor between paints; take
                 // it for the duration, since shaping needs the window mutably
@@ -3281,6 +3400,7 @@ impl Element for TextElement {
                     link: style.link,
                     muted: style.muted,
                     mark_bg: style.mark_background,
+                    code_bg: style.code_background,
                 };
                 let line_ratio = (f32::from(line_height) / f32::from(font_size).max(1.0)).max(1.0);
                 let mut shaper = Shaper {
@@ -3297,16 +3417,27 @@ impl Element for TextElement {
 
                 let mut rows: Vec<RowLayout> = Vec::new();
                 let mut geoms: Vec<TableGeom> = Vec::new();
+                let mut code_geoms: Vec<CodeGeom> = Vec::new();
                 for logical in &logical_lines {
                     match logical {
-                        Logical::Line(glyphs, end_src) => wrap_logical(
-                            &mut shaper,
-                            glyphs,
-                            *end_src,
-                            wrap_px,
-                            marked.as_ref(),
-                            &mut rows,
-                        ),
+                        Logical::Line { glyphs, end_src, code } => {
+                            let before = rows.len();
+                            // A code line never wraps — it scrolls inside its box —
+                            // so it's laid out at an unbounded width and stays one
+                            // row. Prose wraps at the element width as before.
+                            let w = if code.is_some() { f32::INFINITY } else { wrap_px };
+                            wrap_logical(&mut shaper, glyphs, *end_src, w, marked.as_ref(), &mut rows);
+                            if let Some(id) = code {
+                                // Lines of one block are consecutive, so the first
+                                // opens its span and the rest extend it.
+                                if *id == code_geoms.len() {
+                                    let lang = code_langs.get(*id).cloned().flatten();
+                                    code_geoms.push(CodeGeom { rows: before..rows.len(), lang });
+                                } else {
+                                    code_geoms[*id].rows.end = rows.len();
+                                }
+                            }
+                        }
                         Logical::Table(info) => {
                             if let Some(g) =
                                 layout_table(&mut shaper, info, wrap_px, marked.as_ref(), &mut rows)
@@ -3325,16 +3456,18 @@ impl Element for TextElement {
                 // Whatever is still in `prev` was not used by this paint: text
                 // that has been edited away. Only `fresh` goes back.
                 let (shapes, breaks) = (shaper.fresh, shaper.breaks);
-                let (rows, geoms) = (Rc::new(rows), Rc::new(geoms));
+                let (rows, geoms, code_geoms) =
+                    (Rc::new(rows), Rc::new(geoms), Rc::new(code_geoms));
                 self.editor.update(cx, |e, _| {
                     e.last_rows = rows.clone();
                     e.last_geoms = geoms.clone();
+                    e.last_code_geoms = code_geoms.clone();
                     e.layout_key = Some(key);
                     e.last_row_count = rows.len();
                     e.shape_cache = shapes;
                     e.break_cache = breaks;
                 });
-                (rows, geoms)
+                (rows, geoms, code_geoms)
             }
         };
 
@@ -3351,7 +3484,86 @@ impl Element for TextElement {
         // longer matches the rows on screen.
         let (cr, cgi) = locate_caret(&rows, caret);
         let cr = cr.min(rows.len() - 1);
-        let caret_x = rows[cr].x_at(cgi);
+
+        // Code blocks scroll horizontally inside their box rather than wrapping,
+        // and — like a table — the box is only as wide as its widest line rather
+        // than the whole editor. Every code row's text is indented `CODE_PAD_X`;
+        // the one block holding the caret is then scrolled left just enough to
+        // keep the caret a margin clear of the box's right edge (every other block
+        // shows from column 0). `row_x[r]` is the net x added to row `r`'s text —
+        // a code row's indent-minus-scroll, zero for prose. It's recomputed here,
+        // not baked into the cached rows, because the caret moves without the rows
+        // re-shaping. `code_boxes` pairs each block's rows with the box rect its
+        // border, fill, and text-clip are drawn from.
+        let avail = f32::from(bounds.size.width);
+        // The widest laid-out row in a block, in pixels — what the box hugs.
+        let block_content_w = |g: &CodeGeom| -> f32 {
+            g.rows
+                .clone()
+                .map(|r| f32::from(rows[r].segments.iter().map(|s| s.x + s.shaped.width).max().unwrap_or(px(0.0))))
+                .fold(0.0f32, f32::max)
+        };
+        // Shape each block's language label once, so its width feeds the box
+        // width (the box never cuts its own label) and the paint step just draws
+        // it. A block without a language shapes nothing.
+        let label_size = font_size * CODE_LABEL_SCALE;
+        let mut code_labels: Vec<Option<Rc<ShapedLine>>> = Vec::with_capacity(code_geoms.len());
+        for g in code_geoms.iter() {
+            let shaped = g.lang.as_ref().map(|lang| {
+                let text: SharedString = format!(" {lang} ").into();
+                let run = gpui::TextRun {
+                    len: text.len(),
+                    font: font.clone(),
+                    color: style.muted,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                Rc::new(window.text_system().shape_line(text, label_size, &[run], None))
+            });
+            code_labels.push(shaped);
+        }
+        // Each block's box width: its content (or its label, whichever is wider)
+        // plus the padding either side, capped at the editor width.
+        let box_w = |bi: usize, g: &CodeGeom| -> f32 {
+            let label_w = code_labels[bi].as_ref().map_or(0.0, |s| f32::from(s.width) + CODE_PAD_X);
+            (block_content_w(g).max(label_w) + 2.0 * CODE_PAD_X).min(avail).max(2.0 * CODE_PAD_X)
+        };
+
+        let caret_block = code_geoms.iter().position(|g| g.rows.contains(&cr));
+        let caret_off = caret_block.map_or(0.0, |bi| {
+            let inner_w = (box_w(bi, &code_geoms[bi]) - 2.0 * CODE_PAD_X).max(1.0);
+            (f32::from(rows[cr].x_at(cgi)) - inner_w + CODE_CARET_MARGIN).max(0.0)
+        });
+        let mut row_x = vec![px(0.0); rows.len()];
+        let mut code_boxes: Vec<(Range<usize>, Bounds<Pixels>)> = Vec::new();
+        let mut code_labels_out: Vec<(Rc<ShapedLine>, Point<Pixels>, Bounds<Pixels>)> = Vec::new();
+        let label_h = label_size * 1.3;
+        for (bi, g) in code_geoms.iter().enumerate() {
+            let off = if Some(bi) == caret_block { caret_off } else { 0.0 };
+            for r in g.rows.clone() {
+                row_x[r] = px(CODE_PAD_X - off);
+            }
+            // The box grows a little past its rows into the blank separator lines
+            // above and below, and is only as wide as its content.
+            let box_top = row_top(g.rows.start) - px(CODE_PAD_Y);
+            let box_bottom = top + tops[g.rows.end] + px(CODE_PAD_Y);
+            let rect = Bounds::from_corners(
+                point(left, box_top),
+                point(left + px(box_w(bi, g)), box_bottom),
+            );
+            code_boxes.push((g.rows.clone(), rect));
+            // The language label straddles the top border as a little chip, its
+            // own background cutting the border the way a fieldset legend does.
+            if let Some(shaped) = &code_labels[bi] {
+                let origin = point(rect.left() + px(CODE_PAD_X), box_top - label_h * 0.5);
+                let chip = Bounds::new(origin, size(shaped.width, label_h));
+                code_labels_out.push((shaped.clone(), origin, chip));
+            }
+        }
+        let row_x = Rc::new(row_x);
+
+        let caret_x = rows[cr].x_at(cgi) + row_x[cr];
         let cursor = if sel.is_none() {
             Some(fill(
                 Bounds::new(point(left + caret_x, row_top(cr)), size(px(2.0), row_h(cr))),
@@ -3386,8 +3598,8 @@ impl Element for TextElement {
                     if let Some(a) = a {
                         selections.push(fill(
                             Bounds::from_corners(
-                                point(left + row.x_in(si, a), row_top(r)),
-                                point(left + row.x_in(si, b), row_top(r) + row_h(r)),
+                                point(left + row.x_in(si, a) + row_x[r], row_top(r)),
+                                point(left + row.x_in(si, b) + row_x[r], row_top(r) + row_h(r)),
                             ),
                             selection_color,
                         ));
@@ -3405,14 +3617,35 @@ impl Element for TextElement {
             table_borders.extend(b);
         }
 
+        // A code block's box: one rounded quad, a tinted fill under a thin
+        // border, painted before the selection and text so both land on top.
+        let code_fills: Vec<PaintQuad> = code_boxes
+            .iter()
+            .map(|(_, rect)| {
+                quad(
+                    *rect,
+                    px(CODE_RADIUS),
+                    style.code_background,
+                    px(CODE_BORDER),
+                    style.code_border,
+                    BorderStyle::Solid,
+                )
+            })
+            .collect();
+
         Prepaint {
             rows,
             tops,
+            row_x,
             line_height,
             cursor,
             selections,
             table_fills,
             table_borders,
+            code_fills,
+            code_boxes,
+            code_labels: code_labels_out,
+            code_label_h: label_h,
         }
     }
 
@@ -3433,8 +3666,20 @@ impl Element for TextElement {
             cx,
         );
 
-        // A table's fills go under the selection; its rules go over it, so a
-        // selection running across a cell boundary doesn't swallow the grid.
+        // A code block's box, then a table's fills, all go under the selection;
+        // a table's rules go over it, so a selection running across a cell
+        // boundary doesn't swallow the grid.
+        for quad in prepaint.code_fills.drain(..) {
+            window.paint_quad(quad);
+        }
+        // The language chips sit over the box border they cut into, their own
+        // background masking the border where the label crosses it.
+        let code_label_h = prepaint.code_label_h;
+        let code_bg = self.editor.read(cx).style.code_background;
+        for (shaped, origin, chip) in prepaint.code_labels.drain(..) {
+            window.paint_quad(fill(chip, code_bg));
+            shaped.paint(origin, code_label_h, TextAlign::Left, None, window, cx).ok();
+        }
         for quad in prepaint.table_fills.drain(..) {
             window.paint_quad(quad);
         }
@@ -3448,15 +3693,36 @@ impl Element for TextElement {
         let left = bounds.left();
         let top = bounds.top();
         let tops = prepaint.tops.clone();
+        let row_x = prepaint.row_x.clone();
+        // Which box, if any, clips a given row's text (a scrolled code line must
+        // not spill past its box). `code_boxes` is tiny, so a linear scan per row
+        // is cheaper than a per-row lookup table.
+        let clip_of = |r: usize| -> Option<Bounds<Pixels>> {
+            prepaint
+                .code_boxes
+                .iter()
+                .find(|(rows, _)| rows.contains(&r))
+                .map(|(_, rect)| *rect)
+        };
         for (r, row) in prepaint.rows.iter().enumerate() {
             // Each row paints at its own top and its own height — a shaped line is
             // painted at the height it was measured to, so a heading's larger
-            // glyphs sit in a proportionally taller row.
+            // glyphs sit in a proportionally taller row. A code row is shifted by
+            // its box's indent-minus-scroll and clipped to the box.
             let y = top + tops[r];
-            for seg in &row.segments {
-                seg.shaped
-                    .paint(point(left + seg.x, y), row.height, TextAlign::Left, None, window, cx)
-                    .ok();
+            let dx = row_x[r];
+            let paint_row = |window: &mut Window, cx: &mut App| {
+                for seg in &row.segments {
+                    seg.shaped
+                        .paint(point(left + seg.x + dx, y), row.height, TextAlign::Left, None, window, cx)
+                        .ok();
+                }
+            };
+            match clip_of(r) {
+                Some(rect) => window.with_content_mask(Some(ContentMask { bounds: rect }), |w| {
+                    paint_row(w, cx)
+                }),
+                None => paint_row(window, cx),
             }
         }
 
@@ -3479,6 +3745,7 @@ impl Element for TextElement {
         self.editor.update(cx, |editor, _| {
             editor.last_line_height = prepaint.line_height;
             editor.last_row_tops = tops;
+            editor.last_row_x = row_x;
             editor.last_bounds = Some(bounds);
         });
     }
@@ -3571,6 +3838,7 @@ impl Render for Editor {
                     .on_action(cx.listener(Self::toggle_bullet_list))
                     .on_action(cx.listener(Self::toggle_ordered_list))
                     .on_action(cx.listener(Self::insert_link))
+                    .on_action(cx.listener(Self::set_language))
                     .on_action(cx.listener(Self::copy))
                     .on_action(cx.listener(Self::cut))
                     .on_action(cx.listener(Self::paste))
@@ -3624,6 +3892,7 @@ fn test_run_style(body: Font) -> RunStyle {
         link: theme.link,
         muted: theme.muted,
         mark_bg: theme.mark_background,
+        code_bg: theme.code_background,
     }
 }
 
@@ -4056,6 +4325,53 @@ mod table_layout_tests {
         );
     }
 
+    #[gpui::test]
+    fn painting_a_code_block_does_not_panic(cx: &mut TestAppContext) {
+        // Drives the real prepaint+paint over a fenced block: the box quad, the
+        // content-mask clip, the language chip, and the caret-follow horizontal
+        // scroll (caret parked inside a line far wider than the viewport). A
+        // regression in any of those quad/shape calls panics here.
+        let doc = doc_with(
+            "paint_code",
+            "text\n\n```rust\nlet x = 1;\nlet very_long_line_that_is_far_wider_than_the_narrow_test_viewport_here = 1;\n```\n\nafter\n",
+        );
+        let window = cx.add_window(|_, cx| Editor::new(cx, Some(doc)));
+        let editor = window.root(cx).unwrap();
+        let mut vcx = VisualTestContext::from_window(window.into(), cx);
+        editor.update(&mut vcx, |e, _| {
+            if let Some(d) = e.doc.as_mut() {
+                d.caret = 60; // deep inside the long code line
+            }
+        });
+        vcx.draw(
+            gpui::point(px(0.0), px(0.0)),
+            gpui::size(px(240.0), px(400.0)),
+            |_, _| TextElement { editor: editor.clone() },
+        );
+    }
+
+    #[test]
+    fn gather_logical_tags_code_rows_and_carries_the_language() {
+        // A fenced block's code lines are gathered as `Line`s tagged with their
+        // block index (so prepaint can box and scroll them), prose as `None`, and
+        // the block's language rides the map for the label.
+        let doc = doc_with("code_gather", "text\n\n```rust\nlet x = 1;\n```\n\nafter\n");
+        let logical = gather_logical(&doc);
+        let code_lines: Vec<String> = logical
+            .iter()
+            .filter_map(|l| match l {
+                Logical::Line { glyphs, code: Some(_), .. } => {
+                    Some(glyphs.iter().map(|g| g.ch).collect())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(code_lines, vec!["let x = 1;".to_string()]);
+        // Prose lines carry no code tag.
+        assert!(logical.iter().any(|l| matches!(l, Logical::Line { code: None, .. })));
+        assert_eq!(doc.vmap.code_blocks[0].lang.as_deref(), Some("rust"));
+    }
+
     #[test]
     fn no_box_drawing_reaches_the_gui() {
         // The bug, stated as the user sees it: a table drawn as *text*. Every
@@ -4068,7 +4384,7 @@ mod table_layout_tests {
         for l in &logical {
             match l {
                 Logical::Table(_) => tables += 1,
-                Logical::Line(glyphs, _) => {
+                Logical::Line { glyphs, .. } => {
                     let text: String = glyphs.iter().map(|g| g.ch).collect();
                     assert!(
                         !text.contains(['┌', '┬', '┐', '├', '┼', '┤', '└', '┴', '┘', '│', '─']),
@@ -4082,7 +4398,7 @@ mod table_layout_tests {
         let prose: Vec<String> = logical
             .iter()
             .filter_map(|l| match l {
-                Logical::Line(g, _) => Some(g.iter().map(|x| x.ch).collect::<String>()),
+                Logical::Line { glyphs, .. } => Some(glyphs.iter().map(|x| x.ch).collect::<String>()),
                 _ => None,
             })
             .filter(|s| !s.is_empty())
@@ -4099,11 +4415,11 @@ mod table_layout_tests {
         doc.view = View::Source;
         let logical = gather_logical(&doc);
         assert!(
-            logical.iter().all(|l| matches!(l, Logical::Line(..))),
+            logical.iter().all(|l| matches!(l, Logical::Line { .. })),
             "the source view must not build a grid"
         );
         let first: String = match &logical[0] {
-            Logical::Line(g, _) => g.iter().map(|x| x.ch).collect(),
+            Logical::Line { glyphs, .. } => glyphs.iter().map(|x| x.ch).collect(),
             _ => unreachable!(),
         };
         assert_eq!(first, "| Name | Qty |", "the source view shows the source");

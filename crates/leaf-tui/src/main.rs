@@ -79,6 +79,16 @@ struct App {
     /// scroll wheel to drive this independently (unlike `doc.scroll`), so it
     /// only ever chases the caret — see `ui::follow_caret_x`.
     scroll_x: usize,
+    /// How far the code block holding the caret is scrolled sideways inside its
+    /// box (WYSIWYG view). Code lines don't wrap — they scroll — and only the
+    /// block the caret is in ever scrolls, so this one value plus the span below
+    /// is all the mouse needs to undo the shift on a click. Chases the caret the
+    /// same way `scroll_x` does; see `ui::render_body`.
+    code_scroll_x: usize,
+    /// The row span of the code block the last frame scrolled (the caret's), so
+    /// `handle_mouse` knows which rows carry `code_scroll_x` and which are a
+    /// different, unscrolled block.
+    code_caret_span: Option<std::ops::Range<usize>>,
 }
 
 struct ClickState {
@@ -383,6 +393,7 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
             // letter is the one the user is reaching for.
             KeyCode::Char('v') => clipboard_paste_plain(doc),
             KeyCode::Char('k') => open_link_prompt(doc, app),
+            KeyCode::Char('l') => open_language_prompt(doc, app),
             KeyCode::Char('s') => open_save_as_prompt(doc, app),
             KeyCode::Char('n') => {
                 if doc.dirty {
@@ -461,10 +472,32 @@ fn handle_mouse(doc: &mut Doc, m: MouseEvent, app: &mut App) {
         && (m.row as usize) < by as usize + doc.body_height as usize
         && m.column >= bx;
 
+    // A code row is drawn inset for its box and — if it's the caret's block —
+    // scrolled sideways, so a raw screen column has to be shifted back into the
+    // block's own column space before it maps to a source byte. Mirrors the
+    // draw-time shift in `ui::render_body`; a plain row is left alone.
+    let col_at = |doc: &Doc, app: &App, row: usize, column: u16| -> usize {
+        let raw = column.saturating_sub(bx) as usize;
+        if doc.view != leaf_core::View::Wysiwyg {
+            return raw;
+        }
+        match doc.vmap.code_blocks.iter().find(|c| c.rows_span.contains(&row)) {
+            Some(cb) => {
+                let scroll = if app.code_caret_span.as_ref() == Some(&cb.rows_span) {
+                    app.code_scroll_x
+                } else {
+                    0
+                };
+                raw.saturating_sub(crate::style::CODE_INSET) + scroll
+            }
+            None => raw,
+        }
+    };
+
     match m.kind {
         MouseEventKind::Down(MouseButton::Left) if within => {
             let row = doc.scroll + (m.row - by) as usize;
-            let col = (m.column - bx) as usize;
+            let col = col_at(doc, app, row, m.column);
             let count = click_count(app, m.row, m.column);
             let shift = m.modifiers.contains(KeyModifiers::SHIFT);
 
@@ -488,7 +521,7 @@ fn handle_mouse(doc: &mut Doc, m: MouseEvent, app: &mut App) {
         }
         MouseEventKind::Drag(MouseButton::Left) if within => {
             let row = doc.scroll + (m.row - by) as usize;
-            let col = (m.column - bx) as usize;
+            let col = col_at(doc, app, row, m.column);
             doc.click(row, col, true); // extend the selection
         }
         // Dragging past the top or bottom edge of the body scrolls to keep
@@ -502,15 +535,15 @@ fn handle_mouse(doc: &mut Doc, m: MouseEvent, app: &mut App) {
         // as the wheel handlers below already rely on.
         MouseEventKind::Drag(MouseButton::Left) if m.column >= bx && m.row < by => {
             doc.scroll = doc.scroll.saturating_sub(1);
-            let col = (m.column - bx) as usize;
+            let col = col_at(doc, app, doc.scroll, m.column);
             doc.click(doc.scroll, col, true);
         }
         MouseEventKind::Drag(MouseButton::Left)
             if m.column >= bx && (m.row as usize) >= by as usize + doc.body_height as usize =>
         {
             doc.scroll = doc.scroll.saturating_add(1);
-            let col = (m.column - bx) as usize;
             let row = doc.scroll + doc.body_height.saturating_sub(1) as usize;
+            let col = col_at(doc, app, row, m.column);
             doc.click(row, col, true);
         }
         MouseEventKind::Down(MouseButton::Right) if within => {
@@ -523,7 +556,7 @@ fn handle_mouse(doc: &mut Doc, m: MouseEvent, app: &mut App) {
             // right-click while nothing is selected has no selection to lose.
             if doc.selection().is_none() {
                 let row = doc.scroll + (m.row - by) as usize;
-                let col = (m.column - bx) as usize;
+                let col = col_at(doc, app, row, m.column);
                 doc.click(row, col, false);
             }
             app.context_menu = Some(ContextMenu {
@@ -600,6 +633,21 @@ fn open_link_prompt(doc: &mut Doc, app: &mut App) {
     let initial = doc.link_destination_at_caret().unwrap_or_default();
     app.text_prompt = Some(TextPrompt::new("Link destination", initial, |doc, dest| {
         doc.insert_link(dest);
+    }));
+}
+
+/// ⌥l: set the language of the fenced code block the caret is in, prefilled
+/// with its current language — the code-block analogue of ⌥k's link prompt,
+/// editing the fence's info string through a prompt rather than exposing the
+/// fence markup as an editable row. A no-op (no prompt) when the caret is in no
+/// fenced block, since there's nothing to label.
+fn open_language_prompt(doc: &mut Doc, app: &mut App) {
+    if !doc.caret_in_fenced_code() {
+        return;
+    }
+    let initial = doc.code_language_at_caret().unwrap_or_default();
+    app.text_prompt = Some(TextPrompt::new("Code language", initial, |doc, lang| {
+        doc.set_code_language(lang);
     }));
 }
 

@@ -1433,6 +1433,51 @@ impl Doc {
             .and_then(|n| n.destination.or(n.text))
     }
 
+    /// The language of the fenced code block the caret stands in — what a
+    /// language prompt shows so editing it starts from the current value rather
+    /// than blank. `None` when the caret is in no code block, or in one whose
+    /// fence carries no language (or an indented block, which has no fence).
+    pub fn code_language_at_caret(&mut self) -> Option<String> {
+        let start = self.code_block_start_at_caret()?;
+        wysiwyg::code_language(&self.source, start)
+    }
+
+    /// Whether the caret stands in a fenced code block — the one a language
+    /// prompt could edit. A frontend gates its "set language" affordance on this
+    /// (an indented block, which can't carry a language, reports `false`).
+    pub fn caret_in_fenced_code(&mut self) -> bool {
+        self.code_block_start_at_caret()
+            .is_some_and(|start| wysiwyg::code_info_span(&self.source, start).is_some())
+    }
+
+    /// Set (or clear, with `""`) the language of the fenced code block the caret
+    /// is in — the prompt's confirm. Replaces the fence's info string in place;
+    /// a no-op when the caret is in no fenced block.
+    pub fn set_code_language(&mut self, lang: &str) {
+        let Some(start) = self.code_block_start_at_caret() else {
+            return;
+        };
+        let Some(span) = wysiwyg::code_info_span(&self.source, start) else {
+            return;
+        };
+        // Trim what the user typed: an info string is a single token, and a
+        // stray space would render as part of the label and re-open the prompt
+        // with it next time.
+        self.splice(span.start, span.end, lang.trim(), EditKind::Other);
+    }
+
+    /// The `span.start` of the code block covering the caret — the anchor
+    /// [`wysiwyg::code_info_span`] reads the fence from. `None` when the caret is
+    /// in none.
+    fn code_block_start_at_caret(&mut self) -> Option<usize> {
+        let off = self.caret;
+        self.nodes()
+            .into_iter()
+            .filter(|n| n.kind == "code_block" && n.span.start <= off && off <= n.span.end)
+            .max_by_key(|n| n.span.start)
+            .map(|n| n.span.start)
+    }
+
     /// The source range of the text inside the link covering `off` — what sits
     /// between its `[` and `]`. `None` when twig reports no link there.
     fn link_text_span(&mut self, off: usize) -> Option<std::ops::Range<usize>> {
@@ -3316,6 +3361,29 @@ mod tests {
         d.caret = 10;
         d.insert_link("https://y.dev");
         assert_eq!(d.source, "see <https://y.dev> ok\n");
+    }
+
+    #[test]
+    fn code_language_reads_and_edits_through_the_fence() {
+        let mut d = doc_with("code_lang", "```rust\nlet x = 1;\n```\n");
+        d.caret = 10; // inside the code body
+        assert_eq!(d.code_language_at_caret().as_deref(), Some("rust"));
+        assert!(d.caret_in_fenced_code());
+
+        d.set_code_language("python");
+        assert!(d.source.starts_with("```python\n"), "source: {:?}", d.source);
+        assert_eq!(d.code_language_at_caret().as_deref(), Some("python"));
+
+        // Clearing it leaves a bare fence and no label.
+        d.set_code_language("");
+        assert!(d.source.starts_with("```\n"), "source: {:?}", d.source);
+        assert_eq!(d.code_language_at_caret(), None);
+
+        // A caret outside any code block edits nothing.
+        let mut p = doc_with("code_lang_none", "just prose\n");
+        assert!(!p.caret_in_fenced_code());
+        p.set_code_language("rust");
+        assert_eq!(p.source, "just prose\n");
     }
 
     #[test]

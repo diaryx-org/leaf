@@ -69,6 +69,23 @@ pub struct VRow {
     /// Emptiness isn't the test — an empty paragraph is a blank row too, and a
     /// real caret stop. The test is whether the row is somewhere text can go.
     pub decoration: bool,
+    /// This row is one line of a fenced or indented code block. Set on every row
+    /// the `"code_block"` arm emits — including its blank lines, which carry no
+    /// glyph to tell them apart otherwise. A frontend draws its own chrome (a
+    /// border and a tinted background) around each maximal run of these, and
+    /// scrolls them horizontally instead of wrapping; see
+    /// [`VisualMap::code_blocks`]. Survives the row shuffling of [`BlockCache`]
+    /// reuse and [`build_spliced`] because it rides on the row, not on a
+    /// row-index span the way a table's picture does.
+    pub code: bool,
+    /// A fenced code block's info string (its language), carried on the *first*
+    /// row of the block so it survives row reuse the way [`code`](Self::code)
+    /// does. `None` on every other row, and on an indented block (which has no
+    /// fence to label). A frontend paints it as a small label on the block's box
+    /// and edits it through a prompt — see [`CodeBlockInfo::lang`]. It's a plain
+    /// display string, not a source slice, so it needs no offset shifting; the
+    /// label re-derives from twig on the next build.
+    pub code_lang: Option<String>,
 }
 
 /// The rendered document plus the offset⇄position mapping the caret rides on.
@@ -108,6 +125,14 @@ pub struct VisualMap {
     /// Every table in the document, in order, described structurally rather than
     /// drawn — see [`TableInfo`] for why both exist.
     pub tables: Vec<TableInfo>,
+    /// Every fenced/indented code block, in order, as the range of [`rows`] it
+    /// occupies — a frontend draws one bordered, tinted box around each and
+    /// scrolls it horizontally rather than wrapping. Derived from the per-row
+    /// [`VRow::code`] flag once the rows are final (so it survives incremental
+    /// row reuse), the same way [`collect_stops`] derives the stop table.
+    ///
+    /// [`rows`]: VisualMap::rows
+    pub code_blocks: Vec<CodeBlockInfo>,
 }
 
 impl VisualMap {
@@ -325,6 +350,69 @@ fn collect_stops(rows: &[VRow]) -> Vec<usize> {
     stops
 }
 
+/// Group the rows tagged [`VRow::code`] into one [`CodeBlockInfo`] per maximal
+/// run — the block-level view a frontend needs to box and scroll each code
+/// block. Two code blocks are always parted by the blank separator row a block
+/// boundary is spelled with (never itself a code row), so a contiguous run is
+/// exactly one block. Derived from the final rows rather than tracked through
+/// the builder so it comes out right no matter how [`build_cached`] and
+/// [`build_spliced`] shuffle rows around.
+fn code_block_spans(rows: &[VRow]) -> Vec<CodeBlockInfo> {
+    let mut blocks = Vec::new();
+    let mut start: Option<usize> = None;
+    for (i, row) in rows.iter().enumerate() {
+        match (row.code, start) {
+            (true, None) => start = Some(i),
+            (false, Some(s)) => {
+                blocks.push(CodeBlockInfo { rows_span: s..i, lang: rows[s].code_lang.clone() });
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(s) = start {
+        blocks.push(CodeBlockInfo { rows_span: s..rows.len(), lang: rows[s].code_lang.clone() });
+    }
+    blocks
+}
+
+/// The source range of a fenced code block's info string — everything on the
+/// opening line past the fence (`` ```rust `` → the `rust`). `block_start` is the
+/// code block node's `span.start`. `None` for an indented code block, which
+/// opens with no fence to carry one. The range is empty for a fence written
+/// bare (`` ``` `` alone), which is exactly where a language would be inserted.
+///
+/// Shared by the WYSIWYG builder (to label the box) and [`crate::Doc`] (to edit
+/// the label through a prompt), so the two agree on where the language lives.
+pub fn code_info_span(source: &str, block_start: usize) -> Option<Range<usize>> {
+    let rest = source.get(block_start..)?;
+    let line_len = rest.find('\n').unwrap_or(rest.len());
+    let line = &rest[..line_len];
+    // A fence may be indented up to three spaces; past that it opens with a run
+    // of the same fence character.
+    let indent = line.len() - line.trim_start().len();
+    if indent > 3 {
+        return None;
+    }
+    let fence = line[indent..].chars().next()?;
+    if fence != '`' && fence != '~' {
+        return None; // an indented block, not a fenced one
+    }
+    let fence_len = line[indent..].chars().take_while(|&c| c == fence).count();
+    let info_start = block_start + indent + fence_len;
+    Some(info_start..block_start + line_len)
+}
+
+/// A fenced code block's language for display: its info string, trimmed, or
+/// `None` when there's no fence or the fence carries no language. The trimmed
+/// text is what a frontend labels the box with; [`code_info_span`] is what an
+/// edit replaces.
+pub fn code_language(source: &str, block_start: usize) -> Option<String> {
+    let span = code_info_span(source, block_start)?;
+    let text = source.get(span)?.trim();
+    (!text.is_empty()).then(|| text.to_string())
+}
+
 /// A horizontal rule's dash count when the map isn't wrapping to a column grid
 /// (the GUI, which wraps at pixel width): a fixed, sane width the frontend can
 /// paint or re-wrap, instead of a runaway count from an unbounded wrap width.
@@ -351,11 +439,13 @@ pub fn build(nodes: &[FlatNode], source: &str, wrap: Option<usize>) -> VisualMap
     b.emit_trailing_blank_lines();
     let content_start = first_content_offset(nodes, doc);
     let stops = collect_stops(&b.rows);
+    let code_blocks = code_block_spans(&b.rows);
     VisualMap {
         rows: b.rows,
         content_start,
         stops,
         tables: b.tables,
+        code_blocks,
     }
 }
 
@@ -503,11 +593,13 @@ pub fn build_cached(
     // [`first_content_offset`] for the top-level list.
     let content_start = blocks.first().map_or(0, |m| m.span.start);
     let stops = collect_stops(&b.rows);
+    let code_blocks = code_block_spans(&b.rows);
     VisualMap {
         rows: b.rows,
         content_start,
         stops,
         tables: b.tables,
+        code_blocks,
     }
 }
 
@@ -678,11 +770,13 @@ pub fn build_spliced(
         all_shift_safe: true,
     };
 
+    let code_blocks = code_block_spans(&rows);
     Some(VisualMap {
         rows,
         content_start: blocks[0].span.start,
         stops,
         tables: Vec::new(),
+        code_blocks,
     })
 }
 
@@ -848,6 +942,8 @@ fn shift_row(row: &VRow, delta: isize) -> VRow {
             .collect(),
         end_src: shift(row.end_src),
         decoration: row.decoration,
+        code: row.code,
+        code_lang: row.code_lang.clone(),
     }
 }
 
@@ -983,6 +1079,8 @@ impl Builder<'_> {
                 glyphs: pc.to_vec(),
                 end_src,
                 decoration: k == 0 || k == last,
+                code: false,
+                code_lang: None,
             });
         }
     }
@@ -1031,16 +1129,35 @@ impl Builder<'_> {
                     .content_span
                     .as_ref()
                     .and_then(|c| self.code_line_offsets(c, &lines));
+                // The fence's info string, carried on the block's first row as
+                // its language label (`None` for an indented block or a bare
+                // fence). Kept on the row so it rides the block cache.
+                let lang = code_language(self.source, node.span.start);
                 for (i, raw) in lines.iter().enumerate() {
                     let at = offs.as_ref().map_or(node.span.start, |o| o[i]);
-                    let gutter = synth("▏ ", Role::CodeFence, at);
-                    let mut glyphs: Vec<Glyph> = concat(pf, &gutter);
+                    // No gutter glyph: the block is set apart by the border and
+                    // tint a frontend draws around the whole run of `code` rows,
+                    // not by a per-line mark. Just the block prefix (a list
+                    // indent, a quote gutter) and the code text.
+                    let mut glyphs: Vec<Glyph> = pf.to_vec();
                     push_text(&mut glyphs, raw, at, style);
-                    // Explicitly past the line's *text*: a blank line has only
-                    // the gutter, whose offset would put the row's end inside
-                    // the next line.
+                    // Explicitly past the line's *text*: a blank code line has no
+                    // glyph, and any prefix's offset would put the row's end
+                    // inside the next line.
                     self.push_row_at(glyphs, at + raw.len());
+                    if let Some(row) = self.rows.last_mut() {
+                        row.code = true;
+                        if i == 0 {
+                            row.code_lang = lang.clone();
+                        }
+                    }
                 }
+                // Anchor the block's end past its closing fence. Its last content
+                // row ends at the last code line, before the ``` and the blank
+                // line under it; without this the separator logic would count the
+                // closing-fence line as its own blank row and open a phantom
+                // second gap below the block.
+                self.last_off = node.span.end;
             }
             "thematic_break" => {
                 let full = self.wrap.unwrap_or(UNWRAPPED_RULE_WIDTH);
@@ -1193,6 +1310,8 @@ impl Builder<'_> {
             glyphs,
             end_src: src,
             decoration: true,
+            code: false,
+            code_lang: None,
         });
     }
 
@@ -1269,7 +1388,7 @@ impl Builder<'_> {
                 .rev()
                 .find(|g| g.stop)
                 .map_or(fallback, |g| g.src);
-            self.rows.push(VRow { glyphs, end_src, decoration: false });
+            self.rows.push(VRow { glyphs, end_src, decoration: false, code: false, code_lang: None });
         }
     }
 
@@ -1440,7 +1559,7 @@ impl Builder<'_> {
     /// extent better than its last glyph does.
     fn push_row_at(&mut self, glyphs: Vec<Glyph>, end_src: usize) {
         self.last_off = end_src;
-        self.rows.push(VRow { glyphs, end_src, decoration: false });
+        self.rows.push(VRow { glyphs, end_src, decoration: false, code: false, code_lang: None });
     }
 
     /// The source offset the caret rests at on the blank line separating a block
@@ -1523,6 +1642,8 @@ impl Builder<'_> {
                 // real empty paragraph — the end of the document bounds the last
                 // one the way a following block would.
                 decoration: k == 1,
+                code: false,
+                code_lang: None,
             });
         }
     }
@@ -1683,6 +1804,27 @@ pub struct TableInfo {
     /// draws flush at the left margin has left the quote.
     pub prefix: Vec<Glyph>,
     pub grid: Vec<TableRow>,
+}
+
+/// A fenced or indented code block, named by the [`VisualMap::rows`] it occupies.
+///
+/// Unlike a table, the rows *are* the block's content — a frontend still paints
+/// them, it just draws a border and a tinted background around the whole span
+/// and lets the code inside scroll horizontally instead of wrapping. So this
+/// carries only the row range; there's no structural alternative to the picture
+/// the way [`TableInfo`] is one. Derived from [`VRow::code`] — see
+/// [`code_block_spans`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodeBlockInfo {
+    /// The contiguous run of [`VisualMap::rows`] this code block spans, blank
+    /// code lines included.
+    pub rows_span: Range<usize>,
+    /// The block's language, from a fenced block's info string — what a frontend
+    /// paints as a small label on the box (`` ```rust `` → `Some("rust")`).
+    /// `None` for a fence written without one, or an indented block. Editing it
+    /// goes through [`crate::Doc::set_code_language`], which re-finds the fence
+    /// in the AST, so this stays a display string.
+    pub lang: Option<String>,
 }
 
 /// The narrowest a column may be squeezed. Below a few characters a column
@@ -1883,6 +2025,8 @@ pub(crate) fn assert_maps_eq(a: &VisualMap, b: &VisualMap, ctx: &str) {
     for (i, (ra, rb)) in a.rows.iter().zip(&b.rows).enumerate() {
         assert_eq!(ra.end_src, rb.end_src, "row {i} end_src ({ctx})");
         assert_eq!(ra.decoration, rb.decoration, "row {i} decoration ({ctx})");
+        assert_eq!(ra.code, rb.code, "row {i} code ({ctx})");
+        assert_eq!(ra.code_lang, rb.code_lang, "row {i} code_lang ({ctx})");
         assert_eq!(ra.glyphs.len(), rb.glyphs.len(), "row {i} glyph count ({ctx})");
         for (j, (ga, gb)) in ra.glyphs.iter().zip(&rb.glyphs).enumerate() {
             assert_eq!(
@@ -1899,6 +2043,7 @@ pub(crate) fn assert_maps_eq(a: &VisualMap, b: &VisualMap, ctx: &str) {
         assert_eq!(ta.rows_span, tb.rows_span, "table {i} rows_span ({ctx})");
         assert_eq!(ta.end_src, tb.end_src, "table {i} end_src ({ctx})");
     }
+    assert_eq!(a.code_blocks, b.code_blocks, "code_blocks ({ctx})");
 }
 
 #[cfg(test)]
@@ -2236,6 +2381,64 @@ mod tests {
         let m = map(src);
         let first = m.rows[0].glyphs.iter().find(|g| g.stop).unwrap();
         assert_eq!(first.src, 8, "matched the info string, not the code");
+    }
+
+    #[test]
+    fn a_code_block_carries_no_gutter_and_is_published_as_a_row_span() {
+        // The old `▏ ` gutter is gone: a code row is the block prefix (none, at
+        // the top level) plus the code text, and the whole run is named in
+        // `code_blocks` so a frontend can box it.
+        let src = "para\n\n```\ncode\nlines\n```\n\nafter\n";
+        let m = map(src);
+        assert_eq!(m.code_blocks.len(), 1, "one code block");
+        let span = m.code_blocks[0].rows_span.clone();
+        let rows: Vec<String> = m.rows[span.clone()]
+            .iter()
+            .map(|r| r.glyphs.iter().map(|g| g.ch).collect())
+            .collect();
+        assert_eq!(rows, vec!["code".to_string(), "lines".to_string()]);
+        assert!(!rendered(&m).contains('▏'), "gutter still drawn");
+        assert!(
+            m.rows[span].iter().all(|r| r.code),
+            "every row in the span is flagged code"
+        );
+    }
+
+    #[test]
+    fn a_code_block_leaves_exactly_one_blank_row_below_it() {
+        // The closing fence line used to be miscounted as a blank separator,
+        // opening a phantom second gap under the block. One block boundary is
+        // one blank row, code block or not.
+        let src = "para\n\n```\ncode\n```\n\nafter\n";
+        let m = map(src);
+        let code_end = m.code_blocks[0].rows_span.end;
+        let after = m
+            .rows
+            .iter()
+            .position(|r| r.glyphs.iter().map(|g| g.ch).collect::<String>() == "after")
+            .unwrap();
+        assert_eq!(after - code_end, 1, "exactly one row between code and 'after'");
+    }
+
+    #[test]
+    fn a_fenced_block_publishes_its_language_on_its_code_block() {
+        // The info string becomes the block's label; a bare fence and an indented
+        // block carry none.
+        assert_eq!(
+            map("```rust\nlet x = 1;\n```\n").code_blocks[0].lang.as_deref(),
+            Some("rust")
+        );
+        assert_eq!(map("```\nplain\n```\n").code_blocks[0].lang, None);
+        assert_eq!(map("    indented\n").code_blocks[0].lang, None);
+    }
+
+    #[test]
+    fn inline_code_is_not_a_code_block() {
+        // A `code` span inside prose is styled by role, not boxed: it's part of a
+        // normal paragraph row, so it names no `code_blocks` entry.
+        let m = map("a `snippet` b\n");
+        assert!(m.code_blocks.is_empty(), "inline code wrongly boxed");
+        assert!(m.rows.iter().all(|r| !r.code), "inline code flagged a code row");
     }
 
     #[test]
