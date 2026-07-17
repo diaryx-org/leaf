@@ -895,8 +895,41 @@ impl Editor {
             Some(x) if self.goal_caret == doc.caret => x,
             _ => rows[r].x_at(gi),
         };
-        let tr = ((r as i32 + dir).max(0) as usize).min(rows.len() - 1);
-        Some((rows[tr].src_at_index(rows[tr].index_for_x(x)), x))
+        // Step in `dir`, stepping *over* any row the caret can't rest on — a
+        // block-gap separator is painted for paragraph spacing but carries no
+        // caret stop, the pixel-wrap analogue of the decoration rows `leaf-core`'s
+        // `navigable_above`/`navigable_below` skip for the TUI. Without this a
+        // Down into the gap would land on its only nearby stop — the line above —
+        // and `place_caret`'s snap would pin the caret one row short of the next
+        // paragraph. Running off either end means there's no navigable row that
+        // way; fall back (`None`) to the model's edge move (Cocoa's jump to the
+        // document's start/end).
+        let mut tr = r as i32 + dir;
+        while (0..rows.len() as i32).contains(&tr) {
+            let cand = tr as usize;
+            if self.row_is_navigable(cand) {
+                return Some((rows[cand].src_at_index(rows[cand].index_for_x(x)), x));
+            }
+            tr += dir;
+        }
+        None
+    }
+
+    /// Whether the caret can rest on visual row `r`. Every source-view row can;
+    /// in WYSIWYG a block-gap separator can't — it's drawn for spacing but holds
+    /// no caret stop, so its `end_src` isn't a stop and it carries no glyph whose
+    /// source offset is one (an *empty paragraph*, by contrast, is a real stop and
+    /// stays navigable). Read straight off the visual map's stop table so it can't
+    /// drift from what `place_caret` will snap to.
+    fn row_is_navigable(&self, r: usize) -> bool {
+        let Some(doc) = self.doc.as_ref() else {
+            return true;
+        };
+        if doc.view != View::Wysiwyg {
+            return true;
+        }
+        let row = &self.last_rows[r];
+        doc.vmap.is_stop(row.end_src) || row.char_srcs.iter().any(|&s| doc.vmap.is_stop(s))
     }
 
     /// Move the caret to the start (`to_end = false`) or end of its *visual* row.

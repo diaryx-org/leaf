@@ -1726,8 +1726,20 @@ impl Doc {
     /// frontend that hit-tests pixels straight to a source offset.
     pub fn place_caret(&mut self, offset: usize, extend: bool) {
         self.goal_col = None;
-        self.move_to(offset, extend);
+        let before = self.caret;
+        // A pixel hit-test can land between the visible caret stops — in the
+        // blank gap a paragraph break is drawn with, or inside a hidden delimiter.
+        // Snap to the nearest real stop so the caret can't come to rest where it
+        // would draw in one place and type in another. The `(row, col)` click
+        // path (`click`) already snaps this way through `offset_of_pos`; the
+        // source view reaches every byte, so it snaps to nothing.
+        let target = match self.view {
+            View::Wysiwyg => self.vmap.snap_to_stop(offset.min(self.source.len())),
+            View::Source => offset,
+        };
+        self.move_to(target, extend);
         self.clamp_caret();
+        self.debug_assert_on_a_stop(before);
     }
 
     /// Select the whole document (⌘A / Ctrl+A) — everything reachable in the
@@ -3445,6 +3457,49 @@ mod tests {
         let mut d = doc_with("click", "ab\ncd\n");
         d.click(1, 1, false); // row 1 ("cd"), col 1 -> the 'd'
         assert_eq!(d.caret, 4);
+    }
+
+    // A pixel-hit-test placement (the GUI's `place_caret`) must land on a caret
+    // stop just as the `(row, col)` click path does, so the caret can never come
+    // to rest in the blank gap between two paragraphs — where it would draw in one
+    // place and type in another.
+    #[test]
+    fn place_caret_snaps_out_of_the_blank_gap_between_paragraphs() {
+        // "A\n\nB": offset 2 is the gap the paragraph break is drawn with, not a
+        // caret stop (stops are 0,1,3,4).
+        let mut d = wysiwyg_doc("place_gap", "A\n\nB");
+        assert!(!d.vmap.is_stop(2), "offset 2 should be an unreachable gap");
+        d.place_caret(2, false);
+        assert!(d.vmap.is_stop(d.caret), "caret {} is not a stop", d.caret);
+        assert_eq!(d.caret, 1, "should snap to the end of the paragraph above");
+    }
+
+    #[test]
+    fn place_caret_dragging_through_the_gap_keeps_selection_on_stops() {
+        let mut d = wysiwyg_doc("place_gap_drag", "A\n\nB");
+        d.place_caret(0, false); // anchor at the start of "A"
+        d.place_caret(2, true); // drag into the gap
+        assert!(d.vmap.is_stop(d.caret), "caret {} is not a stop", d.caret);
+        let (s, e) = d.selection().expect("a selection");
+        assert!(d.vmap.is_stop(s) && d.vmap.is_stop(e), "selection {s}..{e} off a stop");
+    }
+
+    #[test]
+    fn place_caret_on_a_real_stop_is_left_untouched() {
+        let mut d = wysiwyg_doc("place_stop", "A\n\nB");
+        d.place_caret(3, false); // the start of "B" — a genuine stop
+        assert_eq!(d.caret, 3);
+    }
+
+    // An *empty paragraph* (two blank lines, an intentional blank line the user
+    // opened) is a real caret stop, unlike the gap — a click into it must stay.
+    #[test]
+    fn place_caret_rests_in_an_empty_paragraph() {
+        let mut d = wysiwyg_doc("place_empty_para", "A\n\n\n\nB");
+        let empty = 3; // the navigable empty row's offset (stops: 0,1,3,5,6)
+        assert!(d.vmap.is_stop(empty));
+        d.place_caret(empty, false);
+        assert_eq!(d.caret, empty);
     }
 
     fn wysiwyg_doc(name: &str, body: &str) -> Doc {

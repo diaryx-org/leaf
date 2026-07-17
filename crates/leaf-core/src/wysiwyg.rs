@@ -233,6 +233,20 @@ impl VisualMap {
         }
     }
 
+    /// Snap `off` to the nearest caret stop — the funnel a frontend that
+    /// hit-tests pixels straight to a source offset must run its result through.
+    /// A click or drag can land in the blank gap a paragraph break is drawn with,
+    /// or inside a hidden delimiter; both are offsets the caret can't rest at, so
+    /// resting there would draw the caret in one place and type in another. This
+    /// settles it on a real caret home instead. Idempotent on an offset that is
+    /// already a stop — the `(row, col)` click path already snaps this way inside
+    /// [`offset_of_pos`](Self::offset_of_pos), and this gives the pixel path the
+    /// same guarantee. Returns `off` unchanged only for an empty document (no
+    /// stops at all).
+    pub fn snap_to_stop(&self, off: usize) -> usize {
+        self.nearest_stop(off)
+    }
+
     /// The caret stop nearest `off`, preferring the one before it when `off`
     /// falls exactly between two. Returns `off` unchanged if there are no stops
     /// at all (an empty document).
