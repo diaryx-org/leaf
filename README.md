@@ -3,7 +3,7 @@ config: colophon.yaml
 contents:
 - '[Sample](sample.md)'
 ---
-# leaf
+# leaf (Work in progress!!)
 
 A caret-based rich-text editor for documents, built on [`twig`](../twig).
 
