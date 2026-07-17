@@ -1,0 +1,38 @@
+[package]
+name = "leaf-wasm"
+version.workspace = true
+edition.workspace = true
+description = "WebAssembly frontend binding for leaf: wraps the filesystem-free leaf-core Doc for a browser-rendered editor, exposing the VisualMap as style runs."
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The document model, filesystem-free: a browser has no path to read and its own
+# way to persist bytes, so `fs` is off and the host drives `Doc::from_source` +
+# the public `source` field + `mark_saved`.
+leaf-core = { path = "../leaf-core", default-features = false }
+
+wasm-bindgen = "0.2"
+# Turns the serde-derived view structs into real JS objects across the boundary
+# (structured, not a JSON string round-trip) — the cheap way to hand a whole
+# frame of style runs to the renderer.
+serde = { version = "1", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+# Generates the TypeScript interfaces for the view structs (`DocView`/`Row`/`Run`)
+# straight from their Rust definitions into `leaf_wasm.d.ts`, so the wasm boundary
+# is *typed* on the JS side instead of surfacing as `any`. Rust stays the single
+# source of truth — the types can't drift from the structs the way a hand-written
+# `.d.ts` would. `#[tsify(into_wasm_abi)]` also lets a method return the struct
+# itself (not an opaque `JsValue`), so its return type is the interface.
+tsify-next = { version = "0.5", features = ["js"] }
+# A visual column is a display cell, but a DOM `Range` counts UTF-16 units — the
+# two drift by a cell per wide glyph (CJK, emoji). Walking grapheme clusters and
+# measuring each with core's own `text_width` maps between them exactly, so the
+# caret lands where the text is even after an IME commits a wide character. Same
+# crate/version leaf-core segments with, so the cluster boundaries agree.
+unicode-segmentation = "1.13.3"
+# Route Rust panics to console.error with a real message + stack instead of the
+# opaque "unreachable executed" a release wasm trap gives.
+console_error_panic_hook = "0.1"

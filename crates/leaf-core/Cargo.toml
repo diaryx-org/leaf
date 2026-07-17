@@ -4,6 +4,16 @@ version.workspace = true
 edition.workspace = true
 description = "Frontend-neutral core of leaf: a byte-offset caret/selection model over twig, plus an AST→glyph map, styled with a toolkit-agnostic Style."
 
+[features]
+# Filesystem-backed document I/O: `Doc::open`/`save`/`save_as`/`reload` and the
+# on-disk change watch (`disk_state`). Default-on, so `leaf-tui` and `leaf-gpui`
+# are unaffected. A sandboxed host — wasm in the browser, an FFI embed — builds
+# with `--no-default-features` and drives the model through the in-memory
+# constructors (`Doc::from_source`, the public `source` field, `mark_saved`)
+# instead, since it has no path to read and its own way to persist bytes.
+default = ["fs"]
+fs = []
+
 [dependencies]
 twig-doc.workspace = true
 anyhow.workspace = true

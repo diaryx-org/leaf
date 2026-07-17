@@ -25,4 +25,7 @@ pub use wysiwyg::{CodeBlockInfo, Glyph, TableCell, TableInfo, TableRow, VRow, Vi
 // Re-export the twig types a frontend needs to name when calling into a `Doc`
 // (the toolbar's block/inline kinds), so frontends don't each depend on twig.
 // `Alignment` comes with `TableCell`, which carries one.
-pub use twig::{Alignment, BlockKind, InlineKind};
+// `Format` too: a filesystem-free host (wasm/FFI) picks the document's format
+// itself when it calls `Doc::from_source`, since there's no file extension to
+// sniff it from the way `Doc::open` does.
+pub use twig::{Alignment, BlockKind, Format, InlineKind};

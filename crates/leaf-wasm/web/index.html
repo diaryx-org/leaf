@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>leaf · web</title>
+<style>
+  :root {
+    --bg: #1c1f26; --panel: #232730; --text: #d7dce5; --muted: #7a8394;
+    --accent: #7fd1c1; --border: #3a4150; --h3: #d8c56a;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #fbfbf9; --panel: #ffffff; --text: #23262c; --muted: #6a7280;
+      --accent: #1e8f7e; --border: #dfe2e8; --h3: #9a7b12;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  #app { display: flex; flex-direction: column; height: 100%; max-width: 900px; margin: 0 auto; }
+  header { display: flex; align-items: center; gap: 10px; padding: 10px 16px; color: var(--muted);
+    border-bottom: 1px solid var(--border); font-size: 13px; }
+  header .brand { color: var(--accent); font-weight: 700; }
+  header .dot { color: var(--h3); }
+  #toolbar { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 12px;
+    border-bottom: 1px solid var(--border); }
+  #toolbar button { font: inherit; font-size: 13px; padding: 4px 9px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--panel); color: var(--text); cursor: pointer; }
+  #toolbar button:hover { border-color: var(--accent); }
+  #toolbar button.on { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+  #toolbar .sep { width: 1px; background: var(--border); margin: 2px 4px; }
+
+  /* The editor mounts here; LeafEditor injects its own surface styles. */
+  #editor { flex: 1; min-height: 0; }
+
+  footer { padding: 6px 16px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--border);
+    display: flex; gap: 16px; flex-wrap: wrap; }
+  footer .k { color: var(--accent); }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <span class="brand">🍃 leaf</span>
+    <span class="dot">▸</span>
+    <span>web frontend</span>
+    <span id="fmt">[markdown]</span>
+    <span id="dirty"></span>
+    <span style="flex:1"></span>
+    <span id="viewname">wysiwyg</span>
+  </header>
+  <div id="toolbar">
+    <button data-cmd="toggleBold" id="b-bold"><b>B</b></button>
+    <button data-cmd="toggleItalic" id="b-italic"><i>I</i></button>
+    <button data-cmd="toggleCode" id="b-code">&lt;/&gt;</button>
+    <button data-cmd="toggleMark" id="b-mark">▨</button>
+    <div class="sep"></div>
+    <button data-cmd="setParagraph">¶</button>
+    <button data-cmd="setHeading" data-arg="1" id="b-h1">H1</button>
+    <button data-cmd="setHeading" data-arg="2" id="b-h2">H2</button>
+    <button data-cmd="setHeading" data-arg="3" id="b-h3">H3</button>
+    <button data-cmd="toggleBlockquote">❝</button>
+    <button data-cmd="toggleList" data-arg="false">• List</button>
+    <button data-cmd="toggleList" data-arg="true">1. List</button>
+    <div class="sep"></div>
+    <button data-cmd="undo">↶</button>
+    <button data-cmd="redo">↷</button>
+    <div style="flex:1"></div>
+    <button data-cmd="toggleView">⌥ source</button>
+  </div>
+  <div id="editor"></div>
+  <footer>
+    <span><span class="k">type</span> to edit</span>
+    <span><span class="k">⌘B/I</span> bold·italic</span>
+    <span><span class="k">⌘E</span> toggle view</span>
+    <span><span class="k">⌘Z</span> undo</span>
+    <span id="marks"></span>
+  </footer>
+</div>
+
+<script type="module">
+import { LeafEditor } from "./src/index.js";
+
+const SAMPLE = `# leaf on the web 🍃
+
+The **twig**-backed rich-text editor, now compiled to *WebAssembly* and rendered
+by the browser from \`leaf-core\`'s glyph map.
+
+## What this proves
+- The same document model as the TUI and native apps, unchanged
+- The AST→glyph \`VisualMap\` shipped across the wasm boundary as **style runs**
+- Markup resolves live: the \`**\`/\`*\` delimiters are hidden here and revealed
+  in the source view (⌥ source / ⌘E)
+
+## Proportional typography
+Headings step down in **size**, not colour — the same ramp \`leaf-gpui\` uses.
+Body text is a real proportional font, \`code\` is monospace, ==marked== text and
+[links](https://example.com) render inline. Lists too:
+
+1. First ordered item
+2. Second ordered item
+3. Third ordered item
+
+> A blockquote, to show block-level styling in the browser.
+
+\`\`\`rust
+fn main() {
+    println!("hello from a code block");
+}
+\`\`\`
+
+*Everything you type is a real \`leaf_core::Doc\` edit — try it.*
+`;
+
+// Reflect editor state onto the app chrome (toolbar lights, dirty flag, footer).
+function syncChrome(state) {
+  document.getElementById("viewname").textContent = state.view;
+  const dirtyEl = document.getElementById("dirty");
+  dirtyEl.textContent = state.dirty ? "● modified" : "";
+  dirtyEl.style.color = "var(--h3)";
+
+  const on = new Set(state.active);
+  for (const [id, name] of [["b-bold","bold"],["b-italic","italic"],["b-code","code"],["b-mark","mark"]]) {
+    document.getElementById(id).classList.toggle("on", on.has(name));
+  }
+  for (const lvl of [1,2,3]) {
+    document.getElementById("b-h"+lvl).classList.toggle("on", state.heading === lvl);
+  }
+  document.getElementById("marks").textContent =
+    (state.heading ? "H"+state.heading+"  " : "") + [...on].join("  ");
+}
+
+async function main() {
+  await LeafEditor.init();
+  const editor = new LeafEditor(document.getElementById("editor"), {
+    source: SAMPLE,
+    format: "markdown",
+    onChange: syncChrome,
+  });
+
+  // Wire the app's toolbar to the editor's command API.
+  for (const btn of document.querySelectorAll("#toolbar button")) {
+    btn.addEventListener("click", () => {
+      const cmd = btn.dataset.cmd, arg = btn.dataset.arg;
+      if (cmd === "setHeading") editor.setHeading(parseInt(arg, 10));
+      else if (cmd === "toggleList") editor.toggleList(arg === "true");
+      else editor[cmd]();
+      editor.focus();
+    });
+  }
+
+  window._leaf = editor; // handy for console poking / automated checks
+}
+main();
+</script>
+</body>
+</html>

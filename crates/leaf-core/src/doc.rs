@@ -14,9 +14,15 @@
 //! byte-for-byte untouched, so the document stays a live, navigable AST while
 //! you type into it.
 
-use std::path::{Path, PathBuf};
+// `PathBuf` names the `path` field and the untitled marker on every build;
+// `Path` is only touched by the filesystem I/O gated behind the `fs` feature.
+use std::path::PathBuf;
+#[cfg(feature = "fs")]
+use std::path::Path;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
+#[cfg(feature = "fs")]
+use anyhow::Context;
 use twig::{BlockContainerKind, BlockKind, Change, Editor, FlatNode, Format, InlineKind, NodeId};
 use unicode_segmentation::GraphemeCursor;
 
@@ -255,6 +261,7 @@ pub struct Doc {
 }
 
 impl Doc {
+    #[cfg(feature = "fs")]
     pub fn open(path: PathBuf) -> Result<Self> {
         let bytes = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
         let format = detect_format(&path)?;
@@ -262,6 +269,20 @@ impl Doc {
         let source = String::from_utf8(bytes).map_err(|_| anyhow!("document is not UTF-8"))?;
         let disk_hash = Some(hash_bytes(source.as_bytes()));
         Ok(Doc::from_parts(editor, format, path, source, disk_hash))
+    }
+
+    /// Build a document from an in-memory string, the format named explicitly —
+    /// the portable, filesystem-free counterpart to [`Doc::open`] (which reads a
+    /// path and sniffs the format from its extension). A wasm or FFI host, which
+    /// has no path to read, uses this: it hands over bytes it fetched however it
+    /// could, and later persists [`Doc::source`] however it can (a browser
+    /// download, `localStorage`, a backend `PUT`) and calls [`Doc::mark_saved`].
+    ///
+    /// No file backs the result, so it starts untitled ([`Doc::is_untitled`] is
+    /// true) exactly like a [`Doc::blank`] that has been given content.
+    pub fn from_source(source: String, format: Format) -> Result<Self> {
+        let editor = Editor::new_str(&source, format).map_err(|e| anyhow!("twig parse: {e}"))?;
+        Ok(Doc::from_parts(editor, format, PathBuf::new(), source, None))
     }
 
     /// An untitled, empty document — the `+` button and a `leaf` launched with
@@ -1549,6 +1570,7 @@ impl Doc {
 
     // ── the file ──────────────────────────────────────────────────────────────
 
+    #[cfg(feature = "fs")]
     pub fn save(&mut self) {
         if self.is_untitled() {
             // No path to write and no name to invent: ⌘S on an untitled document
@@ -1583,6 +1605,7 @@ impl Doc {
     /// history — not a rename. So `notes.md` saved as `notes.dj` holds Markdown
     /// in a `.dj` file, and `format_name()` keeps honestly saying `markdown`
     /// until it's reopened.
+    #[cfg(feature = "fs")]
     pub fn save_as(&mut self, path: PathBuf) {
         if !self.write(&path) {
             return;
@@ -1594,6 +1617,7 @@ impl Doc {
     /// Put `source` on disk at `path`, reporting whether it got there. The one
     /// place leaf writes a document, so a save and a Save As can't disagree
     /// about what a failure looks like.
+    #[cfg(feature = "fs")]
     fn write(&mut self, path: &Path) -> bool {
         match std::fs::write(path, self.source.as_bytes()) {
             Ok(()) => true,
@@ -1604,9 +1628,17 @@ impl Doc {
         }
     }
 
-    /// Everything a write that landed means — run after `self.path` is whatever
-    /// was written, so the status names the file the bytes are actually in.
-    fn mark_saved(&mut self) {
+    /// Re-base the document's saved watermark to the current bytes: clears
+    /// `dirty`, records `source` as the new clean state (so undoing back to here
+    /// clears the flag again), and re-stamps the on-disk hash.
+    ///
+    /// [`Doc::save`]/[`Doc::save_as`] call this after a write lands. It is also
+    /// the hook a **filesystem-free host** calls itself once it has persisted
+    /// [`Doc::source`] its own way (a browser download, `localStorage`, a backend
+    /// `PUT`) — which is why it is public and touches no filesystem: the bytes
+    /// are already where that host wants them, and this just tells the model they
+    /// are safe.
+    pub fn mark_saved(&mut self) {
         self.clean_source = self.source.clone();
         self.dirty = false;
         // The bytes on disk are now ours, so this is the new watermark: without
@@ -1628,6 +1660,7 @@ impl Doc {
     /// [`Doc::reload`] discards the user's. leaf-core deliberately won't choose —
     /// it has no way to ask — so it hands a frontend both halves and lets it put
     /// the question to the person who can answer it.
+    #[cfg(feature = "fs")]
     pub fn disk_state(&self) -> DiskState {
         let Some(want) = self.disk_hash else {
             return DiskState::Untitled;
@@ -1662,6 +1695,7 @@ impl Doc {
     ///
     /// Nothing is touched unless the whole reload succeeds; a failure leaves the
     /// document alone with a status.
+    #[cfg(feature = "fs")]
     pub fn reload(&mut self) {
         if self.is_untitled() {
             self.status = Some("no file to reload".into());
@@ -5698,6 +5732,7 @@ fn hash_bytes(bytes: &[u8]) -> u64 {
     h.finish()
 }
 
+#[cfg(feature = "fs")]
 fn detect_format(path: &Path) -> Result<Format> {
     let ext = path
         .extension()
