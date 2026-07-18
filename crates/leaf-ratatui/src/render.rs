@@ -8,13 +8,18 @@ use ratatui::{
     layout::{Constraint, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
+    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
+// Only the block-image loop wipes cells before framing a picture.
+#[cfg(feature = "images")]
+use ratatui::widgets::Clear;
 
 use leaf_core::{Doc, View};
 
 use crate::EditorState;
-use crate::style::{CODE_BG, CODE_BORDER, CODE_INSET, IMAGE_BORDER, wysiwyg_lines};
+use crate::style::{CODE_BG, CODE_BORDER, CODE_INSET, wysiwyg_lines};
+#[cfg(feature = "images")]
+use crate::style::IMAGE_BORDER;
 
 /// Render the editing surface into `area`: the document body, its code-block
 /// boxes and framed images, the scrollbar, and the terminal caret. Updates
@@ -35,6 +40,7 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
     // The document's directory — what a relative image path resolves against.
     // `Doc::open` stores an absolute path, so this is set for any real file and
     // empty only for an untitled buffer (where a relative image can't resolve).
+    #[cfg(feature = "images")]
     let doc_dir = doc
         .path
         .parent()
@@ -45,15 +51,23 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
     // rides it). Code lines don't wrap — the map keeps them full length — so a
     // long one scrolls inside its box (below) rather than folding.
     if doc.view == View::Wysiwyg {
-        // Build once to learn which images the document has, decode and measure
-        // them, tell core how many rows each reserves, then rebuild at those
-        // heights. The second build is a cache hit whenever nothing changed, so a
-        // steady frame pays for one build; only a new image or a resize rebuilds.
         doc.build_visual(width);
-        let heights =
-            state.images.reserve(&doc.vmap.images, doc_dir.as_deref(), width as u16, height as u16);
-        doc.set_image_rows(heights);
-        doc.build_visual(width);
+        // With image support: learn which images the document has, decode and
+        // measure them, tell core how many rows each reserves, then rebuild at
+        // those heights. The second build is a cache hit whenever nothing changed.
+        // Without the feature, block images keep core's default reservation and
+        // render as the inline `🖼 alt` placeholder — no decode, no rebuild.
+        #[cfg(feature = "images")]
+        {
+            let heights = state.images.reserve(
+                &doc.vmap.images,
+                doc_dir.as_deref(),
+                width as u16,
+                height as u16,
+            );
+            doc.set_image_rows(heights);
+            doc.build_visual(width);
+        }
     }
     let (caret_row, caret_col) = doc.caret_pos();
 
@@ -152,6 +166,9 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
     // be shown — a remote/unresolved image, or one only partly scrolled into view
     // (a protocol image can't be clipped; see `Images::paint_raster`). Drawn after
     // the paragraph so it covers the `🖼 alt` text core laid down underneath.
+    // Only with the `images` feature; without it this loop is gone and core's
+    // inline `🖼 alt` text (drawn by the paragraph) is the placeholder.
+    #[cfg(feature = "images")]
     if doc.view == View::Wysiwyg {
         for info in &doc.vmap.images {
             let span = &info.rows_span;

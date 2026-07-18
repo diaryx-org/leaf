@@ -32,11 +32,13 @@
 use std::ops::Range;
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "images")]
 pub mod image;
 mod input;
 mod render;
 pub mod style;
 
+#[cfg(feature = "images")]
 pub use image::Images;
 pub use input::{MouseOutcome, Outcome, handle_key, handle_mouse};
 pub use render::render;
@@ -66,7 +68,10 @@ pub struct EditorState {
     code_caret_span: Option<Range<usize>>,
     /// Block-image rendering: the graphics-protocol picker and the per-path cache
     /// of decoded rasters. Defaults to half-blocks; [`EditorState::query_graphics`]
-    /// upgrades to kitty/iTerm2/sixel where the terminal supports it.
+    /// upgrades to kitty/iTerm2/sixel where the terminal supports it. Present only
+    /// with the `images` feature; without it, block images fall back to core's
+    /// inline `🖼 alt` placeholder and this field (and its deps) are gone.
+    #[cfg(feature = "images")]
     images: Images,
     /// Timing and screen cell of the last left mouse-down, for detecting
     /// double/triple clicks.
@@ -83,8 +88,10 @@ impl EditorState {
 
     /// Probe the terminal for its graphics protocol. Call once, *after* the
     /// terminal is in raw mode (the probe reads escape-sequence replies); a
-    /// terminal that can't answer keeps the half-blocks fallback.
+    /// terminal that can't answer keeps the half-blocks fallback. A no-op when
+    /// the `images` feature is off.
     pub fn query_graphics(&mut self) {
+        #[cfg(feature = "images")]
         self.images.query();
     }
 }

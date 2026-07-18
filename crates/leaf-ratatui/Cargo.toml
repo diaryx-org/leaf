@@ -4,6 +4,16 @@ version.workspace = true
 edition.workspace = true
 description = "Embeddable rich-text editor widget for ratatui: renders leaf-core's WYSIWYG/source view into a Rect and turns key/mouse events into document edits. The terminal peer of leaf-gpui."
 
+[features]
+default = ["images"]
+# Block-level image rasterization via the terminal's graphics protocol. On by
+# default so hosts get pictures for free. Turning it off drops the ratatui-image
+# + image (codec) dependencies entirely; block images then fall back to core's
+# inline `🖼 alt` placeholder text — the same fallback a terminal with no
+# graphics protocol already gets. Everything else (text, code boxes, selection,
+# input) is unchanged.
+images = ["dep:ratatui-image", "dep:image"]
+
 [dependencies]
 # Frontend-neutral core: the caret/selection model + AST→glyph VisualMap.
 leaf-core.workspace = true
@@ -14,9 +24,10 @@ ratatui = "0.29"
 # the line built against ratatui 0.29 — 10+ require ratatui 0.30, which would
 # skew the backend. `default-features = false` drops the `chafa-dyn` default
 # (a build-time libchafa/pkg-config C dependency); the built-in encoders need no
-# C libs. `crossterm` matches the backend ratatui already uses here.
-ratatui-image = { version = "9", default-features = false, features = ["crossterm"] }
+# C libs. `crossterm` matches the backend ratatui already uses here. Optional:
+# pulled in only by the `images` feature.
+ratatui-image = { version = "9", default-features = false, features = ["crossterm"], optional = true }
 # Decoding image files to the `DynamicImage` ratatui-image rasterizes. Same 0.25
 # line ratatui-image and leaf-gpui pin, so the `image` types line up across the
-# workspace's one resolved version.
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"] }
+# workspace's one resolved version. Optional: gated behind the `images` feature.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"], optional = true }
