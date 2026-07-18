@@ -29,10 +29,7 @@ edition = "2024"
 # 2.1: `toggle_block_container` (blockquote/bullet/ordered) and `insert_link`,
 # which spells a text-less link the way the format does — an autolink where the
 # destination is one, `[dest](dest)` where it isn't.
-# Temporarily a path dep on the sibling checkout while its unreleased Tier-1 work
-# lands (opaque undo payload + monotonic revision token, and Tier-2 to follow).
-# Restore the crates.io version pin once that is published.
-twig-doc = { path = "../twig/bindings/rust/twig" }
+twig-doc = { version = "2.2.2" }
 anyhow = "1"
 # Frontend-neutral core: the caret/selection model + AST→glyph map, styled with
 # a toolkit-agnostic Style. Each frontend crate maps that to its own styling.

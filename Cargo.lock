@@ -6137,7 +6137,55 @@ dependencies = [
 
 [[package]]
 name = "twig-doc"
-version = "2.1.0"
+version = "2.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f830072a39afa6a1e000eadf29a9c860c8bf510d761c5bd5cb4ee1e15872b2d7"
+dependencies = [
+ "twig-sys",
+]
+
+[[package]]
+name = "twig-sys"
+version = "2.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ecdec530c474eac79feaa24703967672e56fbb4077140e512af11e8d30172c5d"
+dependencies = [
+ "twig-sys-linux-arm64-gnu",
+ "twig-sys-linux-x64-gnu",
+ "twig-sys-macos-arm64",
+ "twig-sys-wasm32",
+ "twig-sys-windows-x64-msvc",
+]
+
+[[package]]
+name = "twig-sys-linux-arm64-gnu"
+version = "2.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb96dc3932c5de26f6b36e9c1b1ca9a1f7aa4cd21f4e21175c17b911aede5aa9"
+
+[[package]]
+name = "twig-sys-linux-x64-gnu"
+version = "2.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c70ccebfdbe9fbc06c0a093511c1316591bdb9f6c99fc534a346b7e71b5429ac"
+
+[[package]]
+name = "twig-sys-macos-arm64"
+version = "2.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ddf69f067be065967313e1fa2be7de953a5914e03de0e2f69dfa1140b396a336"
+
+[[package]]
+name = "twig-sys-wasm32"
+version = "2.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7a4b5d5c27793a0d96b7958d8ca795cf2b2016641f5a0a694cbecaffa4ba8abb"
+
+[[package]]
+name = "twig-sys-windows-x64-msvc"
+version = "2.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3974b17f8014f120a4b1e16e77fbe73f07ee868af1dc1671cce058da85926446"
 
 [[package]]
 name = "typeid"
