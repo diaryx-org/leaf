@@ -1,242 +1,242 @@
-//! The host's chrome around the editor widget: a header with a live AST
-//! breadcrumb, a toolbar-hint / status footer, and the modal overlays (the
-//! Save/Discard/Cancel and conflict prompts, the right-click context menu, and
-//! the single-line text prompt). The editing surface itself — the document body,
-//! its code boxes, images, scrollbar, and caret — is drawn by
-//! [`leaf_ratatui::render`] into the middle chunk.
+//! The host's chrome around the editor widget. There is deliberately almost
+//! none: the editing surface fills the entire terminal, and everything else —
+//! the Save/Discard/Cancel and conflict dialogs, the right-click context menu,
+//! the single-line text prompt, and the transient status toast — floats over it
+//! only while it's needed, then gets out of the way. The editing surface itself
+//! (the document body, its code boxes, images, scrollbar, and caret) is drawn by
+//! [`leaf_ratatui::render`] into the whole frame.
 
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Position, Rect},
+    layout::{Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Clear, Paragraph},
 };
 
-use leaf_core::{Doc, InlineKind};
+use leaf_core::{Doc, InlineMarks};
 
-use crate::{App, ConflictPrompt, ContextMenu, DirtyAction, DirtyPrompt, MENU_ITEMS, TextPrompt};
+use crate::{App, ContextMenu, DirtyAction, MenuEntry, TextPrompt};
 
-pub fn render(f: &mut Frame, doc: &mut Doc, breadcrumb: &str, app: &mut App) {
-    let chunks = Layout::vertical([
-        Constraint::Length(1), // header
-        Constraint::Min(1),    // body
-        Constraint::Length(2), // footer
-    ])
-    .split(f.area());
+pub fn render(f: &mut Frame, doc: &mut Doc, app: &mut App) {
+    // The editing surface owns the whole terminal; the host paints only floating
+    // overlays over it, and only when one is actually up.
+    leaf_ratatui::render(f, f.area(), doc, &mut app.editor);
 
-    render_header(f, chunks[0], doc, breadcrumb);
-    // The editing surface is the widget's job; the host owns everything around it.
-    leaf_ratatui::render(f, chunks[1], doc, &mut app.editor);
-    render_footer(f, chunks[2], doc, app.dirty_prompt.as_ref(), app.conflict.as_ref());
+    // The two safety dialogs take over the keyboard until answered, so they float
+    // centered and modal (the widest, most attention-drawing chrome we have) —
+    // the terminal analogue of a sheet dropping over the document.
+    if let Some(prompt) = &app.dirty_prompt {
+        let verb = match prompt.action {
+            DirtyAction::Quit => "quit",
+            DirtyAction::New => "start a new document",
+        };
+        render_choice_overlay(
+            f,
+            &format!("Unsaved changes — {verb}?"),
+            &["Save", "Discard", "Cancel"],
+            prompt.selected,
+        );
+    } else if let Some(prompt) = &app.conflict {
+        render_choice_overlay(
+            f,
+            "File changed on disk since it was opened",
+            &["Overwrite", "Reload", "Cancel"],
+            prompt.selected,
+        );
+    } else if let Some(msg) = &doc.status {
+        // A status ("copied", "pasted", "clipboard unavailable", a list-nest
+        // note) is feedback, not a question — so it's a small toast in the
+        // bottom-right corner, drawn over the body and cleared by the next edit,
+        // rather than a line of permanent chrome. Suppressed while a dialog is up
+        // so the two never fight for the same glance.
+        render_status_toast(f, msg);
+    }
 
     if let Some(menu) = &mut app.context_menu {
-        render_context_menu(f, f.area(), menu);
+        render_context_menu(f, f.area(), menu, doc);
     }
     if let Some(prompt) = &app.text_prompt {
         render_text_prompt(f, f.area(), prompt);
     }
 }
 
-fn render_header(f: &mut Frame, area: Rect, doc: &Doc, breadcrumb: &str) {
-    let dim = Style::default().fg(Color::DarkGray);
-    let mut spans = vec![
-        Span::styled(
-            "leaf ",
-            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("▸ ", dim),
-        Span::raw(doc.file_name()),
-        Span::styled(format!("  [{}]", doc.format_name()), dim),
-    ];
-    if doc.dirty {
-        spans.push(Span::styled(
-            "  ● modified",
-            Style::default().fg(Color::Yellow),
-        ));
-    }
-    spans.push(Span::styled(format!("  ⌥w {}", doc.view_name()), dim));
-    if !breadcrumb.is_empty() {
-        spans.push(Span::styled(format!("   {breadcrumb}"), Style::default().fg(Color::Cyan)));
-    }
-    f.render_widget(Line::from(spans), area);
-}
+/// A centered modal box for the two three-way safety dialogs: a warning line
+/// naming what's at stake, then the choices with `selected` reversed and a
+/// first-letter mnemonic per item (the caller's key handling and this agree on
+/// what those letters are; there's only ever three, so they're spelled out in
+/// the label rather than derived). Shaped like [`render_text_prompt`] — a
+/// `Clear`ed, bordered island floated over the document — because both suspend
+/// editing until answered.
+fn render_choice_overlay(f: &mut Frame, message: &str, items: &[&str], selected: usize) {
+    let base = Style::default().bg(Color::DarkGray).fg(Color::White);
+    let warn = base.fg(Color::Yellow).add_modifier(Modifier::BOLD);
+    let key = base.fg(Color::Cyan);
 
-fn render_footer(
-    f: &mut Frame,
-    area: Rect,
-    doc: &mut Doc,
-    dirty_prompt: Option<&DirtyPrompt>,
-    conflict: Option<&ConflictPrompt>,
-) {
-    let dim = Style::default().fg(Color::DarkGray);
-    let key = Style::default().fg(Color::Cyan);
-
-    // Both prompts take over the whole footer until answered, so an
-    // accidental Ctrl+Q/⌥s/^S on a document with something at stake can't
-    // lose or clobber work to a stray keystroke.
-    if let Some(prompt) = dirty_prompt {
-        let verb = match prompt.action {
-            DirtyAction::Quit => "quit",
-            DirtyAction::New => "start a new document",
-        };
-        let lines = choice_prompt_lines(
-            &format!("Unsaved changes — {verb}?"),
-            &["Save", "Discard", "Cancel"],
-            prompt.selected,
-            key,
-            dim,
-        );
-        f.render_widget(Paragraph::new(lines), area);
-        return;
-    }
-    if let Some(prompt) = conflict {
-        let lines = choice_prompt_lines(
-            "File changed on disk since it was opened",
-            &["Overwrite", "Reload", "Cancel"],
-            prompt.selected,
-            key,
-            dim,
-        );
-        f.render_widget(Paragraph::new(lines), area);
-        return;
-    }
-
-    let line1 = if let Some(msg) = &doc.status {
-        Line::from(Span::styled(msg.clone(), Style::default().fg(Color::Yellow)))
-    } else {
-        format_state_line(doc, key)
-    };
-    let line2 = Line::from(vec![
-        Span::styled("type ", key),
-        Span::styled("to edit   ", dim),
-        Span::styled("⇧+move ", key),
-        Span::styled("select   ", dim),
-        Span::styled("⌥←/→/⌫/⌦ ", key),
-        Span::styled("word   ", dim),
-        Span::styled("^a/c/x/v ", key),
-        Span::styled("all·copy·cut·paste   ", dim),
-        Span::styled("⌥v ", key),
-        Span::styled("paste plain   ", dim),
-        Span::styled("⌥w ", key),
-        Span::styled("view   ", dim),
-        Span::styled("^s/⌥s ", key),
-        Span::styled("save·save as   ", dim),
-        Span::styled("^q ", key),
-        Span::styled("quit", dim),
-    ]);
-    f.render_widget(Paragraph::new(vec![line1, line2]), area);
-}
-
-/// Line 1's normal (no-status) content: what's active at the caret, read live
-/// off `Doc::active_inline_marks`/`current_heading_level` every frame — the
-/// same thing a mouse-driven toolbar shows by lighting up a button, as text
-/// since there are no buttons here to light. Only what's actually *on* is
-/// listed (a status line states facts; a row of every possible mark grayed
-/// out beside it is the toolbar this deliberately isn't), so a bare caret in
-/// plain body text prints a dim placeholder rather than leaving the line
-/// looking broken or blank.
-fn format_state_line(doc: &mut Doc, key: Style) -> Line<'static> {
-    let heading = doc.current_heading_level();
-    let marks = doc.active_inline_marks();
-    let mut spans = Vec::new();
-    if let Some(level) = heading {
-        spans.push(Span::styled(format!("H{level}"), key.add_modifier(Modifier::BOLD)));
-    }
-    for kind in marks.iter() {
-        if !spans.is_empty() {
-            spans.push(Span::raw("  "));
-        }
-        spans.push(Span::styled(mark_label(kind), mark_style(kind)));
-    }
-    if spans.is_empty() {
-        return Line::from(Span::styled("plain text", Style::default().fg(Color::DarkGray)));
-    }
-    Line::from(spans)
-}
-
-/// The word a mark reads as in the footer — the toolbar-button name, not the
-/// AST node kind `Doc::toggle`/`active_inline_marks` traffic in.
-fn mark_label(kind: InlineKind) -> &'static str {
-    match kind {
-        InlineKind::Strong => "Bold",
-        InlineKind::Emph => "Italic",
-        InlineKind::Verbatim => "Code",
-        InlineKind::Mark => "Mark",
-        InlineKind::Superscript => "Superscript",
-        InlineKind::Subscript => "Subscript",
-        InlineKind::Insert => "Underline",
-        InlineKind::Delete => "Strikethrough",
-    }
-}
-
-/// Style a mark's footer label the way the WYSIWYG view itself renders that
-/// mark (see leaf-core's `wysiwyg::Builder::inline`), so the footer reads as a
-/// mirror of the caret's actual formatting instead of an unrelated palette.
-fn mark_style(kind: InlineKind) -> Style {
-    let base = Style::default();
-    match kind {
-        InlineKind::Strong => base.add_modifier(Modifier::BOLD),
-        InlineKind::Emph => base.add_modifier(Modifier::ITALIC),
-        InlineKind::Verbatim => base.fg(Color::Green),
-        InlineKind::Mark => base.bg(Color::Yellow).fg(Color::Black),
-        InlineKind::Insert => base.add_modifier(Modifier::UNDERLINED),
-        InlineKind::Delete => base.add_modifier(Modifier::CROSSED_OUT),
-        InlineKind::Superscript | InlineKind::Subscript => base.fg(Color::Cyan),
-    }
-}
-
-/// Shared two-line rendering for `dirty_prompt` and `conflict`: a warning
-/// line naming what's at stake, then `items` laid out with `selected`
-/// reversed — arrow-key highlighted the same way the context menu is, plus a
-/// first-letter mnemonic per item (the caller's key handling and this must
-/// agree on what those letters are; there's only three items either prompt
-/// ever has, so they're spelled out in the label rather than derived).
-fn choice_prompt_lines(message: &str, items: &[&str], selected: usize, key: Style, dim: Style) -> Vec<Line<'static>> {
-    let warn = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
-    let mut spans = Vec::new();
+    let mut choices = Vec::new();
     for (i, label) in items.iter().enumerate() {
         if i > 0 {
-            spans.push(Span::styled("   ", dim));
+            choices.push(Span::styled("   ", base));
         }
         let style = if i == selected { key.add_modifier(Modifier::REVERSED) } else { key };
         let mnemonic = label.chars().next().unwrap_or(' ').to_ascii_lowercase();
-        spans.push(Span::styled(format!(" {label} ({mnemonic}) "), style));
+        choices.push(Span::styled(format!(" {label} ({mnemonic}) "), style));
     }
-    vec![Line::from(Span::styled(message.to_string(), warn)), Line::from(spans)]
+    let lines = vec![
+        Line::from(Span::styled(format!(" {message} "), warn)),
+        Line::from(choices),
+    ];
+
+    let screen = f.area();
+    let choices_w: usize = items.iter().map(|l| l.chars().count() + 7).sum::<usize>() + 2;
+    let width = (message.chars().count() + 2).max(choices_w).min(screen.width.max(1) as usize) as u16;
+    let height = 2u16.min(screen.height.max(1));
+    let rect = centered(screen, width, height);
+    f.render_widget(Clear, rect);
+    f.render_widget(Paragraph::new(lines).style(base), rect);
 }
 
-/// The right-click menu: Cut / Copy / Paste / Select All, anchored at the
-/// click and nudged back onto `screen` if it wouldn't otherwise fit (the
-/// terminal equivalent of the GUI menu's `snap_to_window`). Stashes the rect
-/// it painted at back onto `menu` so `main::menu_item_at` can hit-test clicks
-/// against the exact geometry drawn here, the same way `doc.body_origin`
-/// carries the body's geometry back out to `handle_mouse`.
-fn render_context_menu(f: &mut Frame, screen: Rect, menu: &mut ContextMenu) {
-    let width = MENU_ITEMS.iter().map(|(label, _)| label.len()).max().unwrap_or(0) as u16 + 4;
-    let height = MENU_ITEMS.len() as u16;
-    let (anchor_x, anchor_y) = menu.anchor;
-    let x = anchor_x.min(screen.width.saturating_sub(width));
-    let y = anchor_y.min(screen.height.saturating_sub(height));
-    let rect = Rect { x, y, width, height };
-    menu.rect = Some(rect);
+/// A small feedback toast in the bottom-right corner, drawn over the body and
+/// cleared by the next edit. Right-aligned and one row tall so it stays out of
+/// the way of the text and the caret, which usually sit up and to the left.
+fn render_status_toast(f: &mut Frame, msg: &str) {
+    let screen = f.area();
+    if screen.width == 0 || screen.height == 0 {
+        return;
+    }
+    let text = format!(" {msg} ");
+    let width = (text.chars().count() as u16).min(screen.width);
+    let rect = Rect {
+        x: screen.x + screen.width - width,
+        y: screen.y + screen.height - 1,
+        width,
+        height: 1,
+    };
+    let style = Style::default().bg(Color::DarkGray).fg(Color::Yellow);
+    f.render_widget(Clear, rect);
+    f.render_widget(Paragraph::new(Line::from(Span::styled(text, style))).style(style), rect);
+}
 
+/// Center a `width`×`height` rect within `screen`.
+fn centered(screen: Rect, width: u16, height: u16) -> Rect {
+    Rect {
+        x: screen.x + (screen.width.saturating_sub(width)) / 2,
+        y: screen.y + (screen.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    }
+}
+
+/// The right-click menu and any submenu drilled into it. Each level is a
+/// `Clear`ed, bordered-by-background island: the root anchored at the click
+/// (nudged back onto `screen` if it wouldn't fit, the terminal equivalent of the
+/// GUI menu's `snap_to_window`), each submenu flying out from its parent's
+/// selected row (to the left instead if there's no room on the right). Every
+/// level stashes the rect it painted at back onto itself, so `ContextMenu::hit`
+/// can map a later click or hover to a row against the exact geometry drawn here.
+///
+/// Rows carry live state: an active inline mark or the caret's heading level
+/// shows a `✓`, read once off `doc` up front so a menu of sixteen rows doesn't
+/// re-query the AST sixteen times a frame.
+fn render_context_menu(f: &mut Frame, screen: Rect, menu: &mut ContextMenu, doc: &mut Doc) {
+    let marks = doc.active_inline_marks();
+    let heading = doc.current_heading_level();
     let base = Style::default().bg(Color::DarkGray).fg(Color::White);
-    let lines: Vec<Line<'static>> = MENU_ITEMS
-        .iter()
-        .enumerate()
-        .map(|(i, (label, _))| {
-            let style = if i == menu.selected {
+
+    // Walk parent → child: a submenu's position depends on the rect its parent
+    // was just painted at, and its top aligns with the parent row it opened from.
+    let mut parent: Option<(Rect, usize)> = None;
+    for i in 0..menu.levels.len() {
+        let items = menu.levels[i].items;
+        let selected = menu.levels[i].selected;
+        let width = menu_level_width(items);
+        let height = items.len() as u16;
+        let (x, y) = match parent {
+            None => {
+                let (ax, ay) = menu.anchor;
+                (
+                    ax.min(screen.width.saturating_sub(width)),
+                    ay.min(screen.height.saturating_sub(height)),
+                )
+            }
+            Some((prect, prow)) => {
+                let x = if prect.x + prect.width + width <= screen.width {
+                    prect.x + prect.width
+                } else {
+                    prect.x.saturating_sub(width)
+                };
+                let y = (prect.y + prow as u16).min(screen.height.saturating_sub(height));
+                (x, y)
+            }
+        };
+        let rect = Rect { x, y, width, height };
+        menu.levels[i].rect = Some(rect);
+
+        let lines: Vec<Line<'static>> = items
+            .iter()
+            .enumerate()
+            .map(|(r, entry)| menu_row(*entry, r == selected, marks, heading, width, base))
+            .collect();
+
+        f.render_widget(Clear, rect);
+        f.render_widget(Paragraph::new(lines).style(base), rect);
+
+        parent = Some((rect, selected));
+    }
+}
+
+/// A menu level's box width: its widest label plus the fixed gutters — a
+/// left check column (`✓`/blank) and a right submenu-arrow column (`▸`/blank),
+/// each with its own padding — so every row aligns whether or not it's checked
+/// or a submenu.
+fn menu_level_width(items: &[MenuEntry]) -> u16 {
+    let label = items.iter().map(|e| e.label().chars().count()).max().unwrap_or(0);
+    // " ✓ " (3) + label + " ▸ " (3)
+    (label + 6) as u16
+}
+
+/// One rendered menu row. Actions carry a check gutter (lit when the style is
+/// active); submenus carry a trailing `▸`; headers are a dim, unhighlightable
+/// section label. `width` is the level's box width so every row fills it exactly.
+fn menu_row(
+    entry: MenuEntry,
+    selected: bool,
+    marks: InlineMarks,
+    heading: Option<u32>,
+    width: u16,
+    base: Style,
+) -> Line<'static> {
+    let label_w = width as usize - 6;
+    match entry {
+        MenuEntry::Header(label) => {
+            // Non-selectable: dim and never reversed, so it reads as a divider
+            // rather than a choice.
+            let style = base.fg(Color::Gray).add_modifier(Modifier::DIM);
+            Line::from(Span::styled(format!(" {label:<w$} ", w = width as usize - 2), style))
+        }
+        MenuEntry::Action(label, act) => {
+            let active = act.active(marks, heading);
+            let check = if active { '✓' } else { ' ' };
+            let style = if selected {
+                base.add_modifier(Modifier::REVERSED)
+            } else if active {
+                // Lit even without the pointer on it, so what's already on is
+                // legible at a glance, not only under the highlight.
+                base.fg(Color::Cyan)
+            } else {
+                base
+            };
+            Line::from(Span::styled(format!(" {check} {label:<label_w$}   "), style))
+        }
+        MenuEntry::Submenu(label, _) => {
+            let style = if selected {
                 base.add_modifier(Modifier::REVERSED)
             } else {
                 base
             };
-            Line::from(Span::styled(format!(" {label:<pad$}", pad = width as usize - 1), style))
-        })
-        .collect();
-
-    f.render_widget(Clear, rect);
-    f.render_widget(Paragraph::new(lines).style(base), rect);
+            Line::from(Span::styled(format!("   {label:<label_w$} ▸ "), style))
+        }
+    }
 }
 
 /// The single-line input: a label row, a value row, and an Enter/Esc hint,
@@ -254,9 +254,7 @@ fn render_text_prompt(f: &mut Frame, screen: Rect, prompt: &TextPrompt) {
         + 2;
     let width = content.max(24).min(screen.width.max(1));
     let height = 3u16.min(screen.height.max(1));
-    let x = screen.x + (screen.width.saturating_sub(width)) / 2;
-    let y = screen.y + (screen.height.saturating_sub(height)) / 2;
-    let rect = Rect { x, y, width, height };
+    let rect = centered(screen, width, height);
 
     let base = Style::default().bg(Color::DarkGray).fg(Color::White);
     let bold = base.add_modifier(Modifier::BOLD);

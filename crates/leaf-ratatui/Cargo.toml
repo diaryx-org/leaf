@@ -12,7 +12,7 @@ default = ["images"]
 # inline `🖼 alt` placeholder text — the same fallback a terminal with no
 # graphics protocol already gets. Everything else (text, code boxes, selection,
 # input) is unchanged.
-images = ["dep:ratatui-image", "dep:image"]
+images = ["dep:ratatui-image", "dep:image", "dep:resvg"]
 
 [dependencies]
 # Frontend-neutral core: the caret/selection model + AST→glyph VisualMap.
@@ -31,3 +31,10 @@ ratatui-image = { version = "9", default-features = false, features = ["crosster
 # line ratatui-image and leaf-gpui pin, so the `image` types line up across the
 # workspace's one resolved version. Optional: gated behind the `images` feature.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"], optional = true }
+# SVG rasterization: the `image` codec crate can't decode SVG at all, so a
+# vector picture (a README banner is often one — `assets/*.svg`) needs its own
+# path. resvg parses with usvg and paints onto a tiny-skia pixmap we hand back
+# to `image` as an `RgbaImage`; it re-exports both, so this is the only new dep.
+# Version 0.46 matches the one already resolved in the workspace (via gpui), so
+# no second copy is pulled. Optional: only the `images` feature wants it.
+resvg = { version = "0.46", optional = true }

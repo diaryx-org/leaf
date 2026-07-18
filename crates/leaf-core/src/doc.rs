@@ -24,7 +24,10 @@ use std::path::Path;
 use anyhow::{Result, anyhow};
 #[cfg(feature = "fs")]
 use anyhow::Context;
-use twig::{BlockContainerKind, BlockKind, Change, Editor, FlatNode, Format, InlineKind, NodeId};
+use twig::{
+    BlockContainerKind, BlockKind, Change, Editor, FlatNode, Format, InlineKind,
+    MarkdownExtensions, NodeId,
+};
 use unicode_segmentation::GraphemeCursor;
 
 use crate::html;
@@ -269,12 +272,30 @@ pub struct Doc {
     pub drawn_caret: Option<usize>,
 }
 
+/// The Markdown extensions every leaf document is parsed with. Only
+/// `html_elements` departs from twig's defaults: it promotes embedded raw HTML
+/// (`<img>`, `<picture>`, `<source>`, …) into semantic AST nodes, so a picture
+/// becomes a real `image` node the frontends can frame and rasterize instead of
+/// opaque `raw_block` text. The flag is inert for non-Markdown formats, so it's
+/// safe to pass unconditionally. Threading it through every constructor (not
+/// just `open`) keeps `from_source`, `blank`, and `reload` parsing the same
+/// document the same way — twig reparses with these same flags after each edit.
+fn parse_extensions() -> MarkdownExtensions {
+    MarkdownExtensions { html_elements: true, ..Default::default() }
+}
+
+/// Build an editor over `bytes` in `format` with leaf's [`parse_extensions`],
+/// mapping twig's error into the `anyhow` context every constructor shares.
+fn new_editor(bytes: &[u8], format: Format) -> Result<Editor> {
+    Editor::new_ext(bytes, format, parse_extensions()).map_err(|e| anyhow!("twig parse: {e}"))
+}
+
 impl Doc {
     #[cfg(feature = "fs")]
     pub fn open(path: PathBuf) -> Result<Self> {
         let bytes = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
         let format = detect_format(&path)?;
-        let editor = Editor::new(&bytes, format).map_err(|e| anyhow!("twig parse: {e}"))?;
+        let editor = new_editor(&bytes, format)?;
         let source = String::from_utf8(bytes).map_err(|_| anyhow!("document is not UTF-8"))?;
         let disk_hash = Some(hash_bytes(source.as_bytes()));
         // Store the document's *absolute* path. A relative one (`leaf README.md`)
@@ -298,7 +319,7 @@ impl Doc {
     /// No file backs the result, so it starts untitled ([`Doc::is_untitled`] is
     /// true) exactly like a [`Doc::blank`] that has been given content.
     pub fn from_source(source: String, format: Format) -> Result<Self> {
-        let editor = Editor::new_str(&source, format).map_err(|e| anyhow!("twig parse: {e}"))?;
+        let editor = new_editor(source.as_bytes(), format)?;
         Ok(Doc::from_parts(editor, format, PathBuf::new(), source, None))
     }
 
@@ -314,7 +335,7 @@ impl Doc {
     /// *doesn't* revisit this: see [`Doc::save_as`].
     pub fn blank() -> Result<Self> {
         let format = Format::Markdown;
-        let editor = Editor::new_str("", format).map_err(|e| anyhow!("twig parse: {e}"))?;
+        let editor = new_editor(b"", format)?;
         // An empty `path` is the untitled marker (`path` is a public `PathBuf`
         // field two frontends already read; making it an `Option` to say this
         // would break both). `is_untitled` is the question to ask, not the
@@ -1806,10 +1827,10 @@ impl Doc {
         // Reparse rather than splice the difference in: leaf doesn't know what
         // changed, and `format` is the format this document is, not what the
         // (unchanged) name now says — see `save_as`.
-        let editor = match Editor::new_str(&source, self.format) {
+        let editor = match new_editor(source.as_bytes(), self.format) {
             Ok(ed) => ed,
             Err(e) => {
-                self.status = Some(format!("reload failed: twig parse: {e}"));
+                self.status = Some(format!("reload failed: {e}"));
                 return;
             }
         };

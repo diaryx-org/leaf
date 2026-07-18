@@ -38,7 +38,7 @@ clipboard, and file I/O.
 | [`leaf-tui`](apps/leaf-tui) | the terminal editor (binary `leaf`) — a thin host around `leaf-ratatui` wiring a terminal, clipboard, and dialogs. The workspace default `cargo run`. |
 | [`leaf`](apps/leaf) | the standalone gpui **application** (binary `leaf-gui`) — a thin host around `leaf-gpui`. |
 | [`leaf-ios`](apps/leaf-ios) | the gpui iOS host (a standalone workspace on the gpui-mobile platform). |
-| [`leaf-ffi-ios`](apps/leaf-ffi-ios) | the UIKit/UniFFI iOS demo app, consuming `packages/leaf-swift`. |
+| [`leaf-editor`](apps/leaf-editor) | the cross-platform (macOS + iOS) AppKit/UIKit/UniFFI demo app, consuming `packages/leaf-swift`. |
 | [`leaf-web-demo`](apps/leaf-web-demo) | the web demo page, consuming `packages/leaf-web`. |
 
 ```sh

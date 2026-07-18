@@ -22,7 +22,7 @@ use ratatui::{
     },
     layout::Rect,
 };
-use leaf_core::{DiskState, Doc};
+use leaf_core::{BlockKind, DiskState, Doc, InlineKind, InlineMarks};
 use leaf_ratatui::{MouseOutcome, Outcome};
 
 fn main() -> Result<()> {
@@ -47,7 +47,7 @@ fn main() -> Result<()> {
 /// wraps around it.
 #[derive(Default)]
 struct App {
-    /// Set by Ctrl+Q or ⌥n meeting a dirty document: the footer shows a
+    /// Set by Ctrl+Q or ⌥n meeting a dirty document: a centered overlay offers a
     /// Save/Discard/Cancel choice and normal key handling is suspended until
     /// one is picked. What runs once it's picked (and, for Save, once any
     /// dialog that choice opens resolves) is `dirty_prompt`'s own `action`.
@@ -79,27 +79,194 @@ struct App {
     editor: leaf_ratatui::EditorState,
 }
 
-/// The right-click menu's rows, in display order: a label paired with the
-/// action a click or Enter on that row runs. `ui::render_context_menu` reads
-/// the labels off this same list so the menu drawn on screen and the actions
-/// wired to it can't drift apart.
-const MENU_ITEMS: &[(&str, fn(&mut Doc))] = &[
-    ("Cut", clipboard_cut),
-    ("Copy", clipboard_copy),
-    ("Paste", clipboard_paste),
-    ("Select All", Doc::select_all),
+/// One row of the context menu. `Action` runs a command and closes the menu;
+/// `Submenu` opens a flyout of further rows (the Format menu of styling
+/// options); `Header` is a dim, unselectable section label — the divider
+/// between the block and inline styles. `ui::render_context_menu` reads its
+/// labels off these same values, so what's drawn and what's wired can't drift.
+#[derive(Clone, Copy)]
+pub enum MenuEntry {
+    Action(&'static str, MenuAction),
+    Submenu(&'static str, &'static [MenuEntry]),
+    Header(&'static str),
+}
+
+impl MenuEntry {
+    pub fn label(self) -> &'static str {
+        match self {
+            MenuEntry::Action(l, _) | MenuEntry::Submenu(l, _) | MenuEntry::Header(l) => l,
+        }
+    }
+
+    /// A `Header` is drawn but never highlighted or activated: the arrow keys
+    /// and mouse hover step over it.
+    fn selectable(self) -> bool {
+        !matches!(self, MenuEntry::Header(_))
+    }
+}
+
+/// What activating an `Action` row does. Kept as data (rather than the old
+/// `fn(&mut Doc)` pointers) so the same value can also answer "is this style
+/// already on?" for the row's checkmark — see [`MenuAction::active`].
+#[derive(Clone, Copy)]
+pub enum MenuAction {
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
+    Paragraph,
+    Heading(u32),
+    BulletList,
+    NumberedList,
+    Quote,
+    Inline(InlineKind),
+}
+
+impl MenuAction {
+    fn run(self, doc: &mut Doc) {
+        match self {
+            MenuAction::Cut => clipboard_cut(doc),
+            MenuAction::Copy => clipboard_copy(doc),
+            MenuAction::Paste => clipboard_paste(doc),
+            MenuAction::SelectAll => doc.select_all(),
+            MenuAction::Paragraph => doc.set_block(BlockKind::Paragraph),
+            MenuAction::Heading(n) => doc.toggle_heading(n),
+            MenuAction::BulletList => doc.toggle_list(false),
+            MenuAction::NumberedList => doc.toggle_list(true),
+            MenuAction::Quote => doc.toggle_blockquote(),
+            MenuAction::Inline(k) => doc.toggle(k),
+        }
+    }
+
+    /// Whether this style is currently in force at the caret — drives the row's
+    /// checkmark. Only the inline marks and headings answer cheaply and without
+    /// ambiguity; the clipboard verbs and the list/quote/paragraph toggles
+    /// (whose "on" state needs AST ancestry the toolbar never exposed) show none.
+    pub fn active(self, marks: InlineMarks, heading: Option<u32>) -> bool {
+        match self {
+            MenuAction::Inline(k) => marks.contains(k),
+            MenuAction::Heading(n) => heading == Some(n),
+            _ => false,
+        }
+    }
+}
+
+/// The root right-click menu; `Format` drills into [`FORMAT_MENU`].
+pub const ROOT_MENU: &[MenuEntry] = &[
+    MenuEntry::Action("Cut", MenuAction::Cut),
+    MenuEntry::Action("Copy", MenuAction::Copy),
+    MenuEntry::Action("Paste", MenuAction::Paste),
+    MenuEntry::Action("Select All", MenuAction::SelectAll),
+    MenuEntry::Submenu("Format", FORMAT_MENU),
 ];
 
-struct ContextMenu {
-    /// Screen cell the right-click landed on; the overlay is anchored here
-    /// (and nudged back on screen if it wouldn't fit).
+/// Every styling command the keyboard exposes, gathered into one flyout and
+/// split into a block section (what the whole paragraph becomes) and an inline
+/// section (marks on the selection). The labels are the toolbar words a reader
+/// knows, not the AST kinds underneath.
+pub const FORMAT_MENU: &[MenuEntry] = &[
+    MenuEntry::Header("Block"),
+    MenuEntry::Action("Paragraph", MenuAction::Paragraph),
+    MenuEntry::Action("Heading 1", MenuAction::Heading(1)),
+    MenuEntry::Action("Heading 2", MenuAction::Heading(2)),
+    MenuEntry::Action("Heading 3", MenuAction::Heading(3)),
+    MenuEntry::Action("Bulleted List", MenuAction::BulletList),
+    MenuEntry::Action("Numbered List", MenuAction::NumberedList),
+    MenuEntry::Action("Quote", MenuAction::Quote),
+    MenuEntry::Header("Inline"),
+    MenuEntry::Action("Bold", MenuAction::Inline(InlineKind::Strong)),
+    MenuEntry::Action("Italic", MenuAction::Inline(InlineKind::Emph)),
+    MenuEntry::Action("Code", MenuAction::Inline(InlineKind::Verbatim)),
+    MenuEntry::Action("Highlight", MenuAction::Inline(InlineKind::Mark)),
+    MenuEntry::Action("Strikethrough", MenuAction::Inline(InlineKind::Delete)),
+    MenuEntry::Action("Underline", MenuAction::Inline(InlineKind::Insert)),
+];
+
+/// The right-click menu, as a stack of open levels: the root first, then any
+/// submenu drilled into. The last level owns the keyboard; Esc/Left pops it, and
+/// a click or hover on a `Submenu` row pushes the next. It's the one piece of
+/// host chrome with a real navigation state of its own.
+pub struct ContextMenu {
+    /// Screen cell the right-click landed on; the root level is anchored here
+    /// (nudged back on screen if it wouldn't fit) and each submenu flies out
+    /// from its parent row.
     anchor: (u16, u16),
-    /// Index into `MENU_ITEMS` currently highlighted, moved by the arrow keys.
+    /// The open levels, root first. Never empty while the menu is up.
+    levels: Vec<MenuLevel>,
+}
+
+pub struct MenuLevel {
+    items: &'static [MenuEntry],
+    /// The highlighted row — moved by the arrow keys and by mouse hover, always
+    /// left on a selectable (non-`Header`) row.
     selected: usize,
-    /// The rect `ui::render_context_menu` last painted the menu at, stashed
-    /// the same way `doc.body_origin`/`body_height` are, so mouse hit-testing
-    /// here and drawing there agree on one geometry.
+    /// The rect `ui::render_context_menu` last painted this level at, stashed for
+    /// hit-testing the same way `doc.body_origin` is.
     rect: Option<Rect>,
+}
+
+impl MenuLevel {
+    fn new(items: &'static [MenuEntry]) -> Self {
+        let selected = items.iter().position(|e| e.selectable()).unwrap_or(0);
+        MenuLevel { items, selected, rect: None }
+    }
+
+    /// Move the highlight `delta` rows, skipping headers and wrapping at the
+    /// ends. A no-op for a level with nothing selectable (can't happen for the
+    /// two real menus, but keeps the walk total).
+    fn step(&mut self, delta: isize) {
+        let n = self.items.len() as isize;
+        if n == 0 {
+            return;
+        }
+        let mut i = self.selected as isize;
+        for _ in 0..n {
+            i = (i + delta).rem_euclid(n);
+            if self.items[i as usize].selectable() {
+                self.selected = i as usize;
+                return;
+            }
+        }
+    }
+}
+
+impl ContextMenu {
+    fn new(anchor: (u16, u16)) -> Self {
+        ContextMenu { anchor, levels: vec![MenuLevel::new(ROOT_MENU)] }
+    }
+
+    /// The frontmost (deepest) level — the one the keyboard drives.
+    fn active_level(&self) -> usize {
+        self.levels.len() - 1
+    }
+
+    /// Open `items` as the submenu of level `parent`, replacing any deeper level
+    /// already showing (hovering a different submenu row swaps the flyout). A
+    /// no-op if this exact submenu is already open, so hovering its parent row
+    /// doesn't keep resetting the child's own highlight.
+    fn open_submenu(&mut self, parent: usize, items: &'static [MenuEntry]) {
+        if self.levels.get(parent + 1).is_some_and(|l| l.items.as_ptr() == items.as_ptr()) {
+            return;
+        }
+        self.levels.truncate(parent + 1);
+        self.levels.push(MenuLevel::new(items));
+    }
+
+    /// The `(level, row)` under a screen cell, deepest level first so a submenu
+    /// wins over the parent it flies out over.
+    fn hit(&self, row: u16, col: u16) -> Option<(usize, usize)> {
+        for (i, level) in self.levels.iter().enumerate().rev() {
+            if let Some(rect) = level.rect {
+                if row >= rect.y && row < rect.y + rect.height && col >= rect.x && col < rect.x + rect.width {
+                    let idx = (row - rect.y) as usize;
+                    if idx < level.items.len() {
+                        return Some((i, idx));
+                    }
+                }
+            }
+        }
+        None
+    }
 }
 
 /// A minimal, reusable single-line input: a label, a starting value, and a
@@ -134,8 +301,8 @@ enum DirtyAction {
 
 /// The Save/Discard/Cancel choice offered in place of the old y/n "quit
 /// without saving?" — same overlay-owns-the-keyboard shape as `ContextMenu`,
-/// but, like `TextPrompt`, drawn inline in the footer rather than floated:
-/// there's no click to anchor it to.
+/// floated as a centered modal (`ui::render_choice_overlay`); unlike the menu
+/// there's no click to anchor it to, so it centers on the screen instead.
 struct DirtyPrompt {
     action: DirtyAction,
     /// Index into `["Save", "Discard", "Cancel"]`, moved by the arrow keys;
@@ -162,8 +329,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, doc: &mut Doc) -> Result<()> {
     // that can't answer keeps the half-blocks fallback.
     app.editor.query_graphics();
     loop {
-        let breadcrumb = doc.breadcrumb();
-        terminal.draw(|f| ui::render(f, doc, &breadcrumb, &mut app))?;
+        terminal.draw(|f| ui::render(f, doc, &mut app))?;
 
         match event::read()? {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
@@ -171,6 +337,10 @@ fn run(terminal: &mut ratatui::DefaultTerminal, doc: &mut Doc) -> Result<()> {
                     return Ok(());
                 }
             }
+            // Mouse motion (with no button down) drives the context menu's hover
+            // highlight; `EnableMouseCapture` already turns on any-motion
+            // reporting, so these `Moved` events arrive without extra setup. The
+            // editing surface ignores them, so they cost only a redraw.
             Event::Mouse(m) => handle_mouse(doc, m, &mut app),
             _ => {}
         }
@@ -226,16 +396,34 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
     }
 
     // The context menu takes over the keyboard the same way the prompts above
-    // do: arrows move the highlight, Enter runs the highlighted row, Esc (or
-    // anything else) closes it without acting.
+    // do: arrows move the highlight (skipping section headers), Right/Enter open
+    // a submenu or run the highlighted row, Left/Esc back out one level (or
+    // close at the root), and any other key closes it without acting.
     if let Some(menu) = &mut app.context_menu {
+        let lvl = menu.active_level();
+        let entry = menu.levels[lvl].items[menu.levels[lvl].selected];
         match key.code {
-            KeyCode::Up => menu.selected = (menu.selected + MENU_ITEMS.len() - 1) % MENU_ITEMS.len(),
-            KeyCode::Down => menu.selected = (menu.selected + 1) % MENU_ITEMS.len(),
-            KeyCode::Enter => {
-                let action = MENU_ITEMS[menu.selected].1;
-                app.context_menu = None;
-                action(doc);
+            KeyCode::Up => menu.levels[lvl].step(-1),
+            KeyCode::Down => menu.levels[lvl].step(1),
+            KeyCode::Right => {
+                if let MenuEntry::Submenu(_, items) = entry {
+                    menu.open_submenu(lvl, items);
+                }
+            }
+            KeyCode::Enter => match entry {
+                MenuEntry::Action(_, act) => {
+                    app.context_menu = None;
+                    act.run(doc);
+                }
+                MenuEntry::Submenu(_, items) => menu.open_submenu(lvl, items),
+                MenuEntry::Header(_) => {}
+            },
+            KeyCode::Left | KeyCode::Esc => {
+                if lvl > 0 {
+                    menu.levels.pop();
+                } else {
+                    app.context_menu = None;
+                }
             }
             _ => app.context_menu = None,
         }
@@ -358,20 +546,39 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
 }
 
 fn handle_mouse(doc: &mut Doc, m: MouseEvent, app: &mut App) {
-    // The menu owns the mouse while it's open: a click on one of its rows runs
-    // that row's action, a click anywhere else just dismisses it — either way
-    // the click doesn't also fall through to the document underneath (a menu
-    // click landing on, say, a paste shouldn't also re-place the caret at the
-    // menu's screen position).
-    if let Some(menu) = &app.context_menu {
-        if let MouseEventKind::Down(_) = m.kind {
-            if let Some(i) = menu_item_at(menu, m.row, m.column) {
-                let action = MENU_ITEMS[i].1;
-                app.context_menu = None;
-                action(doc);
-            } else {
-                app.context_menu = None;
+    // The menu owns the mouse while it's open. Motion (with no button, or a
+    // drag) hovers: the row under the pointer becomes the highlight, and moving
+    // onto a submenu row opens its flyout while moving off it closes any deeper
+    // one. A press runs the row's action (or opens its submenu); a press outside
+    // every level dismisses the menu. Either way the event doesn't fall through
+    // to the document underneath.
+    if let Some(menu) = &mut app.context_menu {
+        match m.kind {
+            MouseEventKind::Moved | MouseEventKind::Drag(_) => {
+                if let Some((lvl, idx)) = menu.hit(m.row, m.column) {
+                    if menu.levels[lvl].items[idx].selectable() {
+                        // Close any deeper flyout first, then highlight the row —
+                        // and reopen its submenu if that's what it is.
+                        menu.levels.truncate(lvl + 1);
+                        menu.levels[lvl].selected = idx;
+                        if let MenuEntry::Submenu(_, items) = menu.levels[lvl].items[idx] {
+                            menu.open_submenu(lvl, items);
+                        }
+                    }
+                }
             }
+            MouseEventKind::Down(_) => match menu.hit(m.row, m.column) {
+                Some((lvl, idx)) => match menu.levels[lvl].items[idx] {
+                    MenuEntry::Action(_, act) => {
+                        app.context_menu = None;
+                        act.run(doc);
+                    }
+                    MenuEntry::Submenu(_, items) => menu.open_submenu(lvl, items),
+                    MenuEntry::Header(_) => {}
+                },
+                None => app.context_menu = None,
+            },
+            _ => {}
         }
         return;
     }
@@ -383,20 +590,8 @@ fn handle_mouse(doc: &mut Doc, m: MouseEvent, app: &mut App) {
     match leaf_ratatui::handle_mouse(doc, m, &mut app.editor) {
         MouseOutcome::Continue => {}
         MouseOutcome::ContextMenu { x, y } => {
-            app.context_menu = Some(ContextMenu { anchor: (x, y), selected: 0, rect: None });
+            app.context_menu = Some(ContextMenu::new((x, y)));
         }
-    }
-}
-
-/// Hit-test a mouse-down against the last-painted context menu rect, returning
-/// the row index under it (if any). Mirrors the `doc.body_origin`/
-/// `body_height` dance the document body itself uses for the same purpose.
-fn menu_item_at(menu: &ContextMenu, row: u16, col: u16) -> Option<usize> {
-    let rect = menu.rect?;
-    if row >= rect.y && row < rect.y + rect.height && col >= rect.x && col < rect.x + rect.width {
-        Some((row - rect.y) as usize)
-    } else {
-        None
     }
 }
 
@@ -672,6 +867,19 @@ mod tests {
         }
     }
 
+    fn moved(row: u16, col: u16) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    fn keyp(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
     #[test]
     fn triple_click_selects_the_paragraph_not_the_source_line() {
         // The TUI used to select the source *line* under the click, walking out
@@ -759,9 +967,9 @@ mod tests {
         let mut doc = doc_with("menu_click", "one two three\n");
         let mut app = App::default();
         handle_mouse(&mut doc, right_down(1, 4), &mut app);
-        // The menu hasn't been drawn (no `ui::render` in this test), so there's
-        // no painted rect to click on; a click anywhere just dismisses it.
-        assert!(app.context_menu.as_ref().unwrap().rect.is_none());
+        // The menu hasn't been drawn (no `ui::render` in this test), so no level
+        // has a painted rect to hit-test; a click anywhere just dismisses it.
+        assert!(app.context_menu.as_ref().unwrap().levels[0].rect.is_none());
         handle_mouse(&mut doc, left_down(5, 5), &mut app);
         assert!(app.context_menu.is_none());
     }
@@ -1362,5 +1570,198 @@ mod tests {
         handle_mouse(&mut doc, left_down(2, 0), &mut app);
         handle_mouse(&mut doc, drag(0, 0), &mut app); // above body_origin's row (1)
         assert_eq!(doc.scroll, 4);
+    }
+
+    // ── chrome-less rendering ────────────────────────────────────────────────
+
+    use ratatui::{Terminal, backend::TestBackend};
+
+    /// Draw one frame of the whole UI at `w`×`h` and read the screen back as
+    /// rows of text — the host chrome's own render path, exercised end to end.
+    fn frame(doc: &mut Doc, app: &mut App, w: u16, h: u16) -> Vec<String> {
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| ui::render(f, doc, app)).unwrap();
+        let buf = term.backend().buffer().clone();
+        (0..buf.area.height)
+            .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect()
+    }
+
+    #[test]
+    fn the_body_starts_on_the_top_row_now_that_there_is_no_header() {
+        // The document used to open under a one-row header; with the chrome gone
+        // its first line is the terminal's first row.
+        let mut doc = doc_with("no_header", "hello world\n");
+        let mut app = App::default();
+        let lines = frame(&mut doc, &mut app, 40, 6);
+        assert!(lines[0].starts_with("hello world"), "body not on row 0:\n{}", lines.join("\n"));
+    }
+
+    #[test]
+    fn a_dirty_prompt_floats_as_a_centered_overlay() {
+        let mut doc = doc_with("prompt_overlay", "hello\n");
+        let mut app = App::default();
+        app.dirty_prompt = Some(DirtyPrompt { action: DirtyAction::Quit, selected: 0 });
+        let lines = frame(&mut doc, &mut app, 50, 10);
+        let joined = lines.join("\n");
+        assert!(joined.contains("Unsaved changes"), "no dialog:\n{joined}");
+        assert!(joined.contains("Save") && joined.contains("Discard"), "no choices:\n{joined}");
+        // Centered, not pinned to the bottom rows the old footer used.
+        let row = lines.iter().position(|l| l.contains("Unsaved changes")).unwrap();
+        assert!(row > 0 && row < 9, "dialog should be centered, got row {row}");
+    }
+
+    #[test]
+    fn a_status_message_shows_as_a_bottom_right_toast() {
+        let mut doc = doc_with("toast", "hello\n");
+        doc.status = Some("copied".into());
+        let mut app = App::default();
+        let lines = frame(&mut doc, &mut app, 40, 6);
+        let bottom = lines.last().unwrap();
+        assert!(bottom.contains("copied"), "toast missing from bottom row:\n{}", lines.join("\n"));
+        // The toast is drawn flush against the right edge (its text is padded
+        // with a single trailing space), and the space to its left is empty body.
+        assert!(bottom.ends_with("copied "), "toast should hug the right edge: {bottom:?}");
+        assert!(bottom.starts_with("     "), "toast should not stretch across the row: {bottom:?}");
+    }
+
+    #[test]
+    fn a_dirty_prompt_suppresses_the_status_toast() {
+        // A dialog and a toast shouldn't fight for the same glance: while the
+        // dialog is up, the toast stays hidden.
+        let mut doc = doc_with("no_toast_with_prompt", "hello\n");
+        doc.status = Some("copied".into());
+        let mut app = App::default();
+        app.dirty_prompt = Some(DirtyPrompt { action: DirtyAction::Quit, selected: 0 });
+        let lines = frame(&mut doc, &mut app, 40, 6);
+        assert!(!lines.join("\n").contains("copied"), "toast should be suppressed:\n{}", lines.join("\n"));
+    }
+
+    // ── context menu: Format submenu, hover, active state ────────────────────
+
+    /// Right-click, then walk the root down to the `Format` row (index 4).
+    fn open_format(doc: &mut Doc, app: &mut App) {
+        handle_mouse(doc, right_down(1, 2), app);
+        for _ in 0..4 {
+            handle_key(doc, keyp(KeyCode::Down), app);
+        }
+        handle_key(doc, keyp(KeyCode::Right), app); // open the submenu
+    }
+
+    #[test]
+    fn right_arrow_on_format_opens_the_styling_submenu() {
+        let mut doc = doc_with("submenu_open", "hello\n");
+        let mut app = App::default();
+        open_format(&mut doc, &mut app);
+        let menu = app.context_menu.as_ref().unwrap();
+        assert_eq!(menu.levels.len(), 2, "Format should push a second level");
+        // Its highlight starts on the first *selectable* row — past the "Block"
+        // header at index 0, on Paragraph at index 1.
+        assert_eq!(menu.levels[1].selected, 1);
+    }
+
+    #[test]
+    fn submenu_arrows_skip_section_headers() {
+        let mut doc = doc_with("submenu_headers", "hello\n");
+        let mut app = App::default();
+        open_format(&mut doc, &mut app);
+        // Up from Paragraph (1) wraps past the "Inline" header (8) to the last
+        // row, Underline (14) — never landing on a header.
+        handle_key(&mut doc, keyp(KeyCode::Up), &mut app);
+        assert_eq!(app.context_menu.as_ref().unwrap().levels[1].selected, 14);
+        // Down from there wraps past the "Block" header (0) to Paragraph (1).
+        handle_key(&mut doc, keyp(KeyCode::Down), &mut app);
+        assert_eq!(app.context_menu.as_ref().unwrap().levels[1].selected, 1);
+    }
+
+    #[test]
+    fn choosing_bold_from_the_submenu_toggles_the_selection() {
+        let mut doc = doc_with("submenu_bold", "hello world\n");
+        doc.anchor = Some(0);
+        doc.caret = 5; // "hello" selected
+        let mut app = App::default();
+        open_format(&mut doc, &mut app);
+        // Paragraph(1) → Quote(7) is six Downs; a seventh skips the "Inline"
+        // header to Bold(9), then Enter applies it.
+        for _ in 0..7 {
+            handle_key(&mut doc, keyp(KeyCode::Down), &mut app);
+        }
+        handle_key(&mut doc, keyp(KeyCode::Enter), &mut app);
+        assert!(app.context_menu.is_none(), "running an action closes the menu");
+        assert_eq!(doc.source, "**hello** world\n");
+    }
+
+    #[test]
+    fn choosing_heading_from_the_submenu_sets_the_block() {
+        let mut doc = doc_with("submenu_heading", "hello\n");
+        let mut app = App::default();
+        open_format(&mut doc, &mut app);
+        // Paragraph(1) → Heading 1(2) is one Down.
+        handle_key(&mut doc, keyp(KeyCode::Down), &mut app);
+        handle_key(&mut doc, keyp(KeyCode::Enter), &mut app);
+        assert_eq!(doc.source, "# hello\n");
+    }
+
+    #[test]
+    fn left_backs_out_of_the_submenu_without_closing_the_menu() {
+        let mut doc = doc_with("submenu_back", "hello\n");
+        let mut app = App::default();
+        open_format(&mut doc, &mut app);
+        assert_eq!(app.context_menu.as_ref().unwrap().levels.len(), 2);
+        handle_key(&mut doc, keyp(KeyCode::Left), &mut app);
+        let menu = app.context_menu.as_ref().expect("Left in a submenu backs out, not closes");
+        assert_eq!(menu.levels.len(), 1);
+        // A second Left, now at the root, closes it.
+        handle_key(&mut doc, keyp(KeyCode::Left), &mut app);
+        assert!(app.context_menu.is_none());
+    }
+
+    #[test]
+    fn hovering_a_row_highlights_it_and_hovering_format_opens_the_submenu() {
+        let mut doc = doc_with("hover", "hello\n");
+        let mut app = App::default();
+        handle_mouse(&mut doc, right_down(1, 2), &mut app);
+        // Paint once so each level gets a rect to hit-test against.
+        let _ = frame(&mut doc, &mut app, 40, 20);
+        let root = app.context_menu.as_ref().unwrap().levels[0].rect.unwrap();
+
+        // Hover Copy (root row 1): it becomes the highlight without any click.
+        handle_mouse(&mut doc, moved(root.y + 1, root.x + 1), &mut app);
+        assert_eq!(app.context_menu.as_ref().unwrap().levels[0].selected, 1);
+
+        // Hover Format (root row 4): its submenu flies out on hover alone.
+        handle_mouse(&mut doc, moved(root.y + 4, root.x + 1), &mut app);
+        assert_eq!(app.context_menu.as_ref().unwrap().levels.len(), 2, "hover opens the submenu");
+
+        // Hover back onto Cut (root row 0): the submenu closes again.
+        handle_mouse(&mut doc, moved(root.y, root.x + 1), &mut app);
+        assert_eq!(app.context_menu.as_ref().unwrap().levels.len(), 1, "hovering off Format closes it");
+        assert_eq!(app.context_menu.as_ref().unwrap().levels[0].selected, 0);
+    }
+
+    #[test]
+    fn the_format_submenu_renders_its_sections_and_flies_out() {
+        let mut doc = doc_with("submenu_render", "hello\n");
+        let mut app = App::default();
+        open_format(&mut doc, &mut app);
+        let lines = frame(&mut doc, &mut app, 60, 20);
+        let joined = lines.join("\n");
+        assert!(joined.contains("Format"), "the root stays visible beside the flyout:\n{joined}");
+        assert!(joined.contains('▸'), "the submenu arrow is drawn:\n{joined}");
+        assert!(joined.contains("Block") && joined.contains("Inline"), "section headers:\n{joined}");
+        assert!(joined.contains("Bold") && joined.contains("Strikethrough"), "inline options listed:\n{joined}");
+    }
+
+    #[test]
+    fn an_active_inline_style_shows_a_check_in_the_submenu() {
+        // Caret inside bold text: the Bold row should carry its ✓.
+        let mut doc = doc_with("submenu_active", "**hello** world\n");
+        doc.anchor = Some(2);
+        doc.caret = 7; // inside the bold "hello"
+        let mut app = App::default();
+        open_format(&mut doc, &mut app);
+        let joined = frame(&mut doc, &mut app, 60, 20).join("\n");
+        assert!(joined.contains("✓ Bold"), "active Bold should be checked:\n{joined}");
+        assert!(joined.contains("  Italic"), "inactive Italic should not:\n{joined}");
     }
 }

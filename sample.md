@@ -18,3 +18,6 @@ hello
 
 - edits are `edit_range` splices
 - the tree stays valid as you type
+- Hello!
+
+This is a great editor. I really like it!

@@ -10,3 +10,4 @@
 # Build products of scripts/build-xcframework.sh — the xcframework and the
 # UniFFI-generated Swift are regenerated from crates/leaf-ffi, never committed.
 /packages/leaf-swift/generated/
+packages/leaf-swift/.build/index-build/

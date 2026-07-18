@@ -3193,6 +3193,7 @@ dependencies = [
  "leaf-core",
  "ratatui",
  "ratatui-image",
+ "resvg",
 ]
 
 [[package]]

@@ -255,7 +255,16 @@ impl VisualMap {
     /// far cell of a wide glyph — [`VRow::glyph_at_col`] is where that lands.
     pub fn offset_of_pos(&self, row: usize, col: usize) -> usize {
         let Some(r) = self.rows.get(row) else {
-            return 0;
+            // A click or drag below the last row — a short document with empty
+            // space under it, dragged into to extend a selection. Land on the
+            // document's last caret stop (its end), not offset 0: jumping the
+            // caret to the top is the wrong direction, and 0 isn't even a stop
+            // when the document opens on hidden frontmatter or a `# ` marker, so
+            // returning it would leave the caret where it draws in one place and
+            // types in another (`move_to` would then clamp it onto the unhomeable
+            // frontmatter floor). `None` only for a document with no stops at all
+            // (empty), where the caret has nowhere to be but 0.
+            return self.stops.last().copied().unwrap_or(0);
         };
         match r.glyph_at_col(col).and_then(|i| r.glyphs.get(i)) {
             // A glyph that holds no caret is clickable, but where it points
@@ -1191,8 +1200,16 @@ impl Builder<'_> {
         match node.kind.as_str() {
             "doc" | "section" => self.blocks(id, pf, pc),
             "heading" => {
+                // A heading whose only visible content is a single image — a
+                // banner set in an `<h1>` (`<h1><picture><img></picture></h1>`),
+                // or `# ![](banner.png)` — is a block picture, not text. Render
+                // it as one; anything with real heading text falls through.
+                if let Some(img) = self.image_only(id) {
+                    self.block_image(img, pf);
+                    return;
+                }
                 let style = heading_style(node.level.unwrap_or(1));
-                let glyphs = self.inline_children(id, style);
+                let glyphs = self.inline_children_with_trailing(id, style);
                 self.emit_wrapped(glyphs, node.span.start, pf, pc);
             }
             "block_quote" => {
@@ -1215,7 +1232,21 @@ impl Builder<'_> {
                     self.block(item, &concat(pc, &bullet), &concat(pc, &indent));
                 }
             }
-            "list_item" | "task_list_item" => self.blocks(id, pf, pc),
+            "list_item" | "task_list_item" => {
+                // A childless item — the empty bullet you get the instant you
+                // press Enter to open a new one — has no inner block to carry the
+                // marker prefix or a caret home, so `blocks` would emit nothing
+                // and the new bullet simply wouldn't appear until something was
+                // typed into it. Emit the prefixed row itself, ending at a caret
+                // stop just past the marker (the item's `span.end`), the way an
+                // empty paragraph emits its one prefixed row via `emit_wrapped`.
+                if self.children(id).is_empty() {
+                    let home = self.nodes[id].span.end.min(self.source.len());
+                    self.push_row_at(pf.to_vec(), home);
+                } else {
+                    self.blocks(id, pf, pc);
+                }
+            }
             "table" => self.table(id, pf, pc),
             "code_block" => {
                 let style = Style::default().role(Role::Code);
@@ -1276,24 +1307,26 @@ impl Builder<'_> {
                 }
                 self.push_row(glyphs, node.span.start);
             }
+            // A block-level image node with no wrapping paragraph — a promoted
+            // top-level HTML `<img>` lands as a direct `doc` child like this
+            // (a Markdown `![](…)` comes wrapped in a `para`, handled below).
+            "image" => self.block_image(id, pf),
             _ => {
                 // A container of blocks, or an inline-bearing paragraph.
                 let kids = self.children(id);
-                // A block-level image: a paragraph whose sole child is an
-                // `image` node (`![alt](url)` on its own line). Render it as a
-                // placeholder row + record an [`ImageInfo`] a capable frontend
-                // replaces. An image mixed with other inline content on the line
-                // isn't block-level and falls through to the inline path below,
-                // where it still renders as its alt text.
-                if let [only] = kids[..] {
-                    if self.nodes[only].kind == "image" {
-                        self.block_image(only, pf);
-                        return;
-                    }
+                // A block-level image: a paragraph (or other wrapper — a
+                // `<picture>`, an `<h1>` banner) whose only visible content is a
+                // single `image` node. Render it as a placeholder row + record an
+                // [`ImageInfo`] a capable frontend replaces. An image mixed with
+                // real text or other images on the line isn't block-level and
+                // falls through to the inline path below, still as its alt text.
+                if let Some(img) = self.image_only(id) {
+                    self.block_image(img, pf);
+                    return;
                 }
                 let inline = !kids.is_empty() && kids.iter().all(|&c| is_inline(&self.nodes[c].kind));
                 if inline || kids.is_empty() {
-                    let glyphs = self.inline_children(id, Style::default());
+                    let glyphs = self.inline_children_with_trailing(id, Style::default());
                     if !glyphs.is_empty() {
                         self.emit_wrapped(glyphs, node.span.start, pf, pc);
                     }
@@ -1564,6 +1597,59 @@ impl Builder<'_> {
         self.last_off = end;
     }
 
+    /// The single block-level image `id`'s subtree resolves to, or `None`.
+    ///
+    /// A wrapper is a block picture when the only *visible* thing under it is one
+    /// image: whitespace-only text and structure-only elements (a `<picture>`'s
+    /// `<source>`, which declares an alternate but paints nothing) don't count,
+    /// and the search descends through wrapping elements (`<picture>`, a linking
+    /// `<a>`). This is what makes `<p><img></p>`, a bare `<img>`, and
+    /// `<h1><picture>…<img></picture></h1>` all render as one framed picture.
+    /// Any real text, or a second image, means it isn't image-only — it falls
+    /// back to inline rendering, where the image still shows as its alt text.
+    ///
+    /// [`FlatNode`]'s snapshot doesn't carry an element's tag name, so a
+    /// `<source>` can't be skipped by name — but it needs no special case:
+    /// contributing no image and no text, it's simply invisible to the scan.
+    fn image_only(&self, id: usize) -> Option<usize> {
+        let mut image = None;
+        let mut images = 0usize;
+        let mut has_text = false;
+        self.scan_visual(id, &mut image, &mut images, &mut has_text);
+        (images == 1 && !has_text).then(|| image.unwrap())
+    }
+
+    /// Walk `id`'s subtree tallying visible leaves for [`image_only`]: each
+    /// `image` (remembering the last, counting the total) and whether any
+    /// non-whitespace text appears. Images aren't descended into — their inline
+    /// children are alt text, not document content.
+    ///
+    /// [`image_only`]: Self::image_only
+    fn scan_visual(&self, id: usize, image: &mut Option<usize>, images: &mut usize, has_text: &mut bool) {
+        for c in self.children(id) {
+            let node = &self.nodes[c];
+            match node.kind.as_str() {
+                "image" => {
+                    *image = Some(c);
+                    *images += 1;
+                }
+                // Text leaves: only non-whitespace counts as visible content.
+                // (Twig keeps the whitespace `str`s between HTML tags — the
+                // newlines and indentation inside a `<picture>` — as real nodes.)
+                "str" | "smart_punctuation" | "verbatim" | "inline_math" => {
+                    if node.text.as_deref().is_some_and(|t| !t.trim().is_empty()) {
+                        *has_text = true;
+                    }
+                }
+                // Structural breaks carry no visible glyph of their own.
+                "soft_break" | "hard_break" | "non_breaking_space" => {}
+                // Any other wrapper (emphasis, a link, a `<picture>`) is
+                // transparent to the scan — descend into it.
+                _ => self.scan_visual(c, image, images, has_text),
+            }
+        }
+    }
+
     /// An image's alt text: the flattened text of its inline descendants (an
     /// image's children *are* its alt content), empty when it has none.
     fn image_alt(&self, id: usize) -> String {
@@ -1590,6 +1676,55 @@ impl Builder<'_> {
             self.inline(c, base, &mut out);
         }
         out
+    }
+
+    /// [`inline_children`](Self::inline_children) plus any trailing whitespace the
+    /// block carries past its inline content (see [`trailing_ws_glyphs`]). Used
+    /// for the leaf inline blocks — paragraphs and headings — whose own `span`
+    /// bounds exactly one line of text, so the trailing gap is theirs. *Not* for
+    /// a table cell, whose `span` is the whole row and would swallow the
+    /// delimiters and neighbours between it and the row's end.
+    ///
+    /// [`trailing_ws_glyphs`]: Self::trailing_ws_glyphs
+    fn inline_children_with_trailing(&self, id: usize, base: Style) -> Vec<Glyph> {
+        let mut out = self.inline_children(id, base);
+        out.extend(self.trailing_ws_glyphs(id, base));
+        out
+    }
+
+    /// Glyphs for whatever trailing whitespace a block's source carries past its
+    /// last inline node — the space(s) at the end of `hello ` that Markdown and
+    /// Djot drop from the `str` node as insignificant. twig still records them:
+    /// a block's `content_span` ends at its last meaningful character while its
+    /// `span` runs to the end of the line's text (before the terminating
+    /// newline), so the gap between the two *is* that trailing whitespace.
+    ///
+    /// Emitting it as real caret-stop glyphs is what lets the caret be drawn
+    /// past the last visible character. Without it, typing a space at the end of
+    /// a paragraph moved the caret in the source but not on screen — the caret
+    /// stuck on the last glyph until the next visible character reparsed the
+    /// space into an interior `str` node that finally carried it.
+    ///
+    /// Restricted to spaces: only they are safe to synthesize one-cell-per-byte,
+    /// and only they are what the parser silently strips. Anything else in the
+    /// gap means the span accounting isn't what this assumes, so it's left alone.
+    fn trailing_ws_glyphs(&self, id: usize, style: Style) -> Vec<Glyph> {
+        let node = &self.nodes[id];
+        let Some(content) = &node.content_span else {
+            return Vec::new();
+        };
+        let (from, to) = (content.end, node.span.end);
+        let Some(slice) = (from < to).then(|| self.source.get(from..to)).flatten() else {
+            return Vec::new();
+        };
+        if slice.is_empty() || slice.bytes().any(|b| b != b' ') {
+            return Vec::new();
+        }
+        slice
+            .bytes()
+            .enumerate()
+            .map(|(i, _)| Glyph { ch: ' ', style, src: from + i, stop: true })
+            .collect()
     }
 
     fn inline(&self, id: usize, base: Style, out: &mut Vec<Glyph>) {
@@ -2474,6 +2609,80 @@ mod tests {
         assert_eq!(m.content_start, 0);
     }
 
+    #[test]
+    fn trailing_spaces_become_caret_stops_so_the_caret_can_be_drawn_past_them() {
+        // Markdown/Djot drop the trailing space in `hello ` from the `str` node,
+        // so without help the row would end at `hello` and the caret couldn't be
+        // drawn past column 5 — typing a space at a line's end wouldn't move it
+        // on screen until the next visible character reparsed the space into an
+        // interior node. The builder recovers it from the block's span/content_span
+        // gap and emits it as a real, caret-stoppable glyph.
+        let m = map("hello \n");
+        assert_eq!(m.rows[0].glyphs.iter().map(|g| g.ch).collect::<String>(), "hello ");
+        assert_eq!(m.rows[0].end_src, 6, "the row now ends past the trailing space");
+        // The caret can rest both on and past the space.
+        assert_eq!(m.pos_of_offset(5), (0, 5), "between 'o' and the space");
+        assert_eq!(m.pos_of_offset(6), (0, 6), "past the space");
+        // Two trailing spaces, both stops.
+        let m = map("hello  \n");
+        assert_eq!(m.rows[0].glyphs.iter().map(|g| g.ch).collect::<String>(), "hello  ");
+        assert_eq!(m.pos_of_offset(7), (0, 7));
+    }
+
+    #[test]
+    fn a_headings_trailing_space_is_a_caret_stop_too() {
+        // The hidden `# ` marker means `# hi ` renders as `hi ` in three columns;
+        // the caret past the trailing space lands on the third.
+        let m = map("# hi \n");
+        assert_eq!(m.rows[0].glyphs.iter().map(|g| g.ch).collect::<String>(), "hi ");
+        assert_eq!(m.pos_of_offset(5), (0, 3));
+    }
+
+    #[test]
+    fn a_table_cells_trailing_padding_is_not_mistaken_for_block_trailing_space() {
+        // A cell's own `span` is the whole row, so the trailing-whitespace
+        // recovery must not run for cells or it would swallow the `│` delimiters
+        // and neighbours between the cell text and the row's end. The grid stays
+        // exactly as before.
+        let text = rendered(&map(TABLE));
+        assert!(text.contains("│ Pear │   3 │"), "cell padding disturbed:\n{text}");
+    }
+
+    #[test]
+    fn a_click_below_the_last_row_lands_on_the_last_stop_not_offset_zero() {
+        // A drag into the empty space under a short document used to resolve to
+        // offset 0 — the wrong direction, and not even a caret stop when the
+        // document opens on hidden frontmatter (its `content_start` floor is not
+        // a stop), which crashed the caret invariant. It now lands on the last
+        // stop: the end of the document, where dragging downward should reach.
+        let fm = "---\ntitle: n\n---\n";
+        let m = map(&format!("{fm}# Hi\n\nbody\n"));
+        let below = m.num_rows() + 5;
+        let off = m.offset_of_pos(below, 0);
+        assert!(m.is_stop(off), "offset {off} from a below-content click is not a stop");
+        assert_eq!(off, m.stops.last().copied().unwrap(), "should be the document's last stop");
+        assert!(off > fm.len(), "must not fall onto the hidden frontmatter floor");
+    }
+
+    #[test]
+    fn offset_of_pos_is_a_stop_for_every_row_including_past_the_end() {
+        // The invariant the caret motion asserts: whatever cell a click names,
+        // the offset it resolves to is one the caret can actually rest at.
+        for src in [
+            "hello \n",
+            "# A heading here \n\nbody text goes on \n",
+            "---\nk: v\n---\n# Title\n\nprose here that wraps a bit \n",
+        ] {
+            let m = map(src);
+            for row in 0..m.num_rows() + 3 {
+                for col in 0..30 {
+                    let off = m.offset_of_pos(row, col);
+                    assert!(m.is_stop(off), "row {row} col {col} → {off} is not a stop in {src:?}");
+                }
+            }
+        }
+    }
+
     /// `| Name | Qty |` with Name left-aligned and Qty right-aligned.
     const TABLE: &str = "| Name | Qty |\n|:-----|----:|\n| Pear | 3 |\n| Fig | 12 |\n";
 
@@ -2930,6 +3139,35 @@ mod tests {
 
         // An empty word yields no pieces at all — a double space stays a space.
         assert!(hard_break(&[], 4).is_empty());
+    }
+
+    #[test]
+    fn an_empty_list_item_still_gets_a_bulleted_row_with_a_caret_home() {
+        // Pressing Enter at the end of a list item opens a new, empty item —
+        // a childless `list_item`. Without a row of its own the new bullet
+        // wouldn't appear until something was typed into it (the caret would be
+        // stranded on an offset no row draws). It now renders as one prefixed
+        // row whose end is a caret stop, so the bullet shows and the caret lands
+        // just past the marker.
+        let m = map("- item\n- \n");
+        assert_eq!(m.num_rows(), 2, "the empty second item needs its own row");
+        assert_eq!(
+            m.rows[1].glyphs.iter().map(|g| g.ch).collect::<String>(),
+            "• ",
+            "the empty item draws just its bullet",
+        );
+        // Its end is the caret home (past the `- ` marker), and it's a real stop.
+        assert!(m.is_stop(m.rows[1].end_src), "the empty item's caret home is not a stop");
+        assert_eq!(m.pos_of_offset(m.rows[1].end_src), (1, 2), "caret sits after '• '");
+    }
+
+    #[test]
+    fn an_empty_ordered_item_gets_its_number_and_a_caret_home() {
+        let m = map("1. item\n2. \n");
+        assert_eq!(m.num_rows(), 2);
+        assert_eq!(m.rows[1].glyphs.iter().map(|g| g.ch).collect::<String>(), "2. ");
+        assert!(m.is_stop(m.rows[1].end_src));
+        assert_eq!(m.pos_of_offset(m.rows[1].end_src), (1, 3), "caret sits after '2. '");
     }
 
     #[test]
