@@ -158,8 +158,8 @@ impl Default for EditorStyle {
     }
 }
 use leaf_core::{
-    Alignment, BlockKind, DiskState, Doc, Glyph, ImageInfo, InlineKind, InlineMarks, TableInfo,
-    View,
+    Alignment, BlockKind, ColorScheme, DiskState, Doc, Glyph, ImageInfo, InlineKind, InlineMarks,
+    TableInfo, View,
 };
 
 use crate::style::{RunStyle, heading_scale, text_run};
@@ -2805,6 +2805,20 @@ const IMAGE_MAX_H: f32 = 480.0;
 /// Vertical breathing room above and below an image's box.
 const IMAGE_PAD_Y: f32 = 6.0;
 
+/// The window's light/dark appearance as a [`ColorScheme`], for picking a
+/// `<picture>`'s `prefers-color-scheme` source (see [`ImageInfo::resolve`]). GPUI
+/// already tracks the system appearance and repaints on a change, so a theme
+/// switch re-picks the source on the next frame for free. The desktop app and
+/// the mobile host (leaf-ios) share this one upstream gpui `WindowAppearance`,
+/// so no platform split is needed; the vibrant variants fold to their base tone.
+fn window_color_scheme(window: &Window) -> ColorScheme {
+    use gpui::WindowAppearance;
+    match window.appearance() {
+        WindowAppearance::Dark | WindowAppearance::VibrantDark => ColorScheme::Dark,
+        WindowAppearance::Light | WindowAppearance::VibrantLight => ColorScheme::Light,
+    }
+}
+
 /// Resolve an image destination to a readable local file path, or `None` when it
 /// isn't one this synchronous loader can handle: a remote URL (`http(s):`), a
 /// `data:` URI, a protocol-relative `//host/…`, or a relative path with no
@@ -3556,6 +3570,12 @@ impl Element for TextElement {
                 // destination to its raster for the shaping loop; `None` means the
                 // destination isn't a loadable local file (or failed to decode),
                 // and the row falls back to core's `🖼 alt` text placeholder.
+                // The picture source to load is theme-dependent: a `<picture>`
+                // with a `prefers-color-scheme` `<source>` gets the dark or light
+                // file per the window's appearance. Keyed (and reserved) by the
+                // canonical `destination` regardless, so the shaping lookup below
+                // is unchanged and a theme switch just re-picks on the next paint.
+                let scheme = window_color_scheme(window);
                 let loaded: HashMap<String, Option<Arc<RenderImage>>> = {
                     let mut loaded = HashMap::new();
                     for logical in &logical_lines {
@@ -3563,7 +3583,7 @@ impl Element for TextElement {
                         if loaded.contains_key(&info.destination) {
                             continue;
                         }
-                        let img = match resolve_image_path(&info.destination, doc_dir.as_deref()) {
+                        let img = match resolve_image_path(info.resolve(scheme), doc_dir.as_deref()) {
                             Some(path) => self.editor.update(cx, |e, _| {
                                 e.image_cache
                                     .entry(path.clone())

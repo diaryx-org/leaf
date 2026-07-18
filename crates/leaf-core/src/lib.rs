@@ -20,7 +20,10 @@ pub mod wysiwyg;
 
 pub use doc::{DiskState, Doc, InlineMarks, View};
 pub use style::{Role, Style};
-pub use wysiwyg::{CodeBlockInfo, Glyph, ImageInfo, TableCell, TableInfo, TableRow, VRow, VisualMap};
+pub use wysiwyg::{
+    CodeBlockInfo, ColorScheme, Glyph, ImageInfo, ImageSource, TableCell, TableInfo, TableRow,
+    VRow, VisualMap,
+};
 
 // Re-export the twig types a frontend needs to name when calling into a `Doc`
 // (the toolbar's block/inline kinds), so frontends don't each depend on twig.

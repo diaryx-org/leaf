@@ -108,6 +108,14 @@ pub struct ImageMark {
     /// the AST. A frontend resolves a relative path against the document's
     /// directory itself; core holds no I/O.
     pub destination: String,
+    /// A `<picture>`'s theme/media alternatives, in document order, when this
+    /// block image came from one; empty for a plain `![](…)` / bare `<img>`. Each
+    /// is a `<source>`'s media query + candidate URL(s); a frontend that knows its
+    /// theme picks the first whose media matches and falls back to [`destination`]
+    /// (the `<img>`). Core keeps them verbatim and picks nothing — it has no theme.
+    ///
+    /// [`destination`]: ImageMark::destination
+    pub sources: Vec<ImageSource>,
     /// The image's alt text (its rendered inline children, flattened), or empty
     /// when it has none. Also what the placeholder label shows.
     pub alt: String,
@@ -120,6 +128,23 @@ pub struct ImageMark {
     /// count comes from the frontend (via [`crate::Doc::set_image_rows`]) because
     /// core does no I/O and can't measure the image itself. See [`VRow::image`].
     pub rows: usize,
+}
+
+/// One `<source>` of a `<picture>`: a media query and the candidate image(s) it
+/// selects. Verbatim from the AST — core carries a picture's alternatives but
+/// resolves none of them, having no notion of the frontend's theme. A frontend
+/// that does (light/dark) matches `media` (today, `prefers-color-scheme`) and,
+/// on a hit, loads [`srcset`](ImageSource::srcset) instead of the `<img>` it
+/// falls back to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImageSource {
+    /// The `<source media="…">` query, verbatim (`"(prefers-color-scheme: dark)"`),
+    /// or empty for a `<source>` with no `media` (an unconditional override).
+    pub media: String,
+    /// The `<source srcset="…">` value, verbatim — one URL, or a comma-separated
+    /// candidate list with `1x`/`2x`/width descriptors. A frontend takes the
+    /// first URL token; the theme case only ever needs that.
+    pub srcset: String,
 }
 
 /// The rendered document plus the offset⇄position mapping the caret rides on.
@@ -454,6 +479,7 @@ fn image_spans(rows: &[VRow]) -> Vec<ImageInfo> {
             row.image.as_ref().map(|m| ImageInfo {
                 rows_span: i..i + m.rows.max(1),
                 destination: m.destination.clone(),
+                sources: m.sources.clone(),
                 alt: m.alt.clone(),
             })
         })
@@ -1205,7 +1231,7 @@ impl Builder<'_> {
                 // or `# ![](banner.png)` — is a block picture, not text. Render
                 // it as one; anything with real heading text falls through.
                 if let Some(img) = self.image_only(id) {
-                    self.block_image(img, pf);
+                    self.block_image(img, id, pf);
                     return;
                 }
                 let style = heading_style(node.level.unwrap_or(1));
@@ -1310,7 +1336,7 @@ impl Builder<'_> {
             // A block-level image node with no wrapping paragraph — a promoted
             // top-level HTML `<img>` lands as a direct `doc` child like this
             // (a Markdown `![](…)` comes wrapped in a `para`, handled below).
-            "image" => self.block_image(id, pf),
+            "image" => self.block_image(id, id, pf),
             _ => {
                 // A container of blocks, or an inline-bearing paragraph.
                 let kids = self.children(id);
@@ -1321,7 +1347,7 @@ impl Builder<'_> {
                 // real text or other images on the line isn't block-level and
                 // falls through to the inline path below, still as its alt text.
                 if let Some(img) = self.image_only(id) {
-                    self.block_image(img, pf);
+                    self.block_image(img, id, pf);
                     return;
                 }
                 let inline = !kids.is_empty() && kids.iter().all(|&c| is_inline(&self.nodes[c].kind));
@@ -1548,11 +1574,12 @@ impl Builder<'_> {
     /// [`ImageInfo`] a capable frontend replaces with the real picture; a plain
     /// surface paints the label as-is. `pf` is the block prefix (a list indent, a
     /// quote gutter) the row opens with, exactly as every other block honours it.
-    fn block_image(&mut self, img: usize, pf: &[Glyph]) {
+    fn block_image(&mut self, img: usize, wrapper: usize, pf: &[Glyph]) {
         let node = &self.nodes[img];
         let start = node.span.start;
         let end = node.span.end;
         let destination = node.destination.clone().unwrap_or_default();
+        let sources = self.picture_sources(wrapper);
         let alt = self.image_alt(img);
         let label = if alt.is_empty() {
             format!("🖼 {}", image_label(&destination))
@@ -1574,7 +1601,7 @@ impl Builder<'_> {
         // last-glyph rule would strand the end stop inside the markup.
         self.push_row_at(glyphs, end);
         if let Some(row) = self.rows.last_mut() {
-            row.image = Some(ImageMark { destination, alt, rows });
+            row.image = Some(ImageMark { destination, sources, alt, rows });
         }
         // Reserve the picture's remaining height as blank `decoration` rows: drawn
         // (so the frontend has the vertical room to paint the raster over them),
@@ -1595,6 +1622,45 @@ impl Builder<'_> {
             });
         }
         self.last_off = end;
+    }
+
+    /// The `<picture>` alternatives inside block-image `wrapper`, in document
+    /// order — every `<source>` element in its subtree. Empty when there's no
+    /// `<picture>`. Each is a `<source>`'s `media` + `srcset`; core keeps them
+    /// verbatim and picks none (see [`ImageSource`]). A `<source>` with no
+    /// `srcset` is dropped (nothing to load); its `media` may be empty (an
+    /// unconditional override), which a frontend treats as always-matching.
+    ///
+    /// It scans the wrapper's whole subtree (via the forward `first_child` /
+    /// `next_sibling` links, the reliable ones) rather than the `<img>`'s parent,
+    /// for two reasons. A `<picture>` reaches core in two shapes: twig promotes a
+    /// block `<picture>` to an `element(picture)` wrapping `[source, img]`, but
+    /// leaves an inline one's tags as raw siblings — `[raw "<picture>", source,
+    /// img, raw "</picture>"]` — so the `<source>`s sit at different depths in
+    /// the two. And the editor's flat arena leaves a promoted inline node's
+    /// `parent` back-pointer dangling on a phantom root, so only the wrapper
+    /// (known at the call site) is a trustworthy anchor. A block image is the
+    /// sole visible content of its wrapper, so every `<source>` under it is its
+    /// picture's.
+    fn picture_sources(&self, wrapper: usize) -> Vec<ImageSource> {
+        let mut out = Vec::new();
+        self.collect_sources(wrapper, &mut out);
+        out
+    }
+
+    fn collect_sources(&self, id: usize, out: &mut Vec<ImageSource>) {
+        for c in self.children(id) {
+            let node = &self.nodes[c];
+            if node.name.as_deref() == Some("source") {
+                let attr = |key: &str| {
+                    node.attrs.iter().find(|(k, _)| k == key).and_then(|(_, v)| v.clone())
+                };
+                if let Some(srcset) = attr("srcset") {
+                    out.push(ImageSource { media: attr("media").unwrap_or_default(), srcset });
+                }
+            }
+            self.collect_sources(c, out);
+        }
     }
 
     /// The single block-level image `id`'s subtree resolves to, or `None`.
@@ -2171,11 +2237,84 @@ pub struct ImageInfo {
     pub rows_span: Range<usize>,
     /// The image's link destination — a path, URL, or `data:` URI, verbatim from
     /// the AST. A frontend resolves a relative path against the document's own
-    /// directory; core does no I/O.
+    /// directory; core does no I/O. For a `<picture>` this is the `<img>`
+    /// fallback — the source used when no [`sources`](ImageInfo::sources) media
+    /// query matches (or the frontend has no theme).
     pub destination: String,
+    /// A `<picture>`'s `<source>` alternatives in document order, or empty for a
+    /// plain image. See [`ImageSource`]; a theme-aware frontend picks one and
+    /// otherwise loads [`destination`](ImageInfo::destination).
+    pub sources: Vec<ImageSource>,
     /// The image's alt text, flattened from its inline children (empty when it
     /// has none).
     pub alt: String,
+}
+
+impl ImageInfo {
+    /// The image URL to load under `scheme`: the first [`sources`] `<source>`
+    /// whose media query matches, else the [`destination`] `<img>` fallback. The
+    /// pick is a `<source>`'s first `srcset` URL or the destination — a frontend
+    /// resolves whichever it gets against the document directory exactly as it
+    /// resolves `destination`, and reserves/keys the picture under `destination`
+    /// regardless, so a theme switch just re-picks without disturbing the layout.
+    ///
+    /// Only `prefers-color-scheme` is understood (that's what a light/dark banner
+    /// uses); a `<source>` with any other media query is skipped, and one with no
+    /// media at all always matches (an unconditional override). With no matching
+    /// source — including every frontend that can't/doesn't theme and passes
+    /// [`ColorScheme::Light`] to a dark-only picture — it's the plain `<img>`.
+    ///
+    /// [`sources`]: ImageInfo::sources
+    /// [`destination`]: ImageInfo::destination
+    pub fn resolve(&self, scheme: ColorScheme) -> &str {
+        self.sources
+            .iter()
+            .find(|s| media_matches(&s.media, scheme))
+            .and_then(|s| first_srcset_url(&s.srcset))
+            .unwrap_or(&self.destination)
+    }
+}
+
+/// A frontend's active color scheme — what a `<picture>`'s `prefers-color-scheme`
+/// `<source>`s are matched against by [`ImageInfo::resolve`]. A frontend with no
+/// notion of theme passes [`Light`](ColorScheme::Light), the web's own default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColorScheme {
+    Light,
+    Dark,
+}
+
+/// Whether a `<source media="…">` query applies under `scheme`. Empty media is
+/// an unconditional `<source>` (always matches); otherwise only a
+/// `prefers-color-scheme: dark|light` feature is understood — anything else
+/// (a width query, `print`, …) doesn't match, so resolution falls through to the
+/// next source or the `<img>`. Deliberately lax about the surrounding syntax
+/// (`(prefers-color-scheme: dark)`, `screen and (prefers-color-scheme:dark)`):
+/// it keys off the feature and its value, which is all the theme case needs.
+fn media_matches(media: &str, scheme: ColorScheme) -> bool {
+    let media = media.trim();
+    if media.is_empty() {
+        return true;
+    }
+    let lower = media.to_ascii_lowercase();
+    let Some(after) = lower.split_once("prefers-color-scheme").map(|(_, rest)| rest) else {
+        return false;
+    };
+    // Skip the `:` and any spaces to reach the value word.
+    let value = after.trim_start_matches([':', ' ', '\t']);
+    let wanted = match scheme {
+        ColorScheme::Light => "light",
+        ColorScheme::Dark => "dark",
+    };
+    value.starts_with(wanted)
+}
+
+/// The first URL in a `srcset`: its first comma-separated candidate, before any
+/// `1x`/`2x`/width descriptor. The theme case only ever puts one URL per
+/// `<source>`, so the first candidate is the picture.
+fn first_srcset_url(srcset: &str) -> Option<&str> {
+    let first = srcset.split(',').next()?.trim();
+    first.split_whitespace().next().filter(|u| !u.is_empty())
 }
 
 /// The narrowest a column may be squeezed. Below a few characters a column
@@ -2979,6 +3118,92 @@ mod tests {
         let m = map("see ![a cat](cat.png) here\n");
         assert!(m.images.is_empty(), "not a block image");
         assert!(rendered(&m).contains("a cat"), "alt text still renders inline");
+    }
+
+    /// The block images `Doc` publishes for `src`, driven through the real
+    /// production build (`build_visual` → `build_cached`) with `html_elements`
+    /// on — the path a `<picture>` actually travels. Not the raw `build` the
+    /// other tests use: the editor's flat whole-arena snapshot tangles the links
+    /// of inline-promoted HTML (phantom roots, dangling `parent`s), which only
+    /// the per-block subtree walk `build_cached` does untangles.
+    fn doc_images(src: &str) -> Vec<ImageInfo> {
+        let mut doc = crate::Doc::from_source(src.to_string(), Format::Markdown).unwrap();
+        doc.build_visual(80);
+        doc.vmap.images.clone()
+    }
+
+    #[test]
+    fn a_picture_block_carries_its_source_alternatives() {
+        // A `<picture>` with a dark-mode `<source>`: one block image, whose
+        // fallback destination is the `<img>` and whose `sources` carry the
+        // `<source>`'s media + srcset for a theme-aware frontend to pick.
+        let src = "<picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"dark.svg\"><img src=\"light.svg\" alt=\"banner\"></picture>\n";
+        let images = doc_images(src);
+        assert_eq!(images.len(), 1, "the picture is one block image");
+        let img = &images[0];
+        assert_eq!(img.destination, "light.svg", "fallback is the <img>");
+        assert_eq!(img.alt, "banner");
+        assert_eq!(
+            img.sources,
+            vec![ImageSource {
+                media: "(prefers-color-scheme: dark)".into(),
+                srcset: "dark.svg".into(),
+            }],
+        );
+    }
+
+    #[test]
+    fn a_picture_inside_a_heading_is_still_a_block_image_with_sources() {
+        // fig.md's shape: the banner is an `<h1>` wrapping the `<picture>`.
+        let src = "<h1><picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"d.svg\"><img src=\"l.svg\" alt=\"fig\"></picture></h1>\n";
+        let images = doc_images(src);
+        assert_eq!(images.len(), 1, "heading-wrapped picture is a block image");
+        assert_eq!(images[0].destination, "l.svg");
+        assert_eq!(images[0].sources.len(), 1);
+        assert_eq!(images[0].sources[0].srcset, "d.svg");
+    }
+
+    #[test]
+    fn a_plain_image_has_no_picture_sources() {
+        // A bare Markdown image carries an empty `sources` — nothing to pick from.
+        let images = doc_images("![alt](p.png)\n");
+        assert_eq!(images.len(), 1);
+        assert!(images[0].sources.is_empty(), "no <picture>, no alternatives");
+    }
+
+    #[test]
+    fn resolve_picks_the_source_matching_the_scheme() {
+        let src = "<picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"dark.svg\"><img src=\"light.svg\" alt=\"b\"></picture>\n";
+        let images = doc_images(src);
+        let img = &images[0];
+        // Dark theme takes the dark source; light falls through to the <img>.
+        assert_eq!(img.resolve(ColorScheme::Dark), "dark.svg");
+        assert_eq!(img.resolve(ColorScheme::Light), "light.svg");
+    }
+
+    #[test]
+    fn resolve_falls_back_for_a_plain_image_and_unknown_media() {
+        // A plain image ignores the scheme.
+        let plain = doc_images("![a](p.png)\n");
+        assert_eq!(plain[0].resolve(ColorScheme::Dark), "p.png");
+
+        // A <source> with an unrecognized media query is skipped; a light source
+        // is taken under a light theme.
+        let m = doc_images("<picture><source media=\"print\" srcset=\"p.svg\"><source media=\"(prefers-color-scheme: light)\" srcset=\"l.svg\"><img src=\"f.svg\" alt=\"x\"></picture>\n");
+        assert_eq!(m[0].resolve(ColorScheme::Light), "l.svg");
+        assert_eq!(m[0].resolve(ColorScheme::Dark), "f.svg", "no dark source → <img>");
+    }
+
+    #[test]
+    fn resolve_reads_the_first_srcset_url_ignoring_descriptors() {
+        // A comma/descriptor srcset resolves to its first URL.
+        assert_eq!(first_srcset_url("a.png 1x, b.png 2x"), Some("a.png"));
+        assert_eq!(first_srcset_url("  solo.svg  "), Some("solo.svg"));
+        assert_eq!(first_srcset_url(""), None);
+        // An empty (unconditional) media always matches.
+        assert!(media_matches("", ColorScheme::Light));
+        assert!(media_matches("(prefers-color-scheme:dark)", ColorScheme::Dark));
+        assert!(!media_matches("(prefers-color-scheme: dark)", ColorScheme::Light));
     }
 
     #[test]

@@ -11,3 +11,4 @@
 # UniFFI-generated Swift are regenerated from crates/leaf-ffi, never committed.
 /packages/leaf-swift/generated/
 packages/leaf-swift/.build/index-build/
+packages/leaf-swift/.swiftpm/xcode/xcuserdata/adamharris.xcuserdatad/xcschemes/

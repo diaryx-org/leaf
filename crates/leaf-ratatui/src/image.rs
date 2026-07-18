@@ -27,7 +27,7 @@ use ratatui_image::{
     protocol::StatefulProtocol,
 };
 
-use leaf_core::ImageInfo;
+use leaf_core::{ColorScheme, ImageInfo};
 
 /// The most rows a single image may reserve, so one tall picture can't push a
 /// whole screen of text out of view. Mirrors the GUI's `IMAGE_MAX_H` pixel cap,
@@ -59,14 +59,25 @@ pub struct Images {
     /// The `None` is cached too, so a broken reference is tried once, not every
     /// frame.
     cache: HashMap<PathBuf, Option<Entry>>,
+    /// The terminal's color scheme, used to pick a `<picture>`'s
+    /// `prefers-color-scheme` `<source>` (see [`ImageInfo::resolve`]). Detected
+    /// once at startup and refreshable via [`Images::set_color_scheme`]; the
+    /// per-path cache keys off the *resolved* file, so a scheme change naturally
+    /// loads (and caches) the newly-picked image without disturbing the old one.
+    scheme: ColorScheme,
 }
 
 impl Default for Images {
     /// A half-blocks picker with no terminal query — the safe default before
     /// [`Images::query`] has probed the real terminal (and the permanent state on
-    /// a terminal that has no graphics protocol at all).
+    /// a terminal that has no graphics protocol at all). The color scheme is
+    /// sniffed from the environment (see [`detect_color_scheme`]).
     fn default() -> Self {
-        Images { picker: Picker::halfblocks(), cache: HashMap::new() }
+        Images {
+            picker: Picker::halfblocks(),
+            cache: HashMap::new(),
+            scheme: detect_color_scheme(),
+        }
     }
 }
 
@@ -80,6 +91,14 @@ impl Images {
         if let Ok(picker) = Picker::from_query_stdio() {
             self.picker = picker;
         }
+    }
+
+    /// Override the detected color scheme — what a host wires to a config option
+    /// or a `prefers-color-scheme`-style toggle. Re-picking is automatic: the
+    /// cache keys off the resolved file, so the next frame measures and paints
+    /// whichever `<source>` the new scheme selects.
+    pub fn set_color_scheme(&mut self, scheme: ColorScheme) {
+        self.scheme = scheme;
     }
 
     /// Decode (once) and measure every block image, returning the row count each
@@ -104,7 +123,7 @@ impl Images {
         let inner_rows = (avail_rows.saturating_sub(2) as usize).clamp(1, MAX_IMAGE_ROWS) as u16;
         let mut heights = HashMap::new();
         for info in images {
-            let Some(path) = resolve_image_path(&info.destination, doc_dir) else {
+            let Some(path) = resolve_image_path(info.resolve(self.scheme), doc_dir) else {
                 continue;
             };
             let Some(entry) = self.entry(&path) else { continue };
@@ -119,7 +138,7 @@ impl Images {
     /// what `ui` sizes the box to and reserves the rows for. `None` for an image
     /// that isn't a loadable local file (so `ui` frames it as a bare placeholder).
     pub fn picture_cells(&self, info: &ImageInfo, doc_dir: Option<&Path>) -> Option<(u16, u16)> {
-        let path = resolve_image_path(&info.destination, doc_dir)?;
+        let path = resolve_image_path(info.resolve(self.scheme), doc_dir)?;
         self.cache.get(&path).and_then(|e| e.as_ref()).map(|e| e.box_cells)
     }
 
@@ -137,7 +156,7 @@ impl Images {
         doc_dir: Option<&Path>,
         rect: Rect,
     ) -> bool {
-        let Some(path) = resolve_image_path(&info.destination, doc_dir) else {
+        let Some(path) = resolve_image_path(info.resolve(self.scheme), doc_dir) else {
             return false;
         };
         let Some(entry) = self.cache.get_mut(&path).and_then(|e| e.as_mut()) else {
@@ -191,6 +210,28 @@ fn box_cells(intrinsic: (u32, u32), avail_cols: u16, max_rows: u16, font: FontSi
     let cols = w_px.div_ceil(cw).clamp(1, avail_cols.max(1) as u64) as u16;
     let rows = h_px.div_ceil(ch).clamp(1, max_rows.max(1) as u64) as u16;
     (cols, rows)
+}
+
+/// The terminal's color scheme, best-effort, for picking a `<picture>`'s
+/// `prefers-color-scheme` source. Terminals have no universal theme API, so this
+/// reads the widely-set `COLORFGBG` variable (`"fg;bg"`, e.g. `"15;0"` = light
+/// text on a dark background): the trailing background index tells light from
+/// dark — ANSI 0–6 and 8 are the dark backgrounds, 7 and 9–15 the light ones.
+/// Absent or unparseable, it defaults to [`ColorScheme::Dark`], the common
+/// terminal case; a host that knows better calls [`Images::set_color_scheme`].
+fn detect_color_scheme() -> ColorScheme {
+    std::env::var("COLORFGBG")
+        .ok()
+        .and_then(|v| scheme_from_colorfgbg(&v))
+        .unwrap_or(ColorScheme::Dark)
+}
+
+/// Parse a `COLORFGBG` value (`"fg;bg"` or `"fg;;bg"`) into a scheme: the
+/// trailing background ANSI index is dark for 0–6 and 8, light otherwise.
+/// `None` when there's no parseable trailing index.
+fn scheme_from_colorfgbg(value: &str) -> Option<ColorScheme> {
+    let bg: u8 = value.rsplit(';').next()?.trim().parse().ok()?;
+    Some(if bg <= 6 || bg == 8 { ColorScheme::Dark } else { ColorScheme::Light })
 }
 
 /// Resolve an image destination to a readable local path, or `None` when it's
@@ -329,6 +370,17 @@ mod tests {
     #[test]
     fn load_svg_rejects_garbage() {
         assert!(load_svg(b"not an svg at all").is_none());
+    }
+
+    #[test]
+    fn colorfgbg_reads_the_background_index() {
+        // "light text on dark bg" (bg 0) → dark; "dark on light" (bg 15) → light.
+        assert_eq!(scheme_from_colorfgbg("15;0"), Some(ColorScheme::Dark));
+        assert_eq!(scheme_from_colorfgbg("0;15"), Some(ColorScheme::Light));
+        assert_eq!(scheme_from_colorfgbg("15;default;0"), Some(ColorScheme::Dark));
+        assert_eq!(scheme_from_colorfgbg("7"), Some(ColorScheme::Light));
+        assert_eq!(scheme_from_colorfgbg(""), None);
+        assert_eq!(scheme_from_colorfgbg("nonsense"), None);
     }
 
     #[test]
