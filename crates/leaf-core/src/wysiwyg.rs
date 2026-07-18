@@ -2732,12 +2732,12 @@ mod tests {
         // Leading YAML frontmatter renders nothing — no phantom blank rows for
         // its lines, no leading gap — and `content_start` points at the first
         // real block so the caret floor can keep out of the hidden metadata.
-        let fm = "---\nconfig: colophon.yaml\ncontents:\n- '[Sample](sample.md)'\n---\n";
+        let fm = "---\nconfig: prov.yaml\ncontents:\n- '[Sample](sample.md)'\n---\n";
         let src = format!("{fm}# leaf\n\nA line.\n");
         let m = map(&src);
         let text = rendered(&m);
         assert!(!text.contains("config"), "frontmatter body leaked: {text:?}");
-        assert!(!text.contains("colophon"), "frontmatter body leaked: {text:?}");
+        assert!(!text.contains("prov"), "frontmatter body leaked: {text:?}");
         assert_eq!(m.rows[0].glyphs.iter().map(|g| g.ch).collect::<String>(), "leaf");
         assert_eq!(m.content_start, fm.len(), "floor should be the first real block");
     }

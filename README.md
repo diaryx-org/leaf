@@ -1,5 +1,4 @@
 ---
-config: colophon.yaml
 contents:
 - '[Sample](sample.md)'
 ---
