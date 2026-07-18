@@ -13,7 +13,7 @@ options:
 # when the Rust *API* changes and the binding must be regenerated).
 packages:
   LeafFFI:
-    path: ../..
+    path: ../../packages/leaf-swift
 
 targets:
   LeafEditorApp:
@@ -43,17 +43,17 @@ targets:
         CODE_SIGN_IDENTITY: ""
         # Force-load the Rust staticlib the pre-build script produces. The path is
         # SDK-conditional (sim vs device); $(LEAF_STATIC_LIB) below picks the match.
-        # PROJECT_DIR is crates/leaf-ffi/examples/ios → ../../../.. is the repo root
-        # whose `target/` cargo writes into.
+        # PROJECT_DIR is apps/leaf-ffi-ios → ../.. is the repo root whose `target/`
+        # cargo writes into.
         OTHER_LDFLAGS:
           - "-force_load"
           - "$(LEAF_STATIC_LIB)"
-        "LEAF_STATIC_LIB[sdk=iphonesimulator*]": "$(PROJECT_DIR)/../../../../target/aarch64-apple-ios-sim/debug/libleaf_ffi.a"
-        "LEAF_STATIC_LIB[sdk=iphoneos*]": "$(PROJECT_DIR)/../../../../target/aarch64-apple-ios/debug/libleaf_ffi.a"
+        "LEAF_STATIC_LIB[sdk=iphonesimulator*]": "$(PROJECT_DIR)/../../target/aarch64-apple-ios-sim/debug/libleaf_ffi.a"
+        "LEAF_STATIC_LIB[sdk=iphoneos*]": "$(PROJECT_DIR)/../../target/aarch64-apple-ios/debug/libleaf_ffi.a"
       configs:
         Release:
-          "LEAF_STATIC_LIB[sdk=iphonesimulator*]": "$(PROJECT_DIR)/../../../../target/aarch64-apple-ios-sim/release/libleaf_ffi.a"
-          "LEAF_STATIC_LIB[sdk=iphoneos*]": "$(PROJECT_DIR)/../../../../target/aarch64-apple-ios/release/libleaf_ffi.a"
+          "LEAF_STATIC_LIB[sdk=iphonesimulator*]": "$(PROJECT_DIR)/../../target/aarch64-apple-ios-sim/release/libleaf_ffi.a"
+          "LEAF_STATIC_LIB[sdk=iphoneos*]": "$(PROJECT_DIR)/../../target/aarch64-apple-ios/release/libleaf_ffi.a"
     preBuildScripts:
       - name: "Build leaf-ffi staticlib"
         basedOnDependencyAnalysis: false
@@ -67,7 +67,7 @@ targets:
           set -euo pipefail
           # Xcode's build env has a minimal PATH; add the user's toolchains.
           export PATH="$HOME/.nix-profile/bin:$HOME/.cargo/bin:/opt/homebrew/bin:$PATH"
-          cd "${PROJECT_DIR}/../../../.."        # repo root (workspace Cargo.toml)
+          cd "${PROJECT_DIR}/../.."        # repo root (workspace Cargo.toml)
 
           if [ "${PLATFORM_NAME}" = "iphonesimulator" ]; then
             RUST_TARGET="aarch64-apple-ios-sim"

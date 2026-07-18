@@ -3,7 +3,7 @@
 # Type-check the LeafUI renderer against the real generated LeafFFI binding,
 # without an Xcode project — the Swift peer of `cargo check`. Builds the host
 # dylib, generates the UniFFI Swift, emits a LeafFFI .swiftmodule, then
-# `-typecheck`s crates/leaf-ffi/Sources/LeafUI against it. macOS only.
+# `-typecheck`s packages/leaf-swift/Sources/LeafUI against it. macOS only.
 #
 # Usage: scripts/check-swift.sh
 set -euo pipefail
@@ -33,7 +33,7 @@ swiftc -emit-module -module-name LeafFFI \
 
 echo "▸ Type-checking LeafUI (macOS / AppKit)…"
 swiftc -typecheck -module-name LeafUI \
-  "$ROOT"/crates/leaf-ffi/Sources/LeafUI/*.swift \
+  "$ROOT"/packages/leaf-swift/Sources/LeafUI/*.swift \
   -sdk "$SDK" \
   -I "$WORK" \
   -I "$WORK/headers" -Xcc -fmodule-map-file="$WORK/headers/module.modulemap"
@@ -52,7 +52,7 @@ swiftc -emit-module -module-name LeafFFI \
   -sdk "$SDK_IOS" -target "$TARGET_IOS" \
   -I "$WORK/headers" -Xcc -fmodule-map-file="$WORK/headers/module.modulemap"
 swiftc -typecheck -module-name LeafUI \
-  "$ROOT"/crates/leaf-ffi/Sources/LeafUI/*.swift \
+  "$ROOT"/packages/leaf-swift/Sources/LeafUI/*.swift \
   -sdk "$SDK_IOS" -target "$TARGET_IOS" \
   -I "$WORK/ios" \
   -I "$WORK/headers" -Xcc -fmodule-map-file="$WORK/headers/module.modulemap"

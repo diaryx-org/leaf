@@ -1,0 +1,36 @@
+{
+  "name": "leaf-web",
+  "version": "0.1.0",
+  "description": "Framework-agnostic rich-text editor for the web: a proportional WYSIWYG surface over leaf-core's caret model, compiled to WebAssembly.",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./editor": {
+      "types": "./src/editor.d.ts",
+      "default": "./src/editor.js"
+    }
+  },
+  "types": "./src/index.d.ts",
+  "files": [
+    "src",
+    "pkg"
+  ],
+  "sideEffects": [
+    "./pkg/*.js"
+  ],
+  "scripts": {
+    "build:wasm": "wasm-pack build ../../crates/leaf-wasm --target web --out-dir ../../packages/leaf-web/pkg",
+    "build:wasm:dev": "wasm-pack build ../../crates/leaf-wasm --dev --target web --out-dir ../../packages/leaf-web/pkg"
+  },
+  "keywords": [
+    "editor",
+    "rich-text",
+    "wysiwyg",
+    "wasm",
+    "markdown"
+  ]
+}

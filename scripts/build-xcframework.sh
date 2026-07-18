@@ -3,12 +3,12 @@
 # Build LeafFFI.xcframework from crates/leaf-ffi and generate the Swift bindings
 # alongside it — the one artifact a macOS/iOS app links to drive leaf-core.
 #
-# Output (under crates/leaf-ffi/generated/, git-ignored):
+# Output (under packages/leaf-swift/generated/, git-ignored):
 #   LeafFFI.xcframework/    the static libs for every Apple slice + C headers
 #   Sources/LeafFFI/        the generated Swift (leaf_ffi.swift)
 #
-# The bundled Swift package manifest (crates/leaf-ffi/Package.swift) points at
-# both, so an app just adds this directory as a local Swift package.
+# The bundled Swift package manifest (packages/leaf-swift/Package.swift) points at
+# both, so an app just adds that directory as a local Swift package.
 #
 # Prereqs:
 #   rustup target add \
@@ -27,8 +27,9 @@ if [[ "${1:-}" == "--debug" ]]; then
 fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CRATE="$ROOT/crates/leaf-ffi"
-OUT="$CRATE/generated"
+# The Rust binding crate stays in crates/leaf-ffi; its generated Swift + the
+# xcframework are emitted into the Swift package at packages/leaf-swift.
+OUT="$ROOT/packages/leaf-swift/generated"
 LIB_BASENAME="libleaf_ffi.a"       # staticlib output name for the crate
 TARGET_DIR="$ROOT/target"
 
@@ -85,4 +86,4 @@ rm -rf "$OUT/lipo" "$OUT/headers"
 echo "✓ Done:"
 echo "    $OUT/LeafFFI.xcframework"
 echo "    $OUT/Sources/LeafFFI/leaf_ffi.swift"
-echo "  Add crates/leaf-ffi (Package.swift) as a local Swift package to consume it."
+echo "  Add packages/leaf-swift (Package.swift) as a local Swift package to consume it."

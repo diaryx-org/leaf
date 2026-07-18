@@ -13,7 +13,7 @@
 #ifdef USE_GPUI_RUST
 #import "gpui_ios.h"
 // Exported by the leaf-ios Rust static lib: run a formatting command on the
-// editor. Ids match crates/leaf-ios/src/lib.rs (leaf_ios_cmd).
+// editor. Ids match apps/leaf-ios/src/lib.rs (leaf_ios_cmd).
 extern void leaf_ios_cmd(uint32_t cmd_id);
 #endif
 

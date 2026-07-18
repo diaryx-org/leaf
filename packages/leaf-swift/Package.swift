@@ -3,7 +3,7 @@
 // The Swift package an AppKit/SwiftUI app links to drive leaf-core. It builds the
 // UniFFI binding + the LeafUI renderer **from source**; the Rust staticlib itself
 // is linked by the consuming app via a `-force_load` linker flag and (re)built by
-// a pre-build step — see `examples/ios/project.yml`, which does exactly that so an
+// a pre-build step — see `apps/leaf-ffi-ios/project.yml`, which does exactly that so an
 // Xcode build always picks up fresh Rust changes (a prebuilt xcframework would be
 // cached instead). `bootstrap.sh` generates the two `generated/` inputs below.
 //
@@ -12,7 +12,7 @@
 //   • generated/Sources/LeafFFI/    the UniFFI-generated Swift over that C ABI
 //
 // A consumer adds this directory as a local package and links the staticlib:
-//   .package(path: "…/crates/leaf-ffi")            // import LeafUI
+//   .package(path: "…/packages/leaf-swift")        // import LeafUI
 //   OTHER_LDFLAGS = -force_load <path>/libleaf_ffi.a
 // (`scripts/build-xcframework.sh` still exists to produce a *distributable*
 // prebuilt xcframework, but the package no longer depends on one.)

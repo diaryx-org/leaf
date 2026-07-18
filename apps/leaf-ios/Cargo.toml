@@ -15,9 +15,9 @@ crate-type = ["staticlib", "cdylib", "lib"]
 # The forked gpui-mobile platform layer, upgraded to gpui bd72919.
 gpui-mobile = { path = "../../../gpui-mobile" }
 # The embeddable editor widget WITHOUT its desktop backend (no gpui_platform).
-leaf-gpui = { path = "../leaf-gpui", default-features = false }
+leaf-gpui = { path = "../../crates/leaf-gpui", default-features = false }
 # The document model — to seed a sample buffer so the editing surface has content.
-leaf-core = { path = "../leaf-core" }
+leaf-core = { path = "../../crates/leaf-core" }
 # Same gpui git rev as leaf-gpui and gpui-mobile so the whole graph resolves a
 # single gpui. default-features = false matches gpui-mobile.
 gpui = { git = "https://github.com/zed-industries/zed", rev = "bd72919555149fc072d33c4fa6805c742a11ee8b", package = "gpui", default-features = false }

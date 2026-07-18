@@ -6,26 +6,24 @@
 //! offset-addressed twig edit that reparses live. You type into a document that
 //! stays a valid AST the whole time.
 
-mod image;
-mod style;
 mod ui;
 
 use std::io::stdout;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
 use ratatui::{
     crossterm::{
         event::{
             self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent,
-            KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+            KeyEventKind, MouseEvent, MouseEventKind,
         },
         execute,
     },
     layout::Rect,
 };
-use leaf_core::{BlockKind, DiskState, Doc, InlineKind};
+use leaf_core::{DiskState, Doc};
+use leaf_ratatui::{MouseOutcome, Outcome};
 
 fn main() -> Result<()> {
     let arg = std::env::args_os()
@@ -41,10 +39,12 @@ fn main() -> Result<()> {
     result
 }
 
-/// UI-only state that doesn't belong on `Doc`: the quit-confirmation prompt,
-/// mouse click-counting for double/triple-click, the right-click context menu,
-/// and the source view's horizontal scroll. Doc stays the frontend-neutral
-/// model; this is the crossterm-facing bookkeeping around it.
+/// Host-only state that belongs to neither `Doc` nor the editor widget: the
+/// modal dialogs (quit/new confirmation, on-disk conflict), the right-click
+/// context menu, and the single-line text prompt. The editing surface's own
+/// view state — horizontal scroll, the image cache, click-counting — lives on
+/// the widget's [`leaf_ratatui::EditorState`]; this is just the chrome the host
+/// wraps around it.
 #[derive(Default)]
 struct App {
     /// Set by Ctrl+Q or ⌥n meeting a dirty document: the footer shows a
@@ -66,9 +66,6 @@ struct App {
     /// Overwrite/Reload/Cancel instead of silently clobbering someone else's
     /// edit. See `attempt_save` for the one place that sets it.
     conflict: Option<ConflictPrompt>,
-    /// Timing and screen cell of the last left mouse-down, for detecting
-    /// double/triple clicks.
-    last_click: Option<ClickState>,
     /// Present while the right-click menu is open; consumes keyboard and
     /// mouse input until an item is chosen or it's dismissed.
     context_menu: Option<ContextMenu>,
@@ -76,36 +73,11 @@ struct App {
     /// Save As later) is open; consumes the keyboard the same way
     /// `context_menu` does, until Enter confirms or Esc cancels it.
     text_prompt: Option<TextPrompt>,
-    /// How far the source view is scrolled sideways. There's no horizontal
-    /// scroll wheel to drive this independently (unlike `doc.scroll`), so it
-    /// only ever chases the caret — see `ui::follow_caret_x`.
-    scroll_x: usize,
-    /// How far the code block holding the caret is scrolled sideways inside its
-    /// box (WYSIWYG view). Code lines don't wrap — they scroll — and only the
-    /// block the caret is in ever scrolls, so this one value plus the span below
-    /// is all the mouse needs to undo the shift on a click. Chases the caret the
-    /// same way `scroll_x` does; see `ui::render_body`.
-    code_scroll_x: usize,
-    /// The row span of the code block the last frame scrolled (the caret's), so
-    /// `handle_mouse` knows which rows carry `code_scroll_x` and which are a
-    /// different, unscrolled block.
-    code_caret_span: Option<std::ops::Range<usize>>,
-    /// Block-image rendering: the graphics-protocol picker and the per-path cache
-    /// of decoded rasters. Defaults to half-blocks; `run` calls `query` once the
-    /// terminal is in raw mode to upgrade to kitty/iTerm2/sixel where available.
-    images: image::Images,
+    /// The editor widget's own view state: horizontal/code scroll, the image
+    /// raster cache, and mouse click-counting. Threaded into
+    /// `leaf_ratatui::render`/`handle_key`/`handle_mouse` each frame.
+    editor: leaf_ratatui::EditorState,
 }
-
-struct ClickState {
-    at: Instant,
-    row: u16,
-    col: u16,
-    /// 1 = single, 2 = double, 3 = triple; cycles back to 1 after that.
-    count: u8,
-}
-
-/// Clicks within this long, on the same cell, extend the click count.
-const MULTI_CLICK_WINDOW: Duration = Duration::from_millis(400);
 
 /// The right-click menu's rows, in display order: a label paired with the
 /// action a click or Enter on that row runs. `ui::render_context_menu` reads
@@ -188,7 +160,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, doc: &mut Doc) -> Result<()> {
     // Probe the terminal for its graphics protocol now that `ratatui::init` has
     // put it in raw mode — the query reads escape-sequence replies. A terminal
     // that can't answer keeps the half-blocks fallback.
-    app.images.query();
+    app.editor.query_graphics();
     loop {
         let breadcrumb = doc.breadcrumb();
         terminal.draw(|f| ui::render(f, doc, &breadcrumb, &mut app))?;
@@ -322,139 +294,67 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
         return Flow::Continue;
     }
 
-    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let alt = key.modifiers.contains(KeyModifiers::ALT);
-
-    if ctrl {
-        match key.code {
-            KeyCode::Char('q') => {
-                if doc.dirty {
-                    app.dirty_prompt = Some(DirtyPrompt { action: DirtyAction::Quit, selected: 0 });
-                } else {
-                    return Flow::Quit;
-                }
+    // No overlay is capturing input, so the editing surface gets the key. It
+    // performs any document edit itself and returns what the *host* must do —
+    // quit, save, clipboard, or open one of its own dialogs.
+    match leaf_ratatui::handle_key(doc, key, &mut app.editor) {
+        Outcome::Continue => Flow::Continue,
+        // Ctrl+Q: quit, guarding an unsaved document behind the Save/Discard/
+        // Cancel prompt the way it always did.
+        Outcome::Quit => {
+            if doc.dirty {
+                app.dirty_prompt = Some(DirtyPrompt { action: DirtyAction::Quit, selected: 0 });
+                Flow::Continue
+            } else {
+                Flow::Quit
             }
-            KeyCode::Char('s') => {
-                attempt_save(doc, app, None);
-            }
-            KeyCode::Char('a') => doc.select_all(),
-            KeyCode::Char('c') => clipboard_copy(doc),
-            KeyCode::Char('x') => clipboard_cut(doc),
-            KeyCode::Char('v') => clipboard_paste(doc),
-            // ^Z undo, ^⇧Z or ^Y redo.
-            KeyCode::Char('z') | KeyCode::Char('Z') if shift => doc.redo(),
-            KeyCode::Char('z') | KeyCode::Char('Z') => doc.undo(),
-            KeyCode::Char('y') | KeyCode::Char('Y') => doc.redo(),
-            // Readline's kill-line pair: ^U back to the line start, ^K forward
-            // to its end — the convention a terminal user already has under
-            // their fingers, and free (neither was bound to anything here).
-            KeyCode::Char('u') => doc.delete_to_line_start(),
-            KeyCode::Char('k') => doc.delete_to_line_end(),
-            // ^Home / ^End jump to the document's start / end.
-            KeyCode::Home => doc.move_doc_start(shift),
-            KeyCode::End => doc.move_doc_end(shift),
-            _ => {}
         }
-        return Flow::Continue;
+        // Ctrl+S: save, routing through the Save-As / conflict dialogs as needed.
+        Outcome::Save => {
+            attempt_save(doc, app, None);
+            Flow::Continue
+        }
+        // ⌥S: name a destination and move the document there.
+        Outcome::SaveAs => {
+            open_save_as_prompt(doc, app);
+            Flow::Continue
+        }
+        // ⌥N: swap in a blank document, guarding unsaved changes first.
+        Outcome::New => {
+            if doc.dirty {
+                app.dirty_prompt = Some(DirtyPrompt { action: DirtyAction::New, selected: 0 });
+            } else {
+                replace_with_blank(doc);
+            }
+            Flow::Continue
+        }
+        // Clipboard (^C/^X/^V and ⌥V) — the host owns the system pasteboard.
+        Outcome::Copy => {
+            clipboard_copy(doc);
+            Flow::Continue
+        }
+        Outcome::Cut => {
+            clipboard_cut(doc);
+            Flow::Continue
+        }
+        Outcome::Paste => {
+            clipboard_paste(doc);
+            Flow::Continue
+        }
+        Outcome::PastePlain => {
+            clipboard_paste_plain(doc);
+            Flow::Continue
+        }
+        // ⌥K / ⌥L: open a single-line prompt the host owns.
+        Outcome::LinkPrompt => {
+            open_link_prompt(doc, app);
+            Flow::Continue
+        }
+        Outcome::LanguagePrompt => {
+            open_language_prompt(doc, app);
+            Flow::Continue
+        }
     }
-
-    if alt {
-        // The formatting toolbar. Inline marks act on the selection; heading /
-        // body conversion acts on the block at the caret. Word motion/delete
-        // share this modifier with ⌥w/b/i/c/m/0-6 since crossterm reports
-        // Alt+Left/Right/Backspace/Delete as ordinary key codes plus ALT.
-        match key.code {
-            KeyCode::Left => doc.move_word_left(shift),
-            KeyCode::Right => doc.move_word_right(shift),
-            KeyCode::Backspace => doc.delete_word_back(),
-            KeyCode::Delete => doc.delete_word_forward(),
-            KeyCode::Char('w') => doc.toggle_view(),
-            KeyCode::Char('b') => doc.toggle(InlineKind::Strong),
-            KeyCode::Char('i') => doc.toggle(InlineKind::Emph),
-            KeyCode::Char('c') => doc.toggle(InlineKind::Verbatim),
-            KeyCode::Char('m') => doc.toggle(InlineKind::Mark),
-            // twig models strikethrough/underline as the Delete/Insert marks
-            // (their names in the CommonMark/Djot extensions that define them,
-            // not the toolbar's), matching ⌥d/⌥u to what a user actually reads
-            // in the WYSIWYG view: struck-through and underlined text.
-            KeyCode::Char('d') => doc.toggle(InlineKind::Delete),
-            KeyCode::Char('u') => doc.toggle(InlineKind::Insert),
-            KeyCode::Char('0') => doc.set_block(BlockKind::Paragraph),
-            // Toggle, not set: ⌥1 on a line that's already H1 reverts it to a
-            // paragraph, matching the feel of the bold/italic/code toggles.
-            KeyCode::Char(d @ '1'..='6') => doc.toggle_heading(d.to_digit(10).unwrap()),
-            // Headings stop at 6, so the numeric family keeps going: ⌥7/⌥8 are
-            // the other pair that reads as one three-state control (numbered /
-            // bulleted / neither), ⌥9 is quote.
-            KeyCode::Char('7') => toggle_list(doc, true),
-            KeyCode::Char('8') => toggle_list(doc, false),
-            KeyCode::Char('9') => doc.toggle_blockquote(),
-            // Paste the plain flavor, where ^V prefers the rich one.
-            //
-            // ⌥V and not ^⇧V, which is the obvious pick and the wrong one: a
-            // terminal sends the same control byte for ^V and ^⇧V unless the
-            // kitty keyboard protocol is negotiated (leaf doesn't), so the shift
-            // is invisible here and the binding would just be ^V — and ^⇧V is
-            // the *terminal emulator's* own paste on much of the world, which
-            // means leaf would never see the keystroke anyway. ⌥ is already this
-            // frontend's modifier for the editing surface, ⌥V was free, and its
-            // letter is the one the user is reaching for.
-            KeyCode::Char('v') => clipboard_paste_plain(doc),
-            KeyCode::Char('k') => open_link_prompt(doc, app),
-            KeyCode::Char('l') => open_language_prompt(doc, app),
-            KeyCode::Char('s') => open_save_as_prompt(doc, app),
-            KeyCode::Char('n') => {
-                if doc.dirty {
-                    app.dirty_prompt = Some(DirtyPrompt { action: DirtyAction::New, selected: 0 });
-                } else {
-                    replace_with_blank(doc);
-                }
-            }
-            _ => {}
-        }
-        return Flow::Continue;
-    }
-
-    match key.code {
-        KeyCode::Char(c) => doc.insert(&c.to_string()),
-        KeyCode::Enter => doc.newline(),
-        // In a table, Tab walks the cells (Shift+Tab back) — that precedence
-        // is unchanged from before indent/outdent existed. Only once the
-        // caret isn't in a table does Tab/Shift+Tab fall through to indent,
-        // matching how a Tab in any list/outline editor behaves outside a
-        // table and reserving the table's own Tab convention where it applies.
-        KeyCode::Tab if doc.cell_hop(true) => {}
-        KeyCode::BackTab if doc.cell_hop(false) => {}
-        KeyCode::Tab => doc.indent(),
-        KeyCode::BackTab => doc.outdent(),
-        KeyCode::Backspace => doc.backspace(),
-        KeyCode::Delete => doc.delete_forward(),
-        KeyCode::Left => doc.move_left(shift),
-        KeyCode::Right => doc.move_right(shift),
-        KeyCode::Up => doc.move_up(shift),
-        KeyCode::Down => doc.move_down(shift),
-        KeyCode::Home => doc.move_home(shift),
-        KeyCode::End => doc.move_end(shift),
-        // Page motion: one bodyful of rows, one row kept for overlap.
-        KeyCode::PageUp => {
-            for _ in 0..page_rows(doc) {
-                doc.move_up(shift);
-            }
-        }
-        KeyCode::PageDown => {
-            for _ in 0..page_rows(doc) {
-                doc.move_down(shift);
-            }
-        }
-        _ => {}
-    }
-    Flow::Continue
-}
-
-/// The page step: the body's visible rows minus one for overlap (at least one).
-fn page_rows(doc: &Doc) -> usize {
-    (doc.body_height as usize).saturating_sub(1).max(1)
 }
 
 fn handle_mouse(doc: &mut Doc, m: MouseEvent, app: &mut App) {
@@ -476,107 +376,15 @@ fn handle_mouse(doc: &mut Doc, m: MouseEvent, app: &mut App) {
         return;
     }
 
-    let (bx, by) = doc.body_origin;
-    let within = m.row >= by
-        && (m.row as usize) < by as usize + doc.body_height as usize
-        && m.column >= bx;
-
-    // A code row is drawn inset for its box and — if it's the caret's block —
-    // scrolled sideways, so a raw screen column has to be shifted back into the
-    // block's own column space before it maps to a source byte. Mirrors the
-    // draw-time shift in `ui::render_body`; a plain row is left alone.
-    let col_at = |doc: &Doc, app: &App, row: usize, column: u16| -> usize {
-        let raw = column.saturating_sub(bx) as usize;
-        if doc.view != leaf_core::View::Wysiwyg {
-            return raw;
+    // No overlay owns the mouse, so the editing surface handles it — caret
+    // placement, word/block/drag selection, and scroll all happen inside the
+    // widget. A right-click is the one thing it hands back: the host owns the
+    // context menu it anchors.
+    match leaf_ratatui::handle_mouse(doc, m, &mut app.editor) {
+        MouseOutcome::Continue => {}
+        MouseOutcome::ContextMenu { x, y } => {
+            app.context_menu = Some(ContextMenu { anchor: (x, y), selected: 0, rect: None });
         }
-        match doc.vmap.code_blocks.iter().find(|c| c.rows_span.contains(&row)) {
-            Some(cb) => {
-                let scroll = if app.code_caret_span.as_ref() == Some(&cb.rows_span) {
-                    app.code_scroll_x
-                } else {
-                    0
-                };
-                raw.saturating_sub(crate::style::CODE_INSET) + scroll
-            }
-            None => raw,
-        }
-    };
-
-    match m.kind {
-        MouseEventKind::Down(MouseButton::Left) if within => {
-            let row = doc.scroll + (m.row - by) as usize;
-            let col = col_at(doc, app, row, m.column);
-            let count = click_count(app, m.row, m.column);
-            let shift = m.modifiers.contains(KeyModifiers::SHIFT);
-
-            // Single click places the caret (extending the selection if shift
-            // is held, same as a shift-click in any other editor); double
-            // selects the word under it; triple selects the block it's in.
-            // All three start from the same `click` hit-test so the row/col →
-            // offset mapping (source bytes vs. the WYSIWYG glyph grid) only
-            // lives in one place.
-            //
-            // The block, not the source line: a paragraph broken over several
-            // lines is one paragraph, and a triple click that stopped at the
-            // newline inside it would be selecting a detail of the markup the
-            // rich-text view exists to hide. Same call the GUI makes.
-            doc.click(row, col, shift);
-            match count {
-                2 => doc.select_word_at(doc.caret),
-                n if n >= 3 => doc.select_block_at(doc.caret),
-                _ => {}
-            }
-        }
-        MouseEventKind::Drag(MouseButton::Left) if within => {
-            let row = doc.scroll + (m.row - by) as usize;
-            let col = col_at(doc, app, row, m.column);
-            doc.click(row, col, true); // extend the selection
-        }
-        // Dragging past the top or bottom edge of the body scrolls to keep
-        // revealing more document, the way a drag-select stalling at the
-        // viewport edge never does in any other editor. `within`'s column
-        // check still applies (dragging off the body sideways isn't this),
-        // but its row check is exactly what these two exist to fall outside
-        // of, so each re-derives "past the top"/"past the bottom" instead of
-        // reusing `within`. `doc.scroll` isn't clamped to the document's
-        // length here — `Doc::follow_caret` does that every frame, the same
-        // as the wheel handlers below already rely on.
-        MouseEventKind::Drag(MouseButton::Left) if m.column >= bx && m.row < by => {
-            doc.scroll = doc.scroll.saturating_sub(1);
-            let col = col_at(doc, app, doc.scroll, m.column);
-            doc.click(doc.scroll, col, true);
-        }
-        MouseEventKind::Drag(MouseButton::Left)
-            if m.column >= bx && (m.row as usize) >= by as usize + doc.body_height as usize =>
-        {
-            doc.scroll = doc.scroll.saturating_add(1);
-            let row = doc.scroll + doc.body_height.saturating_sub(1) as usize;
-            let col = col_at(doc, app, row, m.column);
-            doc.click(row, col, true);
-        }
-        MouseEventKind::Down(MouseButton::Right) if within => {
-            // A right-click on top of an existing selection should offer to
-            // act on *it* (Cut/Copy), not collapse it to a fresh caret. There's
-            // no public way to test "is this screen cell inside the selection"
-            // without moving the caret (that mapping is private to `Doc`), so
-            // this approximates the precise hit-test the GUI does with the
-            // coarser "is any selection active at all" — good enough since a
-            // right-click while nothing is selected has no selection to lose.
-            if doc.selection().is_none() {
-                let row = doc.scroll + (m.row - by) as usize;
-                let col = col_at(doc, app, row, m.column);
-                doc.click(row, col, false);
-            }
-            app.context_menu = Some(ContextMenu {
-                anchor: (m.column, m.row),
-                selected: 0,
-                rect: None,
-            });
-        }
-        MouseEventKind::ScrollDown => doc.scroll = doc.scroll.saturating_add(1),
-        MouseEventKind::ScrollUp => doc.scroll = doc.scroll.saturating_sub(1),
-        _ => {}
     }
 }
 
@@ -590,47 +398,6 @@ fn menu_item_at(menu: &ContextMenu, row: u16, col: u16) -> Option<usize> {
     } else {
         None
     }
-}
-
-/// Track repeated `Down` events on the same screen cell and return the click
-/// count (1, 2, 3, then wrapping back to 1). Split out from `handle_mouse` so
-/// the timing/position logic is unit-testable without a terminal.
-fn click_count(app: &mut App, row: u16, col: u16) -> u8 {
-    let now = Instant::now();
-    let count = match &app.last_click {
-        Some(c) if c.row == row && c.col == col && now.duration_since(c.at) < MULTI_CLICK_WINDOW => {
-            (c.count % 3) + 1
-        }
-        _ => 1,
-    };
-    app.last_click = Some(ClickState { at: now, row, col, count });
-    count
-}
-
-/// ⌥7/⌥8: toggle an ordered/bulleted list, then check whether that just
-/// nested rather than un-listed. `toggle_list` un-wraps a container only when
-/// the edited range covers every block it holds; a bare caret's range is just
-/// its own block, so pressing the same list's key a second time inside a
-/// multi-item list nests instead of undoing — a real, if surprising, engine
-/// rule (see `Doc::toggle_list`), not a bug this frontend can paper over.
-/// What it *can* do is stop the nest from reading as "nothing happened": the
-/// breadcrumb's count of `kind` ancestors around the caret goes up, not down
-/// to zero, exactly when that's what occurred, so that's the signal a status
-/// line hangs off.
-fn toggle_list(doc: &mut Doc, ordered: bool) {
-    let kind = if ordered { "ordered_list" } else { "bullet_list" };
-    let no_selection = doc.selection().is_none();
-    let before = list_depth(doc, kind);
-    doc.toggle_list(ordered);
-    if no_selection && doc.status.is_none() && list_depth(doc, kind) > before {
-        doc.status = Some("nested — select the whole list to un-list it".into());
-    }
-}
-
-/// How many `kind` ancestors wrap the caret, read off the same breadcrumb the
-/// header displays — the only public window onto AST ancestry a frontend has.
-fn list_depth(doc: &mut Doc, kind: &str) -> usize {
-    doc.breadcrumb().split(" › ").filter(|k| *k == kind).count()
 }
 
 /// ⌥k: open the link prompt, prefilled with the destination of the link the
@@ -860,7 +627,10 @@ fn get_clipboard_html() -> Result<String, arboard::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use leaf_core::View;
+    use leaf_core::{InlineKind, View};
+    // Modifiers/buttons the non-test code no longer references directly (the
+    // editing dispatch moved into leaf-ratatui), but the test event builders do.
+    use ratatui::crossterm::event::{KeyModifiers, MouseButton};
 
     /// A `Doc` over `body`, laid out with the body occupying the whole screen
     /// below a one-row header — the geometry `handle_mouse` hit-tests against.
@@ -1008,50 +778,6 @@ mod tests {
 
         handle_key(&mut doc, alt_1, &mut app);
         assert!(doc.source.starts_with("# Title"), "second ⌥1 should re-apply H1");
-    }
-
-    #[test]
-    fn first_click_is_single() {
-        let mut app = App::default();
-        assert_eq!(click_count(&mut app, 3, 5), 1);
-    }
-
-    #[test]
-    fn quick_repeat_on_same_cell_advances_to_double_then_triple() {
-        let mut app = App::default();
-        assert_eq!(click_count(&mut app, 3, 5), 1);
-        assert_eq!(click_count(&mut app, 3, 5), 2);
-        assert_eq!(click_count(&mut app, 3, 5), 3);
-    }
-
-    #[test]
-    fn fourth_click_wraps_back_to_single() {
-        let mut app = App::default();
-        for _ in 0..3 {
-            click_count(&mut app, 3, 5);
-        }
-        assert_eq!(click_count(&mut app, 3, 5), 1);
-    }
-
-    #[test]
-    fn click_on_a_different_cell_resets_to_single() {
-        let mut app = App::default();
-        assert_eq!(click_count(&mut app, 3, 5), 1);
-        assert_eq!(click_count(&mut app, 3, 5), 2);
-        assert_eq!(click_count(&mut app, 4, 5), 1); // different row
-        assert_eq!(click_count(&mut app, 4, 6), 1); // different col
-    }
-
-    #[test]
-    fn stale_click_state_resets_to_single() {
-        let mut app = App::default();
-        app.last_click = Some(ClickState {
-            at: Instant::now() - MULTI_CLICK_WINDOW - Duration::from_millis(1),
-            row: 3,
-            col: 5,
-            count: 2,
-        });
-        assert_eq!(click_count(&mut app, 3, 5), 1);
     }
 
     fn alt(c: char) -> KeyEvent {

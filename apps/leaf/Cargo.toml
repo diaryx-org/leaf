@@ -11,7 +11,7 @@ name = "leaf-gui"
 path = "src/main.rs"
 
 [dependencies]
-leaf-gpui = { path = "../leaf-gpui", version = "0.1.0" }
+leaf-gpui = { path = "../../crates/leaf-gpui", version = "0.1.0" }
 leaf-core.workspace = true
 
 # The app shell owns the window and the run-loop, so it pulls gpui + the platform

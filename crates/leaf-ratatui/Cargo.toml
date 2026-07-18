@@ -1,0 +1,22 @@
+[package]
+name = "leaf-ratatui"
+version.workspace = true
+edition.workspace = true
+description = "Embeddable rich-text editor widget for ratatui: renders leaf-core's WYSIWYG/source view into a Rect and turns key/mouse events into document edits. The terminal peer of leaf-gpui."
+
+[dependencies]
+# Frontend-neutral core: the caret/selection model + AST→glyph VisualMap.
+leaf-core.workspace = true
+# TUI framework; we use its re-exported crossterm so backend versions can't skew.
+ratatui = "0.29"
+# Block-level images painted with the terminal's own graphics protocol (kitty,
+# iTerm2, sixel) and a unicode-halfblock fallback everywhere else. Version 9 is
+# the line built against ratatui 0.29 — 10+ require ratatui 0.30, which would
+# skew the backend. `default-features = false` drops the `chafa-dyn` default
+# (a build-time libchafa/pkg-config C dependency); the built-in encoders need no
+# C libs. `crossterm` matches the backend ratatui already uses here.
+ratatui-image = { version = "9", default-features = false, features = ["crossterm"] }
+# Decoding image files to the `DynamicImage` ratatui-image rasterizes. Same 0.25
+# line ratatui-image and leaf-gpui pin, so the `image` types line up across the
+# workspace's one resolved version.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"] }

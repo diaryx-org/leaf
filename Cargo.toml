@@ -1,14 +1,17 @@
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+# crates/* are all Rust libraries. Under apps/ the Rust binaries are listed
+# explicitly — apps/ also holds non-Cargo frontends (apps/leaf-web-demo) that a
+# glob would wrongly try to load as workspace members.
+members = ["crates/*", "apps/leaf-tui", "apps/leaf"]
 # leaf-ios is a standalone workspace (it path-deps the external gpui-mobile fork
 # and needs its own [patch] table); keep its heavy gpui/wgpu graph out of this
-# workspace's Cargo.lock. Build it explicitly from crates/leaf-ios.
-exclude = ["crates/leaf-ios"]
+# workspace's Cargo.lock. Build it explicitly from apps/leaf-ios.
+exclude = ["apps/leaf-ios"]
 # `cargo run -- file.md` and `cargo build` default to the TUI, so the workspace
 # split doesn't change the everyday UX. leaf-gui, once it grows a binary, is
 # built explicitly with `-p leaf-gui`.
-default-members = ["crates/leaf-tui"]
+default-members = ["apps/leaf-tui"]
 
 [workspace.package]
 version = "0.1.0"

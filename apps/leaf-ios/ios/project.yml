@@ -82,7 +82,7 @@ targets:
         ONLY_ACTIVE_ARCH: YES
         # Rust staticlib path (SDK-conditional). $(LEAF_STATIC_LIB) in
         # OTHER_LDFLAGS above resolves to the matching one. project.yml is at
-        # crates/leaf-ios/ios, so ../target is crates/leaf-ios/target.
+        # apps/leaf-ios/ios, so ../target is apps/leaf-ios/target.
         "LEAF_STATIC_LIB[sdk=iphonesimulator*]": "$(PROJECT_DIR)/../target/aarch64-apple-ios-sim/debug/libleaf_ios.a"
         "LEAF_STATIC_LIB[sdk=iphoneos*]": "$(PROJECT_DIR)/../target/aarch64-apple-ios/debug/libleaf_ios.a"
       configs:
@@ -101,7 +101,7 @@ targets:
           # Xcode's build environment has a minimal PATH; add the user's toolchain.
           export PATH="$HOME/.nix-profile/bin:$HOME/.cargo/bin:/opt/homebrew/bin:$PATH"
 
-          cd "${PROJECT_DIR}/.."   # crates/leaf-ios (has Cargo.toml + rust-toolchain.toml)
+          cd "${PROJECT_DIR}/.."   # apps/leaf-ios (has Cargo.toml + rust-toolchain.toml)
 
           if [ "${PLATFORM_NAME}" = "iphonesimulator" ]; then
             RUST_TARGET="aarch64-apple-ios-sim"

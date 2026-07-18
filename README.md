@@ -9,15 +9,37 @@ A caret-based rich-text editor for documents, built on [`twig`](../twig).
 
 ## Workspace layout
 
-leaf is a Cargo workspace. The caret/selection model and the AST→glyph mapping
-live in a frontend-neutral core; each frontend is a thin leaf crate on top of it.
+leaf is a Cargo workspace in three tiers. The caret/selection model and the
+AST→glyph mapping live in a frontend-neutral **core**; embeddable editor
+**widgets** wrap it per toolkit; and thin **apps** host a widget with a window,
+clipboard, and file I/O.
+
+### `crates/` — Rust libraries
 
 | crate | what it is |
 |-------|------------|
 | [`leaf-core`](crates/leaf-core) | the document model — a `twig::Editor` with a byte-offset caret + selection, and the WYSIWYG `VisualMap`. Glyphs carry a **toolkit-agnostic `Style`**; no UI dependency. |
-| [`leaf-tui`](crates/leaf-tui) | the terminal frontend (ratatui + crossterm). Maps `leaf-core`'s `Style` onto terminal colors. Ships the `leaf` binary. |
-| [`leaf-gpui`](crates/leaf-gpui) | the **embeddable GUI widget** on [gpui](https://github.com/zed-industries/zed): the `Editor` view plus its input, pixel-wrapping renderer, and `register_keybindings`. It renders only the editing surface and leaves window chrome, file I/O, and quit to the host — so it drops into any gpui app. Reuses every bit of `leaf-core`'s caret math and edit surface; only paints glyphs and forwards key/mouse events into the same `Doc` ops. |
-| [`leaf`](crates/leaf) | the standalone **application** (binary `leaf-gui`) — a thin host around `leaf-gpui`: a window, a header bar, a file-open button, and an unsaved-changes quit guard. The same widget powers this app and any embedding host. |
+| [`leaf-ratatui`](crates/leaf-ratatui) | the **embeddable terminal widget** (ratatui + crossterm): renders the editing surface into a `Rect` and turns key/mouse events into `Doc` edits, returning an `Outcome` for what the host owns (quit, save, clipboard, dialogs). The terminal peer of `leaf-gpui`. |
+| [`leaf-gpui`](crates/leaf-gpui) | the **embeddable GUI widget** on [gpui](https://github.com/zed-industries/zed): the `Editor` view plus its input, pixel-wrapping renderer, and `register_keybindings`. Renders only the editing surface and leaves window chrome, file I/O, and quit to the host. |
+| [`leaf-ffi`](crates/leaf-ffi) | the **UniFFI Rust binding** — wraps the filesystem-free `Doc` behind a C ABI so a native Apple app can drive it. Paired with the `leaf-swift` package. |
+| [`leaf-wasm`](crates/leaf-wasm) | the **wasm-bindgen Rust binding** — wraps the `Doc` for the browser (`LeafDoc` + a typed `DocView`). Paired with the `leaf-web` package. |
+
+### `packages/` — importable non-Rust widget packages
+
+| package | what it is |
+|---------|------------|
+| [`leaf-swift`](packages/leaf-swift) | the Swift Package (`Package.swift`) — `LeafUI`, the AppKit/UIKit editor view, over the UniFFI `leaf-ffi` binding. The Apple peer of `leaf-ratatui`/`leaf-gpui`. |
+| [`leaf-web`](packages/leaf-web) | the npm package — `LeafEditor`, a framework-agnostic web editor, over the `leaf-wasm` binding. |
+
+### `apps/` — runnable frontends
+
+| app | what it is |
+|-----|------------|
+| [`leaf-tui`](apps/leaf-tui) | the terminal editor (binary `leaf`) — a thin host around `leaf-ratatui` wiring a terminal, clipboard, and dialogs. The workspace default `cargo run`. |
+| [`leaf`](apps/leaf) | the standalone gpui **application** (binary `leaf-gui`) — a thin host around `leaf-gpui`. |
+| [`leaf-ios`](apps/leaf-ios) | the gpui iOS host (a standalone workspace on the gpui-mobile platform). |
+| [`leaf-ffi-ios`](apps/leaf-ffi-ios) | the UIKit/UniFFI iOS demo app, consuming `packages/leaf-swift`. |
+| [`leaf-web-demo`](apps/leaf-web-demo) | the web demo page, consuming `packages/leaf-web`. |
 
 ```sh
 cargo run -- path/to/document.md            # the TUI (workspace default)

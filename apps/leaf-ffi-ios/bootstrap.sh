@@ -2,7 +2,7 @@
 #
 # First-time setup for the iOS demo app (and whenever the Rust *API* changes):
 #   1. build the leaf-ffi Rust lib on the host (so uniffi-bindgen can introspect it)
-#   2. generate the UniFFI Swift binding + C module into crates/leaf-ffi/generated/
+#   2. generate the UniFFI Swift binding + C module into packages/leaf-swift/generated/
 #      (what Package.swift compiles: generated/Sources/LeafFFI + generated/headers)
 #   3. run `xcodegen generate` to (re)create LeafEditorApp.xcodeproj
 #
@@ -14,8 +14,8 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(cd "$HERE/../../../.." && pwd)"        # repo root
-OUT="$ROOT/crates/leaf-ffi/generated"
+ROOT="$(cd "$HERE/../.." && pwd)"        # repo root
+OUT="$ROOT/packages/leaf-swift/generated"
 
 echo "▸ Building leaf-ffi (host) for bindgen introspection…"
 cargo build --manifest-path "$ROOT/Cargo.toml" -p leaf-ffi

@@ -12,9 +12,13 @@ and forwards input — exactly as the TUI and native GUI do.
 
 | Layer | File | What it is |
 |-------|------|------------|
-| Model | `src/lib.rs` → `pkg/leaf_wasm.js` | `LeafDoc`: parse/edit/caret + a typed `DocView` frame of style runs. wasm-bindgen glue; view types generated from Rust by [tsify](https://github.com/madonoharu/tsify). |
-| Editor | `web/src/editor.js` (+ `.d.ts`) | `LeafEditor`: a **framework-agnostic** class that renders those runs to the DOM, places the caret, and routes keys/clicks. The reusable piece. |
-| Demo | `web/index.html` | A thin host: chrome (toolbar/footer) around a `LeafEditor`. |
+| Model | `crates/leaf-wasm/src/lib.rs` → `pkg/leaf_wasm.js` | `LeafDoc`: parse/edit/caret + a typed `DocView` frame of style runs. wasm-bindgen glue; view types generated from Rust by [tsify](https://github.com/madonoharu/tsify). This crate. |
+| Editor | [`packages/leaf-web`](../../packages/leaf-web) `src/editor.js` (+ `.d.ts`) | `LeafEditor`: a **framework-agnostic** class that renders those runs to the DOM, places the caret, and routes keys/clicks. The reusable, importable npm package. |
+| Demo | [`apps/leaf-web-demo`](../../apps/leaf-web-demo) `index.html` | A thin host: chrome (toolbar/footer) around a `LeafEditor`. |
+
+This crate is only the **Model** layer — the Rust→wasm binding. The importable
+editor and its demo were extracted into `packages/leaf-web` and
+`apps/leaf-web-demo`; the binding's `pkg/` output is built *into* that package.
 
 ## Proportional rendering
 
@@ -46,22 +50,25 @@ communicated as `DocView.caret_ch` (a UTF-16 offset) and clicks come back throug
 ## Build
 
 ```sh
-wasm-pack build crates/leaf-wasm --target web --out-dir web/pkg
-# (--dev for a fast, unoptimized build during development)
+# from packages/leaf-web (wraps the wasm-pack invocation):
+npm --prefix packages/leaf-web run build:wasm       # or build:wasm:dev for a fast build
+# equivalently, directly:
+wasm-pack build crates/leaf-wasm --target web --out-dir packages/leaf-web/pkg
 ```
 
-This regenerates `web/pkg/` (git-ignored). Then serve `web/` over HTTP (wasm and
-ES modules need a real origin, not `file://`):
+This regenerates `packages/leaf-web/pkg/` (git-ignored). Then serve the **repo
+root** over HTTP (the demo imports the package across directories; wasm and ES
+modules need a real origin, not `file://`):
 
 ```sh
-cd crates/leaf-wasm/web && python3 -m http.server 8000
-# open http://localhost:8000/
+python3 -m http.server 8000            # from the repo root
+# open http://localhost:8000/apps/leaf-web-demo/
 ```
 
 ## Using `LeafEditor`
 
 ```js
-import { LeafEditor } from "./src/index.js";
+import { LeafEditor } from "leaf-web";               // the packages/leaf-web package
 
 await LeafEditor.init();                              // load the wasm once
 const editor = new LeafEditor(document.getElementById("editor"), {
@@ -77,11 +84,12 @@ const md = editor.source();                           // persist however you lik
 
 The editor owns the editing surface and input; the host owns chrome (toolbar,
 footer, save). Presentation is themeable via the `theme` option (fonts, sizes,
-the heading ramp) — see `DEFAULT_THEME` in `web/src/editor.d.ts`.
+the heading ramp) — see `DEFAULT_THEME` in `packages/leaf-web/src/editor.d.ts`.
 
-## Not yet packaged
+## Packaged
 
-`LeafEditor` is written to be published as an npm package (framework-agnostic,
-typed, self-contained styles), but the publish mechanics — `package.json`
-`exports`, a chosen wasm-init strategy (`--target web` vs `bundler` vs inlined
-base64), and semver — are deliberately deferred until the API has settled.
+`LeafEditor` now ships as the `packages/leaf-web` npm package — framework-agnostic,
+typed, with a `package.json` `exports` map over `--target web` wasm. The `pkg/`
+wasm output builds into that package (see **Build** above). A chosen wasm-init
+strategy beyond `--target web` (bundler vs inlined base64) and semver are still
+free to evolve as the API settles.

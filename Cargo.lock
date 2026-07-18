@@ -3186,15 +3186,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "leaf-ratatui"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "leaf-core",
+ "ratatui",
+ "ratatui-image",
+]
+
+[[package]]
 name = "leaf-tui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "arboard",
- "image",
  "leaf-core",
+ "leaf-ratatui",
  "ratatui",
- "ratatui-image",
 ]
 
 [[package]]

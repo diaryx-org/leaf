@@ -1,0 +1,25 @@
+[package]
+name = "leaf-tui"
+version.workspace = true
+edition.workspace = true
+description = "A caret-based rich-text TUI editor for documents, built on twig's round-trippable AST."
+
+# The everyday `cargo run -- file.md` invocation still runs `leaf`.
+[[bin]]
+name = "leaf"
+path = "src/main.rs"
+
+[dependencies]
+leaf-core.workspace = true
+anyhow.workspace = true
+# The embeddable editor widget: rendering + input for the editing surface. This
+# thin host wires a terminal, clipboard, and dialogs around it (and is its
+# reference example). Image rasterization now lives inside the widget.
+leaf-ratatui = { path = "../../crates/leaf-ratatui", version = "0.1.0" }
+# TUI framework; we use its re-exported crossterm so backend versions can't skew.
+ratatui = "0.29"
+# System clipboard for Ctrl+C/X/V. Opened fresh per operation (cheap, and
+# avoids holding a stale pasteboard handle across app focus changes) and
+# guarded so a headless/unavailable clipboard degrades to a status message
+# instead of a panic.
+arboard = "3"
