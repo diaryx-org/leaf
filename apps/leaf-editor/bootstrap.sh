@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 #
-# First-time setup for the iOS demo app (and whenever the Rust *API* changes):
+# First-time setup for the cross-platform editor app (and whenever the Rust *API*
+# changes):
 #   1. build the leaf-ffi Rust lib on the host (so uniffi-bindgen can introspect it)
 #   2. generate the UniFFI Swift binding + C module into packages/leaf-swift/generated/
 #      (what Package.swift compiles: generated/Sources/LeafFFI + generated/headers)
 #   3. run `xcodegen generate` to (re)create LeafEditorApp.xcodeproj
 #
-# The Rust *staticlib* for the simulator/device is NOT built here — the Xcode
+# The Rust *staticlib* for mac/simulator/device is NOT built here — the Xcode
 # project's pre-build script (see project.yml) does that on every build, so
-# ordinary Rust edits need only ⌘R in Xcode (or the xcodebuild line below). Re-run
+# ordinary Rust edits need only ⌘R in Xcode (or the xcodebuild lines below). Re-run
 # this script only after changing the Rust API surface (new/renamed FFI methods),
 # which requires regenerating the binding.
 set -euo pipefail
@@ -33,8 +34,10 @@ rm -rf "$OUT/tmp"
 echo "▸ Generating Xcode project…"
 cd "$HERE" && xcodegen generate
 
-echo "✓ Ready. Build & run in the simulator:"
-echo "    cd $HERE"
-echo "    xcodebuild -project LeafEditorApp.xcodeproj -scheme LeafEditorApp \\"
-echo "      -destination 'platform=iOS Simulator,name=iPhone 17' \\"
-echo "      -derivedDataPath build/DD build"
+echo "✓ Ready."
+echo "  Run on macOS:"
+echo "    xcodebuild -project $HERE/LeafEditorApp.xcodeproj -scheme LeafEditorApp \\"
+echo "      -destination 'platform=macOS' -derivedDataPath build/DD build"
+echo "  Run in the iOS simulator:"
+echo "    xcodebuild -project $HERE/LeafEditorApp.xcodeproj -scheme LeafEditorApp \\"
+echo "      -destination 'platform=iOS Simulator,name=iPhone 17' -derivedDataPath build/DD build"

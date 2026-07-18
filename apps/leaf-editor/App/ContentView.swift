@@ -1,10 +1,11 @@
 import SwiftUI
 import LeafUI
 
-/// A minimal iOS host for the `LeafUI` editor: a formatting toolbar bound to the
-/// document's live state, and the `LeafEditor` surface below it. Everything —
-/// caret math, wrapping, selection, WYSIWYG resolution — comes from leaf-core
-/// over the FFI; this file is only chrome.
+/// A minimal cross-platform host for the `LeafUI` editor: a formatting toolbar
+/// bound to the document's live state, and the `LeafEditor` surface below it.
+/// Everything — caret math, wrapping, selection, WYSIWYG resolution — comes from
+/// leaf-core over the FFI; this file is only chrome. The same view builds for
+/// macOS and iOS because `LeafEditor`/`LeafTextView` carry both surfaces.
 struct ContentView: View {
     @StateObject private var editor = makeEditor()
 
@@ -13,7 +14,7 @@ struct ContentView: View {
             toolbar
             Divider()
             LeafEditor(model: editor)
-                .background(Color(.systemBackground))
+                .background(editorBackground)
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)
     }
@@ -57,22 +58,32 @@ struct ContentView: View {
     }
 }
 
+/// The window/content background, resolved to each toolkit's dynamic system
+/// colour so light/dark just works on both platforms.
+private var editorBackground: Color {
+    #if canImport(UIKit)
+    Color(.systemBackground)
+    #else
+    Color(nsColor: .textBackgroundColor)
+    #endif
+}
+
 private func makeEditor() -> LeafEditorModel {
     // The sample is valid Markdown, so parsing cannot fail here.
     try! LeafEditorModel(source: sampleMarkdown, format: "markdown")
 }
 
 private let sampleMarkdown = """
-# leaf on iOS
+# leaf, natively
 
 A native **SwiftUI** front end driving *leaf-core* over the FFI — the same \
-caret model and AST→glyph map the terminal and desktop apps use.
+caret model and AST→glyph map the terminal and desktop apps use, on macOS and iOS.
 
 ## What's live
 
 - WYSIWYG rendering with `inline code`
 - **Bold**, *italic*, and ==highlight==
-- Tap to place the caret, drag to select
+- Click (or tap) to place the caret, drag to select
 
 > The document is a live, round-trippable AST the whole time you type.
 
@@ -82,5 +93,5 @@ fn main() {
 }
 ```
 
-Try the toolbar, or a hardware keyboard's arrows and ⌘B / ⌘I.
+Try the toolbar, or the keyboard's arrows and ⌘B / ⌘I.
 """

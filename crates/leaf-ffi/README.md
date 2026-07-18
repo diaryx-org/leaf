@@ -11,8 +11,8 @@ The Swift side built on top of it lives elsewhere:
 | Piece | Location | What it is |
 |-------|----------|------------|
 | Swift SDK | [`packages/leaf-swift`](../../packages/leaf-swift) | `Package.swift` + `Sources/LeafUI` (the AppKit/UIKit editor) + the UniFFI-`generated/` Swift. The importable Swift package. |
-| Demo app | [`apps/leaf-ffi-ios`](../../apps/leaf-ffi-ios) | The runnable iOS example (`bootstrap.sh`, xcodegen `project.yml`). |
+| Demo app | [`apps/leaf-editor`](../../apps/leaf-editor) | The runnable cross-platform (macOS + iOS) example (`bootstrap.sh`, xcodegen `project.yml`). |
 
 The Swift bindings are (re)generated from this crate by
-`apps/leaf-ffi-ios/bootstrap.sh` (dev) or `scripts/build-xcframework.sh`
+`apps/leaf-editor/bootstrap.sh` (dev) or `scripts/build-xcframework.sh`
 (distributable xcframework), both writing into `packages/leaf-swift/generated/`.
