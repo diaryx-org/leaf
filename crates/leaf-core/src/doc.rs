@@ -923,12 +923,25 @@ impl Doc {
                     out.push_str(line);
                     0
                 } else {
-                    out.push_str(Self::INDENT);
+                    // Indent by the line's own *marker width* when it's a list
+                    // item, so Tab nests it under its sibling: an ordered item's
+                    // `1. ` marker is 3 wide, and only 3 spaces push the new
+                    // marker to the parent's content column where twig reparses
+                    // it as a sub-list. A fixed two-space step nests a bullet
+                    // (`- ` is 2 wide) but leaves an ordered item flat. A plain
+                    // line still indents by the ordinary step.
+                    let unit = indent_unit(line);
+                    for _ in 0..unit {
+                        out.push(' ');
+                    }
                     out.push_str(line);
-                    Self::INDENT.len() as isize
+                    unit as isize
                 }
             } else {
-                let strip = outdent_width(line);
+                // Outdent one level: a nested item gives back its marker width,
+                // an ordinary line the ordinary step (Shift+Tab unnests in one
+                // press, the mirror of the indent above).
+                let strip = outdent_width(line, indent_unit(line));
                 out.push_str(&line[strip..]);
                 -(strip as isize)
             };
@@ -2760,14 +2773,55 @@ fn source_line_range(s: &str, off: usize) -> std::ops::Range<usize> {
 /// A leading tab counts as a level on its own. It's indentation some other
 /// editor wrote, and one tab is one level everywhere it came from — measuring it
 /// in spaces it doesn't contain would leave it untouchable.
-fn outdent_width(line: &str) -> usize {
+fn outdent_width(line: &str, unit: usize) -> usize {
     if line.starts_with('\t') {
         return 1;
     }
     line.bytes()
-        .take(Doc::INDENT.len())
+        .take(unit)
         .take_while(|b| *b == b' ')
         .count()
+}
+
+/// The indentation step for `line`: one list-marker width when the line opens a
+/// list item (so Tab nests it), otherwise the ordinary [`Doc::INDENT`] step. See
+/// [`list_marker_width`].
+fn indent_unit(line: &str) -> usize {
+    list_marker_width(line).unwrap_or(Doc::INDENT.len())
+}
+
+/// The display width of the list marker `line` opens with — the bullet or number
+/// through its trailing space, *excluding* any indentation before it — or `None`
+/// when the line isn't a list item. `"- "` → 2, `"1. "` → 3, `"  10) "` → 4.
+/// This is exactly how far the marker's content is inset, so indenting a sibling
+/// by it lands the sibling's marker at this item's content column and nests it.
+fn list_marker_width(line: &str) -> Option<usize> {
+    let b = line.as_bytes();
+    let mut i = 0;
+    while i < b.len() && (b[i] == b' ' || b[i] == b'\t') {
+        i += 1;
+    }
+    let marker_start = i;
+    if i < b.len() && matches!(b[i], b'-' | b'*' | b'+') {
+        i += 1;
+    } else {
+        let digits_start = i;
+        while i < b.len() && b[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == digits_start || !(i < b.len() && matches!(b[i], b'.' | b')')) {
+            return None;
+        }
+        i += 1; // the . or )
+    }
+    let after_marker = i;
+    while i < b.len() && (b[i] == b' ' || b[i] == b'\t') {
+        i += 1;
+    }
+    if i == after_marker {
+        return None; // a marker needs a trailing space
+    }
+    Some(i - marker_start)
 }
 
 fn classify(c: char) -> Class {
@@ -4760,9 +4814,8 @@ mod tests {
 
     #[test]
     fn indent_nests_a_list_item_under_its_parent() {
-        // Not list-*aware* (that needs container-aware indentation in twig), but
-        // the plain line shift already lands a bullet at the column that nests
-        // it — which is the same width the aware version will need.
+        // Tab indents a list item by its own marker width, landing its marker at
+        // the parent's content column so twig reparses it as a nested list.
         for view in [View::Source, View::Wysiwyg] {
             let mut d = doc_in(view, "indent_nest", "- a\n- b\n");
             d.caret = 6; // on the second item
@@ -4771,6 +4824,33 @@ mod tests {
             let lists = d.nodes().iter().filter(|n| n.kind == "bullet_list").count();
             assert_eq!(lists, 2, "the indented item is a nested list");
         }
+    }
+
+    #[test]
+    fn indent_nests_an_ordered_item_at_its_marker_width() {
+        // An ordered marker `1. ` is three columns wide, so a two-space step
+        // (which nests a bullet) leaves it flat. Regression: Tab must use the
+        // marker width, three, so the item actually nests.
+        for view in [View::Source, View::Wysiwyg] {
+            let mut d = doc_in(view, "indent_ord", "1. a\n2. b\n3. c\n");
+            d.caret = d.source.find('b').unwrap();
+            d.indent();
+            assert_eq!(d.source, "1. a\n   2. b\n3. c\n");
+            let lists = d.nodes().iter().filter(|n| n.kind == "ordered_list").count();
+            assert_eq!(lists, 2, "the indented item is a nested ordered list");
+        }
+    }
+
+    #[test]
+    fn outdent_unnests_an_ordered_item_in_one_press() {
+        // Shift+Tab gives back exactly the marker width the indent added, so a
+        // nested ordered item unnests in a single press rather than two.
+        let mut d = doc_with("outdent_ord", "1. a\n   2. b\n3. c\n");
+        d.caret = d.source.find('b').unwrap();
+        d.outdent();
+        assert_eq!(d.source, "1. a\n2. b\n3. c\n");
+        let lists = d.nodes().iter().filter(|n| n.kind == "ordered_list").count();
+        assert_eq!(lists, 1, "back to one flat list");
     }
 
     #[test]
