@@ -67,6 +67,7 @@ public final class LeafTextView: UIView, UITextInput {
             // just repaints. Guarding this breaks the relayout⇄state-publish loop
             // that otherwise re-scrolled the view to the caret every frame.
             guard theme.metricsDiffer(from: oldValue) else { setNeedsDisplay(); return }
+            shapeCache.removeAll(keepingCapacity: true)   // shaping is theme-dependent
             avgGlyphWidth = nil
             relayoutForWidth(force: true)
         }
@@ -80,6 +81,9 @@ public final class LeafTextView: UIView, UITextInput {
     /// The caret offset the view last scrolled to reveal. Only a *move* re-scrolls,
     /// so passive reflows leave the reader's scroll position alone.
     private var lastCaretOffset: UInt32?
+    /// Per-row shaped-text cache reused across frames; an edit re-shapes only the
+    /// changed row(s). Cleared when the theme geometry changes (see `theme`).
+    private var shapeCache: [Row: ShapedRow] = [:]
 
     // UITextInput plumbing.
     public weak var inputDelegate: UITextInputDelegate?
@@ -97,7 +101,9 @@ public final class LeafTextView: UIView, UITextInput {
         self.theme = theme
         let first = doc.view()
         self.docView = first
-        self.layoutEngine = EditorLayout(first, theme: theme)
+        var seed: [Row: ShapedRow] = [:]
+        self.layoutEngine = EditorLayout(first, theme: theme, cache: &seed)
+        self.shapeCache = seed
         super.init(frame: .zero)
         backgroundColor = .clear
         contentMode = .redraw
@@ -154,7 +160,7 @@ public final class LeafTextView: UIView, UITextInput {
     /// and re-lays its selection overlays afterward.
     private func render(_ view: DocView) {
         docView = view
-        layoutEngine = EditorLayout(view, theme: theme)
+        layoutEngine = EditorLayout(view, theme: theme, cache: &shapeCache)
         invalidateIntrinsicContentSize()
         setNeedsDisplay()
         // Only follow the caret when it actually moved, not on a passive reflow.

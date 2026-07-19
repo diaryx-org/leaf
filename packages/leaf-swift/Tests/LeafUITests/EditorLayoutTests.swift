@@ -67,4 +67,34 @@ final class EditorLayoutTests: XCTestCase {
         let (_, ch) = layout.hit(CGPoint(x: 10_000, y: theme.padding.top + 4), theme: theme)
         XCTAssertLessThanOrEqual(ch, "hello".utf16.count, "hit clamps past end-of-line to the line length")
     }
+
+    // MARK: incremental shaping cache
+
+    func testCacheReusesUnchangedRowAndReshapesChangedRow() {
+        var cache: [Row: ShapedRow] = [:]
+        let l1 = EditorLayout(docView([row([mkRun("alpha")]), row([mkRun("beta")])]), theme: theme, cache: &cache)
+        // Edit row 0 only; row 1 is byte-identical.
+        let l2 = EditorLayout(docView([row([mkRun("alphaX")]), row([mkRun("beta")])]), theme: theme, cache: &cache)
+        XCTAssertTrue(l1.rows[1].attributed === l2.rows[1].attributed, "unchanged row reuses its shaped text")
+        XCTAssertFalse(l1.rows[0].attributed === l2.rows[0].attributed, "changed row is re-shaped")
+    }
+
+    func testCacheReuseSurvivesRowInsertion() {
+        var cache: [Row: ShapedRow] = [:]
+        let a = row([mkRun("a")])
+        let b = row([mkRun("b")])
+        let l1 = EditorLayout(docView([a, b]), theme: theme, cache: &cache)
+        // Insert a new first row: a and b shift down one but are unchanged.
+        let l2 = EditorLayout(docView([row([mkRun("new")]), a, b]), theme: theme, cache: &cache)
+        XCTAssertTrue(l1.rows[0].attributed === l2.rows[1].attributed, "row reused despite shifting position")
+        XCTAssertTrue(l1.rows[1].attributed === l2.rows[2].attributed)
+    }
+
+    func testCacheEvictsRowsNoLongerPresent() {
+        var cache: [Row: ShapedRow] = [:]
+        _ = EditorLayout(docView([row([mkRun("keep")]), row([mkRun("drop")])]), theme: theme, cache: &cache)
+        _ = EditorLayout(docView([row([mkRun("keep")])]), theme: theme, cache: &cache)
+        XCTAssertEqual(cache.count, 1, "the removed row is evicted; the cache stays bounded to the document")
+        XCTAssertNotNil(cache[row([mkRun("keep")])])
+    }
 }

@@ -39,25 +39,60 @@ struct RowLayout {
     let height: CGFloat
 }
 
+/// The expensive, position-independent shaping of one row: its attributed string,
+/// the `CTLine` over it, and its height. Cached across frames keyed by the row's
+/// *value*, so an edit re-shapes only the row(s) that changed — everything else,
+/// including every row below an insert/delete, is reused. `Row` value-equality is
+/// exact for this purpose: two equal rows shape identically. (A selection-only edit
+/// flips a run's `sel` and so re-shapes that row, which is harmless — `sel` isn't in
+/// the attributed string; the selection is filled separately.)
+struct ShapedRow {
+    let attributed: NSAttributedString
+    let line: CTLine
+    let height: CGFloat
+}
+
 /// The laid-out rows of one `DocView` plus the geometry queries over them.
 struct EditorLayout {
     let rows: [RowLayout]
     /// Total content height including top+bottom padding — the view's fitting size.
     let contentHeight: CGFloat
 
-    init(_ docView: DocView, theme: EditorTheme) {
+    /// Lay out `docView`, reusing shaped rows from `cache` and replacing it with the
+    /// exact set this frame used — so deleted rows are evicted and the cache stays
+    /// bounded to the document. The caller must clear `cache` when the theme's
+    /// geometry changes, since shaping depends on the theme and the key doesn't.
+    init(_ docView: DocView, theme: EditorTheme, cache: inout [Row: ShapedRow]) {
         var layouts: [RowLayout] = []
         layouts.reserveCapacity(docView.rows.count)
+        var next = Dictionary<Row, ShapedRow>(minimumCapacity: docView.rows.count)
         var y = theme.padding.top
         for row in docView.rows {
-            let attributed = AttributedRow.make(row, theme: theme)
-            let line = CTLineCreateWithAttributedString(attributed)
-            let h = theme.rowHeight(heading: row.heading)
-            layouts.append(RowLayout(row: row, attributed: attributed, line: line, top: y, height: h))
-            y += h
+            let shaped: ShapedRow
+            if let hit = cache[row] ?? next[row] {
+                shaped = hit
+            } else {
+                let attributed = AttributedRow.make(row, theme: theme)
+                shaped = ShapedRow(
+                    attributed: attributed,
+                    line: CTLineCreateWithAttributedString(attributed),
+                    height: theme.rowHeight(heading: row.heading)
+                )
+            }
+            next[row] = shaped
+            layouts.append(RowLayout(row: row, attributed: shaped.attributed, line: shaped.line, top: y, height: shaped.height))
+            y += shaped.height
         }
         rows = layouts
         contentHeight = y + theme.padding.bottom
+        cache = next
+    }
+
+    /// Build with no cross-frame cache — every row shaped fresh. Convenience for
+    /// one-off layouts and tests.
+    init(_ docView: DocView, theme: EditorTheme) {
+        var scratch: [Row: ShapedRow] = [:]
+        self.init(docView, theme: theme, cache: &scratch)
     }
 
     /// A 1.5pt-wide vertical rect at row `row`, UTF-16 offset `ch` — the geometry a

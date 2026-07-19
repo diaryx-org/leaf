@@ -32,6 +32,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             // theme just repaints. Guarding this breaks the relayout⇄state-publish
             // loop that otherwise re-scrolled the view to the caret every frame.
             guard theme.metricsDiffer(from: oldValue) else { needsDisplay = true; return }
+            shapeCache.removeAll(keepingCapacity: true)   // shaping is theme-dependent
             avgGlyphWidth = nil
             relayoutForWidth(force: true)
         }
@@ -43,6 +44,9 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     private var layoutEngine: EditorLayout
     private var wrapCols: Int = 0
     private var avgGlyphWidth: CGFloat?
+    /// Per-row shaped-text cache reused across frames; an edit re-shapes only the
+    /// changed row(s). Cleared when the theme geometry changes (see `theme`).
+    private var shapeCache: [Row: ShapedRow] = [:]
 
     private var caretVisible = true
     private var blinkTimer: Timer?
@@ -57,7 +61,9 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         self.theme = theme
         let first = doc.view()
         self.docView = first
-        self.layoutEngine = EditorLayout(first, theme: theme)
+        var seed: [Row: ShapedRow] = [:]
+        self.layoutEngine = EditorLayout(first, theme: theme, cache: &seed)
+        self.shapeCache = seed
         super.init(frame: .zero)
         autoresizingMask = [.width]
         // Seed with the initial caret so the first reflow opens at the top rather
@@ -108,7 +114,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     private func render(_ view: DocView) {
         docView = view
-        layoutEngine = EditorLayout(view, theme: theme)
+        layoutEngine = EditorLayout(view, theme: theme, cache: &shapeCache)
         let h = layoutEngine.contentHeight
         if abs(frame.height - h) > 0.5 { setFrameSize(NSSize(width: frame.width, height: h)) }
         needsDisplay = true
