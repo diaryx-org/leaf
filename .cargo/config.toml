@@ -1,0 +1,8 @@
+# Local development against the sibling twig checkout (../twig), whose Rust
+# binding leaf pins via [patch.crates-io] in Cargo.toml. twig-sys links a
+# prebuilt libtwig.a by default; forcing the source build makes leaf pick up
+# in-progress Zig changes to the engine (list/table structural ops) without
+# rebuilding the payload archive. Requires a Zig toolchain (see rust-toolchain
+# / twig's build.zig.zon: Zig 0.16+).
+[env]
+TWIG_SYS_FORCE_SOURCE = "1"
