@@ -25,7 +25,7 @@ use anyhow::{Result, anyhow};
 #[cfg(feature = "fs")]
 use anyhow::Context;
 use twig::{
-    BlockContainerKind, BlockKind, Change, Editor, FlatNode, Format, InlineKind,
+    Alignment, BlockContainerKind, BlockKind, Change, Editor, FlatNode, Format, InlineKind,
     MarkdownExtensions, NodeId,
 };
 use unicode_segmentation::GraphemeCursor;
@@ -1569,6 +1569,91 @@ impl Doc {
         } else {
             BlockContainerKind::BulletList
         });
+    }
+
+    // ── Tables ───────────────────────────────────────────────────────────────
+    // A table is a grid, and twig edits it as one — add/remove/move a row or
+    // column, set a column's alignment — re-spelling the whole table in a single
+    // splice. Every gesture is anchored at the caret's cell. leaf just names the
+    // gesture and re-reads the result; the whole table's numbering, borders, and
+    // delimiter are twig's to keep straight.
+
+    /// Whether the caret is inside a table — what a frontend asks to enable or
+    /// disable its table controls.
+    pub fn caret_in_table(&mut self) -> bool {
+        let caret = self.caret.min(self.source.len());
+        self.editor
+            .ancestors_at(caret)
+            .map(|c| c.into_iter().any(|m| m.kind == "table"))
+            .unwrap_or(false)
+    }
+
+    /// Insert an empty row below (`below`) or above the caret's row.
+    pub fn table_insert_row(&mut self, below: bool) {
+        self.record_caret();
+        let r = self.editor.table_insert_row(self.caret, below);
+        self.apply_table(r, "table row");
+    }
+
+    /// Delete the caret's row (not the header, not the last body row).
+    pub fn table_delete_row(&mut self) {
+        self.record_caret();
+        let r = self.editor.table_delete_row(self.caret);
+        self.apply_table(r, "table row");
+    }
+
+    /// Insert an empty column right (`right`) or left of the caret's column.
+    pub fn table_insert_column(&mut self, right: bool) {
+        self.record_caret();
+        let r = self.editor.table_insert_column(self.caret, right);
+        self.apply_table(r, "table column");
+    }
+
+    /// Delete the caret's column (unless it is the only one).
+    pub fn table_delete_column(&mut self) {
+        self.record_caret();
+        let r = self.editor.table_delete_column(self.caret);
+        self.apply_table(r, "table column");
+    }
+
+    /// Set the caret's column to `alignment`.
+    pub fn table_set_alignment(&mut self, alignment: Alignment) {
+        self.record_caret();
+        let r = self.editor.table_set_alignment(self.caret, alignment);
+        self.apply_table(r, "table alignment");
+    }
+
+    /// Move the caret's row one place down (`down`) or up, within the body rows.
+    pub fn table_move_row(&mut self, down: bool) {
+        self.record_caret();
+        let r = self.editor.table_move_row(self.caret, down);
+        self.apply_table(r, "table row");
+    }
+
+    /// Move the caret's column one place right (`right`) or left.
+    pub fn table_move_column(&mut self, right: bool) {
+        self.record_caret();
+        let r = self.editor.table_move_column(self.caret, right);
+        self.apply_table(r, "table column");
+    }
+
+    /// Settle the caret and document flags after a table op (or report its
+    /// error). twig re-spells the whole table, so the caret rides its old byte
+    /// offset and is clamped back into the rebuilt bytes — near enough to where
+    /// it was, since the op preserves the cells' content and order around it.
+    fn apply_table(&mut self, result: Result<(), twig::Error>, what: &str) {
+        match result {
+            Ok(()) => {
+                self.last_edit_kind = None;
+                self.refresh();
+                self.anchor = None;
+                self.clamp_caret();
+                self.dirty = self.source != self.clean_source;
+                self.status = None;
+                self.record_caret();
+            }
+            Err(e) => self.status = Some(format!("{what}: {e}")),
+        }
     }
 
     /// One `toggle_block_container` over the block-level target.
@@ -4881,6 +4966,49 @@ mod tests {
         assert_eq!(d.source, "1. a\n2. b\n3. c\n");
         let lists = d.nodes().iter().filter(|n| n.kind == "ordered_list").count();
         assert_eq!(lists, 1, "back to one flat list");
+    }
+
+    #[test]
+    fn table_insert_row_adds_a_row_below_the_caret() {
+        let mut d = doc_with("tbl_ins_row", "| a | b |\n| --- | --- |\n| 1 | 2 |\n");
+        d.caret = d.source.find('1').unwrap(); // in the body row
+        d.table_insert_row(true);
+        assert_eq!(
+            d.source,
+            "| a | b |\n| --- | --- |\n| 1 | 2 |\n|  |  |\n"
+        );
+    }
+
+    #[test]
+    fn table_insert_and_delete_column_at_the_caret() {
+        let mut d = doc_with("tbl_col", "| a | b |\n| --- | --- |\n| 1 | 2 |\n");
+        d.caret = d.source.find('a').unwrap(); // column 0
+        d.table_insert_column(true); // add a column to the right of `a`
+        assert_eq!(
+            d.source,
+            "| a |  | b |\n| --- | --- | --- |\n| 1 |  | 2 |\n"
+        );
+        d.caret = d.source.find('b').unwrap(); // now the third column
+        d.table_delete_column();
+        assert_eq!(d.source, "| a |  |\n| --- | --- |\n| 1 |  |\n");
+    }
+
+    #[test]
+    fn table_set_alignment_respells_the_delimiter() {
+        let mut d = doc_with("tbl_align", "| a | b |\n| --- | --- |\n| 1 | 2 |\n");
+        d.caret = d.source.find('b').unwrap();
+        d.table_set_alignment(Alignment::Right);
+        assert_eq!(d.source, "| a | b |\n| --- | ---: |\n| 1 | 2 |\n");
+    }
+
+    #[test]
+    fn table_op_off_a_table_is_a_no_op_with_a_status() {
+        let mut d = doc_with("tbl_none", "just text\n");
+        d.caret = 3;
+        d.table_insert_row(true);
+        assert_eq!(d.source, "just text\n", "nothing changed");
+        assert!(d.status.is_some(), "a status explains why");
+        assert!(!d.caret_in_table());
     }
 
     #[test]
