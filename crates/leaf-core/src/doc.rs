@@ -903,6 +903,18 @@ impl Doc {
             self.insert("\n> ");
             return;
         }
+        // On an *empty* paragraph line, a lone Enter should add a single blank line,
+        // not another full paragraph break — so it moves down one line and one
+        // Backspace undoes it, not two. A non-empty paragraph still opens a fresh
+        // paragraph with `\n\n` (splitting it there when the caret is mid-line).
+        let line_start = self.source[..self.caret].rfind('\n').map_or(0, |i| i + 1);
+        let line_end = self.source[self.caret..]
+            .find('\n')
+            .map_or(self.source.len(), |i| self.caret + i);
+        if self.source[line_start..line_end].trim().is_empty() {
+            self.insert("\n");
+            return;
+        }
         self.insert("\n\n");
     }
 

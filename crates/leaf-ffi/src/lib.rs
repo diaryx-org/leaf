@@ -1114,6 +1114,33 @@ mod tests {
     }
 
     #[test]
+    fn enter_on_an_empty_line_adds_one_newline_and_one_backspace_undoes_it() {
+        let d = doc("hello\n");
+        d.set_selection_offsets(5, 5);
+        d.newline(); // paragraph "hello" → a paragraph break, caret on the empty line
+        let after_para = d.source();
+        let caret_para = d.caret_offset();
+        d.newline(); // Enter on the empty line
+        assert_eq!(
+            d.source().len(),
+            after_para.len() + 1,
+            "an empty-line Enter adds a single newline, not another paragraph break"
+        );
+        d.backspace(); // a single Backspace restores the previous state
+        assert_eq!(d.source(), after_para);
+        assert_eq!(d.caret_offset(), caret_para);
+    }
+
+    #[test]
+    fn enter_in_a_nonempty_paragraph_still_opens_a_new_paragraph() {
+        let d = doc("hello\n");
+        d.set_selection_offsets(5, 5);
+        let before = d.source().len();
+        d.newline();
+        assert_eq!(d.source().len(), before + 2, "a paragraph break is still \\n\\n");
+    }
+
+    #[test]
     fn link_destination_at_caret_reads_the_caret_link() {
         let d = doc("see [t](https://x.dev) ok\n");
         d.set_selection_offsets(5, 5); // caret on the link text "t"
