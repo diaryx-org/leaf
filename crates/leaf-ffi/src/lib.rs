@@ -711,6 +711,13 @@ impl LeafDoc {
         g.view()
     }
 
+    /// The destination of the link under the caret, if the caret is inside one —
+    /// so a frontend can open it (⌘-click / "Open Link") or show it. `None` when the
+    /// caret isn't on a link.
+    pub fn link_destination_at_caret(&self) -> Option<String> {
+        self.lock().doc.link_destination_at_caret()
+    }
+
     pub fn undo(&self) -> DocView {
         let mut g = self.lock();
         g.doc.undo();
@@ -1090,5 +1097,14 @@ mod tests {
         let first = d.set_unwrapped();
         let second = d.set_unwrapped();
         assert_eq!(first.rows.len(), second.rows.len());
+    }
+
+    #[test]
+    fn link_destination_at_caret_reads_the_caret_link() {
+        let d = doc("see [t](https://x.dev) ok\n");
+        d.set_selection_offsets(5, 5); // caret on the link text "t"
+        assert_eq!(d.link_destination_at_caret().as_deref(), Some("https://x.dev"));
+        d.set_selection_offsets(0, 0); // caret on plain text
+        assert_eq!(d.link_destination_at_caret(), None);
     }
 }

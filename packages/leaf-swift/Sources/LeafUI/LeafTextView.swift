@@ -187,12 +187,37 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         window?.makeFirstResponder(self)
         let p = convert(event.locationInWindow, from: nil)
         let (row, ch) = layoutEngine.hit(p, theme: theme)
+        // ⌘-click opens a link under the pointer (the native convention), leaving the
+        // caret there. A plain click still places the caret to edit the link text.
+        if event.modifierFlags.contains(.command), event.clickCount == 1 {
+            render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: false))
+            openLinkAtCaret()
+            return
+        }
         let extend = event.modifierFlags.contains(.shift)
         switch event.clickCount {
         case 2:  render(doc.selectWordCh(row: UInt32(row), ch: UInt32(ch)))
         case 3:  render(doc.selectBlockCh(row: UInt32(row), ch: UInt32(ch)))
         default: render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: extend))
         }
+    }
+
+    /// Open the link under the caret in the default app, if there is one and it
+    /// parses as a URL. Used by ⌘-click and the "Open Link" menu item.
+    @discardableResult
+    private func openLinkAtCaret() -> Bool {
+        guard let dest = doc.linkDestinationAtCaret(), let url = URL(string: dest) else { return false }
+        NSWorkspace.shared.open(url)
+        return true
+    }
+
+    @objc private func openLink(_ sender: Any?) { openLinkAtCaret() }
+
+    @objc private func copyLink(_ sender: Any?) {
+        guard let dest = doc.linkDestinationAtCaret() else { return }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(dest, forType: .string)
     }
 
     public override func mouseDragged(with event: NSEvent) {
@@ -349,6 +374,12 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         }
 
         let menu = NSMenu()
+        // A link under the click (the caret was just placed there) leads the menu.
+        if doc.linkDestinationAtCaret() != nil {
+            menu.addItem(withTitle: "Open Link", action: #selector(openLink(_:)), keyEquivalent: "")
+            menu.addItem(withTitle: "Copy Link", action: #selector(copyLink(_:)), keyEquivalent: "")
+            menu.addItem(.separator())
+        }
         if hasSelection {
             menu.addItem(withTitle: "Cut", action: #selector(cut(_:)), keyEquivalent: "")
             menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
