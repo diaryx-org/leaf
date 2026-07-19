@@ -880,6 +880,9 @@ impl Doc {
     /// one level (Tab).
     pub fn indent(&mut self) {
         self.reindent(true);
+        // Nesting changes an ordered list's numbering (the nested item restarts,
+        // its old siblings resume) — keep the source markers in step.
+        self.renumber_here();
     }
 
     /// Take one indent level back off the selected lines, or the caret's line
@@ -892,6 +895,7 @@ impl Doc {
     /// line at a depth Shift+Tab couldn't undo.
     pub fn outdent(&mut self) {
         self.reindent(false);
+        self.renumber_here();
     }
 
     /// The body of [`indent`](Self::indent) / [`outdent`](Self::outdent).
@@ -1044,6 +1048,9 @@ impl Doc {
             && self.is_inside_list(line_start)
         {
             self.list_newline(line_start, marker);
+            // A new item mid-list leaves the source markers stale (`next_list_marker`
+            // only bumps the one it wrote); renumber the whole list to match.
+            self.renumber_here();
             return;
         }
         if has("block_quote") {
@@ -1303,6 +1310,27 @@ impl Doc {
                 self.status = Some(format!("edit: {e}"));
                 false
             }
+        }
+    }
+
+    /// After a structural list edit (a new item, a nest/unnest), renumber the
+    /// ordered list the caret sits in so its source markers run `1, 2, 3, …`
+    /// again — a raw splice leaves them stale (`1. 2. 2. 3.`). twig does the
+    /// renumber as its own edit; fold it into the edit that triggered it so the
+    /// two undo as one, and only when it actually changed the source (a no-op or
+    /// a caret outside any ordered list must not coalesce the real edit into the
+    /// step before it).
+    fn renumber_here(&mut self) {
+        let before = self.source.clone();
+        if self.editor.renumber_ordered_lists(self.caret).is_err() {
+            return; // not inside an ordered list — nothing to renumber
+        }
+        self.refresh();
+        if self.source != before {
+            let _ = self.editor.coalesce_last_undo();
+            self.dirty = self.source != self.clean_source;
+            self.clamp_caret();
+            self.record_caret();
         }
     }
 
@@ -4830,12 +4858,13 @@ mod tests {
     fn indent_nests_an_ordered_item_at_its_marker_width() {
         // An ordered marker `1. ` is three columns wide, so a two-space step
         // (which nests a bullet) leaves it flat. Regression: Tab must use the
-        // marker width, three, so the item actually nests.
+        // marker width, three, so the item actually nests — and the source
+        // renumbers so the sub-list restarts at 1 and the outer list resumes.
         for view in [View::Source, View::Wysiwyg] {
             let mut d = doc_in(view, "indent_ord", "1. a\n2. b\n3. c\n");
             d.caret = d.source.find('b').unwrap();
             d.indent();
-            assert_eq!(d.source, "1. a\n   2. b\n3. c\n");
+            assert_eq!(d.source, "1. a\n   1. b\n2. c\n");
             let lists = d.nodes().iter().filter(|n| n.kind == "ordered_list").count();
             assert_eq!(lists, 2, "the indented item is a nested ordered list");
         }
@@ -4844,13 +4873,25 @@ mod tests {
     #[test]
     fn outdent_unnests_an_ordered_item_in_one_press() {
         // Shift+Tab gives back exactly the marker width the indent added, so a
-        // nested ordered item unnests in a single press rather than two.
+        // nested ordered item unnests in a single press, and the flattened list
+        // renumbers back to a clean 1, 2, 3.
         let mut d = doc_with("outdent_ord", "1. a\n   2. b\n3. c\n");
         d.caret = d.source.find('b').unwrap();
         d.outdent();
         assert_eq!(d.source, "1. a\n2. b\n3. c\n");
         let lists = d.nodes().iter().filter(|n| n.kind == "ordered_list").count();
         assert_eq!(lists, 1, "back to one flat list");
+    }
+
+    #[test]
+    fn enter_in_an_ordered_list_renumbers_the_following_items() {
+        // Inserting an item mid-list left the source markers stale (`1. 2. 2. 3.`);
+        // the renumber pass keeps them sequential, matching what the view draws.
+        let mut d = wysiwyg_doc("enter_renumber", "1. a\n2. b\n3. c\n");
+        d.caret = d.source.find('a').unwrap() + 1; // end of item a
+        d.newline();
+        d.insert("x");
+        assert_eq!(d.source, "1. a\n2. x\n3. b\n4. c\n");
     }
 
     #[test]
