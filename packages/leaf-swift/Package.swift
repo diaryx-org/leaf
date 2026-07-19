@@ -44,5 +44,15 @@ let package = Package(
             dependencies: ["LeafFFI"],
             path: "Sources/LeafUI"
         ),
+        // Renderer unit tests. They build `Row`/`DocView` fixtures in pure Swift and
+        // exercise the CoreText geometry + attribute mapping — no `LeafDoc`/Rust
+        // calls — but the module still references the FFI symbols, so the test
+        // binary must link the staticlib. `scripts/test-swift.sh` force-loads it;
+        // see that script (plain `swift test` won't find the `.a`).
+        .testTarget(
+            name: "LeafUITests",
+            dependencies: ["LeafUI"],
+            path: "Tests/LeafUITests"
+        ),
     ]
 )

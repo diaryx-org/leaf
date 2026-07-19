@@ -133,6 +133,11 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         let selColor = active ? theme.selectionColor : theme.inactiveSelectionColor
 
         for rl in layoutEngine.rows {
+            // Rows are laid out top-down, so cull to the dirty band: skip rows above
+            // it, stop once past the bottom. A scroll or caret blink then repaints
+            // only the visible rows, not the whole document.
+            if rl.top >= dirtyRect.maxY { break }
+            if rl.top + rl.height <= dirtyRect.minY { continue }
             let rowRect = CGRect(x: padX, y: rl.top, width: fullWidth, height: rl.height)
             if rl.row.code {
                 ctx.setFillColor(theme.codeBackground.cgColor)

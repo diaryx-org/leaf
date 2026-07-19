@@ -186,6 +186,10 @@ public final class LeafTextView: UIView, UITextInput {
         let fullWidth = bounds.width - theme.padding.left - theme.padding.right
 
         for rl in layoutEngine.rows {
+            // Rows are laid out top-down, so cull to the dirty band: skip rows above
+            // it, stop once past the bottom — repaint only the visible rows.
+            if rl.top >= rect.maxY { break }
+            if rl.top + rl.height <= rect.minY { continue }
             let rowRect = CGRect(x: padX, y: rl.top, width: fullWidth, height: rl.height)
             if rl.row.code {
                 ctx.setFillColor(theme.codeBackground.cgColor)
