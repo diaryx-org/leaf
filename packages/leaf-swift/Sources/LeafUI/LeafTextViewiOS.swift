@@ -68,7 +68,6 @@ public final class LeafTextView: UIView, UITextInput {
             // that otherwise re-scrolled the view to the caret every frame.
             guard theme.metricsDiffer(from: oldValue) else { setNeedsDisplay(); return }
             shapeCache.removeAll(keepingCapacity: true)   // shaping is theme-dependent
-            avgGlyphWidth = nil
             relayoutForWidth(force: true)
         }
     }
@@ -76,8 +75,9 @@ public final class LeafTextView: UIView, UITextInput {
 
     private var docView: DocView
     private var layoutEngine: EditorLayout
-    private var wrapCols: Int = 0
-    private var avgGlyphWidth: CGFloat?
+    /// The pixel width rows wrap to (content width, minus insets). Core lays out
+    /// unwrapped; the view soft-wraps at this width.
+    private var wrapWidth: CGFloat = 0
     /// The caret offset the view last scrolled to reveal. Only a *move* re-scrolls,
     /// so passive reflows leave the reader's scroll position alone.
     private var lastCaretOffset: UInt32?
@@ -99,10 +99,11 @@ public final class LeafTextView: UIView, UITextInput {
     public init(doc: LeafDoc, theme: EditorTheme = .default) {
         self.doc = doc
         self.theme = theme
-        let first = doc.view()
+        // Unwrapped layout (one row per block); the view soft-wraps at pixel width.
+        let first = doc.setUnwrapped()
         self.docView = first
         var seed: [Row: ShapedRow] = [:]
-        self.layoutEngine = EditorLayout(first, theme: theme, cache: &seed)
+        self.layoutEngine = EditorLayout(first, theme: theme, wrapWidth: 0, cache: &seed)
         self.shapeCache = seed
         super.init(frame: .zero)
         backgroundColor = .clear
@@ -130,28 +131,13 @@ public final class LeafTextView: UIView, UITextInput {
     }
 
     private func relayoutForWidth(force: Bool) {
-        let cols = columnsForWidth()
-        guard cols > 0 else { return }
-        if force || cols != wrapCols {
-            wrapCols = cols
-            render(doc.setWidth(cols: UInt32(cols)))
+        let w = bounds.width - theme.padding.left - theme.padding.right
+        guard w > 0 else { return }
+        if force || abs(w - wrapWidth) > 0.5 {
+            wrapWidth = w
+            // Re-wrap the current frame at the new pixel width — no round trip to core.
+            render(docView)
         }
-    }
-
-    private func columnsForWidth() -> Int {
-        let avail = bounds.width - theme.padding.left - theme.padding.right
-        let avg = glyphWidth()
-        guard avail > 0, avg > 0 else { return 0 }
-        return max(1, Int(avail / avg))
-    }
-
-    private func glyphWidth() -> CGFloat {
-        if let w = avgGlyphWidth { return w }
-        let sample = "the quick brown fox jumps over the lazy dog " as NSString
-        let font = theme.proportionalFont(size: theme.fontSize, bold: false, italic: false)
-        let width = sample.size(withAttributes: [.font: font]).width / CGFloat(sample.length)
-        avgGlyphWidth = width > 0 ? width : theme.fontSize * 0.5
-        return avgGlyphWidth!
     }
 
     // MARK: applying a frame
@@ -160,7 +146,7 @@ public final class LeafTextView: UIView, UITextInput {
     /// and re-lays its selection overlays afterward.
     private func render(_ view: DocView) {
         docView = view
-        layoutEngine = EditorLayout(view, theme: theme, cache: &shapeCache)
+        layoutEngine = EditorLayout(view, theme: theme, wrapWidth: wrapWidth, cache: &shapeCache)
         invalidateIntrinsicContentSize()
         setNeedsDisplay()
         // Only follow the caret when it actually moved, not on a passive reflow.
@@ -202,7 +188,14 @@ public final class LeafTextView: UIView, UITextInput {
                 ctx.fill(rowRect.insetBy(dx: -4, dy: 0))
                 if let lang = rl.row.codeLang, !lang.isEmpty { drawCodeLang(lang, in: rowRect) }
             }
-            rl.attributed.draw(with: rowRect, options: [.usesLineFragmentOrigin], context: nil)
+            // Draw each wrapped visual line's substring on its own line box.
+            for (i, wl) in rl.wrapped.enumerated() {
+                let lineTop = rl.top + CGFloat(i) * rl.lineHeight
+                if lineTop >= rect.maxY { break }
+                if lineTop + rl.lineHeight <= rect.minY { continue }
+                wl.attributed.draw(with: CGRect(x: padX, y: lineTop, width: fullWidth, height: rl.lineHeight),
+                                   options: [.usesLineFragmentOrigin], context: nil)
+            }
         }
     }
 
@@ -390,11 +383,29 @@ public final class LeafTextView: UIView, UITextInput {
         switch direction {
         case .left:  o = Int(doc.stepOffset(off: UInt32(o), delta: Int32(clamping: -offset)))
         case .right: o = Int(doc.stepOffset(off: UInt32(o), delta: Int32(clamping: offset)))
-        case .up:    for _ in 0..<max(0, offset) { if let v = doc.verticalOffset(off: UInt32(o), down: false) { o = Int(v) } else { break } }
-        case .down:  for _ in 0..<max(0, offset) { if let v = doc.verticalOffset(off: UInt32(o), down: true) { o = Int(v) } else { break } }
+        // ↑/↓ ride the *visual* wrap: probe one line-height past the caret and hit-test,
+        // rather than core's paragraph rows (unwrapped map).
+        case .up:    o = visualStep(from: o, up: true, times: offset)
+        case .down:  o = visualStep(from: o, up: false, times: offset)
         @unknown default: break
         }
         return LeafTextPosition(o)
+    }
+
+    /// Move `times` visual lines up/down from source offset `o`, returning the new
+    /// offset. Mirrors the AppKit peer's visual-line motion, in offset terms.
+    private func visualStep(from o: Int, up: Bool, times: Int) -> Int {
+        var cur = o
+        for _ in 0..<max(0, times) {
+            let rc = doc.posForOffset(off: UInt32(cur))
+            guard let caret = layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch), theme: theme) else { break }
+            let probeY = up ? caret.minY - 1 : caret.maxY + 1
+            let (row, ch) = layoutEngine.hit(CGPoint(x: caret.minX, y: probeY), theme: theme)
+            let next = Int(doc.offsetForPos(row: UInt32(row), ch: UInt32(ch)))
+            if next == cur { break }
+            cur = next
+        }
+        return cur
     }
 
     public func compare(_ position: UITextPosition, to other: UITextPosition) -> ComparisonResult {
@@ -449,14 +460,21 @@ public final class LeafTextView: UIView, UITextInput {
         var rects: [UITextSelectionRect] = []
         for row in sRow...eRow where layoutEngine.rows.indices.contains(row) {
             let rl = layoutEngine.rows[row]
-            let len = rl.attributed.length
-            let fromCh = (row == sRow) ? sCh : 0
-            let toCh = (row == eRow) ? min(eCh, len) : len
-            let x0 = CTLineGetOffsetForStringIndex(rl.line, CFIndex(min(fromCh, len)), nil)
-            let x1 = CTLineGetOffsetForStringIndex(rl.line, CFIndex(toCh), nil)
-            let rect = CGRect(x: theme.padding.left + x0, y: rl.top,
-                              width: max(x1 - x0, row == eRow ? 0 : 2), height: rl.height)
-            rects.append(LeafSelectionRect(rect: rect, containsStart: row == sRow, containsEnd: row == eRow))
+            let rowFrom = (row == sRow) ? sCh : 0
+            let rowTo = (row == eRow) ? min(eCh, rl.attributed.length) : rl.attributed.length
+            // One rect per visual line the selection touches in this block.
+            for (i, wl) in rl.wrapped.enumerated() {
+                let lineStart = wl.start, lineEnd = wl.start + wl.length
+                let cs = max(rowFrom, lineStart), ce = min(rowTo, lineEnd)
+                guard cs < ce else { continue }
+                let x0 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(cs - lineStart), nil)
+                let x1 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(ce - lineStart), nil)
+                let rect = CGRect(x: theme.padding.left + x0, y: rl.top + CGFloat(i) * rl.lineHeight,
+                                  width: x1 - x0, height: rl.lineHeight)
+                rects.append(LeafSelectionRect(rect: rect,
+                                               containsStart: row == sRow && cs == sCh,
+                                               containsEnd: row == eRow && ce == eCh))
+            }
         }
         return rects
     }

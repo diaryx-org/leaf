@@ -33,7 +33,6 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             // loop that otherwise re-scrolled the view to the caret every frame.
             guard theme.metricsDiffer(from: oldValue) else { needsDisplay = true; return }
             shapeCache.removeAll(keepingCapacity: true)   // shaping is theme-dependent
-            avgGlyphWidth = nil
             relayoutForWidth(force: true)
         }
     }
@@ -42,11 +41,15 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     private var docView: DocView
     private var layoutEngine: EditorLayout
-    private var wrapCols: Int = 0
-    private var avgGlyphWidth: CGFloat?
+    /// The pixel width rows wrap to (content width, minus insets). Core lays out
+    /// unwrapped; the view soft-wraps at this width.
+    private var wrapWidth: CGFloat = 0
     /// Per-row shaped-text cache reused across frames; an edit re-shapes only the
     /// changed row(s). Cleared when the theme geometry changes (see `theme`).
     private var shapeCache: [Row: ShapedRow] = [:]
+    /// The pixel x that ↑/↓ aim for, so repeated vertical motion rides the visual
+    /// wrap without drifting through shorter lines. Nil except mid vertical run.
+    private var verticalGoalX: CGFloat?
 
     private var caretVisible = true
     private var blinkTimer: Timer?
@@ -59,10 +62,12 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     public init(doc: LeafDoc, theme: EditorTheme = .default) {
         self.doc = doc
         self.theme = theme
-        let first = doc.view()
+        // Switch core to unwrapped layout (one row per block); the view soft-wraps
+        // each row at its own pixel width.
+        let first = doc.setUnwrapped()
         self.docView = first
         var seed: [Row: ShapedRow] = [:]
-        self.layoutEngine = EditorLayout(first, theme: theme, cache: &seed)
+        self.layoutEngine = EditorLayout(first, theme: theme, wrapWidth: 0, cache: &seed)
         self.shapeCache = seed
         super.init(frame: .zero)
         autoresizingMask = [.width]
@@ -86,35 +91,22 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     }
 
     private func relayoutForWidth(force: Bool) {
-        let cols = columnsForWidth()
-        guard cols > 0 else { return }
-        if force || cols != wrapCols {
-            wrapCols = cols
-            render(doc.setWidth(cols: UInt32(cols)))
+        let w = bounds.width - theme.padding.left - theme.padding.right
+        guard w > 0 else { return }
+        if force || abs(w - wrapWidth) > 0.5 {
+            wrapWidth = w
+            // Re-wrap the current frame at the new pixel width — the unwrapped map is
+            // width-independent, so no round trip to core is needed.
+            render(docView, keepVerticalGoal: true)
         }
-    }
-
-    private func columnsForWidth() -> Int {
-        let avail = bounds.width - theme.padding.left - theme.padding.right
-        let avg = glyphWidth()
-        guard avail > 0, avg > 0 else { return 0 }
-        return max(1, Int(avail / avg))
-    }
-
-    private func glyphWidth() -> CGFloat {
-        if let w = avgGlyphWidth { return w }
-        let sample = "the quick brown fox jumps over the lazy dog " as NSString
-        let font = theme.proportionalFont(size: theme.fontSize, bold: false, italic: false)
-        let width = sample.size(withAttributes: [.font: font]).width / CGFloat(sample.length)
-        avgGlyphWidth = width > 0 ? width : theme.fontSize * 0.5
-        return avgGlyphWidth!
     }
 
     // MARK: applying a frame
 
-    private func render(_ view: DocView) {
+    private func render(_ view: DocView, keepVerticalGoal: Bool = false) {
+        if !keepVerticalGoal { verticalGoalX = nil }
         docView = view
-        layoutEngine = EditorLayout(view, theme: theme, cache: &shapeCache)
+        layoutEngine = EditorLayout(view, theme: theme, wrapWidth: wrapWidth, cache: &shapeCache)
         let h = layoutEngine.contentHeight
         if abs(frame.height - h) > 0.5 { setFrameSize(NSSize(width: frame.width, height: h)) }
         needsDisplay = true
@@ -151,7 +143,14 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
                 if let lang = rl.row.codeLang, !lang.isEmpty { drawCodeLang(lang, in: rowRect) }
             }
             layoutEngine.fillSelection(row: rl, padLeft: padX, color: selColor, in: ctx)
-            rl.attributed.draw(with: rowRect, options: [.usesLineFragmentOrigin])
+            // Draw each wrapped visual line's substring on its own line box.
+            for (i, wl) in rl.wrapped.enumerated() {
+                let lineTop = rl.top + CGFloat(i) * rl.lineHeight
+                if lineTop >= dirtyRect.maxY { break }
+                if lineTop + rl.lineHeight <= dirtyRect.minY { continue }
+                wl.attributed.draw(with: CGRect(x: padX, y: lineTop, width: fullWidth, height: rl.lineHeight),
+                                   options: [.usesLineFragmentOrigin])
+            }
         }
 
         if active, caretVisible, let rect = layoutEngine.caretRect(docView, theme: theme) {
@@ -218,24 +217,27 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         switch selector {
         case #selector(moveLeft(_:)):                       render(doc.moveLeft(extend: false))
         case #selector(moveRight(_:)):                      render(doc.moveRight(extend: false))
-        case #selector(moveUp(_:)):                         render(doc.moveUp(extend: false))
-        case #selector(moveDown(_:)):                       render(doc.moveDown(extend: false))
+        // ↑/↓ ride the pixel wrap, not core's paragraph rows (which the unwrapped map
+        // exposes) — computed from the visual geometry, then snapped by `clickCh`.
+        case #selector(moveUp(_:)):                         moveVertical(up: true, extend: false)
+        case #selector(moveDown(_:)):                       moveVertical(up: false, extend: false)
         case #selector(moveLeftAndModifySelection(_:)):     render(doc.moveLeft(extend: true))
         case #selector(moveRightAndModifySelection(_:)):    render(doc.moveRight(extend: true))
-        case #selector(moveUpAndModifySelection(_:)):       render(doc.moveUp(extend: true))
-        case #selector(moveDownAndModifySelection(_:)):     render(doc.moveDown(extend: true))
+        case #selector(moveUpAndModifySelection(_:)):       moveVertical(up: true, extend: true)
+        case #selector(moveDownAndModifySelection(_:)):     moveVertical(up: false, extend: true)
         case #selector(moveWordLeft(_:)):                   render(doc.moveWordLeft(extend: false))
         case #selector(moveWordRight(_:)):                  render(doc.moveWordRight(extend: false))
         case #selector(moveWordLeftAndModifySelection(_:)): render(doc.moveWordLeft(extend: true))
         case #selector(moveWordRightAndModifySelection(_:)):render(doc.moveWordRight(extend: true))
+        // Home/End go to the *visual* line's ends, not the whole paragraph's.
         case #selector(moveToLeftEndOfLine(_:)),
-             #selector(moveToBeginningOfLine(_:)):          render(doc.moveHome(extend: false))
+             #selector(moveToBeginningOfLine(_:)):          moveToVisualLineBoundary(toStart: true, extend: false)
         case #selector(moveToLeftEndOfLineAndModifySelection(_:)),
-             #selector(moveToBeginningOfLineAndModifySelection(_:)): render(doc.moveHome(extend: true))
+             #selector(moveToBeginningOfLineAndModifySelection(_:)): moveToVisualLineBoundary(toStart: true, extend: true)
         case #selector(moveToRightEndOfLine(_:)),
-             #selector(moveToEndOfLine(_:)):                render(doc.moveEnd(extend: false))
+             #selector(moveToEndOfLine(_:)):                moveToVisualLineBoundary(toStart: false, extend: false)
         case #selector(moveToRightEndOfLineAndModifySelection(_:)),
-             #selector(moveToEndOfLineAndModifySelection(_:)): render(doc.moveEnd(extend: true))
+             #selector(moveToEndOfLineAndModifySelection(_:)): moveToVisualLineBoundary(toStart: false, extend: true)
         case #selector(moveToBeginningOfDocument(_:)):      render(doc.moveDocStart(extend: false))
         case #selector(moveToEndOfDocument(_:)):            render(doc.moveDocEnd(extend: false))
         case #selector(moveToBeginningOfDocumentAndModifySelection(_:)): render(doc.moveDocStart(extend: true))
@@ -248,6 +250,40 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         case #selector(deleteWordForward(_:)):              render(doc.deleteWordForward())
         default: super.doCommand(by: selector)
         }
+    }
+
+    // MARK: visual-line motion (the wrap is ours, so core can't do these)
+
+    /// Move the caret one *visual* line up/down, holding the pixel x it started from
+    /// so a run of ↑/↓ doesn't drift through shorter lines. Probes one line-height
+    /// past the caret and hit-tests, so it crosses block boundaries naturally.
+    private func moveVertical(up: Bool, extend: Bool) {
+        guard let caret = layoutEngine.caretRect(docView, theme: theme) else {
+            render(up ? doc.moveUp(extend: extend) : doc.moveDown(extend: extend))
+            return
+        }
+        let goalX = verticalGoalX ?? caret.minX
+        let probeY = up ? caret.minY - 1 : caret.maxY + 1
+        let (row, ch) = layoutEngine.hit(CGPoint(x: goalX, y: probeY), theme: theme)
+        verticalGoalX = goalX
+        render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: extend), keepVerticalGoal: true)
+    }
+
+    /// Move to the start or end of the caret's *visual* line. At the end of a
+    /// soft-wrapped line, stop before the wrap whitespace so the caret stays on this
+    /// line rather than jumping to the next line's start.
+    private func moveToVisualLineBoundary(toStart: Bool, extend: Bool) {
+        let row = Int(docView.caretRow), ch = Int(docView.caretCh)
+        guard let vl = layoutEngine.visualLine(row: row, ch: ch) else {
+            render(toStart ? doc.moveHome(extend: extend) : doc.moveEnd(extend: extend))
+            return
+        }
+        var target = toStart ? vl.start : vl.end
+        if !toStart, vl.index < layoutEngine.rows[row].wrapped.count - 1,
+           layoutEngine.rows[row].wrapped[vl.index].attributed.string.hasSuffix(" ") {
+            target -= 1
+        }
+        render(doc.clickCh(row: UInt32(row), ch: UInt32(target), extend: extend))
     }
 
     public override func performKeyEquivalent(with event: NSEvent) -> Bool {
