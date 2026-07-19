@@ -159,9 +159,11 @@ pub struct LeafDoc {
 /// resulting frame.
 struct Inner {
     doc: Doc,
-    /// The wrap width in columns, from the viewport. `build_visual` caches on
-    /// `(revision, width)`, so re-syncing when neither moved is free.
-    width: usize,
+    /// The wrap mode. `Some(cols)` wraps the map at that column budget (a terminal,
+    /// or a fixed-cell frontend); `None` builds it **unwrapped** — one row per block —
+    /// for a proportional GUI that wraps at its own pixel width. `build_visual`
+    /// caches on `(revision, width)`, so re-syncing when neither moved is free.
+    width: Option<usize>,
 }
 
 // SAFETY: `Doc` embeds a `twig::Editor`, which holds a `NonNull<TwigEditor>` and
@@ -182,7 +184,10 @@ impl Inner {
     /// changed; the guard that lets every movement/click method assume a fresh
     /// grid regardless of call order.
     fn sync(&mut self) {
-        self.doc.build_visual(self.width);
+        match self.width {
+            Some(w) => self.doc.build_visual(w),
+            None => self.doc.build_visual_unwrapped(),
+        }
     }
 
     /// The plain text of visual row `row` in the active view — the string the
@@ -384,7 +389,7 @@ impl LeafDoc {
         };
         let doc = Doc::from_source(source, format)
             .map_err(|e| LeafError::Parse { message: e.to_string() })?;
-        Ok(Arc::new(LeafDoc { inner: Mutex::new(Inner { doc, width: 80 }) }))
+        Ok(Arc::new(LeafDoc { inner: Mutex::new(Inner { doc, width: Some(80) }) }))
     }
 
     /// Resolve the current document to a renderable frame — the first paint.
@@ -392,10 +397,22 @@ impl LeafDoc {
         self.lock().view()
     }
 
-    /// Set the wrap width (in columns) the viewport implies and repaint.
+    /// Set the wrap width (in columns) the viewport implies and repaint. For a
+    /// fixed-cell frontend (a terminal); a proportional GUI uses [`set_unwrapped`].
     pub fn set_width(&self, cols: u32) -> DocView {
         let mut g = self.lock();
-        g.width = (cols as usize).max(1);
+        g.width = Some((cols as usize).max(1));
+        g.view()
+    }
+
+    /// Switch to **unwrapped** layout — one visual row per block, no column wrapping —
+    /// and repaint. A proportional GUI calls this once at start-up, then wraps each
+    /// row at its own pixel width (the caret/hit/selection geometry it derives from
+    /// the pixel wrap; core still owns the caret model, in byte offsets). Idempotent
+    /// and cheap to leave in place across edits.
+    pub fn set_unwrapped(&self) -> DocView {
+        let mut g = self.lock();
+        g.width = None;
         g.view()
     }
 
@@ -1027,5 +1044,51 @@ fn make_run(text: String, style: LStyle, sel: bool) -> Run {
         underline: style.underline,
         strike: style.strikethrough,
         sel,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn doc(src: &str) -> Arc<LeafDoc> {
+        LeafDoc::new(src.to_string(), "markdown".to_string()).unwrap()
+    }
+
+    fn row_text(v: &DocView, row: usize) -> String {
+        v.rows[row].runs.iter().map(|r| r.text.clone()).collect()
+    }
+
+    #[test]
+    fn unwrapped_collapses_a_paragraph_to_one_row() {
+        let d = doc("one two three four five six seven eight\n");
+        let wrapped = d.set_width(10);
+        let unwrapped = d.set_unwrapped();
+        assert!(
+            unwrapped.rows.len() < wrapped.rows.len(),
+            "a narrow column wrap splits the paragraph; unwrapped keeps it whole"
+        );
+        assert!(
+            (0..unwrapped.rows.len()).any(|i| row_text(&unwrapped, i).contains("eight")),
+            "the whole paragraph, including its last word, sits on a single unwrapped row"
+        );
+    }
+
+    #[test]
+    fn offsets_round_trip_when_unwrapped() {
+        let d = doc("hello world\n");
+        d.set_unwrapped();
+        // offset -> (row, ch) -> offset is stable, so the pixel-wrapping frontend can
+        // map between its visual lines and core's byte-offset caret model.
+        let rc = d.pos_for_offset(6); // the 'w' of "world"
+        assert_eq!(d.offset_for_pos(rc.row, rc.ch), 6);
+    }
+
+    #[test]
+    fn set_unwrapped_is_idempotent() {
+        let d = doc("a paragraph of some length here\n");
+        let first = d.set_unwrapped();
+        let second = d.set_unwrapped();
+        assert_eq!(first.rows.len(), second.rows.len());
     }
 }
