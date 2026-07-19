@@ -1246,16 +1246,32 @@ impl Builder<'_> {
             }
             "bullet_list" | "ordered_list" | "task_list" => {
                 let ordered = node.kind == "ordered_list";
-                for (i, item) in self.children(id).into_iter().enumerate() {
-                    let start = self.nodes[item].span.start;
-                    let marker = if ordered {
-                        format!("{}. ", i + 1)
+                let mut item_no = 0usize;
+                for (i, child) in self.children(id).into_iter().enumerate() {
+                    let kind = self.nodes[child].kind.as_str();
+                    if kind == "list_item" || kind == "task_list_item" {
+                        let start = self.nodes[child].span.start;
+                        item_no += 1;
+                        let marker = if ordered {
+                            format!("{item_no}. ")
+                        } else {
+                            "• ".to_string()
+                        };
+                        let bullet = synth(&marker, Role::ListMarker, start);
+                        let indent = synth(&" ".repeat(text_width(&marker)), Role::Body, start);
+                        self.block(child, &concat(pc, &bullet), &concat(pc, &indent));
                     } else {
-                        "• ".to_string()
-                    };
-                    let bullet = synth(&marker, Role::ListMarker, start);
-                    let indent = synth(&" ".repeat(text_width(&marker)), Role::Body, start);
-                    self.block(item, &concat(pc, &bullet), &concat(pc, &indent));
+                        // twig can nest a *following* top-level block as a direct
+                        // child of the list rather than a sibling of it — e.g.
+                        // `- item\n\n> quote` parses the block quote under the
+                        // `bullet_list`. It isn't a list item, so render it de-nested:
+                        // no bullet, at the list's own prefix, with the usual block
+                        // separator — never `• │ quote`.
+                        if i > 0 {
+                            self.emit_separators_before(self.nodes[child].span.start, pc);
+                        }
+                        self.block(child, pc, pc);
+                    }
                 }
             }
             "list_item" | "task_list_item" => {

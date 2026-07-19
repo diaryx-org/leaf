@@ -1100,6 +1100,20 @@ mod tests {
     }
 
     #[test]
+    fn newline_on_last_list_item_before_a_blockquote_starts_a_new_item() {
+        let src = "- one\n- two\n- three\n\n> quote\n";
+        let d = doc(src);
+        let off = (src.find("three").unwrap() + "three".len()) as u32; // end of "three" = 19
+        d.set_selection_offsets(off, off);
+        d.newline();
+        let after = d.source();
+        assert!(
+            after.contains("- three\n- ") && after.contains("> quote"),
+            "expected a new empty list item with the blockquote intact, got: {after:?}"
+        );
+    }
+
+    #[test]
     fn link_destination_at_caret_reads_the_caret_link() {
         let d = doc("see [t](https://x.dev) ok\n");
         d.set_selection_offsets(5, 5); // caret on the link text "t"

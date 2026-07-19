@@ -2781,6 +2781,30 @@ mod tests {
         doc_in(View::Source, name, body)
     }
 
+    #[test]
+    fn blockquote_after_a_list_is_not_bulleted() {
+        // twig nests a following top-level block quote under the `bullet_list`
+        // (a direct child, not a `list_item`). The map must render it de-nested —
+        // `│ quote`, never `• │ quote` — with a blank separator, like any block
+        // that follows a list. Regression for the "combined list + blockquote" bug.
+        let mut d = doc_in(View::Wysiwyg, "bq_after_list", "- item\n\n> quote\n");
+        d.build_visual(80);
+        let rows: Vec<String> = d
+            .vmap
+            .rows
+            .iter()
+            .map(|r| r.glyphs.iter().map(|g| g.ch).collect())
+            .collect();
+        assert!(
+            rows.iter().any(|r| r == "│ quote"),
+            "block quote should render on its own gutter, got rows: {rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|r| r.contains('•') && r.contains('│')),
+            "no row should carry both a bullet and a quote gutter, got rows: {rows:?}"
+        );
+    }
+
     // ── the map is built at most once per (revision, wrap) ───────────────────
     //
     // A frontend repaints for reasons that have nothing to do with the text — a
