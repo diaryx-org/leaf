@@ -61,14 +61,34 @@ final class LeafSelectionRect: UITextSelectionRect {
 
 public final class LeafTextView: UIView, UITextInput {
     let doc: LeafDoc
+    /// The host-set theme (base sizes). Internal layout uses `renderTheme`, which
+    /// scales this to the user's Dynamic Type content size.
     public var theme: EditorTheme {
-        didSet {
-            // Re-wrap only on a geometry change; a colour-only (or identical) theme
-            // just repaints. Guarding this breaks the relayout⇄state-publish loop
-            // that otherwise re-scrolled the view to the caret every frame.
-            guard theme.metricsDiffer(from: oldValue) else { setNeedsDisplay(); return }
-            shapeCache.removeAll(keepingCapacity: true)   // shaping is theme-dependent
-            relayoutForWidth(force: true)
+        get { hostTheme }
+        set { hostTheme = newValue; applyDynamicType() }
+    }
+    private var hostTheme: EditorTheme
+    private var renderTheme: EditorTheme
+
+    /// Scale `hostTheme`'s type to the current Dynamic Type content size and relayout
+    /// if the geometry changed. The `metricsDiffer` guard keeps a re-applied theme (or
+    /// an unchanged content size) from relayouting — the loop-breaking invariant.
+    private func applyDynamicType() {
+        let old = renderTheme
+        var t = hostTheme
+        let factor = UIFontMetrics.default.scaledValue(for: 100, compatibleWith: traitCollection) / 100
+        t.fontSize = hostTheme.fontSize * factor
+        t.lineHeight = hostTheme.lineHeight * factor
+        renderTheme = t
+        guard renderTheme.metricsDiffer(from: old) else { setNeedsDisplay(); return }
+        shapeCache.removeAll(keepingCapacity: true)
+        relayoutForWidth(force: true)
+    }
+
+    public override func traitCollectionDidChange(_ previous: UITraitCollection?) {
+        super.traitCollectionDidChange(previous)
+        if traitCollection.preferredContentSizeCategory != previous?.preferredContentSizeCategory {
+            applyDynamicType()   // the user changed their text-size setting
         }
     }
     public var onStateChange: ((EditorState) -> Void)?
@@ -98,12 +118,13 @@ public final class LeafTextView: UIView, UITextInput {
 
     public init(doc: LeafDoc, theme: EditorTheme = .default) {
         self.doc = doc
-        self.theme = theme
+        self.hostTheme = theme
+        self.renderTheme = theme
         // Unwrapped layout (one row per block); the view soft-wraps at pixel width.
         let first = doc.setUnwrapped()
         self.docView = first
         var seed: [Row: ShapedRow] = [:]
-        self.layoutEngine = EditorLayout(first, theme: theme, wrapWidth: 0, cache: &seed)
+        self.layoutEngine = EditorLayout(first, theme: renderTheme, wrapWidth: 0, cache: &seed)
         self.shapeCache = seed
         super.init(frame: .zero)
         backgroundColor = .clear
@@ -111,6 +132,7 @@ public final class LeafTextView: UIView, UITextInput {
         addInteraction(textInteraction)
         // Seed with the initial caret so the first reflow opens at the top.
         lastCaretOffset = doc.caretOffset()
+        applyDynamicType()   // scale type to the current trait environment
     }
 
     @available(*, unavailable)
@@ -131,7 +153,7 @@ public final class LeafTextView: UIView, UITextInput {
     }
 
     private func relayoutForWidth(force: Bool) {
-        let w = bounds.width - theme.padding.left - theme.padding.right
+        let w = bounds.width - renderTheme.padding.left - renderTheme.padding.right
         guard w > 0 else { return }
         if force || abs(w - wrapWidth) > 0.5 {
             wrapWidth = w
@@ -146,7 +168,7 @@ public final class LeafTextView: UIView, UITextInput {
     /// and re-lays its selection overlays afterward.
     private func render(_ view: DocView) {
         docView = view
-        layoutEngine = EditorLayout(view, theme: theme, wrapWidth: wrapWidth, cache: &shapeCache)
+        layoutEngine = EditorLayout(view, theme: renderTheme, wrapWidth: wrapWidth, cache: &shapeCache)
         invalidateIntrinsicContentSize()
         setNeedsDisplay()
         // Only follow the caret when it actually moved, not on a passive reflow.
@@ -159,9 +181,9 @@ public final class LeafTextView: UIView, UITextInput {
     }
 
     private func scrollCaretToVisible() {
-        guard let caret = layoutEngine.caretRect(docView, theme: theme),
+        guard let caret = layoutEngine.caretRect(docView, theme: renderTheme),
               let scroll = enclosingScrollView() else { return }
-        scroll.scrollRectToVisible(convert(caret.insetBy(dx: 0, dy: -theme.lineHeight), to: scroll), animated: false)
+        scroll.scrollRectToVisible(convert(caret.insetBy(dx: 0, dy: -renderTheme.lineHeight), to: scroll), animated: false)
     }
 
     private func enclosingScrollView() -> UIScrollView? {
@@ -174,8 +196,8 @@ public final class LeafTextView: UIView, UITextInput {
 
     public override func draw(_ rect: CGRect) {
         guard let ctx = UIGraphicsGetCurrentContext() else { return }
-        let padX = theme.padding.left
-        let fullWidth = bounds.width - theme.padding.left - theme.padding.right
+        let padX = renderTheme.padding.left
+        let fullWidth = bounds.width - renderTheme.padding.left - renderTheme.padding.right
 
         for rl in layoutEngine.rows {
             // Rows are laid out top-down, so cull to the dirty band: skip rows above
@@ -184,7 +206,7 @@ public final class LeafTextView: UIView, UITextInput {
             if rl.top + rl.height <= rect.minY { continue }
             let rowRect = CGRect(x: padX, y: rl.top, width: fullWidth, height: rl.height)
             if rl.row.code {
-                ctx.setFillColor(theme.codeBackground.cgColor)
+                ctx.setFillColor(renderTheme.codeBackground.cgColor)
                 ctx.fill(rowRect.insetBy(dx: -4, dy: 0))
                 if let lang = rl.row.codeLang, !lang.isEmpty { drawCodeLang(lang, in: rowRect) }
             }
@@ -201,8 +223,8 @@ public final class LeafTextView: UIView, UITextInput {
 
     private func drawCodeLang(_ lang: String, in rowRect: CGRect) {
         let attrs: [NSAttributedString.Key: Any] = [
-            .font: theme.monospaceFont(size: theme.fontSize * 0.75, bold: false, italic: false),
-            .foregroundColor: theme.secondaryColor,
+            .font: renderTheme.monospaceFont(size: renderTheme.fontSize * 0.75, bold: false, italic: false),
+            .foregroundColor: renderTheme.secondaryColor,
         ]
         let s = lang as NSString
         let size = s.size(withAttributes: attrs)
@@ -398,9 +420,9 @@ public final class LeafTextView: UIView, UITextInput {
         var cur = o
         for _ in 0..<max(0, times) {
             let rc = doc.posForOffset(off: UInt32(cur))
-            guard let caret = layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch), theme: theme) else { break }
+            guard let caret = layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch), theme: renderTheme) else { break }
             let probeY = up ? caret.minY - 1 : caret.maxY + 1
-            let (row, ch) = layoutEngine.hit(CGPoint(x: caret.minX, y: probeY), theme: theme)
+            let (row, ch) = layoutEngine.hit(CGPoint(x: caret.minX, y: probeY), theme: renderTheme)
             let next = Int(doc.offsetForPos(row: UInt32(row), ch: UInt32(ch)))
             if next == cur { break }
             cur = next
@@ -446,7 +468,7 @@ public final class LeafTextView: UIView, UITextInput {
 
     public func caretRect(for position: UITextPosition) -> CGRect {
         let rc = doc.posForOffset(off: UInt32(off(position)))
-        return layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch), theme: theme) ?? .zero
+        return layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch), theme: renderTheme) ?? .zero
     }
 
     public func selectionRects(for range: UITextRange) -> [UITextSelectionRect] {
@@ -469,7 +491,7 @@ public final class LeafTextView: UIView, UITextInput {
                 guard cs < ce else { continue }
                 let x0 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(cs - lineStart), nil)
                 let x1 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(ce - lineStart), nil)
-                let rect = CGRect(x: theme.padding.left + x0, y: rl.top + CGFloat(i) * rl.lineHeight,
+                let rect = CGRect(x: renderTheme.padding.left + x0, y: rl.top + CGFloat(i) * rl.lineHeight,
                                   width: x1 - x0, height: rl.lineHeight)
                 rects.append(LeafSelectionRect(rect: rect,
                                                containsStart: row == sRow && cs == sCh,
@@ -484,7 +506,7 @@ public final class LeafTextView: UIView, UITextInput {
     }
 
     public func closestPosition(to point: CGPoint) -> UITextPosition? {
-        let (row, ch) = layoutEngine.hit(point, theme: theme)
+        let (row, ch) = layoutEngine.hit(point, theme: renderTheme)
         return LeafTextPosition(Int(doc.offsetForPos(row: UInt32(row), ch: UInt32(ch))))
     }
 
