@@ -443,24 +443,33 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         let menu = NSMenu()
         // A link under the click (the caret was just placed there) leads the menu.
         if doc.linkDestinationAtCaret() != nil {
-            menu.addItem(withTitle: "Open Link", action: #selector(openLink(_:)), keyEquivalent: "")
-            menu.addItem(withTitle: "Copy Link", action: #selector(copyLink(_:)), keyEquivalent: "")
+            menu.addItem(withTitle: loc("menu.openLink", "Open Link"), action: #selector(openLink(_:)), keyEquivalent: "")
+            menu.addItem(withTitle: loc("menu.copyLink", "Copy Link"), action: #selector(copyLink(_:)), keyEquivalent: "")
             menu.addItem(.separator())
         }
         if hasSelection {
-            menu.addItem(withTitle: "Cut", action: #selector(cut(_:)), keyEquivalent: "")
-            menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
+            menu.addItem(withTitle: loc("menu.cut", "Cut"), action: #selector(cut(_:)), keyEquivalent: "")
+            menu.addItem(withTitle: loc("menu.copy", "Copy"), action: #selector(copy(_:)), keyEquivalent: "")
         }
-        menu.addItem(withTitle: "Paste", action: #selector(paste(_:)), keyEquivalent: "")
-        menu.addItem(withTitle: "Paste and Match Style", action: #selector(pasteAsPlainText(_:)), keyEquivalent: "")
-        menu.addItem(withTitle: "Select All", action: #selector(selectAll(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: loc("menu.paste", "Paste"), action: #selector(paste(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: loc("menu.pasteMatchStyle", "Paste and Match Style"), action: #selector(pasteAsPlainText(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: loc("menu.selectAll", "Select All"), action: #selector(selectAll(_:)), keyEquivalent: "")
         if hasSelection, let text = doc.selectedText(), !text.isEmpty {
             menu.addItem(.separator())
             let shown = text.count > 24 ? text.prefix(24) + "…" : Substring(text)
-            menu.addItem(withTitle: "Look Up “\(shown)”", action: #selector(lookUpSelection(_:)), keyEquivalent: "")
-            menu.addItem(withTitle: "Share…", action: #selector(shareSelection(_:)), keyEquivalent: "")
+            menu.addItem(withTitle: String(format: loc("menu.lookUp", "Look Up “%@”"), String(shown)),
+                         action: #selector(lookUpSelection(_:)), keyEquivalent: "")
+            menu.addItem(withTitle: loc("menu.share", "Share…"), action: #selector(shareSelection(_:)), keyEquivalent: "")
         }
         return menu
+    }
+
+    /// A localized UI string with an English fallback, looked up in the bundle this
+    /// class ships in — the host app's, for a statically linked package. So a host
+    /// can translate the menu (drop a `Localizable.strings` with these keys) without
+    /// the library owning a resource bundle, and the English `value` shows otherwise.
+    private func loc(_ key: String, _ value: String) -> String {
+        NSLocalizedString(key, tableName: nil, bundle: Bundle(for: LeafTextView.self), value: value, comment: "")
     }
 
     @objc private func lookUpSelection(_ sender: Any?) {
