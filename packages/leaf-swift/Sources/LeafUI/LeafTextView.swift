@@ -254,6 +254,39 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: true))
     }
 
+    // MARK: drag & drop (destination)
+
+    public override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        window?.makeFirstResponder(self)
+        moveCaretToDrop(sender)
+        return .copy
+    }
+
+    public override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        moveCaretToDrop(sender)   // track the drop point so the caret previews it
+        return .copy
+    }
+
+    public override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        moveCaretToDrop(sender)
+        let pb = sender.draggingPasteboard
+        if let html = pb.string(forType: .html) {
+            render(doc.pasteRich(html: html, text: pb.string(forType: .string) ?? ""))
+            return true
+        }
+        if let text = pb.string(forType: .string) {
+            render(doc.paste(text: text))
+            return true
+        }
+        return false
+    }
+
+    private func moveCaretToDrop(_ sender: NSDraggingInfo) {
+        let p = convert(sender.draggingLocation, from: nil)
+        let (row, ch) = layoutEngine.hit(p, theme: theme)
+        render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: false))
+    }
+
     // MARK: keyboard — text + IME
 
     public override func keyDown(with event: NSEvent) {
@@ -526,6 +559,8 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         guard let window else { return }
         // Advertise the selection to the app-wide Services menu (Edit ▸ Services).
         NSApp.registerServicesMenuSendTypes([.string], returnTypes: [.string])
+        // Accept text/rich content dropped into the editor.
+        registerForDraggedTypes([.string, .html])
         nc.addObserver(self, selector: #selector(keyStateChanged), name: NSWindow.didBecomeKeyNotification, object: window)
         nc.addObserver(self, selector: #selector(keyStateChanged), name: NSWindow.didResignKeyNotification, object: window)
     }
