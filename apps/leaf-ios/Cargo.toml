@@ -13,7 +13,7 @@ crate-type = ["staticlib", "cdylib", "lib"]
 
 [dependencies]
 # The forked gpui-mobile platform layer, upgraded to gpui bd72919.
-gpui-mobile = { path = "../../../gpui-mobile" }
+gpui-mobile = { git = "https://github.com/adammharris/gpui-mobile", branch = "upgrade-gpui-bd72919", rev = "47ab1279b78304067749ab92b7b68916a3bed1a9" }
 # The embeddable editor widget WITHOUT its desktop backend (no gpui_platform).
 leaf-gpui = { path = "../../crates/leaf-gpui", default-features = false }
 # The document model — to seed a sample buffer so the editing surface has content.
@@ -26,8 +26,7 @@ log = "0.4"
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2 = "0.6"
 
-# gpui-mobile is a *path* dependency, so its own [patch] table is ignored — only
-# the workspace root's patches apply. Replicate the async-task fork that gpui
+# Replicate the async-task fork that gpui
 # (via Zed) pins, otherwise transitive resolution fails to build.
 [patch.crates-io]
 async-task = { git = "https://github.com/smol-rs/async-task.git", rev = "b4486cd71e4e94fbda54ce6302444de14f4d190e" }
