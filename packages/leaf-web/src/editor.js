@@ -69,6 +69,13 @@ export const DEFAULT_THEME = {
   /** Body line height in px. Heading rows scale taller in proportion. */
   lineHeight: 24,
   /**
+   * The height of a between-blocks gap row, as a fraction of `lineHeight`. Core
+   * spells a block boundary with an empty decoration row; at a full line box it
+   * reads as a blank line the user never typed, so it's drawn short — ordinary
+   * paragraph spacing. Set to `1` to restore the old full-line gap.
+   */
+  blockGapScale: 0.5,
+  /**
    * How much larger than the body each heading level is drawn, `[h1…h6]`.
    * Headings are told apart by size and weight alone (no colour), so this ramp
    * is the whole hierarchy — 26 / 22 / 19 / 17 / 16 / 15 px against a 16px body.
@@ -294,10 +301,14 @@ export class LeafEditor {
       div.style.fontSize = size + "px";
       div.style.lineHeight = size * this._ratio + "px";
     }
-    // Keep empty rows occupying their line so the caret has somewhere to sit.
+    // Keep empty rows occupying their line so the caret has somewhere to sit —
+    // except a block-boundary gap row (empty, holds no caret), drawn short so a
+    // paragraph break reads as spacing rather than a blank line.
     div.style.minHeight = (row.heading
       ? this.theme.fontSize * this.theme.headingScale[Math.min(row.heading, 6) - 1] * this._ratio
-      : this.theme.lineHeight) + "px";
+      : isBlockGap(row)
+        ? this.theme.lineHeight * this.theme.blockGapScale
+        : this.theme.lineHeight) + "px";
 
     if (row.code) {
       div.classList.add("code");
@@ -671,6 +682,20 @@ function el(tag, cls) {
   const e = document.createElement(tag);
   e.className = cls;
   return e;
+}
+
+/**
+ * Whether `row` is the blank decoration row core spells a block boundary with:
+ * no caret home, and — unlike a table rule or a quote gutter — no visible
+ * glyphs. These are the paragraph gaps drawn short so a boundary reads as
+ * spacing rather than an empty line.
+ */
+function isBlockGap(row) {
+  return (
+    row.decoration &&
+    !row.code &&
+    row.runs.every((r) => r.text.trim() === "")
+  );
 }
 
 /**

@@ -15,6 +15,8 @@ export interface EditorTheme {
   fontSize: number;
   /** Body line height in px. */
   lineHeight: number;
+  /** Height of a between-blocks gap row, as a fraction of `lineHeight` (default 0.5). */
+  blockGapScale: number;
   /** Per-level heading size multipliers `[h1…h6]`, relative to `fontSize`. */
   headingScale: [number, number, number, number, number, number];
 }

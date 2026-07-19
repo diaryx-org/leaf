@@ -31,6 +31,16 @@ public struct EditorState: Equatable {
     }
 }
 
+extension Row {
+    /// Whether this is the blank decoration row core spells a block boundary
+    /// with — no caret home, and (unlike a table rule or a quote gutter) no
+    /// visible glyphs. These are the paragraph gaps the layout draws short so a
+    /// boundary reads as spacing, not an empty line.
+    var isBlockGap: Bool {
+        decoration && !code && runs.allSatisfy { $0.text.allSatisfy(\.isWhitespace) }
+    }
+}
+
 /// One pixel-wrapped visual line within a logical row. Its `CTLine` is built over
 /// the line's *substring*, so its string indices are relative to `start`; callers
 /// convert with `ch - start`. `start`/`length` are UTF-16 offsets into the row.
@@ -95,7 +105,7 @@ struct EditorLayout {
                 shaped = ShapedRow(
                     attributed: attributed,
                     wrapped: EditorLayout.wrap(attributed, width: wrapWidth),
-                    lineHeight: theme.rowHeight(heading: row.heading),
+                    lineHeight: theme.rowHeight(for: row),
                     wrapWidth: wrapWidth
                 )
             }

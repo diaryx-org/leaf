@@ -19,6 +19,29 @@ final class EditorLayoutTests: XCTestCase {
         XCTAssertEqual(layout.contentHeight, expected, accuracy: 0.5)
     }
 
+    func testBlockGapRowIsShorterThanALine() {
+        // Core spells a paragraph boundary with an empty decoration row. It must
+        // lay out at the shrunk gap height, not a full line box — otherwise the
+        // boundary reads as a blank line the user never typed.
+        let gap = row([], decoration: true)
+        let dv = docView([row([mkRun("a")]), gap, row([mkRun("b")])])
+        let layout = EditorLayout(dv, theme: theme)
+        let expected = theme.padding.top + theme.padding.bottom
+            + theme.rowHeight(heading: nil) * 2 + theme.blockGap
+        XCTAssertEqual(layout.contentHeight, expected, accuracy: 0.5)
+        XCTAssertLessThan(theme.blockGap, theme.rowHeight(heading: nil))
+    }
+
+    func testTableRuleRowKeepsFullHeight() {
+        // A decoration row that carries glyphs (a table's box-drawing rule) is
+        // not a paragraph gap and must keep its full line box.
+        let rule = row([mkRun("├────┼────┤", role: "rule")], decoration: true)
+        let dv = docView([rule])
+        let layout = EditorLayout(dv, theme: theme)
+        let expected = theme.padding.top + theme.padding.bottom + theme.rowHeight(heading: nil)
+        XCTAssertEqual(layout.contentHeight, expected, accuracy: 0.5)
+    }
+
     func testHeadingRowIsTaller() {
         let dv = docView([row([mkRun("Title")], heading: 1)])
         let layout = EditorLayout(dv, theme: theme)

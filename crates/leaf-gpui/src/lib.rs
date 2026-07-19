@@ -126,6 +126,11 @@ pub struct EditorStyle {
     /// their own heights rather than on one uniform grid.
     pub font_size: Pixels,
     pub line_height: Pixels,
+    /// The height of a between-blocks gap row, as a fraction of `line_height`.
+    /// Core spells a block boundary with an empty decoration row; drawn at a full
+    /// line box it reads as a blank line the user never typed, so it's laid out
+    /// short — ordinary paragraph spacing. `1.0` restores the old full-line gap.
+    pub block_gap_scale: f32,
     /// How much larger than the body each heading level is drawn, `[h1, …, h6]`.
     /// Headings are distinguished by size and weight alone (no color), so this
     /// ramp is the whole hierarchy. The default is a moderate one — h1 ≈ 1.6×
@@ -152,6 +157,7 @@ impl Default for EditorStyle {
             mono_font_family: "Menlo".into(),
             font_size: px(16.0),
             line_height: px(24.0),
+            block_gap_scale: 0.5,
             // 26 / 22 / 19 / 17 / 16 / 15 px against a 16px body.
             heading_scale: [1.625, 1.375, 1.1875, 1.0625, 1.0, 0.9375],
         }
@@ -2481,7 +2487,7 @@ struct LayoutKey {
 /// output rows it produces are gathered into that block's on-screen span so the
 /// element can draw one border-and-tint box around the whole run.
 enum Logical {
-    Line { glyphs: Vec<Glyph>, end_src: usize, code: Option<usize> },
+    Line { glyphs: Vec<Glyph>, end_src: usize, code: Option<usize>, decoration: bool },
     Table(TableInfo),
     /// A block-level image, whose placeholder row (the `🖼 alt` picture core
     /// draws) is skipped the way a table's box rows are — the GUI paints the real
@@ -2516,7 +2522,12 @@ fn gather_logical(doc: &Doc) -> Vec<Logical> {
                         stop: true,
                     })
                     .collect();
-                lines.push(Logical::Line { glyphs, end_src: start + line.len(), code: None });
+                lines.push(Logical::Line {
+                    glyphs,
+                    end_src: start + line.len(),
+                    code: None,
+                    decoration: false,
+                });
                 start += line.len() + 1;
             }
         }
@@ -2566,6 +2577,10 @@ fn gather_logical(doc: &Doc) -> Vec<Logical> {
                             glyphs: vrow.glyphs.clone(),
                             end_src: vrow.end_src,
                             code: in_code,
+                            // Tables and images are already skipped above, so the
+                            // only decoration rows reaching here are the blank
+                            // block-gap separators — laid out short below.
+                            decoration: vrow.decoration,
                         });
                         r += 1;
                     }
@@ -2626,11 +2641,14 @@ fn wrap_logical(
     logical_end_src: usize,
     wrap_px: f32,
     marked: Option<&Range<usize>>,
+    height_override: Option<Pixels>,
     out: &mut Vec<RowLayout>,
 ) {
     // Every visual row of one logical line shares its role, so its height too:
-    // a heading wraps into taller rows, a paragraph into body-height ones.
-    let height = shaper.row_height(glyphs);
+    // a heading wraps into taller rows, a paragraph into body-height ones. A
+    // block-gap separator overrides this with a shrunk gap height so a paragraph
+    // boundary reads as spacing, not a blank line.
+    let height = height_override.unwrap_or_else(|| shaper.row_height(glyphs));
     if glyphs.is_empty() {
         let shaped = shaper.empty();
         out.push(RowLayout::prose(shaped, Vec::new(), vec![0], logical_end_src, height));
@@ -3637,13 +3655,17 @@ impl Element for TextElement {
                 let mut image_geoms: Vec<ImageGeom> = Vec::new();
                 for logical in &logical_lines {
                     match logical {
-                        Logical::Line { glyphs, end_src, code } => {
+                        Logical::Line { glyphs, end_src, code, decoration } => {
                             let before = rows.len();
                             // A code line never wraps — it scrolls inside its box —
                             // so it's laid out at an unbounded width and stays one
                             // row. Prose wraps at the element width as before.
                             let w = if code.is_some() { f32::INFINITY } else { wrap_px };
-                            wrap_logical(&mut shaper, glyphs, *end_src, w, marked.as_ref(), &mut rows);
+                            // A block-gap separator is drawn short — paragraph
+                            // spacing, not a full blank line.
+                            let gap = decoration
+                                .then(|| px(f32::from(line_height) * style.block_gap_scale));
+                            wrap_logical(&mut shaper, glyphs, *end_src, w, marked.as_ref(), gap, &mut rows);
                             if let Some(id) = code {
                                 // Lines of one block are consecutive, so the first
                                 // opens its span and the rest extend it.
@@ -3696,6 +3718,7 @@ impl Element for TextElement {
                                         *end_src,
                                         wrap_px,
                                         marked.as_ref(),
+                                        None,
                                         &mut rows,
                                     );
                                 }

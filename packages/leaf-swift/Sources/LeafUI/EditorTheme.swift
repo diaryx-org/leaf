@@ -11,6 +11,7 @@
 
 import CoreGraphics
 import Foundation
+import LeafFFI
 
 public struct EditorTheme {
     /// Proportional body family — prose and headings shape with this.
@@ -21,6 +22,11 @@ public struct EditorTheme {
     public var fontSize: CGFloat
     /// Body line height in points. Heading rows scale taller in proportion.
     public var lineHeight: CGFloat
+    /// The height of a between-blocks gap row, as a fraction of `lineHeight`.
+    /// Core spells a block boundary with a blank decoration row; drawn at a full
+    /// line box it reads as an empty line the user didn't type. A fraction turns
+    /// it into ordinary paragraph spacing. `1.0` restores the old full-line gap.
+    public var blockGapScale: CGFloat
     /// How much larger than the body each heading level is, `[h1…h6]`.
     public var headingScale: [CGFloat]
     /// Horizontal/vertical text inset from the view's edges.
@@ -50,6 +56,7 @@ public struct EditorTheme {
         monoFontName: String = "Menlo",
         fontSize: CGFloat = 16,
         lineHeight: CGFloat = 24,
+        blockGapScale: CGFloat = 0.5,
         headingScale: [CGFloat] = [1.625, 1.375, 1.1875, 1.0625, 1.0, 0.9375],
         padding: LeafInsets = LeafInsets(top: 12, left: 16, bottom: 12, right: 16),
         textColor: LeafColor = Palette.label,
@@ -69,6 +76,7 @@ public struct EditorTheme {
         self.monoFontName = monoFontName
         self.fontSize = fontSize
         self.lineHeight = lineHeight
+        self.blockGapScale = blockGapScale
         self.headingScale = headingScale
         self.padding = padding
         self.textColor = textColor
@@ -97,6 +105,7 @@ public struct EditorTheme {
             || monoFontName != other.monoFontName
             || fontSize != other.fontSize
             || lineHeight != other.lineHeight
+            || blockGapScale != other.blockGapScale
             || headingScale != other.headingScale
             || padding != other.padding
     }
@@ -117,6 +126,16 @@ public struct EditorTheme {
     func rowHeight(heading: UInt8?) -> CGFloat {
         guard let h = heading else { return lineHeight }
         return headingSize(Int(h)) * lineRatio
+    }
+
+    /// The height a between-blocks gap row occupies — a fraction of the body line
+    /// box, so a paragraph boundary reads as spacing rather than a blank line.
+    var blockGap: CGFloat { lineHeight * blockGapScale }
+
+    /// The laid-out height of `row`: a shrunk gap for a block-boundary decoration
+    /// row (empty, holds no caret), otherwise its heading/body line box.
+    func rowHeight(for row: Row) -> CGFloat {
+        row.isBlockGap ? blockGap : rowHeight(heading: row.heading)
     }
 
     // ── fonts ────────────────────────────────────────────────────────────────
