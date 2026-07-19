@@ -50,6 +50,9 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// The pixel x that ↑/↓ aim for, so repeated vertical motion rides the visual
     /// wrap without drifting through shorter lines. Nil except mid vertical run.
     private var verticalGoalX: CGFloat?
+    /// The byte range of the in-flight IME composition (marked text), drawn with a
+    /// composing underline. Nil when not composing. Committed text clears it.
+    private var markedByteRange: NSRange?
 
     private var caretVisible = true
     private var blinkTimer: Timer?
@@ -153,9 +156,34 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             }
         }
 
+        if markedByteRange != nil { drawMarkedUnderline(in: ctx) }
+
         if active, caretVisible, let rect = layoutEngine.caretRect(docView, theme: theme) {
             ctx.setFillColor(theme.caretColor.cgColor)
             ctx.fill(rect)
+        }
+    }
+
+    /// Underline the in-flight IME composition, one segment per visual line — the
+    /// native "you're still composing this" affordance.
+    private func drawMarkedUnderline(in ctx: CGContext) {
+        guard let m = markedByteRange, m.length > 0 else { return }
+        let s = doc.posForOffset(off: UInt32(m.location))
+        let e = doc.posForOffset(off: UInt32(m.location + m.length))
+        ctx.setFillColor(theme.caretColor.cgColor)
+        for row in Int(s.row)...Int(e.row) where layoutEngine.rows.indices.contains(row) {
+            let rl = layoutEngine.rows[row]
+            let rowFrom = (row == Int(s.row)) ? Int(s.ch) : 0
+            let rowTo = (row == Int(e.row)) ? Int(e.ch) : rl.attributed.length
+            for (i, wl) in rl.wrapped.enumerated() {
+                let lineStart = wl.start, lineEnd = wl.start + wl.length
+                let cs = max(rowFrom, lineStart), ce = min(rowTo, lineEnd)
+                guard cs < ce else { continue }
+                let x0 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(cs - lineStart), nil)
+                let x1 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(ce - lineStart), nil)
+                let y = rl.top + CGFloat(i) * rl.lineHeight + rl.lineHeight - 1.5
+                ctx.fill(CGRect(x: theme.padding.left + x0, y: y, width: x1 - x0, height: 1))
+            }
         }
     }
 
@@ -234,6 +262,12 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     public func insertText(_ string: Any, replacementRange: NSRange) {
         let text = (string as? String) ?? (string as? NSAttributedString)?.string ?? ""
+        // Committing an IME composition: replace the marked bytes with the final text.
+        if let m = markedByteRange {
+            markedByteRange = nil
+            render(doc.replaceRange(from: UInt32(m.location), to: UInt32(m.location + m.length), text: text))
+            return
+        }
         guard !text.isEmpty else { return }
         render(doc.insert(text: text))
     }
@@ -520,13 +554,38 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     //
     // With these reporting the true selection, macOS's system text services light up:
     // Look Up, the Services menu, dictation, and IME candidate placement all target
-    // the real range. Marked-text composition (the inline IME overlay) is still the one
-    // follow-up; committed CJK/emoji text inserts via `insertText`.
+    // the real range. Marked text (the inline IME composition) is inserted as it's
+    // composed and drawn with a composing underline; `insertText` commits it.
 
-    public func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {}
-    public func unmarkText() {}
-    public func hasMarkedText() -> Bool { false }
-    public func markedRange() -> NSRange { NSRange(location: NSNotFound, length: 0) }
+    public func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        let text = (string as? String) ?? (string as? NSAttributedString)?.string ?? ""
+        // Bytes to replace: the existing composition, else the proposed replacement,
+        // else the current selection.
+        let start: Int, end: Int
+        if let m = markedByteRange {
+            start = m.location; end = m.location + m.length
+        } else if replacementRange.location != NSNotFound {
+            start = replacementRange.location; end = replacementRange.location + replacementRange.length
+        } else {
+            start = selLowByte; end = selHighByte
+        }
+        render(doc.replaceRange(from: UInt32(max(0, start)), to: UInt32(max(start, end)), text: text))
+        if text.isEmpty {
+            markedByteRange = nil
+        } else {
+            markedByteRange = NSRange(location: start, length: text.utf8.count)
+            // Place the caret within the composition per the IME's selected range.
+            let ns = text as NSString
+            let uptoUTF16 = min(max(0, selectedRange.location + selectedRange.length), ns.length)
+            let caret = start + ns.substring(to: uptoUTF16).utf8.count
+            render(doc.setSelectionOffsets(anchor: UInt32(caret), focus: UInt32(caret)))
+        }
+        needsDisplay = true
+    }
+
+    public func unmarkText() { markedByteRange = nil; needsDisplay = true }
+    public func hasMarkedText() -> Bool { markedByteRange != nil }
+    public func markedRange() -> NSRange { markedByteRange ?? NSRange(location: NSNotFound, length: 0) }
     public func validAttributesForMarkedText() -> [NSAttributedString.Key] { [] }
 
     public func selectedRange() -> NSRange {
