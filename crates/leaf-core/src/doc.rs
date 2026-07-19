@@ -93,6 +93,18 @@ impl InlineMarks {
         self.0 |= Self::bit(kind);
     }
 
+    /// Flip `kind` in the set — the sticky-marks toggle at a collapsed caret.
+    fn flip(&mut self, kind: InlineKind) {
+        self.0 ^= Self::bit(kind);
+    }
+
+    /// The symmetric difference: which marks differ between the two sets. Used
+    /// to resolve the marks already in force at the caret against the pending
+    /// delta — a bit set in the delta flips the base mark for the next keystroke.
+    fn xor(self, other: InlineMarks) -> InlineMarks {
+        InlineMarks(self.0 ^ other.0)
+    }
+
     /// Whether `kind` is in force — the toolbar's "is Bold active?".
     pub fn contains(self, kind: InlineKind) -> bool {
         self.0 & Self::bit(kind) != 0
@@ -203,6 +215,20 @@ pub struct Doc {
     /// (see `undo`/`redo`), but "what counts as one undo step" is a frontend-UX
     /// call, so leaf decides when a run continues and tells twig to coalesce.
     last_edit_kind: Option<EditKind>,
+    /// The inline marks the user has toggled *at a collapsed caret* with no
+    /// selection — "start typing bold here". Held as the XOR delta from the marks
+    /// already in force at [`pending_at`](Self::pending_at): a set bit means
+    /// "flip this kind for the next typed text", so it both turns a mark on where
+    /// none is (type into bold) and off where one already covers the caret (type
+    /// past the bold you're standing in). [`Doc::insert`] realises it onto the
+    /// freshly typed text and then clears it — a mark once realised is carried by
+    /// the caret sitting inside the run, not by this delta.
+    pending_marks: InlineMarks,
+    /// The caret offset [`pending_marks`](Self::pending_marks) applies to. The
+    /// delta is live only while the caret still stands here with no selection;
+    /// any motion or edit ([`move_to`](Self::move_to), a splice, a click) drops
+    /// it, so a toggled-but-never-typed format doesn't leak onto text elsewhere.
+    pending_at: Option<usize>,
     /// The source as of the last open/save — `dirty` is `source != clean_source`,
     /// so undoing back to the saved state correctly clears the modified flag.
     clean_source: String,
@@ -369,6 +395,8 @@ impl Doc {
             // toggles at runtime.
             view: View::Wysiwyg,
             last_edit_kind: None,
+            pending_marks: InlineMarks::empty(),
+            pending_at: None,
             goal_col: None,
             vmap: VisualMap::default(),
             revision: 0,
@@ -589,6 +617,13 @@ impl Doc {
     ///
     /// Typed input only — clipboard text goes through [`paste`](Self::paste).
     pub fn insert(&mut self, text: &str) {
+        // Armed sticky marks (⌘b with no selection) turn the next typed text
+        // bold/italic/… and then retire — see `insert_with_marks`.
+        let pending = self.pending_here();
+        if !pending.is_empty() && self.selection().is_none() && !text.is_empty() {
+            self.insert_with_marks(self.caret, text, pending);
+            return;
+        }
         let (s, e) = self.selection().unwrap_or((self.caret, self.caret));
         let kind = if text.chars().take(2).count() == 1 && text != "\n" {
             EditKind::Insert
@@ -596,6 +631,105 @@ impl Doc {
             EditKind::Other
         };
         self.splice(s, e, text, kind);
+    }
+
+    /// The sticky-mark delta that is live right now: the marks armed by [`toggle`]
+    /// at a collapsed caret, but only while the caret still stands where they
+    /// were armed and nothing is selected. Empty otherwise, so a stale delta
+    /// never styles text it wasn't meant for.
+    fn pending_here(&self) -> InlineMarks {
+        if self.anchor.is_none() && self.pending_at == Some(self.caret) {
+            self.pending_marks
+        } else {
+            InlineMarks::empty()
+        }
+    }
+
+    /// Drop the armed sticky marks — any caret motion, selection, or edit does
+    /// this, so "start bold here" only ever applies at the exact spot it was
+    /// asked for.
+    fn clear_pending(&mut self) {
+        self.pending_marks = InlineMarks::empty();
+        self.pending_at = None;
+    }
+
+    /// Insert `text` at `at` carrying the armed sticky `marks`: a mark not yet in
+    /// force is wrapped around the freshly typed text; a mark the caret already
+    /// stands inside is *shed* — the text is inserted past the run's end so it
+    /// lands unmarked ("type normally again"). The caret comes to rest inside any
+    /// added runs, so continued typing inherits the marks with no re-wrapping,
+    /// and the delta is cleared: the marks now live in the document, not here.
+    fn insert_with_marks(&mut self, at: usize, text: &str, marks: InlineMarks) {
+        let base = self.mark_spans_at(at);
+        let base_set: InlineMarks = base.iter().map(|(k, _)| *k).collect();
+        // Shed the marks we're turning off: step the insertion point past the
+        // end of each run the caret sits in, so the new text falls outside it.
+        let mut ins_at = at;
+        for (kind, span) in &base {
+            if marks.contains(*kind) {
+                ins_at = ins_at.max(span.end);
+            }
+        }
+        if !self.splice(ins_at, ins_at, text, EditKind::Other) {
+            return;
+        }
+        // The plain splice inserted exactly `text` at `ins_at`; that byte range
+        // is the content every added mark wraps.
+        let (mut cs, mut ce) = (ins_at, ins_at + text.len());
+        for kind in marks.iter() {
+            if !base_set.contains(kind) {
+                let (ncs, nce) = self.wrap_span(cs, ce, kind);
+                cs = ncs;
+                ce = nce;
+            }
+        }
+        self.caret = ce.min(self.source.len());
+        self.anchor = None;
+        self.last_edit_kind = None;
+        // Realised: the marks are in the document now, and the caret sits inside
+        // them, so there is no delta left to carry. Arm nothing, but remember the
+        // spot so a *further* toggle before typing starts a clean delta here.
+        self.pending_marks = InlineMarks::empty();
+        self.pending_at = Some(self.caret);
+        self.clamp_caret();
+        self.record_caret();
+    }
+
+    /// Wrap `[s, e)` in `kind` via twig and return the byte span the *content*
+    /// (not the delimiters) occupies afterwards. Markdown/Djot inline delimiters
+    /// are symmetric (`**`…`**`, `_`…`_`, `` ` ``…`` ` ``), so the bytes twig
+    /// added split evenly around the content — half the growth on each side.
+    fn wrap_span(&mut self, s: usize, e: usize, kind: InlineKind) -> (usize, usize) {
+        match self.editor.toggle_inline(s, e, kind) {
+            Ok(change) => {
+                self.last_edit_kind = None;
+                self.refresh();
+                self.dirty = self.source != self.clean_source;
+                let added = (change.new.end - change.new.start).saturating_sub(e - s);
+                let half = added / 2;
+                (change.new.start + half, change.new.end - half)
+            }
+            // Unsupported here (e.g. mark on Markdown): leave the text unwrapped
+            // rather than lose the keystroke.
+            Err(e2) => {
+                self.status = Some(format!("{kind:?}: {e2}"));
+                (s, e)
+            }
+        }
+    }
+
+    /// The inline mark kinds whose span covers `off`, each with that span — the
+    /// span-carrying sibling of [`marks_at`](Self::marks_at), which reports node
+    /// ids instead. Used to shed a mark by stepping past the end of its run.
+    fn mark_spans_at(&mut self, off: usize) -> Vec<(InlineKind, std::ops::Range<usize>)> {
+        let off = off.min(self.source.len());
+        self.editor
+            .ancestors_at(off)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|m| off < m.span.end)
+            .filter_map(|m| inline_kind(&m.kind).map(|k| (k, m.span.clone())))
+            .collect()
     }
 
     /// Insert clipboard `text` at the caret, replacing the selection if there is
@@ -1142,6 +1276,7 @@ impl Doc {
                 self.caret = change.new.end;
                 self.anchor = None;
                 self.goal_col = None;
+                self.clear_pending();
                 self.dirty = self.source != self.clean_source;
                 self.status = None;
                 // And the post-edit caret, so a later redo restores it.
@@ -1183,9 +1318,21 @@ impl Doc {
     /// the toggled region selected so a second press cleanly reverses it.
     pub fn toggle(&mut self, kind: InlineKind) {
         let Some((s, e)) = self.selection() else {
-            self.status = Some("select text first".into());
+            // No selection: arm the mark for the next text typed here, the way a
+            // word processor does. `⌘b`, type, `⌘b` again toggles bold on and off
+            // in the flow of typing without ever selecting anything — the delta
+            // is realised onto the freshly typed text by `insert`. A fresh caret
+            // position starts the delta over from the marks actually in force.
+            if self.pending_at != Some(self.caret) {
+                self.pending_marks = InlineMarks::empty();
+                self.pending_at = Some(self.caret);
+            }
+            self.pending_marks.flip(kind);
+            self.status = None;
             return;
         };
+        // Styling a selection is a one-shot act, not a sticky mode.
+        self.clear_pending();
         self.record_caret();
         match self.editor.toggle_inline(s, e, kind) {
             Ok(change) => {
@@ -1308,7 +1455,11 @@ impl Doc {
     /// buffer exactly as in the middle.
     pub fn active_inline_marks(&mut self) -> InlineMarks {
         let Some((start, end)) = self.selection() else {
-            return self.marks_at(self.caret).into_iter().map(|(k, _)| k).collect();
+            // The marks actually in force at the caret, flipped by any armed
+            // sticky delta — so `⌘b` at a bare caret lights the Bold button
+            // immediately, before a single character is typed.
+            let base: InlineMarks = self.marks_at(self.caret).into_iter().map(|(k, _)| k).collect();
+            return base.xor(self.pending_here());
         };
         // The selection's *last character*, not its exclusive end: `end` is the
         // offset one past the selection, which for a selection ending exactly at
@@ -1978,6 +2129,9 @@ impl Doc {
         // A caret move ends the current typing/deletion run, so the next edit
         // starts a fresh undo group rather than coalescing across the gap.
         self.last_edit_kind = None;
+        // Moving away disarms any sticky mark — "start bold" applies only where
+        // it was asked for, not wherever the caret next lands.
+        self.clear_pending();
     }
 
     // In the source view, motion walks source bytes / source lines. In the
@@ -3244,6 +3398,84 @@ mod tests {
         assert_eq!(d.source, "a `word` b\n");
         d.toggle(InlineKind::Verbatim);
         assert_eq!(d.source, "a word b\n");
+    }
+
+    #[test]
+    fn sticky_bold_with_no_selection_wraps_the_next_typed_text() {
+        // ⌘b at a bare caret, then type: the text comes out bold with no
+        // selection ever made — the word-processor "start bold here" gesture.
+        let mut d = doc_with("sticky_wrap", "xy\n");
+        d.caret = 1; // between x and y
+        d.toggle(InlineKind::Strong);
+        assert_eq!(d.source, "xy\n", "arming a mark must not edit the document");
+        d.insert("A");
+        assert_eq!(d.source, "x**A**y\n");
+    }
+
+    #[test]
+    fn sticky_bold_lights_the_toolbar_before_any_typing() {
+        // The button must light the instant ⌘b is pressed, or the mode is
+        // invisible until the first character lands.
+        let mut d = doc_with("sticky_light", "xy\n");
+        d.caret = 1;
+        assert!(!d.active_inline_marks().contains(InlineKind::Strong));
+        d.toggle(InlineKind::Strong);
+        assert!(d.active_inline_marks().contains(InlineKind::Strong));
+    }
+
+    #[test]
+    fn sticky_bold_toggled_off_types_normally_again() {
+        // ⌘b, type, ⌘b, type: the first run is bold, the second is not — all
+        // in the flow of typing, the exact sequence the user described.
+        let mut d = doc_with("sticky_off", "\n");
+        d.caret = 0;
+        d.toggle(InlineKind::Strong);
+        d.insert("a");
+        d.insert("b"); // continues inside the run, no re-arming
+        assert_eq!(d.source, "**ab**\n");
+        d.toggle(InlineKind::Strong); // ⌘b again — shed bold
+        d.insert("c");
+        assert_eq!(d.source, "**ab**c\n");
+    }
+
+    #[test]
+    fn continued_typing_after_a_sticky_run_stays_in_the_run() {
+        // Once a mark is realised the caret sits inside the run, so plain typing
+        // extends it rather than starting a second, adjacent bold span.
+        let mut d = doc_with("sticky_cont", "\n");
+        d.caret = 0;
+        d.toggle(InlineKind::Emph);
+        d.insert("h");
+        d.insert("i");
+        assert_eq!(d.source, "*hi*\n");
+    }
+
+    #[test]
+    fn moving_the_caret_disarms_a_sticky_mark() {
+        // Arming a mark and then moving away must not style text elsewhere.
+        let mut d = doc_with("sticky_disarm", "xy\n");
+        d.caret = 0;
+        d.toggle(InlineKind::Strong);
+        d.move_right(false); // caret 0 → 1, disarms
+        assert!(!d.active_inline_marks().contains(InlineKind::Strong));
+        d.insert("A");
+        assert_eq!(d.source, "xAy\n", "the mark must not follow the caret");
+    }
+
+    #[test]
+    fn stacked_sticky_marks_apply_together() {
+        // ⌘b then ⌘i before typing: the text comes out both bold and italic.
+        let mut d = doc_with("sticky_stack", "\n");
+        d.caret = 0;
+        d.toggle(InlineKind::Strong);
+        d.toggle(InlineKind::Emph);
+        d.insert("x");
+        // Land the caret on the styled character and confirm both marks are live.
+        d.anchor = Some(d.source.find('x').unwrap());
+        d.caret = d.anchor.unwrap() + 1;
+        let marks = d.active_inline_marks();
+        assert!(marks.contains(InlineKind::Strong), "bold: {}", d.source);
+        assert!(marks.contains(InlineKind::Emph), "italic: {}", d.source);
     }
 
     #[test]
