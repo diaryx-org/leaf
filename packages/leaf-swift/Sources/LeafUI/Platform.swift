@@ -22,7 +22,7 @@ public typealias LeafView = NSView
 
 /// Text insets, kept as a plain struct so the theme doesn't depend on either
 /// toolkit's edge-inset type.
-public struct LeafInsets {
+public struct LeafInsets: Equatable {
     public var top: CGFloat
     public var left: CGFloat
     public var bottom: CGFloat
@@ -43,6 +43,7 @@ public enum Palette {
     public static var link: LeafColor { .link }
     public static var separator: LeafColor { .separator }
     public static var selection: LeafColor { UIColor.systemBlue.withAlphaComponent(0.30) }
+    public static var inactiveSelection: LeafColor { UIColor.systemGray.withAlphaComponent(0.30) }
     public static var accent: LeafColor { .tintColor }
     #elseif canImport(AppKit)
     public static var label: LeafColor { .labelColor }
@@ -51,6 +52,7 @@ public enum Palette {
     public static var link: LeafColor { .linkColor }
     public static var separator: LeafColor { .separatorColor }
     public static var selection: LeafColor { .selectedTextBackgroundColor }
+    public static var inactiveSelection: LeafColor { .unemphasizedSelectedTextBackgroundColor }
     public static var accent: LeafColor { .controlAccentColor }
     #endif
     public static var codeBackground: LeafColor { secondary.withAlphaComponent(0.08) }

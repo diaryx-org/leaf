@@ -61,13 +61,25 @@ final class LeafSelectionRect: UITextSelectionRect {
 
 public final class LeafTextView: UIView, UITextInput {
     let doc: LeafDoc
-    public var theme: EditorTheme { didSet { avgGlyphWidth = nil; relayoutForWidth(force: true) } }
+    public var theme: EditorTheme {
+        didSet {
+            // Re-wrap only on a geometry change; a colour-only (or identical) theme
+            // just repaints. Guarding this breaks the relayout⇄state-publish loop
+            // that otherwise re-scrolled the view to the caret every frame.
+            guard theme.metricsDiffer(from: oldValue) else { setNeedsDisplay(); return }
+            avgGlyphWidth = nil
+            relayoutForWidth(force: true)
+        }
+    }
     public var onStateChange: ((EditorState) -> Void)?
 
     private var docView: DocView
     private var layoutEngine: EditorLayout
     private var wrapCols: Int = 0
     private var avgGlyphWidth: CGFloat?
+    /// The caret offset the view last scrolled to reveal. Only a *move* re-scrolls,
+    /// so passive reflows leave the reader's scroll position alone.
+    private var lastCaretOffset: UInt32?
 
     // UITextInput plumbing.
     public weak var inputDelegate: UITextInputDelegate?
@@ -90,6 +102,8 @@ public final class LeafTextView: UIView, UITextInput {
         backgroundColor = .clear
         contentMode = .redraw
         addInteraction(textInteraction)
+        // Seed with the initial caret so the first reflow opens at the top.
+        lastCaretOffset = doc.caretOffset()
     }
 
     @available(*, unavailable)
@@ -143,7 +157,12 @@ public final class LeafTextView: UIView, UITextInput {
         layoutEngine = EditorLayout(view, theme: theme)
         invalidateIntrinsicContentSize()
         setNeedsDisplay()
-        scrollCaretToVisible()
+        // Only follow the caret when it actually moved, not on a passive reflow.
+        let caret = doc.caretOffset()
+        if caret != lastCaretOffset {
+            lastCaretOffset = caret
+            scrollCaretToVisible()
+        }
         onStateChange?(EditorState(view))
     }
 
@@ -218,7 +237,8 @@ public final class LeafTextView: UIView, UITextInput {
             UIKeyCommand(input: input, modifierFlags: mods, action: a)
         }
         return [k("b", .command), k("i", .command), k("u", .command),
-                k("z", .command), k("z", [.command, .shift])]
+                k("z", .command), k("z", [.command, .shift]),
+                k("v", [.command, .shift])]
     }
 
     @objc private func handleShortcut(_ cmd: UIKeyCommand) {
@@ -228,6 +248,10 @@ public final class LeafTextView: UIView, UITextInput {
         case ("u", _): command { $0.toggleUnderline() }
         case ("z", false): command { $0.undo() }
         case ("z", true): command { $0.redo() }
+        // ⇧⌘V — plain-flavor escape hatch: paste as leaf source, ignoring rich HTML.
+        case ("v", true):
+            let text = UIPasteboard.general.string ?? ""
+            if !text.isEmpty { command { $0.paste(text: text) } }
         default: break
         }
     }
@@ -258,10 +282,17 @@ public final class LeafTextView: UIView, UITextInput {
         if doc.selectedText() != nil { render(doc.backspace()) }
     }
 
+    /// ⌘V: the rich flavor where the pasteboard has one, the plain flavor otherwise
+    /// (mirrors leaf-tui / leaf-gpui / the macOS surface). HTML carries the
+    /// formatting a `text/plain` copy out of another app has already lost; core
+    /// falls back to the plain flavor when the HTML won't convert.
     public override func paste(_ sender: Any?) {
-        let text = UIPasteboard.general.string ?? ""
-        guard !text.isEmpty else { return }
-        render(doc.pasteRich(html: nil, text: text))
+        let pb = UIPasteboard.general
+        let html = pb.data(forPasteboardType: "public.html").flatMap { String(data: $0, encoding: .utf8) }
+            ?? (pb.value(forPasteboardType: "public.html") as? String)
+        let text = pb.string ?? ""
+        guard html != nil || !text.isEmpty else { return }
+        command { $0.pasteRich(html: html, text: text) }
     }
 
     public override func selectAll(_ sender: Any?) {

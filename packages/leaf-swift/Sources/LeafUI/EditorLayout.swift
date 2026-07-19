@@ -14,7 +14,7 @@ import LeafFFI
 
 /// Toolbar/chrome state pushed to the host after every repaint — the subset of a
 /// `DocView` a surrounding UI reflects. Platform-neutral so both views share it.
-public struct EditorState {
+public struct EditorState: Equatable {
     public var view: String          // "wysiwyg" | "source"
     public var dirty: Bool
     public var heading: UInt32?      // heading level at the caret, or nil

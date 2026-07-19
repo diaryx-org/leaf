@@ -7,14 +7,35 @@
 //  key/mouse intent routes back into core, which edits and returns the next frame.
 //  Shared geometry lives in `EditorLayout`; the UIKit peer is `LeafTextView` in
 //  `LeafTextViewiOS.swift`.
+//
+//  ## Native selection on AppKit
+//
+//  AppKit has no analogue to iOS's `UITextInteraction` — nothing lets the system
+//  draw or own a selection over custom-laid-out text, so (like Xcode's own editor)
+//  this view paints the selection itself. What makes it *native* is that the OS is
+//  told the truth about it: `NSTextInputClient` reports the real `selectedRange` and
+//  answers `attributedSubstring`/`firstRect`/`characterIndex`, the view is an
+//  `NSServicesMenuRequestor`, and it exposes an `NSAccessibility` text area. So Look
+//  Up, the Services menu, dictation, the right-click menu, VoiceOver, and the
+//  emphasized/unemphasized (key-window-aware) highlight all behave natively — the
+//  same experience the iOS peer gets from `UITextInput`, reached a different way.
 
 #if canImport(AppKit) && !targetEnvironment(macCatalyst)
 import AppKit
 import LeafFFI
 
-public final class LeafTextView: NSView, NSTextInputClient {
+public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuRequestor {
     let doc: LeafDoc
-    public var theme: EditorTheme { didSet { avgGlyphWidth = nil; relayoutForWidth(force: true) } }
+    public var theme: EditorTheme {
+        didSet {
+            // Re-wrap only when the geometry changed; a colour-only (or identical)
+            // theme just repaints. Guarding this breaks the relayout⇄state-publish
+            // loop that otherwise re-scrolled the view to the caret every frame.
+            guard theme.metricsDiffer(from: oldValue) else { needsDisplay = true; return }
+            avgGlyphWidth = nil
+            relayoutForWidth(force: true)
+        }
+    }
     /// Fired after every repaint so a host can update a toolbar/footer.
     public var onStateChange: ((EditorState) -> Void)?
 
@@ -26,6 +47,10 @@ public final class LeafTextView: NSView, NSTextInputClient {
     private var caretVisible = true
     private var blinkTimer: Timer?
     private var isFocused = false
+    /// The caret offset the view last scrolled to reveal. Only a *move* re-scrolls,
+    /// so passive reflows (width/theme relayout, state refreshes) leave the reader's
+    /// scroll position alone instead of yanking it back to the caret.
+    private var lastCaretOffset: UInt32?
 
     public init(doc: LeafDoc, theme: EditorTheme = .default) {
         self.doc = doc
@@ -35,6 +60,9 @@ public final class LeafTextView: NSView, NSTextInputClient {
         self.layoutEngine = EditorLayout(first, theme: theme)
         super.init(frame: .zero)
         autoresizingMask = [.width]
+        // Seed with the initial caret so the first reflow opens at the top rather
+        // than scrolling to wherever the caret happens to start.
+        lastCaretOffset = doc.caretOffset()
     }
 
     @available(*, unavailable)
@@ -85,7 +113,13 @@ public final class LeafTextView: NSView, NSTextInputClient {
         if abs(frame.height - h) > 0.5 { setFrameSize(NSSize(width: frame.width, height: h)) }
         needsDisplay = true
         resetBlink()
-        scrollCaretToVisible()
+        // Only follow the caret when it actually moved (typing, motion, click), not
+        // on a passive reflow — otherwise every relayout snaps the reader back.
+        let caret = doc.caretOffset()
+        if caret != lastCaretOffset {
+            lastCaretOffset = caret
+            scrollCaretToVisible()
+        }
         onStateChange?(EditorState(view: view.view, dirty: view.dirty, heading: view.heading, active: view.active))
     }
 
@@ -95,6 +129,8 @@ public final class LeafTextView: NSView, NSTextInputClient {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         let padX = theme.padding.left
         let fullWidth = bounds.width - theme.padding.left - theme.padding.right
+        let active = selectionIsActive
+        let selColor = active ? theme.selectionColor : theme.inactiveSelectionColor
 
         for rl in layoutEngine.rows {
             let rowRect = CGRect(x: padX, y: rl.top, width: fullWidth, height: rl.height)
@@ -103,15 +139,21 @@ public final class LeafTextView: NSView, NSTextInputClient {
                 ctx.fill(rowRect.insetBy(dx: -4, dy: 0))
                 if let lang = rl.row.codeLang, !lang.isEmpty { drawCodeLang(lang, in: rowRect) }
             }
-            layoutEngine.fillSelection(row: rl, padLeft: padX, color: theme.selectionColor, in: ctx)
+            layoutEngine.fillSelection(row: rl, padLeft: padX, color: selColor, in: ctx)
             rl.attributed.draw(with: rowRect, options: [.usesLineFragmentOrigin])
         }
 
-        if isFocused, caretVisible, let rect = layoutEngine.caretRect(docView, theme: theme) {
+        if active, caretVisible, let rect = layoutEngine.caretRect(docView, theme: theme) {
             ctx.setFillColor(theme.caretColor.cgColor)
             ctx.fill(rect)
         }
     }
+
+    /// Whether this view owns the text focus right now: first responder **and** in the
+    /// key window. Drives the emphasized-vs-unemphasized selection fill and whether the
+    /// caret shows — matching a native `NSTextView`, which greys its selection and hides
+    /// its caret the moment its window stops being key.
+    private var selectionIsActive: Bool { isFocused && (window?.isKeyWindow ?? false) }
 
     private func drawCodeLang(_ lang: String, in rowRect: CGRect) {
         let attrs: [NSAttributedString.Key: Any] = [
@@ -209,7 +251,7 @@ public final class LeafTextView: NSView, NSTextInputClient {
         case "a": render(doc.selectAll()); return true
         case "c": copy(nil); return true
         case "x": cut(nil); return true
-        case "v": paste(nil); return true
+        case "v": if shift { pasteAsPlainText(nil) } else { paste(nil) }; return true
         default:  return super.performKeyEquivalent(with: event)
         }
     }
@@ -237,7 +279,114 @@ public final class LeafTextView: NSView, NSTextInputClient {
         render(doc.pasteRich(html: html, text: text))
     }
 
+    /// ⇧⌘V — the plain-flavor escape hatch: insert the pasteboard's text as leaf
+    /// *source*, ignoring any rich HTML flavor (mirrors leaf-gpui's ⇧⌘V and
+    /// leaf-tui's ⌥V). The Edit menu's "Paste and Match Style" routes here too.
+    @objc public func pasteAsPlainText(_ sender: Any?) {
+        guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else { return }
+        render(doc.paste(text: text))
+    }
+
     @objc public override func selectAll(_ sender: Any?) { render(doc.selectAll()) }
+
+    // MARK: contextual menu + macOS text services
+
+    public override func menu(for event: NSEvent) -> NSMenu? {
+        window?.makeFirstResponder(self)
+        // Right-clicking outside the selection moves the caret there first, like a
+        // native text view; a click inside an existing selection keeps it.
+        if !hasSelection {
+            let p = convert(event.locationInWindow, from: nil)
+            let (row, ch) = layoutEngine.hit(p, theme: theme)
+            render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: false))
+        }
+
+        let menu = NSMenu()
+        if hasSelection {
+            menu.addItem(withTitle: "Cut", action: #selector(cut(_:)), keyEquivalent: "")
+            menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
+        }
+        menu.addItem(withTitle: "Paste", action: #selector(paste(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: "Paste and Match Style", action: #selector(pasteAsPlainText(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: "Select All", action: #selector(selectAll(_:)), keyEquivalent: "")
+        if hasSelection, let text = doc.selectedText(), !text.isEmpty {
+            menu.addItem(.separator())
+            let shown = text.count > 24 ? text.prefix(24) + "…" : Substring(text)
+            menu.addItem(withTitle: "Look Up “\(shown)”", action: #selector(lookUpSelection(_:)), keyEquivalent: "")
+            menu.addItem(withTitle: "Share…", action: #selector(shareSelection(_:)), keyEquivalent: "")
+        }
+        return menu
+    }
+
+    @objc private func lookUpSelection(_ sender: Any?) {
+        guard let text = doc.selectedText(), !text.isEmpty else { return }
+        let rc = doc.posForOffset(off: UInt32(selLowByte))
+        let origin = layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch), theme: theme)?.origin ?? .zero
+        showDefinition(for: NSAttributedString(string: text),
+                       at: NSPoint(x: origin.x, y: origin.y + theme.lineHeight))
+    }
+
+    @objc private func shareSelection(_ sender: Any?) {
+        guard let text = doc.selectedText(), !text.isEmpty else { return }
+        let rc = doc.posForOffset(off: UInt32(selLowByte))
+        let anchor = layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch), theme: theme) ?? .zero
+        NSSharingServicePicker(items: [text]).show(relativeTo: anchor, of: self, preferredEdge: .minY)
+    }
+
+    /// Advertise the selection to the Services system: we can *send* a string when
+    /// there's a selection and *receive* one to replace it. Pairs with the
+    /// `NSServicesMenuRequestor` methods below.
+    public override func validRequestor(forSendType sendType: NSPasteboard.PasteboardType?,
+                                        returnType: NSPasteboard.PasteboardType?) -> Any? {
+        let sendOK = sendType == nil || (sendType == .string && hasSelection)
+        let returnOK = returnType == nil || returnType == .string
+        if sendOK, returnOK { return self }
+        return super.validRequestor(forSendType: sendType, returnType: returnType)
+    }
+
+    public func writeSelection(to pboard: NSPasteboard, types: [NSPasteboard.PasteboardType]) -> Bool {
+        guard hasSelection, types.contains(.string), let text = doc.selectedText() else { return false }
+        pboard.clearContents()
+        return pboard.setString(text, forType: .string)
+    }
+
+    public func readSelection(from pboard: NSPasteboard) -> Bool {
+        guard let text = pboard.string(forType: .string) else { return false }
+        render(doc.pasteRich(html: nil, text: text))
+        return true
+    }
+
+    // MARK: accessibility — expose the document as a native text area
+
+    public override func isAccessibilityElement() -> Bool { true }
+    public override func accessibilityRole() -> NSAccessibility.Role? { .textArea }
+    public override func accessibilityValue() -> Any? { fullText() }
+    public override func accessibilityNumberOfCharacters() -> Int { (fullText() as NSString).length }
+    public override func accessibilityInsertionPointLineNumber() -> Int { Int(docView.caretRow) }
+
+    public override func accessibilitySelectedText() -> String? {
+        doc.textInRange(from: UInt32(selLowByte), to: UInt32(selHighByte))
+    }
+
+    public override func accessibilitySelectedTextRange() -> NSRange {
+        let loc = (doc.textInRange(from: 0, to: UInt32(selLowByte)) as NSString).length
+        let len = ((accessibilitySelectedText() ?? "") as NSString).length
+        return NSRange(location: loc, length: len)
+    }
+
+    public override func setAccessibilitySelectedTextRange(_ range: NSRange) {
+        let full = fullText() as NSString
+        guard range.location >= 0, range.location + range.length <= full.length else { return }
+        let fromByte = full.substring(to: range.location).utf8.count
+        let toByte = full.substring(to: range.location + range.length).utf8.count
+        render(doc.setSelectionOffsets(anchor: UInt32(fromByte), focus: UInt32(toByte)))
+    }
+
+    public override func accessibilityString(for range: NSRange) -> String? {
+        let full = fullText() as NSString
+        guard range.location >= 0, range.location + range.length <= full.length else { return nil }
+        return full.substring(with: range)
+    }
 
     // MARK: focus + caret blink
 
@@ -255,18 +404,76 @@ public final class LeafTextView: NSView, NSTextInputClient {
         }
     }
 
-    // MARK: NSTextInputClient — minimal (committed text + candidate placement)
+    // MARK: window key state — selection emphasis + caret track the key window
+
+    public override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        let nc = NotificationCenter.default
+        nc.removeObserver(self, name: NSWindow.didBecomeKeyNotification, object: nil)
+        nc.removeObserver(self, name: NSWindow.didResignKeyNotification, object: nil)
+        guard let window else { return }
+        // Advertise the selection to the app-wide Services menu (Edit ▸ Services).
+        NSApp.registerServicesMenuSendTypes([.string], returnTypes: [.string])
+        nc.addObserver(self, selector: #selector(keyStateChanged), name: NSWindow.didBecomeKeyNotification, object: window)
+        nc.addObserver(self, selector: #selector(keyStateChanged), name: NSWindow.didResignKeyNotification, object: window)
+    }
+
+    @objc private func keyStateChanged() { resetBlink(); needsDisplay = true }
+
+    deinit { NotificationCenter.default.removeObserver(self) }
+
+    // MARK: selection offsets
+    //
+    // The character-index space shared by `NSTextInputClient`, Services, and
+    // accessibility below is leaf-core's **byte offset** — the same handle the iOS
+    // `UITextInput` peer uses. Core owns the offset⇄position mapping (`posForOffset` /
+    // `offsetForPos`), so these only have to stay self-consistent, which they do.
+
+    private var caretByte: Int { Int(doc.caretOffset()) }
+    private var anchorByte: Int { Int(doc.anchorOffset()) }
+    private var selLowByte: Int { min(anchorByte, caretByte) }
+    private var selHighByte: Int { max(anchorByte, caretByte) }
+    private var hasSelection: Bool { docView.hasSelection }
+
+    /// The document's whole plain text — the buffer those byte offsets count into.
+    private func fullText() -> String { doc.textInRange(from: 0, to: doc.docEndOffset()) }
+
+    // MARK: NSTextInputClient — real selection, geometry, and hit-testing
+    //
+    // With these reporting the true selection, macOS's system text services light up:
+    // Look Up, the Services menu, dictation, and IME candidate placement all target
+    // the real range. Marked-text composition (the inline IME overlay) is still the one
+    // follow-up; committed CJK/emoji text inserts via `insertText`.
 
     public func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {}
     public func unmarkText() {}
     public func hasMarkedText() -> Bool { false }
     public func markedRange() -> NSRange { NSRange(location: NSNotFound, length: 0) }
-    public func selectedRange() -> NSRange { NSRange(location: NSNotFound, length: 0) }
     public func validAttributesForMarkedText() -> [NSAttributedString.Key] { [] }
-    public func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?) -> NSAttributedString? { nil }
-    public func characterIndex(for point: NSPoint) -> Int { NSNotFound }
+
+    public func selectedRange() -> NSRange {
+        NSRange(location: selLowByte, length: selHighByte - selLowByte)
+    }
+
+    public func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?) -> NSAttributedString? {
+        let from = max(0, range.location)
+        let to = max(from, range.location + range.length)
+        actualRange?.pointee = NSRange(location: from, length: to - from)
+        return NSAttributedString(string: doc.textInRange(from: UInt32(from), to: UInt32(to)))
+    }
+
+    public func characterIndex(for point: NSPoint) -> Int {
+        guard let window else { return NSNotFound }
+        let local = convert(window.convertPoint(fromScreen: point), from: nil)
+        let (row, ch) = layoutEngine.hit(local, theme: theme)
+        return Int(doc.offsetForPos(row: UInt32(row), ch: UInt32(ch)))
+    }
+
     public func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
-        guard let rect = layoutEngine.caretRect(docView, theme: theme), let window else { return .zero }
+        guard let window else { return .zero }
+        actualRange?.pointee = range
+        let rc = doc.posForOffset(off: UInt32(max(0, range.location)))
+        guard let rect = layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch), theme: theme) else { return .zero }
         return window.convertToScreen(convert(rect, to: nil))
     }
 

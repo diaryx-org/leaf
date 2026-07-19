@@ -66,7 +66,7 @@ public final class LeafEditorModel: ObservableObject {
     }
 
     private func run(_ op: @escaping (LeafDoc) -> DocView) { textView?.command(op) }
-    fileprivate func updateState(_ s: EditorState) { state = s }
+    fileprivate func updateState(_ s: EditorState) { if s != state { state = s } }
 }
 
 #if canImport(AppKit) && !targetEnvironment(macCatalyst)

@@ -36,6 +36,11 @@ public struct EditorTheme {
     public var quoteBarColor: LeafColor
     public var ruleColor: LeafColor
     public var selectionColor: LeafColor
+    /// The selection fill when the view isn't the focus — window not key, or the
+    /// view not first responder. Matches native text: emphasized blue when active,
+    /// this unemphasized grey otherwise. Only the macOS surface draws it (iOS lets
+    /// the system overlay selection).
+    public var inactiveSelectionColor: LeafColor
     public var caretColor: LeafColor
     /// The drag-handle knobs on iOS selection (the loupe-free native peers).
     public var handleColor: LeafColor
@@ -56,6 +61,7 @@ public struct EditorTheme {
         quoteBarColor: LeafColor = Palette.tertiary,
         ruleColor: LeafColor = Palette.separator,
         selectionColor: LeafColor = Palette.selection,
+        inactiveSelectionColor: LeafColor = Palette.inactiveSelection,
         caretColor: LeafColor = Palette.label,
         handleColor: LeafColor = Palette.accent
     ) {
@@ -74,11 +80,26 @@ public struct EditorTheme {
         self.quoteBarColor = quoteBarColor
         self.ruleColor = ruleColor
         self.selectionColor = selectionColor
+        self.inactiveSelectionColor = inactiveSelectionColor
         self.caretColor = caretColor
         self.handleColor = handleColor
     }
 
     public static let `default` = EditorTheme()
+
+    /// Whether moving from `other` to `self` changes the *geometry* — the only kind
+    /// of theme change that needs a re-wrap/re-layout. A pure colour change just
+    /// repaints. Lets a host re-apply an equal theme (SwiftUI re-runs `updateNSView`
+    /// on every state change) without forcing a relayout, which would otherwise loop
+    /// with the state publish and re-scroll the view to the caret every frame.
+    func metricsDiffer(from other: EditorTheme) -> Bool {
+        bodyFontName != other.bodyFontName
+            || monoFontName != other.monoFontName
+            || fontSize != other.fontSize
+            || lineHeight != other.lineHeight
+            || headingScale != other.headingScale
+            || padding != other.padding
+    }
 
     // ── derived metrics ──────────────────────────────────────────────────────
 

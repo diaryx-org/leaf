@@ -91,11 +91,32 @@ struct ContentView: View {
 `toggleList`, `insertLink`, `undo`, …), `source()` / `markSaved()` for
 persistence, and a `@Published state` (active marks, heading, dirty, view) for
 toolbar binding. Keyboard (typing, arrows/word/line/doc motion with shift-select,
-delete/word-delete, ⌘B/I/U/E, ⌘Z/⇧⌘Z, ⌘C/X/V/A), mouse (click, shift-click,
+delete/word-delete, ⌘B/I/U/E, ⌘Z/⇧⌘Z, ⌘C/X/V/A, ⇧⌘V), mouse (click, shift-click,
 double/triple-click select), and the rich HTML clipboard all work out of the box.
-Customize fonts/colours via `EditorTheme`. *Inline IME (marked text) is the one
-follow-up* — committed CJK/emoji insert correctly, but the composing overlay isn't
-drawn yet (the web got that free from `contenteditable`; AppKit needs it explicit).
+Customize fonts/colours via `EditorTheme`.
+
+**Smart, rich clipboard** (the same behaviour as leaf-tui / leaf-gpui via
+`arboard`, reached here through `NSPasteboard`/`UIPasteboard`). A copy publishes
+*two* flavours: the plain flavour is the leaf **source** (`selectedText`), the rich
+flavour is twig-rendered **HTML** (`selectionHtml`) — so pasting into a plain editor
+yields Markdown and pasting into Notes/Word/a browser yields formatting. A paste
+(⌘V) *prefers* the HTML flavour, parsing external rich content back into the AST via
+`pasteRich`, and falls back to plain when there's no HTML or it won't convert.
+**Paste and Match Style** (⇧⌘V, or the Edit / right-click menu item) is the escape
+hatch: it ignores the rich flavour and inserts the plain flavour as source.
+
+**Native selection.** iOS gets the system's real selection experience (caret,
+handles, loupe, edit menu) by conforming to `UITextInput` + `UITextInteraction`.
+AppKit has no such API — nothing lets the system draw a selection over custom text
+layout — so the macOS surface (like Xcode's own editor) paints the selection
+itself, but makes it *native* by telling the OS the truth about it: a real
+`NSTextInputClient` (`selectedRange`, `attributedSubstring`, `firstRect`,
+`characterIndex`), an `NSServicesMenuRequestor`, and an `NSAccessibility` text
+area. So Look Up, the Services menu, Writing Tools, dictation, the right-click
+menu, VoiceOver, and the emphasized/unemphasized (key-window-aware) highlight all
+behave natively. *Inline IME (marked text) is the one remaining follow-up* —
+committed CJK/emoji insert correctly, but the composing overlay isn't drawn yet
+(the web got that free from `contenteditable`; AppKit needs it explicit).
 
 ### Type-checking the Swift without an app
 
