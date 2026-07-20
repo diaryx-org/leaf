@@ -51,6 +51,18 @@ public final class LeafEditorModel: ObservableObject {
     public func toggleBlockquote() { run { $0.toggleBlockquote() } }
     public func toggleList(ordered: Bool) { run { $0.toggleList(ordered: ordered) } }
     public func insertLink(_ destination: String) { run { $0.insertLink(destination: destination) } }
+
+    // ── table editing ─────────────────────────────────────────────────────────
+
+    public var caretInTable: Bool { doc.caretInTable() }
+    public func tableInsertRow(below: Bool = true) { run { $0.tableInsertRow(below: below) } }
+    public func tableDeleteRow() { run { $0.tableDeleteRow() } }
+    public func tableInsertColumn(right: Bool = true) { run { $0.tableInsertColumn(right: right) } }
+    public func tableDeleteColumn() { run { $0.tableDeleteColumn() } }
+    public func tableSetAlignment(_ alignment: TableAlignment) { run { $0.tableSetAlignment(alignment: alignment) } }
+    public func tableMoveRow(down: Bool) { run { $0.tableMoveRow(down: down) } }
+    public func tableMoveColumn(right: Bool) { run { $0.tableMoveColumn(right: right) } }
+
     public func undo() { run { $0.undo() } }
     public func redo() { run { $0.redo() } }
     public func toggleView() { run { $0.toggleView() } }

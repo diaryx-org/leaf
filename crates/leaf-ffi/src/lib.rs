@@ -43,7 +43,7 @@ use std::sync::{Arc, Mutex};
 
 use leaf_core::style::{Role, Style as LStyle};
 use leaf_core::wysiwyg::text_width;
-use leaf_core::{BlockKind, Doc, Format, InlineKind, View, VisualMap};
+use leaf_core::{Alignment, BlockKind, Doc, Format, InlineKind, View, VisualMap};
 use unicode_segmentation::UnicodeSegmentation;
 
 uniffi::setup_scaffolding!();
@@ -143,6 +143,27 @@ pub struct DocView {
 pub struct RowCol {
     pub row: u32,
     pub ch: u32,
+}
+
+/// A table column's text alignment — the argument to
+/// [`LeafDoc::table_set_alignment`]. Mirrors twig's `Alignment`.
+#[derive(uniffi::Enum)]
+pub enum TableAlignment {
+    Default,
+    Left,
+    Right,
+    Center,
+}
+
+impl TableAlignment {
+    fn to_core(self) -> Alignment {
+        match self {
+            TableAlignment::Default => Alignment::Default,
+            TableAlignment::Left => Alignment::Left,
+            TableAlignment::Right => Alignment::Right,
+            TableAlignment::Center => Alignment::Center,
+        }
+    }
 }
 
 /// A live leaf document bound for a native Apple frontend: `leaf_core::Doc` plus
@@ -702,6 +723,62 @@ impl LeafDoc {
     pub fn toggle_list(&self, ordered: bool) -> DocView {
         let mut g = self.lock();
         g.doc.toggle_list(ordered);
+        g.view()
+    }
+
+    // ── table editing ─────────────────────────────────────────────────────────
+
+    /// Whether the caret is inside a table — for enabling the table controls.
+    pub fn caret_in_table(&self) -> bool {
+        self.lock().doc.caret_in_table()
+    }
+
+    /// Insert an empty row below (`below`) or above the caret's row.
+    pub fn table_insert_row(&self, below: bool) -> DocView {
+        let mut g = self.lock();
+        g.doc.table_insert_row(below);
+        g.view()
+    }
+
+    /// Delete the caret's row (not the header or the last body row).
+    pub fn table_delete_row(&self) -> DocView {
+        let mut g = self.lock();
+        g.doc.table_delete_row();
+        g.view()
+    }
+
+    /// Insert an empty column right (`right`) or left of the caret's column.
+    pub fn table_insert_column(&self, right: bool) -> DocView {
+        let mut g = self.lock();
+        g.doc.table_insert_column(right);
+        g.view()
+    }
+
+    /// Delete the caret's column (unless it is the only one).
+    pub fn table_delete_column(&self) -> DocView {
+        let mut g = self.lock();
+        g.doc.table_delete_column();
+        g.view()
+    }
+
+    /// Set the caret's column to `alignment`.
+    pub fn table_set_alignment(&self, alignment: TableAlignment) -> DocView {
+        let mut g = self.lock();
+        g.doc.table_set_alignment(alignment.to_core());
+        g.view()
+    }
+
+    /// Move the caret's row one place down (`down`) or up.
+    pub fn table_move_row(&self, down: bool) -> DocView {
+        let mut g = self.lock();
+        g.doc.table_move_row(down);
+        g.view()
+    }
+
+    /// Move the caret's column one place right (`right`) or left.
+    pub fn table_move_column(&self, right: bool) -> DocView {
+        let mut g = self.lock();
+        g.doc.table_move_column(right);
         g.view()
     }
 

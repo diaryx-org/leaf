@@ -31,6 +31,8 @@ struct ContentView: View {
                 btn("list", "list.bullet", active: false) { editor.toggleList(ordered: false) }
                 btn("quote", "text.quote", active: false) { editor.toggleBlockquote() }
                 Divider().frame(height: 22)
+                tableMenu
+                Divider().frame(height: 22)
                 btn("undo", "arrow.uturn.backward", active: false) { editor.undo() }
                 btn("redo", "arrow.uturn.forward", active: false) { editor.redo() }
                 Divider().frame(height: 22)
@@ -44,6 +46,43 @@ struct ContentView: View {
             .padding(.vertical, 8)
         }
         .background(.bar)
+    }
+
+    /// The table controls — rows, columns, alignment, and moves. Enabled only
+    /// when the caret is in a table (the ops are no-ops otherwise, but a disabled
+    /// control says so up front). `editor.state` drives the re-render on caret
+    /// moves, so `caretInTable` is re-read as the caret enters or leaves a table.
+    private var tableMenu: some View {
+        Menu {
+            Button("Insert Row Above") { editor.tableInsertRow(below: false) }
+            Button("Insert Row Below") { editor.tableInsertRow(below: true) }
+            Button("Delete Row") { editor.tableDeleteRow() }
+            Divider()
+            Button("Insert Column Left") { editor.tableInsertColumn(right: false) }
+            Button("Insert Column Right") { editor.tableInsertColumn(right: true) }
+            Button("Delete Column") { editor.tableDeleteColumn() }
+            Divider()
+            Menu("Align Column") {
+                Button("Left") { editor.tableSetAlignment(.left) }
+                Button("Center") { editor.tableSetAlignment(.center) }
+                Button("Right") { editor.tableSetAlignment(.right) }
+                Button("Default") { editor.tableSetAlignment(.default) }
+            }
+            Divider()
+            Button("Move Row Up") { editor.tableMoveRow(down: false) }
+            Button("Move Row Down") { editor.tableMoveRow(down: true) }
+            Button("Move Column Left") { editor.tableMoveColumn(right: false) }
+            Button("Move Column Right") { editor.tableMoveColumn(right: true) }
+        } label: {
+            Image(systemName: "tablecells")
+                .font(.system(size: 17))
+                .frame(minWidth: 24, minHeight: 24)
+                .foregroundStyle(editor.caretInTable ? Color.accentColor : Color.primary)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .disabled(!editor.caretInTable)
+        .accessibilityLabel("table")
     }
 
     private func btn(_ id: String, _ symbol: String, active: Bool, _ action: @escaping () -> Void) -> some View {
@@ -84,6 +123,11 @@ caret model and AST→glyph map the terminal and desktop apps use, on macOS and 
 - WYSIWYG rendering with `inline code`
 - **Bold**, *italic*, and ==highlight==
 - Click (or tap) to place the caret, drag to select
+
+| Feature | Status |
+| --- | :---: |
+| Tables | editable |
+| Lists | nesting |
 
 > The document is a live, round-trippable AST the whole time you type.
 
