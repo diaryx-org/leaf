@@ -98,12 +98,55 @@ pub struct Row {
     pub heading: Option<u8>,
 }
 
+/// One cell of a table's structural grid: its styled content runs, the column
+/// alignment its text honours, and the source range the cell's content occupies
+/// (where a click or the caret lands). The content is *unwrapped* — the frontend
+/// laying out the grid decides the column width, so it needs the text before the
+/// monospace picture wrapped it.
+#[derive(uniffi::Record)]
+pub struct TableCellView {
+    pub runs: Vec<Run>,
+    /// `"left"`, `"right"`, `"center"`, or `"default"`.
+    pub align: String,
+    /// The source offsets bounding the cell's content — the caret anchors a
+    /// click in the cell resolves to.
+    pub start: u32,
+    pub end: u32,
+}
+
+/// One row of a table's structural grid; a header row draws bold and is ruled
+/// off from the body below it.
+#[derive(uniffi::Record)]
+pub struct TableRowView {
+    pub head: bool,
+    pub cells: Vec<TableCellView>,
+}
+
+/// A table described *structurally* rather than as the monospace box-glyph
+/// picture that spells it in [`DocView::rows`]. A proportional renderer draws its
+/// own grid from this — columns sized to content, real borders — and SKIPS the
+/// picture rows in `[start_row, end_row)`. The two describe the same cells at the
+/// same source offsets, so the caret lands identically either way. See
+/// [`leaf_core::TableInfo`].
+#[derive(uniffi::Record)]
+pub struct TableView {
+    /// The [`DocView::rows`] indices the box-drawn picture occupies — the rows a
+    /// grid-drawing frontend skips.
+    pub start_row: u32,
+    pub end_row: u32,
+    pub grid: Vec<TableRowView>,
+}
+
 /// A whole rendered frame: the rows to paint, where the caret sits, and the
 /// toolbar state — everything the Swift side needs for one repaint, in one value.
 /// Returned by every view-producing method.
 #[derive(uniffi::Record)]
 pub struct DocView {
     pub rows: Vec<Row>,
+    /// Tables described structurally, for a frontend that draws its own grid
+    /// instead of painting the box-glyph rows. Empty in the source view. Each
+    /// names the `rows` span its picture occupies, to be skipped.
+    pub tables: Vec<TableView>,
     /// The caret's row: an index into [`Self::rows`].
     pub caret_row: u32,
     /// The caret's display *column* within its row — core's grid position. Kept
@@ -115,6 +158,10 @@ pub struct DocView {
     /// through the row's grapheme widths, so it lands the caret correctly past
     /// wide glyphs (CJK, emoji) where a column and a character index diverge.
     pub caret_ch: u32,
+    /// The caret's **source byte offset** — the coordinate a table cell is keyed
+    /// by (`TableCellView::start`/`end`), so a frontend drawing its own grid can
+    /// find which cell the caret sits in without the picture-row indices.
+    pub caret_src: u32,
     /// Whether a (non-empty) selection is active.
     pub has_selection: bool,
     /// The selection's *fixed* end (the caret is the moving end), as a row and a
@@ -357,6 +404,12 @@ impl Inner {
             View::Wysiwyg => wysiwyg_rows(&self.doc.vmap, ss, se),
             View::Source => source_rows(&self.doc.source, ss, se),
         };
+        // Structural tables, for a proportional renderer that draws its own grid;
+        // none in the source view (the caret rides raw pipe text there).
+        let tables = match self.doc.view {
+            View::Wysiwyg => wysiwyg_tables(&self.doc.vmap, ss, se),
+            View::Source => Vec::new(),
+        };
 
         let (caret_row, caret_col) = self.doc.caret_pos();
         // Map the caret's display column to a UTF-16 text offset so a native
@@ -381,9 +434,11 @@ impl Inner {
 
         DocView {
             rows,
+            tables,
             caret_row: caret_row as u32,
             caret_col: caret_col as u32,
             caret_ch: caret_ch as u32,
+            caret_src: self.doc.caret.min(self.doc.source.len()) as u32,
             has_selection,
             anchor_row: anchor_row as u32,
             anchor_ch: anchor_ch as u32,
@@ -1045,29 +1100,8 @@ fn wysiwyg_rows(vmap: &VisualMap, ss: usize, se: usize) -> Vec<Row> {
                 _ => None,
             });
 
-            let mut runs: Vec<Run> = Vec::new();
-            let mut buf = String::new();
-            let mut cur: Option<(LStyle, bool)> = None;
-
-            for g in &vrow.glyphs {
-                let key = (g.style, g.src >= ss && g.src < se);
-                match cur {
-                    Some(k) if k == key => buf.push(g.ch),
-                    _ => {
-                        if let Some((style, was_sel)) = cur.take() {
-                            runs.push(make_run(std::mem::take(&mut buf), style, was_sel));
-                        }
-                        cur = Some(key);
-                        buf.push(g.ch);
-                    }
-                }
-            }
-            if let Some((style, was_sel)) = cur {
-                runs.push(make_run(buf, style, was_sel));
-            }
-
             Row {
-                runs,
+                runs: runs_of(&vrow.glyphs, ss, se),
                 decoration: vrow.decoration,
                 code: vrow.code,
                 code_lang: vrow.code_lang.clone(),
@@ -1075,6 +1109,72 @@ fn wysiwyg_rows(vmap: &VisualMap, ss: usize, se: usize) -> Vec<Row> {
             }
         })
         .collect()
+}
+
+/// Coalesce `glyphs` into maximal runs of identical `(style, selected)` — the
+/// shared body of a row's runs and a table cell's runs. A glyph is selected when
+/// its source byte lies in `[ss, se)`.
+fn runs_of(glyphs: &[leaf_core::Glyph], ss: usize, se: usize) -> Vec<Run> {
+    let mut runs: Vec<Run> = Vec::new();
+    let mut buf = String::new();
+    let mut cur: Option<(LStyle, bool)> = None;
+    for g in glyphs {
+        let key = (g.style, g.src >= ss && g.src < se);
+        match cur {
+            Some(k) if k == key => buf.push(g.ch),
+            _ => {
+                if let Some((style, was_sel)) = cur.take() {
+                    runs.push(make_run(std::mem::take(&mut buf), style, was_sel));
+                }
+                cur = Some(key);
+                buf.push(g.ch);
+            }
+        }
+    }
+    if let Some((style, was_sel)) = cur {
+        runs.push(make_run(buf, style, was_sel));
+    }
+    runs
+}
+
+/// The structural tables of a WYSIWYG frame — each with the `rows` span its
+/// box-glyph picture occupies (to be skipped) and its grid of styled cells.
+fn wysiwyg_tables(vmap: &VisualMap, ss: usize, se: usize) -> Vec<TableView> {
+    vmap.tables
+        .iter()
+        .map(|t| TableView {
+            start_row: t.rows_span.start as u32,
+            end_row: t.rows_span.end as u32,
+            grid: t
+                .grid
+                .iter()
+                .map(|row| TableRowView {
+                    head: row.head,
+                    cells: row
+                        .cells
+                        .iter()
+                        .map(|cell| TableCellView {
+                            runs: runs_of(&cell.glyphs, ss, se),
+                            align: align_name(cell.align),
+                            start: cell.start as u32,
+                            end: cell.end as u32,
+                        })
+                        .collect(),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+/// The wire name for a cell's column alignment.
+fn align_name(a: Alignment) -> String {
+    match a {
+        Alignment::Left => "left",
+        Alignment::Right => "right",
+        Alignment::Center => "center",
+        Alignment::Default => "default",
+    }
+    .to_string()
 }
 
 /// The source rows: the raw document split on `'\n'`, every line plain body text

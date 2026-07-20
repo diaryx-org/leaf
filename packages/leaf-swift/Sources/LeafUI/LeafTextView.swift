@@ -139,6 +139,12 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             // only the visible rows, not the whole document.
             if rl.top >= dirtyRect.maxY { break }
             if rl.top + rl.height <= dirtyRect.minY { continue }
+            // A table draws its own grid (once, on its first picture row); its
+            // rows carry no text to paint.
+            if let grid = rl.table {
+                if rl.tableFirst { drawTable(grid, tableTop: rl.tableTop, in: ctx) }
+                continue
+            }
             let rowRect = CGRect(x: padX, y: rl.top, width: fullWidth, height: rl.height)
             if rl.row.code {
                 ctx.setFillColor(theme.codeBackground.cgColor)
@@ -161,6 +167,55 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         if active, caretVisible, let rect = layoutEngine.caretRect(docView, theme: theme) {
             ctx.setFillColor(theme.caretColor.cgColor)
             ctx.fill(rect)
+        }
+    }
+
+    /// Draw a table as a proportional grid — header fill and body stripes, the
+    /// cell text, then the grid rules over them — the Apple peer of leaf-gpui's
+    /// `table_chrome`. `tableTop` is the grid's top in view coordinates.
+    private func drawTable(_ grid: TableLayout, tableTop: CGFloat, in ctx: CGContext) {
+        let left = theme.padding.left
+        let border = TableMetrics.border
+        let x0 = left + (grid.colX.first ?? 0)
+        let x1 = left + (grid.colX.last ?? 0)
+
+        // Fills under the text: the header rows, then every other body row.
+        var body = 0
+        for row in grid.rows {
+            let bg: LeafColor?
+            if row.head {
+                bg = theme.tableHeaderColor
+            } else {
+                body += 1
+                bg = body % 2 == 0 ? theme.tableStripeColor : nil // first body row clear
+            }
+            if let bg {
+                ctx.setFillColor(bg.cgColor)
+                ctx.fill(CGRect(x: x0, y: tableTop + row.top, width: x1 - x0, height: row.height))
+            }
+        }
+
+        // Cell text.
+        for row in grid.rows {
+            let top = tableTop + row.top + TableMetrics.padY
+            for cell in row.cells {
+                cell.attributed.draw(
+                    with: CGRect(x: left + cell.textX, y: top, width: .greatestFiniteMagnitude,
+                                 height: theme.lineHeight),
+                    options: [.usesLineFragmentOrigin])
+            }
+        }
+
+        // Grid rules over the fills and text.
+        ctx.setFillColor(theme.tableBorderColor.cgColor)
+        for bx in grid.colX { // verticals, outer two included
+            ctx.fill(CGRect(x: left + bx, y: tableTop, width: border, height: grid.height))
+        }
+        var edgeYs = [tableTop] // horizontals: top, each row boundary, bottom
+        for row in grid.rows { edgeYs.append(tableTop + row.top + row.height) }
+        for ey in edgeYs {
+            ctx.fill(CGRect(x: x0, y: min(ey, tableTop + grid.height - border),
+                            width: x1 - x0 + border, height: border))
         }
     }
 
@@ -211,10 +266,22 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     // MARK: mouse
 
+    /// The `(row, ch)` a click at `p` resolves to. Inside a table the point is
+    /// mapped through the grid to a source offset and back to a picture-row
+    /// coordinate, so the ordinary `clickCh` path (which snaps to a cell stop)
+    /// still applies; elsewhere it's the plain visual hit-test.
+    private func hitRowCh(_ p: CGPoint) -> (Int, Int) {
+        if let off = layoutEngine.tableHitOffset(p, theme: theme) {
+            let rc = doc.posForOffset(off: UInt32(off))
+            return (Int(rc.row), Int(rc.ch))
+        }
+        return layoutEngine.hit(p, theme: theme)
+    }
+
     public override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         let p = convert(event.locationInWindow, from: nil)
-        let (row, ch) = layoutEngine.hit(p, theme: theme)
+        let (row, ch) = hitRowCh(p)
         // ⌘-click opens a link under the pointer (the native convention), leaving the
         // caret there. A plain click still places the caret to edit the link text.
         if event.modifierFlags.contains(.command), event.clickCount == 1 {
@@ -250,7 +317,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     public override func mouseDragged(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
-        let (row, ch) = layoutEngine.hit(p, theme: theme)
+        let (row, ch) = hitRowCh(p)
         render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: true))
     }
 
@@ -283,7 +350,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     private func moveCaretToDrop(_ sender: NSDraggingInfo) {
         let p = convert(sender.draggingLocation, from: nil)
-        let (row, ch) = layoutEngine.hit(p, theme: theme)
+        let (row, ch) = hitRowCh(p)
         render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: false))
     }
 
@@ -436,7 +503,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // native text view; a click inside an existing selection keeps it.
         if !hasSelection {
             let p = convert(event.locationInWindow, from: nil)
-            let (row, ch) = layoutEngine.hit(p, theme: theme)
+            let (row, ch) = hitRowCh(p)
             render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: false))
         }
 

@@ -204,6 +204,11 @@ public final class LeafTextView: UIView, UITextInput {
             // it, stop once past the bottom — repaint only the visible rows.
             if rl.top >= rect.maxY { break }
             if rl.top + rl.height <= rect.minY { continue }
+            // A table draws its own grid (once, on its first picture row).
+            if let grid = rl.table {
+                if rl.tableFirst { drawTable(grid, tableTop: rl.tableTop, in: ctx) }
+                continue
+            }
             let rowRect = CGRect(x: padX, y: rl.top, width: fullWidth, height: rl.height)
             if rl.row.code {
                 ctx.setFillColor(renderTheme.codeBackground.cgColor)
@@ -218,6 +223,49 @@ public final class LeafTextView: UIView, UITextInput {
                 wl.attributed.draw(with: CGRect(x: padX, y: lineTop, width: fullWidth, height: rl.lineHeight),
                                    options: [.usesLineFragmentOrigin], context: nil)
             }
+        }
+    }
+
+    /// Draw a table as a proportional grid — header fill and body stripes, cell
+    /// text, then the grid rules — the UIKit peer of the AppKit `drawTable`.
+    private func drawTable(_ grid: TableLayout, tableTop: CGFloat, in ctx: CGContext) {
+        let left = renderTheme.padding.left
+        let border = TableMetrics.border
+        let x0 = left + (grid.colX.first ?? 0)
+        let x1 = left + (grid.colX.last ?? 0)
+
+        var body = 0
+        for row in grid.rows {
+            let bg: LeafColor?
+            if row.head {
+                bg = renderTheme.tableHeaderColor
+            } else {
+                body += 1
+                bg = body % 2 == 0 ? renderTheme.tableStripeColor : nil
+            }
+            if let bg {
+                ctx.setFillColor(bg.cgColor)
+                ctx.fill(CGRect(x: x0, y: tableTop + row.top, width: x1 - x0, height: row.height))
+            }
+        }
+        for row in grid.rows {
+            let top = tableTop + row.top + TableMetrics.padY
+            for cell in row.cells {
+                cell.attributed.draw(
+                    with: CGRect(x: left + cell.textX, y: top, width: .greatestFiniteMagnitude,
+                                 height: renderTheme.lineHeight),
+                    options: [.usesLineFragmentOrigin], context: nil)
+            }
+        }
+        ctx.setFillColor(renderTheme.tableBorderColor.cgColor)
+        for bx in grid.colX {
+            ctx.fill(CGRect(x: left + bx, y: tableTop, width: border, height: grid.height))
+        }
+        var edgeYs = [tableTop]
+        for row in grid.rows { edgeYs.append(tableTop + row.top + row.height) }
+        for ey in edgeYs {
+            ctx.fill(CGRect(x: x0, y: min(ey, tableTop + grid.height - border),
+                            width: x1 - x0 + border, height: border))
         }
     }
 
@@ -506,6 +554,11 @@ public final class LeafTextView: UIView, UITextInput {
     }
 
     public func closestPosition(to point: CGPoint) -> UITextPosition? {
+        // Inside a table, the point maps through the grid straight to a source
+        // offset; elsewhere it's the plain row/ch hit-test.
+        if let off = layoutEngine.tableHitOffset(point, theme: renderTheme) {
+            return LeafTextPosition(off)
+        }
         let (row, ch) = layoutEngine.hit(point, theme: renderTheme)
         return LeafTextPosition(Int(doc.offsetForPos(row: UInt32(row), ch: UInt32(ch))))
     }

@@ -41,6 +41,10 @@ public struct EditorTheme {
     public var markBackground: LeafColor
     public var quoteBarColor: LeafColor
     public var ruleColor: LeafColor
+    /// Table chrome: the grid lines, the header row fill, and the body stripe.
+    public var tableBorderColor: LeafColor
+    public var tableHeaderColor: LeafColor
+    public var tableStripeColor: LeafColor
     public var selectionColor: LeafColor
     /// The selection fill when the view isn't the focus — window not key, or the
     /// view not first responder. Matches native text: emphasized blue when active,
@@ -67,6 +71,9 @@ public struct EditorTheme {
         markBackground: LeafColor = Palette.markBackground,
         quoteBarColor: LeafColor = Palette.tertiary,
         ruleColor: LeafColor = Palette.separator,
+        tableBorderColor: LeafColor = Palette.tableBorder,
+        tableHeaderColor: LeafColor = Palette.tableHeader,
+        tableStripeColor: LeafColor = Palette.tableStripe,
         selectionColor: LeafColor = Palette.selection,
         inactiveSelectionColor: LeafColor = Palette.inactiveSelection,
         caretColor: LeafColor = Palette.label,
@@ -87,6 +94,9 @@ public struct EditorTheme {
         self.markBackground = markBackground
         self.quoteBarColor = quoteBarColor
         self.ruleColor = ruleColor
+        self.tableBorderColor = tableBorderColor
+        self.tableHeaderColor = tableHeaderColor
+        self.tableStripeColor = tableStripeColor
         self.selectionColor = selectionColor
         self.inactiveSelectionColor = inactiveSelectionColor
         self.caretColor = caretColor

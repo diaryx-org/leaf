@@ -67,16 +67,33 @@ struct ShapedRow {
 }
 
 /// One logical row (block) placed in the document: its shaping plus a top offset.
+///
+/// Table rows are the exception. To keep `rows` 1:1 with the frame's rows (every
+/// caret/click path indexes `rows` by a core row index), a table's box-glyph
+/// picture rows are kept — but each carries the laid-out `table` grid instead of
+/// text, only the FIRST one (`tableFirst`) has any height, and all of them draw
+/// the grid rather than their glyphs. The caret and hit-testing over a table read
+/// the grid, not these rows' shaping.
 struct RowLayout {
     let row: Row
     let shaped: ShapedRow
     let top: CGFloat
+    /// The grid, on every picture row of a table; `nil` for an ordinary row.
+    var table: TableLayout? = nil
+    /// The grid's top (all of a table's rows share it — they collapse onto it).
+    var tableTop: CGFloat = 0
+    /// The one picture row that carries the grid's height and paints it.
+    var tableFirst: Bool = false
 
     var attributed: NSAttributedString { shaped.attributed }
     var wrapped: [WrappedLine] { shaped.wrapped }
     var lineHeight: CGFloat { shaped.lineHeight }
-    /// The block's total height — one `lineHeight` per visual line.
-    var height: CGFloat { CGFloat(shaped.wrapped.count) * shaped.lineHeight }
+    /// The block's total height — the grid's height on a table's first row, zero
+    /// on its other (collapsed) rows, else one `lineHeight` per visual line.
+    var height: CGFloat {
+        if let t = table { return tableFirst ? t.height : 0 }
+        return CGFloat(shaped.wrapped.count) * shaped.lineHeight
+    }
 }
 
 /// The laid-out rows of one `DocView` plus the geometry queries over them.
@@ -96,7 +113,42 @@ struct EditorLayout {
         layouts.reserveCapacity(docView.rows.count)
         var next = Dictionary<Row, ShapedRow>(minimumCapacity: docView.rows.count)
         var y = theme.padding.top
-        for row in docView.rows {
+
+        // A table's box-glyph picture rows are replaced by one grid element that
+        // stands in for the whole `[startRow, endRow)` span.
+        var tableAt: [Int: TableView] = [:]
+        for t in docView.tables { tableAt[Int(t.startRow)] = t }
+
+        // An empty stand-in shape for a table's collapsed picture rows (they draw
+        // the grid, never their own glyphs).
+        let emptyShape = ShapedRow(
+            attributed: NSAttributedString(),
+            wrapped: [WrappedLine(attributed: NSAttributedString(),
+                                  line: CTLineCreateWithAttributedString(NSAttributedString()),
+                                  start: 0, length: 0, width: 0)],
+            lineHeight: theme.lineHeight,
+            wrapWidth: wrapWidth
+        )
+
+        var i = 0
+        while i < docView.rows.count {
+            if let t = tableAt[i], let grid = TableLayout(t, theme: theme) {
+                let tableTop = y
+                // Keep every picture row (rows stay 1:1 with the frame), but
+                // collapse them onto the grid: the first carries its height, the
+                // rest are zero-height, and all defer drawing/caret to the grid.
+                for r in Int(t.startRow)..<Int(t.endRow) where r < docView.rows.count {
+                    layouts.append(RowLayout(
+                        row: docView.rows[r], shaped: emptyShape, top: tableTop,
+                        table: grid, tableTop: tableTop, tableFirst: r == Int(t.startRow)
+                    ))
+                }
+                y += grid.height
+                i = Int(t.endRow)
+                continue
+            }
+
+            let row = docView.rows[i]
             let shaped: ShapedRow
             if let hit = cache[row] ?? next[row], hit.wrapWidth == wrapWidth {
                 shaped = hit
@@ -113,6 +165,7 @@ struct EditorLayout {
             let rl = RowLayout(row: row, shaped: shaped, top: y)
             y += rl.height
             layouts.append(rl)
+            i += 1
         }
         rows = layouts
         contentHeight = y + theme.padding.bottom
@@ -181,9 +234,48 @@ struct EditorLayout {
     }
 
     /// The caret's frame — `caret_ch` (UTF-16, within its block row) mapped through
-    /// the pixel wrap to a rect. `nil` if the caret row is out of range.
+    /// the pixel wrap to a rect. `nil` if the caret row is out of range. Inside a
+    /// table the caret rides the grid (by its source offset), not the collapsed
+    /// picture row `caret_row` names.
     func caretRect(_ docView: DocView, theme: EditorTheme) -> CGRect? {
-        rect(row: Int(docView.caretRow), ch: Int(docView.caretCh), theme: theme)
+        let cr = Int(docView.caretRow)
+        if rows.indices.contains(cr), let grid = rows[cr].table {
+            return tableCaretRect(grid, tableTop: rows[cr].tableTop,
+                                  caretSrc: Int(docView.caretSrc), theme: theme)
+        }
+        return rect(row: cr, ch: Int(docView.caretCh), theme: theme)
+    }
+
+    /// The caret's frame inside a table: the cell its source offset falls in, at
+    /// the x the offset maps to within that cell.
+    private func tableCaretRect(_ grid: TableLayout, tableTop: CGFloat, caretSrc: Int,
+                                theme: EditorTheme) -> CGRect? {
+        guard let (row, cell) = grid.cell(containing: caretSrc) else { return nil }
+        // Byte offset within the cell ≈ UTF-16 index (exact for ASCII cells).
+        let idx = max(0, min(caretSrc - cell.start, cell.attributed.length))
+        let dx = CTLineGetOffsetForStringIndex(cell.line, CFIndex(idx), nil)
+        return CGRect(x: theme.padding.left + cell.textX + dx,
+                      y: tableTop + row.top + TableMetrics.padY,
+                      width: 1.5, height: theme.lineHeight)
+    }
+
+    /// The source offset a click at `point` resolves to when it lands in a table,
+    /// else `nil` (the caller falls back to the row/ch hit path). The offset is
+    /// approximate for a cell with inline markup; core snaps it to a real stop.
+    func tableHitOffset(_ point: CGPoint, theme: EditorTheme) -> Int? {
+        for rl in rows {
+            guard let grid = rl.table, rl.tableFirst else { continue }
+            let yInTable = point.y - rl.tableTop
+            guard yInTable >= 0, yInTable < grid.height else { continue }
+            let xInTable = point.x - theme.padding.left
+            guard let (_, cell) = grid.cell(atX: xInTable, y: yInTable) else { return nil }
+            let rel = CTLineGetStringIndexForPosition(
+                cell.line, CGPoint(x: max(0, xInTable - cell.textX), y: 0))
+            let clamped = max(0, min(rel, cell.attributed.length))
+            let prefix = (cell.attributed.string as NSString).substring(to: clamped)
+            return cell.start + prefix.utf8.count
+        }
+        return nil
     }
 
     /// Map a point (view coordinates) to core's `(row, ch)`: the block row from the

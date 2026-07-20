@@ -45,6 +45,28 @@ enum AttributedRow {
         return result
     }
 
+    /// Build the attributed text for one table cell. A header cell draws bold
+    /// (via the same path a heading row takes); everything else — role colours,
+    /// inline `code`/`mark` backgrounds, emphasis — is the ordinary run styling.
+    static func makeCell(_ cell: TableCellView, head: Bool, theme: EditorTheme) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        for run in cell.runs {
+            result.append(
+                NSAttributedString(
+                    string: run.text,
+                    attributes: attributes(
+                        run: run,
+                        size: theme.fontSize,
+                        headingRow: head,
+                        codeRow: false,
+                        theme: theme
+                    )
+                )
+            )
+        }
+        return result
+    }
+
     /// The AppKit attributes for a single run.
     private static func attributes(
         run: Run,

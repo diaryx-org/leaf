@@ -42,6 +42,45 @@ final class EditorLayoutTests: XCTestCase {
         XCTAssertEqual(layout.contentHeight, expected, accuracy: 0.5)
     }
 
+    func testTableLaysOutAsAGridAndCollapsesPictureRows() {
+        // A 2×2 table spelled by, say, 4 picture rows collapses to one grid whose
+        // height is the sum of its two grid-row bands — not the picture rows.
+        let grid = mkTable([
+            mkTableRow([mkCell("Feature"), mkCell("Status")], head: true),
+            mkTableRow([mkCell("Tables"), mkCell("editable")]),
+        ], startRow: 0, endRow: 4)
+        // Four placeholder picture rows the table replaces.
+        let dv = docView(
+            [row([], decoration: true), row([], decoration: true),
+             row([], decoration: true), row([], decoration: true)],
+            tables: [grid]
+        )
+        let layout = EditorLayout(dv, theme: theme)
+        // rows stay 1:1 with the frame (4), but only the first carries height.
+        XCTAssertEqual(layout.rows.count, 4)
+        XCTAssertNotNil(layout.rows[0].table)
+        let rowH = theme.lineHeight + 8 // padY * 2
+        let gridH = rowH * 2 + 2 // two bands + top/bottom border
+        XCTAssertEqual(layout.rows[0].height, gridH, accuracy: 0.5)
+        XCTAssertEqual(layout.rows[1].height, 0, "collapsed picture row")
+        XCTAssertEqual(layout.contentHeight,
+                       theme.padding.top + theme.padding.bottom + gridH, accuracy: 0.5)
+    }
+
+    func testTableCaretRidesTheCellItsOffsetFallsIn() throws {
+        let grid = mkTable([
+            mkTableRow([mkCell("ab", start: 2, end: 4), mkCell("cd", start: 7, end: 9)], head: true),
+        ], startRow: 0, endRow: 2)
+        // Caret at source offset 8 → inside the second cell ("cd").
+        let dv = docView([row([], decoration: true), row([], decoration: true)],
+                         tables: [grid], caretRow: 0, caretSrc: 8)
+        let layout = EditorLayout(dv, theme: theme)
+        let caret = try XCTUnwrap(layout.caretRect(dv, theme: theme))
+        // Second column starts past the first, so the caret is well right of the inset.
+        XCTAssertGreaterThan(caret.minX, theme.padding.left + 40)
+        XCTAssertEqual(caret.height, theme.lineHeight, accuracy: 0.5)
+    }
+
     func testHeadingRowIsTaller() {
         let dv = docView([row([mkRun("Title")], heading: 1)])
         let layout = EditorLayout(dv, theme: theme)

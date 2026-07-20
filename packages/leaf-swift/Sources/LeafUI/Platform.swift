@@ -57,6 +57,11 @@ public enum Palette {
     #endif
     public static var codeBackground: LeafColor { secondary.withAlphaComponent(0.08) }
     public static var markBackground: LeafColor { LeafColor.systemYellow.withAlphaComponent(0.28) }
+    // Table chrome — a grid line, a header fill, and a body stripe, all derived
+    // from the label colour so they track light/dark like everything else.
+    public static var tableBorder: LeafColor { separator }
+    public static var tableHeader: LeafColor { secondary.withAlphaComponent(0.12) }
+    public static var tableStripe: LeafColor { secondary.withAlphaComponent(0.05) }
 }
 
 /// Build a font by family name + size with optional bold/italic traits — the one
