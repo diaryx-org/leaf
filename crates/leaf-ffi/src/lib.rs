@@ -98,14 +98,28 @@ pub struct Row {
     pub heading: Option<u8>,
 }
 
-/// One cell of a table's structural grid: its styled content runs, the column
-/// alignment its text honours, and the source range the cell's content occupies
-/// (where a click or the caret lands). The content is *unwrapped* — the frontend
-/// laying out the grid decides the column width, so it needs the text before the
-/// monospace picture wrapped it.
+/// One *visual line* of a table cell: its styled runs and the source offsets
+/// bounding it. A cell is usually one line, but an in-cell hard break (an inline
+/// `<br>`) splits it into several — each its own line here, so the frontend
+/// shapes and caret-maps them independently (the byte↔UTF-16 offset math a cell
+/// needs holds within a line, which carries no break). The runs are *unwrapped*:
+/// column width — and any soft wrap within it — is the frontend's to decide.
+#[derive(uniffi::Record)]
+pub struct TableCellLineView {
+    pub runs: Vec<Run>,
+    /// The source offsets bounding this line's content — the caret home at its
+    /// start and the stop just past its end.
+    pub start: u32,
+    pub end: u32,
+}
+
+/// One cell of a table's structural grid: its content as one or more visual
+/// lines, the column alignment its text honours, and the source range the whole
+/// cell occupies (where a click or the caret lands).
 #[derive(uniffi::Record)]
 pub struct TableCellView {
-    pub runs: Vec<Run>,
+    /// The cell's lines, in order — one unless an in-cell `<br>` splits it.
+    pub lines: Vec<TableCellLineView>,
     /// `"left"`, `"right"`, `"center"`, or `"default"`.
     pub align: String,
     /// The source offsets bounding the cell's content — the caret anchors a
@@ -529,6 +543,35 @@ impl LeafDoc {
         let mut g = self.lock();
         g.doc.newline();
         g.view()
+    }
+
+    // ── table keys ────────────────────────────────────────────────────────────
+    // Tab, Return, and Shift+Return take on table meanings when the caret is in
+    // one. Each returns `Some(view)` when it acted as a table key and `None` when
+    // the caret isn't in a table — the frontend then does the key's ordinary job
+    // (indent, newline), so these keep their meaning everywhere else.
+
+    /// Tab (`forward`) / Shift+Tab hops to the next/previous cell; Tab past the
+    /// last cell appends a fresh row and enters it.
+    pub fn cell_tab(&self, forward: bool) -> Option<DocView> {
+        let mut g = self.lock();
+        g.sync();
+        g.doc.cell_tab(forward).then(|| g.view())
+    }
+
+    /// Return drops to the cell below in the same column, appending a row at the
+    /// table's bottom.
+    pub fn cell_return(&self) -> Option<DocView> {
+        let mut g = self.lock();
+        g.sync();
+        g.doc.cell_return().then(|| g.view())
+    }
+
+    /// Shift+Return inserts a hard line break *within* the current cell.
+    pub fn cell_line_break(&self) -> Option<DocView> {
+        let mut g = self.lock();
+        g.sync();
+        g.doc.cell_line_break().then(|| g.view())
     }
 
     pub fn backspace(&self) -> DocView {
@@ -1114,6 +1157,49 @@ fn wysiwyg_rows(vmap: &VisualMap, ss: usize, se: usize) -> Vec<Row> {
 /// Coalesce `glyphs` into maximal runs of identical `(style, selected)` — the
 /// shared body of a row's runs and a table cell's runs. A glyph is selected when
 /// its source byte lies in `[ss, se)`.
+/// Split a cell's flat glyphs into its visual lines at the in-cell break glyphs
+/// (`\n`, from a `<br>`), each with the source range it spans. A line runs from
+/// its first glyph's offset to the break that ends it (`cell_end` for the last);
+/// an empty line — a leading/trailing break, or an empty cell — collapses to a
+/// single caret home. The break glyphs themselves are dropped (they hold no
+/// caret), exactly as the monospace picture drops them.
+fn cell_lines(
+    glyphs: &[leaf_core::Glyph],
+    cell_start: usize,
+    cell_end: usize,
+    ss: usize,
+    se: usize,
+) -> Vec<TableCellLineView> {
+    let mut lines = Vec::new();
+    let mut seg: Vec<leaf_core::Glyph> = Vec::new();
+    // The current line's start offset: the cell's for the first line, then the
+    // first real glyph after each break (`None` until that glyph is seen).
+    let mut line_start: Option<usize> = Some(cell_start);
+    for g in glyphs {
+        if g.ch == '\n' {
+            let start = line_start.unwrap_or(g.src);
+            lines.push(TableCellLineView {
+                runs: runs_of(&seg, ss, se),
+                start: start as u32,
+                end: g.src as u32,
+            });
+            seg.clear();
+            line_start = None;
+        } else {
+            if line_start.is_none() {
+                line_start = Some(g.src);
+            }
+            seg.push(g.clone());
+        }
+    }
+    lines.push(TableCellLineView {
+        runs: runs_of(&seg, ss, se),
+        start: line_start.unwrap_or(cell_end) as u32,
+        end: cell_end as u32,
+    });
+    lines
+}
+
 fn runs_of(glyphs: &[leaf_core::Glyph], ss: usize, se: usize) -> Vec<Run> {
     let mut runs: Vec<Run> = Vec::new();
     let mut buf = String::new();
@@ -1154,7 +1240,7 @@ fn wysiwyg_tables(vmap: &VisualMap, ss: usize, se: usize) -> Vec<TableView> {
                         .cells
                         .iter()
                         .map(|cell| TableCellView {
-                            runs: runs_of(&cell.glyphs, ss, se),
+                            lines: cell_lines(&cell.glyphs, cell.start, cell.end, ss, se),
                             align: align_name(cell.align),
                             start: cell.start as u32,
                             end: cell.end as u32,
@@ -1237,6 +1323,34 @@ mod tests {
 
     fn doc(src: &str) -> Arc<LeafDoc> {
         LeafDoc::new(src.to_string(), "markdown".to_string()).unwrap()
+    }
+
+    #[test]
+    fn cell_lines_split_on_the_break_glyph_carrying_each_lines_source_range() {
+        use leaf_core::Glyph;
+        let g = |ch, src| Glyph { ch, style: LStyle::default(), src, stop: true };
+        // "a" at 10, a `<br>` at 11..15 (the break glyph), "b" at 15; cell 10..16.
+        let glyphs = [g('a', 10), g('\n', 11), g('b', 15)];
+        let lines = cell_lines(&glyphs, 10, 16, 0, 0);
+        assert_eq!(lines.len(), 2, "one break makes two lines");
+        assert_eq!((lines[0].start, lines[0].end), (10, 11), "line 1 ends at the break");
+        assert_eq!((lines[1].start, lines[1].end), (15, 16), "line 2 begins past it");
+        let text = |l: &TableCellLineView| l.runs.iter().map(|r| r.text.clone()).collect::<String>();
+        assert_eq!(text(&lines[0]), "a");
+        assert_eq!(text(&lines[1]), "b");
+
+        // A trailing break leaves an empty last line homed at the cell's end.
+        let trailing = [g('a', 10), g('\n', 11)];
+        let lines = cell_lines(&trailing, 10, 15, 0, 0);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[1].runs.is_empty());
+        assert_eq!((lines[1].start, lines[1].end), (15, 15));
+
+        // No break: one line spanning the whole cell.
+        let plain = [g('P', 10), g('e', 11)];
+        let lines = cell_lines(&plain, 10, 12, 0, 0);
+        assert_eq!(lines.len(), 1);
+        assert_eq!((lines[0].start, lines[0].end), (10, 12));
     }
 
     fn row_text(v: &DocView, row: usize) -> String {

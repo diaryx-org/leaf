@@ -81,6 +81,78 @@ final class EditorLayoutTests: XCTestCase {
         XCTAssertEqual(caret.height, theme.lineHeight, accuracy: 0.5)
     }
 
+    func testMultiLineCellGrowsItsRowAndStacksTheCaret() throws {
+        // A cell of two lines ("Pear" then "ripe", from a `<br>`) makes its row two
+        // text-lines tall, and the caret for an offset on the second line sits a
+        // line lower than one on the first.
+        let grid = mkTable([
+            mkTableRow([
+                mkCellLines([("Pear", 2, 6), ("ripe", 11, 15)]),
+                mkCell("3", start: 18, end: 19),
+            ]),
+        ], startRow: 0, endRow: 3)
+        let dv = docView(
+            [row([], decoration: true), row([], decoration: true), row([], decoration: true)],
+            tables: [grid], caretRow: 0, caretSrc: 2
+        )
+        let layout = EditorLayout(dv, theme: theme)
+        // The single grid row is two text-lines + padding tall.
+        let twoLine = 2 * theme.lineHeight + 8
+        XCTAssertEqual(layout.rows[0].height, twoLine + 2, accuracy: 0.5) // + top/bottom border
+
+        // Caret on line 1 ("Pear", offset 2) vs line 2 ("ripe", offset 11): the
+        // second is exactly one line lower, same height.
+        let top = try XCTUnwrap(layout.caretRect(dv, theme: theme))
+        let dv2 = docView(
+            [row([], decoration: true), row([], decoration: true), row([], decoration: true)],
+            tables: [grid], caretRow: 0, caretSrc: 11
+        )
+        let below = try XCTUnwrap(layout.caretRect(dv2, theme: theme))
+        XCTAssertEqual(below.minY - top.minY, theme.lineHeight, accuracy: 0.5)
+        XCTAssertEqual(top.height, theme.lineHeight, accuracy: 0.5)
+
+        // The band on line 1 clears the cell's top padding (so an Up probe leaves
+        // the cell), while line 2's band reaches the cell bottom.
+        let band1 = try XCTUnwrap(layout.caretBand(src: 2))
+        let band2 = try XCTUnwrap(layout.caretBand(src: 11))
+        XCTAssertLessThan(band1.minY, top.minY, "line-1 band includes the top padding")
+        XCTAssertGreaterThan(band2.maxY, below.maxY, "line-2 band reaches the bottom padding")
+    }
+
+    func testTableSelectionCarriesIntoTheLaidOutLineAndYieldsAHighlightRect() throws {
+        // A cell core marks selected carries its selected sub-range into the laid
+        // out line (so the grid can paint a highlight the plain row path would
+        // otherwise skip over a table), and the same range resolves to one
+        // selection rect in the first band, sized to the cell text.
+        let grid = mkTable([
+            mkTableRow([mkSelCell("ab", start: 2, end: 4), mkCell("cd", start: 7, end: 9)], head: true),
+        ], startRow: 0, endRow: 2)
+        let dv = docView([row([], decoration: true), row([], decoration: true)],
+                         tables: [grid], hasSelection: true)
+        let layout = EditorLayout(dv, theme: theme)
+        let table = try XCTUnwrap(layout.rows[0].table)
+        XCTAssertFalse(table.rows[0].cells[0].lines[0].selRanges.isEmpty, "selected cell records its range")
+        XCTAssertTrue(table.rows[0].cells[1].lines[0].selRanges.isEmpty, "unselected cell records none")
+
+        let rects = layout.tableSelectionRects(from: 2, to: 4, theme: theme)
+        XCTAssertEqual(rects.count, 1, "one rect for the one covered cell line")
+        let r = try XCTUnwrap(rects.first)
+        XCTAssertTrue(r.containsStart)
+        XCTAssertTrue(r.containsEnd)
+        XCTAssertGreaterThan(r.rect.width, 0, "the highlight spans the cell text")
+        XCTAssertEqual(r.rect.height, theme.lineHeight, accuracy: 0.5)
+        XCTAssertGreaterThan(r.rect.minX, theme.padding.left, "highlight sits inside the first column")
+    }
+
+    func testTableSelectionRectsEmptyForARangeOutsideAnyTable() {
+        let grid = mkTable([
+            mkTableRow([mkSelCell("ab", start: 2, end: 4)]),
+        ], startRow: 0, endRow: 2)
+        let dv = docView([row([], decoration: true), row([], decoration: true)], tables: [grid])
+        let layout = EditorLayout(dv, theme: theme)
+        XCTAssertTrue(layout.tableSelectionRects(from: 20, to: 30, theme: theme).isEmpty)
+    }
+
     func testHeadingRowIsTaller() {
         let dv = docView([row([mkRun("Title")], heading: 1)])
         let layout = EditorLayout(dv, theme: theme)

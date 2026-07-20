@@ -15,13 +15,13 @@ clipboard, and file I/O.
 
 ### `crates/` — Rust libraries
 
-| crate | what it is |
-|-------|------------|
-| [`leaf-core`](crates/leaf-core) | the document model — a `twig::Editor` with a byte-offset caret + selection, and the WYSIWYG `VisualMap`. Glyphs carry a **toolkit-agnostic `Style`**; no UI dependency. |
+| crate                                 | what it is                                                                                                                                                                                                                                                         |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [`leaf-core`](crates/leaf-core)       | the document model — a `twig::Editor` with a byte-offset caret + selection, and the WYSIWYG `VisualMap`. Glyphs carry a **toolkit-agnostic `Style`**; no UI dependency.                                                                                            |
 | [`leaf-ratatui`](crates/leaf-ratatui) | the **embeddable terminal widget** (ratatui + crossterm): renders the editing surface into a `Rect` and turns key/mouse events into `Doc` edits, returning an `Outcome` for what the host owns (quit, save, clipboard, dialogs). The terminal peer of `leaf-gpui`. |
-| [`leaf-gpui`](crates/leaf-gpui) | the **embeddable GUI widget** on [gpui](https://github.com/zed-industries/zed): the `Editor` view plus its input, pixel-wrapping renderer, and `register_keybindings`. Renders only the editing surface and leaves window chrome, file I/O, and quit to the host. |
-| [`leaf-ffi`](crates/leaf-ffi) | the **UniFFI Rust binding** — wraps the filesystem-free `Doc` behind a C ABI so a native Apple app can drive it. Paired with the `leaf-swift` package. |
-| [`leaf-wasm`](crates/leaf-wasm) | the **wasm-bindgen Rust binding** — wraps the `Doc` for the browser (`LeafDoc` + a typed `DocView`). Paired with the `leaf-web` package. |
+| [`leaf-gpui`](crates/leaf-gpui)       | the **embeddable GUI widget** on [gpui](https://github.com/zed-industries/zed): the `Editor` view plus its input, pixel-wrapping renderer, and `register_keybindings`. Renders only the editing surface and leaves window chrome, file I/O, and quit to the host.  |
+| [`leaf-ffi`](crates/leaf-ffi)         | the **UniFFI Rust binding** — wraps the filesystem-free `Doc` behind a C ABI so a native Apple app can drive it. Paired with the `leaf-swift` package.                                                                                                             |
+| [`leaf-wasm`](crates/leaf-wasm)       | the **wasm-bindgen Rust binding** — wraps the `Doc` for the browser (`LeafDoc` + a typed `DocView`). Paired with the `leaf-web` package.                                                                                                                           |
 
 ### `packages/` — importable non-Rust widget packages
 

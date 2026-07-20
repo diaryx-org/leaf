@@ -246,16 +246,18 @@ struct EditorLayout {
         return rect(row: cr, ch: Int(docView.caretCh), theme: theme)
     }
 
-    /// The caret's frame inside a table: the cell its source offset falls in, at
-    /// the x the offset maps to within that cell.
+    /// The caret's frame inside a table: the cell *line* its source offset falls
+    /// on, at the x the offset maps to within that line and the y of the line's
+    /// band. A multi-line cell (an in-cell `<br>`) puts later offsets lower.
     private func tableCaretRect(_ grid: TableLayout, tableTop: CGFloat, caretSrc: Int,
                                 theme: EditorTheme) -> CGRect? {
-        guard let (row, cell) = grid.cell(containing: caretSrc) else { return nil }
-        // Byte offset within the cell ≈ UTF-16 index (exact for ASCII cells).
-        let idx = max(0, min(caretSrc - cell.start, cell.attributed.length))
-        let dx = CTLineGetOffsetForStringIndex(cell.line, CFIndex(idx), nil)
-        return CGRect(x: theme.padding.left + cell.textX + dx,
-                      y: tableTop + row.top + TableMetrics.padY,
+        guard let (row, _, line, lineIndex) = grid.locate(src: caretSrc) else { return nil }
+        // Byte offset within the line ≈ UTF-16 index (exact for ASCII text). The
+        // line carries no break, so this holds even across an in-cell `<br>`.
+        let idx = max(0, min(caretSrc - line.start, line.attributed.length))
+        let dx = CTLineGetOffsetForStringIndex(line.line, CFIndex(idx), nil)
+        return CGRect(x: theme.padding.left + line.textX + dx,
+                      y: tableTop + row.top + TableMetrics.padY + CGFloat(lineIndex) * grid.lineHeight,
                       width: 1.5, height: theme.lineHeight)
     }
 
@@ -268,12 +270,71 @@ struct EditorLayout {
             let yInTable = point.y - rl.tableTop
             guard yInTable >= 0, yInTable < grid.height else { continue }
             let xInTable = point.x - theme.padding.left
-            guard let (_, cell) = grid.cell(atX: xInTable, y: yInTable) else { return nil }
+            guard let (_, _, line, _) = grid.locate(atX: xInTable, y: yInTable) else { return nil }
             let rel = CTLineGetStringIndexForPosition(
-                cell.line, CGPoint(x: max(0, xInTable - cell.textX), y: 0))
-            let clamped = max(0, min(rel, cell.attributed.length))
-            let prefix = (cell.attributed.string as NSString).substring(to: clamped)
-            return cell.start + prefix.utf8.count
+                line.line, CGPoint(x: max(0, xInTable - line.textX), y: 0))
+            let clamped = max(0, min(rel, line.attributed.length))
+            let prefix = (line.attributed.string as NSString).substring(to: clamped)
+            return line.start + prefix.utf8.count
+        }
+        return nil
+    }
+
+    /// The selection rectangles for the source range `[from, to)` that fall
+    /// inside tables — one per cell line the range touches, in view coordinates.
+    /// Empty when the range meets no table. The peer of `fillSelection` for the
+    /// grid: a table's picture rows carry no `wrapped` lines, so the ordinary
+    /// row-based selection walk skips right over them and the system (iOS) or the
+    /// caller would otherwise draw no highlight over a table. `from`/`to` are
+    /// source byte offsets; each rect flags whether it holds an endpoint.
+    func tableSelectionRects(from: Int, to: Int, theme: EditorTheme)
+        -> [(rect: CGRect, containsStart: Bool, containsEnd: Bool)]
+    {
+        guard to > from else { return [] }
+        var out: [(rect: CGRect, containsStart: Bool, containsEnd: Bool)] = []
+        for rl in rows {
+            guard let grid = rl.table, rl.tableFirst else { continue }
+            for row in grid.rows {
+                for cell in row.cells {
+                    for (i, line) in cell.lines.enumerated() {
+                        let cs = max(from, line.start), ce = min(to, line.end)
+                        guard cs < ce else { continue }
+                        // Byte offset within the line ≈ UTF-16 index (exact for
+                        // ASCII), the same approximation the table caret rides.
+                        let sIdx = max(0, min(cs - line.start, line.attributed.length))
+                        let eIdx = max(0, min(ce - line.start, line.attributed.length))
+                        let x0 = CTLineGetOffsetForStringIndex(line.line, CFIndex(sIdx), nil)
+                        let x1 = CTLineGetOffsetForStringIndex(line.line, CFIndex(eIdx), nil)
+                        let y = rl.tableTop + row.top + TableMetrics.padY
+                            + CGFloat(i) * grid.lineHeight
+                        out.append((
+                            CGRect(x: theme.padding.left + line.textX + x0, y: y,
+                                   width: x1 - x0, height: grid.lineHeight),
+                            cs == from, ce == to
+                        ))
+                    }
+                }
+            }
+        }
+        return out
+    }
+
+    /// The vertical band of the cell line holding source offset `src` — a full
+    /// table-cell band (clearing the cell's top/bottom padding) at the cell's
+    /// first/last line, and the bare line band between. A vertical probe just past
+    /// this band lands on the next line, the next cell, or out of the table,
+    /// whichever is adjacent. `nil` when `src` isn't in a table (the caller uses
+    /// the caret/line rect, whose thin height is already the right band there).
+    func caretBand(src: Int) -> (minY: CGFloat, maxY: CGFloat)? {
+        for rl in rows {
+            guard let grid = rl.table, rl.tableFirst,
+                  let (row, cell, _, lineIndex) = grid.locate(src: src)
+            else { continue }
+            let top = rl.tableTop + row.top
+            let lineTop = top + TableMetrics.padY + CGFloat(lineIndex) * grid.lineHeight
+            let minY = lineIndex == 0 ? top : lineTop
+            let maxY = lineIndex == cell.lines.count - 1 ? top + row.height : lineTop + grid.lineHeight
+            return (minY, maxY)
         }
         return nil
     }

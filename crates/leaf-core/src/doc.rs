@@ -2242,6 +2242,21 @@ impl Doc {
         }
     }
 
+    /// Land in a table cell with its whole content selected — the anchor at the
+    /// cell's start, the caret at its end — so a Tab/Return hop into a cell reads
+    /// like tabbing into a form field: the text comes up selected, so typing
+    /// replaces it and an arrow collapses to an edge. An empty cell (`start ==
+    /// end`) collapses to a plain caret home (an empty selection is no selection).
+    fn select_cell(&mut self, start: usize, end: usize) {
+        let floor = self.caret_floor();
+        self.anchor = Some(start.min(self.source.len()).max(floor));
+        self.caret = end.min(self.source.len()).max(floor);
+        self.goal_col = None;
+        self.status = None;
+        self.last_edit_kind = None;
+        self.clear_pending();
+    }
+
     fn move_to(&mut self, offset: usize, extend: bool) {
         if extend {
             if self.anchor.is_none() {
@@ -2646,46 +2661,183 @@ impl Doc {
         self.debug_assert_on_a_stop(before);
     }
 
-    /// Hop to the next (Tab) or previous (Shift+Tab) table cell, landing at the
-    /// start of its text. Returns `false` when the caret isn't in a table, or is
-    /// already in the last/first cell — the frontend then does whatever Tab
-    /// normally does (indent), so Tab keeps its meaning everywhere else.
+    /// Hop to the next (Tab) or previous (Shift+Tab) table cell, landing with the
+    /// cell's whole content selected (see [`Self::select_cell`]). Returns `false`
+    /// when the caret isn't in a table, or is already in the last/first cell — the
+    /// frontend then does whatever Tab normally does (indent), so Tab keeps its
+    /// meaning everywhere else.
     pub fn cell_hop(&mut self, forward: bool) -> bool {
-        let off = self.caret;
-        let Some(cells) = self.table_cells_at(off) else {
+        let Some((grid, r, c)) = self.table_grid_at(self.caret) else {
             return false;
         };
-        let Some(i) = cells.iter().position(|r| off >= r.start && off <= r.end) else {
-            return false;
-        };
+        // Flatten to document (row-major) order and step one cell either way.
+        let i: usize = grid[..r].iter().map(Vec::len).sum::<usize>() + c;
+        let flat: Vec<(usize, usize)> = grid.into_iter().flatten().collect();
         let next = if forward { i.checked_add(1) } else { i.checked_sub(1) };
-        let Some(target) = next.and_then(|j| cells.get(j)) else {
+        let Some(&(start, end)) = next.and_then(|j| flat.get(j)) else {
             return false; // at the table's edge; leave Tab to the frontend
         };
-        self.goal_col = None;
-        self.move_to(target.start, false);
+        self.select_cell(start, end);
         true
     }
 
-    /// The content ranges of every cell in the table containing `off`, in
-    /// document order — `None` when `off` isn't inside a table's cell. Scoped to
-    /// the *one* table, so Tab in the last cell never jumps into another one.
-    fn table_cells_at(&mut self, off: usize) -> Option<Vec<std::ops::Range<usize>>> {
-        let nodes = self.nodes();
-        let in_cell = |n: &FlatNode| {
-            n.kind == "cell"
-                && n.content_span
-                    .as_ref()
-                    .is_some_and(|r| off >= r.start && off <= r.end)
+    /// Move the caret to the cell directly above (`down == false`) or below in
+    /// the same column, landing with the cell's whole content selected (see
+    /// [`Self::select_cell`]). Returns `false` at the grid's top/bottom edge (or
+    /// when the caret isn't in a table), so the frontend can fall through — the
+    /// vertical counterpart of [`cell_hop`].
+    ///
+    /// A ragged row that is short a column clamps to its last cell, so Down never
+    /// falls out of the table over a gap the row above happened to have.
+    pub fn cell_move_vertical(&mut self, down: bool) -> bool {
+        let Some((grid, r, c)) = self.table_grid_at(self.caret) else {
+            return false;
         };
-        let table = table_of(&nodes, nodes.iter().find(|n| in_cell(n))?)?;
-        let mut out: Vec<std::ops::Range<usize>> = nodes
-            .iter()
-            .filter(|n| n.kind == "cell" && table_of(&nodes, n) == Some(table))
-            .filter_map(|n| n.content_span.clone())
-            .collect();
-        out.sort_by_key(|r| r.start);
-        Some(out)
+        let target = match down {
+            true => r + 1,
+            false if r == 0 => return false,
+            false => r - 1,
+        };
+        let Some(row) = grid.get(target) else {
+            return false;
+        };
+        let Some(&(start, end)) = row.get(c).or_else(|| row.last()) else {
+            return false;
+        };
+        self.select_cell(start, end);
+        true
+    }
+
+    /// The table containing `off` as a row-major grid of `(start, end)` cell
+    /// caret homes, plus the `(row, col)` the caret sits in — `None` when `off`
+    /// isn't in a table. Read straight off the visual map's laid-out grid, so
+    /// every cell (an empty one included, whose derived home twig gives no
+    /// `content_span` for) is present and in the order Tab walks them.
+    fn table_grid_at(&self, off: usize) -> Option<(Vec<Vec<(usize, usize)>>, usize, usize)> {
+        for t in &self.vmap.tables {
+            let mut pos = None;
+            let grid: Vec<Vec<(usize, usize)>> = t
+                .grid
+                .iter()
+                .enumerate()
+                .map(|(r, row)| {
+                    row.cells
+                        .iter()
+                        .enumerate()
+                        .map(|(c, cell)| {
+                            if pos.is_none() && off >= cell.start && off <= cell.end {
+                                pos = Some((r, c));
+                            }
+                            (cell.start, cell.end)
+                        })
+                        .collect()
+                })
+                .collect();
+            if let Some((r, c)) = pos {
+                return Some((grid, r, c));
+            }
+        }
+        None
+    }
+
+    // ── table key policy ──────────────────────────────────────────────────────
+    // The three keys a table gives its own meaning — Tab, Return, Shift+Return —
+    // as one policy every frontend shares, rather than each re-deriving it. Each
+    // reports whether it acted *as a table key*; a `false` hands the key back to
+    // the frontend's ordinary handling (indent, newline) so it keeps its meaning
+    // everywhere else.
+
+    /// Tab / Shift+Tab inside a table. Tab steps to the next cell, appending a
+    /// fresh row and entering it when it runs off the last one; Shift+Tab steps
+    /// back and simply stays put at the very first cell. `false` when the caret
+    /// isn't in a table.
+    pub fn cell_tab(&mut self, forward: bool) -> bool {
+        if !self.caret_in_table() {
+            return false;
+        }
+        if self.cell_hop(forward) {
+            return true;
+        }
+        // Off the last cell: grow the table by a row and step into its first
+        // cell. (Shift+Tab at the first cell has nowhere to go and just holds.)
+        if forward {
+            self.append_row_and_enter(0);
+        }
+        true
+    }
+
+    /// Return inside a table: drop to the cell below in the same column,
+    /// appending a new row when the caret is already in the last one. `false`
+    /// when the caret isn't in a table, so the frontend inserts a newline.
+    pub fn cell_return(&mut self) -> bool {
+        if !self.caret_in_table() {
+            return false;
+        }
+        if self.cell_move_vertical(true) {
+            return true;
+        }
+        // Already on the last row: grow one below and drop into the same column.
+        let col = self.table_grid_at(self.caret).map_or(0, |(_, _, c)| c);
+        self.append_row_and_enter(col);
+        true
+    }
+
+    /// Append a row below the caret's (last) row and land in `col` of it. The
+    /// caret is in the last row, so twig's "insert below" makes the fresh row the
+    /// table's new last — but twig re-spells the whole table, moving every byte,
+    /// so the destination is read back from the rebuilt grid by the table's
+    /// position (stable across a row insert), not from the pre-edit caret.
+    fn append_row_and_enter(&mut self, col: usize) {
+        let table = self.caret_table_index();
+        self.table_insert_row(true);
+        self.rebuild_map();
+        let Some((start, end)) = table
+            .and_then(|ti| self.vmap.tables.get(ti))
+            .and_then(|t| t.grid.last())
+            .and_then(|row| row.cells.get(col.min(row.cells.len().saturating_sub(1))))
+            .map(|cell| (cell.start, cell.end))
+        else {
+            return;
+        };
+        self.select_cell(start, end);
+    }
+
+    /// The index, among the document's tables, of the one the caret sits in —
+    /// `None` when it's in none. Used to re-find a table after an edit re-spells
+    /// it (a row insert leaves the table order unchanged).
+    fn caret_table_index(&self) -> Option<usize> {
+        let off = self.caret;
+        self.vmap.tables.iter().position(|t| {
+            t.grid
+                .iter()
+                .any(|row| row.cells.iter().any(|c| off >= c.start && off <= c.end))
+        })
+    }
+
+    /// Shift+Return inside a table: insert a hard line break *within* the current
+    /// cell. `false` when the caret isn't in a table, so the frontend inserts an
+    /// ordinary line break.
+    ///
+    /// A table row is a single source line, so an inline `<br>` is the only break
+    /// its markup can carry. Leaf is opinionated and spells it that way for every
+    /// format (a djot cell passes the raw tag through the same). The renderer
+    /// reads such a `<br>` back as a line break, so the cell grows a line.
+    pub fn cell_line_break(&mut self) -> bool {
+        if !self.caret_in_table() {
+            return false;
+        }
+        self.insert("<br>");
+        true
+    }
+
+    /// Rebuild the visual map at the width the last build used. A structural edit
+    /// bumps the revision and swaps the source in, but leaves the *map* stale;
+    /// when a single gesture edits and then moves over the result (Tab appending
+    /// a row, then stepping into it), the move needs the map to already show the
+    /// edit rather than waiting for the frontend's next frame.
+    fn rebuild_map(&mut self) {
+        let wrap = self.vmap_key.map_or(None, |(_, w)| w);
+        self.build_map(wrap);
     }
 
     /// Move the caret to the very start of the document (⌘↑ on macOS,
@@ -2816,21 +2968,6 @@ fn next_list_marker(marker: &str) -> String {
     } else {
         marker.to_string()
     }
-}
-
-/// The id of the `table` a node lives under, or `None` if it isn't in one.
-/// Walks parents rather than assuming `cell`'s grandparent, so a nested table
-/// still resolves to the one that actually encloses the cell.
-fn table_of(nodes: &[FlatNode], node: &FlatNode) -> Option<usize> {
-    let mut cur = node.parent;
-    while let Some(id) = cur {
-        let n = &nodes[id.0 as usize];
-        if n.kind == "table" {
-            return Some(id.0 as usize);
-        }
-        cur = n.parent;
-    }
-    None
 }
 
 /// The source range of an inline node's own visible text — the part of it a
@@ -4447,12 +4584,15 @@ mod tests {
     fn wysiwyg_tab_walks_the_cells_and_shift_tab_walks_back() {
         let mut d = wysiwyg_doc("tbl_tab", TABLE);
         d.caret = TABLE.find("Name").unwrap();
+        // A hop lands with the destination cell's whole content selected, the
+        // caret at its end — so typing replaces the cell like a form field.
         assert!(d.cell_hop(true));
-        assert_eq!(d.caret, TABLE.find("Qty").unwrap());
+        assert_eq!(d.selected_text(), Some("Qty"), "the target cell comes up selected");
+        assert_eq!(d.caret, TABLE.find("Qty").unwrap() + "Qty".len());
         assert!(d.cell_hop(true), "Tab wraps onto the next row's first cell");
-        assert_eq!(d.caret, TABLE.find("Pear").unwrap());
+        assert_eq!(d.selected_text(), Some("Pear"));
         assert!(d.cell_hop(false));
-        assert_eq!(d.caret, TABLE.find("Qty").unwrap());
+        assert_eq!(d.selected_text(), Some("Qty"));
     }
 
     #[test]
@@ -4471,6 +4611,82 @@ mod tests {
         assert!(!d.cell_hop(true), "no cell after the last one");
         d.caret = TABLE.find("Name").unwrap();
         assert!(!d.cell_hop(false), "no cell before the first one");
+    }
+
+    #[test]
+    fn wysiwyg_vertical_cell_motion_holds_the_column() {
+        // Down/Up step to the cell above/below in the *same column*, not back to
+        // the top-left the way a naive row/col motion over the picture would.
+        let mut d = wysiwyg_doc("tbl_vert", TABLE);
+        d.caret = TABLE.find("Qty").unwrap();
+        // Each vertical hop selects the destination cell, holding the column.
+        assert!(d.cell_move_vertical(true));
+        assert_eq!(d.selected_text(), Some("3"), "Down holds column 1");
+        assert!(d.cell_move_vertical(true));
+        assert_eq!(d.selected_text(), Some("12"), "Down again, still column 1");
+        assert!(!d.cell_move_vertical(true), "no row below the last");
+        assert!(d.cell_move_vertical(false));
+        assert_eq!(d.selected_text(), Some("3"), "Up holds column 1");
+        assert!(d.cell_move_vertical(false));
+        assert_eq!(d.selected_text(), Some("Qty"), "Up onto the header");
+        assert!(!d.cell_move_vertical(false), "no row above the header");
+    }
+
+    #[test]
+    fn tab_off_the_last_cell_grows_a_row_and_enters_it() {
+        let mut d = wysiwyg_doc("tbl_grow", TABLE);
+        d.caret = TABLE.rfind("12").unwrap();
+        let rows_before = d.source.matches('\n').count();
+        assert!(d.cell_tab(true), "acts as a table key");
+        assert_eq!(
+            d.source.matches('\n').count(),
+            rows_before + 1,
+            "a fresh row was appended"
+        );
+        assert!(d.caret_in_table(), "the caret entered the new row");
+        // The caret sits in the new row's first cell — past the old last cell.
+        assert!(d.caret > TABLE.rfind("12").unwrap());
+    }
+
+    #[test]
+    fn return_in_a_table_drops_a_cell_and_grows_a_row_at_the_bottom() {
+        let mut d = wysiwyg_doc("tbl_ret", TABLE);
+        d.caret = TABLE.find("Name").unwrap();
+        assert!(d.cell_return(), "acts as a table key");
+        assert_eq!(d.selected_text(), Some("Pear"), "Return drops one cell, selecting it");
+        // From the last row, Return appends a row and enters it.
+        d.caret = TABLE.rfind("Fig").unwrap();
+        let rows_before = d.source.matches('\n').count();
+        assert!(d.cell_return());
+        assert_eq!(d.source.matches('\n').count(), rows_before + 1);
+        assert!(d.caret_in_table());
+    }
+
+    #[test]
+    fn return_and_tab_outside_a_table_decline() {
+        let mut d = wysiwyg_doc("tbl_decline", "just a paragraph\n");
+        d.caret = 4;
+        assert!(!d.cell_return(), "no table: the frontend inserts a newline");
+        assert!(!d.cell_tab(true), "no table: the frontend indents");
+        assert!(!d.cell_line_break(), "no table: the frontend breaks the line");
+    }
+
+    #[test]
+    fn shift_return_inserts_an_in_cell_break_the_renderer_reads_as_a_line() {
+        let mut d = wysiwyg_doc("tbl_break", TABLE);
+        d.caret = TABLE.find("Pear").unwrap() + 4; // just after "Pear"
+        assert!(d.cell_line_break(), "acts as a table key");
+        assert!(d.source.contains("Pear<br>"), "spelled as an inline <br>: {}", d.source);
+        assert!(d.caret_in_table(), "still in the cell, past the break");
+        // The break renders as a real line: the "Pear" cell now draws two lines,
+        // so the table's picture is one row taller than a single-line table.
+        d.build_visual(80);
+        let table = &d.vmap.tables[0];
+        let cell = &table.grid[1].cells[0]; // first body row, first column
+        assert!(
+            cell.glyphs.iter().any(|g| g.ch == '\n'),
+            "the cell carries the break as a newline glyph for the frontend to split"
+        );
     }
 
     #[test]

@@ -45,12 +45,13 @@ enum AttributedRow {
         return result
     }
 
-    /// Build the attributed text for one table cell. A header cell draws bold
-    /// (via the same path a heading row takes); everything else — role colours,
-    /// inline `code`/`mark` backgrounds, emphasis — is the ordinary run styling.
-    static func makeCell(_ cell: TableCellView, head: Bool, theme: EditorTheme) -> NSAttributedString {
+    /// Build the attributed text for one line of a table cell. A header cell
+    /// draws bold (via the same path a heading row takes); everything else — role
+    /// colours, inline `code`/`mark` backgrounds, emphasis — is the ordinary run
+    /// styling. One line at a time so an in-cell `<br>` shapes as several.
+    static func makeCellLine(_ line: TableCellLineView, head: Bool, theme: EditorTheme) -> NSAttributedString {
         let result = NSMutableAttributedString()
-        for run in cell.runs {
+        for run in line.runs {
             result.append(
                 NSAttributedString(
                     string: run.text,

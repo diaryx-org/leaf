@@ -20,6 +20,7 @@
 //! the verbatim source slice), so a Markdown and a Djot file that parse alike
 //! render — and map — identically.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::ops::Range;
 
@@ -550,6 +551,7 @@ pub fn build(
         tables: Vec::new(),
         last_off: 0,
         image_rows,
+        break_glyph: Cell::new(' '),
     };
     b.blocks(doc, &[], &[]);
     b.emit_trailing_blank_lines();
@@ -613,6 +615,7 @@ pub fn build_cached(
         tables: Vec::new(),
         last_off: 0,
         image_rows,
+        break_glyph: Cell::new(' '),
     };
 
     // Record the per-block row decomposition as we go, so a later
@@ -654,6 +657,7 @@ pub fn build_cached(
                     tables: Vec::new(),
                     last_off: 0,
                     image_rows,
+                    break_glyph: Cell::new(' '),
                 };
                 sub.block(0, &[], &[]);
                 let last_off = sub.last_off;
@@ -832,6 +836,7 @@ pub fn build_spliced(
         tables: Vec::new(),
         last_off: 0,
         image_rows,
+        break_glyph: Cell::new(' '),
     };
     sub.block(0, &[], &[]);
     // A table, or content that renders outside the block's span (a degenerate
@@ -1138,6 +1143,12 @@ struct Builder<'a> {
     /// bare one-row placeholder, which is the whole-document default and what
     /// every existing test — passing an empty map — still gets.
     image_rows: &'a HashMap<String, usize>,
+    /// The glyph a hard break renders as while the current inline run is built:
+    /// a space in prose (a break folds into the flow the frontend wraps), but a
+    /// newline (`\n`) inside a table cell, where a row is one source line and the
+    /// only break it can carry is an explicit one that must show as a line of its
+    /// own. Set around [`Builder::row_cells`] and otherwise left at `' '`.
+    break_glyph: Cell<char>,
 }
 
 impl Builder<'_> {
@@ -1418,7 +1429,7 @@ impl Builder<'_> {
         let mut widths = vec![0usize; cols];
         for row in &grid {
             for (c, cell) in row.iter().enumerate() {
-                widths[c] = widths[c].max(glyphs_width(&cell.glyphs));
+                widths[c] = widths[c].max(cell_width(&cell.glyphs));
             }
         }
         // Every column at its widest cell is only the *wish*; a grid wider than
@@ -1468,7 +1479,12 @@ impl Builder<'_> {
 
     /// One row of laid-out cells, in column order.
     fn row_cells(&self, row: usize) -> Vec<TableCell> {
-        self.children(row)
+        // A cell is one source line, so a break within it is an explicit line
+        // break (an inline `<br>`) that must render as a line of its own — not the
+        // flow-folding space a break is in prose.
+        self.break_glyph.set('\n');
+        let cells = self
+            .children(row)
             .into_iter()
             .filter(|&c| self.nodes[c].kind == "cell")
             .enumerate()
@@ -1502,7 +1518,9 @@ impl Builder<'_> {
                     align: n.alignment.unwrap_or(Alignment::Default),
                 }
             })
-            .collect()
+            .collect();
+        self.break_glyph.set(' ');
+        cells
     }
 
     /// A horizontal rule between/around rows — entirely decoration.
@@ -1828,7 +1846,7 @@ impl Builder<'_> {
         match node.kind.as_str() {
             "str" | "smart_punctuation" => push_text(out, node.text.as_deref().unwrap_or(""), node.span.start, base),
             "soft_break" | "hard_break" | "non_breaking_space" => {
-                // A break renders as a real, caret-navigable space — but twig
+                // A break renders as a real, caret-navigable glyph — but twig
                 // gives it no span of its own (`0..0`), so the offset comes from
                 // the text in front of it: one *past* the last glyph, which is
                 // the newline the break stands for. Past, not on: sharing the
@@ -1839,7 +1857,18 @@ impl Builder<'_> {
                 } else {
                     out.last().map(|g| g.src + g.ch.len_utf8()).unwrap_or(0)
                 };
-                out.push(Glyph { ch: ' ', style: base, src, stop: true });
+                // A soft break folds into a space; a *hard* break renders as this
+                // run's break glyph — a newline inside a table cell (its own
+                // line), the same space in prose the frontend re-wraps.
+                let ch = if node.kind == "hard_break" { self.break_glyph.get() } else { ' ' };
+                out.push(Glyph { ch, style: base, src, stop: true });
+            }
+            // A cell's only spelling for an in-line break is a raw `<br>`; read it
+            // back as one (outside a cell it stays the literal text it falls to
+            // below). The tag's bytes carry no stop of their own — the line it
+            // ends stops just before it, the next just after.
+            "raw_inline" if self.break_glyph.get() == '\n' && is_br(node.text.as_deref()) => {
+                out.push(Glyph { ch: '\n', style: base, src: node.span.start, stop: true });
             }
             "emph" => self.recurse(id, base.italic(), out),
             "strong" => self.recurse(id, base.bold(), out),
@@ -2140,6 +2169,26 @@ fn glyphs_width(glyphs: &[Glyph]) -> usize {
     clusters(glyphs).last().map_or(0, |c| c.col + c.cells)
 }
 
+/// A cell's display width — the widest of its lines, since an in-cell `\n` break
+/// splits it into several. Sizes the column that must hold every line.
+fn cell_width(glyphs: &[Glyph]) -> usize {
+    glyphs
+        .split(|g| g.ch == '\n')
+        .map(glyphs_width)
+        .max()
+        .unwrap_or(0)
+}
+
+/// Whether a raw inline HTML tag is a line break (`<br>`, `<br/>`, `<br />`,
+/// case-insensitively) — the one tag a table cell reads as an in-cell break.
+fn is_br(text: Option<&str>) -> bool {
+    let Some(t) = text else { return false };
+    matches!(
+        t.trim().to_ascii_lowercase().replace(' ', "").as_str(),
+        "<br>" | "<br/>"
+    )
+}
+
 impl VRow {
     /// The row's width in display columns — and so the column of the caret
     /// placed past its last glyph, which is the rightmost column it can occupy.
@@ -2413,7 +2462,23 @@ fn fit_widths(widths: &mut [usize], avail: usize) {
 /// line's end stop just past its last glyph, so a line cut mid-cluster would
 /// put a caret stop inside a character — reachable by Down or a click, and the
 /// next Backspace would take the cluster apart from the middle.
+///
+/// An explicit in-cell break (a `\n` glyph, from a `<br>`) is a hard boundary:
+/// each run between the breaks wraps on its own and the results stack. The break
+/// glyphs are dropped — the caller's per-line end stop already sits exactly where
+/// each break was, so no offset is lost.
 fn wrap_glyphs(glyphs: &[Glyph], width: usize) -> Vec<Vec<Glyph>> {
+    if glyphs.iter().any(|g| g.ch == '\n') {
+        return glyphs
+            .split(|g| g.ch == '\n')
+            .flat_map(|seg| wrap_segment(seg, width))
+            .collect();
+    }
+    wrap_segment(glyphs, width)
+}
+
+/// [`wrap_glyphs`] for a run with no explicit breaks — the word-wrap proper.
+fn wrap_segment(glyphs: &[Glyph], width: usize) -> Vec<Vec<Glyph>> {
     let width = width.max(1);
     // Words are maximal non-space runs, each carrying the space that followed it
     // — which survives only if the next word joins it on this line.

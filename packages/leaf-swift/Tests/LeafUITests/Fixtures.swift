@@ -30,7 +30,24 @@ func row(
 }
 
 func mkCell(_ text: String, align: String = "default", start: UInt32 = 0, end: UInt32 = 0) -> TableCellView {
-    TableCellView(runs: [mkRun(text)], align: align, start: start, end: end)
+    let line = TableCellLineView(runs: [mkRun(text)], start: start, end: end)
+    return TableCellView(lines: [line], align: align, start: start, end: end)
+}
+
+/// A single-line cell whose one run core has marked selected — for exercising
+/// the table selection highlight.
+func mkSelCell(_ text: String, start: UInt32, end: UInt32) -> TableCellView {
+    let line = TableCellLineView(runs: [mkRun(text, sel: true)], start: start, end: end)
+    return TableCellView(lines: [line], align: "default", start: start, end: end)
+}
+
+/// A cell of several lines (an in-cell `<br>`): each `(text, start, end)` triple
+/// is one visual line. The whole cell spans the first line's start to the last's
+/// end.
+func mkCellLines(_ lines: [(String, UInt32, UInt32)], align: String = "default") -> TableCellView {
+    let laid = lines.map { TableCellLineView(runs: [mkRun($0.0)], start: $0.1, end: $0.2) }
+    return TableCellView(lines: laid, align: align,
+                         start: lines.first?.1 ?? 0, end: lines.last?.2 ?? 0)
 }
 
 func mkTableRow(_ cells: [TableCellView], head: Bool = false) -> TableRowView {

@@ -1398,7 +1398,10 @@ mod tests {
         doc.caret = doc.source.find('a').unwrap();
         handle_key(&mut doc, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &mut app);
         assert_eq!(doc.source, "| a | b |\n| - | - |\n| c | d |\n", "a table hop must not indent");
-        assert_eq!(doc.caret, doc.source.find('b').unwrap());
+        // A hop lands with the destination cell selected (caret at its end), so
+        // typing replaces the cell — the same field-select Tab gives everywhere.
+        assert_eq!(doc.selected_text(), Some("b"), "the hopped-to cell comes up selected");
+        assert_eq!(doc.caret, doc.source.find('b').unwrap() + 1);
     }
 
     #[test]

@@ -142,7 +142,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             // A table draws its own grid (once, on its first picture row); its
             // rows carry no text to paint.
             if let grid = rl.table {
-                if rl.tableFirst { drawTable(grid, tableTop: rl.tableTop, in: ctx) }
+                if rl.tableFirst { drawTable(grid, tableTop: rl.tableTop, selColor: selColor, in: ctx) }
                 continue
             }
             let rowRect = CGRect(x: padX, y: rl.top, width: fullWidth, height: rl.height)
@@ -173,7 +173,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// Draw a table as a proportional grid — header fill and body stripes, the
     /// cell text, then the grid rules over them — the Apple peer of leaf-gpui's
     /// `table_chrome`. `tableTop` is the grid's top in view coordinates.
-    private func drawTable(_ grid: TableLayout, tableTop: CGFloat, in ctx: CGContext) {
+    private func drawTable(_ grid: TableLayout, tableTop: CGFloat, selColor: LeafColor, in ctx: CGContext) {
         let left = theme.padding.left
         let border = TableMetrics.border
         let x0 = left + (grid.colX.first ?? 0)
@@ -195,14 +195,37 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             }
         }
 
-        // Cell text.
+        // Selection highlight, behind the cell text — the table peer of the row
+        // path's `fillSelection`. One rect per selected span, clipped to its cell
+        // line; the row backgrounds above it, the text below, exactly as a plain
+        // row layers them.
+        ctx.setFillColor(selColor.cgColor)
+        for row in grid.rows {
+            let selTop = tableTop + row.top + TableMetrics.padY
+            for cell in row.cells {
+                for (i, line) in cell.lines.enumerated() where !line.selRanges.isEmpty {
+                    let y = selTop + CGFloat(i) * grid.lineHeight
+                    for (s, e) in line.selRanges {
+                        let sx = CTLineGetOffsetForStringIndex(line.line, CFIndex(s), nil)
+                        let ex = CTLineGetOffsetForStringIndex(line.line, CFIndex(e), nil)
+                        ctx.fill(CGRect(x: left + line.textX + sx, y: y,
+                                        width: ex - sx, height: grid.lineHeight))
+                    }
+                }
+            }
+        }
+
+        // Cell text — each cell line on its own row within the cell's band.
         for row in grid.rows {
             let top = tableTop + row.top + TableMetrics.padY
             for cell in row.cells {
-                cell.attributed.draw(
-                    with: CGRect(x: left + cell.textX, y: top, width: .greatestFiniteMagnitude,
-                                 height: theme.lineHeight),
-                    options: [.usesLineFragmentOrigin])
+                for (i, line) in cell.lines.enumerated() {
+                    line.attributed.draw(
+                        with: CGRect(x: left + line.textX,
+                                     y: top + CGFloat(i) * grid.lineHeight,
+                                     width: .greatestFiniteMagnitude, height: theme.lineHeight),
+                        options: [.usesLineFragmentOrigin])
+                }
             }
         }
 
@@ -401,8 +424,18 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         case #selector(moveToEndOfDocument(_:)):            render(doc.moveDocEnd(extend: false))
         case #selector(moveToBeginningOfDocumentAndModifySelection(_:)): render(doc.moveDocStart(extend: true))
         case #selector(moveToEndOfDocumentAndModifySelection(_:)):       render(doc.moveDocEnd(extend: true))
-        case #selector(insertNewline(_:)), #selector(insertLineBreak(_:)): render(doc.newline())
-        case #selector(insertTab(_:)):                      render(doc.insert(text: "  "))
+        // In a table these keys take on grid meanings (see the FFI's `cell_*`):
+        // Return drops a cell, Shift+Return breaks a line within one, Tab/Shift+Tab
+        // walk the cells. Each returns nil off the table, where the key keeps its
+        // ordinary job (newline, indent).
+        case #selector(insertNewline(_:)):
+            render(doc.cellReturn() ?? doc.newline())
+        case #selector(insertLineBreak(_:)):
+            render(doc.cellLineBreak() ?? doc.newline())
+        case #selector(insertTab(_:)):
+            render(doc.cellTab(forward: true) ?? doc.insert(text: "  "))
+        case #selector(insertBacktab(_:)):
+            if let v = doc.cellTab(forward: false) { render(v) }
         case #selector(deleteBackward(_:)):                 render(doc.backspace())
         case #selector(deleteForward(_:)):                  render(doc.deleteForward())
         case #selector(deleteWordBackward(_:)):             render(doc.deleteWordBack())
@@ -421,9 +454,15 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             render(up ? doc.moveUp(extend: extend) : doc.moveDown(extend: extend))
             return
         }
+        // Probe from the caret's full *line band* — inside a table that clears the
+        // cell's vertical padding, which the thin caret rect doesn't, so a step
+        // actually crosses into the next line/cell instead of stalling. Hit-test
+        // the table-aware way (`hitRowCh`), or a probe into a table resolves to the
+        // collapsed picture row and teleports the caret to its top-left cell.
+        let band = layoutEngine.caretBand(src: Int(docView.caretSrc))
         let goalX = verticalGoalX ?? caret.minX
-        let probeY = up ? caret.minY - 1 : caret.maxY + 1
-        let (row, ch) = layoutEngine.hit(CGPoint(x: goalX, y: probeY), theme: theme)
+        let probeY = up ? (band?.minY ?? caret.minY) - 1 : (band?.maxY ?? caret.maxY) + 1
+        let (row, ch) = hitRowCh(CGPoint(x: goalX, y: probeY))
         verticalGoalX = goalX
         render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: extend), keepVerticalGoal: true)
     }

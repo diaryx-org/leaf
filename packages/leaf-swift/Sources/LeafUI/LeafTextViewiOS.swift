@@ -251,10 +251,13 @@ public final class LeafTextView: UIView, UITextInput {
         for row in grid.rows {
             let top = tableTop + row.top + TableMetrics.padY
             for cell in row.cells {
-                cell.attributed.draw(
-                    with: CGRect(x: left + cell.textX, y: top, width: .greatestFiniteMagnitude,
-                                 height: renderTheme.lineHeight),
-                    options: [.usesLineFragmentOrigin], context: nil)
+                for (i, line) in cell.lines.enumerated() {
+                    line.attributed.draw(
+                        with: CGRect(x: left + line.textX,
+                                     y: top + CGFloat(i) * grid.lineHeight,
+                                     width: .greatestFiniteMagnitude, height: renderTheme.lineHeight),
+                        options: [.usesLineFragmentOrigin], context: nil)
+                }
             }
         }
         ctx.setFillColor(renderTheme.tableBorderColor.cgColor)
@@ -287,8 +290,14 @@ public final class LeafTextView: UIView, UITextInput {
         if let m = marked {
             marked = nil
             render(doc.replaceRange(from: UInt32(m.from.offset), to: UInt32(m.to.offset), text: text))
+        } else if text == "\n" {
+            // In a table, Return drops a cell; elsewhere it's a newline.
+            render(doc.cellReturn() ?? doc.newline())
+        } else if text == "\t" {
+            // In a table, Tab walks the cells; elsewhere it indents.
+            render(doc.cellTab(forward: true) ?? doc.insert(text: "  "))
         } else {
-            render(text == "\n" ? doc.newline() : doc.insert(text: text))
+            render(doc.insert(text: text))
         }
     }
 
@@ -469,9 +478,19 @@ public final class LeafTextView: UIView, UITextInput {
         for _ in 0..<max(0, times) {
             let rc = doc.posForOffset(off: UInt32(cur))
             guard let caret = layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch), theme: renderTheme) else { break }
-            let probeY = up ? caret.minY - 1 : caret.maxY + 1
-            let (row, ch) = layoutEngine.hit(CGPoint(x: caret.minX, y: probeY), theme: renderTheme)
-            let next = Int(doc.offsetForPos(row: UInt32(row), ch: UInt32(ch)))
+            // Probe from the caret's full line band (a table cell's padding is
+            // cleared) and resolve the table-aware way, or a probe into a table
+            // teleports to its top-left cell. See the AppKit peer's `moveVertical`.
+            let band = layoutEngine.caretBand(src: cur)
+            let probeY = up ? (band?.minY ?? caret.minY) - 1 : (band?.maxY ?? caret.maxY) + 1
+            let probe = CGPoint(x: caret.minX, y: probeY)
+            let next: Int
+            if let off = layoutEngine.tableHitOffset(probe, theme: renderTheme) {
+                next = Int(doc.snapOffset(off: UInt32(off)))
+            } else {
+                let (row, ch) = layoutEngine.hit(probe, theme: renderTheme)
+                next = Int(doc.offsetForPos(row: UInt32(row), ch: UInt32(ch)))
+            }
             if next == cur { break }
             cur = next
         }
@@ -546,6 +565,12 @@ public final class LeafTextView: UIView, UITextInput {
                                                containsEnd: row == eRow && ce == eCh))
             }
         }
+        // Tables carry no `wrapped` lines, so the row walk above skips them; add
+        // the highlight over any table cells the range covers, keyed by source
+        // offset (the coordinate a cell is laid out by).
+        rects.append(contentsOf: layoutEngine.tableSelectionRects(
+            from: r.from.offset, to: r.to.offset, theme: renderTheme
+        ).map { LeafSelectionRect(rect: $0.rect, containsStart: $0.containsStart, containsEnd: $0.containsEnd) })
         return rects
     }
 
