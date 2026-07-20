@@ -1405,6 +1405,33 @@ mod tests {
     }
 
     #[test]
+    fn alt_enter_in_a_markdown_table_inserts_an_in_cell_line_break() {
+        // The GUI's Shift+Enter is indistinguishable from Enter in a terminal, so
+        // the TUI spells the in-cell break Alt+Enter. In a Markdown cell it splices
+        // the `<br>` twig reads back as a hard_break; the caret stays in the table.
+        let mut doc = doc_with("table_break", "| a | b |\n| - | - |\n| c | d |\n");
+        let mut app = App::default();
+        doc.caret = doc.source.find('a').unwrap() + 1; // just after "a"
+        handle_key(&mut doc, KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT), &mut app);
+        assert_eq!(doc.source, "| a<br> | b |\n| - | - |\n| c | d |\n");
+        assert!(doc.caret_in_table(), "still editing the cell, past the break");
+    }
+
+    #[test]
+    fn alt_enter_off_a_table_is_an_ordinary_newline() {
+        let mut doc = doc_with("break_newline", "hello world\n");
+        let mut app = App::default();
+        doc.caret = 5; // after "hello"
+        let breaks = doc.source.matches('\n').count();
+        handle_key(&mut doc, KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT), &mut app);
+        // Off a table `cell_line_break` declines and we fall through to the
+        // ordinary newline (which opens a paragraph), so the line count grows and
+        // no `<br>` is spliced.
+        assert!(doc.source.matches('\n').count() > breaks, "a newline off a table");
+        assert!(!doc.source.contains("<br>"), "no in-cell break off a table");
+    }
+
+    #[test]
     fn ctrl_u_kills_back_to_the_line_start() {
         let mut doc = doc_with("kill_start", "hello world\n");
         let mut app = App::default();

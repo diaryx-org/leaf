@@ -332,8 +332,21 @@ struct EditorLayout {
             else { continue }
             let top = rl.tableTop + row.top
             let lineTop = top + TableMetrics.padY + CGFloat(lineIndex) * grid.lineHeight
-            let minY = lineIndex == 0 ? top : lineTop
-            let maxY = lineIndex == cell.lines.count - 1 ? top + row.height : lineTop + grid.lineHeight
+            // On the table's first/last grid row, reach all the way to the table's
+            // true outer edge (`tableTop` / `tableTop + height`), not just the
+            // cell's band — a grid row sits a border's-width inside the box
+            // (`row.top` starts at `TableMetrics.border`). Without this, ↑ from the
+            // top row probes `minY - 1`, which lands *on* the top border line; the
+            // hit-test resolves that back into the table and the caret never
+            // reaches the block above it. The bottom edge is the symmetric peer.
+            let atTop = row.top == grid.rows.first?.top
+            let atBottom = row.top == grid.rows.last?.top
+            let minY = lineIndex == 0
+                ? (atTop ? rl.tableTop : top)
+                : lineTop
+            let maxY = lineIndex == cell.lines.count - 1
+                ? (atBottom ? rl.tableTop + grid.height : top + row.height)
+                : lineTop + grid.lineHeight
             return (minY, maxY)
         }
         return nil

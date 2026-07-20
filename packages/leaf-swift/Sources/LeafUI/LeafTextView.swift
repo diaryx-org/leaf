@@ -380,6 +380,20 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     // MARK: keyboard — text + IME
 
     public override func keyDown(with event: NSEvent) {
+        // Shift+Return is leaf's in-cell line break. AppKit's default key bindings
+        // don't distinguish it from a bare Return — both resolve to
+        // `insertNewline:` (only Ctrl+Return maps to `insertLineBreak:`) — so
+        // without catching it here it would drop to the next cell instead of
+        // breaking the line. Route it straight to the line-break command, which
+        // no-ops off a table (falling back to an ordinary newline). Skip while an
+        // IME composition is live so a Shift+Return that commits marked text still
+        // reaches the input system.
+        let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let isReturn = event.keyCode == 36 || event.keyCode == 76 // Return, keypad Enter
+        if markedByteRange == nil, isReturn, mods == .shift {
+            doCommand(by: #selector(insertLineBreak(_:)))
+            return
+        }
         if !(inputContext?.handleEvent(event) ?? false) { interpretKeyEvents([event]) }
     }
 

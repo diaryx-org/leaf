@@ -185,6 +185,15 @@ enum EditKind {
     Other,
 }
 
+/// Which side of the caret a delete looks for an in-cell `<br>` break to swallow
+/// whole — see [`Doc::cell_break_at`]. `Backward` is Backspace (a break ending at
+/// the caret), `Forward` is Delete (one starting at it).
+#[derive(Clone, Copy)]
+enum BreakEdge {
+    Backward,
+    Forward,
+}
+
 /// The caret and selection at one moment — the part of a history step twig's
 /// `Change` cannot carry, because the caret is leaf's state and twig only knows
 /// about bytes. leaf serializes it into the opaque per-state blob twig now
@@ -1319,6 +1328,18 @@ impl Doc {
             }
         }
         if self.caret > self.caret_floor() {
+            // An in-cell `<br>` draws as one newline glyph, so Backspace over it
+            // takes the whole tag — a single-byte step would leave a broken `<br`
+            // showing in the cell. Rich view only (source view edits the literal).
+            if self.view != View::Source
+                && let Some((start, end)) = self.cell_break_at(BreakEdge::Backward)
+            {
+                let start = start.max(self.caret_floor());
+                if start < end {
+                    self.splice(start, end, "", EditKind::Delete);
+                    return;
+                }
+            }
             // Never delete back across the floor — that would eat hidden
             // frontmatter the WYSIWYG caret can't even see.
             let mut prev = prev_boundary(&self.source, self.caret).max(self.caret_floor());
@@ -1348,6 +1369,34 @@ impl Doc {
             .find('\n')
             .map_or(self.source.len(), |i| self.caret + i);
         self.source[line_start..line_end].trim().is_empty()
+    }
+
+    /// The source span of an in-cell hard break (`<br>`) touching the caret on the
+    /// `edge` side — the byte range to delete whole. A table row is one source
+    /// line, so its break is spelled `<br>` yet drawn as a single newline glyph
+    /// (see `wysiwyg.rs`); a delete over it must take every byte, or a one-byte
+    /// step strands a broken `<br` in the cell. `Backward` matches a break ending
+    /// at the caret (Backspace), `Forward` one starting at it (Delete). `None`
+    /// when no such break is adjacent. Only the in-cell break is spelled `<br>`
+    /// (an ordinary hard break is `  \n`), so the leading `<` alone tells them
+    /// apart — no ancestor walk needed. Rich view only; source view shows the
+    /// literal tag and deletes it a byte at a time.
+    fn cell_break_at(&mut self, edge: BreakEdge) -> Option<(usize, usize)> {
+        let caret = self.caret;
+        let nodes = self.nodes();
+        let src = self.source.as_bytes();
+        nodes
+            .iter()
+            .find(|n| {
+                n.kind == "hard_break"
+                    && n.span.start < n.span.end
+                    && src.get(n.span.start) == Some(&b'<')
+                    && match edge {
+                        BreakEdge::Backward => n.span.end == caret,
+                        BreakEdge::Forward => n.span.start == caret,
+                    }
+            })
+            .map(|n| (n.span.start, n.span.end))
     }
 
     /// Whether the source byte at `off` is a backslash twig consumed as an escape
@@ -1390,6 +1439,15 @@ impl Doc {
         if let Some((s, e)) = self.selection() {
             self.splice(s, e, "", EditKind::Other);
         } else if self.caret < self.source.len() {
+            // Delete forward over an in-cell `<br>` takes the whole tag, the mirror
+            // of Backspace's swallow (see `cell_break_at`) — else a byte-step
+            // strands a broken `<br` in the cell.
+            if self.view != View::Source
+                && let Some((start, end)) = self.cell_break_at(BreakEdge::Forward)
+            {
+                self.splice(start, end, "", EditKind::Delete);
+                return;
+            }
             let next = next_boundary(&self.source, self.caret);
             self.splice(self.caret, next, "", EditKind::Delete);
         }
@@ -3146,18 +3204,43 @@ impl Doc {
     }
 
     /// Shift+Return inside a table: insert a hard line break *within* the current
-    /// cell. `false` when the caret isn't in a table, so the frontend inserts an
-    /// ordinary line break.
+    /// cell, via twig's `insert_line_break`. `false` when the caret isn't in a
+    /// table, so the frontend inserts an ordinary line break.
     ///
-    /// A table row is a single source line, so an inline `<br>` is the only break
-    /// its markup can carry. Leaf is opinionated and spells it that way for every
-    /// format (a djot cell passes the raw tag through the same). The renderer
-    /// reads such a `<br>` back as a line break, so the cell grows a line.
+    /// A table row is a single source line, so the newline-spelled hard break
+    /// can't live in a cell. twig spells the in-cell break the format's way
+    /// (`<br>` for Markdown) and reparses it as a *semantic* `hard_break`, so the
+    /// break round-trips as structure the renderer reads back as a line — not the
+    /// opaque raw HTML the old raw-splice left behind.
+    ///
+    /// Djot has no idiomatic in-cell break, so twig refuses it
+    /// (`UnsupportedFormat`) rather than emit a `<br>` that any other djot reader
+    /// would render as the literal text `<br>`. The gesture is still *consumed*
+    /// there — returning `false` would let the frontend insert a real newline,
+    /// which splits the one-line row — it just leaves the cell unchanged and says
+    /// so on the status line. A rollback (`EditConflict`) is swallowed the same.
     pub fn cell_line_break(&mut self) -> bool {
         if !self.caret_in_table() {
             return false;
         }
-        self.insert_raw("<br>");
+        self.record_caret();
+        match self.editor.insert_line_break(self.caret) {
+            Ok(change) => {
+                self.last_edit_kind = None;
+                self.refresh();
+                self.caret = change.new.end;
+                self.anchor = None;
+                self.goal_col = None;
+                self.clamp_caret();
+                self.dirty = self.source != self.clean_source;
+                self.status = None;
+                self.record_caret();
+            }
+            Err(twig::Error::UnsupportedFormat) => {
+                self.status = Some("in-cell line breaks aren't supported in djot".into());
+            }
+            Err(_) => {}
+        }
         true
     }
 
@@ -5056,6 +5139,59 @@ mod tests {
             cell.glyphs.iter().any(|g| g.ch == '\n'),
             "the cell carries the break as a newline glyph for the frontend to split"
         );
+    }
+
+    #[test]
+    fn shift_return_in_a_markdown_cell_leaves_a_semantic_hard_break_not_raw_html() {
+        // twig promotes the in-cell `<br>` to a `hard_break`, so the break reads
+        // back as structure — the whole point of routing through insert_line_break
+        // instead of splicing raw `<br>` bytes.
+        let mut d = wysiwyg_doc("tbl_break_semantic", TABLE);
+        d.caret = TABLE.find("Pear").unwrap() + 4;
+        assert!(d.cell_line_break());
+        let kinds: Vec<String> = d.editor.nodes().unwrap().iter().map(|n| n.kind.clone()).collect();
+        assert!(kinds.iter().any(|k| k == "hard_break"), "got {kinds:?}");
+        assert!(!kinds.iter().any(|k| k == "raw_inline"), "still raw HTML: {kinds:?}");
+    }
+
+    #[test]
+    fn backspace_over_an_in_cell_break_deletes_the_whole_br_not_a_byte() {
+        // The `<br>` draws as one newline glyph, so Backspace over it must take
+        // all four bytes — a one-byte delete would strand a visible `<br` in the
+        // cell (the reported bug).
+        let mut d = wysiwyg_doc("tbl_break_bs", TABLE);
+        d.caret = TABLE.find("Pear").unwrap() + 4;
+        assert!(d.cell_line_break());
+        assert!(d.source.contains("Pear<br>"), "precondition: {}", d.source);
+        d.backspace(); // caret sits just past the break
+        assert!(!d.source.contains("<br"), "no half-deleted <br left: {}", d.source);
+        assert!(d.source.contains("| Pear |"), "the cell is back to one line: {}", d.source);
+    }
+
+    #[test]
+    fn delete_forward_over_an_in_cell_break_deletes_the_whole_br() {
+        let mut d = wysiwyg_doc("tbl_break_del", TABLE);
+        d.caret = TABLE.find("Pear").unwrap() + 4;
+        assert!(d.cell_line_break());
+        d.caret = TABLE.find("Pear").unwrap() + 4; // back onto the break's start
+        d.delete_forward();
+        assert!(!d.source.contains("<br"), "no half-deleted <br: {}", d.source);
+        assert!(d.source.contains("| Pear |"), "cell back to one line: {}", d.source);
+    }
+
+    #[test]
+    fn shift_return_in_a_djot_cell_is_swallowed_and_leaves_the_row_intact() {
+        // Djot has no idiomatic in-cell break, so twig refuses it. The gesture is
+        // still consumed (a real newline would split the one-line row), but the
+        // cell must be left exactly as it was — no non-idiomatic `<br>` spliced in.
+        let src = "| Name | Qty |\n|:-----|----:|\n| Pear | 3 |\n";
+        let mut d = Doc::from_source(src.to_string(), Format::Djot).unwrap();
+        d.caret = src.find("Pear").unwrap() + 4;
+        assert!(d.caret_in_table(), "caret should be inside the djot table");
+        assert!(d.cell_line_break(), "the key is consumed, not passed to the frontend");
+        assert_eq!(d.source, src, "the djot cell is left untouched");
+        assert!(!d.source.contains("<br>"), "no non-idiomatic <br> spliced into djot");
+        assert!(d.status.is_some(), "the refusal is surfaced on the status line");
     }
 
     #[test]

@@ -325,7 +325,11 @@ public final class LeafTextView: UIView, UITextInput {
                 // Shift+Tab: plain Tab arrives through `insertText("\t")`, but the
                 // shifted chord doesn't — capture it here to outdent (walk a cell
                 // back in a table, unnest a list item otherwise).
-                k("\t", .shift)]
+                k("\t", .shift),
+                // Shift+Return: plain Return arrives through `insertText("\n")`, but
+                // the shifted chord doesn't — capture it here for the in-cell line
+                // break (an ordinary newline off a table).
+                k("\r", .shift)]
     }
 
     @objc private func handleShortcut(_ cmd: UIKeyCommand) {
@@ -334,6 +338,7 @@ public final class LeafTextView: UIView, UITextInput {
         case ("i", _): command { $0.toggleItalic() }
         case ("u", _): command { $0.toggleUnderline() }
         case ("\t", true): command { $0.cellTab(forward: false) ?? $0.outdent() }
+        case ("\r", true): command { $0.cellLineBreak() ?? $0.newline() }
         case ("z", false): command { $0.undo() }
         case ("z", true): command { $0.redo() }
         // ⇧⌘V — plain-flavor escape hatch: paste as leaf source, ignoring rich HTML.

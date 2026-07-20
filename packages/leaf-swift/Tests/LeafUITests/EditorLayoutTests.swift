@@ -119,6 +119,38 @@ final class EditorLayoutTests: XCTestCase {
         XCTAssertGreaterThan(band2.maxY, below.maxY, "line-2 band reaches the bottom padding")
     }
 
+    func testCaretBandReachesTheTablesOuterEdgesOnItsFirstAndLastRows() throws {
+        // ↑ out of a table's top row probes `band.minY - 1`; if the band stops at
+        // the cell (a border's-width inside the box) that probe lands on the top
+        // border line, which the hit-test snaps back into the table — so the caret
+        // can never reach the block above. The top row's band must reach the
+        // table's true top edge (and the bottom row's its true bottom) so the
+        // probe clears the box entirely.
+        let grid = mkTable([
+            mkTableRow([mkCell("ab", start: 2, end: 4), mkCell("cd", start: 7, end: 9)], head: true),
+            mkTableRow([mkCell("ef", start: 12, end: 14), mkCell("gh", start: 17, end: 19)]),
+        ], startRow: 0, endRow: 4)
+        let dv = docView(
+            [row([], decoration: true), row([], decoration: true),
+             row([], decoration: true), row([], decoration: true)],
+            tables: [grid]
+        )
+        let layout = EditorLayout(dv, theme: theme)
+        let tableTop = layout.rows[0].tableTop
+        let tableHeight = try XCTUnwrap(layout.rows[0].table).height
+
+        // Top (header) row: the band starts at the table's outer top, so a probe
+        // one point above it clears the top border.
+        let topBand = try XCTUnwrap(layout.caretBand(src: 2))
+        XCTAssertEqual(topBand.minY, tableTop, accuracy: 0.5, "top-row band reaches the table's top edge")
+        XCTAssertLessThan(topBand.minY - 1, tableTop, "an Up probe clears the whole table")
+
+        // Bottom (body) row: the band reaches the table's outer bottom.
+        let botBand = try XCTUnwrap(layout.caretBand(src: 12))
+        XCTAssertEqual(botBand.maxY, tableTop + tableHeight, accuracy: 0.5, "bottom-row band reaches the table's bottom edge")
+        XCTAssertGreaterThan(botBand.maxY + 1, tableTop + tableHeight, "a Down probe clears the whole table")
+    }
+
     func testTableSelectionCarriesIntoTheLaidOutLineAndYieldsAHighlightRect() throws {
         // A cell core marks selected carries its selected sub-range into the laid
         // out line (so the grid can paint a highlight the plain row path would

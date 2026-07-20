@@ -101,6 +101,15 @@ pub fn handle_key(doc: &mut Doc, key: KeyEvent, _state: &mut EditorState) -> Out
             KeyCode::Right => doc.move_word_right(shift),
             KeyCode::Backspace => doc.delete_word_back(),
             KeyCode::Delete => doc.delete_word_forward(),
+            // Alt+Enter is the in-cell line break. The GUI's chord is Shift+Enter,
+            // but a terminal can't tell that from a bare Enter (same byte), so the
+            // TUI spells the gesture Alt+Enter, which every terminal reports. Off a
+            // table `cell_line_break` declines and we insert an ordinary newline.
+            KeyCode::Enter => {
+                if !doc.cell_line_break() {
+                    doc.newline();
+                }
+            }
             KeyCode::Char('w') => doc.toggle_view(),
             KeyCode::Char('b') => doc.toggle(InlineKind::Strong),
             KeyCode::Char('i') => doc.toggle(InlineKind::Emph),
