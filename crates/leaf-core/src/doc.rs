@@ -918,12 +918,22 @@ impl Doc {
 
         let mut out = String::with_capacity(region.len() + lines.len() * Self::INDENT.len());
         let mut deltas: Vec<isize> = Vec::with_capacity(lines.len());
+        let mut line_off = start;
         for (i, line) in lines.iter().enumerate() {
             if i > 0 {
                 out.push('\n');
             }
             let delta = if add {
                 if skip_blank && line.trim().is_empty() {
+                    out.push_str(line);
+                    0
+                } else if list_marker_width(line).is_some() && self.first_item_of_list(line_off) {
+                    // The first item of a list has no preceding sibling to nest
+                    // under, so a Tab here can't spell a sub-list — twig would
+                    // reparse the shoved-over marker as the same list, only
+                    // indented, which Shift+Tab then can't cleanly undo. Leave the
+                    // item where it is, the way every list editor refuses to
+                    // over-indent a list's first line.
                     out.push_str(line);
                     0
                 } else {
@@ -950,6 +960,7 @@ impl Doc {
                 -(strip as isize)
             };
             deltas.push(delta);
+            line_off += line.len() + 1;
         }
         // Nothing to give back. Returning before the splice keeps an outdent at
         // column zero from spending an undo step on a document it never changed.
@@ -1137,15 +1148,91 @@ impl Doc {
         Some((line_start, self.source[line_start..i].to_string()))
     }
 
+    /// Whether the list item on `line_start`'s line is the **first item** of its
+    /// list — the one Tab must not nest, because nesting needs a preceding
+    /// sibling to become the new parent and a first item has none. `false` for a
+    /// line that isn't a list item, and for an item with a sibling above it (the
+    /// one Tab *can* nest). Gated on the AST, not the marker bytes: `- ` reads
+    /// the same in a setext underline that opens no list at all.
+    fn first_item_of_list(&mut self, line_start: usize) -> bool {
+        let Some((_, marker)) = self.list_marker_on_line(line_start) else {
+            return false;
+        };
+        // Probe just inside the marker, where the item's own node is in reach —
+        // the marker offset itself can resolve to the enclosing list, not the
+        // `list_item`, whose span starts at the marker.
+        let probe = (line_start + marker.len()).min(self.source.len());
+        let Ok(nodes) = self.editor.nodes() else {
+            return false;
+        };
+        // The innermost list item covering the probe (smallest span wins).
+        let Some(item) = nodes
+            .iter()
+            .filter(|n| {
+                (n.kind == "list_item" || n.kind == "task_list_item")
+                    && n.span.start <= probe
+                    && probe < n.span.end
+            })
+            .min_by_key(|n| n.span.end - n.span.start)
+        else {
+            return false;
+        };
+        match item.parent {
+            // First when the parent list opens with this very item.
+            Some(pid) => nodes
+                .get(pid.0 as usize)
+                .is_some_and(|p| p.first_child == Some(item.id)),
+            // A parentless item is trivially the first (and only) one.
+            None => true,
+        }
+    }
+
     pub fn backspace(&mut self) {
         if let Some((s, e)) = self.selection() {
             self.splice(s, e, "", EditKind::Other);
-        } else if self.caret > self.caret_floor() {
+            return;
+        }
+        // WYSIWYG: Backspace at the very start of a list item's content is a
+        // structural key, not a character delete — it walks the "un-indent, then
+        // un-list" ladder every list editor gives that keystroke (outdent a
+        // nested item, strip a top-level one's marker to a paragraph). In source
+        // view the `- ` is visible text the user is deleting a byte of, so it
+        // keeps its literal meaning there, like Enter does.
+        if self.view != View::Source && self.backspace_list_start() {
+            return;
+        }
+        if self.caret > self.caret_floor() {
             // Never delete back across the floor — that would eat hidden
             // frontmatter the WYSIWYG caret can't even see.
             let prev = prev_boundary(&self.source, self.caret).max(self.caret_floor());
             self.splice(prev, self.caret, "", EditKind::Delete);
         }
+    }
+
+    /// Backspace's list behaviour: when the caret sits exactly at the start of a
+    /// list item's content (right after its marker), outdent the item if it's
+    /// nested, else strip the marker so it becomes a paragraph. Returns whether
+    /// it acted — `false` leaves Backspace its ordinary character delete.
+    fn backspace_list_start(&mut self) -> bool {
+        let Some((line_start, marker)) = self.list_marker_on_line(self.caret) else {
+            return false;
+        };
+        // Only right after the marker, and only in a real list (an AST-gated
+        // test — `- ` bytes alone read the same in a setext underline).
+        if self.caret != line_start + marker.len() || !self.is_inside_list(line_start) {
+            return false;
+        }
+        if marker.len() > marker.trim_start().len() {
+            // Nested (the marker carries leading indent): give back one level,
+            // keeping the marker and carrying the caret with it.
+            self.outdent();
+        } else {
+            // Top level: drop the marker, leaving a paragraph, then renumber the
+            // siblings the removed item was counted among.
+            self.splice(line_start, self.caret, "", EditKind::Other);
+            self.renumber_here();
+        }
+        true
     }
 
     pub fn delete_forward(&mut self) {
@@ -5169,6 +5256,69 @@ mod tests {
             let lists = d.nodes().iter().filter(|n| n.kind == "ordered_list").count();
             assert_eq!(lists, 2, "the indented item is a nested ordered list");
         }
+    }
+
+    #[test]
+    fn indent_leaves_a_lists_first_item_put() {
+        // The first item of a list has no sibling above it to nest under, so Tab
+        // is a no-op there — the marker stays at column zero rather than being
+        // shoved into indentation twig can't read as a sub-list.
+        for view in [View::Source, View::Wysiwyg] {
+            let mut d = doc_in(view, "indent_first", "- a\n- b\n");
+            d.caret = 1; // on the FIRST item
+            d.indent();
+            assert_eq!(d.source, "- a\n- b\n", "the first item doesn't nest");
+            // The sibling below still nests, proving the guard is per-item.
+            d.caret = d.source.find('b').unwrap();
+            d.indent();
+            assert_eq!(d.source, "- a\n  - b\n");
+        }
+    }
+
+    #[test]
+    fn indent_leaves_a_nested_lists_first_item_put_too() {
+        // The guard is about siblings, not depth: the first item of an *inner*
+        // list (already nested under `a`) still has nothing before it at its own
+        // level, so Tab can't take it deeper.
+        let mut d = doc_in(View::Wysiwyg, "indent_first_nested", "- a\n  - b\n  - c\n");
+        d.caret = d.source.find('b').unwrap();
+        d.indent();
+        assert_eq!(d.source, "- a\n  - b\n  - c\n", "inner first item holds");
+        // But `c` (a sibling of `b`) nests under `b`.
+        d.caret = d.source.find('c').unwrap();
+        d.indent();
+        assert_eq!(d.source, "- a\n  - b\n    - c\n");
+    }
+
+    #[test]
+    fn backspace_at_a_nested_item_start_outdents_it() {
+        // Backspace with the caret right after a nested item's marker gives back
+        // one level of nesting, the mirror of Tab — and renumbers the flattened
+        // ordered list back to a clean run.
+        let mut d = doc_in(View::Wysiwyg, "bsp_outdent", "1. a\n   1. b\n2. c\n");
+        d.caret = d.source.find('b').unwrap(); // start of the nested item's content
+        d.backspace();
+        assert_eq!(d.source, "1. a\n2. b\n3. c\n");
+    }
+
+    #[test]
+    fn backspace_at_a_top_level_item_start_strips_the_marker() {
+        // At the outermost level there's no nesting left to give back, so the same
+        // keystroke drops the bullet and leaves a plain paragraph.
+        let mut d = doc_in(View::Wysiwyg, "bsp_strip", "- a\n- b\n");
+        d.caret = d.source.find('b').unwrap(); // right after `- `
+        d.backspace();
+        assert_eq!(d.source, "- a\nb\n", "the marker is gone, the text stays");
+    }
+
+    #[test]
+    fn backspace_mid_item_still_deletes_a_character() {
+        // The list behaviour is armed only at the item's content start; anywhere
+        // else Backspace is the ordinary character delete.
+        let mut d = doc_in(View::Wysiwyg, "bsp_mid", "- ab\n");
+        d.caret = d.source.find('b').unwrap(); // between `a` and `b`
+        d.backspace();
+        assert_eq!(d.source, "- b\n");
     }
 
     #[test]

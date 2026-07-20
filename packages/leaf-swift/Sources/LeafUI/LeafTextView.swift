@@ -433,9 +433,9 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         case #selector(insertLineBreak(_:)):
             render(doc.cellLineBreak() ?? doc.newline())
         case #selector(insertTab(_:)):
-            render(doc.cellTab(forward: true) ?? doc.insert(text: "  "))
+            render(doc.cellTab(forward: true) ?? doc.indent())
         case #selector(insertBacktab(_:)):
-            if let v = doc.cellTab(forward: false) { render(v) }
+            render(doc.cellTab(forward: false) ?? doc.outdent())
         case #selector(deleteBackward(_:)):                 render(doc.backspace())
         case #selector(deleteForward(_:)):                  render(doc.deleteForward())
         case #selector(deleteWordBackward(_:)):             render(doc.deleteWordBack())

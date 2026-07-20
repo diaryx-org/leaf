@@ -370,6 +370,20 @@ impl LeafDoc {
         self.view()
     }
 
+    /// Tab: indent the caret's line (or the selected lines) one level, nesting a
+    /// list item under its sibling.
+    pub fn indent(&mut self) -> Result<DocView, JsValue> {
+        self.doc.indent();
+        self.view()
+    }
+
+    /// Shift+Tab: take one indent level back off the caret's line (or the
+    /// selected lines), unnesting a list item.
+    pub fn outdent(&mut self) -> Result<DocView, JsValue> {
+        self.doc.outdent();
+        self.view()
+    }
+
     pub fn backspace(&mut self) -> Result<DocView, JsValue> {
         self.doc.backspace();
         self.view()

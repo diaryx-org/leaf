@@ -545,6 +545,24 @@ impl LeafDoc {
         g.view()
     }
 
+    /// Tab away from a table: indent the caret's line (or the selected lines) one
+    /// level, nesting a list item under its sibling. The frontend calls this when
+    /// [`LeafDoc::cell_tab`] declined because the caret isn't in a table.
+    pub fn indent(&self) -> DocView {
+        let mut g = self.lock();
+        g.doc.indent();
+        g.view()
+    }
+
+    /// Shift+Tab away from a table: take one indent level back off the caret's
+    /// line (or the selected lines), unnesting a list item. The mirror of
+    /// [`LeafDoc::indent`].
+    pub fn outdent(&self) -> DocView {
+        let mut g = self.lock();
+        g.doc.outdent();
+        g.view()
+    }
+
     // ── table keys ────────────────────────────────────────────────────────────
     // Tab, Return, and Shift+Return take on table meanings when the caret is in
     // one. Each returns `Some(view)` when it acted as a table key and `None` when

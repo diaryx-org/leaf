@@ -50,6 +50,8 @@ public final class LeafEditorModel: ObservableObject {
     public func setHeading(_ level: UInt32) { run { $0.setHeading(level: level) } }
     public func toggleBlockquote() { run { $0.toggleBlockquote() } }
     public func toggleList(ordered: Bool) { run { $0.toggleList(ordered: ordered) } }
+    public func indent()  { run { $0.indent() } }
+    public func outdent() { run { $0.outdent() } }
     public func insertLink(_ destination: String) { run { $0.insertLink(destination: destination) } }
 
     // ── table editing ─────────────────────────────────────────────────────────

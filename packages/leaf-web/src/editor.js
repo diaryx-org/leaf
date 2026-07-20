@@ -650,9 +650,12 @@ export class LeafEditor {
     }
 
     if (e.key === "Tab") {
+      // Tab / Shift+Tab are structural: they indent / outdent the caret's line,
+      // nesting or unnesting a list item (not typing spaces). The core decides
+      // the step — a list item moves by its marker width, prose by one level.
       e.preventDefault();
       this._syncFromDom();
-      this.render(d.insert("  "));
+      this.render(e.shiftKey ? d.outdent() : d.indent());
     }
     // Enter, Backspace, Delete, arrows: handled via beforeinput / native motion.
   }

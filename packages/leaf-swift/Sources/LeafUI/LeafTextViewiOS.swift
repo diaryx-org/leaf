@@ -294,8 +294,9 @@ public final class LeafTextView: UIView, UITextInput {
             // In a table, Return drops a cell; elsewhere it's a newline.
             render(doc.cellReturn() ?? doc.newline())
         } else if text == "\t" {
-            // In a table, Tab walks the cells; elsewhere it indents.
-            render(doc.cellTab(forward: true) ?? doc.insert(text: "  "))
+            // In a table, Tab walks the cells; elsewhere it indents (nesting a
+            // list item under its sibling — the core picks the step).
+            render(doc.cellTab(forward: true) ?? doc.indent())
         } else {
             render(doc.insert(text: text))
         }
@@ -320,7 +321,11 @@ public final class LeafTextView: UIView, UITextInput {
         }
         return [k("b", .command), k("i", .command), k("u", .command),
                 k("z", .command), k("z", [.command, .shift]),
-                k("v", [.command, .shift])]
+                k("v", [.command, .shift]),
+                // Shift+Tab: plain Tab arrives through `insertText("\t")`, but the
+                // shifted chord doesn't — capture it here to outdent (walk a cell
+                // back in a table, unnest a list item otherwise).
+                k("\t", .shift)]
     }
 
     @objc private func handleShortcut(_ cmd: UIKeyCommand) {
@@ -328,6 +333,7 @@ public final class LeafTextView: UIView, UITextInput {
         case ("b", _): command { $0.toggleBold() }
         case ("i", _): command { $0.toggleItalic() }
         case ("u", _): command { $0.toggleUnderline() }
+        case ("\t", true): command { $0.cellTab(forward: false) ?? $0.outdent() }
         case ("z", false): command { $0.undo() }
         case ("z", true): command { $0.redo() }
         // ⇧⌘V — plain-flavor escape hatch: paste as leaf source, ignoring rich HTML.
