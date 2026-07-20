@@ -99,6 +99,10 @@ export class LeafEditor {
   selectAll(): void;
   /** Switch between the WYSIWYG surface and the raw source. */
   toggleView(): void;
+  /** The inline-reveal preference. */
+  revealMode(): "hidden" | "caret-line";
+  /** Set the inline-reveal preference (inert on rendering until a later phase). */
+  setRevealMode(mode: "hidden" | "caret-line"): void;
 }
 
 // Selection gestures are handled internally on mousedown by click count

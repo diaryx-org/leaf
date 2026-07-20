@@ -461,8 +461,22 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // collapsed picture row and teleports the caret to its top-left cell.
         let band = layoutEngine.caretBand(src: Int(docView.caretSrc))
         let goalX = verticalGoalX ?? caret.minX
-        let probeY = up ? (band?.minY ?? caret.minY) - 1 : (band?.maxY ?? caret.maxY) + 1
-        let (row, ch) = hitRowCh(CGPoint(x: goalX, y: probeY))
+        var probeY = up ? (band?.minY ?? caret.minY) - 1 : (band?.maxY ?? caret.maxY) + 1
+        var (row, ch) = hitRowCh(CGPoint(x: goalX, y: probeY))
+        // A block boundary is drawn as a short blank gap row (`blockGap`, half a
+        // line) that holds no caret. Probing one line past the caret lands *inside*
+        // that gap, where the hit-test snaps back and forth between the block above
+        // and below — so a step from a paragraph into the list or code block under
+        // it moves only sometimes. Step over any gap row(s) to the next row that can
+        // actually hold the caret; the bounded walk can't outrun the row count.
+        let rows = layoutEngine.rows
+        var guardCount = 0
+        while rows.indices.contains(row), rows[row].row.isBlockGap, guardCount < rows.count {
+            let r = rows[row]
+            probeY = up ? r.top - 1 : r.top + r.height + 1
+            (row, ch) = hitRowCh(CGPoint(x: goalX, y: probeY))
+            guardCount += 1
+        }
         verticalGoalX = goalX
         render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: extend), keepVerticalGoal: true)
     }

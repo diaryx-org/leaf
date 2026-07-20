@@ -45,7 +45,9 @@
 
 use leaf_core::style::{Role, Style as LStyle};
 use leaf_core::wysiwyg::text_width;
-use leaf_core::{BlockKind, Doc, Format, InlineKind, View, VisualMap};
+use leaf_core::{
+    BlockKind, Doc, Format, InlineKind, RevealMode as CoreRevealMode, View, VisualMap,
+};
 use serde::Serialize;
 use tsify_next::Tsify;
 use unicode_segmentation::UnicodeSegmentation;
@@ -641,6 +643,28 @@ impl LeafDoc {
     /// Switch between the rendered WYSIWYG surface and the raw source.
     pub fn toggle_view(&mut self) -> Result<DocView, JsValue> {
         self.doc.toggle_view();
+        self.view()
+    }
+
+    /// The current inline-reveal preference as `"hidden"` or `"caret-line"`.
+    pub fn reveal_mode(&self) -> String {
+        match self.doc.reveal_mode() {
+            CoreRevealMode::Hidden => "hidden",
+            CoreRevealMode::CaretLine => "caret-line",
+        }
+        .to_string()
+    }
+
+    /// Set the inline-reveal preference from `"hidden"` / `"caret-line"` (an
+    /// unknown value is ignored). Returns a fresh view to repaint. Inert on
+    /// rendering today — a later phase teaches the builder to honour it; the web
+    /// demo defaults to `"hidden"`, the clean surface.
+    pub fn set_reveal_mode(&mut self, mode: &str) -> Result<DocView, JsValue> {
+        match mode {
+            "hidden" => self.doc.set_reveal_mode(CoreRevealMode::Hidden),
+            "caret-line" => self.doc.set_reveal_mode(CoreRevealMode::CaretLine),
+            _ => {}
+        }
         self.view()
     }
 }

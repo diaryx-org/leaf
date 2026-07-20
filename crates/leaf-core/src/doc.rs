@@ -42,6 +42,31 @@ pub enum View {
     Wysiwyg,
 }
 
+/// How the WYSIWYG view treats inline markup *at the caret* — a per-editor
+/// preference, orthogonal to [`View`]. It governs two coupled behaviours the
+/// later render phases read: whether the caret's line reveals its raw
+/// delimiters, and (in both modes) whether a caret-enclosing emphasis run is
+/// held styled through the transient invalid states typing passes through
+/// (`*this *` between two asterisks).
+///
+/// The scaffold only: today the field is stored and round-tripped through every
+/// binding so a frontend can offer the preference and Diaryx can default it
+/// correctly; the renderer begins consulting it in a later phase.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum RevealMode {
+    /// Delimiters stay hidden even on the caret's line (Typora-shaped) — the
+    /// clean reading surface for people who don't write Markdown. The default,
+    /// and what Diaryx ships. In this mode typed syntax is eventually kept
+    /// literal (formatting comes from commands), pending the twig literal-insert
+    /// op and leaf's escape rendering.
+    #[default]
+    Hidden,
+    /// The caret's line shows its raw markdown; every other line renders
+    /// resolved (Obsidian/live-preview-shaped) — for people fluent in Markdown
+    /// who want to see and edit the delimiters they type.
+    CaretLine,
+}
+
 /// What the file behind a document looks like right now, against the bytes leaf
 /// last read from it or wrote to it — the question a frontend asks before it
 /// saves (a `Changed` file plus a `dirty` document is an overwrite about to
@@ -211,6 +236,10 @@ pub struct Doc {
     pub dirty: bool,
     pub status: Option<String>,
     pub view: View,
+    /// How inline markup at the caret is revealed/resolved — a frontend
+    /// preference (see [`RevealMode`]). Stored here so it round-trips through the
+    /// bindings; the renderer starts reading it in a later phase.
+    reveal: RevealMode,
     /// The kind of the last edit, for coalescing: twig owns the undo *history*
     /// (see `undo`/`redo`), but "what counts as one undo step" is a frontend-UX
     /// call, so leaf decides when a run continues and tells twig to coalesce.
@@ -394,6 +423,9 @@ impl Doc {
             // still start in source view explicitly (e.g. a CLI flag), and ⌘e/⌥w
             // toggles at runtime.
             view: View::Wysiwyg,
+            // Hidden by default — the clean surface Diaryx ships; a
+            // Markdown-fluent frontend can switch to `CaretLine`.
+            reveal: RevealMode::default(),
             last_edit_kind: None,
             pending_marks: InlineMarks::empty(),
             pending_at: None,
@@ -429,6 +461,18 @@ impl Doc {
         // Entering WYSIWYG, the caret may be sitting in now-hidden frontmatter;
         // lift it to the first rendered offset.
         self.clamp_caret();
+    }
+
+    /// The current inline-reveal preference (see [`RevealMode`]).
+    pub fn reveal_mode(&self) -> RevealMode {
+        self.reveal
+    }
+
+    /// Set the inline-reveal preference. Inert on rendering for now (a later
+    /// phase teaches the WYSIWYG builder to consult it); today it only stores the
+    /// choice so a frontend's toggle persists and round-trips.
+    pub fn set_reveal_mode(&mut self, mode: RevealMode) {
+        self.reveal = mode;
     }
 
     pub fn view_name(&self) -> &'static str {
@@ -624,6 +668,30 @@ impl Doc {
             self.insert_with_marks(self.caret, text, pending);
             return;
         }
+        // Hidden reveal mode: typed syntax stays literal — twig escapes anything
+        // that would open markup, so a Diaryx user never mints formatting by
+        // keyboard (it comes from commands instead). Only in the rendered view
+        // (source view is for typing raw markup) and only for the authorable
+        // lightweight formats (a parse-only format has no literal spelling).
+        // Marks (⌘b) still format — that path returned above; and leaf's own
+        // structural inserts go through `insert_raw`, never here, so a list
+        // marker or quote gutter is written as the markup it is.
+        if self.reveal == RevealMode::Hidden
+            && self.view == View::Wysiwyg
+            && !text.is_empty()
+            && matches!(self.format, Format::Markdown | Format::Djot)
+        {
+            self.insert_literal_typed(text);
+            return;
+        }
+        self.insert_raw(text);
+    }
+
+    /// Insert `text` verbatim at the caret (replacing any selection) — the plain
+    /// path with no Hidden-mode literal escaping. leaf's own structural inserts
+    /// (a list marker, a quote gutter, an in-cell `<br>`) call this: they ARE
+    /// markup by design and must not be escaped.
+    fn insert_raw(&mut self, text: &str) {
         let (s, e) = self.selection().unwrap_or((self.caret, self.caret));
         let kind = if text.chars().take(2).count() == 1 && text != "\n" {
             EditKind::Insert
@@ -631,6 +699,29 @@ impl Doc {
             EditKind::Other
         };
         self.splice(s, e, text, kind);
+    }
+
+    /// The Hidden-mode typing path: replace any selection, then insert `text`
+    /// escaped so it stays literal. When it replaces a selection the two edits
+    /// fold into one undo step, so an overwrite undoes atomically (and restores
+    /// the selection) exactly as a plain one does.
+    fn insert_literal_typed(&mut self, text: &str) {
+        let kind = if text.chars().take(2).count() == 1 && text != "\n" {
+            EditKind::Insert
+        } else {
+            EditKind::Other
+        };
+        match self.selection() {
+            Some((s, e)) => {
+                if !self.splice(s, e, "", EditKind::Other) {
+                    return;
+                }
+                self.insert_literal_at(self.caret, text, kind, true);
+            }
+            None => {
+                self.insert_literal_at(self.caret, text, kind, false);
+            }
+        }
     }
 
     /// The sticky-mark delta that is live right now: the marks armed by [`toggle`]
@@ -883,6 +974,10 @@ impl Doc {
         // Nesting changes an ordered list's numbering (the nested item restarts,
         // its old siblings resume) — keep the source markers in step.
         self.renumber_here();
+        // Nesting an empty `-` item under a text line reparses that text as a
+        // setext heading; swap the dash for a `*` before it can (a no-op unless
+        // the collapse actually happened).
+        self.avoid_setext_collapse();
     }
 
     /// Take one indent level back off the selected lines, or the caret's line
@@ -1023,7 +1118,7 @@ impl Doc {
     ///   - code block           → a literal newline (stay in the block)
     pub fn newline(&mut self) {
         if self.view == View::Source {
-            self.insert("\n");
+            self.insert_raw("\n");
             return;
         }
         // Enter over a selection replaces it with a paragraph break.
@@ -1044,7 +1139,7 @@ impl Doc {
         let has = |k: &str| kinds.iter().any(|x| x == k);
 
         if has("code_block") {
-            self.insert("\n");
+            self.insert_raw("\n");
             return;
         }
         // Lists: an empty item exits the list, a non-empty one opens the next.
@@ -1065,7 +1160,7 @@ impl Doc {
             return;
         }
         if has("block_quote") {
-            self.insert("\n> ");
+            self.insert_raw("\n> ");
             return;
         }
         // On an *empty* paragraph line, a lone Enter should add a single blank line,
@@ -1077,10 +1172,10 @@ impl Doc {
             .find('\n')
             .map_or(self.source.len(), |i| self.caret + i);
         if self.source[line_start..line_end].trim().is_empty() {
-            self.insert("\n");
+            self.insert_raw("\n");
             return;
         }
-        self.insert("\n\n");
+        self.insert_raw("\n\n");
     }
 
     /// Enter inside a list: start the next item, or exit the list if the current
@@ -1100,7 +1195,7 @@ impl Doc {
             // so the caret lands in a fresh paragraph below the list.
             self.splice(line_start, caret, "\n", EditKind::Other);
         } else {
-            self.insert(&format!("\n{}", next_list_marker(&marker)));
+            self.insert_raw(&format!("\n{}", next_list_marker(&marker)));
         }
     }
 
@@ -1201,12 +1296,68 @@ impl Doc {
         if self.view != View::Source && self.backspace_list_start() {
             return;
         }
+        // WYSIWYG: Backspace on a *blank line* deletes back to the previous caret
+        // stop, not a single newline. On a line with no text of its own, the byte
+        // before the caret is a `\n` that spells part of a block boundary — the gap
+        // between two blocks, drawn but never a caret home. Removing just it strands
+        // the caret in that gap and leaves an odd blank line the eye reads as one
+        // separator but the caret can't land on: the "extra newline" left behind
+        // after leaving a list (Enter, Enter) or a paragraph and pressing Backspace.
+        // Deleting to the previous stop instead collapses the whole break at once,
+        // landing the caret at the end of the block above. Two blank lines in a row
+        // are one stop apart, so this still removes exactly one — the lone-Enter /
+        // lone-Backspace symmetry the empty-line case is built on is untouched.
+        if self.view != View::Source
+            && self.caret > self.caret_floor()
+            && self.caret_on_blank_line()
+            && let Some(stop) = self.vmap.stop_before(self.caret)
+        {
+            let stop = stop.max(self.caret_floor());
+            if stop < self.caret {
+                self.splice(stop, self.caret, "", EditKind::Delete);
+                return;
+            }
+        }
         if self.caret > self.caret_floor() {
             // Never delete back across the floor — that would eat hidden
             // frontmatter the WYSIWYG caret can't even see.
-            let prev = prev_boundary(&self.source, self.caret).max(self.caret_floor());
+            let mut prev = prev_boundary(&self.source, self.caret).max(self.caret_floor());
+            // Take a hidden escape backslash with the char it escapes: the rich
+            // view draws `\*` as a single `*`, so Backspace over it must delete
+            // both bytes, never strand the `\` as a lone visible backslash (the
+            // mirror of the Hidden-mode typing that wrote the escape). Source view
+            // shows the `\`, so there it is an ordinary character.
+            if self.view != View::Source
+                && prev > self.caret_floor()
+                && self.is_hidden_escape(prev - 1)
+            {
+                prev -= 1;
+            }
             self.splice(prev, self.caret, "", EditKind::Delete);
         }
+    }
+
+    /// Whether the caret's own source line holds nothing but whitespace — an
+    /// empty paragraph, or the blank line a block boundary is spelled with. The
+    /// test for [`backspace`](Self::backspace)'s stop-wise delete: such a line has
+    /// no text of its own, so the newline before the caret belongs to the gap
+    /// between blocks rather than to any word the caret is editing.
+    fn caret_on_blank_line(&self) -> bool {
+        let line_start = self.source[..self.caret].rfind('\n').map_or(0, |i| i + 1);
+        let line_end = self.source[self.caret..]
+            .find('\n')
+            .map_or(self.source.len(), |i| self.caret + i);
+        self.source[line_start..line_end].trim().is_empty()
+    }
+
+    /// Whether the source byte at `off` is a backslash twig consumed as an escape
+    /// (hidden in the rich view), as against a literal backslash (drawn). A
+    /// backslash escapes exactly an ASCII-punctuation character (the CommonMark /
+    /// Djot rule twig follows), so `\` + punctuation is the whole test — no AST
+    /// round-trip needed.
+    fn is_hidden_escape(&self, off: usize) -> bool {
+        let b = self.source.as_bytes();
+        b.get(off) == Some(&b'\\') && b.get(off + 1).is_some_and(u8::is_ascii_punctuation)
     }
 
     /// Backspace's list behaviour: when the caret sits exactly at the start of a
@@ -1400,6 +1551,42 @@ impl Doc {
         }
     }
 
+    /// Insert `text` at `at` as a *literal* run via twig's `insert_literal`,
+    /// which backslash-escapes any character that would otherwise open markup in
+    /// this format and position (`*` → `\*`, a line-start `#` → `\#`). The mirror
+    /// of [`splice`](Self::splice) for the Hidden reveal mode's typing path, with
+    /// the same caret re-anchor, coalescing, and rollback contract. `at` must be
+    /// a collapsed point — a selection is deleted by the caller first, since
+    /// `insert_literal` inserts rather than replaces.
+    fn insert_literal_at(&mut self, at: usize, text: &str, kind: EditKind, force_coalesce: bool) -> bool {
+        // `force_coalesce` folds this into the immediately preceding edit (the
+        // selection-delete of an overwrite) so the pair is one undo step; else it
+        // coalesces only when it continues a run of the same-kind typing.
+        let coalesce = force_coalesce || (kind != EditKind::Other && self.last_edit_kind == Some(kind));
+        self.record_caret();
+        match self.editor.insert_literal(at, text) {
+            Ok(change) => {
+                if coalesce {
+                    let _ = self.editor.coalesce_last_undo();
+                }
+                self.last_edit_kind = Some(kind);
+                self.refresh();
+                self.caret = change.new.end;
+                self.anchor = None;
+                self.goal_col = None;
+                self.clear_pending();
+                self.dirty = self.source != self.clean_source;
+                self.status = None;
+                self.record_caret();
+                true
+            }
+            Err(e) => {
+                self.status = Some(format!("edit: {e}"));
+                false
+            }
+        }
+    }
+
     /// After a structural list edit (a new item, a nest/unnest), renumber the
     /// ordered list the caret sits in so its source markers run `1, 2, 3, …`
     /// again — a raw splice leaves them stale (`1. 2. 2. 3.`). twig does the
@@ -1416,6 +1603,63 @@ impl Doc {
         if self.source != before {
             let _ = self.editor.coalesce_last_undo();
             self.dirty = self.source != self.clean_source;
+            self.clamp_caret();
+            self.record_caret();
+        }
+    }
+
+    /// Repair the one trap a list edit can spring on itself. An *empty* `-`
+    /// sub-item written directly beneath a text line reparses that text as a
+    /// setext heading — `- hello\n  - ` is `<h2>hello</h2>`, because a lone `-`
+    /// is also a setext-H2 underline (twig is right; pandoc agrees). `*` and `+`
+    /// bullets can't underline anything, so swap the dash for a `*`: the item
+    /// stays an empty nested bullet, the parent stays prose, and the source
+    /// round-trips instead of hiding a heading the user never asked for. Folded
+    /// into the triggering edit's undo step, the way renumbering is.
+    ///
+    /// Gated on the collapse having actually happened (the swapped dash was
+    /// swallowed into a `heading`), so a real setext heading the author wrote —
+    /// or a `- x` with content, which can't underline anything — is never
+    /// touched. This has to live in the *edit*, not the renderer: leaving the
+    /// hazardous bytes on disk and only painting over them would ship a file
+    /// every other CommonMark tool reads as a heading.
+    fn avoid_setext_collapse(&mut self) {
+        let Some((line_start, marker)) = self.list_marker_on_line(self.caret) else {
+            return;
+        };
+        let indent_len = marker.len() - marker.trim_start().len();
+        // A dash bullet is the only marker that doubles as a setext underline.
+        if marker.as_bytes().get(indent_len) != Some(&b'-') {
+            return;
+        }
+        // Only an *empty* item is a bare underline; `- x` carries content and
+        // can't fold the line above into a heading.
+        let content_start = line_start + marker.len();
+        let line_end = self.source[content_start..]
+            .find('\n')
+            .map_or(self.source.len(), |i| content_start + i);
+        if !self.source[content_start..line_end].trim().is_empty() {
+            return;
+        }
+        // The tell: that dash was swallowed into a `heading`. A properly nested
+        // empty item sits under a `list_item`, with no heading in reach. Probe
+        // the dash byte itself (well inside the heading), not the caret, whose
+        // end-of-line offset can fall on the half-open span boundary.
+        let dash = line_start + indent_len;
+        let collapsed = self
+            .editor
+            .ancestors_at(dash)
+            .map(|c| c.into_iter().any(|m| m.kind == "heading"))
+            .unwrap_or(false);
+        if !collapsed {
+            return;
+        }
+        let caret = self.caret;
+        if self.splice(dash, dash + 1, "*", EditKind::Other) {
+            // Same width, so the caret keeps its column; fold into the edit that
+            // triggered this so Tab stays one undo step.
+            let _ = self.editor.coalesce_last_undo();
+            self.caret = caret.min(self.source.len());
             self.clamp_caret();
             self.record_caret();
         }
@@ -1541,7 +1785,7 @@ impl Doc {
                 return;
             }
         };
-        self.insert(&prefix);
+        self.insert_raw(&prefix);
     }
 
     /// The heading level of the text block at the caret, or `None` when that
@@ -2913,7 +3157,7 @@ impl Doc {
         if !self.caret_in_table() {
             return false;
         }
-        self.insert("<br>");
+        self.insert_raw("<br>");
         true
     }
 
@@ -3962,6 +4206,44 @@ mod tests {
         d.newline();
         d.insert("two");
         assert_eq!(d.source, "1. one\n2. two\n");
+    }
+
+    #[test]
+    fn wysiwyg_backspace_after_leaving_a_list_collapses_the_gap_cleanly() {
+        // Regression for the "extra newline" left between a list and the paragraph
+        // below it. Enter, Enter leaves the list on a fresh empty paragraph
+        // (`- item\n\n\n\nnext`, a navigable blank between the two blocks); one
+        // Backspace should then take the caret cleanly back to the end of the list
+        // item, `- item\n\nnext`, not delete a single newline and strand it on the
+        // odd `- item\n\n\nnext` — a blank line the eye reads as one separator but
+        // no caret can land on. The map is rebuilt between keystrokes exactly as a
+        // frontend does, since Backspace reads the stop table to place the delete.
+        let mut d = wysiwyg_doc("wys_exit_bksp", "- item\n\nnext\n");
+        d.caret = 6; // end of "item"
+        d.newline();
+        d.build_visual(80);
+        d.newline(); // leave the list onto a fresh empty paragraph
+        d.build_visual(80);
+        assert_eq!(d.source, "- item\n\n\n\nnext\n", "double-Enter opens the empty paragraph");
+        d.backspace();
+        assert_eq!(d.source, "- item\n\nnext\n", "one Backspace collapses the whole gap");
+        assert_eq!(d.caret, 6, "and lands the caret back at the end of the list item");
+    }
+
+    #[test]
+    fn wysiwyg_backspace_on_stacked_blank_lines_still_removes_just_one() {
+        // The stop-wise delete must not over-reach when there is no block boundary
+        // to cross: two blank lines in a row are one caret stop apart, so pressing
+        // Enter on an empty line and then Backspace removes exactly the one newline
+        // it added — the lone-Enter / lone-Backspace symmetry, preserved.
+        let mut d = wysiwyg_doc("wys_stack", "abc\n\n\n");
+        d.caret = 5; // the empty paragraph the first Enter already opened
+        d.build_visual(80);
+        d.newline();
+        d.build_visual(80);
+        assert_eq!(d.source, "abc\n\n\n\n", "Enter on the blank line adds one newline");
+        d.backspace();
+        assert_eq!(d.source, "abc\n\n\n", "Backspace takes back exactly that one newline");
     }
 
     #[test]
@@ -5273,6 +5555,138 @@ mod tests {
             d.indent();
             assert_eq!(d.source, "- a\n  - b\n");
         }
+    }
+
+    #[test]
+    fn hidden_mode_keeps_typed_markup_literal() {
+        // The Diaryx default: typing `*hi*` gives the characters, not emphasis —
+        // twig escapes what would open markup, so the source is `\*hi\*` and the
+        // AST is a plain string. Formatting is the commands' job in this mode.
+        let mut d = doc_in(View::Wysiwyg, "hidden_literal", "");
+        d.insert("*hi*");
+        assert_eq!(d.source, "\\*hi\\*");
+        assert!(d.nodes().iter().all(|n| n.kind != "emph" && n.kind != "strong"));
+    }
+
+    #[test]
+    fn hidden_mode_escapes_a_line_start_block_marker() {
+        // A `#`/`-`/`>` at a line start would open a block, so Hidden mode keeps
+        // it literal too — a Diaryx user's "# 1 idea" stays prose, not a heading.
+        let mut d = doc_in(View::Wysiwyg, "hidden_block", "");
+        d.insert("# hi");
+        assert_eq!(d.source, "\\# hi");
+        assert!(d.nodes().iter().all(|n| n.kind != "heading"));
+    }
+
+    #[test]
+    fn caret_line_mode_keeps_typed_markup_live() {
+        // The Markdown-fluent mode: typing `*hi*` really is emphasis (no escape),
+        // the same as source view — escaping is Hidden mode's alone.
+        for (view, reveal) in [
+            (View::Wysiwyg, RevealMode::CaretLine),
+            (View::Source, RevealMode::Hidden),
+        ] {
+            let mut d = doc_in(view, "live_markup", "");
+            d.set_reveal_mode(reveal);
+            d.insert("*hi*");
+            assert_eq!(d.source, "*hi*", "{reveal:?} types raw markup");
+            let _ = view;
+        }
+    }
+
+    #[test]
+    fn hidden_mode_overwrite_undoes_in_one_step() {
+        // Typing over a selection escapes the replacement *and* stays a single
+        // undo — the selection-delete and the literal insert fold together, so
+        // one undo brings the whole selection back, like a plain overwrite.
+        let mut d = doc_in(View::Wysiwyg, "hidden_overwrite", "a word b\n");
+        d.anchor = Some(2);
+        d.caret = 6; // "word"
+        d.insert("*");
+        assert_eq!(d.source, "a \\* b\n", "the replacement is escaped");
+        d.undo();
+        assert_eq!(d.source, "a word b\n");
+        assert_eq!(d.selection(), Some((2, 6)), "one undo, selection restored");
+    }
+
+    #[test]
+    fn backspace_over_an_escaped_char_takes_the_hidden_backslash_too() {
+        // Type `*` in Hidden mode → `\*` (drawn as one `*`); one Backspace clears
+        // the whole visual character, never stranding the hidden `\`.
+        let mut d = doc_in(View::Wysiwyg, "bsp_escape", "");
+        d.insert("*");
+        assert_eq!(d.source, "\\*");
+        d.backspace();
+        assert_eq!(d.source, "", "the escape backslash went with the *");
+        // A *literal* backslash (source view, no escape) is an ordinary char.
+        let mut s = doc_in(View::Source, "bsp_lit", "a\\b\n");
+        s.caret = 3; // after `b`
+        s.backspace();
+        assert_eq!(s.source, "a\\\n", "only the b is deleted, the \\ stays");
+    }
+
+    #[test]
+    fn hidden_mode_leaves_structural_markup_alone() {
+        // Enter continues a bullet list by writing a real `- ` marker (an
+        // `insert_raw`, not the typing path), so Hidden mode's escaping never
+        // touches it — the list keeps working.
+        let mut d = doc_in(View::Wysiwyg, "hidden_struct", "- item\n");
+        d.caret = 6;
+        d.newline();
+        d.insert("two");
+        assert_eq!(d.source, "- item\n- two\n");
+    }
+
+    #[test]
+    fn reveal_mode_defaults_to_hidden_and_round_trips() {
+        // Diaryx's default is the clean Hidden surface; a Markdown-fluent
+        // frontend can switch to CaretLine, and the choice sticks.
+        let mut d = doc_in(View::Wysiwyg, "reveal_mode", "hi\n");
+        assert_eq!(d.reveal_mode(), RevealMode::Hidden, "Hidden by default");
+        d.set_reveal_mode(RevealMode::CaretLine);
+        assert_eq!(d.reveal_mode(), RevealMode::CaretLine);
+        d.set_reveal_mode(RevealMode::Hidden);
+        assert_eq!(d.reveal_mode(), RevealMode::Hidden);
+    }
+
+    #[test]
+    fn indenting_an_empty_dash_item_under_text_dodges_the_setext_collapse() {
+        // Tabbing an empty `- ` under a text line would spell `- hello\n  - `,
+        // which twig (correctly, per CommonMark — pandoc agrees) reparses as a
+        // setext H2. leaf swaps the dash for a `*` so the item stays an empty
+        // nested bullet and `hello` stays prose: the file round-trips instead of
+        // hiding a heading the user never asked for.
+        for view in [View::Source, View::Wysiwyg] {
+            let mut d = doc_in(view, "setext_guard", "- hello\n- \n");
+            d.caret = d.source.find("- \n").unwrap() + 2; // after the empty marker
+            d.indent();
+            assert_eq!(d.source, "- hello\n  * \n");
+            assert!(d.nodes().iter().all(|n| n.kind != "heading"), "no heading");
+            // And it's genuinely a nested list, not a flat one.
+            assert_eq!(d.nodes().iter().filter(|n| n.kind == "bullet_list").count(), 2);
+        }
+    }
+
+    #[test]
+    fn indenting_a_dash_item_with_content_keeps_its_dash() {
+        // With content, `- x` can't be a setext underline, so there's nothing to
+        // dodge: the marker stays a dash and nests as an ordinary sub-bullet.
+        let mut d = doc_in(View::Wysiwyg, "setext_ok", "- hello\n- x\n");
+        d.caret = d.source.find('x').unwrap();
+        d.indent();
+        assert_eq!(d.source, "- hello\n  - x\n");
+    }
+
+    #[test]
+    fn the_setext_swap_undoes_as_one_step_with_the_indent() {
+        // The dash→`*` repair coalesces into the Tab, so a single undo restores
+        // the whole pre-Tab state rather than stranding a half-collapsed doc.
+        let mut d = doc_in(View::Wysiwyg, "setext_undo", "- hello\n- \n");
+        d.caret = d.source.find("- \n").unwrap() + 2;
+        d.indent();
+        assert_eq!(d.source, "- hello\n  * \n");
+        d.undo();
+        assert_eq!(d.source, "- hello\n- \n", "one undo, not two");
     }
 
     #[test]
@@ -6596,9 +7010,12 @@ mod tests {
     fn a_blank_document_becomes_a_real_one_at_the_first_save_as() {
         let p = temp_path("blank_save_as");
         let mut d = Doc::blank().unwrap();
-        d.insert("# hi");
+        // Plain text — a blank doc opens in Hidden mode, where a typed `#` would
+        // be kept literal (`\#`); this test is about save-as, not escaping (which
+        // has its own test), so it types nothing that escaping would touch.
+        d.insert("hi");
         d.save_as(p.clone());
-        assert_eq!(std::fs::read_to_string(&p).unwrap(), "# hi");
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "hi");
         assert!(!d.is_untitled());
         assert!(!d.dirty);
         assert_eq!(d.file_name(), p.file_name().unwrap().to_string_lossy());
@@ -6606,7 +7023,7 @@ mod tests {
         // And ⌘S is a plain save from here on.
         d.insert("!");
         d.save();
-        assert_eq!(std::fs::read_to_string(&p).unwrap(), "# hi!");
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "hi!");
         let _ = std::fs::remove_file(&p);
     }
 

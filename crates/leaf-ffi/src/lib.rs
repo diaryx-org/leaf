@@ -43,7 +43,9 @@ use std::sync::{Arc, Mutex};
 
 use leaf_core::style::{Role, Style as LStyle};
 use leaf_core::wysiwyg::text_width;
-use leaf_core::{Alignment, BlockKind, Doc, Format, InlineKind, View, VisualMap};
+use leaf_core::{
+    Alignment, BlockKind, Doc, Format, InlineKind, RevealMode as CoreRevealMode, View, VisualMap,
+};
 use unicode_segmentation::UnicodeSegmentation;
 
 uniffi::setup_scaffolding!();
@@ -223,6 +225,31 @@ impl TableAlignment {
             TableAlignment::Left => Alignment::Left,
             TableAlignment::Right => Alignment::Right,
             TableAlignment::Center => Alignment::Center,
+        }
+    }
+}
+
+/// How the rich view reveals inline markup at the caret — the argument to
+/// [`LeafDoc::set_reveal_mode`]. Mirrors [`leaf_core::RevealMode`]; `Hidden` is
+/// the default (the clean surface Diaryx ships).
+#[derive(uniffi::Enum)]
+pub enum RevealMode {
+    Hidden,
+    CaretLine,
+}
+
+impl RevealMode {
+    fn to_core(self) -> CoreRevealMode {
+        match self {
+            RevealMode::Hidden => CoreRevealMode::Hidden,
+            RevealMode::CaretLine => CoreRevealMode::CaretLine,
+        }
+    }
+
+    fn from_core(mode: CoreRevealMode) -> Self {
+        match mode {
+            CoreRevealMode::Hidden => RevealMode::Hidden,
+            CoreRevealMode::CaretLine => RevealMode::CaretLine,
         }
     }
 }
@@ -927,6 +954,20 @@ impl LeafDoc {
     pub fn toggle_view(&self) -> DocView {
         let mut g = self.lock();
         g.doc.toggle_view();
+        g.view()
+    }
+
+    /// The current inline-reveal preference (see [`RevealMode`]).
+    pub fn reveal_mode(&self) -> RevealMode {
+        RevealMode::from_core(self.lock().doc.reveal_mode())
+    }
+
+    /// Set the inline-reveal preference. Returns a fresh view so a frontend can
+    /// repaint. Inert on rendering today (the setting is stored and honoured by a
+    /// later render phase); Diaryx leaves it at the `Hidden` default.
+    pub fn set_reveal_mode(&self, mode: RevealMode) -> DocView {
+        let mut g = self.lock();
+        g.doc.set_reveal_mode(mode.to_core());
         g.view()
     }
 }

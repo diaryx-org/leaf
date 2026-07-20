@@ -488,13 +488,25 @@ public final class LeafTextView: UIView, UITextInput {
             // cleared) and resolve the table-aware way, or a probe into a table
             // teleports to its top-left cell. See the AppKit peer's `moveVertical`.
             let band = layoutEngine.caretBand(src: cur)
-            let probeY = up ? (band?.minY ?? caret.minY) - 1 : (band?.maxY ?? caret.maxY) + 1
+            var probeY = up ? (band?.minY ?? caret.minY) - 1 : (band?.maxY ?? caret.maxY) + 1
             let probe = CGPoint(x: caret.minX, y: probeY)
             let next: Int
             if let off = layoutEngine.tableHitOffset(probe, theme: renderTheme) {
                 next = Int(doc.snapOffset(off: UInt32(off)))
             } else {
-                let (row, ch) = layoutEngine.hit(probe, theme: renderTheme)
+                var (row, ch) = layoutEngine.hit(probe, theme: renderTheme)
+                // Step over the short blank gap row a block boundary is drawn with:
+                // probing one line past the caret lands inside it, where the hit
+                // snaps back and the step stalls between a paragraph and the list or
+                // code block below. See the AppKit peer's `moveVertical`.
+                let rows = layoutEngine.rows
+                var guardCount = 0
+                while rows.indices.contains(row), rows[row].row.isBlockGap, guardCount < rows.count {
+                    let r = rows[row]
+                    probeY = up ? r.top - 1 : r.top + r.height + 1
+                    (row, ch) = layoutEngine.hit(CGPoint(x: caret.minX, y: probeY), theme: renderTheme)
+                    guardCount += 1
+                }
                 next = Int(doc.offsetForPos(row: UInt32(row), ch: UInt32(ch)))
             }
             if next == cur { break }

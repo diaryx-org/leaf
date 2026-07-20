@@ -553,7 +553,7 @@ pub fn build(
         image_rows,
         break_glyph: Cell::new(' '),
     };
-    b.blocks(doc, &[], &[]);
+    b.blocks(doc, &[], &[], false);
     b.emit_trailing_blank_lines();
     let content_start = first_content_offset(nodes, doc);
     let stops = collect_stops(&b.rows);
@@ -626,7 +626,7 @@ pub fn build_cached(
         let start = block.span.start;
         let before_sep = b.rows.len();
         if i > 0 {
-            b.emit_separators_before(start, &[]);
+            b.emit_separators_before(start, &[], true);
         }
         let sep_rows = b.rows.len() - before_sep;
         let after_sep = b.rows.len();
@@ -1162,8 +1162,11 @@ impl Builder<'_> {
         out
     }
 
-    /// Render a node's block children, a blank separator between each.
-    fn blocks(&mut self, id: usize, pf: &[Glyph], pc: &[Glyph]) {
+    /// Render a node's block children, a blank separator between each. `tight`
+    /// suppresses the *fabricated* separator between adjacent children that share
+    /// a source line boundary — a tight list item and the sub-list nested in it —
+    /// while a real blank source line between them still opens a gap.
+    fn blocks(&mut self, id: usize, pf: &[Glyph], pc: &[Glyph], tight: bool) {
         // Frontmatter (a leading `metadata` block) is document metadata, not
         // prose: hide it entirely in the rich-text view. Skipping it here means
         // no phantom blank rows for its lines and no separator before the first
@@ -1175,7 +1178,7 @@ impl Builder<'_> {
             .collect();
         for (i, child) in kids.into_iter().enumerate() {
             if i > 0 {
-                self.emit_separators_before(self.nodes[child].span.start, pc);
+                self.emit_separators_before(self.nodes[child].span.start, pc, !tight);
             }
             let first = if i == 0 { pf } else { pc };
             self.block(child, first, pc);
@@ -1199,9 +1202,18 @@ impl Builder<'_> {
     /// `…\n\n\n\n…`) must be a navigable empty row, not vanish — else the caret
     /// in it snaps onto the *next* block's start and Enter looks like it did
     /// nothing.
-    fn emit_separators_before(&mut self, next_start: usize, pc: &[Glyph]) {
+    fn emit_separators_before(&mut self, next_start: usize, pc: &[Glyph], synthetic: bool) {
         let mut offs = self.blank_rows_between(self.last_off, next_start);
         if offs.is_empty() {
+            if !synthetic {
+                // A tight list item's own text sits directly above the sub-list
+                // nested in it — no fabricated gap. The "breathe" row belongs
+                // between free-standing blocks, not between an item and its
+                // child list, which the source writes on the very next line. A
+                // real blank source line (a loose list) still lands a gap below,
+                // because `blank_rows_between` found it and we never reach here.
+                return;
+            }
             // A tight gap with no blank line (e.g. a heading directly above its
             // text): keep the one conventional separator row so blocks still
             // breathe, as they always have.
@@ -1235,7 +1247,7 @@ impl Builder<'_> {
     fn block(&mut self, id: usize, pf: &[Glyph], pc: &[Glyph]) {
         let node = &self.nodes[id];
         match node.kind.as_str() {
-            "doc" | "section" => self.blocks(id, pf, pc),
+            "doc" | "section" => self.blocks(id, pf, pc, false),
             "heading" => {
                 // A heading whose only visible content is a single image — a
                 // banner set in an `<h1>` (`<h1><picture><img></picture></h1>`),
@@ -1253,7 +1265,7 @@ impl Builder<'_> {
                 let gutter = synth("│ ", Role::QuoteGutter, node.span.start);
                 let f = concat(pf, &gutter);
                 let c = concat(pc, &gutter);
-                self.blocks(id, &f, &c);
+                self.blocks(id, &f, &c, false);
             }
             "bullet_list" | "ordered_list" | "task_list" => {
                 let ordered = node.kind == "ordered_list";
@@ -1279,7 +1291,7 @@ impl Builder<'_> {
                         // no bullet, at the list's own prefix, with the usual block
                         // separator — never `• │ quote`.
                         if i > 0 {
-                            self.emit_separators_before(self.nodes[child].span.start, pc);
+                            self.emit_separators_before(self.nodes[child].span.start, pc, true);
                         }
                         self.block(child, pc, pc);
                     }
@@ -1297,7 +1309,10 @@ impl Builder<'_> {
                     let home = self.nodes[id].span.end.min(self.source.len());
                     self.push_row_at(pf.to_vec(), home);
                 } else {
-                    self.blocks(id, pf, pc);
+                    // Tight: an item's text and the list nested under it butt
+                    // together (`• a` / `  • b`), no fabricated blank row between —
+                    // a loose item's real blank line still parts them.
+                    self.blocks(id, pf, pc, true);
                 }
             }
             "table" => self.table(id, pf, pc),
@@ -1384,7 +1399,7 @@ impl Builder<'_> {
                         self.emit_wrapped(glyphs, node.span.start, pf, pc);
                     }
                 } else {
-                    self.blocks(id, pf, pc);
+                    self.blocks(id, pf, pc, false);
                 }
             }
         }
@@ -1844,7 +1859,13 @@ impl Builder<'_> {
     fn inline(&self, id: usize, base: Style, out: &mut Vec<Glyph>) {
         let node = &self.nodes[id];
         match node.kind.as_str() {
-            "str" | "smart_punctuation" => push_text(out, node.text.as_deref().unwrap_or(""), node.span.start, base),
+            "str" | "smart_punctuation" => push_escaped_text(
+                out,
+                node.text.as_deref().unwrap_or(""),
+                node.span.clone(),
+                &self.source,
+                base,
+            ),
             "soft_break" | "hard_break" | "non_breaking_space" => {
                 // A break renders as a real, caret-navigable glyph — but twig
                 // gives it no span of its own (`0..0`), so the offset comes from
@@ -2587,6 +2608,39 @@ fn push_text(out: &mut Vec<Glyph>, text: &str, base_src: usize, style: Style) {
     }
 }
 
+/// Emit an inline `str`/`smart_punctuation` run, mapping every visible char back
+/// to its *true* source byte even when the source carries backslash escapes the
+/// parsed `text` dropped (`\*` → `*`). The naive `span.start + text_offset`
+/// mapping [`push_text`] uses drifts by one byte after each escape, so a caret or
+/// click past an escaped `*` would land on the wrong character; walking the text
+/// against its source keeps them aligned, and the hidden escape backslash gets no
+/// glyph of its own (it is a spelling artefact, not something the caret lands on).
+fn push_escaped_text(out: &mut Vec<Glyph>, text: &str, span: Range<usize>, source: &str, style: Style) {
+    let end = span.end.min(source.len());
+    let src = source.get(span.start..end).unwrap_or("");
+    // Fast path — no dropped bytes, so text and source align 1:1 (the common
+    // case: prose with no escapes). Byte lengths equal ⇒ no backslash was eaten.
+    if src.len() == text.len() {
+        push_text(out, text, span.start, style);
+        return;
+    }
+    // Slow path: some `\` was consumed. Walk char-by-char, skipping a backslash
+    // in the source exactly when it escapes the next visible char (a real escape),
+    // never when it is a literal backslash the parse kept (that case has equal
+    // lengths and takes the fast path above).
+    let sb = src.as_bytes();
+    let mut si = 0usize;
+    for (_, cluster) in text.grapheme_indices(true) {
+        for (ci, ch) in cluster.char_indices() {
+            if si < sb.len() && sb[si] == b'\\' && src[si + 1..].chars().next() == Some(ch) {
+                si += 1; // the escape backslash: hidden, no glyph
+            }
+            out.push(Glyph { ch, style, src: span.start + si, stop: ci == 0 });
+            si += ch.len_utf8();
+        }
+    }
+}
+
 /// Build synthetic decoration glyphs (a bullet, a gutter) all pointing at `src`,
 /// each carrying `role` so the frontend can style it (`Role::Body` for plain
 /// padding). Synthetic glyphs are never caret stops — they share one offset, so
@@ -2847,6 +2901,45 @@ mod tests {
             .map(|r| r.glyphs.iter().map(|g| g.ch).collect())
             .collect();
         assert_eq!(text, vec!["H", "", "text"], "got {text:?}");
+    }
+
+    #[test]
+    fn an_escaped_delimiter_renders_without_its_backslash_and_maps_true_offsets() {
+        // `a\*b` renders the three visible chars `a * b` — the escape backslash
+        // is hidden — and every glyph points at its real source byte, so a caret
+        // past the escape lands right (the `*` at source 2, `b` at source 3, not
+        // the drifted 1/2 the naive text-offset mapping gave).
+        let m = map("a\\*b\n");
+        let row: Vec<(char, usize)> = m.rows[0].glyphs.iter().map(|g| (g.ch, g.src)).collect();
+        assert_eq!(row, vec![('a', 0), ('*', 2), ('b', 3)], "got {row:?}");
+    }
+
+    #[test]
+    fn an_escaped_hash_stays_a_paragraph_and_shows_the_hash() {
+        // `\# hi` is a paragraph beginning with a literal `#`, not a heading —
+        // the backslash is hidden, the `#` shown at its true offset.
+        let m = map("\\# hi\n");
+        let text: String = m.rows[0].glyphs.iter().map(|g| g.ch).collect();
+        assert_eq!(text, "# hi");
+        assert_eq!(m.rows[0].glyphs[0].src, 1, "the # is at source byte 1, past the \\");
+    }
+
+    #[test]
+    fn a_tight_nested_list_hangs_its_sublist_directly_under_the_item() {
+        // A list item's own text and the sub-list nested under it are written on
+        // adjacent source lines, so the rich view butts them together — no
+        // fabricated blank row. Regression: the synthetic "breathe" separator
+        // used to open a gap between `• a` and its `  • b`.
+        assert_eq!(rendered(&map("- a\n  - b\n")), "• a\n  • b");
+    }
+
+    #[test]
+    fn a_loose_nested_list_keeps_its_real_blank_line() {
+        // A genuine blank source line (a loose list) still parts the item from
+        // its sub-list — only the *fabricated* separator is suppressed, never a
+        // real one the author typed. The gap row wears the item's continuation
+        // prefix (the two-space indent), so it renders as "  ", not empty.
+        assert_eq!(rendered(&map("- a\n\n  - b\n")), "• a\n  \n  • b");
     }
 
     #[test]

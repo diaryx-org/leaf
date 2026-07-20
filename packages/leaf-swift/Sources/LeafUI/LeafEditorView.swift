@@ -69,6 +69,14 @@ public final class LeafEditorModel: ObservableObject {
     public func redo() { run { $0.redo() } }
     public func toggleView() { run { $0.toggleView() } }
 
+    // ── inline reveal preference ──────────────────────────────────────────────
+    // Hidden (the default) is the clean surface Diaryx ships; CaretLine reveals
+    // the caret line's raw markdown for Markdown-fluent users. Stored today;
+    // honoured by the renderer in a later phase.
+
+    public var revealMode: RevealMode { doc.revealMode() }
+    public func setRevealMode(_ mode: RevealMode) { run { $0.setRevealMode(mode: mode) } }
+
     // ── convenience toolbar queries ───────────────────────────────────────────
 
     public func isActive(_ mark: String) -> Bool { state.active.contains(mark) }

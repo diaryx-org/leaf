@@ -216,6 +216,20 @@ export class LeafEditor {
   /** Switch between the rendered WYSIWYG surface and the raw source. */
   toggleView() { this._command((d) => d.toggle_view()); }
 
+  /**
+   * The inline-reveal preference: `"hidden"` (the clean default — delimiters
+   * stay hidden even on the caret's line) or `"caret-line"` (the caret's line
+   * shows its raw markdown, Obsidian-style).
+   */
+  revealMode() { return this.doc.reveal_mode(); }
+
+  /**
+   * Set the inline-reveal preference (`"hidden"` / `"caret-line"`). Inert on
+   * rendering today — the setting is stored and a later phase teaches the
+   * renderer to honour it. Diaryx leaves the `"hidden"` default.
+   */
+  setRevealMode(mode) { this._command((d) => d.set_reveal_mode(String(mode))); }
+
   /** Sync core's selection from the DOM, run a model op, and repaint. */
   _command(op) {
     this._syncFromDom();
@@ -292,6 +306,13 @@ export class LeafEditor {
   /** Build one row element from a `Row`. */
   _rowEl(row, i, rows) {
     const div = el("div", "leaf-row");
+    // A block-boundary gap row holds no caret. Left editable, the browser's own
+    // ArrowUp/ArrowDown lands in its short line box on the way between blocks, so
+    // a step from a paragraph into the list or code block below it moves only
+    // sometimes. Marking it non-editable (like the code-language label) makes
+    // native vertical motion step straight over it to the next real line.
+    const gap = isBlockGap(row);
+    if (gap) div.setAttribute("contenteditable", "false");
     // Sizing the *whole* row from its heading level (not per run) mirrors gpui
     // shaping a heading's line at one size: an inline `code` run inside a
     // heading still reads at the heading's size.
@@ -337,8 +358,9 @@ export class LeafEditor {
     }
 
     // A contenteditable block needs a placeholder to hold a caret when it has no
-    // text of its own (an empty paragraph).
-    if (row.runs.length === 0) div.appendChild(document.createElement("br"));
+    // text of its own (an empty paragraph) — but a non-editable gap row holds no
+    // caret, so it needs none.
+    if (row.runs.length === 0 && !gap) div.appendChild(document.createElement("br"));
 
     this.rowEls.push(div);
     return div;
