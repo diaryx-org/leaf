@@ -1471,16 +1471,30 @@ impl Builder<'_> {
         self.children(row)
             .into_iter()
             .filter(|&c| self.nodes[c].kind == "cell")
-            .map(|c| {
+            .enumerate()
+            .map(|(col, c)| {
                 let n = &self.nodes[c];
                 let style = if n.head.unwrap_or(false) {
                     Style::default().bold()
                 } else {
                     Style::default()
                 };
-                // A cell's own `span` is the whole row; only `content_span`
-                // bounds its text.
-                let span = n.content_span.clone().unwrap_or(n.span.start..n.span.start);
+                // A cell's own `span` is the whole row; only `content_span` bounds
+                // its text. An EMPTY cell has no `content_span` at all — twig
+                // records no interior for it — so both offsets would fall back to
+                // the row's start (before its first `│`), where every empty cell
+                // in the row collapses onto the same spot and a click or caret
+                // there types *before* the table. Derive the cell's own interior
+                // from the row source and this cell's column instead, so each
+                // empty cell has a distinct, editable caret home.
+                let span = n.content_span.clone().unwrap_or_else(|| {
+                    let off = empty_cell_offset(
+                        &self.source[n.span.start.min(self.source.len())..n.span.end.min(self.source.len())],
+                        n.span.start,
+                        col,
+                    );
+                    off..off
+                });
                 TableCell {
                     glyphs: self.inline_children(c, style),
                     start: span.start,
@@ -2161,6 +2175,33 @@ impl VRow {
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+/// The caret home inside an *empty* table cell (`col`, 0-based) of a row whose
+/// source is `row_src` starting at byte `row_start`. twig gives an empty cell no
+/// `content_span`, so its interior is read from the pipes: cell `col` lies
+/// between the `col`-th and `col+1`-th unescaped `│`/`|`, and the home is one
+/// space past the opening one — mimicking the `| ` padding a filled cell has,
+/// and never at or past the closing pipe. So `|  |  |` gives the two cells
+/// distinct, editable homes instead of both collapsing onto the row's start.
+fn empty_cell_offset(row_src: &str, row_start: usize, col: usize) -> usize {
+    let bytes = row_src.as_bytes();
+    let mut pipes = Vec::new();
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'|' && (i == 0 || bytes[i - 1] != b'\\') {
+            pipes.push(i);
+        }
+    }
+    match (pipes.get(col).copied(), pipes.get(col + 1).copied()) {
+        (Some(open), Some(close)) => {
+            let lo = open + 1; // just inside the opening pipe
+            let hi = close.saturating_sub(1); // just inside the closing pipe
+            let inside = if hi < lo { lo } else { (open + 2).clamp(lo, hi) };
+            row_start + inside
+        }
+        (Some(open), None) => row_start + open + 1,
+        _ => row_start,
+    }
+}
 
 /// One laid-out table cell: its rendered text, the source range that text
 /// occupies (`start`/`end` are the caret anchors decoration points at), and the

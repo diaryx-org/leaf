@@ -5002,6 +5002,41 @@ mod tests {
     }
 
     #[test]
+    fn each_empty_table_cell_has_its_own_editable_home() {
+        // Regression: an empty cell has no twig content_span, so both cells of a
+        // `|  |  |` row collapsed onto the row's start (before the first `│`).
+        // Typing there inserted *before* the table (`hello|  |  |`); nav couldn't
+        // tell the cells apart. Each empty cell must now have a distinct home
+        // inside it.
+        let mut d = wysiwyg_doc("tbl_empty", "| a | b |\n| --- | --- |\n|  |  |\n");
+        let (c0, c1) = {
+            let cells = &d.vmap.tables[0].grid[1].cells;
+            (cells[0].start, cells[1].start)
+        };
+        assert!(c0 < c1, "the two empty cells have distinct homes: {c0} < {c1}");
+        d.caret = c0;
+        d.insert("x");
+        assert_eq!(d.source, "| a | b |\n| --- | --- |\n| x |  |\n", "typed inside the cell");
+    }
+
+    #[test]
+    fn arrows_step_into_each_empty_table_cell() {
+        let mut d = wysiwyg_doc("tbl_empty_nav", "| a | b |\n| --- | --- |\n|  |  |\n");
+        let (c0, c1) = {
+            let cells = &d.vmap.tables[0].grid[1].cells;
+            (cells[0].start, cells[1].start)
+        };
+        d.caret = d.source.find('b').unwrap(); // in the header's second cell
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..6 {
+            d.move_right(false);
+            seen.insert(d.caret);
+        }
+        assert!(seen.contains(&c0), "right arrow reaches the first empty cell");
+        assert!(seen.contains(&c1), "right arrow reaches the second empty cell");
+    }
+
+    #[test]
     fn table_op_off_a_table_is_a_no_op_with_a_status() {
         let mut d = doc_with("tbl_none", "just text\n");
         d.caret = 3;
