@@ -77,6 +77,14 @@ public final class LeafEditorModel: ObservableObject {
     public var revealMode: RevealMode { doc.revealMode() }
     public func setRevealMode(_ mode: RevealMode) { run { $0.setRevealMode(mode: mode) } }
 
+    // ── soft-break flow preference ────────────────────────────────────────────
+    // Fold (the default) reflows soft breaks into the paragraph; Preserve renders
+    // each where it was written, so a source laid out in semantic line breaks
+    // shows that structure. Unlike reveal, the renderer honours this immediately.
+
+    public var lineFlow: LineFlow { doc.lineFlow() }
+    public func setLineFlow(_ mode: LineFlow) { run { $0.setLineFlow(mode: mode) } }
+
     // ── convenience toolbar queries ───────────────────────────────────────────
 
     public func isActive(_ mark: String) -> Bool { state.active.contains(mark) }
@@ -105,13 +113,7 @@ public struct LeafEditor: NSViewRepresentable {
     }
 
     public func makeNSView(context: Context) -> NSScrollView {
-        let textView = LeafTextView(doc: model.doc, theme: theme)
-        // Defer the publish: `render()` can fire during a SwiftUI layout pass, and
-        // mutating an `@Published` mid-update loops the view system.
-        textView.onStateChange = { [weak model] s in
-            DispatchQueue.main.async { model?.updateState(s) }
-        }
-        model.textView = textView
+        let textView = makeTextView()
 
         let scroll = NSScrollView()
         scroll.documentView = textView
@@ -125,7 +127,39 @@ public struct LeafEditor: NSViewRepresentable {
     }
 
     public func updateNSView(_ scroll: NSScrollView, context: Context) {
-        (scroll.documentView as? LeafTextView)?.theme = theme
+        guard let hosted = scroll.documentView as? LeafTextView else { return }
+        // A freshly-swapped model has never been through `makeNSView`, so its
+        // `textView` is still nil — that mismatch (rather than comparing docs
+        // directly, which `LeafTextView` doesn't expose) is the stale-binding
+        // signal. SwiftUI keeps this view's identity across the swap, so without
+        // this the cached `hosted` view would go on showing the OLD model's doc
+        // forever (the bug this fixes; hosts no longer need `.id(...)`).
+        guard model.textView === hosted else {
+            let textView = makeTextView()
+            scroll.documentView = textView
+            textView.autoresizingMask = [.width]
+            textView.frame = CGRect(origin: .zero, size: CGSize(width: scroll.contentSize.width, height: 0))
+            // `doc.view()` is a read-only snapshot — routing it through `command`
+            // forces an immediate render → `onStateChange`, rather than waiting on
+            // whatever layout pass happens to come next.
+            textView.command { $0.view() }
+            DispatchQueue.main.async { scroll.window?.makeFirstResponder(textView) }
+            return
+        }
+        hosted.theme = theme
+    }
+
+    /// Build a `LeafTextView` over `model.doc`, wired the way `makeNSView` and the
+    /// stale-binding rebuild in `updateNSView` both need it.
+    private func makeTextView() -> LeafTextView {
+        let textView = LeafTextView(doc: model.doc, theme: theme)
+        // Defer the publish: `render()` can fire during a SwiftUI layout pass, and
+        // mutating an `@Published` mid-update loops the view system.
+        textView.onStateChange = { [weak model] s in
+            DispatchQueue.main.async { model?.updateState(s) }
+        }
+        model.textView = textView
+        return textView
     }
 }
 
@@ -143,6 +177,42 @@ public struct LeafEditor: UIViewRepresentable {
     }
 
     public func makeUIView(context: Context) -> UIScrollView {
+        let textView = makeTextView()
+
+        let scroll = UIScrollView()
+        scroll.alwaysBounceVertical = true
+        scroll.keyboardDismissMode = .interactive
+        pin(textView, into: scroll)
+
+        DispatchQueue.main.async { _ = textView.becomeFirstResponder() }
+        return scroll
+    }
+
+    public func updateUIView(_ scroll: UIScrollView, context: Context) {
+        guard let hosted = scroll.subviews.first(where: { $0 is LeafTextView }) as? LeafTextView else { return }
+        // A freshly-swapped model has never been through `makeUIView`, so its
+        // `textView` is still nil — that mismatch (rather than comparing docs
+        // directly, which `LeafTextView` doesn't expose) is the stale-binding
+        // signal. SwiftUI keeps this view's identity across the swap, so without
+        // this the cached `hosted` view would go on showing the OLD model's doc
+        // forever (the bug this fixes; hosts no longer need `.id(...)`).
+        guard model.textView === hosted else {
+            hosted.removeFromSuperview() // also tears down its own constraints
+            let textView = makeTextView()
+            pin(textView, into: scroll)
+            // `doc.view()` is a read-only snapshot — routing it through `command`
+            // forces an immediate render → `onStateChange`, rather than waiting on
+            // whatever layout pass happens to come next.
+            textView.command { $0.view() }
+            DispatchQueue.main.async { _ = textView.becomeFirstResponder() }
+            return
+        }
+        hosted.theme = theme
+    }
+
+    /// Build a `LeafTextView` over `model.doc`, wired the way `makeUIView` and the
+    /// stale-binding rebuild in `updateUIView` both need it.
+    private func makeTextView() -> LeafTextView {
         let textView = LeafTextView(doc: model.doc, theme: theme)
         // Defer the publish: `render()` can fire during a SwiftUI layout pass, and
         // mutating an `@Published` mid-update loops the view system.
@@ -150,10 +220,12 @@ public struct LeafEditor: UIViewRepresentable {
             DispatchQueue.main.async { model?.updateState(s) }
         }
         model.textView = textView
+        return textView
+    }
 
-        let scroll = UIScrollView()
-        scroll.alwaysBounceVertical = true
-        scroll.keyboardDismissMode = .interactive
+    /// Add `textView` to `scroll` and pin it to the content/frame layout guides —
+    /// the same constraint set `makeUIView` and the stale-binding rebuild both need.
+    private func pin(_ textView: LeafTextView, into scroll: UIScrollView) {
         scroll.addSubview(textView)
         textView.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
@@ -163,13 +235,6 @@ public struct LeafEditor: UIViewRepresentable {
             textView.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
             textView.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor),
         ])
-
-        DispatchQueue.main.async { _ = textView.becomeFirstResponder() }
-        return scroll
-    }
-
-    public func updateUIView(_ scroll: UIScrollView, context: Context) {
-        (scroll.subviews.first { $0 is LeafTextView } as? LeafTextView)?.theme = theme
     }
 }
 #endif

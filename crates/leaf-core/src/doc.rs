@@ -67,6 +67,26 @@ pub enum RevealMode {
     CaretLine,
 }
 
+/// How the WYSIWYG view treats a *soft break* — a bare newline inside a
+/// paragraph. An axis of its own, orthogonal to [`RevealMode`] (which governs
+/// inline-markup delimiters) and to [`View`]: any reveal preference pairs with
+/// either flow. The renderer consults it when it lays a block's inline content
+/// into visual rows.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum LineFlow {
+    /// A soft break folds into a space and the paragraph reflows to the
+    /// viewport width — flowing prose, where the source's line wrapping is
+    /// insignificant. The default, and what Diaryx ships.
+    #[default]
+    Fold,
+    /// A soft break renders as a line break exactly where it was written, so
+    /// the author's source line structure shows on screen unchanged — the mode
+    /// for people who lay out their prose deliberately (one sentence or clause
+    /// per line, semantic line breaks). The break is still a soft break in the
+    /// source; only its rendering changes.
+    Preserve,
+}
+
 /// What the file behind a document looks like right now, against the bytes leaf
 /// last read from it or wrote to it — the question a frontend asks before it
 /// saves (a `Changed` file plus a `dirty` document is an overwrite about to
@@ -249,6 +269,10 @@ pub struct Doc {
     /// preference (see [`RevealMode`]). Stored here so it round-trips through the
     /// bindings; the renderer starts reading it in a later phase.
     reveal: RevealMode,
+    /// Whether soft breaks fold into the reflowed paragraph or render where
+    /// they were written (see [`LineFlow`]) — an independent frontend
+    /// preference the WYSIWYG builder consults when it lays out a block.
+    line_flow: LineFlow,
     /// The kind of the last edit, for coalescing: twig owns the undo *history*
     /// (see `undo`/`redo`), but "what counts as one undo step" is a frontend-UX
     /// call, so leaf decides when a run continues and tells twig to coalesce.
@@ -435,6 +459,9 @@ impl Doc {
             // Hidden by default — the clean surface Diaryx ships; a
             // Markdown-fluent frontend can switch to `CaretLine`.
             reveal: RevealMode::default(),
+            // Fold by default — flowing prose that reflows to the viewport, the
+            // behaviour every frontend had before this preference existed.
+            line_flow: LineFlow::default(),
             last_edit_kind: None,
             pending_marks: InlineMarks::empty(),
             pending_at: None,
@@ -482,6 +509,30 @@ impl Doc {
     /// choice so a frontend's toggle persists and round-trips.
     pub fn set_reveal_mode(&mut self, mode: RevealMode) {
         self.reveal = mode;
+    }
+
+    /// The current soft-break flow preference (see [`LineFlow`]).
+    pub fn line_flow(&self) -> LineFlow {
+        self.line_flow
+    }
+
+    /// Set the soft-break flow preference. Unlike [`set_reveal_mode`], this one
+    /// the renderer honours immediately: the mode changes how every block lays
+    /// out, so a change drops the cached visual map and the per-block render
+    /// cache, forcing the next [`build_visual`] to rebuild under the new flow.
+    ///
+    /// [`set_reveal_mode`]: Self::set_reveal_mode
+    /// [`build_visual`]: Self::build_visual
+    pub fn set_line_flow(&mut self, mode: LineFlow) {
+        if self.line_flow == mode {
+            return;
+        }
+        self.line_flow = mode;
+        // Both caches are keyed on `(revision, wrap)`, neither of which moved —
+        // so invalidate them explicitly, or the next build would reuse rows laid
+        // out under the old flow.
+        self.vmap_key = None;
+        self.block_cache = wysiwyg::BlockCache::default();
     }
 
     pub fn view_name(&self) -> &'static str {
@@ -572,6 +623,10 @@ impl Doc {
             // returns `None` (and we fall back to the always-correct full rebuild)
             // whenever the edit reshaped the block structure, hit a table, or
             // there's no previous map to patch.
+            // Preserve soft breaks as written when the flow preference asks for
+            // it — the builder renders each as its own visual row instead of
+            // folding it into the reflowed paragraph.
+            let preserve_soft = self.line_flow == LineFlow::Preserve;
             let spliced = match self.editor.dirty_range() {
                 Some(dirty) => {
                     let prev = std::mem::take(&mut self.vmap);
@@ -579,7 +634,7 @@ impl Doc {
                     let cache = &mut self.block_cache;
                     let image_rows = &self.image_rows;
                     let editor = &mut self.editor;
-                    wysiwyg::build_spliced(prev, source, wrap, &top, dirty, image_rows, cache, |id| {
+                    wysiwyg::build_spliced(prev, source, wrap, preserve_soft, &top, dirty, image_rows, cache, |id| {
                         editor.subtree(NodeId(id)).unwrap_or_default()
                     })
                 }
@@ -590,7 +645,7 @@ impl Doc {
                 let cache = &mut self.block_cache;
                 let image_rows = &self.image_rows;
                 let editor = &mut self.editor;
-                wysiwyg::build_cached(&top, source, wrap, image_rows, cache, |id| {
+                wysiwyg::build_cached(&top, source, wrap, preserve_soft, image_rows, cache, |id| {
                     editor.subtree(NodeId(id)).unwrap_or_default()
                 })
             });
@@ -1120,7 +1175,9 @@ impl Doc {
     /// break (same paragraph), which is why a paragraph needs a blank-line
     /// separator, a list item needs the next marker, and so on.
     ///
-    ///   - paragraph / heading  → a new paragraph (blank line)
+    ///   - paragraph / heading  → a new paragraph (blank line), or a single soft
+    ///                            break under [`LineFlow::Preserve`], where that
+    ///                            break renders as a visible line
     ///   - list item            → the next item (same bullet, next number);
     ///                            an *empty* item exits the list
     ///   - block quote          → a new quoted line
@@ -1174,13 +1231,26 @@ impl Doc {
         }
         // On an *empty* paragraph line, a lone Enter should add a single blank line,
         // not another full paragraph break — so it moves down one line and one
-        // Backspace undoes it, not two. A non-empty paragraph still opens a fresh
-        // paragraph with `\n\n` (splitting it there when the caret is mid-line).
+        // Backspace undoes it, not two.
         let line_start = self.source[..self.caret].rfind('\n').map_or(0, |i| i + 1);
         let line_end = self.source[self.caret..]
             .find('\n')
             .map_or(self.source.len(), |i| self.caret + i);
         if self.source[line_start..line_end].trim().is_empty() {
+            self.insert_raw("\n");
+            return;
+        }
+        // A non-empty paragraph normally opens a fresh paragraph with `\n\n`
+        // (splitting it there when the caret is mid-line). In `Preserve` flow a
+        // soft break is a *visible* line the author means to make, so Enter writes
+        // a single `\n` and typing continues the same paragraph on the next line —
+        // the behaviour of an ordinary text editor. A second Enter then lands on
+        // the blank line above and takes the empty-line branch, so double-Enter
+        // still promotes to a full paragraph break; and Backspace, which deletes a
+        // lone `\n` over a soft break, undoes a single Enter symmetrically. In
+        // `Fold` flow a lone `\n` would render as an invisible space, so Enter
+        // keeps making the paragraph break that actually shows.
+        if self.line_flow == LineFlow::Preserve {
             self.insert_raw("\n");
             return;
         }
@@ -4226,6 +4296,86 @@ mod tests {
     }
 
     #[test]
+    fn preserve_enter_at_a_line_end_lands_the_caret_on_the_new_blank_line() {
+        // Regression: Enter at the end of a soft-break line (mid-paragraph) opened
+        // the blank line but the caret rendered on the *next* line, because the
+        // separator was a non-navigable decoration row. In Preserve flow that
+        // blank line is a real caret home — the caret must resolve onto it, and
+        // typing there makes the soft break that continues the paragraph.
+        let src = "line one:\nsecond line\n";
+        let mut d = wysiwyg_doc("pre_enter_lineend", src);
+        d.set_line_flow(LineFlow::Preserve);
+        d.build_visual_unwrapped(); // the GUI path (pixel-wrapped)
+        d.caret = 9; // the visual end of row 0, at the soft-break '\n'
+        d.newline();
+        d.build_visual_unwrapped();
+        assert_eq!(d.source, "line one:\n\nsecond line\n");
+        assert_eq!(d.caret, 10, "caret sits on the new blank line, not the next line");
+        // The blank line is row 1, and the caret resolves onto it — not row 2.
+        assert_eq!(d.vmap.pos_of_offset(10), (1, 0), "caret renders on the blank row");
+        assert!(!d.vmap.rows[1].decoration, "the blank line is navigable in Preserve");
+        // Typing there makes a soft break: one paragraph, three lines.
+        d.insert("new clause,");
+        assert_eq!(d.source, "line one:\nnew clause,\nsecond line\n");
+    }
+
+    #[test]
+    fn preserve_enter_makes_a_soft_break_not_a_paragraph() {
+        // Mid-paragraph: Enter splits the line with a single `\n`, a soft break
+        // that keeps it one paragraph — where Fold would open a second paragraph.
+        let mut d = wysiwyg_doc("pre_enter_mid", "abcdef\n");
+        d.set_line_flow(LineFlow::Preserve);
+        d.caret = 3;
+        d.newline();
+        assert_eq!(d.source, "abc\ndef\n", "mid-line Enter is a soft break");
+
+        // End-of-paragraph: Enter then typing continues the same paragraph on a
+        // new line (a soft break), not a fresh paragraph.
+        let mut d = wysiwyg_doc("pre_enter_end", "abc\n");
+        d.set_line_flow(LineFlow::Preserve);
+        d.caret = 3;
+        d.newline();
+        d.insert("def");
+        assert_eq!(d.source, "abc\ndef\n", "end-of-line Enter + typing is a soft break");
+    }
+
+    #[test]
+    fn preserve_double_enter_still_makes_a_paragraph() {
+        // Two Enters in a row promote to a real paragraph break: the second lands
+        // on the blank line the first opened and takes the empty-line branch.
+        let mut d = wysiwyg_doc("pre_enter_dbl", "abc\n");
+        d.set_line_flow(LineFlow::Preserve);
+        d.caret = 3;
+        d.newline();
+        d.newline();
+        d.insert("def");
+        assert_eq!(d.source, "abc\n\ndef\n", "double Enter is a paragraph break");
+    }
+
+    #[test]
+    fn preserve_backspace_joins_across_a_soft_break() {
+        // Backspace is the symmetric undo of a Preserve Enter: over the `\n` of a
+        // soft break it deletes the single newline and joins the two lines.
+        let mut d = wysiwyg_doc("pre_bs", "abc\ndef\n");
+        d.set_line_flow(LineFlow::Preserve);
+        d.build_visual(80);
+        d.caret = 4; // start of "def", just past the soft break
+        d.backspace();
+        assert_eq!(d.source, "abcdef\n", "Backspace joins across the soft break");
+        assert_eq!(d.caret, 3, "caret lands where the lines meet");
+    }
+
+    #[test]
+    fn fold_enter_still_starts_a_new_paragraph() {
+        // The default flow is unchanged: a lone `\n` would render as an invisible
+        // space, so Enter keeps opening the paragraph break that actually shows.
+        let mut d = wysiwyg_doc("fold_enter", "abcdef\n");
+        d.caret = 3;
+        d.newline();
+        assert_eq!(d.source, "abc\n\ndef\n", "Fold mid-line Enter is a paragraph break");
+    }
+
+    #[test]
     fn wysiwyg_one_enter_starts_a_new_paragraph() {
         // Regression: one Enter left the caret between the two newlines, so typing
         // made a soft break (one paragraph) and you needed a second Enter.
@@ -4770,7 +4920,7 @@ mod tests {
     fn reference_map(source: &str) -> crate::wysiwyg::VisualMap {
         let mut ed = twig::Editor::new_str(source, Format::Markdown).unwrap();
         let nodes = ed.nodes().unwrap();
-        crate::wysiwyg::build(&nodes, source, None, &std::collections::HashMap::new())
+        crate::wysiwyg::build(&nodes, source, None, false, &std::collections::HashMap::new())
     }
 
     fn maps_differ(a: &crate::wysiwyg::VisualMap, b: &crate::wysiwyg::VisualMap) -> bool {
@@ -6357,6 +6507,40 @@ mod tests {
         // the character before it, and a caret can't move without changing
         // offset. Right must walk clean off the end of the first line.
         let mut d = wysiwyg_doc("soft_break_walk", "one two\nthree four\n");
+        d.caret = 0;
+        let seen = walk_right(&mut d);
+        assert_eq!(seen, (0..=18).collect::<Vec<_>>(), "walk stalled: {seen:?}");
+    }
+
+    #[test]
+    fn line_flow_preserve_resplits_the_map_and_defaults_to_fold() {
+        // The paragraph holds one soft break. Folded (the default) it lays out as
+        // a single reflowed row; Preserve re-lays it as a row per source line.
+        // The setter must invalidate the cached map for the change to show, and
+        // again on the way back — so a round trip returns to the folded layout.
+        let mut d = wysiwyg_doc("line_flow", "one two\nthree four\n");
+        assert_eq!(d.line_flow(), LineFlow::Fold, "fold is the default");
+        d.build_visual(80);
+        assert_eq!(d.vmap.num_rows(), 1, "fold: one flowing row");
+
+        d.set_line_flow(LineFlow::Preserve);
+        d.build_visual(80);
+        assert_eq!(d.vmap.num_rows(), 2, "preserve: a row per source line");
+
+        d.set_line_flow(LineFlow::Fold);
+        d.build_visual(80);
+        assert_eq!(d.vmap.num_rows(), 1, "fold again: back to one row");
+    }
+
+    #[test]
+    fn the_caret_still_crosses_a_preserved_soft_break() {
+        // Preserve renders the soft break as a row boundary rather than a space,
+        // but the caret must still reach every offset — the break's own offset is
+        // the first row's end stop, so Right walks clean off the end of line one
+        // onto line two, exactly as it does when the break is folded.
+        let mut d = wysiwyg_doc("preserve_walk", "one two\nthree four\n");
+        d.set_line_flow(LineFlow::Preserve);
+        d.build_visual(80);
         d.caret = 0;
         let seen = walk_right(&mut d);
         assert_eq!(seen, (0..=18).collect::<Vec<_>>(), "walk stalled: {seen:?}");

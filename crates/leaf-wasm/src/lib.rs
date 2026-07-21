@@ -46,7 +46,8 @@
 use leaf_core::style::{Role, Style as LStyle};
 use leaf_core::wysiwyg::text_width;
 use leaf_core::{
-    BlockKind, Doc, Format, InlineKind, RevealMode as CoreRevealMode, View, VisualMap,
+    BlockKind, Doc, Format, InlineKind, LineFlow as CoreLineFlow, RevealMode as CoreRevealMode,
+    View, VisualMap,
 };
 use serde::Serialize;
 use tsify_next::Tsify;
@@ -663,6 +664,28 @@ impl LeafDoc {
         match mode {
             "hidden" => self.doc.set_reveal_mode(CoreRevealMode::Hidden),
             "caret-line" => self.doc.set_reveal_mode(CoreRevealMode::CaretLine),
+            _ => {}
+        }
+        self.view()
+    }
+
+    /// The current soft-break flow preference as `"fold"` or `"preserve"`.
+    pub fn line_flow(&self) -> String {
+        match self.doc.line_flow() {
+            CoreLineFlow::Fold => "fold",
+            CoreLineFlow::Preserve => "preserve",
+        }
+        .to_string()
+    }
+
+    /// Set the soft-break flow preference from `"fold"` / `"preserve"` (an
+    /// unknown value is ignored). Returns a fresh view to repaint. Unlike the
+    /// reveal preference this one changes rendering immediately: `"preserve"`
+    /// lays each soft break out as its own row.
+    pub fn set_line_flow(&mut self, mode: &str) -> Result<DocView, JsValue> {
+        match mode {
+            "fold" => self.doc.set_line_flow(CoreLineFlow::Fold),
+            "preserve" => self.doc.set_line_flow(CoreLineFlow::Preserve),
             _ => {}
         }
         self.view()

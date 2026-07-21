@@ -18,7 +18,7 @@ mod html;
 pub mod style;
 pub mod wysiwyg;
 
-pub use doc::{DiskState, Doc, InlineMarks, RevealMode, View};
+pub use doc::{DiskState, Doc, InlineMarks, LineFlow, RevealMode, View};
 pub use style::{Role, Style};
 pub use wysiwyg::{
     CodeBlockInfo, ColorScheme, Glyph, ImageInfo, ImageSource, TableCell, TableInfo, TableRow,

@@ -44,7 +44,8 @@ use std::sync::{Arc, Mutex};
 use leaf_core::style::{Role, Style as LStyle};
 use leaf_core::wysiwyg::text_width;
 use leaf_core::{
-    Alignment, BlockKind, Doc, Format, InlineKind, RevealMode as CoreRevealMode, View, VisualMap,
+    Alignment, BlockKind, Doc, Format, InlineKind, LineFlow as CoreLineFlow,
+    RevealMode as CoreRevealMode, View, VisualMap,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -250,6 +251,31 @@ impl RevealMode {
         match mode {
             CoreRevealMode::Hidden => RevealMode::Hidden,
             CoreRevealMode::CaretLine => RevealMode::CaretLine,
+        }
+    }
+}
+
+/// How the rich view treats a soft break (a bare newline inside a paragraph) —
+/// the argument to [`LeafDoc::set_line_flow`]. Mirrors [`leaf_core::LineFlow`];
+/// `Fold` is the default (soft breaks reflow into the paragraph, as before).
+#[derive(uniffi::Enum)]
+pub enum LineFlow {
+    Fold,
+    Preserve,
+}
+
+impl LineFlow {
+    fn to_core(self) -> CoreLineFlow {
+        match self {
+            LineFlow::Fold => CoreLineFlow::Fold,
+            LineFlow::Preserve => CoreLineFlow::Preserve,
+        }
+    }
+
+    fn from_core(mode: CoreLineFlow) -> Self {
+        match mode {
+            CoreLineFlow::Fold => LineFlow::Fold,
+            CoreLineFlow::Preserve => LineFlow::Preserve,
         }
     }
 }
@@ -968,6 +994,20 @@ impl LeafDoc {
     pub fn set_reveal_mode(&self, mode: RevealMode) -> DocView {
         let mut g = self.lock();
         g.doc.set_reveal_mode(mode.to_core());
+        g.view()
+    }
+
+    /// The current soft-break flow preference (see [`LineFlow`]).
+    pub fn line_flow(&self) -> LineFlow {
+        LineFlow::from_core(self.lock().doc.line_flow())
+    }
+
+    /// Set the soft-break flow preference. Returns a fresh view so a frontend
+    /// can repaint: unlike the reveal preference this one changes rendering
+    /// immediately, laying preserved soft breaks out as their own rows.
+    pub fn set_line_flow(&self, mode: LineFlow) -> DocView {
+        let mut g = self.lock();
+        g.doc.set_line_flow(mode.to_core());
         g.view()
     }
 }

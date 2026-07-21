@@ -8,6 +8,10 @@ import LeafUI
 /// macOS and iOS because `LeafEditor`/`LeafTextView` carry both surfaces.
 struct ContentView: View {
     @StateObject private var editor = makeEditor()
+    /// The soft-break flow shown in the dropdown. Held here (not read back off the
+    /// model each paint) because flipping it doesn't change the toolbar's other
+    /// state, so this is what drives the menu's checkmark.
+    @State private var flowPreserved = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -38,6 +42,8 @@ struct ContentView: View {
                 Divider().frame(height: 22)
                 btn("view", editor.isSource ? "doc.richtext" : "chevron.left.slash.chevron.right",
                     active: editor.isSource) { editor.toggleView() }
+                Divider().frame(height: 22)
+                flowMenu
                 if editor.state.dirty {
                     Circle().fill(.secondary).frame(width: 6, height: 6)
                 }
@@ -85,6 +91,33 @@ struct ContentView: View {
         .accessibilityLabel("table")
     }
 
+    /// The soft-break flow dropdown (a "View"-style menu): Fold reflows soft
+    /// breaks into the paragraph, Preserve renders each where it was written. The
+    /// change takes effect immediately — the editor relays out under the new flow.
+    private var flowMenu: some View {
+        Menu {
+            Button { setFlow(false) } label: {
+                Label("Reflow soft breaks", systemImage: flowPreserved ? "" : "checkmark")
+            }
+            Button { setFlow(true) } label: {
+                Label("Preserve line breaks", systemImage: flowPreserved ? "checkmark" : "")
+            }
+        } label: {
+            Image(systemName: "arrow.turn.down.left")
+                .font(.system(size: 17))
+                .frame(minWidth: 24, minHeight: 24)
+                .foregroundStyle(flowPreserved ? Color.accentColor : Color.primary)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .accessibilityLabel("line flow")
+    }
+
+    private func setFlow(_ preserve: Bool) {
+        flowPreserved = preserve
+        editor.setLineFlow(preserve ? .preserve : .fold)
+    }
+
     private func btn(_ id: String, _ symbol: String, active: Bool, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
@@ -130,6 +163,11 @@ caret model and AST→glyph map the terminal and desktop apps use, on macOS and 
 | Lists | nesting |
 
 > The document is a live, round-trippable AST the whole time you type.
+
+This paragraph is written in semantic line breaks:
+one clause per source line,
+a soft break after each.
+Toggle the ⏎ menu to fold them into flowing prose or preserve them as written.
 
 ```rust
 fn main() {

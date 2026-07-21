@@ -538,6 +538,7 @@ pub fn build(
     nodes: &[FlatNode],
     source: &str,
     wrap: Option<usize>,
+    preserve_soft: bool,
     image_rows: &HashMap<String, usize>,
 ) -> VisualMap {
     let Some(doc) = nodes.iter().position(|n| n.kind == "doc") else {
@@ -552,6 +553,7 @@ pub fn build(
         last_off: 0,
         image_rows,
         break_glyph: Cell::new(' '),
+        preserve_soft,
     };
     b.blocks(doc, &[], &[], false);
     b.emit_trailing_blank_lines();
@@ -585,6 +587,7 @@ pub fn build_cached(
     top: &[QueryMatch],
     source: &str,
     wrap: Option<usize>,
+    preserve_soft: bool,
     image_rows: &HashMap<String, usize>,
     cache: &mut BlockCache,
     mut fetch_subtree: impl FnMut(u32) -> Vec<FlatNode>,
@@ -616,6 +619,7 @@ pub fn build_cached(
         last_off: 0,
         image_rows,
         break_glyph: Cell::new(' '),
+        preserve_soft,
     };
 
     // Record the per-block row decomposition as we go, so a later
@@ -658,6 +662,7 @@ pub fn build_cached(
                     last_off: 0,
                     image_rows,
                     break_glyph: Cell::new(' '),
+                    preserve_soft,
                 };
                 sub.block(0, &[], &[]);
                 let last_off = sub.last_off;
@@ -758,6 +763,7 @@ pub fn build_spliced(
     prev: VisualMap,
     source: &str,
     wrap: Option<usize>,
+    preserve_soft: bool,
     top: &[QueryMatch],
     dirty: Range<usize>,
     image_rows: &HashMap<String, usize>,
@@ -837,6 +843,7 @@ pub fn build_spliced(
         last_off: 0,
         image_rows,
         break_glyph: Cell::new(' '),
+        preserve_soft,
     };
     sub.block(0, &[], &[]);
     // A table, or content that renders outside the block's span (a degenerate
@@ -1149,6 +1156,14 @@ struct Builder<'a> {
     /// only break it can carry is an explicit one that must show as a line of its
     /// own. Set around [`Builder::row_cells`] and otherwise left at `' '`.
     break_glyph: Cell<char>,
+    /// Render a soft break (a bare newline inside a paragraph) as a line break
+    /// where it was written, rather than folding it into the reflowed paragraph
+    /// — the `LineFlow::Preserve` behaviour. A soft break emits a `'\n'` glyph
+    /// (like a hard break in a cell), which [`Builder::emit_wrapped`] turns into
+    /// a fresh visual row. `false` is the flowing-prose default. Inside a table
+    /// cell (where `break_glyph` is already `'\n'`) it has no effect: a cell is
+    /// one line and folds its own soft breaks regardless.
+    preserve_soft: bool,
 }
 
 impl Builder<'_> {
@@ -1233,10 +1248,16 @@ impl Builder<'_> {
             // opens: it inserts a paragraph break (`\n\n`), which leaves a blank
             // line spare on each side and the caret on the navigable line
             // between them.
+            //
+            // Preserve flow is the exception: there a bare `\n` is a visible line
+            // break the author edits directly, so a lone blank line *is* a caret
+            // home — typing on it makes the soft break the mode exists to show,
+            // and Enter at a line's end lands the caret on exactly this row. So no
+            // separator is drawn-only; every blank line is navigable.
             self.rows.push(VRow {
                 glyphs: pc.to_vec(),
                 end_src,
-                decoration: k == 0 || k == last,
+                decoration: !self.preserve_soft && (k == 0 || k == last),
                 code: false,
                 code_lang: None,
                 image: None,
@@ -1878,10 +1899,20 @@ impl Builder<'_> {
                 } else {
                     out.last().map(|g| g.src + g.ch.len_utf8()).unwrap_or(0)
                 };
-                // A soft break folds into a space; a *hard* break renders as this
-                // run's break glyph — a newline inside a table cell (its own
-                // line), the same space in prose the frontend re-wraps.
-                let ch = if node.kind == "hard_break" { self.break_glyph.get() } else { ' ' };
+                // A *hard* break renders as this run's break glyph — a newline
+                // inside a table cell (its own line), the same space in prose the
+                // frontend re-wraps. A soft break normally folds into a space;
+                // under `LineFlow::Preserve` it renders as a `'\n'` too, so the
+                // author's line break shows where it was written. Never inside a
+                // cell (`break_glyph` is `'\n'` there): a cell is one line and
+                // folds its own soft breaks regardless.
+                let ch = if node.kind == "hard_break" {
+                    self.break_glyph.get()
+                } else if node.kind == "soft_break" && self.preserve_soft && self.break_glyph.get() == ' ' {
+                    '\n'
+                } else {
+                    ' '
+                };
                 out.push(Glyph { ch, style: base, src, stop: true });
             }
             // A cell's only spelling for an in-line break is a raw `<br>`; read it
@@ -1930,17 +1961,63 @@ impl Builder<'_> {
         }
     }
 
-    /// Word-wrap `glyphs` to the available width and push the visual rows,
-    /// prefixing the first with `pf` and the rest with `pc`.
+    /// Lay a block's inline `glyphs` into visual rows, prefixing the first with
+    /// `pf` and the rest with `pc`. A preserved soft break arrives as a `'\n'`
+    /// glyph (see the `soft_break` arm): a hard row boundary that splits the
+    /// glyphs so each run lays out on its own and the author's line structure
+    /// shows on screen. The `'\n'` is dropped from the row it closes and its
+    /// source offset becomes that row's end stop — exactly how a table cell's
+    /// in-line `<br>` is handled — so the caret can rest at the line's end
+    /// without a zero-width control char leaking into what the frontends render.
+    /// With no `'\n'` present (the folding default, and every build that isn't
+    /// `LineFlow::Preserve`) there is one run and this is byte-identical to
+    /// laying the glyphs out directly.
     fn emit_wrapped(&mut self, glyphs: Vec<Glyph>, block_start: usize, pf: &[Glyph], pc: &[Glyph]) {
-        // No column budget: emit the whole block as one row and let the frontend
+        if !glyphs.iter().any(|g| g.ch == '\n') {
+            self.emit_line(glyphs, block_start, pf, pc, None);
+            return;
+        }
+        // Each run up to a '\n' is a line of its own: the first wears the block's
+        // opening prefix, every later one the continuation prefix, and the break's
+        // own offset ends the run's last row. The break glyph is dropped. A
+        // trailing '\n' flushes its run and leaves nothing behind, so no spurious
+        // blank row follows it.
+        let mut run: Vec<Glyph> = Vec::new();
+        let mut first = true;
+        for g in glyphs {
+            if g.ch == '\n' {
+                let lead = if first { pf } else { pc };
+                self.emit_line(std::mem::take(&mut run), block_start, lead, pc, Some(g.src));
+                first = false;
+            } else {
+                run.push(g);
+            }
+        }
+        if !run.is_empty() {
+            let lead = if first { pf } else { pc };
+            self.emit_line(run, block_start, lead, pc, None);
+        }
+    }
+
+    /// Word-wrap a single line of `glyphs` (no interior line breaks) to the
+    /// available width and push the visual rows, prefixing the first with `pf`
+    /// and the rest with `pc`. `end`, when set, is the source offset that ends
+    /// the line's final row — the offset of the break that terminated it, which
+    /// the caller has already stripped from `glyphs`; when `None` the row ends
+    /// just past its last glyph, as an unbroken block's does.
+    fn emit_line(&mut self, glyphs: Vec<Glyph>, block_start: usize, pf: &[Glyph], pc: &[Glyph], end: Option<usize>) {
+        // The line's final row ends at `end` when a break gave one, else just
+        // past its last glyph (`push_row`'s default).
+        let push_last = |b: &mut Self, row: Vec<Glyph>| match end {
+            Some(e) => b.push_row_at(row, e),
+            None => b.push_row(row, block_start),
+        };
+
+        // No column budget: emit the whole line as one row and let the frontend
         // wrap it at its own (pixel) width.
         let Some(width) = self.wrap else {
-            if glyphs.is_empty() {
-                self.push_row(pf.to_vec(), block_start);
-            } else {
-                self.push_row(concat(pf, &glyphs), block_start);
-            }
+            let row = if glyphs.is_empty() { pf.to_vec() } else { concat(pf, &glyphs) };
+            push_last(self, row);
             return;
         };
 
@@ -1959,8 +2036,9 @@ impl Builder<'_> {
             words.push((word, None));
         }
         if words.is_empty() {
-            // An empty block still occupies one (prefixed) row.
-            self.push_row(pf.to_vec(), block_start);
+            // An empty block (or an empty preserved line) still occupies one
+            // (prefixed) row.
+            push_last(self, pf.to_vec());
             return;
         }
 
@@ -1987,7 +2065,7 @@ impl Builder<'_> {
             }
         }
         let row = concat(if first { pf } else { pc }, &line);
-        self.push_row(row, block_start);
+        push_last(self, row);
     }
 
     /// The source offset of each line of a code block's `text`.
@@ -2113,8 +2191,9 @@ impl Builder<'_> {
                 // closes the block above, not somewhere to type. Nothing follows
                 // to need a gap of its own, though, so every row after it is a
                 // real empty paragraph — the end of the document bounds the last
-                // one the way a following block would.
-                decoration: k == 1,
+                // one the way a following block would. Preserve flow makes even
+                // that first row navigable, as it does every blank line.
+                decoration: !self.preserve_soft && k == 1,
                 code: false,
                 code_lang: None,
                 image: None,
@@ -2740,11 +2819,17 @@ mod tests {
         build_t(&ed.nodes().unwrap(), src, Some(80))
     }
 
+    /// [`map`] with soft breaks preserved (`LineFlow::Preserve`).
+    fn map_preserve(src: &str, wrap: Option<usize>) -> VisualMap {
+        let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
+        build(&ed.nodes().unwrap(), src, wrap, true, &HashMap::new())
+    }
+
     /// The cache-free reference [`build`], with no per-image height overrides —
     /// every block image stays its default one-row placeholder. The tests that
     /// need a taller image drive it through [`crate::Doc::set_image_rows`] instead.
     fn build_t(nodes: &[FlatNode], src: &str, wrap: Option<usize>) -> VisualMap {
-        build(nodes, src, wrap, &HashMap::new())
+        build(nodes, src, wrap, false, &HashMap::new())
     }
 
     fn rendered(m: &VisualMap) -> String {
@@ -2766,9 +2851,9 @@ mod tests {
     ) -> (VisualMap, VisualMap) {
         let all = ed.nodes().unwrap();
         let image_rows = HashMap::new();
-        let plain = build(&all, src, wrap, &image_rows);
+        let plain = build(&all, src, wrap, false, &image_rows);
         let top = ed.child_spans(None).unwrap();
-        let cached = build_cached(&top, src, wrap, &image_rows, cache, |id| {
+        let cached = build_cached(&top, src, wrap, false, &image_rows, cache, |id| {
             ed.subtree(NodeId(id)).unwrap_or_default()
         });
         (plain, cached)
@@ -2870,6 +2955,63 @@ mod tests {
         // Every glyph's source byte is preserved in the single row.
         let text: String = unwrapped.rows[0].glyphs.iter().map(|g| g.ch).collect();
         assert_eq!(text.trim_end(), long.trim_end());
+    }
+
+    fn line_texts(m: &VisualMap) -> Vec<String> {
+        m.rows
+            .iter()
+            .map(|r| {
+                // Trim the trailing whitespace a row may carry — the zero-width
+                // '\n' that closes a preserved line, and any space glyph left at
+                // a wrap boundary (both real caret stops, neither visible text).
+                r.glyphs.iter().map(|g| g.ch).collect::<String>().trim_end().to_string()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn preserve_lays_each_soft_break_on_its_own_row() {
+        // A soft break (a bare newline inside a paragraph) folds into a space by
+        // default — the whole paragraph is one reflowed row...
+        let src = "one two\nthree four\n";
+        let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
+        let folded = build_t(&ed.nodes().unwrap(), src, None);
+        assert_eq!(folded.num_rows(), 1, "fold: one reflowed row");
+        assert_eq!(line_texts(&folded), vec!["one two three four"], "break folded to a space");
+
+        // ...and under Preserve it renders where it was written, a row per line.
+        let kept = map_preserve(src, None);
+        assert_eq!(line_texts(&kept), vec!["one two", "three four"], "preserve: a row per line");
+    }
+
+    #[test]
+    fn a_preserved_break_keeps_the_newline_offset_as_a_caret_stop() {
+        // The break must leave a caret stop at the newline byte, or the caret
+        // could not rest at the end of the first line. The '\n' glyph is dropped
+        // from the row (so nothing stray renders); its offset (7 here) becomes the
+        // row's end stop instead — the same offset the folded space would carry.
+        let src = "one two\nthree four\n";
+        let m = map_preserve(src, None);
+        assert!(!m.rows[0].glyphs.iter().any(|g| g.ch == '\n'), "the break glyph is dropped");
+        assert_eq!(m.rows[0].end_src, 7, "the first row ends at the newline byte");
+        assert!(m.is_stop(7), "the newline offset is a caret stop");
+        // Row end offsets stay strictly ascending — no two rows pin one offset.
+        let offs: Vec<usize> = m.rows.iter().map(|r| r.end_src).collect();
+        assert!(offs.windows(2).all(|w| w[0] < w[1]), "offsets not unique: {offs:?}");
+    }
+
+    #[test]
+    fn preserved_lines_wrap_independently() {
+        // Each preserved line wraps to the column on its own; the break between
+        // them is hard, so a word never crosses it — "gamma" and "delta" could
+        // share a row on width alone but the soft break keeps them apart.
+        let src = "alpha beta gamma\ndelta epsilon\n";
+        let m = map_preserve(src, Some(12));
+        assert_eq!(
+            line_texts(&m),
+            vec!["alpha beta", "gamma", "delta", "epsilon"],
+            "each source line wraps on its own"
+        );
     }
 
     #[test]
