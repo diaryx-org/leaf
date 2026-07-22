@@ -234,6 +234,15 @@ public struct LeafEditor: UIViewRepresentable {
             textView.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
             textView.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
             textView.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor),
+            // Without this, the text view's height is purely its intrinsic content
+            // height — for a short or empty document that's a sliver at the top, and
+            // UIKit only routes touches to a view under them, so tapping anywhere in
+            // the rest of the visible editor pane hit nothing (no caret, no focus,
+            // typing impossible). `EditorLayout.hit` already clamps a point below the
+            // last row to it, so filling the viewport just makes that reachable —
+            // clicking below the text lands the caret at the document's end, same as
+            // most text editors.
+            textView.heightAnchor.constraint(greaterThanOrEqualTo: scroll.frameLayoutGuide.heightAnchor),
         ])
     }
 }

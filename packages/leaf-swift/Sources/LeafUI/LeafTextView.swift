@@ -91,6 +91,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     public override func layout() {
         super.layout()
         relayoutForWidth(force: false)
+        applyContentHeight()
     }
 
     private func relayoutForWidth(force: Bool) {
@@ -104,14 +105,26 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         }
     }
 
+    /// Keep the view at least as tall as the enclosing scroll view's visible clip
+    /// area, never just the text's own height. `NSScrollView` only routes clicks to
+    /// a view under the cursor; a view sized tightly to short/empty content left the
+    /// rest of the visible editor pane unclickable — no caret, no focus, typing
+    /// impossible. `EditorLayout.hit` already clamps a point below the last row to
+    /// it, so filling the clip area just makes that reachable: clicking below the
+    /// text lands the caret at the document's end, same as most text editors.
+    private func applyContentHeight() {
+        let minHeight = enclosingScrollView?.contentView.bounds.height ?? 0
+        let h = max(layoutEngine.contentHeight, minHeight)
+        if abs(frame.height - h) > 0.5 { setFrameSize(NSSize(width: frame.width, height: h)) }
+    }
+
     // MARK: applying a frame
 
     private func render(_ view: DocView, keepVerticalGoal: Bool = false) {
         if !keepVerticalGoal { verticalGoalX = nil }
         docView = view
         layoutEngine = EditorLayout(view, theme: theme, wrapWidth: wrapWidth, cache: &shapeCache)
-        let h = layoutEngine.contentHeight
-        if abs(frame.height - h) > 0.5 { setFrameSize(NSSize(width: frame.width, height: h)) }
+        applyContentHeight()
         needsDisplay = true
         resetBlink()
         // Only follow the caret when it actually moved (typing, motion, click), not
