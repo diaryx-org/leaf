@@ -143,6 +143,23 @@ public final class LeafTextView: UIView, UITextInput {
         CGSize(width: UIView.noIntrinsicMetric, height: layoutEngine.contentHeight)
     }
 
+    /// A custom view shown above the system keyboard while this view is first
+    /// responder — a host app's own formatting toolbar, say. `nil` (the
+    /// default) shows nothing. This is the raw `UIResponder` hook: SwiftUI's
+    /// `.toolbar(placement: .keyboard)` only self-installs for SwiftUI-native
+    /// text controls (`TextField`/`TextEditor`), not an arbitrary custom
+    /// `UIView`-based text surface like this one, so a host wanting a keyboard
+    /// accessory has to set this directly (see `LeafEditor`'s `accessory:`
+    /// initializer, which wires a SwiftUI view in here).
+    public var accessoryView: UIView? {
+        didSet {
+            guard accessoryView !== oldValue else { return }
+            reloadInputViews()
+        }
+    }
+
+    public override var inputAccessoryView: UIView? { accessoryView }
+
     private func off(_ p: UITextPosition) -> Int { (p as? LeafTextPosition)?.offset ?? 0 }
 
     // MARK: layout / wrap

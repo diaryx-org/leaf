@@ -171,13 +171,39 @@ import UIKit
 public struct LeafEditor: UIViewRepresentable {
     @ObservedObject private var model: LeafEditorModel
     private let theme: EditorTheme
+    /// Type-erased so `LeafEditor` itself stays a concrete, non-generic type —
+    /// existing call sites that don't need an accessory (macOS's peer, every
+    /// call before this existed) keep compiling untouched.
+    private let accessory: AnyView?
 
     public init(model: LeafEditorModel, theme: EditorTheme = .default) {
-        self.model = model; self.theme = theme
+        self.model = model; self.theme = theme; self.accessory = nil
+    }
+
+    /// With a custom view shown above the system keyboard while this editor is
+    /// first responder — a host app's own formatting toolbar. See
+    /// `LeafTextView.accessoryView` for why this has to be threaded through
+    /// explicitly rather than SwiftUI's own `.toolbar(placement: .keyboard)`.
+    public init<Accessory: View>(
+        model: LeafEditorModel, theme: EditorTheme = .default,
+        @ViewBuilder accessory: () -> Accessory
+    ) {
+        self.model = model; self.theme = theme; self.accessory = AnyView(accessory())
+    }
+
+    public func makeCoordinator() -> Coordinator { Coordinator() }
+
+    /// Holds the accessory's `UIHostingController` across SwiftUI updates —
+    /// `LeafEditor` itself is a value type recreated every update, so this is
+    /// the one thing that survives to have its `rootView` refreshed rather
+    /// than being torn down and rebuilt each time.
+    public final class Coordinator {
+        var hosting: UIHostingController<AnyView>?
     }
 
     public func makeUIView(context: Context) -> UIScrollView {
         let textView = makeTextView()
+        attachAccessory(to: textView, context: context)
 
         let scroll = UIScrollView()
         scroll.alwaysBounceVertical = true
@@ -199,6 +225,7 @@ public struct LeafEditor: UIViewRepresentable {
         guard model.textView === hosted else {
             hosted.removeFromSuperview() // also tears down its own constraints
             let textView = makeTextView()
+            attachAccessory(to: textView, context: context)
             pin(textView, into: scroll)
             // `doc.view()` is a read-only snapshot — routing it through `command`
             // forces an immediate render → `onStateChange`, rather than waiting on
@@ -208,6 +235,25 @@ public struct LeafEditor: UIViewRepresentable {
             return
         }
         hosted.theme = theme
+        // Refresh the accessory's content in place — its `UIHostingController`
+        // persists in the coordinator across updates, so this is a live
+        // content swap, not a rebuild (which would drop first-responder focus
+        // on whatever's inside the accessory, e.g. a text field mid-edit).
+        if let accessory { context.coordinator.hosting?.rootView = accessory }
+    }
+
+    /// Wire the accessory (if any) into `textView.accessoryView` as a
+    /// `UIHostingController`'s view, sized to a fixed height and left to
+    /// stretch to the keyboard's width via `.flexibleWidth` — the standard
+    /// shape for a custom `inputAccessoryView`.
+    private func attachAccessory(to textView: LeafTextView, context: Context) {
+        guard let accessory else { return }
+        let hosting = UIHostingController(rootView: accessory)
+        hosting.view.backgroundColor = .clear
+        hosting.view.autoresizingMask = [.flexibleWidth]
+        hosting.view.frame = CGRect(x: 0, y: 0, width: 320, height: 44)
+        context.coordinator.hosting = hosting
+        textView.accessoryView = hosting.view
     }
 
     /// Build a `LeafTextView` over `model.doc`, wired the way `makeUIView` and the
