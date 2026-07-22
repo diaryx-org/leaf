@@ -87,6 +87,22 @@ pub struct VRow {
     /// display string, not a source slice, so it needs no offset shifting; the
     /// label re-derives from twig on the next build.
     pub code_lang: Option<String>,
+    /// This row belongs to a `:::name{.class}` directive container — twig's
+    /// generic fenced-div block, whose meaning is entirely up to the host app
+    /// (diaryx's `:::vis{.audience}` visibility blocks, say). Set on every row
+    /// the `"directive"` arm emits, the same way [`code`](Self::code) marks a
+    /// code block's rows, so a frontend can draw a tinted panel around each
+    /// maximal run of these.
+    pub directive: bool,
+    /// A directive container's space-joined attrs — dot-prefixed classes
+    /// (`.public .family` → `"public family"`) unioned with bare pandoc-style
+    /// words (`public family`, no leading dot — diaryx's other `:::vis{...}`
+    /// convention), carried on the block's *first* row only — the
+    /// [`code_lang`](Self::code_lang) pattern. `None` on every other row, and
+    /// when the directive carries no such attrs. A frontend paints it as a
+    /// small label on the block's panel; it's a plain display string, not a
+    /// source slice, so it rides row reuse untouched.
+    pub directive_label: Option<String>,
     /// Set on the single placeholder row a block-level image renders to, carrying
     /// the image's destination and alt text; `None` on every other row. The row's
     /// glyphs are the default `🖼 alt` label (which a plain surface paints as-is);
@@ -414,6 +430,105 @@ impl VisualMap {
     /// view has to leave standing.
     pub fn is_stop(&self, off: usize) -> bool {
         self.stops.binary_search(&off).is_ok()
+    }
+
+    /// The visible text a caret crosses walking rightward from `from` up to
+    /// (but not including) `to` — `UITextInput.text(in:)`'s `[from, to)` in
+    /// *this* view. A hidden inline-mark delimiter (`**`, `` ` ``, `_`, an
+    /// escape backslash) never got a glyph in the first place — see
+    /// [`push_text`]/[`synth`] — so it contributes nothing; what's left is
+    /// exactly what's drawn on screen for that span.
+    ///
+    /// Built from the same stop glyphs [`stop_after`](Self::stop_after) steps
+    /// across (every glyph with [`Glyph::stop`] set, i.e. one per grapheme
+    /// cluster, decoration excluded) — **plus one inserted `'\n'` for every
+    /// genuine block boundary strictly inside `[from, to)`**: a run of whole
+    /// [`decoration`] rows sitting between two content rows — a paragraph
+    /// gap, a table rule, an image's reserved filler rows — never an ordinary
+    /// soft wrap, which puts no decoration *row* between the two halves of
+    /// its one paragraph (only inline decoration glyphs, e.g. a table's `│`,
+    /// live inside a single content row, and never split one).
+    ///
+    /// [`decoration`]: VRow::decoration
+    ///
+    /// Without that inserted break, two blocks abutting in this string were
+    /// indistinguishable from one run of text: [`collect_stops`] gives a
+    /// block boundary *zero* stops of its own (crossing one is a single,
+    /// free hop — see `the_caret_skips_the_gap_between_two_paragraphs` in
+    /// `doc.rs`'s tests, which pins that as intentional caret behaviour, a
+    /// paragraph gap costing no extra Right presses, not a bug to fix here).
+    /// So the last word of one paragraph and the first word of the next used
+    /// to land directly adjacent with *nothing* between them in this string
+    /// (`"...edb\n\nhello\n"` read back as `"edbhello"`), and `UITextInput`'s
+    /// default word tokenizer then saw one unbroken run of letters and
+    /// selected across the boundary — reported as double-tapping the last
+    /// word on a line expanding the selection into the following
+    /// paragraph(s).
+    ///
+    /// This means the once-strict equality with `distance_offset`/
+    /// `step_offset` (`leaf-ffi`) no longer always holds: those intentionally
+    /// keep costing a block boundary *zero* stops, while this text now
+    /// spends one *character* on it that is never itself a stop. So the
+    /// relationship is `visible_text(a, b).chars().count() >=
+    /// distance_offset(a, b)`, equality holding whenever `(a, b)` spans no
+    /// block boundary (the common case, and the only case the previous
+    /// equality was ever tested against). It can only ever be *greater*,
+    /// never less: every character this function omits relative to a plain
+    /// stop count is a stop with no glyph of its own (a hidden delimiter, or
+    /// a block's own trailing "end of row" stop), and every such omission at
+    /// a block's end is exactly paired with the one inserted separator that
+    /// follows it, so nothing this function returns is ever short of what a
+    /// consumer walking stops one at a time would need. That inequality is
+    /// still exactly what `UITextInput`'s tokenizer needs: it only ever reads
+    /// this string to find a boundary and converts the character index it
+    /// finds back to a position with `position(from:offset:)`, which walks
+    /// stops — an inserted separator is never handed back as one, it only
+    /// keeps two paragraphs' words apart for the tokenizer's letter-run scan.
+    ///
+    /// `from` is snapped to its nearest stop first, exactly as a caret asked
+    /// to stand at a hidden offset is drawn at the next stop instead; `to` is
+    /// left as given, so a stop landing exactly on it is still the walk's
+    /// last step — the same asymmetry `distance_offset`'s own loop has.
+    pub fn visible_text(&self, from: usize, to: usize) -> String {
+        let from = self.nearest_stop(from);
+
+        // Real content: every stop glyph in range, keyed by its own source
+        // offset (`None` tags it as a genuine character, versus the
+        // synthetic separators below).
+        let mut items: Vec<(usize, Option<char>)> = self
+            .rows
+            .iter()
+            .filter(|r| !r.decoration)
+            .flat_map(|r| r.glyphs.iter())
+            .filter(|g| g.stop && g.src >= from && g.src < to)
+            .map(|g| (g.src, Some(g.ch)))
+            .collect();
+
+        // Every whole decoration row is a candidate block boundary; its
+        // `end_src` is the gap offset itself (never a stop — see
+        // `place_caret_snaps_out_of_the_blank_gap_between_paragraphs` in
+        // `doc.rs`) — a source offset like any glyph's, so it merges into the
+        // same ordering. `None` marks it a synthetic separator rather than a
+        // real character, tagged distinctly so a query landing exactly on the
+        // gap offset still opens with its break even with no glyph on either
+        // side to anchor it to (a range spanning nothing but a bare gap).
+        let mut boundaries: Vec<usize> = self
+            .rows
+            .iter()
+            .filter(|r| r.decoration)
+            .map(|r| r.end_src)
+            .filter(|&src| src >= from && src < to)
+            .collect();
+        boundaries.sort_unstable();
+        boundaries.dedup();
+        items.extend(boundaries.into_iter().map(|src| (src, None)));
+
+        // Row order matches source order except across a table's wrapped
+        // cells (see `pos_of_offset`), so sort rather than trust it here too.
+        // A boundary can't share an offset with a glyph (it's the undrawn gap
+        // between two blocks' real content), so tie-breaking never arises.
+        items.sort_by_key(|&(src, _)| src);
+        items.into_iter().map(|(_, ch)| ch.unwrap_or('\n')).collect()
     }
 }
 
@@ -1083,6 +1198,8 @@ fn shift_row(row: &VRow, delta: isize) -> VRow {
         decoration: row.decoration,
         code: row.code,
         code_lang: row.code_lang.clone(),
+        directive: row.directive,
+        directive_label: row.directive_label.clone(),
         image: row.image.clone(),
     }
 }
@@ -1260,6 +1377,8 @@ impl Builder<'_> {
                 decoration: !self.preserve_soft && (k == 0 || k == last),
                 code: false,
                 code_lang: None,
+                directive: false,
+                directive_label: None,
                 image: None,
             });
         }
@@ -1287,6 +1406,49 @@ impl Builder<'_> {
                 let f = concat(pf, &gutter);
                 let c = concat(pc, &gutter);
                 self.blocks(id, &f, &c, false);
+            }
+            // A generic `:::name{.class}` fenced-div container (twig's
+            // `directive`, container form). Core is agnostic of `name` — it's
+            // the host app's vocabulary (diaryx's `vis` for audience
+            // visibility, say) and isn't available here regardless: twig only
+            // threads an `element`'s tag name through `FlatNode::name`, not a
+            // directive's own identifier. Every row gets marked `directive` (a
+            // frontend draws a tinted panel around each maximal run, the
+            // `code`/`code_block` recipe) and the first row carries a label —
+            // the way a code fence's language rides only its first row.
+            //
+            // The label reads BOTH attribute conventions diaryx content
+            // actually uses: twig's own dot-prefixed classes (`{.public
+            // .family}`, one combined `class` attr) and bare pandoc-style
+            // words with no leading dot (`{public family}` — the syntax
+            // `diaryx_core::visibility`'s hand-rolled publish-time filter and
+            // apps/web's directive serializer both write; twig parses each
+            // bare word as its own attribute with an empty value, per
+            // `languages/markdown/attributes.zig`). Reading only `.class`
+            // would leave every *existing* diaryx `:::vis{...}` block
+            // unlabeled.
+            "directive" => {
+                let mut parts: Vec<String> = Vec::new();
+                for (k, v) in &node.attrs {
+                    if k == "class" {
+                        if let Some(v) = v {
+                            if !v.is_empty() {
+                                parts.push(v.clone());
+                            }
+                        }
+                    } else if v.as_deref().unwrap_or("").is_empty() {
+                        parts.push(k.clone());
+                    }
+                }
+                let label = (!parts.is_empty()).then(|| parts.join(" "));
+                let start_row = self.rows.len();
+                self.blocks(id, pf, pc, false);
+                for (i, row) in self.rows[start_row..].iter_mut().enumerate() {
+                    row.directive = true;
+                    if i == 0 {
+                        row.directive_label = label.clone();
+                    }
+                }
             }
             "bullet_list" | "ordered_list" | "task_list" => {
                 let ordered = node.kind == "ordered_list";
@@ -1568,6 +1730,8 @@ impl Builder<'_> {
             decoration: true,
             code: false,
             code_lang: None,
+            directive: false,
+            directive_label: None,
             image: None,
         });
     }
@@ -1645,7 +1809,16 @@ impl Builder<'_> {
                 .rev()
                 .find(|g| g.stop)
                 .map_or(fallback, |g| g.src);
-            self.rows.push(VRow { glyphs, end_src, decoration: false, code: false, code_lang: None, image: None });
+            self.rows.push(VRow {
+            glyphs,
+            end_src,
+            decoration: false,
+            code: false,
+            code_lang: None,
+            directive: false,
+            directive_label: None,
+            image: None,
+        });
         }
     }
 
@@ -1702,6 +1875,8 @@ impl Builder<'_> {
                 decoration: true,
                 code: false,
                 code_lang: None,
+                directive: false,
+                directive_label: None,
                 image: None,
             });
         }
@@ -2110,7 +2285,16 @@ impl Builder<'_> {
     /// extent better than its last glyph does.
     fn push_row_at(&mut self, glyphs: Vec<Glyph>, end_src: usize) {
         self.last_off = end_src;
-        self.rows.push(VRow { glyphs, end_src, decoration: false, code: false, code_lang: None, image: None });
+        self.rows.push(VRow {
+            glyphs,
+            end_src,
+            decoration: false,
+            code: false,
+            code_lang: None,
+            directive: false,
+            directive_label: None,
+            image: None,
+        });
     }
 
     /// The source offset the caret rests at on the blank line separating a block
@@ -2196,6 +2380,8 @@ impl Builder<'_> {
                 decoration: !self.preserve_soft && k == 1,
                 code: false,
                 code_lang: None,
+                directive: false,
+                directive_label: None,
                 image: None,
             });
         }
@@ -2819,6 +3005,19 @@ mod tests {
         build_t(&ed.nodes().unwrap(), src, Some(80))
     }
 
+    /// [`map`], but with twig's `directives` extension on (off by twig's own
+    /// default) — the `:::name{.class}` fenced-div containers leaf-core's
+    /// `"directive"` wysiwyg arm renders.
+    fn map_directives(src: &str) -> VisualMap {
+        let mut ed = Editor::new_ext(
+            src.as_bytes(),
+            Format::Markdown,
+            twig::MarkdownExtensions { directives: true, ..Default::default() },
+        )
+        .unwrap();
+        build_t(&ed.nodes().unwrap(), src, Some(80))
+    }
+
     /// [`map`] with soft breaks preserved (`LineFlow::Preserve`).
     fn map_preserve(src: &str, wrap: Option<usize>) -> VisualMap {
         let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
@@ -3351,6 +3550,63 @@ mod tests {
             m.rows[span].iter().all(|r| r.code),
             "every row in the span is flagged code"
         );
+    }
+
+    #[test]
+    fn a_directive_container_is_tinted_and_labeled_on_its_first_row() {
+        // diaryx's `:::vis{.public .family}` visibility block, and any other
+        // `:::name{.class}` fenced div — core is agnostic of `name`.
+        let src = ":::vis{.public .family}\nhello\n\nworld\n:::\nafter\n";
+        let m = map_directives(src);
+
+        let content_rows: Vec<usize> = (0..m.rows.len())
+            .filter(|&i| m.rows[i].directive)
+            .collect();
+        assert!(!content_rows.is_empty(), "some row is flagged directive");
+
+        let after_rows: Vec<usize> = (0..m.rows.len())
+            .filter(|&i| !content_rows.contains(&i) && !m.rows[i].glyphs.is_empty())
+            .collect();
+        assert!(
+            after_rows.iter().all(|&i| !m.rows[i].directive),
+            "content outside the fence isn't tinted"
+        );
+
+        let labels: Vec<&str> = content_rows
+            .iter()
+            .filter_map(|&i| m.rows[i].directive_label.as_deref())
+            .collect();
+        assert_eq!(labels, vec!["public family"], "only the first row carries the label");
+
+        assert_eq!(
+            rendered(&m).lines().filter(|l| !l.is_empty()).collect::<Vec<_>>(),
+            vec!["hello", "world", "after"],
+            "fence markers don't leak into the rendered text"
+        );
+    }
+
+    #[test]
+    fn a_bare_word_directive_is_labeled_same_as_dot_classes() {
+        // diaryx_core::visibility's own `:::vis{public family}` — no leading
+        // dots — is what apps/web's directive serializer and the native
+        // publish-time filter both actually write today, distinct from twig's
+        // `.class` convention. Both must label the same way so every existing
+        // diaryx `:::vis{...}` block reads, not just newly dot-authored ones.
+        let src = ":::vis{public family}\nhello\n:::\n";
+        let m = map_directives(src);
+        let label = m.rows.iter().find_map(|r| r.directive_label.clone());
+        assert_eq!(label.as_deref(), Some("public family"));
+    }
+
+    #[test]
+    fn a_directive_needs_the_extension_flag() {
+        // `map` (twig's default extensions) leaves `directives` off — the fence
+        // renders as literal paragraph text, same as any other unrecognized
+        // punctuation, never corrupting or panicking.
+        let src = ":::vis{.public}\nhello\n:::\n";
+        let m = map(src);
+        assert!(m.rows.iter().all(|r| !r.directive));
+        assert!(rendered(&m).contains(":::vis{.public}"));
     }
 
     #[test]

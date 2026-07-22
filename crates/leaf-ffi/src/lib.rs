@@ -95,6 +95,13 @@ pub struct Row {
     pub code: bool,
     /// A fenced block's language, carried on the block's first code row only.
     pub code_lang: Option<String>,
+    /// A `:::name{.class}` directive-container line — the renderer draws a
+    /// tinted panel around each maximal run of these, the `code` recipe. See
+    /// [`leaf_core::VRow::directive`].
+    pub directive: bool,
+    /// A directive container's space-joined `.class` attrs, carried on the
+    /// block's first row only. See [`leaf_core::VRow::directive_label`].
+    pub directive_label: Option<String>,
     /// The heading level (1–6) if this row belongs to a heading block, else
     /// `None`. A proportional renderer sizes the *whole* row from this so an
     /// inline `` `code` `` run inside a heading still reads at the heading's size.
@@ -1116,21 +1123,49 @@ impl LeafDoc {
         target.map(|r| g.offset_of_col(r, col) as u32)
     }
 
-    /// The source text between two offsets — `text(in:)`.
+    /// The visible text between two offsets — `text(in:)`. In the WYSIWYG
+    /// view this is *not* the raw source slice: a hidden inline-mark
+    /// delimiter (`**`, `` ` ``, `_`) contributes nothing, matching what
+    /// `distance_offset`/`step_offset` already count in this same offset
+    /// space — while a genuine block boundary the range spans (a paragraph
+    /// gap, a table rule, …) contributes one inserted `'\n'` that
+    /// `distance_offset`/`step_offset` do *not* count (a block boundary costs
+    /// caret motion zero stops there, by design — see
+    /// `the_caret_skips_the_gap_between_two_paragraphs` in `leaf-core`'s
+    /// `doc.rs`). So the relationship is
+    /// `text_in_range(a, b).chars().count() >= distance_offset(a, b)`, not
+    /// strict equality: the two agree exactly when `(a, b)` spans no block
+    /// boundary, and `text_in_range` is never shorter, only ever as long or
+    /// longer, when it does. That inequality is still what
+    /// `UITextInput`'s own word/line tokenizer needs (see
+    /// [`leaf_core::wysiwyg::VisualMap::visible_text`] for why): it only reads
+    /// this string to find a boundary and converts the result back to a
+    /// position via `position(from:offset:)`, which walks stops — the
+    /// inserted character is never hit as one, it only keeps the tokenizer
+    /// from reading two paragraphs' last/first words as a single run of
+    /// letters. The source view has nothing hidden to begin with, so there
+    /// this is still exactly the raw slice.
     pub fn text_in_range(&self, from: u32, to: u32) -> String {
-        let g = self.lock();
-        let s = &g.doc.source;
-        let (mut a, mut b) = ((from as usize).min(s.len()), (to as usize).min(s.len()));
+        let mut g = self.lock();
+        g.sync();
+        let len = g.doc.source.len();
+        let (mut a, mut b) = ((from as usize).min(len), (to as usize).min(len));
         if a > b {
             std::mem::swap(&mut a, &mut b);
         }
-        while a > 0 && !s.is_char_boundary(a) {
-            a -= 1;
+        match g.doc.view {
+            View::Wysiwyg => g.doc.vmap.visible_text(a, b),
+            View::Source => {
+                let s = &g.doc.source;
+                while a > 0 && !s.is_char_boundary(a) {
+                    a -= 1;
+                }
+                while b < s.len() && !s.is_char_boundary(b) {
+                    b += 1;
+                }
+                s[a..b].to_string()
+            }
         }
-        while b < s.len() && !s.is_char_boundary(b) {
-            b += 1;
-        }
-        s[a..b].to_string()
     }
 
     /// Set the selection to `[anchor, focus]` by source offsets — the setter behind
@@ -1247,6 +1282,8 @@ fn wysiwyg_rows(vmap: &VisualMap, ss: usize, se: usize) -> Vec<Row> {
                 decoration: vrow.decoration,
                 code: vrow.code,
                 code_lang: vrow.code_lang.clone(),
+                directive: vrow.directive,
+                directive_label: vrow.directive_label.clone(),
                 heading,
             }
         })
@@ -1395,6 +1432,8 @@ fn source_rows(source: &str, ss: usize, se: usize) -> Vec<Row> {
             decoration: false,
             code: false,
             code_lang: None,
+            directive: false,
+            directive_label: None,
             heading: None, // source view is raw text — no resolved heading rows
         });
         byte = end + 1; // skip the '\n' that `split` consumed
@@ -1537,5 +1576,125 @@ mod tests {
         assert_eq!(d.link_destination_at_caret().as_deref(), Some("https://x.dev"));
         d.set_selection_offsets(0, 0); // caret on plain text
         assert_eq!(d.link_destination_at_caret(), None);
+    }
+
+    #[test]
+    fn text_in_range_hides_delimiters_like_the_screen_does() {
+        // "a **bold** c\n": 0:'a' 1:' ' 2:'*' 3:'*' 4:'b' 5:'o' 6:'l' 7:'d'
+        // 8:'*' 9:'*' 10:' ' 11:'c' 12:'\n'. Bytes 8..10 are the closing `**`
+        // — hidden, no glyph — and bytes 2..4 the opening `**`, likewise
+        // hidden. `caret_steps_over_hidden_delimiters` in leaf-core already
+        // pins that one Right from 7 (just past the 'd') lands on 10 (the
+        // space before 'c'), skipping 8/9 entirely — so the *visible* text
+        // transiting [7, 10) is exactly "d": the closing `**` contributes
+        // nothing, matching what's drawn on screen.
+        let d = doc("a **bold** c\n");
+        assert_eq!(d.text_in_range(7, 10), "d");
+        assert_eq!(
+            d.text_in_range(7, 10).chars().count() as i32,
+            d.distance_offset(7, 10),
+            "text(in:).count() must equal offset(from:to:) — the UITextInput invariant this bug broke"
+        );
+
+        // Plain text with no hidden delimiter in range: unchanged, still the
+        // raw slice, proving the fix doesn't regress the common case.
+        assert_eq!(d.text_in_range(0, 1), "a");
+        assert_eq!(d.text_in_range(11, 12), "c");
+        assert_eq!(
+            d.text_in_range(0, 1).chars().count() as i32,
+            d.distance_offset(0, 1)
+        );
+    }
+
+    #[test]
+    fn text_in_range_matches_distance_offset_across_marked_up_and_plain_spans() {
+        // The general invariant, straddling bold/italic/code spans and not:
+        // for any pair of offsets, the visible text `text_in_range` returns
+        // must have exactly as many `chars()` as `distance_offset` reports
+        // stops between them — otherwise iOS's word tokenizer (which fetches
+        // a text window, finds a boundary by indexing into *that string*, and
+        // converts the index back to a position via `position(from:offset:)`)
+        // resolves the boundary at the wrong offset.
+        let d = doc("a **bold** _em_ and `code` here\n");
+        let len = d.source().len() as u32;
+        let mut pairs = Vec::new();
+        let mut a = 0u32;
+        while a < len {
+            let mut b = a + 1;
+            while b <= len {
+                pairs.push((a, b));
+                b += 3; // sample rather than an O(n^2) sweep
+            }
+            a += 1;
+        }
+        for (a, b) in pairs {
+            let text = d.text_in_range(a, b);
+            let dist = d.distance_offset(a, b).abs();
+            assert_eq!(
+                text.chars().count() as i32,
+                dist,
+                "text_in_range({a}, {b}) = {text:?} has {} chars, but distance_offset says {dist}",
+                text.chars().count()
+            );
+        }
+    }
+
+    #[test]
+    fn text_in_range_separates_paragraphs_so_words_dont_merge_across_the_gap() {
+        // Regression: double-tapping the last word on a line immediately
+        // followed by a paragraph break selected past the break into the
+        // next paragraph — and kept compounding across further trivial
+        // paragraphs in a row — because `text_in_range` returned the two
+        // paragraphs' text with nothing between them: "hello" then "hello"
+        // read back as one merged "hellohello" run of letters, no different
+        // from the raw source concatenation, and iOS's word tokenizer duly
+        // selected the whole run as a single word.
+        let d = doc("hello\n\nhello\n\nhello\n");
+        let src = d.source();
+        assert_eq!(src.find("hello").unwrap(), 0, "paragraph 1 at the very start");
+        let p2 = src[5..].find("hello").unwrap() + 5; // 7: paragraph 2's "hello"
+
+        // A window straddling the tail of paragraph 1 ("lo") and the head of
+        // paragraph 2 ("he").
+        let text = d.text_in_range(3, p2 as u32 + 2);
+        assert_ne!(text, "lohe", "the two paragraphs' words must not read as merged");
+        assert!(
+            text.chars().any(|c| !c.is_alphanumeric()),
+            "a non-letter must separate the two paragraphs' words: got {text:?}"
+        );
+        assert_eq!(text, "lo\nhe", "exactly one separator opens the second paragraph's head");
+
+        // A window that is nothing but the bare gap itself (no glyph on the
+        // left, since it starts exactly at the end of paragraph 1's own last
+        // row) must still carry the break — this is the case a naive
+        // "insert a separator only between two real hits" fix undercounts,
+        // since there is no earlier hit to anchor it to.
+        let gap_only = d.text_in_range(5, p2 as u32);
+        assert!(
+            gap_only.chars().count() as i32 >= d.distance_offset(5, p2 as u32),
+            "text_in_range must never be shorter than distance_offset: {gap_only:?}"
+        );
+
+        // The invariant the two existing tests above assert (strict
+        // equality) no longer holds once the range spans a paragraph
+        // boundary — see `text_in_range`'s doc comment — but it must never
+        // *undercount* relative to `distance_offset`, which is what would let
+        // a tokenizer's `position(from:offset:)` walk past where the text it
+        // was handed actually put a boundary.
+        for (a, b) in [(0u32, src.len() as u32), (3, p2 as u32 + 2), (5, p2 as u32)] {
+            let text = d.text_in_range(a, b);
+            let dist = d.distance_offset(a, b);
+            assert!(
+                text.chars().count() as i32 >= dist,
+                "text_in_range({a}, {b}) = {text:?} ({} chars) is shorter than distance_offset {dist}",
+                text.chars().count()
+            );
+        }
+
+        // Caret motion itself is untouched by any of this: from the very end
+        // of paragraph 1's row, a paragraph gap still costs exactly one
+        // Right press to reach the start of paragraph 2 — matching
+        // leaf-core's `the_caret_skips_the_gap_between_two_paragraphs`.
+        assert_eq!(d.distance_offset(5, p2 as u32), 1, "one Right crosses the whole gap");
     }
 }

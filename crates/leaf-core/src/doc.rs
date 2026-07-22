@@ -360,16 +360,20 @@ pub struct Doc {
     pub drawn_caret: Option<usize>,
 }
 
-/// The Markdown extensions every leaf document is parsed with. Only
-/// `html_elements` departs from twig's defaults: it promotes embedded raw HTML
-/// (`<img>`, `<picture>`, `<source>`, …) into semantic AST nodes, so a picture
-/// becomes a real `image` node the frontends can frame and rasterize instead of
-/// opaque `raw_block` text. The flag is inert for non-Markdown formats, so it's
-/// safe to pass unconditionally. Threading it through every constructor (not
+/// The Markdown extensions every leaf document is parsed with. `html_elements`
+/// and `directives` depart from twig's defaults. `html_elements` promotes
+/// embedded raw HTML (`<img>`, `<picture>`, `<source>`, …) into semantic AST
+/// nodes, so a picture becomes a real `image` node the frontends can frame and
+/// rasterize instead of opaque `raw_block` text. `directives` turns on generic
+/// `:::name{.class}` fenced-div containers (`directive` nodes), which a host
+/// app uses for its own semantics (diaryx's `:::vis{.audience}` visibility
+/// blocks) — core renders any directive as a plain tinted container, agnostic
+/// of `name`. Both flags are inert for non-Markdown formats, so it's safe to
+/// pass them unconditionally. Threading this through every constructor (not
 /// just `open`) keeps `from_source`, `blank`, and `reload` parsing the same
 /// document the same way — twig reparses with these same flags after each edit.
 fn parse_extensions() -> MarkdownExtensions {
-    MarkdownExtensions { html_elements: true, ..Default::default() }
+    MarkdownExtensions { html_elements: true, directives: true, ..Default::default() }
 }
 
 /// Build an editor over `bytes` in `format` with leaf's [`parse_extensions`],
@@ -873,6 +877,31 @@ impl Doc {
         }
     }
 
+    /// The safe offset to splice a block-level break at, given a caret that may
+    /// sit exactly between an inline mark's content and its own closing
+    /// delimiter (`content_span.end == off < span.end` for some enclosing mark
+    /// — the WYSIWYG caret's natural resting place at the end of `**bold**`
+    /// with nothing following it on the line: the closing `**` renders no
+    /// glyph of its own, so the caret's "end of line" offset lands right
+    /// before it). Splicing a paragraph/list/quote break at `off` itself would
+    /// sever the delimiter from its content, stranding it alone on the new
+    /// line. Walks out to the *outermost* such mark's `span.end` instead, so
+    /// nested marks closing at the same point (`**_x_**`) all clear together.
+    /// A no-op everywhere else — mid-run, or past real trailing content, no
+    /// mark's `content_span` ends exactly at `off`.
+    fn skip_trailing_close_delims(&mut self, off: usize) -> usize {
+        let off = off.min(self.source.len());
+        self.editor
+            .ancestors_at(off)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|m| inline_kind(&m.kind).is_some())
+            .filter(|m| off < m.span.end && m.content_span.as_ref().is_some_and(|c| c.end == off))
+            .map(|m| m.span.end)
+            .max()
+            .unwrap_or(off)
+    }
+
     /// The inline mark kinds whose span covers `off`, each with that span — the
     /// span-carrying sibling of [`marks_at`](Self::marks_at), which reports node
     /// ids instead. Used to shed a mark by stepping past the end of its run.
@@ -1192,6 +1221,13 @@ impl Doc {
             self.splice(s, e, "\n\n", EditKind::Other);
             return;
         }
+        // A caret resting exactly between an inline mark's content and its own
+        // closing delimiter (`**bold**` with nothing after it on the line —
+        // the WYSIWYG caret's natural end-of-line position) must not splice a
+        // block break there: every path below eventually does via
+        // `insert_raw`/`self.caret`, and splicing before the hidden closing
+        // delimiter would strand it alone on the new line.
+        self.caret = self.skip_trailing_close_delims(self.caret);
         // The block the caret is in. `block_offset_for_caret` nudges off a line
         // end (where the caret sits at the doc level); on a bare line (e.g. an
         // empty list item) fall back to the caret so the enclosing list/quote is
@@ -3488,6 +3524,7 @@ fn is_block_container(kind: &str) -> bool {
             | "task_list"
             | "list_item"
             | "task_list_item"
+            | "directive"
     )
 }
 
@@ -4387,6 +4424,32 @@ mod tests {
     }
 
     #[test]
+    fn enter_at_the_end_of_a_bold_run_keeps_its_closing_delimiter_attached() {
+        // Regression: Enter at the caret's natural End-of-line resting place
+        // after a bold run with nothing following it (on screen: right after
+        // "bold", before the hidden closing "**") spliced the paragraph break
+        // at that very byte offset — which sits *before* the closing "**" in
+        // the source, since the delimiter is hidden and emits no glyph of its
+        // own for `push_row`'s "end of row" fallback to count. That severed the
+        // mark: "**bold**\n" became "**bold\n\n**\n", stranding the closing
+        // "**" alone on the new line instead of leaving "**bold**" intact with
+        // a fresh empty paragraph after it.
+        let mut d = wysiwyg_doc("bold_eol_enter", "**bold**\n");
+        d.move_end(false); // the WYSIWYG End key, from caret 0
+        assert_eq!(d.caret, 6, "caret rests right after \"bold\", before the hidden \"**\"");
+        d.newline();
+        assert!(
+            d.source.starts_with("**bold**"),
+            "the closing ** must stay attached to \"bold\": got {:?}",
+            d.source
+        );
+        assert_eq!(
+            d.source, "**bold**\n\n\n",
+            "a fresh empty paragraph follows the still-intact bold run"
+        );
+    }
+
+    #[test]
     fn source_view_enter_is_a_single_newline() {
         let mut d = doc_with("src_enter", "abc\n");
         d.caret = 3;
@@ -5131,6 +5194,28 @@ mod tests {
         assert_eq!(d.source, body, "backspace must not touch frontmatter");
         d.delete_word_back();
         assert_eq!(d.source, body, "word-delete must not touch frontmatter either");
+    }
+
+    #[test]
+    fn wysiwyg_edits_inside_a_vis_directive_block_without_disturbing_its_fences() {
+        // diaryx's `:::vis{.audience}` visibility block — any `:::name{.class}`
+        // fenced div, really, since core parses these on for every document
+        // now (`parse_extensions`). The container is a `directive` node, an
+        // `is_block_container` kind like `block_quote`, so the caret works
+        // inside its child paragraph exactly as it would inside a quote: typing
+        // edits the paragraph, and the `:::vis{...}` / `:::` fences round-trip
+        // untouched.
+        let body = ":::vis{.public .family}\nhello\n:::\nafter\n";
+        let mut d = wysiwyg_doc("wys_vis", body);
+        d.caret = body.find("hello").unwrap() + "hello".len();
+        d.insert("!");
+        assert_eq!(
+            d.source,
+            ":::vis{.public .family}\nhello!\n:::\nafter\n",
+            "typing inside the block edits its content in place"
+        );
+        assert!(d.source.contains(":::vis{.public .family}"), "opening fence survives");
+        assert!(d.source.contains(":::\nafter"), "closing fence survives");
     }
 
     #[test]
