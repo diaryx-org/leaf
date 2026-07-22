@@ -24,9 +24,19 @@ func row(
     decoration: Bool = false,
     code: Bool = false,
     codeLang: String? = nil,
+    directive: Bool = false,
+    directiveLabel: String? = nil,
     heading: UInt8? = nil
 ) -> Row {
-    Row(runs: runs, decoration: decoration, code: code, codeLang: codeLang, heading: heading)
+    Row(
+        runs: runs,
+        decoration: decoration,
+        code: code,
+        codeLang: codeLang,
+        directive: directive,
+        directiveLabel: directiveLabel,
+        heading: heading
+    )
 }
 
 func mkCell(_ text: String, align: String = "default", start: UInt32 = 0, end: UInt32 = 0) -> TableCellView {

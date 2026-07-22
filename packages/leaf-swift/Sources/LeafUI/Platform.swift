@@ -56,6 +56,11 @@ public enum Palette {
     public static var accent: LeafColor { .controlAccentColor }
     #endif
     public static var codeBackground: LeafColor { secondary.withAlphaComponent(0.08) }
+    /// A `:::name{.class}` directive container's (diaryx's `:::vis{.audience}`
+    /// visibility block, say) outline — a dashed border round the whole span
+    /// rather than a filled panel, so it reads as a distinct aside without
+    /// competing with prose for attention the way a solid tint would.
+    public static var directiveBorderColor: LeafColor { separator }
     public static var markBackground: LeafColor { LeafColor.systemYellow.withAlphaComponent(0.28) }
     // Table chrome — a grid line, a header fill, and a body stripe, all derived
     // from the label colour so they track light/dark like everything else.

@@ -84,15 +84,20 @@ struct RowLayout {
     var tableTop: CGFloat = 0
     /// The one picture row that carries the grid's height and paints it.
     var tableFirst: Bool = false
+    /// Header space reserved above this row's own text for a directive's audience
+    /// label (nonzero only on a directive block's first, labeled row) — keeps the
+    /// label from painting over that row's real content. See `EditorTheme.directiveLabelHeight`.
+    var labelInset: CGFloat = 0
 
     var attributed: NSAttributedString { shaped.attributed }
     var wrapped: [WrappedLine] { shaped.wrapped }
     var lineHeight: CGFloat { shaped.lineHeight }
     /// The block's total height — the grid's height on a table's first row, zero
-    /// on its other (collapsed) rows, else one `lineHeight` per visual line.
+    /// on its other (collapsed) rows, else the label inset (if any) plus one
+    /// `lineHeight` per visual line.
     var height: CGFloat {
         if let t = table { return tableFirst ? t.height : 0 }
-        return CGFloat(shaped.wrapped.count) * shaped.lineHeight
+        return labelInset + CGFloat(shaped.wrapped.count) * shaped.lineHeight
     }
 }
 
@@ -162,7 +167,9 @@ struct EditorLayout {
                 )
             }
             next[row] = shaped
-            let rl = RowLayout(row: row, shaped: shaped, top: y)
+            let hasLabel = row.directive && !(row.directiveLabel ?? "").isEmpty
+            let rl = RowLayout(row: row, shaped: shaped, top: y,
+                              labelInset: hasLabel ? theme.directiveLabelHeight : 0)
             y += rl.height
             layouts.append(rl)
             i += 1
@@ -227,10 +234,10 @@ struct EditorLayout {
         let lines = rl.wrapped
         for (i, wl) in lines.enumerated() where ch < wl.start + wl.length || i == lines.count - 1 {
             let x = CTLineGetOffsetForStringIndex(wl.line, CFIndex(max(0, ch - wl.start)), nil)
-            let y = rl.top + CGFloat(i) * rl.lineHeight
+            let y = rl.top + rl.labelInset + CGFloat(i) * rl.lineHeight
             return CGRect(x: theme.padding.left + x, y: y, width: 1.5, height: rl.lineHeight)
         }
-        return CGRect(x: theme.padding.left, y: rl.top, width: 1.5, height: rl.lineHeight)
+        return CGRect(x: theme.padding.left, y: rl.top + rl.labelInset, width: 1.5, height: rl.lineHeight)
     }
 
     /// The caret's frame — `caret_ch` (UTF-16, within its block row) mapped through
@@ -361,7 +368,7 @@ struct EditorLayout {
         let row = rows.firstIndex { point.y < $0.top + $0.height } ?? rows.count - 1
         let rl = rows[row]
         let lines = rl.wrapped
-        let li = min(max(0, Int((point.y - rl.top) / rl.lineHeight)), lines.count - 1)
+        let li = min(max(0, Int((point.y - rl.top - rl.labelInset) / rl.lineHeight)), lines.count - 1)
         let wl = lines[li]
         let localX = point.x - theme.padding.left
         let rel = CTLineGetStringIndexForPosition(wl.line, CGPoint(x: max(0, localX), y: 0))
@@ -402,7 +409,7 @@ struct EditorLayout {
         ctx.setFillColor(color.cgColor)
         for (i, wl) in rl.wrapped.enumerated() {
             let lineStart = wl.start, lineEnd = wl.start + wl.length
-            let y = rl.top + CGFloat(i) * rl.lineHeight
+            let y = rl.top + rl.labelInset + CGFloat(i) * rl.lineHeight
             for (s, e) in ranges {
                 let cs = max(s, lineStart), ce = min(e, lineEnd)
                 guard cs < ce else { continue }

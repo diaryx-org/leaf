@@ -32,6 +32,29 @@ final class EditorLayoutTests: XCTestCase {
         XCTAssertLessThan(theme.blockGap, theme.rowHeight(heading: nil))
     }
 
+    func testDirectiveLabelReservesHeaderSpaceAboveTheRowsOwnText() {
+        // Regression: the audience label used to paint directly over the first
+        // row's own text (same top-left origin) instead of in its own strip.
+        let labeled = row([mkRun("hello")], directive: true, directiveLabel: "public family")
+        let dv = docView([labeled])
+        let layout = EditorLayout(dv, theme: theme)
+        let rl = layout.rows[0]
+        XCTAssertEqual(rl.labelInset, theme.directiveLabelHeight)
+        XCTAssertEqual(rl.height, theme.directiveLabelHeight + theme.rowHeight(heading: nil), accuracy: 0.5)
+        // The row's own text draws below the label strip, not at the row's top.
+        let textRect = try! XCTUnwrap(layout.rect(row: 0, ch: 0, theme: theme))
+        XCTAssertEqual(textRect.minY, rl.top + theme.directiveLabelHeight, accuracy: 0.5)
+    }
+
+    func testUnlabeledDirectiveRowHasNoHeaderInset() {
+        // Only the first (labeled) row of a directive block reserves the strip;
+        // later rows in the same block sit flush, like an ordinary row.
+        let unlabeled = row([mkRun("world")], directive: true, directiveLabel: nil)
+        let dv = docView([unlabeled])
+        let layout = EditorLayout(dv, theme: theme)
+        XCTAssertEqual(layout.rows[0].labelInset, 0)
+    }
+
     func testTableRuleRowKeepsFullHeight() {
         // A decoration row that carries glyphs (a table's box-drawing rule) is
         // not a paragraph gap and must keep its full line box.

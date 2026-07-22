@@ -199,6 +199,8 @@ public final class LeafTextView: UIView, UITextInput {
         let padX = renderTheme.padding.left
         let fullWidth = bounds.width - renderTheme.padding.left - renderTheme.padding.right
 
+        drawDirectiveBorders(in: ctx, dirtyRect: rect)
+
         for rl in layoutEngine.rows {
             // Rows are laid out top-down, so cull to the dirty band: skip rows above
             // it, stop once past the bottom — repaint only the visible rows.
@@ -210,6 +212,9 @@ public final class LeafTextView: UIView, UITextInput {
                 continue
             }
             let rowRect = CGRect(x: padX, y: rl.top, width: fullWidth, height: rl.height)
+            if rl.row.directive, let label = rl.row.directiveLabel, !label.isEmpty {
+                drawDirectiveLabel(label, in: rowRect)
+            }
             if rl.row.code {
                 ctx.setFillColor(renderTheme.codeBackground.cgColor)
                 ctx.fill(rowRect.insetBy(dx: -4, dy: 0))
@@ -217,7 +222,7 @@ public final class LeafTextView: UIView, UITextInput {
             }
             // Draw each wrapped visual line's substring on its own line box.
             for (i, wl) in rl.wrapped.enumerated() {
-                let lineTop = rl.top + CGFloat(i) * rl.lineHeight
+                let lineTop = rl.top + rl.labelInset + CGFloat(i) * rl.lineHeight
                 if lineTop >= rect.maxY { break }
                 if lineTop + rl.lineHeight <= rect.minY { continue }
                 wl.attributed.draw(with: CGRect(x: padX, y: lineTop, width: fullWidth, height: rl.lineHeight),
@@ -280,6 +285,42 @@ public final class LeafTextView: UIView, UITextInput {
         let s = lang as NSString
         let size = s.size(withAttributes: attrs)
         s.draw(at: CGPoint(x: rowRect.maxX - size.width - 2, y: rowRect.minY + 1), withAttributes: attrs)
+    }
+
+    /// A directive container's `.class` label, top-left of its first row — the
+    /// UIKit peer of the AppKit `drawDirectiveLabel`.
+    private func drawDirectiveLabel(_ label: String, in rowRect: CGRect) {
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: renderTheme.proportionalFont(size: renderTheme.fontSize * 0.75, bold: false, italic: false),
+            .foregroundColor: renderTheme.secondaryColor,
+        ]
+        (label as NSString).draw(at: CGPoint(x: rowRect.minX + 2, y: rowRect.minY + 1), withAttributes: attrs)
+    }
+
+    /// One dashed outline per maximal run of consecutive `directive` rows — the
+    /// UIKit peer of the AppKit `drawDirectiveBorders`.
+    private func drawDirectiveBorders(in ctx: CGContext, dirtyRect: CGRect) {
+        let padX = renderTheme.padding.left
+        let fullWidth = bounds.width - renderTheme.padding.left - renderTheme.padding.right
+        let rows = layoutEngine.rows
+        var i = 0
+        while i < rows.count {
+            guard rows[i].row.directive, rows[i].table == nil else { i += 1; continue }
+            let start = i
+            while i < rows.count, rows[i].row.directive, rows[i].table == nil { i += 1 }
+            let first = rows[start], last = rows[i - 1]
+            let rect = CGRect(x: padX - 4, y: first.top,
+                              width: fullWidth + 8, height: last.top + last.height - first.top)
+            if rect.maxY < dirtyRect.minY || rect.minY > dirtyRect.maxY { continue }
+            ctx.saveGState()
+            ctx.setStrokeColor(renderTheme.directiveBorderColor.cgColor)
+            ctx.setLineWidth(1)
+            ctx.setLineDash(phase: 0, lengths: [3, 3])
+            ctx.addPath(CGPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5),
+                               cornerWidth: 6, cornerHeight: 6, transform: nil))
+            ctx.strokePath()
+            ctx.restoreGState()
+        }
     }
 
     // MARK: UIKeyInput — typing + backspace
@@ -581,7 +622,7 @@ public final class LeafTextView: UIView, UITextInput {
                 guard cs < ce else { continue }
                 let x0 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(cs - lineStart), nil)
                 let x1 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(ce - lineStart), nil)
-                let rect = CGRect(x: renderTheme.padding.left + x0, y: rl.top + CGFloat(i) * rl.lineHeight,
+                let rect = CGRect(x: renderTheme.padding.left + x0, y: rl.top + rl.labelInset + CGFloat(i) * rl.lineHeight,
                                   width: x1 - x0, height: rl.lineHeight)
                 rects.append(LeafSelectionRect(rect: rect,
                                                containsStart: row == sRow && cs == sCh,

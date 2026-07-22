@@ -146,6 +146,8 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         let active = selectionIsActive
         let selColor = active ? theme.selectionColor : theme.inactiveSelectionColor
 
+        drawDirectiveBorders(in: ctx, dirtyRect: dirtyRect)
+
         for rl in layoutEngine.rows {
             // Rows are laid out top-down, so cull to the dirty band: skip rows above
             // it, stop once past the bottom. A scroll or caret blink then repaints
@@ -159,6 +161,9 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
                 continue
             }
             let rowRect = CGRect(x: padX, y: rl.top, width: fullWidth, height: rl.height)
+            if rl.row.directive, let label = rl.row.directiveLabel, !label.isEmpty {
+                drawDirectiveLabel(label, in: rowRect)
+            }
             if rl.row.code {
                 ctx.setFillColor(theme.codeBackground.cgColor)
                 ctx.fill(rowRect.insetBy(dx: -4, dy: 0))
@@ -167,7 +172,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             layoutEngine.fillSelection(row: rl, padLeft: padX, color: selColor, in: ctx)
             // Draw each wrapped visual line's substring on its own line box.
             for (i, wl) in rl.wrapped.enumerated() {
-                let lineTop = rl.top + CGFloat(i) * rl.lineHeight
+                let lineTop = rl.top + rl.labelInset + CGFloat(i) * rl.lineHeight
                 if lineTop >= dirtyRect.maxY { break }
                 if lineTop + rl.lineHeight <= dirtyRect.minY { continue }
                 wl.attributed.draw(with: CGRect(x: padX, y: lineTop, width: fullWidth, height: rl.lineHeight),
@@ -272,7 +277,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
                 guard cs < ce else { continue }
                 let x0 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(cs - lineStart), nil)
                 let x1 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(ce - lineStart), nil)
-                let y = rl.top + CGFloat(i) * rl.lineHeight + rl.lineHeight - 1.5
+                let y = rl.top + rl.labelInset + CGFloat(i) * rl.lineHeight + rl.lineHeight - 1.5
                 ctx.fill(CGRect(x: theme.padding.left + x0, y: y, width: x1 - x0, height: 1))
             }
         }
@@ -292,6 +297,46 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         let s = lang as NSString
         let size = s.size(withAttributes: attrs)
         s.draw(at: CGPoint(x: rowRect.maxX - size.width - 2, y: rowRect.minY + 1), withAttributes: attrs)
+    }
+
+    /// A directive container's `.class` label, top-left of its first row — the
+    /// mirror of `drawCodeLang`'s top-right fence-language label. Opposite
+    /// corners so a directive wrapping a code block never collides the two.
+    private func drawDirectiveLabel(_ label: String, in rowRect: CGRect) {
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: theme.proportionalFont(size: theme.fontSize * 0.75, bold: false, italic: false),
+            .foregroundColor: theme.secondaryColor,
+        ]
+        (label as NSString).draw(at: CGPoint(x: rowRect.minX + 2, y: rowRect.minY + 1), withAttributes: attrs)
+    }
+
+    /// One dashed outline per maximal run of consecutive `directive` rows — a
+    /// directive block reads as a single bordered aside, not one filled band per
+    /// row. Drawn before the row loop so the label/text paint over it, not the
+    /// reverse. Skips a table row (it has no drawable rect of its own here; a
+    /// directive-wrapped table isn't chromed today).
+    private func drawDirectiveBorders(in ctx: CGContext, dirtyRect: NSRect) {
+        let padX = theme.padding.left
+        let fullWidth = bounds.width - theme.padding.left - theme.padding.right
+        let rows = layoutEngine.rows
+        var i = 0
+        while i < rows.count {
+            guard rows[i].row.directive, rows[i].table == nil else { i += 1; continue }
+            let start = i
+            while i < rows.count, rows[i].row.directive, rows[i].table == nil { i += 1 }
+            let first = rows[start], last = rows[i - 1]
+            let rect = CGRect(x: padX - 4, y: first.top,
+                              width: fullWidth + 8, height: last.top + last.height - first.top)
+            if rect.maxY < dirtyRect.minY || rect.minY > dirtyRect.maxY { continue }
+            ctx.saveGState()
+            ctx.setStrokeColor(theme.directiveBorderColor.cgColor)
+            ctx.setLineWidth(1)
+            ctx.setLineDash(phase: 0, lengths: [3, 3])
+            ctx.addPath(CGPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5),
+                               cornerWidth: 6, cornerHeight: 6, transform: nil))
+            ctx.strokePath()
+            ctx.restoreGState()
+        }
     }
 
     private func scrollCaretToVisible() {

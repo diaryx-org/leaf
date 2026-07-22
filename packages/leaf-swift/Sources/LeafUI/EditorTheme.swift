@@ -38,6 +38,8 @@ public struct EditorTheme {
     public var linkColor: LeafColor
     public var codeColor: LeafColor
     public var codeBackground: LeafColor
+    /// A directive container's (`:::name{.class}`) dashed outline colour.
+    public var directiveBorderColor: LeafColor
     public var markBackground: LeafColor
     public var quoteBarColor: LeafColor
     public var ruleColor: LeafColor
@@ -68,6 +70,7 @@ public struct EditorTheme {
         linkColor: LeafColor = Palette.link,
         codeColor: LeafColor = Palette.label,
         codeBackground: LeafColor = Palette.codeBackground,
+        directiveBorderColor: LeafColor = Palette.directiveBorderColor,
         markBackground: LeafColor = Palette.markBackground,
         quoteBarColor: LeafColor = Palette.tertiary,
         ruleColor: LeafColor = Palette.separator,
@@ -91,6 +94,7 @@ public struct EditorTheme {
         self.linkColor = linkColor
         self.codeColor = codeColor
         self.codeBackground = codeBackground
+        self.directiveBorderColor = directiveBorderColor
         self.markBackground = markBackground
         self.quoteBarColor = quoteBarColor
         self.ruleColor = ruleColor
@@ -141,6 +145,12 @@ public struct EditorTheme {
     /// The height a between-blocks gap row occupies — a fraction of the body line
     /// box, so a paragraph boundary reads as spacing rather than a blank line.
     var blockGap: CGFloat { lineHeight * blockGapScale }
+
+    /// The header strip reserved above a directive block's first row for its
+    /// audience-name label, sized to the small font `drawDirectiveLabel` paints it
+    /// with (see `LeafTextView`/`LeafTextViewiOS`) — so the label sits in its own
+    /// space instead of over that row's real text.
+    var directiveLabelHeight: CGFloat { fontSize * 0.75 + 4 }
 
     /// The laid-out height of `row`: a shrunk gap for a block-boundary decoration
     /// row (empty, holds no caret), otherwise its heading/body line box.
