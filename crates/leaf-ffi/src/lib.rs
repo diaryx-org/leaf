@@ -392,7 +392,16 @@ impl Inner {
             View::Wysiwyg => self.doc.vmap.pos_of_offset(off),
             View::Source => {
                 let s = &self.doc.source;
-                let off = off.min(s.len());
+                // Walk back to a character boundary, not just into range. Every
+                // offset here arrives from a UI toolkit counting in its own
+                // units, so one landing mid-character is ordinary input — and
+                // slicing on it aborts the process across an FFI boundary that
+                // has no unwinding. `snap_stop` and `text_in_range` already do
+                // this; this was the one door left open.
+                let mut off = off.min(s.len());
+                while off > 0 && !s.is_char_boundary(off) {
+                    off -= 1;
+                }
                 let row = s[..off].bytes().filter(|&b| b == b'\n').count();
                 let line_start = s[..off].rfind('\n').map_or(0, |i| i + 1);
                 (row, text_width(&s[line_start..off]))
@@ -1532,6 +1541,42 @@ mod tests {
 
     fn doc(src: &str) -> Arc<LeafDoc> {
         LeafDoc::new(src.to_string(), "markdown".to_string()).unwrap()
+    }
+
+    /// **A foreign caller's offset must never panic.** Every offset entering
+    /// leaf comes from a UI toolkit that counts in its own units — UIKit hands
+    /// back UTF-16 positions — so an offset landing mid-character is a normal
+    /// thing to be handed, not a bug in the caller. Slicing on it aborts the
+    /// process across the FFI boundary, where there is no unwinding to catch.
+    ///
+    /// Reproduces a real crash: `byte index 1236 is not a char boundary; it is
+    /// inside '…'`.
+    #[test]
+    fn an_offset_inside_a_multibyte_char_does_not_panic() {
+        let d = doc("# April 02, 2026\n\nAn interesting thing AI said to me:\n\n> a person… who journals\n");
+        d.toggle_view(); // to the raw source view, where offsets index bytes directly
+        let src = d.source();
+        // The interior byte of the `…` — exactly the shape of the crash.
+        let mid = src.find('…').expect("the ellipsis is in the fixture") + 1;
+        assert!(!src.is_char_boundary(mid), "the fixture must be mid-character");
+
+        // Every entry point that takes a raw source offset.
+        let _ = d.pos_for_offset(mid as u32);
+        let _ = d.vertical_offset(mid as u32, true);
+        let _ = d.vertical_offset(mid as u32, false);
+        let _ = d.snap_offset(mid as u32);
+        let _ = d.step_offset(mid as u32, 1);
+        let _ = d.step_offset(mid as u32, -1);
+        let _ = d.distance_offset(0, mid as u32);
+        let _ = d.text_in_range(0, mid as u32);
+        let _ = d.set_selection_offsets(mid as u32, mid as u32);
+        // And the caret must not come to rest inside the character either — a
+        // mid-character caret is a later panic waiting for the next edit.
+        let _ = d.replace_range(mid as u32, mid as u32, "x".to_string());
+        assert!(
+            d.source().is_char_boundary(d.caret_offset() as usize),
+            "the caret must sit on a character boundary"
+        );
     }
 
     #[test]

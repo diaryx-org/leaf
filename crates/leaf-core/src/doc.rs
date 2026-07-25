@@ -2736,7 +2736,17 @@ impl Doc {
         // source view reaches every byte, so it snaps to nothing.
         let target = match self.view {
             View::Wysiwyg => self.vmap.snap_to_stop(offset.min(self.source.len())),
-            View::Source => offset,
+            // The source view reaches every byte, so there is no stop to snap
+            // to — but "every byte" still means every *character* boundary. A
+            // caret resting inside a multi-byte character draws nowhere real
+            // and panics the next time anything slices there.
+            View::Source => {
+                let mut o = offset.min(self.source.len());
+                while o > 0 && !self.source.is_char_boundary(o) {
+                    o -= 1;
+                }
+                o
+            }
         };
         self.move_to(target, extend);
         self.clamp_caret();
