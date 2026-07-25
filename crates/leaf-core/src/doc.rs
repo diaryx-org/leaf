@@ -1411,6 +1411,11 @@ impl Doc {
         if self.view != View::Source && self.backspace_list_start() {
             return;
         }
+        // WYSIWYG: and the same at the start of a heading's content — the `# `
+        // there is markup the rich view hides, not text the user typed.
+        if self.view != View::Source && self.backspace_heading_start() {
+            return;
+        }
         // WYSIWYG: Backspace on a *blank line* deletes back to the previous caret
         // stop, not a single newline. On a line with no text of its own, the byte
         // before the caret is a `\n` that spells part of a block boundary — the gap
@@ -1537,6 +1542,65 @@ impl Doc {
             // siblings the removed item was counted among.
             self.splice(line_start, self.caret, "", EditKind::Other);
             self.renumber_here();
+        }
+        true
+    }
+
+    /// Backspace's heading behaviour: with the caret exactly at the start of an
+    /// ATX heading's content — right after the `#` marker the rich view hides —
+    /// strip the marker so the line becomes a paragraph. The peer of
+    /// [`backspace_list_start`](Self::backspace_list_start)'s ladder, and the same
+    /// reasoning: hidden block markup is structure, so the keystroke over it is
+    /// structural.
+    ///
+    /// Without this the ordinary delete takes the space out of `# Title` and
+    /// leaves `#Title`, which is no longer a heading at all — the hash the view
+    /// had been hiding surfaces as literal text the user has to delete a second
+    /// time, having never typed it. A closing sequence (`# Title #`, hidden at the
+    /// other end) goes with the marker for the same reason.
+    ///
+    /// Returns whether it acted; `false` leaves Backspace its character delete.
+    fn backspace_heading_start(&mut self) -> bool {
+        let caret = self.caret;
+        // The heading whose content opens exactly at the caret. A bare `#` has no
+        // content span at all — its content starts (and ends) where the line does.
+        let Some((span, content_end)) = self.nodes().iter().find_map(|n| {
+            let (start, end) = match &n.content_span {
+                Some(c) => (c.start, c.end),
+                None => (n.span.end, n.span.end),
+            };
+            (n.kind == "heading" && start == caret).then(|| (n.span.clone(), end))
+        }) else {
+            return false;
+        };
+        // Walk back over the marker: the space between it and the text, then the
+        // hashes. A setext heading has neither — its content opens the line — so
+        // it falls through to the ordinary delete, as does anything else sitting
+        // at a content start.
+        let bytes = self.source.as_bytes();
+        let mut start = caret;
+        while start > span.start && matches!(bytes[start - 1], b' ' | b'\t') {
+            start -= 1;
+        }
+        let spaces_end = start;
+        while start > span.start && bytes[start - 1] == b'#' {
+            start -= 1;
+        }
+        if start == spaces_end {
+            return false;
+        }
+        // A closing `#` sequence is hidden too, so it can't be left behind. Only
+        // when the tail really is one: trailing spaces alone are nothing to strip.
+        let tail = &self.source[content_end..span.end];
+        if tail.contains('#') && tail.chars().all(|c| c == '#' || c.is_whitespace()) {
+            let kept = self.source[caret..content_end].to_string();
+            self.splice(start, span.end, &kept, EditKind::Other);
+            // The splice leaves the caret past the text it re-wrote; the caret
+            // belongs where the content now starts, which is where it already was.
+            self.caret = start;
+            self.record_caret();
+        } else {
+            self.splice(start, caret, "", EditKind::Other);
         }
         true
     }
@@ -6104,6 +6168,63 @@ mod tests {
         d.caret = d.source.find('b').unwrap(); // between `a` and `b`
         d.backspace();
         assert_eq!(d.source, "- b\n");
+    }
+
+    #[test]
+    fn backspace_at_a_heading_start_strips_the_marker() {
+        // The `# ` is markup the rich view hides, so Backspace over it takes the
+        // whole marker and leaves a paragraph. Deleting a byte of it instead left
+        // `#Title` — no longer a heading, with the hash now literal text the user
+        // never typed and has to delete again.
+        let mut d = doc_in(View::Wysiwyg, "bsp_head", "## Title\n");
+        d.caret = d.source.find('T').unwrap(); // right after `## `
+        d.backspace();
+        assert_eq!(d.source, "Title\n");
+        assert_eq!(d.caret, 0, "the caret stays with the text it was in front of");
+    }
+
+    #[test]
+    fn backspace_at_a_heading_start_keeps_the_block_around_it() {
+        // Only the heading's own marker goes — the quote (or list) it sits in is
+        // untouched, exactly as un-heading it should be.
+        let mut d = doc_in(View::Wysiwyg, "bsp_head_quote", "> # Title\n");
+        d.caret = d.source.find('T').unwrap();
+        d.backspace();
+        assert_eq!(d.source, "> Title\n");
+    }
+
+    #[test]
+    fn backspace_at_a_heading_start_takes_its_closing_sequence_too() {
+        // `# Title #`'s trailing hashes are hidden at the other end; leaving them
+        // behind would surface the same stray hash the marker delete just avoided.
+        let mut d = doc_in(View::Wysiwyg, "bsp_head_closed", "# Title #\n");
+        d.caret = d.source.find('T').unwrap();
+        d.backspace();
+        assert_eq!(d.source, "Title\n");
+        // And it's one edit: a single undo puts the whole heading back.
+        d.undo();
+        assert_eq!(d.source, "# Title #\n");
+    }
+
+    #[test]
+    fn backspace_mid_heading_still_deletes_a_character() {
+        // The heading behaviour is armed only at the content's start; anywhere
+        // else Backspace is the ordinary character delete.
+        let mut d = doc_in(View::Wysiwyg, "bsp_head_mid", "# ab\n");
+        d.caret = d.source.find('b').unwrap();
+        d.backspace();
+        assert_eq!(d.source, "# b\n");
+    }
+
+    #[test]
+    fn source_view_backspace_still_edits_the_heading_marker_literally() {
+        // In source view the `# ` is text on the screen the user is deleting a
+        // byte of, so it keeps its literal meaning — the same split the list
+        // ladder and Enter draw between the two views.
+        let mut d = doc_with("bsp_head_src", "# Title\n");
+        d.caret = d.source.find('T').unwrap();
+        d.backspace();
+        assert_eq!(d.source, "#Title\n");
     }
 
     #[test]
