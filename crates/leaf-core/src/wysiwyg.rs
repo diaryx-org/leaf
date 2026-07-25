@@ -4036,6 +4036,65 @@ mod tests {
     }
 
     #[test]
+    fn a_text_directives_label_maps_to_its_true_source_bytes() {
+        // Regression (needs twig-doc >= 2.5.0): twig parses a `[label]` as a
+        // detached slice, and until it rebased the enclosing scan's segments
+        // onto it every node inside the label reported a span of `(0,0)`. Read
+        // by anything that trusts a span that means "byte 0", so the label's
+        // glyphs mapped to the START OF THE DOCUMENT — a click on the label put
+        // the caret at the top of the file, its stops collided with the real
+        // first line's, and an edit there landed on the wrong bytes entirely.
+        //
+        // The sibling test `a_text_directive_keeps_its_paragraph_visible` only
+        // counts stops, which is exactly why this went unnoticed: the right
+        // NUMBER of stops at completely wrong offsets.
+        let src = "x :abbr[HTML]{title=\"y\"} z\n";
+        let m = map_directives(src);
+        let stops: Vec<(char, usize)> = m
+            .rows
+            .iter()
+            .flat_map(|r| &r.glyphs)
+            .filter(|g| g.stop)
+            .map(|g| (g.ch, g.src))
+            .collect();
+        // `HTML` sits at 8..12. The name, brackets and `{…}` are hidden markup
+        // the caret steps over, so the line's stops run 0, 1, 8..12, then 24.
+        assert_eq!(
+            stops,
+            [('x', 0), (' ', 1), ('H', 8), ('T', 9), ('M', 10), ('L', 11), (' ', 24), ('z', 25)]
+        );
+    }
+
+    #[test]
+    fn every_glyph_in_a_directive_label_points_at_its_source_byte() {
+        // The `every_glyph_points_at_its_source_byte` invariant, extended over
+        // directive labels now that their offsets are real. Nested markup is
+        // included: its delimiters are hidden, so the visible glyphs must skip
+        // them and still name their own bytes.
+        let src = "x :abbr[a *b* c] y and :vis[family only] z\n";
+        let m = map_directives(src);
+        for g in m.rows.iter().flat_map(|r| &r.glyphs).filter(|g| g.stop) {
+            let at = src[g.src..].chars().next();
+            assert_eq!(at, Some(g.ch), "glyph {:?} claims byte {}, which is {at:?}", g.ch, g.src);
+        }
+        assert_eq!(rendered(&m).trim_end(), "x a b c y and family only z");
+    }
+
+    #[test]
+    fn a_directive_labels_nested_emphasis_keeps_both_its_style_and_its_offsets() {
+        let src = "x :abbr[a *b* c] y\n";
+        let m = map_directives(src);
+        let b = m
+            .rows
+            .iter()
+            .flat_map(|r| &r.glyphs)
+            .find(|g| g.ch == 'b')
+            .expect("the emphasised char");
+        assert!(b.style.italic, "the label's *b* lost its emphasis");
+        assert_eq!(b.src, 11, "the label's *b* lost its source byte");
+    }
+
+    #[test]
     fn a_bare_colon_word_renders_as_the_prose_it_almost_always_is() {
         // Regression: twig matches a colon followed by any letter-led word, so
         // ordinary prose is full of "text directives" nobody meant to write.

@@ -33,7 +33,12 @@ edition = "2024"
 # leaf / container) on `FlatNode`. Every directive reports the same `kind`, so
 # without these the map can't tell an inline `:vis[…]` span from a `::embed{…}`
 # block — and misreading the first as a block blanks its whole paragraph.
-twig-doc = { version = "2.4.0" }
+# 2.5: a text directive's `[label]` children carry their true source spans. The
+# label is parsed as a detached slice, and without the enclosing scan's segments
+# rebased onto it every node inside reported `(0,0)` — read by anything that
+# trusts a span as "at byte 0", so a click on `:abbr[HTML]`'s label put the caret
+# at the top of the document and its stops collided with the real first line's.
+twig-doc = { version = "2.5.0" }
 anyhow = "1"
 # Frontend-neutral core: the caret/selection model + AST→glyph map, styled with
 # a toolkit-agnostic Style. Each frontend crate maps that to its own styling.
