@@ -71,6 +71,7 @@ func mkTable(_ grid: [TableRowView], startRow: UInt32 = 0, endRow: UInt32 = 0) -
 func docView(
     _ rows: [Row],
     tables: [TableView] = [],
+    directives: [DirectiveView] = [],
     caretRow: UInt32 = 0,
     caretCh: UInt32 = 0,
     caretSrc: UInt32 = 0,
@@ -85,6 +86,7 @@ func docView(
     DocView(
         rows: rows,
         tables: tables,
+        directives: directives,
         caretRow: caretRow,
         caretCol: 0,
         caretCh: caretCh,

@@ -24,7 +24,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::ops::Range;
 
-use twig::{Alignment, FlatNode, QueryMatch};
+use twig::{Alignment, DirectiveForm, FlatNode, QueryMatch};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -113,6 +113,40 @@ pub struct VRow {
     /// [`images`](VisualMap::images) side-table is derived from it once the rows
     /// are final, the same way [`code_blocks`](VisualMap::code_blocks) is.
     pub image: Option<ImageMark>,
+    /// Set on the single placeholder row a **leaf** directive (`::name{…}`)
+    /// renders to, carrying its name and attributes; `None` on every other row.
+    /// The container form isn't this — it wraps real blocks and marks each of
+    /// them [`directive`](Self::directive) instead. Like [`image`](Self::image)
+    /// it's plain display strings, so it rides row reuse untouched, and the map's
+    /// [`directives`](VisualMap::directives) side-table is derived from it once
+    /// the rows are final.
+    pub leaf_directive: Option<DirectiveMark>,
+}
+
+/// The name and attributes a leaf directive's placeholder row carries, so a
+/// frontend that knows the host app's vocabulary can paint the real thing —
+/// an embedded page for diaryx's `::embed{src=…}`, a generated table of
+/// contents for a `::toc`, and the plain `⧉ name` label for one it doesn't
+/// know. The peer of [`ImageMark`], and plain strings for the same reason: they
+/// survive the row shuffling of [`BlockCache`] reuse and [`build_spliced`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectiveMark {
+    /// The directive's type — `embed`, `toc`, `vis` — with no leading colons.
+    /// Core is agnostic of what it means: the vocabulary is the host app's.
+    pub name: String,
+    /// Its `{…}` attributes as `(key, value)` pairs in source order. A bare
+    /// attribute (`{public}`) has a `None` value, the way twig reports it.
+    pub attrs: Vec<(String, Option<String>)>,
+    /// The directive's `[label]` text, flattened from its inline children, or
+    /// empty when it has none. Also what the placeholder label shows.
+    pub label: String,
+    /// How many visual rows this directive reserves — the label row plus blank
+    /// filler rows below it, so a frontend painting something real has the
+    /// vertical room. `1` is the bare placeholder, and the only value core
+    /// produces today: unlike an image (whose height a terminal frontend
+    /// measures and reports back), nothing has told core how tall an embed is.
+    /// A pixel-laid-out GUI sets its own height regardless.
+    pub rows: usize,
 }
 
 /// The destination and alt text a block-level image placeholder row carries, so
@@ -215,6 +249,11 @@ pub struct VisualMap {
     /// row reuse), the same way [`code_blocks`](VisualMap::code_blocks) is
     /// derived from [`VRow::code`].
     pub images: Vec<ImageInfo>,
+    /// Every **leaf** directive in the document, in order — one per placeholder
+    /// row a frontend may replace with whatever the host app's vocabulary makes
+    /// of it. Derived from the per-row [`VRow::leaf_directive`] mark once the
+    /// rows are final, exactly as [`images`](VisualMap::images) is.
+    pub directives: Vec<DirectiveInfo>,
 }
 
 impl VisualMap {
@@ -602,6 +641,25 @@ fn image_spans(rows: &[VRow]) -> Vec<ImageInfo> {
         .collect()
 }
 
+/// Collect one [`DirectiveInfo`] per row carrying a [`VRow::leaf_directive`]
+/// mark — the block-level view a frontend needs to replace each placeholder row
+/// with whatever the directive means to it. The peer of [`image_spans`], derived
+/// from the final rows for the same reason: it survives however [`build_cached`]
+/// and [`build_spliced`] shuffle rows around.
+fn directive_spans(rows: &[VRow]) -> Vec<DirectiveInfo> {
+    rows.iter()
+        .enumerate()
+        .filter_map(|(i, row)| {
+            row.leaf_directive.as_ref().map(|m| DirectiveInfo {
+                rows_span: i..i + m.rows.max(1),
+                name: m.name.clone(),
+                attrs: m.attrs.clone(),
+                label: m.label.clone(),
+            })
+        })
+        .collect()
+}
+
 /// The source range of a fenced code block's info string — everything on the
 /// opening line past the fence (`` ```rust `` → the `rust`). `block_start` is the
 /// code block node's `span.start`. `None` for an indented code block, which
@@ -676,6 +734,7 @@ pub fn build(
     let stops = collect_stops(&b.rows);
     let code_blocks = code_block_spans(&b.rows);
     let images = image_spans(&b.rows);
+    let directives = directive_spans(&b.rows);
     VisualMap {
         rows: b.rows,
         content_start,
@@ -683,6 +742,7 @@ pub fn build(
         tables: b.tables,
         code_blocks,
         images,
+        directives,
     }
 }
 
@@ -840,6 +900,7 @@ pub fn build_cached(
     let stops = collect_stops(&b.rows);
     let code_blocks = code_block_spans(&b.rows);
     let images = image_spans(&b.rows);
+    let directives = directive_spans(&b.rows);
     VisualMap {
         rows: b.rows,
         content_start,
@@ -847,6 +908,7 @@ pub fn build_cached(
         tables: b.tables,
         code_blocks,
         images,
+        directives,
     }
 }
 
@@ -1024,6 +1086,7 @@ pub fn build_spliced(
 
     let code_blocks = code_block_spans(&rows);
     let images = image_spans(&rows);
+    let directives = directive_spans(&rows);
     Some(VisualMap {
         rows,
         content_start: blocks[0].span.start,
@@ -1031,6 +1094,7 @@ pub fn build_spliced(
         tables: Vec::new(),
         code_blocks,
         images,
+        directives,
     })
 }
 
@@ -1201,6 +1265,7 @@ fn shift_row(row: &VRow, delta: isize) -> VRow {
         directive: row.directive,
         directive_label: row.directive_label.clone(),
         image: row.image.clone(),
+        leaf_directive: row.leaf_directive.clone(),
     }
 }
 
@@ -1380,6 +1445,7 @@ impl Builder<'_> {
                 directive: false,
                 directive_label: None,
                 image: None,
+                leaf_directive: None,
             });
         }
     }
@@ -1427,6 +1493,13 @@ impl Builder<'_> {
             // `languages/markdown/attributes.zig`). Reading only `.class`
             // would leave every *existing* diaryx `:::vis{...}` block
             // unlabeled.
+            // Only the *container* form is the panel below. A `text` directive
+            // is inline and never reaches the block walker (see `is_inline`); a
+            // `leaf` one is a standalone block with no body, drawn as a
+            // placeholder the way an image is.
+            "directive" if node.directive_form == Some(DirectiveForm::Leaf) => {
+                self.block_directive(id, pf);
+            }
             "directive" => {
                 let mut parts: Vec<String> = Vec::new();
                 for (k, v) in &node.attrs {
@@ -1575,7 +1648,7 @@ impl Builder<'_> {
                     self.block_image(img, id, pf);
                     return;
                 }
-                let inline = !kids.is_empty() && kids.iter().all(|&c| is_inline(&self.nodes[c].kind));
+                let inline = !kids.is_empty() && kids.iter().all(|&c| is_inline(&self.nodes[c]));
                 if inline || kids.is_empty() {
                     let glyphs = self.inline_children_with_trailing(id, Style::default());
                     if !glyphs.is_empty() {
@@ -1733,6 +1806,7 @@ impl Builder<'_> {
             directive: false,
             directive_label: None,
             image: None,
+            leaf_directive: None,
         });
     }
 
@@ -1818,6 +1892,7 @@ impl Builder<'_> {
             directive: false,
             directive_label: None,
             image: None,
+            leaf_directive: None,
         });
         }
     }
@@ -1878,6 +1953,7 @@ impl Builder<'_> {
                 directive: false,
                 directive_label: None,
                 image: None,
+                leaf_directive: None,
             });
         }
         self.last_off = end;
@@ -1975,8 +2051,46 @@ impl Builder<'_> {
         }
     }
 
+    /// A leaf directive (`::name{…}`) as one placeholder row — the
+    /// [`block_image`](Self::block_image) recipe, for the same reason: it is a
+    /// block that renders as *a thing*, not as text, and the frontend paints
+    /// whatever the host app's vocabulary makes of it.
+    ///
+    /// The row's glyphs are a `⧉ label` (or `⧉ name`) stand-in a plain surface
+    /// paints as-is, every glyph anchored at the directive's start with a caret
+    /// stop there, and the row ending past it so the caret can also rest after
+    /// it. It carries a [`DirectiveMark`] for [`directive_spans`], and is marked
+    /// [`directive`](VRow::directive) so a frontend already drawing the
+    /// container form's panel frames this one identically for free.
+    ///
+    /// Before this, a leaf directive emitted no rows at all: it was invisible,
+    /// held no caret, and vertical motion crossed a void where it stood.
+    fn block_directive(&mut self, id: usize, pf: &[Glyph]) {
+        let node = &self.nodes[id];
+        let (start, end) = (node.span.start, node.span.end);
+        let name = node.name.clone().unwrap_or_default();
+        let attrs = node.attrs.clone();
+        let label = self.image_alt(id); // its `[label]` children, flattened
+        let shown = if label.is_empty() { &name } else { &label };
+        let style = Style::default().role(Role::Image);
+        let mut glyphs = pf.to_vec();
+        for ch in format!("⧉ {shown}").chars() {
+            glyphs.push(Glyph { ch, style, src: start, stop: true });
+        }
+        // End past the directive so the caret has a stop after it — the same
+        // reason `block_image` anchors its row at the image's end.
+        self.push_row_at(glyphs, end);
+        if let Some(row) = self.rows.last_mut() {
+            row.directive = true;
+            row.leaf_directive = Some(DirectiveMark { name, attrs, label, rows: 1 });
+        }
+        self.last_off = end;
+    }
+
     /// An image's alt text: the flattened text of its inline descendants (an
-    /// image's children *are* its alt content), empty when it has none.
+    /// image's children *are* its alt content), empty when it has none. Also a
+    /// leaf directive's `[label]`, which is the same shape — inline children
+    /// standing for the block.
     fn image_alt(&self, id: usize) -> String {
         let mut out = String::new();
         self.collect_text(id, &mut out);
@@ -2110,6 +2224,14 @@ impl Builder<'_> {
                 let at = node.content_span.as_ref().map_or(node.span.start + 1, |c| c.start);
                 push_text(out, node.text.as_deref().unwrap_or(""), at, base.role(Role::Code));
             }
+            // A text directive (`:name[label]{…}`) — the inline form of a generic
+            // directive. Its `[label]` children are the visible text; the name and
+            // the `{…}` attributes are the host app's vocabulary (diaryx's
+            // `:vis[…]`) and stay hidden markup, exactly as a link's `](dest)` is.
+            // Drawn in the surrounding style: a role of its own would need one
+            // every frontend maps, and the bug this fixes is that the text was
+            // invisible, not that it was unstyled.
+            "directive" => self.recurse(id, base, out),
             "link" | "url" | "email" => {
                 let style = base.role(Role::Link);
                 if self.children(id).is_empty() {
@@ -2294,6 +2416,7 @@ impl Builder<'_> {
             directive: false,
             directive_label: None,
             image: None,
+            leaf_directive: None,
         });
     }
 
@@ -2383,6 +2506,7 @@ impl Builder<'_> {
                 directive: false,
                 directive_label: None,
                 image: None,
+                leaf_directive: None,
             });
         }
     }
@@ -2640,6 +2764,41 @@ pub struct ImageInfo {
     /// The image's alt text, flattened from its inline children (empty when it
     /// has none).
     pub alt: String,
+}
+
+/// One leaf directive (`::name{…}`) as a frontend sees it: which rows its
+/// placeholder occupies, its type, and its attributes. A plain surface paints
+/// the `⧉ name` placeholder glyphs as-is; a frontend that knows the host app's
+/// vocabulary **skips the rows in `rows_span`** and paints the real thing there,
+/// exactly as an image-capable one does with [`ImageInfo`]. Derived from
+/// [`VRow::leaf_directive`] by [`directive_spans`].
+///
+/// Core resolves nothing here — it has no idea what an `embed` or a `toc` is,
+/// and deliberately so: the directive vocabulary belongs to the app on top.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectiveInfo {
+    /// The [`VisualMap::rows`] rows this directive's placeholder occupies — the
+    /// label row plus any blank fillers under it.
+    pub rows_span: Range<usize>,
+    /// The directive's type (`embed`, `toc`, `vis`), no leading colons.
+    pub name: String,
+    /// Its `{…}` attributes in source order; a bare one has a `None` value.
+    pub attrs: Vec<(String, Option<String>)>,
+    /// Its `[label]` text, flattened from its inline children (empty when it has
+    /// none) — what the placeholder row shows.
+    pub label: String,
+}
+
+impl DirectiveInfo {
+    /// The value of attribute `key`, if it has one with a value. The convenience
+    /// a frontend reaches for first (`info.attr("src")`), since almost every
+    /// directive that draws as something real is pointed at by one attribute.
+    pub fn attr(&self, key: &str) -> Option<&str> {
+        self.attrs
+            .iter()
+            .find(|(k, _)| k == key)
+            .and_then(|(_, v)| v.as_deref())
+    }
 }
 
 impl ImageInfo {
@@ -2954,7 +3113,27 @@ fn heading_style(level: u32) -> Style {
     Style::default().role(Role::Heading(level.min(255) as u8))
 }
 
-pub(crate) fn is_inline(kind: &str) -> bool {
+pub(crate) fn is_inline(node: &FlatNode) -> bool {
+    // A directive is inline only in its `text` form (`:name[label]{…}`); the
+    // `leaf` and `container` forms are blocks. All three report the same `kind`,
+    // so the form is the only thing telling them apart — and getting it wrong
+    // costs a whole paragraph: a text directive misread as a block makes its
+    // paragraph fail the "all children inline" test in `block`, and the line is
+    // then walked as a container of blocks, rendering as empty rows with no
+    // caret home at all.
+    if node.kind == "directive" {
+        return node.directive_form == Some(DirectiveForm::Text);
+    }
+    is_inline_kind(&node.kind)
+}
+
+/// [`is_inline`] by kind alone — for the ancestor walks, whose `QueryMatch`es
+/// carry no `directive_form`. It answers `false` for every directive, which its
+/// callers must (and do) reconcile: they pair it with `is_block_container`,
+/// which claims every directive, so the pair's verdict is the same one a form
+/// would have given. Anything looking at a *directive itself* wants [`is_inline`]
+/// and a real node.
+pub(crate) fn is_inline_kind(kind: &str) -> bool {
     matches!(
         kind,
         "str" | "soft_break" | "hard_break" | "non_breaking_space" | "emph" | "strong" | "mark"
@@ -3596,6 +3775,75 @@ mod tests {
         let m = map_directives(src);
         let label = m.rows.iter().find_map(|r| r.directive_label.clone());
         assert_eq!(label.as_deref(), Some("public family"));
+    }
+
+    #[test]
+    fn a_text_directive_keeps_its_paragraph_visible() {
+        // Regression: an inline `:name[label]{…}` used to make its paragraph
+        // fail the "all children inline" test, so the whole line was walked as
+        // a container of blocks and rendered as empty rows with NO caret stops —
+        // the text vanished from the editor and the caret couldn't enter it.
+        // diaryx's inline `:vis[…]` is exactly this shape.
+        let src = "Text with :abbr[HTML]{title=\"HyperText\"} inline.\n";
+        let m = map_directives(src);
+        assert_eq!(rendered(&m).trim_end(), "Text with HTML inline.");
+        // Every character of the line is a caret home, markup excluded — the
+        // label reads as ordinary text, the way a link's does.
+        let stops: usize = m.rows.iter().map(|r| r.glyphs.iter().filter(|g| g.stop).count()).sum();
+        assert_eq!(stops, "Text with HTML inline.".chars().count());
+        // It is inline, so it is not the container form's tinted panel.
+        assert!(m.rows.iter().all(|r| !r.directive));
+    }
+
+    #[test]
+    fn a_leaf_directive_is_a_placeholder_row_with_its_attrs_published() {
+        // `::name{…}` is a standalone block with no body — an embed, a table of
+        // contents. It used to emit no rows at all: invisible, no caret home,
+        // vertical motion crossing a void. Now it draws the image recipe's
+        // placeholder and publishes what the host app needs to paint the real
+        // thing.
+        let src = "before\n\n::embed{src=\"demo.html\" height=\"400\"}\n\nafter\n";
+        let m = map_directives(src);
+
+        let row = m.rows.iter().position(|r| r.leaf_directive.is_some()).expect("a placeholder row");
+        assert_eq!(m.rows[row].glyphs.iter().map(|g| g.ch).collect::<String>(), "⧉ embed");
+        assert!(m.rows[row].glyphs.iter().any(|g| g.stop), "the caret can land on it");
+        assert!(m.rows[row].directive, "a frontend frames it like the container form");
+
+        assert_eq!(m.directives.len(), 1);
+        let info = &m.directives[0];
+        assert_eq!(info.name, "embed");
+        assert_eq!(info.rows_span, row..row + 1);
+        assert_eq!(info.attr("src"), Some("demo.html"));
+        assert_eq!(info.attr("height"), Some("400"));
+        assert_eq!(info.attr("nope"), None);
+        // The prose around it is untouched.
+        assert!(rendered(&m).contains("before") && rendered(&m).contains("after"));
+    }
+
+    #[test]
+    fn a_leaf_directive_shows_its_label_and_honours_its_prefix() {
+        // A `[label]` names the placeholder (the way an image's alt does), and a
+        // quoted directive keeps the quote's gutter — it is a block like any
+        // other, not a special case that escapes its container.
+        let m = map_directives("::embed[Audience demo]{src=\"demo.html\"}\n");
+        assert_eq!(rendered(&m).trim_end(), "⧉ Audience demo");
+        assert_eq!(m.directives[0].label, "Audience demo");
+
+        let quoted = map_directives("> ::embed{src=\"x.html\"}\n");
+        assert_eq!(rendered(&quoted).trim_end(), "│ ⧉ embed");
+        assert_eq!(quoted.directives[0].name, "embed");
+    }
+
+    #[test]
+    fn a_container_directive_is_still_a_panel_not_a_placeholder() {
+        // The three forms must not bleed into each other: only the leaf form is
+        // a placeholder, and only the container form tints the blocks it wraps.
+        let m = map_directives(":::note{.warning}\nBody\n:::\n");
+        assert!(m.directives.is_empty(), "a container publishes no placeholder");
+        assert!(m.rows.iter().all(|r| r.leaf_directive.is_none()));
+        assert_eq!(rendered(&m).trim_end(), "Body");
+        assert!(m.rows.iter().any(|r| r.directive && r.directive_label.as_deref() == Some("warning")));
     }
 
     #[test]

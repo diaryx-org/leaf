@@ -1717,7 +1717,7 @@ impl Doc {
         let (mut s, mut e) = (start, end);
         loop {
             let mut grew = false;
-            for n in nodes.iter().filter(|n| wysiwyg::is_inline(&n.kind)) {
+            for n in nodes.iter().filter(|n| wysiwyg::is_inline(n)) {
                 let Some(text) = inline_content_span(n, &self.source) else {
                     continue;
                 };
@@ -1976,7 +1976,7 @@ impl Doc {
         self.editor.ancestors_at(off).ok().is_some_and(|chain| {
             chain
                 .iter()
-                .any(|m| !wysiwyg::is_inline(&m.kind) && !is_block_container(&m.kind))
+                .any(|m| !wysiwyg::is_inline_kind(&m.kind) && !is_block_container(&m.kind))
         })
     }
 
@@ -2779,7 +2779,7 @@ impl Doc {
                 chain
                     .into_iter()
                     .rev()
-                    .find(|m| !wysiwyg::is_inline(&m.kind) && !is_block_container(&m.kind))
+                    .find(|m| !wysiwyg::is_inline_kind(&m.kind) && !is_block_container(&m.kind))
                     .map(|m| m.content_span.unwrap_or(m.span))
             })
             .unwrap_or_else(|| source_line_range(&self.source, off));

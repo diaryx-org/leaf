@@ -29,7 +29,11 @@ edition = "2024"
 # 2.1: `toggle_block_container` (blockquote/bullet/ordered) and `insert_link`,
 # which spells a text-less link the way the format does — an autolink where the
 # destination is one, `[dest](dest)` where it isn't.
-twig-doc = { version = "2.3.0" }
+# 2.4: a directive's `name` (`embed`, `vis`, …) and `directive_form` (text /
+# leaf / container) on `FlatNode`. Every directive reports the same `kind`, so
+# without these the map can't tell an inline `:vis[…]` span from a `::embed{…}`
+# block — and misreading the first as a block blanks its whole paragraph.
+twig-doc = { version = "2.4.0" }
 anyhow = "1"
 # Frontend-neutral core: the caret/selection model + AST→glyph map, styled with
 # a toolkit-agnostic Style. Each frontend crate maps that to its own styling.

@@ -161,6 +161,40 @@ pub struct TableView {
     pub grid: Vec<TableRowView>,
 }
 
+/// A leaf directive (`::name{…}`) — a standalone block with no body, drawn in
+/// [`DocView::rows`] as a one-row `⧉ name` placeholder. A frontend that knows
+/// the host app's vocabulary reads this and paints the real thing over the rows
+/// in `[start_row, end_row)` — a web view for diaryx's `::embed{src=…}`, say —
+/// exactly as a grid-drawing one replaces a [`TableView`]'s picture rows. One
+/// that doesn't just paints the placeholder, which is already framed by the
+/// directive panel chrome.
+///
+/// Core resolves nothing here and neither does this layer: the vocabulary
+/// belongs to the app. See [`leaf_core::DirectiveInfo`].
+#[derive(uniffi::Record)]
+pub struct DirectiveView {
+    /// The [`DocView::rows`] indices the placeholder occupies.
+    pub start_row: u32,
+    pub end_row: u32,
+    /// The directive's type (`embed`, `toc`, `vis`), no leading colons.
+    pub name: String,
+    /// Its `[label]` text, or empty — what the placeholder row shows.
+    pub label: String,
+    /// Its `{…}` attributes in source order. A bare attribute (`{public}`) has an
+    /// empty value, which a consumer reads as a flag.
+    pub attrs: Vec<DirectiveAttr>,
+}
+
+/// One `{key=value}` attribute of a [`DirectiveView`]. A record rather than a
+/// tuple because UniFFI has no tuple type; an absent value flattens to `""`,
+/// since a bare attribute is a flag and the distinction from `key=""` has no
+/// consumer on this side.
+#[derive(uniffi::Record)]
+pub struct DirectiveAttr {
+    pub key: String,
+    pub value: String,
+}
+
 /// A whole rendered frame: the rows to paint, where the caret sits, and the
 /// toolbar state — everything the Swift side needs for one repaint, in one value.
 /// Returned by every view-producing method.
@@ -171,6 +205,11 @@ pub struct DocView {
     /// instead of painting the box-glyph rows. Empty in the source view. Each
     /// names the `rows` span its picture occupies, to be skipped.
     pub tables: Vec<TableView>,
+    /// Leaf directives (`::name{…}`) described structurally, for a frontend that
+    /// paints what the host app's vocabulary makes of them instead of the `⧉`
+    /// placeholder row. Empty in the source view, where the directive is the
+    /// literal text the caret is editing.
+    pub directives: Vec<DirectiveView>,
     /// The caret's row: an index into [`Self::rows`].
     pub caret_row: u32,
     /// The caret's display *column* within its row — core's grid position. Kept
@@ -485,6 +524,13 @@ impl Inner {
             View::Source => Vec::new(),
         };
 
+        // Leaf directives, on the same terms as the tables above: structural in
+        // the rich view, absent in the source view.
+        let directives = match self.doc.view {
+            View::Wysiwyg => wysiwyg_directives(&self.doc.vmap),
+            View::Source => Vec::new(),
+        };
+
         let (caret_row, caret_col) = self.doc.caret_pos();
         // Map the caret's display column to a UTF-16 text offset so a native
         // renderer can place it past wide glyphs (see [`DocView::caret_ch`]).
@@ -509,6 +555,7 @@ impl Inner {
         DocView {
             rows,
             tables,
+            directives,
             caret_row: caret_row as u32,
             caret_col: caret_col as u32,
             caret_ch: caret_ch as u32,
@@ -1357,6 +1404,30 @@ fn runs_of(glyphs: &[leaf_core::Glyph], ss: usize, se: usize) -> Vec<Run> {
         runs.push(make_run(buf, style, was_sel));
     }
     runs
+}
+
+/// The leaf directives of a WYSIWYG frame — each with the `rows` span its
+/// placeholder occupies (to be painted over) and the name/attributes a frontend
+/// resolves it by. The peer of [`wysiwyg_tables`] for a block that renders as a
+/// thing rather than as text.
+fn wysiwyg_directives(vmap: &VisualMap) -> Vec<DirectiveView> {
+    vmap.directives
+        .iter()
+        .map(|d| DirectiveView {
+            start_row: d.rows_span.start as u32,
+            end_row: d.rows_span.end as u32,
+            name: d.name.clone(),
+            label: d.label.clone(),
+            attrs: d
+                .attrs
+                .iter()
+                .map(|(k, v)| DirectiveAttr {
+                    key: k.clone(),
+                    value: v.clone().unwrap_or_default(),
+                })
+                .collect(),
+        })
+        .collect()
 }
 
 /// The structural tables of a WYSIWYG frame — each with the `rows` span its
