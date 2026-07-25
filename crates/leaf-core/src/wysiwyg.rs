@@ -2596,9 +2596,18 @@ impl Builder<'_> {
     }
 
     fn push_row(&mut self, glyphs: Vec<Glyph>, fallback: usize) {
+        // Step past the character the *source* holds at the last glyph's offset,
+        // not past the glyph's own `ch`. The two agree for ordinary text, but a
+        // glyph is not always the character it stands on: `synth` decoration and
+        // a substituted run (an image's `⧉ label`) share one offset by design.
+        // Trusting `ch` there yields an offset inside a multi-byte character,
+        // which every later slice of `source` panics on.
         let end_src = glyphs
             .last()
-            .map(|g| g.src + g.ch.len_utf8())
+            .map(|g| {
+                let at = g.src.min(self.source.len());
+                at + self.source[at..].chars().next().map_or(0, char::len_utf8)
+            })
             .unwrap_or(fallback);
         self.push_row_at(glyphs, end_src);
     }
@@ -3256,11 +3265,19 @@ fn push_escaped_text(out: &mut Vec<Glyph>, text: &str, span: Range<usize>, sourc
     let mut si = 0usize;
     for (_, cluster) in text.grapheme_indices(true) {
         for (ci, ch) in cluster.char_indices() {
-            if si < sb.len() && sb[si] == b'\\' && src[si + 1..].chars().next() == Some(ch) {
-                si += 1; // the escape backslash: hidden, no glyph
+            // Advance to the source character this one came from, stepping over
+            // whatever the parse dropped on the way. An escape backslash is the
+            // common case, but not the only one: a span can cover source that
+            // was folded into a neighbouring node (smart punctuation next to a
+            // bracket gives `text: "]"` over a source span of `"…]"`). Advancing
+            // by the *text* character's length assumed escapes were the only
+            // divergence, so one dropped multi-byte character desynchronized
+            // every glyph after it — placing `]` inside the `…` before it.
+            while si < sb.len() && src[si..].chars().next() != Some(ch) {
+                si += src[si..].chars().next().map_or(1, char::len_utf8);
             }
-            out.push(Glyph { ch, style, src: span.start + si, stop: ci == 0 });
-            si += ch.len_utf8();
+            out.push(Glyph { ch, style, src: span.start + si.min(src.len()), stop: ci == 0 });
+            si += src[si..].chars().next().map_or(ch.len_utf8(), char::len_utf8);
         }
     }
 }
@@ -3476,6 +3493,53 @@ mod tests {
     /// byte-identical map to `build`, on a fresh cache *and* — the case that
     /// actually exercises reuse-and-shift plus per-block subtree marshalling — on
     /// a warm cache after the source has been edited underneath it.
+    /// **Every glyph must stand on the character it claims.** A row's source
+    /// extent is computed from its last glyph's offset, so a glyph carrying an
+    /// offset that is not its own character's start yields a row end inside a
+    /// multi-byte character — and every later slice of the source panics on it.
+    ///
+    /// Reproduces a real crash from a journal entry: a bracketed elision inside
+    /// a blockquote (`[…]`) gave the closing bracket a `text` of `"]"` over a
+    /// source span covering `"…]"`, because the parse folded the ellipsis into a
+    /// neighbouring node. `push_escaped_text` walked that span assuming a
+    /// dropped backslash was the only way text and source could diverge, so the
+    /// `]` landed on the `…`'s first byte:
+    /// `byte index 1236 is not a char boundary; it is inside '…'`.
+    #[test]
+    fn a_glyph_never_lands_inside_the_character_before_it() {
+        let src = "> engage with it rather than look away. […]\n>\n> The through-line\n";
+        let vmap = map(src);
+        for (r, row) in vmap.rows.iter().enumerate() {
+            assert!(
+                src.is_char_boundary(row.end_src.min(src.len())),
+                "row {r} ends at {} — inside a character",
+                row.end_src
+            );
+            for g in &row.glyphs {
+                assert!(
+                    src.is_char_boundary(g.src.min(src.len())),
+                    "row {r} has {:?} at {}, which is inside a character",
+                    g.ch,
+                    g.src
+                );
+            }
+        }
+        // The elision survives, and its bracket sits on the real `]`.
+        let text: String = vmap.rows.iter().flat_map(|r| r.glyphs.iter().map(|g| g.ch)).collect();
+        assert!(text.contains("[…]"), "the elision should render: {text:?}");
+        let close = vmap
+            .rows
+            .iter()
+            .flat_map(|r| r.glyphs.iter())
+            .find(|g| g.ch == ']')
+            .expect("a closing bracket");
+        assert_eq!(
+            src[close.src..].chars().next(),
+            Some(']'),
+            "the bracket glyph should stand on the source's own `]`"
+        );
+    }
+
     #[test]
     fn build_cached_matches_build() {
         let docs = [
