@@ -1616,19 +1616,7 @@ impl Builder<'_> {
                 self.block_directive(id, pf);
             }
             "directive" => {
-                let mut parts: Vec<String> = Vec::new();
-                for (k, v) in &node.attrs {
-                    if k == "class" {
-                        if let Some(v) = v {
-                            if !v.is_empty() {
-                                parts.push(v.clone());
-                            }
-                        }
-                    } else if v.as_deref().unwrap_or("").is_empty() {
-                        parts.push(k.clone());
-                    }
-                }
-                let label = (!parts.is_empty()).then(|| parts.join(" "));
+                let label = directive_attr_label(&node.attrs);
                 let start_row = self.rows.len();
                 self.blocks(id, pf, pc, false);
                 for (i, row) in self.rows[start_row..].iter_mut().enumerate() {
@@ -2375,7 +2363,47 @@ impl Builder<'_> {
             // Drawn in the surrounding style: a role of its own would need one
             // every frontend maps, and the bug this fixes is that the text was
             // invisible, not that it was unstyled.
-            "directive" => self.recurse(id, base, out),
+            "directive" if !self.children(id).is_empty() => self.recurse(id, base, out),
+            // No `[label]`, so there are no children to render and recursing
+            // emitted *nothing*: the directive's bytes vanished from the document
+            // and left no caret stop behind. What to draw instead turns on
+            // whether the syntax looks deliberate.
+            //
+            // Bare `:word` almost never is. twig matches a colon followed by any
+            // letter-led word (`scanTextDirective`, deliberately matching remark),
+            // so ordinary prose is full of them — `:see below`, a `:smile:`
+            // shortcode, a stray colon before a word. Those are prose, and prose
+            // renders as itself: every byte visible, every byte a caret stop, so a
+            // colon typed by accident can be seen and deleted. Hiding them behind
+            // a placeholder would be the invisible-and-unreachable failure this
+            // arm exists to fix, just wearing a nicer glyph.
+            "directive" if node.attrs.is_empty() => {
+                let span = node.span.clone();
+                push_text(out, self.source.get(span.clone()).unwrap_or(""), span.start, base);
+            }
+            // `{…}` attributes, though, are unmistakably deliberate — nobody
+            // types `:vis{.family}` by accident, and diaryx writes exactly that
+            // inline. So an attribute-bearing directive with no label draws as a
+            // chip on `block_directive`'s recipe (`⧉ name attrs`, `Role::Image`),
+            // the inline peer of the leaf form's placeholder row.
+            //
+            // Only the first glyph is a caret stop, and the whole chip shares the
+            // directive's start offset: the caret treats it as one atomic thing
+            // rather than walking hidden markup a byte at a time, and a paragraph
+            // holding nothing but a chip still has a stop to be navigated to.
+            "directive" => {
+                let start = node.span.start;
+                let name = node.name.clone().unwrap_or_default();
+                let shown = match directive_attr_label(&node.attrs) {
+                    Some(attrs) if !name.is_empty() => format!("⧉ {name} {attrs}"),
+                    Some(attrs) => format!("⧉ {attrs}"),
+                    None => format!("⧉ {name}"),
+                };
+                let style = base.role(Role::Image);
+                for (i, ch) in shown.chars().enumerate() {
+                    out.push(Glyph { ch, style, src: start, stop: i == 0 });
+                }
+            }
             // A footnote reference (`[^1]`). The label bracketed is what a reader
             // needs — bare, `note1` reads as a typo rather than a reference — so
             // the `^` is hidden as the spelling artefact it is (a link's
@@ -3277,6 +3305,34 @@ fn image_label(dest: &str) -> String {
     if tail.is_empty() { dest.to_string() } else { tail.to_string() }
 }
 
+/// A directive's attributes read as a human label — what a frontend puts on a
+/// container's tinted panel, and what an attribute-bearing inline directive
+/// shows in its chip.
+///
+/// Reads BOTH conventions diaryx content actually uses: twig's own dot-prefixed
+/// classes (`{.public .family}`, arriving as one combined `class` attr) and bare
+/// pandoc-style words with no leading dot (`{public family}` — what
+/// `diaryx_core::visibility`'s publish-time filter and apps/web's directive
+/// serializer both write, and which twig parses as one valueless attribute
+/// each). Reading only `.class` would leave every *existing* diaryx `:::vis{…}`
+/// block unlabeled. A `key=value` attr is configuration rather than a name, so
+/// it contributes nothing. `None` when nothing readable is left.
+fn directive_attr_label(attrs: &[(String, Option<String>)]) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    for (k, v) in attrs {
+        if k == "class" {
+            if let Some(v) = v {
+                if !v.is_empty() {
+                    parts.push(v.clone());
+                }
+            }
+        } else if v.as_deref().unwrap_or("").is_empty() {
+            parts.push(k.clone());
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join(" "))
+}
+
 fn heading_style(level: u32) -> Style {
     // Just the role — a frontend decides how a heading of this level *looks*
     // (the terminal cycles a color and bolds it, the GUI scales the font). The
@@ -3977,6 +4033,80 @@ mod tests {
         assert_eq!(stops, "Text with HTML inline.".chars().count());
         // It is inline, so it is not the container form's tinted panel.
         assert!(m.rows.iter().all(|r| !r.directive));
+    }
+
+    #[test]
+    fn a_bare_colon_word_renders_as_the_prose_it_almost_always_is() {
+        // Regression: twig matches a colon followed by any letter-led word, so
+        // ordinary prose is full of "text directives" nobody meant to write.
+        // With no `[label]` there are no children, and the arm recursed into
+        // them — rendering *nothing*. The word vanished from the document with
+        // no caret stop left behind, so it could not even be deleted.
+        for src in ["a :word b\n", "note :see below\n", ":smile: hi\n"] {
+            let m = map_directives(src);
+            assert_eq!(rendered(&m).trim_end(), src.trim_end(), "prose was eaten: {src:?}");
+        }
+    }
+
+    #[test]
+    fn a_bare_colon_word_keeps_every_byte_a_caret_stop() {
+        let src = "a :word b\n";
+        let m = map_directives(src);
+        // Nothing here is markup, so nothing is hidden: each byte maps to
+        // itself and can be stood on, which is what makes the colon deletable.
+        let stops: Vec<(char, usize)> = m
+            .rows
+            .iter()
+            .flat_map(|r| &r.glyphs)
+            .filter(|g| g.stop)
+            .map(|g| (g.ch, g.src))
+            .collect();
+        assert_eq!(stops, "a :word b".chars().enumerate().map(|(i, c)| (c, i)).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn an_attribute_bearing_text_directive_draws_a_chip() {
+        // `{…}` is deliberate in a way a bare colon is not — diaryx writes
+        // `:vis{.family}` inline — so this one reads as an embed, on the same
+        // `⧉ label` recipe the leaf form's placeholder row uses.
+        // Both attribute conventions label it: twig's dot-prefixed classes and
+        // the bare pandoc-style words diaryx also writes.
+        for src in ["a :vis{.family} b\n", "a :vis{family} b\n"] {
+            let m = map_directives(src);
+            assert_eq!(rendered(&m).trim_end(), "a ⧉ vis family b", "{src:?}");
+        }
+        // A `key=value` attr is configuration, not a name, so it adds nothing.
+        let m = map_directives("a :foo{title=\"x\"} b\n");
+        assert_eq!(rendered(&m).trim_end(), "a ⧉ foo b");
+    }
+
+    #[test]
+    fn a_directive_chip_is_one_atomic_caret_stop_at_its_own_offset() {
+        let src = "a :vis{.family} b\n";
+        let m = map_directives(src);
+        let stops: Vec<usize> =
+            m.rows.iter().flat_map(|r| &r.glyphs).filter(|g| g.stop).map(|g| g.src).collect();
+        // The chip contributes exactly one stop, at the directive's start (2),
+        // so the caret steps over it whole instead of walking hidden markup a
+        // byte at a time. `{.family}`'s bytes (3..15) are never stood on.
+        assert_eq!(stops, [0, 1, 2, 15, 16]);
+    }
+
+    #[test]
+    fn a_paragraph_holding_only_a_chip_is_still_navigable() {
+        // With no stop of its own the row would be unreachable — the caret
+        // could never be put on the line to edit or delete the directive.
+        let m = map_directives(":vis{.family}\n");
+        assert!(m.row_is_navigable(0), "a chip-only paragraph has no caret home");
+        assert_eq!(m.offset_of_pos(0, 0), 0, "its caret home isn't the directive's start");
+    }
+
+    #[test]
+    fn a_ratio_or_a_clock_time_is_never_a_directive() {
+        // twig requires a letter after the colon, so these stay prose — the
+        // verbatim arm must not be reached for them at all.
+        let src = "ratio 3:4 and 10:30\n";
+        assert_eq!(rendered(&map_directives(src)).trim_end(), "ratio 3:4 and 10:30");
     }
 
     #[test]
