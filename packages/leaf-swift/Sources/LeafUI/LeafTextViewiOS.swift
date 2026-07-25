@@ -217,6 +217,9 @@ public final class LeafTextView: UIView, UITextInput {
         let fullWidth = bounds.width - renderTheme.padding.left - renderTheme.padding.right
 
         drawDirectiveBorders(in: ctx, dirtyRect: rect)
+        // One pass for the quote bars (a run of quoted rows merges into a single
+        // bar), before the rows, exactly as the AppKit surface orders it.
+        BlockChrome.drawQuoteBars(layoutEngine.rows, theme: renderTheme, in: ctx)
 
         for rl in layoutEngine.rows {
             // Rows are laid out top-down, so cull to the dirty band: skip rows above
@@ -237,12 +240,16 @@ public final class LeafTextView: UIView, UITextInput {
                 ctx.fill(rowRect.insetBy(dx: -4, dy: 0))
                 if let lang = rl.row.codeLang, !lang.isEmpty { drawCodeLang(lang, in: rowRect) }
             }
-            // Draw each wrapped visual line's substring on its own line box.
+            // The system paints selection on iOS, so no selection fill here.
+            BlockChrome.drawRule(rl, theme: renderTheme, contentWidth: fullWidth, selColor: nil, in: ctx)
+            // Draw each wrapped visual line's substring on its own line box, hung
+            // at the row's indent (zero on the first line, the prefix width after).
             for (i, wl) in rl.wrapped.enumerated() {
                 let lineTop = rl.top + rl.labelInset + CGFloat(i) * rl.lineHeight
                 if lineTop >= rect.maxY { break }
                 if lineTop + rl.lineHeight <= rect.minY { continue }
-                wl.attributed.draw(with: CGRect(x: padX, y: lineTop, width: fullWidth, height: rl.lineHeight),
+                wl.attributed.draw(with: CGRect(x: padX + wl.indent, y: lineTop,
+                                                width: fullWidth - wl.indent, height: rl.lineHeight),
                                    options: [.usesLineFragmentOrigin], context: nil)
             }
         }
@@ -639,7 +646,8 @@ public final class LeafTextView: UIView, UITextInput {
                 guard cs < ce else { continue }
                 let x0 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(cs - lineStart), nil)
                 let x1 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(ce - lineStart), nil)
-                let rect = CGRect(x: renderTheme.padding.left + x0, y: rl.top + rl.labelInset + CGFloat(i) * rl.lineHeight,
+                let rect = CGRect(x: renderTheme.padding.left + wl.indent + x0,
+                                  y: rl.top + rl.labelInset + CGFloat(i) * rl.lineHeight,
                                   width: x1 - x0, height: rl.lineHeight)
                 rects.append(LeafSelectionRect(rect: rect,
                                                containsStart: row == sRow && cs == sCh,

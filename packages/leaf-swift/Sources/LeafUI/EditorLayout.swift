@@ -36,8 +36,39 @@ extension Row {
     /// with — no caret home, and (unlike a table rule or a quote gutter) no
     /// visible glyphs. These are the paragraph gaps the layout draws short so a
     /// boundary reads as spacing, not an empty line.
+    ///
+    /// Its block decoration doesn't count against it: the boundary between two
+    /// paragraphs *inside* a quote carries the quote's gutter, and would otherwise
+    /// lay out as a full blank line while the same boundary outside the quote
+    /// reads as spacing.
     var isBlockGap: Bool {
-        decoration && !code && runs.allSatisfy { $0.text.allSatisfy(\.isWhitespace) }
+        decoration && !code
+            && runs.drop { $0.role == "quote" || $0.role == "list" }
+                .allSatisfy { $0.text.allSatisfy(\.isWhitespace) }
+    }
+
+    /// The row's leading block decoration — a blockquote's `│ ` gutters and a
+    /// list's indent/bullet. Core emits these as synthetic glyphs in front of the
+    /// row's real content, one gutter per nesting level, so the prefix is exactly
+    /// the run of leading `quote`/`list` runs.
+    var prefixRuns: [Run] {
+        Array(runs.prefix { $0.role == "quote" || $0.role == "list" })
+    }
+
+    /// Whether this row is a thematic break — a `---` drawn as a line across the
+    /// text column rather than as core's row of `─` glyphs.
+    ///
+    /// A break is everything after the prefix being rule-role dashes. That tells
+    /// it apart from the other rows carrying `Role::Rule`: a table's box-drawing
+    /// rules are `decoration` rows, and a table's content rows mix their `│`
+    /// separators with real cell text.
+    var isThematicBreak: Bool {
+        guard !decoration, !code else { return false }
+        let body = runs.drop { $0.role == "quote" || $0.role == "list" }
+        guard !body.isEmpty else { return false }
+        return body.allSatisfy { run in
+            run.role == "rule" && !run.text.isEmpty && run.text.allSatisfy { $0 == "─" }
+        }
     }
 }
 
@@ -50,6 +81,11 @@ struct WrappedLine {
     let start: Int                       // absolute UTF-16 offset of the line within the row
     let length: Int                      // UTF-16 length of the line
     let width: CGFloat                   // typographic width, points
+    /// How far right of the text margin this line is drawn. Zero on a row's first
+    /// visual line (its own prefix glyphs already inset it) and the prefix's width
+    /// on every continuation line, so a wrapped quote or list item hangs under its
+    /// own text rather than sliding back under the gutter.
+    var indent: CGFloat = 0
 }
 
 /// The expensive, position-independent shaping of one row: its attributed string
@@ -64,6 +100,12 @@ struct ShapedRow {
     let wrapped: [WrappedLine]
     let lineHeight: CGFloat
     let wrapWidth: CGFloat
+    /// The width of the row's leading block decoration (quote gutters, list
+    /// indent) — the hanging indent its continuation lines carry.
+    var prefixWidth: CGFloat = 0
+    /// Where each blockquote gutter bar sits, relative to the text margin: one x
+    /// per nesting level, measured at the level's `│` glyph. Empty off a quote.
+    var quoteBarXs: [CGFloat] = []
 }
 
 /// One logical row (block) placed in the document: its shaping plus a top offset.
@@ -98,6 +140,30 @@ struct RowLayout {
     var height: CGFloat {
         if let t = table { return tableFirst ? t.height : 0 }
         return labelInset + CGFloat(shaped.wrapped.count) * shaped.lineHeight
+    }
+
+    /// The blockquote gutter bars this row carries, in view coordinates — one
+    /// rect per nesting level, spanning the row's whole height so consecutive
+    /// quoted rows tile into one unbroken bar. A table's picture rows are skipped:
+    /// the grid they draw isn't inset by the prefix, so a bar there would sit on
+    /// top of the table rather than beside it.
+    func quoteBars(theme: EditorTheme) -> [CGRect] {
+        guard table == nil else { return [] }
+        return shaped.quoteBarXs.map { x in
+            CGRect(x: theme.padding.left + x, y: top,
+                   width: theme.quoteBarWidth, height: height)
+        }
+    }
+
+    /// A thematic break's drawn line, in view coordinates: a hairline centred in
+    /// the row's box, running from past the row's own prefix to the right margin.
+    /// `nil` on every other row. `contentWidth` is the text column's width.
+    func ruleLine(theme: EditorTheme, contentWidth: CGFloat) -> CGRect? {
+        guard row.isThematicBreak, table == nil else { return nil }
+        let x = theme.padding.left + shaped.prefixWidth
+        let right = theme.padding.left + max(contentWidth, shaped.prefixWidth)
+        return CGRect(x: x, y: (top + labelInset + height * 0.5 - theme.ruleThickness / 2).rounded(),
+                      width: max(0, right - x), height: theme.ruleThickness)
     }
 }
 
@@ -158,13 +224,7 @@ struct EditorLayout {
             if let hit = cache[row] ?? next[row], hit.wrapWidth == wrapWidth {
                 shaped = hit
             } else {
-                let attributed = AttributedRow.make(row, theme: theme)
-                shaped = ShapedRow(
-                    attributed: attributed,
-                    wrapped: EditorLayout.wrap(attributed, width: wrapWidth),
-                    lineHeight: theme.rowHeight(for: row),
-                    wrapWidth: wrapWidth
-                )
+                shaped = EditorLayout.shape(row, theme: theme, wrapWidth: wrapWidth)
             }
             next[row] = shaped
             let hasLabel = row.directive && !(row.directiveLabel ?? "").isEmpty
@@ -191,11 +251,54 @@ struct EditorLayout {
         self.init(docView, theme: theme, wrapWidth: 0)
     }
 
+    /// Shape one row: its attributed text, the visual lines it wraps into, and the
+    /// block-decoration geometry the view paints over it (the quote bars' x's, the
+    /// prefix width its continuation lines hang from).
+    ///
+    /// A thematic break is shaped from its *prefix alone* — the `───` glyphs are
+    /// dropped, because the view draws a real line across the column instead.
+    /// Keeping them would wrap a long rule onto a second line and leave a caret
+    /// that walks across invisible dashes; dropping them leaves a one-line row
+    /// whose caret sits at its left edge (any `caret_ch` core reports on the rule
+    /// clamps there), exactly as a table's collapsed picture rows defer to the grid.
+    static func shape(_ row: Row, theme: EditorTheme, wrapWidth: CGFloat) -> ShapedRow {
+        let prefix = row.prefixRuns
+        let drawn = row.isThematicBreak ? prefix : row.runs
+        let attributed = AttributedRow.make(drawn, row: row, theme: theme)
+
+        // The prefix's own geometry, measured on its own line: its total width (the
+        // hanging indent) and where each level's bar glyph starts.
+        var prefixWidth: CGFloat = 0
+        var barXs: [CGFloat] = []
+        if !prefix.isEmpty {
+            let prefixText = AttributedRow.make(prefix, row: row, theme: theme)
+            let line = CTLineCreateWithAttributedString(prefixText as CFAttributedString)
+            prefixWidth = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+            let s = prefixText.string as NSString
+            let bar = String(AttributedRow.quoteBar)
+            for i in 0..<s.length where s.substring(with: NSRange(location: i, length: 1)) == bar {
+                barXs.append(CTLineGetOffsetForStringIndex(line, CFIndex(i), nil))
+            }
+        }
+
+        return ShapedRow(
+            attributed: attributed,
+            wrapped: wrap(attributed, width: wrapWidth, indent: prefixWidth),
+            lineHeight: theme.rowHeight(for: row),
+            wrapWidth: wrapWidth,
+            prefixWidth: prefixWidth,
+            quoteBarXs: barXs
+        )
+    }
+
     /// Break `attributed` into visual lines at `width` points via Core Text. Each
     /// line owns a `CTLine` over its substring (relative indices). `width <= 0`
     /// keeps the whole row on one line; an empty row is one empty line so it still
     /// occupies a line box and holds a caret.
-    static func wrap(_ attributed: NSAttributedString, width: CGFloat) -> [WrappedLine] {
+    /// `indent` hangs every line after the first that far right of the margin (and
+    /// takes that much off its wrap budget), so a wrapped quote or list item lines
+    /// its continuations up with its own text instead of under its gutter.
+    static func wrap(_ attributed: NSAttributedString, width: CGFloat, indent: CGFloat = 0) -> [WrappedLine] {
         let len = attributed.length
         if len == 0 {
             return [WrappedLine(attributed: attributed, line: CTLineCreateWithAttributedString(attributed),
@@ -205,8 +308,12 @@ struct EditorLayout {
         var lines: [WrappedLine] = []
         var start = 0
         while start < len {
+            // The first line pays for the prefix in glyphs; the rest pay for it in
+            // indent. Never let the indent eat the whole budget.
+            let hang = lines.isEmpty ? 0 : min(indent, max(0, width - 1))
+            let budget = width - hang
             let count: Int = width > 0
-                ? max(1, CTTypesetterSuggestLineBreak(typesetter, start, Double(width)))
+                ? max(1, CTTypesetterSuggestLineBreak(typesetter, start, Double(budget)))
                 : len - start
             let sub = attributed.attributedSubstring(from: NSRange(location: start, length: count))
             let line = CTLineCreateWithAttributedString(sub as CFAttributedString)
@@ -215,7 +322,8 @@ struct EditorLayout {
                 line: line,
                 start: start,
                 length: count,
-                width: CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+                width: CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil)),
+                indent: hang
             ))
             start += count
         }
@@ -235,7 +343,7 @@ struct EditorLayout {
         for (i, wl) in lines.enumerated() where ch < wl.start + wl.length || i == lines.count - 1 {
             let x = CTLineGetOffsetForStringIndex(wl.line, CFIndex(max(0, ch - wl.start)), nil)
             let y = rl.top + rl.labelInset + CGFloat(i) * rl.lineHeight
-            return CGRect(x: theme.padding.left + x, y: y, width: 1.5, height: rl.lineHeight)
+            return CGRect(x: theme.padding.left + wl.indent + x, y: y, width: 1.5, height: rl.lineHeight)
         }
         return CGRect(x: theme.padding.left, y: rl.top + rl.labelInset, width: 1.5, height: rl.lineHeight)
     }
@@ -370,7 +478,7 @@ struct EditorLayout {
         let lines = rl.wrapped
         let li = min(max(0, Int((point.y - rl.top - rl.labelInset) / rl.lineHeight)), lines.count - 1)
         let wl = lines[li]
-        let localX = point.x - theme.padding.left
+        let localX = point.x - theme.padding.left - wl.indent
         let rel = CTLineGetStringIndexForPosition(wl.line, CGPoint(x: max(0, localX), y: 0))
         let ch = wl.start + min(max(0, rel), wl.length)
         return (row, ch)
@@ -415,7 +523,7 @@ struct EditorLayout {
                 guard cs < ce else { continue }
                 let x0 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(cs - lineStart), nil)
                 let x1 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(ce - lineStart), nil)
-                ctx.fill(CGRect(x: padLeft + x0, y: y, width: x1 - x0, height: rl.lineHeight))
+                ctx.fill(CGRect(x: padLeft + wl.indent + x0, y: y, width: x1 - x0, height: rl.lineHeight))
             }
         }
     }

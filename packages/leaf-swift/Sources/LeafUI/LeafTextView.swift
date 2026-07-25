@@ -147,6 +147,10 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         let selColor = active ? theme.selectionColor : theme.inactiveSelectionColor
 
         drawDirectiveBorders(in: ctx, dirtyRect: dirtyRect)
+        // The quote bars are one pass over the frame (a run of quoted rows merges
+        // into a single bar), so they're painted before the rows, like the
+        // directive outlines — the text then draws beside them.
+        BlockChrome.drawQuoteBars(layoutEngine.rows, theme: theme, in: ctx)
 
         for rl in layoutEngine.rows {
             // Rows are laid out top-down, so cull to the dirty band: skip rows above
@@ -169,13 +173,16 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
                 ctx.fill(rowRect.insetBy(dx: -4, dy: 0))
                 if let lang = rl.row.codeLang, !lang.isEmpty { drawCodeLang(lang, in: rowRect) }
             }
+            BlockChrome.drawRule(rl, theme: theme, contentWidth: fullWidth, selColor: selColor, in: ctx)
             layoutEngine.fillSelection(row: rl, padLeft: padX, color: selColor, in: ctx)
-            // Draw each wrapped visual line's substring on its own line box.
+            // Draw each wrapped visual line's substring on its own line box, hung
+            // at the row's indent (zero on the first line, the prefix width after).
             for (i, wl) in rl.wrapped.enumerated() {
                 let lineTop = rl.top + rl.labelInset + CGFloat(i) * rl.lineHeight
                 if lineTop >= dirtyRect.maxY { break }
                 if lineTop + rl.lineHeight <= dirtyRect.minY { continue }
-                wl.attributed.draw(with: CGRect(x: padX, y: lineTop, width: fullWidth, height: rl.lineHeight),
+                wl.attributed.draw(with: CGRect(x: padX + wl.indent, y: lineTop,
+                                                width: fullWidth - wl.indent, height: rl.lineHeight),
                                    options: [.usesLineFragmentOrigin])
             }
         }
@@ -278,7 +285,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
                 let x0 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(cs - lineStart), nil)
                 let x1 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(ce - lineStart), nil)
                 let y = rl.top + rl.labelInset + CGFloat(i) * rl.lineHeight + rl.lineHeight - 1.5
-                ctx.fill(CGRect(x: theme.padding.left + x0, y: y, width: x1 - x0, height: 1))
+                ctx.fill(CGRect(x: theme.padding.left + wl.indent + x0, y: y, width: x1 - x0, height: 1))
             }
         }
     }

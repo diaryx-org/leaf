@@ -41,8 +41,18 @@ public struct EditorTheme {
     /// A directive container's (`:::name{.class}`) dashed outline colour.
     public var directiveBorderColor: LeafColor
     public var markBackground: LeafColor
+    /// The painted bar down a blockquote's left edge — one per nesting level.
     public var quoteBarColor: LeafColor
+    /// The bar's thickness in points.
+    public var quoteBarWidth: CGFloat
+    /// The gutter one quote level occupies: the bar plus the space between it and
+    /// the quoted text. Core spells the gutter `│ `, whose width is whatever the
+    /// body font makes of it; the gutter run is sized to this instead, so the
+    /// inset is the theme's and every level's bar lines up down the block.
+    public var quoteIndent: CGFloat
+    /// A thematic break's drawn line — colour and thickness.
     public var ruleColor: LeafColor
+    public var ruleThickness: CGFloat
     /// Table chrome: the grid lines, the header row fill, and the body stripe.
     public var tableBorderColor: LeafColor
     public var tableHeaderColor: LeafColor
@@ -73,7 +83,10 @@ public struct EditorTheme {
         directiveBorderColor: LeafColor = Palette.directiveBorderColor,
         markBackground: LeafColor = Palette.markBackground,
         quoteBarColor: LeafColor = Palette.tertiary,
+        quoteBarWidth: CGFloat = 3,
+        quoteIndent: CGFloat = 22,
         ruleColor: LeafColor = Palette.separator,
+        ruleThickness: CGFloat = 1,
         tableBorderColor: LeafColor = Palette.tableBorder,
         tableHeaderColor: LeafColor = Palette.tableHeader,
         tableStripeColor: LeafColor = Palette.tableStripe,
@@ -97,7 +110,10 @@ public struct EditorTheme {
         self.directiveBorderColor = directiveBorderColor
         self.markBackground = markBackground
         self.quoteBarColor = quoteBarColor
+        self.quoteBarWidth = quoteBarWidth
+        self.quoteIndent = quoteIndent
         self.ruleColor = ruleColor
+        self.ruleThickness = ruleThickness
         self.tableBorderColor = tableBorderColor
         self.tableHeaderColor = tableHeaderColor
         self.tableStripeColor = tableStripeColor
@@ -122,6 +138,9 @@ public struct EditorTheme {
             || blockGapScale != other.blockGapScale
             || headingScale != other.headingScale
             || padding != other.padding
+            // The quote gutter is stretched to `quoteIndent` at shaping time, so
+            // it moves every quoted glyph — a geometry change, not a repaint.
+            || quoteIndent != other.quoteIndent
     }
 
     // ── derived metrics ──────────────────────────────────────────────────────
