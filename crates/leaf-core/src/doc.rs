@@ -26,7 +26,7 @@ use anyhow::{Result, anyhow};
 use anyhow::Context;
 use twig::{
     Alignment, BlockContainerKind, BlockKind, Change, Editor, FlatNode, Format, InlineKind,
-    MarkdownExtensions, NodeId,
+    MarkdownExtensions, NodeId, QueryMatch,
 };
 use unicode_segmentation::GraphemeCursor;
 
@@ -619,7 +619,7 @@ impl Doc {
             // Enumerate the top-level blocks cheaply — no whole-arena marshal.
             // A subtree is pulled only for the block(s) that actually changed, so
             // the FFI marshal shrinks from O(document) to O(edited block).
-            let top = self.editor.child_spans(None).unwrap_or_default();
+            let top = self.top_blocks();
 
             // Fast path: when twig reports a dirty byte range, try to patch the
             // previous map in place — a single-block edit moves the prefix,
@@ -662,6 +662,13 @@ impl Doc {
 
     fn nodes(&mut self) -> Vec<FlatNode> {
         self.editor.nodes().unwrap_or_default()
+    }
+
+    /// The document's top-level blocks for the incremental render. See
+    /// [`wysiwyg::top_blocks`] for why this isn't simply `child_spans(None)`.
+    fn top_blocks(&mut self) -> Vec<QueryMatch> {
+        let source = &self.source;
+        wysiwyg::top_blocks(&mut self.editor, source)
     }
 
     pub fn format_name(&self) -> &'static str {
@@ -5045,7 +5052,12 @@ mod tests {
     /// A from-scratch, cache-free WYSIWYG map for `source` — the ground truth the
     /// incremental (`build_spliced` / `build_cached`) path must always match.
     fn reference_map(source: &str) -> crate::wysiwyg::VisualMap {
-        let mut ed = twig::Editor::new_str(source, Format::Markdown).unwrap();
+        // The same parse `Doc` uses. With twig's plain defaults instead, the two
+        // sides disagree on what the *document* is before the renderer is even
+        // reached — a bare `:word` is a text directive to one and prose to the
+        // other — and the mismatch reads as a splice bug that isn't one.
+        let mut ed =
+            twig::Editor::new_ext(source.as_bytes(), Format::Markdown, parse_extensions()).unwrap();
         let nodes = ed.nodes().unwrap();
         crate::wysiwyg::build(&nodes, source, None, false, &std::collections::HashMap::new())
     }
@@ -5077,6 +5089,12 @@ mod tests {
             "# Title\n\nThe quick brown fox jumps.\n\nAnother paragraph here.\n\n- a\n- b\n",
             "para one\n\n> quote **bold** text\n> continued line\n\ntail paragraph\n",
             "alpha\n\nbeta\n\ngamma\n\ndelta\n\nepsilon\n\nzeta\n",
+            // A footnote definition is a root beside `doc`, merged back into the
+            // top-level list by `wysiwyg::top_blocks`. The random edits below
+            // make and unmake definitions as they go (a deleted `:` turns one
+            // back into a paragraph, and vice versa), which is exactly the
+            // structural churn the splice path has to notice and bail out of.
+            "text[^1] here\n\n[^1]: the note\n\nmore text[^b]\n\n[^b]: second\n",
         ];
         // A deterministic mix: mostly single characters (which stay inside one
         // block → splice), plus edits that reshape structure (a paragraph break,

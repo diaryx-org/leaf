@@ -24,7 +24,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::ops::Range;
 
-use twig::{Alignment, DirectiveForm, FlatNode, QueryMatch};
+use twig::{Alignment, DirectiveForm, Editor, FlatNode, QueryMatch};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -717,6 +717,7 @@ pub fn build(
     let Some(doc) = nodes.iter().position(|n| n.kind == "doc") else {
         return VisualMap::default();
     };
+    let top = top_level(nodes, doc);
     let mut b = Builder {
         nodes,
         source,
@@ -728,9 +729,9 @@ pub fn build(
         break_glyph: Cell::new(' '),
         preserve_soft,
     };
-    b.blocks(doc, &[], &[], false);
+    b.top_blocks(&top);
     b.emit_trailing_blank_lines();
-    let content_start = first_content_offset(nodes, doc);
+    let content_start = top.first().map_or(0, |&i| nodes[i].span.start);
     let stops = collect_stops(&b.rows);
     let code_blocks = code_block_spans(&b.rows);
     let images = image_spans(&b.rows);
@@ -1296,19 +1297,115 @@ fn rows_within(rows: &[VRow], span: &Range<usize>) -> bool {
     })
 }
 
-/// The source offset of the first *rendered* top-level block — the first child
-/// of `doc` that isn't hidden frontmatter (a `metadata` node). Zero when the
-/// document opens straight into content (or is nothing but frontmatter).
-fn first_content_offset(nodes: &[FlatNode], doc: usize) -> usize {
+/// The document's rendered top-level blocks, as node indices in source order.
+///
+/// Not simply `doc`'s children, for two reasons. Frontmatter (a leading
+/// `metadata` block) is document metadata rather than prose and is dropped, the
+/// way [`Builder::blocks`] drops it. And a **footnote definition** (`[^1]: …`)
+/// is not a child of `doc` at all: twig parses it as a root of its own, a
+/// *sibling* of the document node with `parent == None`. A walk that starts at
+/// `doc` therefore never reaches one, which is why a definition — and every
+/// byte of its body — used to render as nothing at all. Merging the roots back
+/// in by `span.start` puts each definition on screen exactly where it was
+/// written, which is what keeps rows, stops, and offsets monotonic.
+///
+/// Only `footnote` roots are merged. twig also leaves stray orphan `str` nodes
+/// parented to nothing (the `*` of an emphasis run, for one); those are already
+/// rendered as part of the subtree that owns their bytes, and re-emitting them
+/// here would double them.
+fn top_level(nodes: &[FlatNode], doc: usize) -> Vec<usize> {
+    let mut out = Vec::new();
     let mut child = nodes[doc].first_child;
     while let Some(cid) = child {
         let n = &nodes[cid.0 as usize];
         if n.kind != "metadata" {
-            return n.span.start;
+            out.push(cid.0 as usize);
         }
         child = n.next_sibling;
     }
-    0
+    out.extend(
+        nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.kind == "footnote" && n.parent.is_none())
+            .map(|(i, _)| i),
+    );
+    out.sort_by_key(|&i| nodes[i].span.start);
+    out
+}
+
+/// The top-level blocks to hand [`build_cached`] / [`build_spliced`] — the
+/// incremental path's twin of [`top_level`], which the two must agree with block
+/// for block or the render paths diverge.
+///
+/// `child_spans(None)` gives `doc`'s children, which is all of them for an
+/// ordinary document. A **footnote definition** is not one: twig parses `[^1]: …`
+/// as a root beside `doc` with no parent, and indexes it at no offset either —
+/// `node_at` inside its bytes answers `doc`, and a `query("footnote")` selector
+/// finds nothing — so the whole-arena `nodes()` is the only way to discover one.
+/// That marshal is precisely what the incremental path exists to avoid, hence
+/// the byte-scan gate: a document with no `[^…]:` line pays a substring search
+/// and nothing more, which is every document that had no footnotes to render in
+/// the first place.
+///
+/// This is the one part of the render that needs an [`Editor`] rather than a
+/// marshalled node array. The builders themselves stay editor-free; this only
+/// prepares their input.
+pub(crate) fn top_blocks(editor: &mut Editor, source: &str) -> Vec<QueryMatch> {
+    let mut top = editor.child_spans(None).unwrap_or_default();
+    if !has_footnote_definition(source) {
+        return top;
+    }
+    let notes: Vec<QueryMatch> = editor
+        .nodes()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|n| n.kind == "footnote" && n.parent.is_none())
+        .map(|n| QueryMatch {
+            node_id: n.id.0,
+            span: n.span,
+            content_span: n.content_span,
+            kind: n.kind,
+        })
+        .collect();
+    if notes.is_empty() {
+        return top;
+    }
+    top.extend(notes);
+    // Source order — what every offset-keyed thing downstream (rows, stops, the
+    // splice path's block-for-block match) is built to assume.
+    top.sort_by_key(|m| m.span.start);
+    top
+}
+
+/// Does the source spell a footnote *definition* — a `[^label]:` opening a line?
+/// The gate on [`top_blocks`]'s whole-arena marshal.
+fn has_footnote_definition(source: &str) -> bool {
+    source.match_indices("[^").any(|(i, _)| {
+        // Opening its line (a leading indent is still an opening), and closed by
+        // the `]:` that makes it a definition rather than a reference.
+        let line_lead = source[..i].rsplit('\n').next().unwrap_or("");
+        if !line_lead.bytes().all(|b| b == b' ' || b == b'\t') {
+            return false;
+        }
+        // Bounded to the rest of *this line*: both because a definition's `]:`
+        // is on it, and because searching to end-of-document from every `[^`
+        // would make this quadratic on a big file full of references.
+        let rest = &source[i..];
+        let line = rest.find('\n').map_or(rest, |j| &rest[..j]);
+        line.contains("]:")
+    })
+}
+
+/// The label of the footnote definition starting at `start` — the `1` in
+/// `[^1]: …`. twig gives the `footnote` node no label of its own (no `text`, no
+/// `name`), and the bytes that spell it belong to no child node either — the
+/// body `para` starts its *content* past them — so the source is the only place
+/// to read it from. `None` when what's there isn't a definition after all.
+fn footnote_label(source: &str, start: usize) -> Option<&str> {
+    let rest = source.get(start..)?.strip_prefix("[^")?;
+    let end = rest.find("]:")?;
+    Some(&rest[..end])
 }
 
 struct Builder<'a> {
@@ -1379,6 +1476,24 @@ impl Builder<'_> {
             }
             let first = if i == 0 { pf } else { pc };
             self.block(child, first, pc);
+        }
+    }
+
+    /// Render an explicit, ordered list of top-level blocks — [`Builder::blocks`]
+    /// for a walk that isn't "the children of one node". The document's top level
+    /// no longer is: a footnote definition is a root beside `doc`, not under it,
+    /// and [`top_level`] merges it into this list by source position.
+    ///
+    /// The separator between blocks is spelled by the same
+    /// [`Builder::emit_separators_before`] the incremental top-level walk in
+    /// [`build_cached`] uses, so the two paths can't drift on how a boundary
+    /// looks.
+    fn top_blocks(&mut self, ids: &[usize]) {
+        for (i, &child) in ids.iter().enumerate() {
+            if i > 0 {
+                self.emit_separators_before(self.nodes[child].span.start, &[], true);
+            }
+            self.block(child, &[], &[]);
         }
     }
 
@@ -1569,6 +1684,35 @@ impl Builder<'_> {
                     // together (`• a` / `  • b`), no fabricated blank row between —
                     // a loose item's real blank line still parts them.
                     self.blocks(id, pf, pc, true);
+                }
+            }
+            // A footnote *definition* (`[^1]: the note`). It reaches this walker
+            // only because [`top_level`] merges it back in — twig hangs it off no
+            // parent at all, so a walk from `doc` never sees one and every byte
+            // of its body used to render as nothing.
+            //
+            // Drawn as a hanging-indent item, the way a list item is: the marker
+            // reads `[1] `, matching the `[1]` its references render as, so the
+            // two can be paired by eye, and the body wraps under it. The marker
+            // is synthetic decoration (one shared offset, never a caret stop) —
+            // the `[^1]: ` that spells it in the source is markup, hidden like a
+            // heading's `# `.
+            "footnote" => {
+                let (start, end) = (node.span.start, node.span.end);
+                let source = self.source;
+                let marker = format!("[{}] ", footnote_label(source, start).unwrap_or(""));
+                let indent = " ".repeat(text_width(&marker));
+                let f = concat(pf, &synth(&marker, Role::ListMarker, start));
+                let c = concat(pc, &synth(&indent, Role::Body, start));
+                if self.children(id).is_empty() {
+                    // A definition with no body yet — the instant `[^1]: ` has
+                    // been typed and nothing after it. `blocks` would emit
+                    // nothing and the definition simply wouldn't appear, so emit
+                    // the marker row itself with a caret home just past it,
+                    // exactly as an empty list item does.
+                    self.push_row_at(f, end.min(source.len()));
+                } else {
+                    self.blocks(id, &f, &c, false);
                 }
             }
             "table" => self.table(id, pf, pc),
@@ -2232,6 +2376,34 @@ impl Builder<'_> {
             // every frontend maps, and the bug this fixes is that the text was
             // invisible, not that it was unstyled.
             "directive" => self.recurse(id, base, out),
+            // A footnote reference (`[^1]`). The label bracketed is what a reader
+            // needs — bare, `note1` reads as a typo rather than a reference — so
+            // the `^` is hidden as the spelling artefact it is (a link's
+            // `](dest)` goes the same way) and the brackets are kept as
+            // decoration: one shared offset, never a caret stop, like a table's
+            // borders, so the caret walks the label alone.
+            //
+            // Styled `Role::Link`: a reference *is* a link to its definition, and
+            // every frontend already paints that role. A role of its own would
+            // need one in each of them, and the bug here is that the text was
+            // invisible, not that it was underspecified.
+            "footnote_reference" => {
+                let style = base.role(Role::Link);
+                // The label's own span, so its glyphs map to their true bytes.
+                // Absent one, it starts past the `[^` that opens the reference.
+                let (label, at) = match &node.content_span {
+                    Some(c) => (self.source.get(c.clone()).unwrap_or(""), c.start),
+                    None => (node.text.as_deref().unwrap_or(""), node.span.start + 2),
+                };
+                out.push(Glyph { ch: '[', style, src: node.span.start, stop: false });
+                push_text(out, label, at, style);
+                out.push(Glyph {
+                    ch: ']',
+                    style,
+                    src: node.span.end.saturating_sub(1),
+                    stop: false,
+                });
+            }
             "link" | "url" | "email" => {
                 let style = base.role(Role::Link);
                 if self.children(id).is_empty() {
@@ -3139,6 +3311,7 @@ pub(crate) fn is_inline_kind(kind: &str) -> bool {
         "str" | "soft_break" | "hard_break" | "non_breaking_space" | "emph" | "strong" | "mark"
             | "insert" | "delete" | "verbatim" | "inline_math" | "display_math" | "url" | "email"
             | "link" | "image" | "smart_punctuation" | "superscript" | "subscript" | "span"
+            | "footnote_reference"
     )
 }
 
@@ -3182,6 +3355,12 @@ mod tests {
     fn map(src: &str) -> VisualMap {
         let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
         build_t(&ed.nodes().unwrap(), src, Some(80))
+    }
+
+    /// [`map`] at a chosen wrap width.
+    fn map_at(src: &str, wrap: Option<usize>) -> VisualMap {
+        let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
+        build_t(&ed.nodes().unwrap(), src, wrap)
     }
 
     /// [`map`], but with twig's `directives` extension on (off by twig's own
@@ -3230,7 +3409,7 @@ mod tests {
         let all = ed.nodes().unwrap();
         let image_rows = HashMap::new();
         let plain = build(&all, src, wrap, false, &image_rows);
-        let top = ed.child_spans(None).unwrap();
+        let top = top_blocks(ed, src);
         let cached = build_cached(&top, src, wrap, false, &image_rows, cache, |id| {
             ed.subtree(NodeId(id)).unwrap_or_default()
         });
@@ -3252,6 +3431,11 @@ mod tests {
             "> quote with **bold** and a [link](https://x.dev)\n>\n> - item\n> - item2\n\ntail\n",
             "intro\n\n![a cat](img/cat.png)\n\nbetween\n\n![](https://x.dev/logo.svg)\n\nend\n",
             "- text item\n- ![alt](pic.png)\n- more text\n",
+            // Footnotes: twig parses each definition as a root beside `doc`, so
+            // these are the docs where the reference build and the incremental
+            // one could disagree about what the top-level blocks even are.
+            "A claim[^1] and another[^src].\n\n[^1]: First note.\n\n[^src]: Second.\n\ntail\n",
+            "note[^a]\n\n[^a]: body **bold**\n    wrapped on\n    three lines\n\nafter\n",
         ];
         for wrap in [None, Some(80usize), Some(20)] {
             for src in docs {
@@ -3855,6 +4039,90 @@ mod tests {
         let m = map(src);
         assert!(m.rows.iter().all(|r| !r.directive));
         assert!(rendered(&m).contains(":::vis{.public}"));
+    }
+
+    #[test]
+    fn a_footnote_reference_keeps_its_paragraph_visible() {
+        // Regression: `footnote_reference` was in neither `is_inline_kind` nor
+        // the inline walker, so a paragraph carrying one failed the "all children
+        // inline" test, was walked as a container of blocks, and rendered as
+        // empty rows with no caret stop anywhere — the whole line vanished.
+        let src = "A claim[^1] and more.\n";
+        let m = map(src);
+        assert_eq!(rendered(&m).trim_end(), "A claim[1] and more.");
+        // The `^` is spelling, not text: hidden the way a link's `](dest)` is.
+        assert!(!rendered(&m).contains('^'));
+    }
+
+    #[test]
+    fn a_footnote_references_brackets_are_decoration_and_only_its_label_is_a_stop() {
+        let src = "see[^note] here\n";
+        let m = map(src);
+        // `[^note]` spans 3..10, its label `note` 5..9. The caret walks the
+        // label; the brackets are drawn but never stood on, as a table's are,
+        // and the `[^`/`]` bytes are stepped over like any hidden delimiter.
+        let stops: Vec<usize> =
+            m.rows.iter().flat_map(|r| &r.glyphs).filter(|g| g.stop).map(|g| g.src).collect();
+        for off in 5..9 {
+            assert!(stops.contains(&off), "label byte {off} isn't a caret stop: {stops:?}");
+        }
+        for off in [3usize, 4, 9] {
+            assert!(!stops.contains(&off), "delimiter byte {off} is a caret stop: {stops:?}");
+        }
+    }
+
+    #[test]
+    fn a_footnote_definition_renders_where_it_was_written() {
+        // Regression: twig parses `[^1]: …` as a root *beside* `doc` — not a
+        // child of it — so the walk from `doc` never reached one and every byte
+        // of the note's body rendered as nothing at all.
+        let src = "A claim[^1].\n\n[^1]: The note body.\n\nAfter.\n";
+        let m = map(src);
+        let text = rendered(&m);
+        assert!(text.contains("The note body."), "the note body is invisible: {text:?}");
+        // In source order — between the paragraph that cites it and the one
+        // after — not hoisted to the end, and marked to match its reference.
+        let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(lines, ["A claim[1].", "[1] The note body.", "After."]);
+    }
+
+    #[test]
+    fn a_footnote_definitions_body_maps_to_its_own_source_bytes() {
+        let src = "x[^a].\n\n[^a]: body\n";
+        let m = map(src);
+        // `body` sits at 14..18. Its glyphs must map there — a marker that ate
+        // the offsets would put the caret in the wrong place on every click.
+        let body: Vec<(char, usize)> = m
+            .rows
+            .iter()
+            .flat_map(|r| &r.glyphs)
+            .filter(|g| g.stop && g.src >= 14)
+            .map(|g| (g.ch, g.src))
+            .collect();
+        assert_eq!(body, [('b', 14), ('o', 15), ('d', 16), ('y', 17)]);
+    }
+
+    #[test]
+    fn an_empty_footnote_definition_still_shows_its_marker() {
+        // The instant `[^1]: ` has been typed and nothing after it. `blocks`
+        // renders no child, so without the explicit marker row the definition
+        // wouldn't appear at all until something was typed into it.
+        let src = "x[^1]\n\n[^1]:\n";
+        let m = map(src);
+        assert!(rendered(&m).contains("[1] "), "no marker row: {:?}", rendered(&m));
+    }
+
+    #[test]
+    fn a_footnote_definition_wearing_a_long_label_indents_its_wrapped_body() {
+        let src = "x[^src]\n\n[^src]: one two three four five six seven\n";
+        let m = map_at(src, Some(24));
+        let text = rendered(&m);
+        let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+        // Continuation lines hang under the marker, as a list item's do — the
+        // indent is the marker's own width, not a fixed one.
+        assert_eq!(lines[1].trim_end(), "[src] one two three four");
+        assert!(lines[2].starts_with("      "), "body doesn't hang: {:?}", lines[2]);
+        assert_eq!(lines[2].trim(), "five six seven");
     }
 
     #[test]
