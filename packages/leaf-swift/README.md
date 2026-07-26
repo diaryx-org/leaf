@@ -87,6 +87,16 @@ struct ContentView: View {
 }
 ```
 
+A hand-rolled bar like the one above is the fully-customizable path; if you just
+want the usual tools, `LeafFormattingToolbar(editor: editor)` is a ready-made row
+of them (inline marks · block structure · indent · history) built on those same
+public commands. It sizes itself per platform — a 32pt strip you stack over the
+editor on macOS, a 44pt keyboard accessory on iOS:
+
+```swift
+LeafEditor(model: editor) { LeafFormattingToolbar(editor: editor) }
+```
+
 `LeafEditorModel` exposes every formatting command (`toggleBold`, `setHeading`,
 `toggleList`, `insertLink`, `undo`, …), `source()` / `markSaved()` for
 persistence, and a `@Published state` (active marks, heading, dirty, view) for
