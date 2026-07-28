@@ -64,14 +64,22 @@ public final class LeafEditorModel: ObservableObject {
         didSet { textView?.documentDirectory = documentDirectory }
     }
 
+    /// What activating a block video or audio does. `.inline` (the default)
+    /// installs a real AVKit player over the box and plays there; `.host` leaves
+    /// the still and the play badge drawn and calls `onOpenMedia` instead, for an
+    /// app that wants to present its own player.
+    public var mediaPlayback: MediaPlaybackMode = .inline {
+        didSet { textView?.mediaPlayback = mediaPlayback }
+    }
+
     /// Called when the reader activates a block video or audio, with its raw
-    /// `src`. The editor draws the still and the play badge; *playing* is the
-    /// host's — it has the view controller (iOS) or the window (macOS) to
-    /// present an `AVPlayerViewController` / `AVPlayerView` from, and LeafUI has
-    /// neither. Nil leaves a click or tap doing nothing but placing the caret.
+    /// `src`, in the cases the editor doesn't play it itself: `.host` playback,
+    /// or a source its local-file loader can't resolve — a remote URL, which
+    /// only the host can fetch asynchronously. Nil leaves those activations
+    /// doing nothing but placing the caret.
     ///
-    /// The same division `onOpenLink` draws, for the same reason: the editor
-    /// renders the document surface and leaves system UI to the app around it.
+    /// The same division `onOpenLink` draws: the editor renders the document
+    /// surface and leaves what it can't reach to the app around it.
     public var onOpenMedia: ((String) -> Void)?
 
     let doc: LeafDoc
@@ -203,6 +211,7 @@ public struct LeafEditor: NSViewRepresentable {
         // vault where only some files use the convention) gets it honoured.
         hosted.recognizesWikilinks = model.recognizesWikilinks
         hosted.documentDirectory = model.documentDirectory
+        hosted.mediaPlayback = model.mediaPlayback
     }
 
     /// Build a `LeafTextView` over `model.doc`, wired the way `makeNSView` and the
@@ -223,6 +232,7 @@ public struct LeafEditor: NSViewRepresentable {
         }
         textView.recognizesWikilinks = model.recognizesWikilinks
         textView.documentDirectory = model.documentDirectory
+        textView.mediaPlayback = model.mediaPlayback
         // Weak, like `onOpenLink` above: the closure outlives a host that swaps
         // its model, and a strong capture would keep the old one alive.
         textView.onOpenMedia = { [weak model] src in
@@ -310,6 +320,7 @@ public struct LeafEditor: UIViewRepresentable {
         // vault where only some files use the convention) gets it honoured.
         hosted.recognizesWikilinks = model.recognizesWikilinks
         hosted.documentDirectory = model.documentDirectory
+        hosted.mediaPlayback = model.mediaPlayback
         // Refresh the accessory's content in place — its `UIHostingController`
         // persists in the coordinator across updates, so this is a live
         // content swap, not a rebuild (which would drop first-responder focus
@@ -349,6 +360,7 @@ public struct LeafEditor: UIViewRepresentable {
         }
         textView.recognizesWikilinks = model.recognizesWikilinks
         textView.documentDirectory = model.documentDirectory
+        textView.mediaPlayback = model.mediaPlayback
         // Weak, like `onOpenLink` above: the closure outlives a host that swaps
         // its model, and a strong capture would keep the old one alive.
         textView.onOpenMedia = { [weak model] src in

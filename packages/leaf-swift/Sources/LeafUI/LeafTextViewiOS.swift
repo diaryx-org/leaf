@@ -131,13 +131,14 @@ public final class LeafTextView: UIView, UITextInput {
     public var recognizesWikilinks = false
 
     /// Host hook for activating a block video or audio — called with its raw
-    /// `src` when the reader taps the box.
+    /// `src` when the editor isn't playing it itself.
     ///
-    /// The view draws a still (a picture, or a video's poster frame) but does not
-    /// *play*: on iOS an `AVPlayerViewController` needs a parent view controller,
-    /// which a `UIView` in a package does not have. Presenting a player is the
-    /// host's job, exactly as `onOpenLink` leaves navigation to the host. Nil
-    /// means a tap just places the caret, as on any other block.
+    /// With `mediaPlayback == .inline` (the default) a tap installs an AVKit
+    /// player over the box and this is never called, *except* for a source the
+    /// editor's own loader can't resolve to a local file — a remote URL, which a
+    /// host is better placed to handle since it can fetch asynchronously.
+    /// With `.host` it is called for every activation. Nil in either case leaves
+    /// a tap doing nothing but placing the caret.
     public var onOpenMedia: ((String) -> Void)?
 
     /// The document's directory, which a relative `src` in the markup resolves
@@ -154,8 +155,15 @@ public final class LeafTextView: UIView, UITextInput {
         }
     }
 
+    /// What activating a block video or audio does. `.inline` (the default)
+    /// installs a real AVKit player over the box; `.host` draws the still and
+    /// hands the source to `onOpenMedia` instead. See `MediaPlaybackMode`.
+    public var mediaPlayback: MediaPlaybackMode = .inline
+
     /// Loads and caches the stills the media boxes draw.
     private let mediaStore = MediaStore()
+    /// The AVKit players currently installed over media boxes.
+    private let mediaPlayers = MediaPlayerHost()
 
     /// Follows a link on a plain tap. A phone has no ⌘ to hold and no pointer to
     /// hover, so the tap is the whole vocabulary. This rides *beside*
@@ -201,14 +209,33 @@ public final class LeafTextView: UIView, UITextInput {
         // so that is what a tap on it should mean. Checked before links because a
         // media box occupies its whole row and holds no link text anyway.
         if let hit = layoutEngine.playableMedia(at: point, theme: renderTheme),
-           let open = onOpenMedia {
-            open(hit.src)
+           activateMedia(hit) {
             return
         }
         guard let destination = linkDestination(at: point) else { return }
         if onOpenLink?(destination) == true { return }
         guard let url = URL(string: destination) else { return }
         UIApplication.shared.open(url)
+    }
+
+    /// Answer a tap on a block video or audio, returning whether it was handled.
+    ///
+    /// In `.inline` mode this installs an AVKit player over the box and starts
+    /// it; a second tap on a playing one pauses. `.host` mode, a source this
+    /// loader can't resolve to a local file, and (on iOS) a view with no owning
+    /// view controller to parent the player to all fall through to `onOpenMedia`.
+    private func activateMedia(_ media: MediaView) -> Bool {
+        if mediaPlayback == .inline, let url = mediaStore.resolve(media.src) {
+            let rects = layoutEngine.mediaRects(theme: renderTheme)
+            if let rect = rects[media.src],
+               mediaPlayers.activate(media, at: rect, in: self, url: url) {
+                setNeedsDisplay()   // the badge under the player must stop drawing
+                return true
+            }
+        }
+        guard let open = onOpenMedia else { return false }
+        open(media.src)
+        return true
     }
 
     /// The destination of the link at `point`, or nil if there isn't one.
@@ -276,6 +303,11 @@ public final class LeafTextView: UIView, UITextInput {
         docView = view
         layoutEngine = EditorLayout(view, theme: renderTheme, wrapWidth: wrapWidth, cache: &shapeCache,
                                     media: mediaStore)
+        // Installed players follow their boxes; media edited out of the document
+        // is absent from the rects, which is what stops its playback.
+        if !mediaPlayers.isEmpty {
+            mediaPlayers.reposition(layoutEngine.mediaRects(theme: renderTheme))
+        }
         invalidateIntrinsicContentSize()
         setNeedsDisplay()
         // Only follow the caret when it actually moved, not on a passive reflow.
@@ -328,7 +360,8 @@ public final class LeafTextView: UIView, UITextInput {
                 if rl.mediaFirst {
                     BlockChrome.drawMedia(box,
                                           at: box.rect(top: rl.mediaTop, left: padX + rl.shaped.prefixWidth),
-                                          theme: renderTheme, in: ctx)
+                                          theme: renderTheme,
+                                          playing: mediaPlayers.isPlaying(box.media.src), in: ctx)
                 }
                 continue
             }

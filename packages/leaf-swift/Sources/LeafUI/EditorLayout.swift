@@ -300,6 +300,25 @@ struct EditorLayout {
         return nil
     }
 
+    /// Every media box's rect in view coordinates, keyed by `src` — what an
+    /// installed player is positioned onto, and the set that decides which
+    /// players are still wanted. Keyed by `src` rather than row index because
+    /// rows renumber on every keystroke while a source doesn't: typing above a
+    /// playing video should move it, not restart it.
+    ///
+    /// A document naming the same `src` twice collapses to one entry, and only
+    /// one of the two boxes can host a player. That is the honest consequence of
+    /// keying by source, and a rare enough shape not to complicate this for.
+    func mediaRects(theme: EditorTheme) -> [String: CGRect] {
+        var out: [String: CGRect] = [:]
+        for rl in rows where rl.mediaFirst {
+            guard let box = rl.media else { continue }
+            out[box.media.src] = box.rect(top: rl.mediaTop,
+                                          left: theme.padding.left + rl.shaped.prefixWidth)
+        }
+        return out
+    }
+
     /// Build with no cross-frame cache — every row shaped fresh. Convenience for
     /// one-off layouts and tests.
     init(_ docView: DocView, theme: EditorTheme, wrapWidth: CGFloat, media: MediaStore? = nil) {

@@ -53,14 +53,15 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     public var recognizesWikilinks = false
 
     /// Host hook for activating a block video or audio — called with its raw
-    /// `src` when the reader clicks the box.
+    /// `src` when the editor isn't playing it itself.
     ///
-    /// The view draws a still (a picture, or a video's poster frame) but does not
-    /// *play*: an `AVPlayerView` is a subview needing its own lifecycle and
-    /// scroll-synced positioning, negotiated against a text view that owns the
-    /// caret. Presenting a player is the host's job — it has the window and the
-    /// view controller — exactly as `onOpenLink` leaves navigation to the host.
-    /// Nil means a click just places the caret, as it does on any other block.
+    /// With `mediaPlayback == .inline` (the default) a click installs an
+    /// `AVPlayerView` over the box and this is never called, *except* for a
+    /// source the editor's own loader can't resolve to a local file — a remote
+    /// URL, which a host is better placed to handle since it can fetch
+    /// asynchronously and this loader cannot. With `.host` it is called for every
+    /// activation. Nil in either case leaves a click doing nothing but placing
+    /// the caret.
     public var onOpenMedia: ((String) -> Void)?
 
     /// The document's directory, which a relative `src` in the markup resolves
@@ -77,8 +78,15 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         }
     }
 
+    /// What activating a block video or audio does. `.inline` (the default)
+    /// installs a real AVKit player over the box; `.host` draws the still and
+    /// hands the source to `onOpenMedia` instead. See `MediaPlaybackMode`.
+    public var mediaPlayback: MediaPlaybackMode = .inline
+
     /// Loads and caches the stills the media boxes draw.
     private let mediaStore = MediaStore()
+    /// The AVKit players currently installed over media boxes.
+    private let mediaPlayers = MediaPlayerHost()
 
     private var docView: DocView
     private var layoutEngine: EditorLayout
@@ -172,6 +180,13 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         docView = view
         layoutEngine = EditorLayout(view, theme: theme, wrapWidth: wrapWidth, cache: &shapeCache,
                                     media: mediaStore)
+        // Installed players follow their boxes: the layout just moved every one
+        // of them, and any media edited out of the document is gone from the
+        // rects, which is what stops its playback. Skipped entirely when nothing
+        // is installed, which is the overwhelmingly common case.
+        if !mediaPlayers.isEmpty {
+            mediaPlayers.reposition(layoutEngine.mediaRects(theme: theme))
+        }
         applyContentHeight()
         needsDisplay = true
         resetBlink()
@@ -220,7 +235,8 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
                 if rl.mediaFirst {
                     BlockChrome.drawMedia(box,
                                           at: box.rect(top: rl.mediaTop, left: padX + rl.shaped.prefixWidth),
-                                          theme: theme, in: ctx)
+                                          theme: theme,
+                                          playing: mediaPlayers.isPlaying(box.media.src), in: ctx)
                 }
                 continue
             }
@@ -253,6 +269,28 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             ctx.setFillColor(theme.caretColor.cgColor)
             ctx.fill(rect)
         }
+    }
+
+    /// Answer a click on a block video or audio, returning whether it was
+    /// handled (so the caller can fall through to plain caret placement if not).
+    ///
+    /// In `.inline` mode this installs an AVKit player over the box and starts
+    /// it; a second click on a playing one pauses. `.host` mode, and any source
+    /// this loader can't resolve to a local file, fall through to `onOpenMedia`
+    /// — a remote URL is exactly the case a host is better placed to handle,
+    /// since it can fetch asynchronously and this cannot.
+    private func activateMedia(_ media: MediaView) -> Bool {
+        if mediaPlayback == .inline, let url = mediaStore.resolve(media.src) {
+            let rects = layoutEngine.mediaRects(theme: theme)
+            if let rect = rects[media.src],
+               mediaPlayers.activate(media, at: rect, in: self, url: url) {
+                needsDisplay = true   // the badge under the player must stop drawing
+                return true
+            }
+        }
+        guard let open = onOpenMedia else { return false }
+        open(media.src)
+        return true
     }
 
     /// Draw a table as a proportional grid — header fill and body stripes, the
@@ -434,10 +472,10 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // host that ignores the media (no `onOpenMedia`) behaves exactly as
         // before, and the reader can still type around the block afterwards.
         if event.clickCount == 1, !event.modifierFlags.contains(.shift),
-           let hit = layoutEngine.playableMedia(at: p, theme: theme), let open = onOpenMedia {
+           let hit = layoutEngine.playableMedia(at: p, theme: theme),
+           activateMedia(hit) {
             let (row, ch) = hitRowCh(p)
             render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: false))
-            open(hit.src)
             return
         }
         let (row, ch) = hitRowCh(p)

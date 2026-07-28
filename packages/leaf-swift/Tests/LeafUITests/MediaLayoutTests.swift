@@ -153,6 +153,61 @@ final class MediaLayoutTests: XCTestCase {
         XCTAssertNil(layout.playableMedia(at: CGPoint(x: 5000, y: 5000), theme: theme))
     }
 
+    // MARK: the rects a player is positioned onto
+
+    func testMediaRectsAreKeyedBySrcNotByRow() {
+        // Keying by src is what lets a playing video survive an edit above it:
+        // rows renumber on every keystroke, sources don't.
+        let frame = docView(
+            [row([mkRun("🖼 a cat")]), row([mkRun("🎬 clip")])],
+            media: [mkMedia("cat.png", startRow: 0, endRow: 1),
+                    mkMedia("clip.mp4", kind: .video, startRow: 1, endRow: 2)]
+        )
+        let rects = EditorLayout(frame, theme: theme, wrapWidth: 400).mediaRects(theme: theme)
+        XCTAssertEqual(Set(rects.keys), ["cat.png", "clip.mp4"])
+    }
+
+    func testAnEditAboveAVideoMovesItsRectWithoutChangingItsKey() {
+        // The scenario the keying exists for. Same document, one extra line of
+        // prose above: the video's rect moves down, its key is untouched — so a
+        // host repositions the installed player instead of tearing it down.
+        let before = docView(
+            [row([mkRun("intro")]), row([mkRun("🎬 clip")])],
+            media: [mkMedia("clip.mp4", kind: .video, startRow: 1, endRow: 2)]
+        )
+        let after = docView(
+            [row([mkRun("intro")]), row([mkRun("a new line")]), row([mkRun("🎬 clip")])],
+            media: [mkMedia("clip.mp4", kind: .video, startRow: 2, endRow: 3)]
+        )
+        let r1 = EditorLayout(before, theme: theme, wrapWidth: 400).mediaRects(theme: theme)
+        let r2 = EditorLayout(after, theme: theme, wrapWidth: 400).mediaRects(theme: theme)
+        XCTAssertNotNil(r1["clip.mp4"])
+        XCTAssertNotNil(r2["clip.mp4"])
+        XCTAssertGreaterThan(r2["clip.mp4"]!.minY, r1["clip.mp4"]!.minY,
+                             "the box moved down under the inserted line")
+    }
+
+    func testMediaDeletedFromTheDocumentLeavesTheRects() {
+        // What stops playback: a player whose src is absent from the new frame's
+        // rects has been edited away, and the host removes it.
+        let frame = docView([row([mkRun("just prose")])])
+        let rects = EditorLayout(frame, theme: theme, wrapWidth: 400).mediaRects(theme: theme)
+        XCTAssertNil(rects["clip.mp4"])
+        XCTAssertTrue(rects.isEmpty)
+    }
+
+    func testMediaRectsMatchWhereTheBoxIsDrawn() {
+        // The rect a player is installed at must be the one the still was drawn
+        // into, or the player would sit off the block it belongs to.
+        let frame = docView([row([mkRun("🎬 clip")])],
+                            media: [mkMedia("clip.mp4", kind: .video, startRow: 0, endRow: 1)])
+        let layout = EditorLayout(frame, theme: theme, wrapWidth: 400)
+        let rl = layout.rows[0]
+        let drawn = rl.media!.rect(top: rl.mediaTop,
+                                   left: theme.padding.left + rl.shaped.prefixWidth)
+        XCTAssertEqual(layout.mediaRects(theme: theme)["clip.mp4"], drawn)
+    }
+
     // MARK: resolving a src
 
     func testResolveJoinsARelativePathToTheDocumentDirectory() {

@@ -28,8 +28,17 @@ enum BlockChrome {
     /// Shared by both surfaces, and drawn into the text's own context — which is
     /// exactly why playback isn't here. A still is pixels; a player is a subview.
     /// See `MediaLayout` for that division and what `onOpenMedia` does about it.
+    /// `playing` means an AVKit player is installed over this box, and nothing is
+    /// drawn at all: the box belongs to the player now.
+    ///
+    /// Not merely "hide the badge". The still is a *stand-in* for a player that
+    /// isn't there yet, and a player view doesn't necessarily fill its frame edge
+    /// to edge — AVKit lays the picture out inside its own chrome — so a poster
+    /// left underneath shows as a mismatched band around the video rather than
+    /// hiding behind it.
     static func drawMedia(_ box: MediaLayout, at rect: CGRect, theme: EditorTheme,
-                          in ctx: CGContext) {
+                          playing: Bool = false, in ctx: CGContext) {
+        guard !playing else { return }
         ctx.saveGState()
         defer { ctx.restoreGState() }
 

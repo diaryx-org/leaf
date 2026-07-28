@@ -148,9 +148,9 @@ private func makeEditor() -> LeafEditorModel {
     // is the app bundle, which is where the sample's media actually lives; a real
     // host would point this at the file's own directory.
     model.documentDirectory = Bundle.main.resourceURL
-    // Playing is the host's job (LeafUI draws the still and the badge but has no
-    // view controller to present a player from). A real app would open an
-    // AVPlayerViewController here; the demo just reports what was activated.
+    // With the default `.inline` playback the editor plays media itself, so this
+    // is only reached for a source its local-file loader can't resolve — a remote
+    // URL, say. A real app would fetch and present one; the demo just reports it.
     model.onOpenMedia = { src in
         NSLog("leaf-editor: play %@", src)
     }
@@ -189,8 +189,8 @@ fn main() {
 
 ## Attachments
 
-Images draw inline; video and audio draw a still and a play badge, and
-activating one hands the source to the host to play.
+Images draw inline. Video and audio show a still and a play badge until you
+tap one, and then play right where they sit.
 
 ![the leaf banner](banner.png)
 
