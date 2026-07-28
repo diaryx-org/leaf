@@ -126,6 +126,14 @@ struct RowLayout {
     var tableTop: CGFloat = 0
     /// The one picture row that carries the grid's height and paints it.
     var tableFirst: Bool = false
+    /// The media box, on every placeholder row of a block image/video/audio;
+    /// `nil` for an ordinary row. Collapsed exactly as a table's rows are — see
+    /// `mediaFirst`.
+    var media: MediaLayout? = nil
+    /// The box's top (all of a media's reserved rows share it).
+    var mediaTop: CGFloat = 0
+    /// The one placeholder row that carries the box's height and paints it.
+    var mediaFirst: Bool = false
     /// Header space reserved above this row's own text for a directive's audience
     /// label (nonzero only on a directive block's first, labeled row) — keeps the
     /// label from painting over that row's real content. See `EditorTheme.directiveLabelHeight`.
@@ -139,6 +147,7 @@ struct RowLayout {
     /// `lineHeight` per visual line.
     var height: CGFloat {
         if let t = table { return tableFirst ? t.height : 0 }
+        if let m = media { return mediaFirst ? m.height : 0 }
         return labelInset + CGFloat(shaped.wrapped.count) * shaped.lineHeight
     }
 
@@ -148,6 +157,10 @@ struct RowLayout {
     /// the grid they draw isn't inset by the prefix, so a bar there would sit on
     /// top of the table rather than beside it.
     func quoteBars(theme: EditorTheme) -> [CGRect] {
+        // A table is skipped (its grid isn't prefix-inset, so a bar would land on
+        // top of it), but a media box *is* drawn inset by the row's prefix — core
+        // emits the same gutter glyphs in front of a block image as any other
+        // block — so a quoted picture keeps its bar beside it.
         guard table == nil else { return [] }
         return shaped.quoteBarXs.map { x in
             CGRect(x: theme.padding.left + x, y: top,
@@ -179,7 +192,12 @@ struct EditorLayout {
     /// The caller must clear `cache` when the theme's geometry changes.
     /// `wrapWidth <= 0` means "don't wrap" (one visual line per row) — the state
     /// before the view knows its bounds.
-    init(_ docView: DocView, theme: EditorTheme, wrapWidth: CGFloat, cache: inout [Row: ShapedRow]) {
+    /// `media` loads the stills a block image or video poster draws. `nil` (the
+    /// default, and what the tests use) still lays every media box out — at its
+    /// no-picture size, as a labelled chip — so geometry can be exercised without
+    /// touching the filesystem.
+    init(_ docView: DocView, theme: EditorTheme, wrapWidth: CGFloat,
+         cache: inout [Row: ShapedRow], media: MediaStore? = nil) {
         var layouts: [RowLayout] = []
         layouts.reserveCapacity(docView.rows.count)
         var next = Dictionary<Row, ShapedRow>(minimumCapacity: docView.rows.count)
@@ -189,6 +207,11 @@ struct EditorLayout {
         // stands in for the whole `[startRow, endRow)` span.
         var tableAt: [Int: TableView] = [:]
         for t in docView.tables { tableAt[Int(t.startRow)] = t }
+
+        // A block image / video / audio replaces its placeholder rows the same
+        // way, with one box standing in for the whole `[startRow, endRow)` span.
+        var mediaAt: [Int: MediaView] = [:]
+        for m in docView.media { mediaAt[Int(m.startRow)] = m }
 
         // An empty stand-in shape for a table's collapsed picture rows (they draw
         // the grid, never their own glyphs).
@@ -219,6 +242,30 @@ struct EditorLayout {
                 continue
             }
 
+            if let mv = mediaAt[i] {
+                // Shaped first, and kept: unlike a table, a media row's own
+                // glyphs (core's `🖼 alt` label) are the fallback drawn when the
+                // box has no picture, and its prefix width is what insets the box
+                // inside a quote or a list.
+                let placeholder = docView.rows[i]
+                let shaped = EditorLayout.shape(placeholder, theme: theme, wrapWidth: wrapWidth)
+                let box = MediaLayout(mv, still: media?.still(for: mv),
+                                      contentWidth: max(0, wrapWidth - shaped.prefixWidth),
+                                      theme: theme)
+                let mediaTop = y
+                for r in Int(mv.startRow)..<Int(mv.endRow) where r < docView.rows.count {
+                    layouts.append(RowLayout(
+                        row: docView.rows[r],
+                        shaped: r == Int(mv.startRow) ? shaped : emptyShape,
+                        top: mediaTop,
+                        media: box, mediaTop: mediaTop, mediaFirst: r == Int(mv.startRow)
+                    ))
+                }
+                y += box.height
+                i = Int(mv.endRow)
+                continue
+            }
+
             let row = docView.rows[i]
             let shaped: ShapedRow
             if let hit = cache[row] ?? next[row], hit.wrapWidth == wrapWidth {
@@ -239,11 +286,25 @@ struct EditorLayout {
         cache = next
     }
 
+    /// The playable media whose box contains `point`, or `nil`.
+    ///
+    /// Only video and audio answer: an image has nothing to activate, so a click
+    /// on one falls through to ordinary caret placement rather than being
+    /// swallowed. `point` is in view coordinates.
+    func playableMedia(at point: CGPoint, theme: EditorTheme) -> MediaView? {
+        for rl in rows {
+            guard rl.mediaFirst, let box = rl.media, box.media.kind != .image else { continue }
+            let r = box.rect(top: rl.mediaTop, left: theme.padding.left + rl.shaped.prefixWidth)
+            if r.contains(point) { return box.media }
+        }
+        return nil
+    }
+
     /// Build with no cross-frame cache — every row shaped fresh. Convenience for
     /// one-off layouts and tests.
-    init(_ docView: DocView, theme: EditorTheme, wrapWidth: CGFloat) {
+    init(_ docView: DocView, theme: EditorTheme, wrapWidth: CGFloat, media: MediaStore? = nil) {
         var scratch: [Row: ShapedRow] = [:]
-        self.init(docView, theme: theme, wrapWidth: wrapWidth, cache: &scratch)
+        self.init(docView, theme: theme, wrapWidth: wrapWidth, cache: &scratch, media: media)
     }
 
     /// Build unwrapped (one visual line per row). Convenience for tests.

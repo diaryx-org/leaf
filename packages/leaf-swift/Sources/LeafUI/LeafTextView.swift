@@ -52,6 +52,34 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// asks. See `LeafDoc.activatableTargetAtCaret`.
     public var recognizesWikilinks = false
 
+    /// Host hook for activating a block video or audio — called with its raw
+    /// `src` when the reader clicks the box.
+    ///
+    /// The view draws a still (a picture, or a video's poster frame) but does not
+    /// *play*: an `AVPlayerView` is a subview needing its own lifecycle and
+    /// scroll-synced positioning, negotiated against a text view that owns the
+    /// caret. Presenting a player is the host's job — it has the window and the
+    /// view controller — exactly as `onOpenLink` leaves navigation to the host.
+    /// Nil means a click just places the caret, as it does on any other block.
+    public var onOpenMedia: ((String) -> Void)?
+
+    /// The document's directory, which a relative `src` in the markup resolves
+    /// against. Core does no I/O and knows no paths, so the host supplies this;
+    /// nil (an untitled buffer) leaves relative paths unresolvable and their
+    /// boxes drawn as labelled chips.
+    public var documentDirectory: URL? {
+        get { mediaStore.baseURL }
+        set {
+            guard newValue != mediaStore.baseURL else { return }
+            mediaStore.baseURL = newValue
+            mediaStore.flush()          // every relative path now points elsewhere
+            render(docView)
+        }
+    }
+
+    /// Loads and caches the stills the media boxes draw.
+    private let mediaStore = MediaStore()
+
     private var docView: DocView
     private var layoutEngine: EditorLayout
     /// The pixel width rows wrap to (content width, minus insets). Core lays out
@@ -142,7 +170,8 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     private func render(_ view: DocView, keepVerticalGoal: Bool = false) {
         if !keepVerticalGoal { verticalGoalX = nil }
         docView = view
-        layoutEngine = EditorLayout(view, theme: theme, wrapWidth: wrapWidth, cache: &shapeCache)
+        layoutEngine = EditorLayout(view, theme: theme, wrapWidth: wrapWidth, cache: &shapeCache,
+                                    media: mediaStore)
         applyContentHeight()
         needsDisplay = true
         resetBlink()
@@ -181,6 +210,18 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             // rows carry no text to paint.
             if let grid = rl.table {
                 if rl.tableFirst { drawTable(grid, tableTop: rl.tableTop, selColor: selColor, in: ctx) }
+                continue
+            }
+            // A media box likewise draws once, on its first placeholder row, in
+            // place of core's `🖼 alt` glyphs. Inset by the row's own prefix, so a
+            // picture inside a quote or a list sits beside its gutter rather than
+            // under it.
+            if let box = rl.media {
+                if rl.mediaFirst {
+                    BlockChrome.drawMedia(box,
+                                          at: box.rect(top: rl.mediaTop, left: padX + rl.shaped.prefixWidth),
+                                          theme: theme, in: ctx)
+                }
                 continue
             }
             let rowRect = CGRect(x: padX, y: rl.top, width: fullWidth, height: rl.height)
@@ -388,6 +429,17 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     public override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         let p = convert(event.locationInWindow, from: nil)
+        // A plain click on a video or audio box starts it — the box's whole point
+        // is the play badge drawn on it. The caret still moves there first, so a
+        // host that ignores the media (no `onOpenMedia`) behaves exactly as
+        // before, and the reader can still type around the block afterwards.
+        if event.clickCount == 1, !event.modifierFlags.contains(.shift),
+           let hit = layoutEngine.playableMedia(at: p, theme: theme), let open = onOpenMedia {
+            let (row, ch) = hitRowCh(p)
+            render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: false))
+            open(hit.src)
+            return
+        }
         let (row, ch) = hitRowCh(p)
         // ⌘-click opens a link under the pointer (the native convention), leaving the
         // caret there. A plain click still places the caret to edit the link text.

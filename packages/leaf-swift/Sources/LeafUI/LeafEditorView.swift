@@ -52,6 +52,28 @@ public final class LeafEditorModel: ObservableObject {
     /// Obsidian will), leave it off otherwise and `[[…]]` stays inert text.
     public var recognizesWikilinks = false
 
+    /// The document's own directory, which a relative `![](img/cat.png)` or
+    /// `<video src="clip.mp4">` resolves against.
+    ///
+    /// Core does no I/O and holds no path context — a `Doc` is bytes and a
+    /// caret — so a relative source is unresolvable until the host says what it
+    /// is relative *to*. Leave it nil for an untitled buffer and relative media
+    /// draws as a labelled chip rather than a picture. Setting it re-reads every
+    /// picture, since the same relative path now points somewhere else.
+    public var documentDirectory: URL? {
+        didSet { textView?.documentDirectory = documentDirectory }
+    }
+
+    /// Called when the reader activates a block video or audio, with its raw
+    /// `src`. The editor draws the still and the play badge; *playing* is the
+    /// host's — it has the view controller (iOS) or the window (macOS) to
+    /// present an `AVPlayerViewController` / `AVPlayerView` from, and LeafUI has
+    /// neither. Nil leaves a click or tap doing nothing but placing the caret.
+    ///
+    /// The same division `onOpenLink` draws, for the same reason: the editor
+    /// renders the document surface and leaves system UI to the app around it.
+    public var onOpenMedia: ((String) -> Void)?
+
     let doc: LeafDoc
     fileprivate weak var textView: LeafTextView?
 
@@ -180,6 +202,7 @@ public struct LeafEditor: NSViewRepresentable {
         // flips this on the model after the view exists (or per document, for a
         // vault where only some files use the convention) gets it honoured.
         hosted.recognizesWikilinks = model.recognizesWikilinks
+        hosted.documentDirectory = model.documentDirectory
     }
 
     /// Build a `LeafTextView` over `model.doc`, wired the way `makeNSView` and the
@@ -199,6 +222,12 @@ public struct LeafEditor: NSViewRepresentable {
             model?.onOpenLink?(destination) ?? false
         }
         textView.recognizesWikilinks = model.recognizesWikilinks
+        textView.documentDirectory = model.documentDirectory
+        // Weak, like `onOpenLink` above: the closure outlives a host that swaps
+        // its model, and a strong capture would keep the old one alive.
+        textView.onOpenMedia = { [weak model] src in
+            model?.onOpenMedia?(src)
+        }
         model.textView = textView
         return textView
     }
@@ -280,6 +309,7 @@ public struct LeafEditor: UIViewRepresentable {
         // flips this on the model after the view exists (or per document, for a
         // vault where only some files use the convention) gets it honoured.
         hosted.recognizesWikilinks = model.recognizesWikilinks
+        hosted.documentDirectory = model.documentDirectory
         // Refresh the accessory's content in place — its `UIHostingController`
         // persists in the coordinator across updates, so this is a live
         // content swap, not a rebuild (which would drop first-responder focus
@@ -318,6 +348,12 @@ public struct LeafEditor: UIViewRepresentable {
             model?.onOpenLink?(destination) ?? false
         }
         textView.recognizesWikilinks = model.recognizesWikilinks
+        textView.documentDirectory = model.documentDirectory
+        // Weak, like `onOpenLink` above: the closure outlives a host that swaps
+        // its model, and a strong capture would keep the old one alive.
+        textView.onOpenMedia = { [weak model] src in
+            model?.onOpenMedia?(src)
+        }
         model.textView = textView
         return textView
     }

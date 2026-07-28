@@ -29,6 +29,11 @@ targets:
     supportedDestinations: [macOS, iOS]
     sources:
       - path: App
+        excludes: [Media]
+      # The sample document's attachments, copied into the bundle so the demo has
+      # real files to resolve `documentDirectory`-relative sources against.
+      - path: App/Media
+        buildPhase: resources
     dependencies:
       - package: LeafFFI
         product: LeafUI

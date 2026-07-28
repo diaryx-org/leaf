@@ -130,6 +130,33 @@ public final class LeafTextView: UIView, UITextInput {
     /// asks. See `LeafDoc.activatableTargetAtCaret`.
     public var recognizesWikilinks = false
 
+    /// Host hook for activating a block video or audio — called with its raw
+    /// `src` when the reader taps the box.
+    ///
+    /// The view draws a still (a picture, or a video's poster frame) but does not
+    /// *play*: on iOS an `AVPlayerViewController` needs a parent view controller,
+    /// which a `UIView` in a package does not have. Presenting a player is the
+    /// host's job, exactly as `onOpenLink` leaves navigation to the host. Nil
+    /// means a tap just places the caret, as on any other block.
+    public var onOpenMedia: ((String) -> Void)?
+
+    /// The document's directory, which a relative `src` in the markup resolves
+    /// against. Core does no I/O and knows no paths, so the host supplies this;
+    /// nil (an untitled buffer) leaves relative paths unresolvable and their
+    /// boxes drawn as labelled chips.
+    public var documentDirectory: URL? {
+        get { mediaStore.baseURL }
+        set {
+            guard newValue != mediaStore.baseURL else { return }
+            mediaStore.baseURL = newValue
+            mediaStore.flush()          // every relative path now points elsewhere
+            render(docView)
+        }
+    }
+
+    /// Loads and caches the stills the media boxes draw.
+    private let mediaStore = MediaStore()
+
     /// Follows a link on a plain tap. A phone has no ⌘ to hold and no pointer to
     /// hover, so the tap is the whole vocabulary. This rides *beside*
     /// `textInteraction` rather than replacing it — it doesn't cancel touches
@@ -169,7 +196,16 @@ public final class LeafTextView: UIView, UITextInput {
     /// `textInteraction` has already placed the caret, which is the whole of what
     /// a tap on ordinary prose should do.
     @objc private func handleLinkTap(_ gesture: UITapGestureRecognizer) {
-        guard let destination = linkDestination(at: gesture.location(in: self)) else { return }
+        let point = gesture.location(in: self)
+        // A tap on a video or audio box starts it — the box draws a play badge,
+        // so that is what a tap on it should mean. Checked before links because a
+        // media box occupies its whole row and holds no link text anyway.
+        if let hit = layoutEngine.playableMedia(at: point, theme: renderTheme),
+           let open = onOpenMedia {
+            open(hit.src)
+            return
+        }
+        guard let destination = linkDestination(at: point) else { return }
         if onOpenLink?(destination) == true { return }
         guard let url = URL(string: destination) else { return }
         UIApplication.shared.open(url)
@@ -238,7 +274,8 @@ public final class LeafTextView: UIView, UITextInput {
     /// and re-lays its selection overlays afterward.
     private func render(_ view: DocView) {
         docView = view
-        layoutEngine = EditorLayout(view, theme: renderTheme, wrapWidth: wrapWidth, cache: &shapeCache)
+        layoutEngine = EditorLayout(view, theme: renderTheme, wrapWidth: wrapWidth, cache: &shapeCache,
+                                    media: mediaStore)
         invalidateIntrinsicContentSize()
         setNeedsDisplay()
         // Only follow the caret when it actually moved, not on a passive reflow.
@@ -282,6 +319,17 @@ public final class LeafTextView: UIView, UITextInput {
             // A table draws its own grid (once, on its first picture row).
             if let grid = rl.table {
                 if rl.tableFirst { drawTable(grid, tableTop: rl.tableTop, in: ctx) }
+                continue
+            }
+            // A media box likewise draws once, on its first placeholder row, in
+            // place of core's `🖼 alt` glyphs. Inset by the row's own prefix, so a
+            // picture inside a quote or a list sits beside its gutter.
+            if let box = rl.media {
+                if rl.mediaFirst {
+                    BlockChrome.drawMedia(box,
+                                          at: box.rect(top: rl.mediaTop, left: padX + rl.shaped.prefixWidth),
+                                          theme: renderTheme, in: ctx)
+                }
                 continue
             }
             let rowRect = CGRect(x: padX, y: rl.top, width: fullWidth, height: rl.height)

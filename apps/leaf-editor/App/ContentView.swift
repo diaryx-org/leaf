@@ -142,7 +142,19 @@ private var editorBackground: Color {
 
 private func makeEditor() -> LeafEditorModel {
     // The sample is valid Markdown, so parsing cannot fail here.
-    try! LeafEditorModel(source: sampleMarkdown, format: "markdown")
+    let model = try! LeafEditorModel(source: sampleMarkdown, format: "markdown")
+    // The sample's attachments are relative paths, and core resolves none of them
+    // — it does no I/O and knows no paths. For this demo the "document directory"
+    // is the app bundle, which is where the sample's media actually lives; a real
+    // host would point this at the file's own directory.
+    model.documentDirectory = Bundle.main.resourceURL
+    // Playing is the host's job (LeafUI draws the still and the badge but has no
+    // view controller to present a player from). A real app would open an
+    // AVPlayerViewController here; the demo just reports what was activated.
+    model.onOpenMedia = { src in
+        NSLog("leaf-editor: play %@", src)
+    }
+    return model
 }
 
 private let sampleMarkdown = """
@@ -174,6 +186,17 @@ fn main() {
     println!("rendered by leaf-core");
 }
 ```
+
+## Attachments
+
+Images draw inline; video and audio draw a still and a play badge, and
+activating one hands the source to the host to play.
+
+![the leaf banner](banner.png)
+
+<video src="clip.mp4" poster="banner.png" controls></video>
+
+<audio src="take.mp3" controls></audio>
 
 Try the toolbar, or the keyboard's arrows and ⌘B / ⌘I.
 """

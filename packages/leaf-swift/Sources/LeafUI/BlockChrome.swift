@@ -12,9 +12,123 @@
 //  the AppKit and UIKit views share one implementation.
 
 import CoreGraphics
+import CoreText
 import Foundation
 
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
+
 enum BlockChrome {
+    /// Paint a block media box: the picture if there is one, else a labelled chip,
+    /// plus a play badge for video and audio.
+    ///
+    /// Shared by both surfaces, and drawn into the text's own context — which is
+    /// exactly why playback isn't here. A still is pixels; a player is a subview.
+    /// See `MediaLayout` for that division and what `onOpenMedia` does about it.
+    static func drawMedia(_ box: MediaLayout, at rect: CGRect, theme: EditorTheme,
+                          in ctx: CGContext) {
+        ctx.saveGState()
+        defer { ctx.restoreGState() }
+
+        let rounded = CGPath(roundedRect: rect, cornerWidth: MediaMetrics.corner,
+                             cornerHeight: MediaMetrics.corner, transform: nil)
+
+        if let img = box.still {
+            // Save/restore around the clip and the flip, so neither leaks into the
+            // frame and badge drawn after this — `resetClip` can't undo a clip and
+            // undoing a transform by re-applying its inverse accumulates error.
+            ctx.saveGState()
+            // Clip to the rounded box so the picture's corners match the chrome's
+            // rather than poking out square behind it.
+            ctx.addPath(rounded)
+            ctx.clip()
+            // Both surfaces draw into a flipped context (AppKit's `isFlipped`,
+            // UIKit's native top-left origin) so rows can be laid out top-down.
+            // `CGContext.draw` doesn't know that and would render the picture
+            // upside down, so flip back across the box before drawing it — the
+            // text paths avoid this only because NSString/NSAttributedString
+            // drawing compensates internally.
+            ctx.translateBy(x: 0, y: rect.maxY)
+            ctx.scaleBy(x: 1, y: -1)
+            ctx.draw(img, in: CGRect(x: rect.minX, y: 0, width: rect.width, height: rect.height))
+            ctx.restoreGState()
+        } else {
+            // Nothing to show: a filled chip carrying the media's name, so the row
+            // says what stands there instead of going blank.
+            ctx.addPath(rounded)
+            ctx.setFillColor(theme.codeBackground.cgColor)
+            ctx.fillPath()
+            drawChipLabel(box, in: rect, theme: theme, ctx: ctx)
+        }
+
+        // A frame: solid for something real, dashed for an image that didn't load
+        // — the same signal leaf-web's dashed outline gives, for the same reason.
+        ctx.addPath(rounded)
+        ctx.setStrokeColor((box.isBroken ? theme.secondaryColor : theme.tableBorderColor).cgColor)
+        ctx.setLineWidth(1)
+        if box.isBroken { ctx.setLineDash(phase: 0, lengths: [4, 3]) }
+        ctx.strokePath()
+        ctx.setLineDash(phase: 0, lengths: [])
+
+        if box.showsPlayBadge { drawPlayBadge(in: rect, theme: theme, ctx: ctx) }
+    }
+
+    /// The media's name, centred in a chip that has no picture. Left-aligned and
+    /// inset when a play badge shares the box, so the two don't overlap.
+    private static func drawChipLabel(_ box: MediaLayout, in rect: CGRect,
+                                      theme: EditorTheme, ctx: CGContext) {
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: theme.proportionalFont(size: theme.fontSize * 0.85, bold: false, italic: false),
+            .foregroundColor: theme.secondaryColor,
+        ]
+        let text = box.chipLabel as NSString
+        let size = text.size(withAttributes: attrs)
+        // Left of the label sits the play badge when there is one; both sides get
+        // the same padding otherwise.
+        let leftInset = box.showsPlayBadge ? MediaMetrics.badge + 16 : 12
+        // A name too long for what's left is clipped rather than spilling out of
+        // the chip and over the prose beside it.
+        let room = rect.width - leftInset - 12
+        guard room > 0 else { return }
+        ctx.saveGState()
+        ctx.clip(to: CGRect(x: rect.minX + leftInset, y: rect.minY,
+                            width: room, height: rect.height))
+        text.draw(at: CGPoint(x: rect.minX + leftInset, y: rect.midY - size.height / 2),
+                  withAttributes: attrs)
+        ctx.restoreGState()
+    }
+
+    /// A play badge — a translucent disc with a triangle — so a video or audio box
+    /// reads as something to start rather than something to look at. Centred on a
+    /// picture, left-aligned on a chip where the label takes the rest of the room.
+    private static func drawPlayBadge(in rect: CGRect, theme: EditorTheme, ctx: CGContext) {
+        let d = min(MediaMetrics.badge, rect.height - 8, rect.width - 8)
+        guard d > 8 else { return }
+        // A tall picture centres the badge; a short chip keeps it at the left so
+        // the label has the rest of the width.
+        let cx = rect.height >= MediaMetrics.badge * 1.5 ? rect.midX : rect.minX + d / 2 + 8
+        let centre = CGPoint(x: cx, y: rect.midY)
+        let disc = CGRect(x: centre.x - d / 2, y: centre.y - d / 2, width: d, height: d)
+
+        ctx.setFillColor(gray: 0, alpha: 0.45)
+        ctx.fillEllipse(in: disc)
+
+        // An equilateral triangle inside the disc, nudged right so it reads as
+        // centred (a triangle's visual centre sits left of its bounding box's).
+        let s = d * 0.36
+        let ox = centre.x + s * 0.12
+        ctx.beginPath()
+        ctx.move(to: CGPoint(x: ox - s * 0.5, y: centre.y - s * 0.6))
+        ctx.addLine(to: CGPoint(x: ox - s * 0.5, y: centre.y + s * 0.6))
+        ctx.addLine(to: CGPoint(x: ox + s * 0.6, y: centre.y))
+        ctx.closePath()
+        ctx.setFillColor(gray: 1, alpha: 0.95)
+        ctx.fillPath()
+    }
+
     /// The quote bars of a whole frame, merged down the page: consecutive rows
     /// quoted at the same level yield ONE rect, so a multi-row quote reads as a
     /// single unbroken bar with rounded caps rather than a stack of segments.

@@ -68,10 +68,24 @@ func mkTable(_ grid: [TableRowView], startRow: UInt32 = 0, endRow: UInt32 = 0) -
     TableView(startRow: startRow, endRow: endRow, grid: grid)
 }
 
+func mkMedia(
+    _ src: String,
+    kind: MediaKind = .image,
+    startRow: UInt32 = 0,
+    endRow: UInt32 = 1,
+    poster: String = "",
+    alt: String = "",
+    sources: [MediaSourceView] = []
+) -> MediaView {
+    MediaView(startRow: startRow, endRow: endRow, kind: kind, src: src,
+              poster: poster, alt: alt, sources: sources)
+}
+
 func docView(
     _ rows: [Row],
     tables: [TableView] = [],
     directives: [DirectiveView] = [],
+    media: [MediaView] = [],
     caretRow: UInt32 = 0,
     caretCh: UInt32 = 0,
     caretSrc: UInt32 = 0,
@@ -87,6 +101,7 @@ func docView(
         rows: rows,
         tables: tables,
         directives: directives,
+        media: media,
         caretRow: caretRow,
         caretCol: 0,
         caretCh: caretCh,
