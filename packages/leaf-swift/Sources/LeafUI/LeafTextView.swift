@@ -78,6 +78,13 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         }
     }
 
+    /// Reconsider `src` — or every source, for nil — and redraw.
+    /// See `LeafEditorModel.reloadMedia`.
+    public func reloadMedia(_ src: String?) {
+        mediaStore.forget(src)
+        render(docView)
+    }
+
     /// What activating a block video or audio does. `.inline` (the default)
     /// installs a real AVKit player over the box; `.host` draws the still and
     /// hands the source to `onOpenMedia` instead. See `MediaPlaybackMode`.
@@ -289,8 +296,8 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         }
     }
 
-    /// Answer a click on a block video or audio, returning whether it was
-    /// handled (so the caller can fall through to plain caret placement if not).
+    /// Answer a click on a block media box, returning whether it was handled (so
+    /// the caller can fall through to plain caret placement if not).
     ///
     /// In `.inline` mode this installs an AVKit player over the box and starts
     /// it; a second click on a playing one pauses. `.host` mode, and any source
@@ -298,6 +305,17 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// — a remote URL is exactly the case a host is better placed to handle,
     /// since it can fetch asynchronously and this cannot.
     private func activateMedia(_ media: MediaView) -> Bool {
+        // An image plays nothing, so it is worth activating only when its box is
+        // empty and the host might yet fill it — a source the host declined, or
+        // one whose bytes aren't on this device. A picture that loaded is just
+        // text to click into, and swallowing that click would be a bug.
+        if media.kind == .image {
+            guard mediaStore.still(for: media) == nil else { return false }
+            if mediaStore.isResolving(media.src) { return true }
+            guard let open = onOpenMedia else { return false }
+            open(media.src)
+            return true
+        }
         if mediaPlayback == .inline {
             if let url = mediaStore.playableURL(for: media.src) {
                 let rects = layoutEngine.mediaRects(theme: theme)
@@ -509,11 +527,12 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         window?.makeFirstResponder(self)
         let p = convert(event.locationInWindow, from: nil)
         // A plain click on a video or audio box starts it — the box's whole point
-        // is the play badge drawn on it. The caret still moves there first, so a
-        // host that ignores the media (no `onOpenMedia`) behaves exactly as
-        // before, and the reader can still type around the block afterwards.
+        // is the play badge drawn on it — and a click on an *empty* picture box
+        // asks the host for it. The caret still moves there first, so a host that
+        // ignores the media (no `onOpenMedia`) behaves exactly as before, and the
+        // reader can still type around the block afterwards.
         if event.clickCount == 1, !event.modifierFlags.contains(.shift),
-           let hit = layoutEngine.playableMedia(at: p, theme: theme),
+           let hit = layoutEngine.mediaBox(at: p, theme: theme),
            activateMedia(hit) {
             let (row, ch) = hitRowCh(p)
             render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: false))

@@ -140,8 +140,9 @@ final class MediaLayoutTests: XCTestCase {
     // MARK: hit-testing
 
     func testOnlyPlayableMediaAnswersAHit() {
-        // An image has nothing to activate, so a click on one must fall through
-        // to ordinary caret placement rather than being swallowed.
+        // An image has nothing to *play*. Whether a click on one is worth acting
+        // on depends on what has loaded into its box, which only a view can see —
+        // so geometry answers `mediaBox` for it and `playableMedia` not at all.
         let frame = docView(
             [row([mkRun("🖼 a cat")]), row([mkRun("🎬 clip")])],
             media: [mkMedia("cat.png", startRow: 0, endRow: 1),
@@ -156,6 +157,11 @@ final class MediaLayoutTests: XCTestCase {
         let video = layout.rows[1]
         let inVideo = CGPoint(x: theme.padding.left + 4, y: video.mediaTop + MediaMetrics.gap + 4)
         XCTAssertEqual(layout.playableMedia(at: inVideo, theme: theme)?.src, "clip.mp4")
+
+        // The superset does answer for the image — an empty picture box is what
+        // the reader clicks to ask the host for it.
+        XCTAssertEqual(layout.mediaBox(at: inImage, theme: theme)?.src, "cat.png")
+        XCTAssertEqual(layout.mediaBox(at: inVideo, theme: theme)?.src, "clip.mp4")
     }
 
     func testAPointOutsideEveryBoxHitsNothing() {
@@ -378,6 +384,110 @@ final class MediaLayoutTests: XCTestCase {
         XCTAssertFalse(store.isResolving("https://example.com/cat.png"))
     }
 
+    // MARK: a local path that isn't here yet
+
+    func testALocalPathWithNoBytesYetIsOfferedToTheHost() throws {
+        // The synced-vault case: `img/cat.png` composes to a perfectly good URL
+        // and there is nothing at it, because the provider hasn't materialized
+        // the placeholder. That is the host's to fetch, not a decode failure to
+        // remember — so it goes to the host like any source this loader can't
+        // read, and the answer draws.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let elsewhere = dir.appendingPathComponent("materialized.png")
+        try onePixelPNG().write(to: elsewhere)
+
+        var asked: [String] = []
+        let store = MediaStore(baseURL: dir)
+        store.onResolveMedia = { src, done in asked.append(src); done(elsewhere) }
+
+        XCTAssertNil(store.still(for: mkMedia("img/cat.png")), "nothing to draw on the first pass")
+        XCTAssertEqual(asked, ["img/cat.png"], "asked with the src as written")
+        XCTAssertNotNil(store.still(for: mkMedia("img/cat.png")), "and now it has a picture")
+    }
+
+    func testALocalFileThatIsHereIsNeverOfferedToTheHost() throws {
+        // The common case must not acquire a round trip through the app.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try onePixelPNG().write(to: dir.appendingPathComponent("dot.png"))
+
+        var asked = 0
+        let store = MediaStore(baseURL: dir)
+        store.onResolveMedia = { _, done in asked += 1; done(nil) }
+        XCTAssertNotNil(store.still(for: mkMedia("dot.png")))
+        XCTAssertEqual(asked, 0)
+    }
+
+    func testALocalVideoIsPlayableWithoutTheHostEvenThoughItDecodesToNoStill() throws {
+        // Readability is the test, not a successful decode: `load` will never
+        // make a CGImage out of an mp4, and the file URL is exactly what
+        // playback needs. Guarding on the decode would send every local video
+        // to the host.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let clip = dir.appendingPathComponent("clip.mp4")
+        try Data([0, 1, 2, 3]).write(to: clip)
+
+        var asked = 0
+        let store = MediaStore(baseURL: dir)
+        store.onResolveMedia = { _, done in asked += 1; done(nil) }
+        XCTAssertEqual(store.playableURL(for: "clip.mp4"), clip)
+        XCTAssertEqual(asked, 0)
+    }
+
+    // MARK: forgetting a decline
+
+    func testForgetLetsADeclinedSourceBeAskedAgain() throws {
+        // What `reloadMedia` is for: the app declined on open, the reader said
+        // load it anyway, and the refusal has to be reconsidered.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("dot.png")
+        try onePixelPNG().write(to: file)
+
+        var allow = false
+        var asked = 0
+        let store = MediaStore()
+        store.onResolveMedia = { _, done in asked += 1; done(allow ? file : nil) }
+
+        let remote = mkMedia("https://example.com/cat.png")
+        XCTAssertNil(store.still(for: remote), "declined")
+        XCTAssertNil(store.still(for: remote))
+        XCTAssertEqual(asked, 1, "and the decline is cached")
+
+        allow = true
+        store.forget("https://example.com/cat.png")
+        XCTAssertNil(store.still(for: remote), "asked again — and, as on any first pass, nothing yet")
+        XCTAssertEqual(asked, 2)
+        XCTAssertNotNil(store.still(for: remote), "and this time the answer was a file")
+    }
+
+    func testForgetLeavesASourceInFlightAlone() {
+        // Forgetting a pending entry would send the host after the same bytes a
+        // second time, and the first answer would still be on its way.
+        var asked = 0
+        let store = MediaStore()
+        store.onResolveMedia = { _, done in asked += 1; _ = done }
+        let remote = mkMedia("https://example.com/cat.png")
+        _ = store.still(for: remote)
+        store.forget("https://example.com/cat.png")
+        _ = store.still(for: remote)
+        XCTAssertEqual(asked, 1)
+        XCTAssertTrue(store.isResolving("https://example.com/cat.png"))
+    }
+
+    func testForgetEverythingIsAFlush() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try onePixelPNG().write(to: dir.appendingPathComponent("dot.png"))
+        let store = MediaStore(baseURL: dir)
+        XCTAssertNotNil(store.still(for: mkMedia("dot.png")))
+        try FileManager.default.removeItem(at: dir.appendingPathComponent("dot.png"))
+        store.forget(nil)
+        XCTAssertNil(store.still(for: mkMedia("dot.png")))
+    }
+
     private func makeTempDir() throws -> URL {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("leaf-media-\(UUID().uuidString)", isDirectory: true)
@@ -414,8 +524,9 @@ final class MediaLayoutTests: XCTestCase {
         XCTAssertNotNil(loaded, "a real PNG decodes")
         XCTAssertEqual(loaded?.width, 1)
 
-        // A missing file answers nil — and, cached as such, keeps answering nil
-        // without going back to disk on every redraw.
+        // A missing file answers nil — and with no host to offer it to, that is
+        // cached, so it keeps answering nil without going back to disk on every
+        // redraw.
         XCTAssertNil(store.still(for: mkMedia("gone.png")))
         XCTAssertNil(store.still(for: mkMedia("gone.png")))
     }

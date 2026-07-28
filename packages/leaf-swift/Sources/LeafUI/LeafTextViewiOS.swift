@@ -155,6 +155,13 @@ public final class LeafTextView: UIView, UITextInput {
         }
     }
 
+    /// Reconsider `src` — or every source, for nil — and redraw.
+    /// See `LeafEditorModel.reloadMedia`.
+    public func reloadMedia(_ src: String?) {
+        mediaStore.forget(src)
+        render(docView)
+    }
+
     /// What activating a block video or audio does. `.inline` (the default)
     /// installs a real AVKit player over the box; `.host` draws the still and
     /// hands the source to `onOpenMedia` instead. See `MediaPlaybackMode`.
@@ -224,9 +231,10 @@ public final class LeafTextView: UIView, UITextInput {
     @objc private func handleLinkTap(_ gesture: UITapGestureRecognizer) {
         let point = gesture.location(in: self)
         // A tap on a video or audio box starts it — the box draws a play badge,
-        // so that is what a tap on it should mean. Checked before links because a
-        // media box occupies its whole row and holds no link text anyway.
-        if let hit = layoutEngine.playableMedia(at: point, theme: renderTheme),
+        // so that is what a tap on it should mean — and a tap on an *empty*
+        // picture box asks the host for it. Checked before links because a media
+        // box occupies its whole row and holds no link text anyway.
+        if let hit = layoutEngine.mediaBox(at: point, theme: renderTheme),
            activateMedia(hit) {
             return
         }
@@ -236,13 +244,24 @@ public final class LeafTextView: UIView, UITextInput {
         UIApplication.shared.open(url)
     }
 
-    /// Answer a tap on a block video or audio, returning whether it was handled.
+    /// Answer a tap on a block media box, returning whether it was handled.
     ///
     /// In `.inline` mode this installs an AVKit player over the box and starts
     /// it; a second tap on a playing one pauses. `.host` mode, a source this
     /// loader can't resolve to a local file, and (on iOS) a view with no owning
     /// view controller to parent the player to all fall through to `onOpenMedia`.
     private func activateMedia(_ media: MediaView) -> Bool {
+        // An image plays nothing, so it is worth activating only when its box is
+        // empty and the host might yet fill it — a source the host declined, or
+        // one whose bytes aren't on this device. A picture that loaded is just
+        // text to tap into, and swallowing that tap would be a bug.
+        if media.kind == .image {
+            guard mediaStore.still(for: media) == nil else { return false }
+            if mediaStore.isResolving(media.src) { return true }
+            guard let open = onOpenMedia else { return false }
+            open(media.src)
+            return true
+        }
         if mediaPlayback == .inline {
             if let url = mediaStore.playableURL(for: media.src) {
                 let rects = layoutEngine.mediaRects(theme: renderTheme)

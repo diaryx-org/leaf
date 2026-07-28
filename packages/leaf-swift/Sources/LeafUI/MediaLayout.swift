@@ -234,6 +234,22 @@ final class MediaStore {
         generation &+= 1
     }
 
+    /// Drop what is known about one source so the next draw settles it again —
+    /// `nil` forgets all of them, the same as `flush`.
+    ///
+    /// This is the counterpart to caching a decline: "not available" is the
+    /// right answer until the reader says *load it anyway*, and then it isn't.
+    /// A host that fetches something it previously declined calls this to have
+    /// its own refusal reconsidered.
+    func forget(_ source: String?) {
+        guard let source else { flush(); return }
+        let key = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        // A source still in flight is already going to answer. Forgetting it
+        // would send the host after the same bytes a second time.
+        if case .pending = entries[key] { return }
+        entries[key] = nil
+    }
+
     /// The still for `media`, or `nil` when there is nothing to draw *yet* —
     /// audio, a poster-less video, a source that failed, or one the host is
     /// still resolving. The box draws its labelled chip meanwhile.
@@ -293,8 +309,16 @@ final class MediaStore {
             return entry
         }
 
-        // A path this loader can read itself.
-        if let url = resolve(source) {
+        // A path this loader can read itself — provided the bytes are actually
+        // here. On a synced vault they often aren't: the file is a placeholder
+        // the provider hasn't materialized, and fetching it is something the
+        // host can do and this cannot. Treating that as a decoding failure and
+        // caching it would leave the attachment broken for the rest of the
+        // session, so it falls through to the host like any other source this
+        // loader can't read. Readability, not a failed decode, is the test —
+        // a video is a perfectly good local file that `load` will never
+        // decode, and its URL is exactly what playback needs.
+        if let url = resolve(source), FileManager.default.isReadableFile(atPath: url.path) {
             let entry = Entry.ready(file: url, still: MediaStore.load(url))
             entries[source] = entry
             return entry

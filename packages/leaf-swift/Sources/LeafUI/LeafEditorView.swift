@@ -91,11 +91,30 @@ public final class LeafEditorModel: ObservableObject {
         didSet { textView?.onResolveMedia = onResolveMedia }
     }
 
-    /// Called when the reader activates a block video or audio, with its raw
-    /// `src`, in the cases the editor doesn't play it itself: `.host` playback,
-    /// or a source its local-file loader can't resolve — a remote URL, which
-    /// only the host can fetch asynchronously. Nil leaves those activations
-    /// doing nothing but placing the caret.
+    /// Have `source` resolved again on the next draw — or every source, when it
+    /// is nil.
+    ///
+    /// A `nil` from `onResolveMedia` is remembered, which is what makes
+    /// declining cheap; this is how an app un-declines. Fetch what the reader
+    /// asked for, then call this with the same `src` and the editor asks again —
+    /// and a video the reader tapped starts playing when the answer lands.
+    ///
+    /// Sources already in flight are left alone, so calling this is never a way
+    /// to send the app after the same bytes twice.
+    public func reloadMedia(_ source: String? = nil) {
+        textView?.reloadMedia(source)
+    }
+
+    /// Called when the reader activates a block media box, with its raw `src`, in
+    /// the cases the editor can't answer itself: `.host` playback, a video or
+    /// audio whose source its local-file loader can't resolve, or a picture whose
+    /// box is empty — a source that was declined, or one whose bytes aren't on
+    /// this device. A remote URL is the shape of all three, and only the host can
+    /// fetch one asynchronously. Nil leaves those activations doing nothing but
+    /// placing the caret.
+    ///
+    /// This is the reader saying *load it anyway*. Fetch it, then call
+    /// `reloadMedia(src)`.
     ///
     /// The same division `onOpenLink` draws: the editor renders the document
     /// surface and leaves what it can't reach to the app around it.

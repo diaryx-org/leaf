@@ -286,18 +286,27 @@ struct EditorLayout {
         cache = next
     }
 
-    /// The playable media whose box contains `point`, or `nil`.
+    /// The media whose box contains `point`, of any kind, or `nil`. `point` is in
+    /// view coordinates.
     ///
-    /// Only video and audio answer: an image has nothing to activate, so a click
-    /// on one falls through to ordinary caret placement rather than being
-    /// swallowed. `point` is in view coordinates.
-    func playableMedia(at point: CGPoint, theme: EditorTheme) -> MediaView? {
+    /// Whether a hit here is worth *acting on* is not geometry's question —
+    /// video and audio always are, an image only while there is nothing drawn in
+    /// its box and the host might still supply it. The views decide that, since
+    /// only they can see what the media store has loaded.
+    func mediaBox(at point: CGPoint, theme: EditorTheme) -> MediaView? {
         for rl in rows {
-            guard rl.mediaFirst, let box = rl.media, box.media.kind != .image else { continue }
+            guard rl.mediaFirst, let box = rl.media else { continue }
             let r = box.rect(top: rl.mediaTop, left: theme.padding.left + rl.shaped.prefixWidth)
             if r.contains(point) { return box.media }
         }
         return nil
+    }
+
+    /// The playable media whose box contains `point`, or `nil` — `mediaBox`
+    /// narrowed to the kinds that have something to play.
+    func playableMedia(at point: CGPoint, theme: EditorTheme) -> MediaView? {
+        guard let hit = mediaBox(at: point, theme: theme), hit.kind != .image else { return nil }
+        return hit
     }
 
     /// Every media box's rect in view coordinates, keyed by `src` — what an
