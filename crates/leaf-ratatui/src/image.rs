@@ -2,7 +2,7 @@
 //!
 //! leaf-core lays a block image out as a run of visual rows — a label row plus
 //! blank filler rows it reserves once we tell it how tall the picture is (see
-//! [`leaf_core::Doc::set_image_rows`]). This module is the terminal end of that:
+//! [`leaf_core::Doc::set_media_rows`]). This module is the terminal end of that:
 //! it decodes each image, measures how many character rows the fitted picture
 //! needs, and paints the raster over the reserved rows with
 //! [`ratatui_image`], which speaks kitty / iTerm2 / sixel where the terminal
@@ -27,7 +27,7 @@ use ratatui_image::{
     protocol::StatefulProtocol,
 };
 
-use leaf_core::{ColorScheme, ImageInfo};
+use leaf_core::{ColorScheme, MediaInfo};
 
 /// The most rows a single image may reserve, so one tall picture can't push a
 /// whole screen of text out of view. Mirrors the GUI's `IMAGE_MAX_H` pixel cap,
@@ -60,7 +60,7 @@ pub struct Images {
     /// frame.
     cache: HashMap<PathBuf, Option<Entry>>,
     /// The terminal's color scheme, used to pick a `<picture>`'s
-    /// `prefers-color-scheme` `<source>` (see [`ImageInfo::resolve`]). Detected
+    /// `prefers-color-scheme` `<source>` (see [`MediaInfo::resolve`]). Detected
     /// once at startup and refreshable via [`Images::set_color_scheme`]; the
     /// per-path cache keys off the *resolved* file, so a scheme change naturally
     /// loads (and caches) the newly-picked image without disturbing the old one.
@@ -103,13 +103,13 @@ impl Images {
 
     /// Decode (once) and measure every block image, returning the row count each
     /// one reserves keyed by destination — exactly the map
-    /// [`leaf_core::Doc::set_image_rows`] wants. A destination that doesn't
+    /// [`leaf_core::Doc::set_media_rows`] wants. A destination that doesn't
     /// resolve to a loadable local file is left out, so core keeps its bare
     /// one-row placeholder for it. `avail_cols` is the content width the picture
     /// may fill.
     pub fn reserve(
         &mut self,
-        images: &[ImageInfo],
+        images: &[MediaInfo],
         doc_dir: Option<&Path>,
         avail_cols: u16,
         avail_rows: u16,
@@ -123,7 +123,10 @@ impl Images {
         let inner_rows = (avail_rows.saturating_sub(2) as usize).clamp(1, MAX_IMAGE_ROWS) as u16;
         let mut heights = HashMap::new();
         for info in images {
-            let Some(path) = resolve_image_path(info.resolve(self.scheme), doc_dir) else {
+            // No still to draw (audio, or a video with no poster): leave core's
+            // labelled placeholder row and reserve nothing extra for it.
+            let Some(still) = info.still(self.scheme) else { continue };
+            let Some(path) = resolve_image_path(still, doc_dir) else {
                 continue;
             };
             let Some(entry) = self.entry(&path) else { continue };
@@ -137,8 +140,8 @@ impl Images {
     /// The character-cell size `(cols, rows)` of the picture inside its border —
     /// what `ui` sizes the box to and reserves the rows for. `None` for an image
     /// that isn't a loadable local file (so `ui` frames it as a bare placeholder).
-    pub fn picture_cells(&self, info: &ImageInfo, doc_dir: Option<&Path>) -> Option<(u16, u16)> {
-        let path = resolve_image_path(info.resolve(self.scheme), doc_dir)?;
+    pub fn picture_cells(&self, info: &MediaInfo, doc_dir: Option<&Path>) -> Option<(u16, u16)> {
+        let path = resolve_image_path(info.still(self.scheme)?, doc_dir)?;
         self.cache.get(&path).and_then(|e| e.as_ref()).map(|e| e.box_cells)
     }
 
@@ -152,11 +155,12 @@ impl Images {
     pub fn paint_raster(
         &mut self,
         f: &mut Frame,
-        info: &ImageInfo,
+        info: &MediaInfo,
         doc_dir: Option<&Path>,
         rect: Rect,
     ) -> bool {
-        let Some(path) = resolve_image_path(info.resolve(self.scheme), doc_dir) else {
+        let Some(still) = info.still(self.scheme) else { return false };
+        let Some(path) = resolve_image_path(still, doc_dir) else {
             return false;
         };
         let Some(entry) = self.cache.get_mut(&path).and_then(|e| e.as_mut()) else {

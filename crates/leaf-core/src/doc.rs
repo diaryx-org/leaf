@@ -31,7 +31,7 @@ use twig::{
 use unicode_segmentation::GraphemeCursor;
 
 use crate::html;
-use crate::wysiwyg::{self, VisualMap};
+use crate::wysiwyg::{self, MediaKind, VisualMap};
 
 /// Which view the body shows.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -336,13 +336,13 @@ pub struct Doc {
     /// builds; a pure accelerator, so it's never read for correctness.
     block_cache: wysiwyg::BlockCache,
     /// How many visual rows each block image reserves, keyed by its destination —
-    /// set by the frontend through [`Doc::set_image_rows`] once it has decoded and
+    /// set by the frontend through [`Doc::set_media_rows`] once it has decoded and
     /// measured the pictures. Core does no image I/O, so this is the only way it
     /// learns a picture's height; a destination not in the map reserves the bare
     /// one-row placeholder. Threaded into the builder so [`wysiwyg::build_cached`]
     /// sizes each placeholder, and folded into `vmap_key` so a height change
     /// rebuilds the map.
-    image_rows: HashMap<String, usize>,
+    media_rows: HashMap<String, usize>,
 
     // View geometry the renderer stamps each frame, so mouse events can map a
     // screen cell back to a byte offset.
@@ -475,7 +475,7 @@ impl Doc {
             // No map yet — the first `build_visual` always builds.
             vmap_key: None,
             block_cache: wysiwyg::BlockCache::default(),
-            image_rows: HashMap::new(),
+            media_rows: HashMap::new(),
             scroll: 0,
             body_origin: (0, 0),
             body_height: 0,
@@ -586,11 +586,11 @@ impl Doc {
     /// the built map (and the block-row cache, since a height isn't part of a
     /// block's bytes and so wouldn't otherwise re-render it). Steady state is a
     /// no-op, so a frontend can just hand over its current measurements each frame.
-    pub fn set_image_rows(&mut self, rows: HashMap<String, usize>) {
-        if self.image_rows == rows {
+    pub fn set_media_rows(&mut self, rows: HashMap<String, usize>) {
+        if self.media_rows == rows {
             return;
         }
-        self.image_rows = rows;
+        self.media_rows = rows;
         // A height lives outside the block's source bytes, so the content-keyed
         // block cache would hand back the old-height rows on a hit. Drop it (and
         // the splice layout it carries) so the next build re-renders every block
@@ -636,9 +636,9 @@ impl Doc {
                     let prev = std::mem::take(&mut self.vmap);
                     let source = &self.source;
                     let cache = &mut self.block_cache;
-                    let image_rows = &self.image_rows;
+                    let media_rows = &self.media_rows;
                     let editor = &mut self.editor;
-                    wysiwyg::build_spliced(prev, source, wrap, preserve_soft, &top, dirty, image_rows, cache, |id| {
+                    wysiwyg::build_spliced(prev, source, wrap, preserve_soft, &top, dirty, media_rows, cache, |id| {
                         editor.subtree(NodeId(id)).unwrap_or_default()
                     })
                 }
@@ -647,9 +647,9 @@ impl Doc {
             self.vmap = spliced.unwrap_or_else(|| {
                 let source = &self.source;
                 let cache = &mut self.block_cache;
-                let image_rows = &self.image_rows;
+                let media_rows = &self.media_rows;
                 let editor = &mut self.editor;
-                wysiwyg::build_cached(&top, source, wrap, preserve_soft, image_rows, cache, |id| {
+                wysiwyg::build_cached(&top, source, wrap, preserve_soft, media_rows, cache, |id| {
                     editor.subtree(NodeId(id)).unwrap_or_default()
                 })
             });
@@ -2385,6 +2385,60 @@ impl Doc {
         // `edit` (via `splice`) records the undo caret, refreshes, and lands the
         // caret at the end of the inserted text — just past the image, which is
         // where a caret belongs after inserting one.
+        self.edit(start, end, &markup);
+    }
+
+    /// Insert a block-level image, video, or audio at the caret. The image case
+    /// is [`insert_image`](Self::insert_image); video and audio are spelled as
+    /// HTML elements, which is the only spelling Markdown and Djot have for them:
+    ///
+    /// ```text
+    /// <video src="clip.mp4" controls>
+    /// alt
+    /// </video>
+    /// ```
+    ///
+    /// HTML rather than a `::video{…}` directive deliberately. A directive means
+    /// something only to an app that knows the vocabulary, so the document would
+    /// read as literal punctuation everywhere else; `<video>` is what every other
+    /// renderer already understands, and what leaf's own reader picks back up
+    /// through `html_elements` promotion (see [`parse_extensions`]).
+    ///
+    /// **The line breaks are load-bearing, not formatting.** CommonMark starts an
+    /// HTML block on a complete tag only when nothing follows it on the line
+    /// (its "type 7" rule), and `video`/`audio` aren't among the tag names that
+    /// open a block regardless (its fixed "type 6" list, which predates both
+    /// elements). Written on one line, `<video …></video>` is therefore a
+    /// *paragraph of raw inline HTML*: no element node, no attributes, no
+    /// [`MediaInfo`] — the placeholder never appears and the tags render as text.
+    /// Broken across lines it is an HTML block, twig promotes it, and it arrives
+    /// as an `element` carrying its attributes. Reading a single-line `<video>`
+    /// someone else wrote needs a change in twig, not here.
+    ///
+    /// `controls` is always written: a player with no transport is a still frame
+    /// the reader can't do anything with. Any selection becomes the element's
+    /// fallback text, exactly as it becomes an image's alt.
+    ///
+    /// The same verbatim-insertion caveat as [`insert_image`](Self::insert_image)
+    /// applies, and bites harder here: a `"` in `destination` closes the
+    /// attribute. A frontend taking these from a file picker is fine; one taking
+    /// them from free text should keep them tame.
+    ///
+    /// [`MediaInfo`]: crate::MediaInfo
+    pub fn insert_media(&mut self, kind: MediaKind, destination: &str, alt: &str) {
+        if kind == MediaKind::Image {
+            return self.insert_image(destination, alt);
+        }
+        let (start, end) = self.selection().unwrap_or((self.caret, self.caret));
+        let alt_text = self
+            .selected_text()
+            .map(str::to_string)
+            .unwrap_or_else(|| alt.to_string());
+        let tag = match kind {
+            MediaKind::Audio => "audio",
+            _ => "video",
+        };
+        let markup = format!("<{tag} src=\"{destination}\" controls>\n{alt_text}\n</{tag}>");
         self.edit(start, end, &markup);
     }
 
@@ -4832,27 +4886,27 @@ mod tests {
     }
 
     #[test]
-    fn set_image_rows_reserves_blank_filler_rows_the_frontend_paints_over() {
-        // The image is one placeholder row by default, and `set_image_rows` grows
+    fn set_media_rows_reserves_blank_filler_rows_the_frontend_paints_over() {
+        // The image is one placeholder row by default, and `set_media_rows` grows
         // it to the height the frontend measured: the label row plus blank
         // `decoration` fillers that hold the vertical space a raster is drawn into.
         let mut d = wysiwyg_doc("img_rows", "intro\n\n![a cat](cat.png)\n\nend\n");
-        assert_eq!(d.vmap.images.len(), 1);
-        let img_row = d.vmap.images[0].rows_span.start;
-        assert_eq!(d.vmap.images[0].rows_span, img_row..img_row + 1, "default is one row");
+        assert_eq!(d.vmap.media.len(), 1);
+        let img_row = d.vmap.media[0].rows_span.start;
+        assert_eq!(d.vmap.media[0].rows_span, img_row..img_row + 1, "default is one row");
 
-        d.set_image_rows(HashMap::from([("cat.png".to_string(), 4)]));
+        d.set_media_rows(HashMap::from([("cat.png".to_string(), 4)]));
         d.build_visual(80);
-        assert_eq!(d.vmap.images.len(), 1, "still one image, now taller");
-        let span = d.vmap.images[0].rows_span.clone();
+        assert_eq!(d.vmap.media.len(), 1, "still one image, now taller");
+        let span = d.vmap.media[0].rows_span.clone();
         assert_eq!(span.end - span.start, 4, "reserves the four rows asked for");
         // The label row carries the mark and its glyphs; the three below are blank
         // decoration — drawn, but no caret and no text.
-        assert!(d.vmap.rows[span.start].image.is_some(), "mark rides the first row");
+        assert!(d.vmap.rows[span.start].media.is_some(), "mark rides the first row");
         for r in (span.start + 1)..span.end {
             assert!(d.vmap.rows[r].decoration, "filler row {r} is decoration");
             assert!(d.vmap.rows[r].glyphs.is_empty(), "filler row {r} is blank");
-            assert!(d.vmap.rows[r].image.is_none(), "only the first row is marked");
+            assert!(d.vmap.rows[r].media.is_none(), "only the first row is marked");
         }
     }
 
@@ -4865,7 +4919,7 @@ mod tests {
         let stops_at = |rows: usize| -> Vec<usize> {
             let mut d = wysiwyg_doc("img_stops", body);
             if rows > 1 {
-                d.set_image_rows(HashMap::from([("p.png".to_string(), rows)]));
+                d.set_media_rows(HashMap::from([("p.png".to_string(), rows)]));
                 d.build_visual(80);
             }
             d.caret = 0;

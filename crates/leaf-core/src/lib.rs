@@ -21,8 +21,8 @@ pub mod wysiwyg;
 pub use doc::{DiskState, Doc, InlineMarks, LineFlow, RevealMode, View};
 pub use style::{Role, Style};
 pub use wysiwyg::{
-    CodeBlockInfo, ColorScheme, Glyph, ImageInfo, ImageSource, TableCell, TableInfo, TableRow,
-    VRow, VisualMap,
+    CodeBlockInfo, ColorScheme, Glyph, MediaInfo, MediaKind, MediaSource, TableCell, TableInfo,
+    TableRow, VRow, VisualMap,
 };
 
 // Re-export the twig types a frontend needs to name when calling into a `Doc`

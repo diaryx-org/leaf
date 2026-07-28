@@ -164,7 +164,7 @@ impl Default for EditorStyle {
     }
 }
 use leaf_core::{
-    Alignment, BlockKind, ColorScheme, DiskState, Doc, Glyph, ImageInfo, InlineKind, InlineMarks,
+    Alignment, BlockKind, ColorScheme, DiskState, Doc, Glyph, MediaInfo, InlineKind, InlineMarks,
     TableInfo, View,
 };
 
@@ -2495,7 +2495,7 @@ enum Logical {
     /// the reserved row still carries the image's caret stops (a home in front of
     /// it and one just past it); `info` carries the destination to load and the
     /// alt text to fall back to.
-    Image { info: ImageInfo, glyphs: Vec<Glyph>, end_src: usize },
+    Image { info: MediaInfo, glyphs: Vec<Glyph>, end_src: usize },
 }
 
 /// Gather the document into the units prepaint lays out: one line per source line
@@ -2535,7 +2535,7 @@ fn gather_logical(doc: &Doc) -> Vec<Logical> {
             // `tables`, `code_blocks`, and `images` are all in row order, so one
             // cursor apiece walks them alongside the rows rather than re-scanning.
             let mut next_table = doc.vmap.tables.iter().peekable();
-            let mut next_image = doc.vmap.images.iter().peekable();
+            let mut next_image = doc.vmap.media.iter().peekable();
             let mut code = doc.vmap.code_blocks.iter().enumerate().peekable();
             let mut r = 0usize;
             while r < doc.vmap.rows.len() {
@@ -2824,7 +2824,7 @@ const IMAGE_MAX_H: f32 = 480.0;
 const IMAGE_PAD_Y: f32 = 6.0;
 
 /// The window's light/dark appearance as a [`ColorScheme`], for picking a
-/// `<picture>`'s `prefers-color-scheme` source (see [`ImageInfo::resolve`]). GPUI
+/// `<picture>`'s `prefers-color-scheme` source (see [`MediaInfo::resolve`]). GPUI
 /// already tracks the system appearance and repaints on a change, so a theme
 /// switch re-picks the source on the next frame for free. The desktop app and
 /// the mobile host (leaf-ios) share this one upstream gpui `WindowAppearance`,
@@ -3601,7 +3601,15 @@ impl Element for TextElement {
                         if loaded.contains_key(&info.destination) {
                             continue;
                         }
-                        let img = match resolve_image_path(info.resolve(scheme), doc_dir.as_deref()) {
+                        // `still`, not `resolve`: for a video that's the poster
+                        // frame, and for audio (or a poster-less video) it's
+                        // `None` — nothing to decode, so the placeholder row
+                        // stands rather than a movie file going to an image
+                        // decoder that can only fail on it.
+                        let img = match info
+                            .still(scheme)
+                            .and_then(|s| resolve_image_path(s, doc_dir.as_deref()))
+                        {
                             Some(path) => self.editor.update(cx, |e, _| {
                                 e.image_cache
                                     .entry(path.clone())
@@ -4672,7 +4680,7 @@ mod table_layout_tests {
     fn load_image_file_decodes_a_real_png_to_a_render_image() {
         // The whole decode path: read → guess format → decode → RGBA→BGRA swap →
         // RenderImage. A real PNG on disk exercises it end to end (short of the
-        // GPU upload, which `painting_a_block_image_does_not_panic` drives).
+        // GPU upload, which `painting_a_block_media_does_not_panic` drives).
         let path = write_test_png("decode", 6, 4);
         let img = load_image_file(&path).expect("the PNG should decode");
         let size = img.size(0);
@@ -4682,7 +4690,7 @@ mod table_layout_tests {
     }
 
     #[gpui::test]
-    fn painting_a_block_image_does_not_panic(cx: &mut TestAppContext) {
+    fn painting_a_block_media_does_not_panic(cx: &mut TestAppContext) {
         // Drives the real prepaint+paint over a block image: resolve → decode →
         // reserve the box row → `Window::paint_image` (which uploads the BGRA
         // frame to the sprite atlas). A regression in the decode, the sizing, or
@@ -4762,13 +4770,13 @@ mod table_layout_tests {
     }
 
     #[test]
-    fn a_block_image_is_gathered_as_an_image_not_a_line() {
+    fn a_block_media_is_gathered_as_an_image_not_a_line() {
         // A block image's placeholder row is pulled out as `Logical::Image`, its
         // box-picture skipped the way a table's is — so the GUI paints a raster
         // there instead of shaping the `🖼 alt` label as prose.
         let doc = doc_with("gather_img", "intro\n\n![a cat](cat.png)\n\noutro\n");
         let logical = gather_logical(&doc);
-        let imgs: Vec<&ImageInfo> = logical
+        let imgs: Vec<&MediaInfo> = logical
             .iter()
             .filter_map(|l| match l {
                 Logical::Image { info, .. } => Some(info),

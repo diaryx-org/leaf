@@ -107,12 +107,12 @@ pub struct VRow {
     /// the image's destination and alt text; `None` on every other row. The row's
     /// glyphs are the default `🖼 alt` label (which a plain surface paints as-is);
     /// an image-capable frontend reads this to paint the real picture instead,
-    /// skipping the row named by [`ImageInfo::rows_span`]. Like
+    /// skipping the row named by [`MediaInfo::rows_span`]. Like
     /// [`code_lang`](Self::code_lang) it's plain display strings, not source
     /// slices, so it rides row reuse and needs no offset shifting; the map's
     /// [`images`](VisualMap::images) side-table is derived from it once the rows
     /// are final, the same way [`code_blocks`](VisualMap::code_blocks) is.
-    pub image: Option<ImageMark>,
+    pub media: Option<MediaMark>,
     /// Set on the single placeholder row a **leaf** directive (`::name{…}`)
     /// renders to, carrying its name and attributes; `None` on every other row.
     /// The container form isn't this — it wraps real blocks and marks each of
@@ -127,7 +127,7 @@ pub struct VRow {
 /// frontend that knows the host app's vocabulary can paint the real thing —
 /// an embedded page for diaryx's `::embed{src=…}`, a generated table of
 /// contents for a `::toc`, and the plain `⧉ name` label for one it doesn't
-/// know. The peer of [`ImageMark`], and plain strings for the same reason: they
+/// know. The peer of [`MediaMark`], and plain strings for the same reason: they
 /// survive the row shuffling of [`BlockCache`] reuse and [`build_spliced`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DirectiveMark {
@@ -149,15 +149,53 @@ pub struct DirectiveMark {
     pub rows: usize,
 }
 
-/// The destination and alt text a block-level image placeholder row carries, so
-/// an image-capable frontend can resolve and paint the picture. Plain strings
-/// (no source offsets), so they survive the row shuffling of [`BlockCache`]
-/// reuse and [`build_spliced`] untouched — see [`VRow::image`].
+/// What a block-level media placeholder actually is, so a frontend knows which
+/// widget to build over the reserved rows: a raster, a movie player, or a
+/// transport with no picture at all. Core classifies and stops there — it opens
+/// nothing, so this is a statement about the *markup*, not about a file it has
+/// verified exists or can decode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MediaKind {
+    /// A `![](…)` / `<img>` / `<picture>` — a still picture.
+    Image,
+    /// An HTML `<video>`. Markdown and Djot spell no video of their own, so this
+    /// only ever arrives through `html_elements` promotion (or a `::video{…}`
+    /// directive a host app maps itself, which core reports as a directive).
+    Video,
+    /// An HTML `<audio>` — a transport with no picture, so a frontend gives it a
+    /// fixed control height rather than measuring an aspect ratio.
+    Audio,
+}
+
+impl MediaKind {
+    /// The emoji a plain surface prefixes the placeholder label with — the
+    /// `🖼`/`🎬`/`🔊` that makes the row read as *a thing* rather than as text.
+    fn sigil(self) -> char {
+        match self {
+            MediaKind::Image => '🖼',
+            MediaKind::Video => '🎬',
+            MediaKind::Audio => '🔊',
+        }
+    }
+}
+
+/// The destination and label a block-level media placeholder row carries, so a
+/// capable frontend can resolve and paint the real thing. Plain strings (no
+/// source offsets), so they survive the row shuffling of [`BlockCache`] reuse
+/// and [`build_spliced`] untouched — see [`VRow::media`].
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ImageMark {
-    /// The image's link destination — a path, URL, or `data:` URI, verbatim from
+pub struct MediaMark {
+    /// Whether this is a picture, a movie, or a sound — which widget the
+    /// frontend builds over the reserved rows.
+    pub kind: MediaKind,
+    /// The media's link destination — a path, URL, or `data:` URI, verbatim from
     /// the AST. A frontend resolves a relative path against the document's
     /// directory itself; core holds no I/O.
+    ///
+    /// Empty is possible and legal for a `<video>`/`<audio>`, which may carry no
+    /// `src` of its own and name its candidates in child `<source>`s instead —
+    /// unlike an `<img>`, whose `src` *is* the picture. A frontend with an empty
+    /// destination takes its URL from [`sources`](MediaMark::sources).
     pub destination: String,
     /// A `<picture>`'s theme/media alternatives, in document order, when this
     /// block image came from one; empty for a plain `![](…)` / bare `<img>`. Each
@@ -165,37 +203,55 @@ pub struct ImageMark {
     /// theme picks the first whose media matches and falls back to [`destination`]
     /// (the `<img>`). Core keeps them verbatim and picks nothing — it has no theme.
     ///
-    /// [`destination`]: ImageMark::destination
-    pub sources: Vec<ImageSource>,
-    /// The image's alt text (its rendered inline children, flattened), or empty
-    /// when it has none. Also what the placeholder label shows.
+    /// [`destination`]: MediaMark::destination
+    pub sources: Vec<MediaSource>,
+    /// The media's alt text (its rendered inline children, flattened), or empty
+    /// when it has none. Also what the placeholder label shows. For a `<video>`/
+    /// `<audio>` this is the element's own text content — the "your browser does
+    /// not support…" fallback, which doubles as its accessible name.
     pub alt: String,
-    /// How many visual rows this image reserves — the placeholder label row plus
+    /// A `<video poster="…">`'s still frame, verbatim, or empty when there is
+    /// none (and always empty for an image or audio). It is an *image*
+    /// destination, so a frontend already able to draw a picture can show it
+    /// before the movie loads — or in place of one it can't play at all.
+    pub poster: String,
+    /// How many visual rows this media reserves — the placeholder label row plus
     /// the blank filler rows below it, so a frontend that paints a real raster has
     /// the vertical room to draw it. `1` is the bare placeholder (a frontend that
     /// can't draw pictures, or an image it couldn't resolve). A terminal frontend
     /// asks for as many rows as the fitted picture is tall; the pixel-laid-out GUI
     /// ignores this and sets its own row height, so it always leaves it `1`. The
-    /// count comes from the frontend (via [`crate::Doc::set_image_rows`]) because
+    /// count comes from the frontend (via [`crate::Doc::set_media_rows`]) because
     /// core does no I/O and can't measure the image itself. See [`VRow::image`].
     pub rows: usize,
 }
 
-/// One `<source>` of a `<picture>`: a media query and the candidate image(s) it
-/// selects. Verbatim from the AST — core carries a picture's alternatives but
-/// resolves none of them, having no notion of the frontend's theme. A frontend
-/// that does (light/dark) matches `media` (today, `prefers-color-scheme`) and,
-/// on a hit, loads [`srcset`](ImageSource::srcset) instead of the `<img>` it
-/// falls back to.
+/// One `<source>` under a `<picture>`, `<video>`, or `<audio>`: a candidate URL
+/// plus whichever of the two things HTML lets a `<source>` be chosen by — a
+/// media query (`<picture>`) or a MIME type (`<video>`/`<audio>`). Verbatim from
+/// the AST: core carries the alternatives and resolves none of them, having
+/// neither a theme nor a codec list to judge them by.
+///
+/// The two spellings are normalised onto one field. `<picture>` writes
+/// `srcset`, `<video>`/`<audio>` write `src`; both land in
+/// [`srcset`](MediaSource::srcset), since a frontend wants the URL either way
+/// and only `<picture>` ever uses the descriptor syntax.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ImageSource {
+pub struct MediaSource {
     /// The `<source media="…">` query, verbatim (`"(prefers-color-scheme: dark)"`),
-    /// or empty for a `<source>` with no `media` (an unconditional override).
+    /// or empty for a `<source>` with no `media` (an unconditional override, and
+    /// the norm for `<video>`/`<audio>`, which pick by codec rather than theme).
     pub media: String,
-    /// The `<source srcset="…">` value, verbatim — one URL, or a comma-separated
-    /// candidate list with `1x`/`2x`/width descriptors. A frontend takes the
-    /// first URL token; the theme case only ever needs that.
+    /// The candidate URL(s): a `<picture>`'s `srcset` verbatim — one URL, or a
+    /// comma-separated candidate list with `1x`/`2x`/width descriptors — or a
+    /// `<video>`/`<audio>` `<source>`'s plain `src`. A frontend takes the first
+    /// URL token; the theme and codec cases both only ever need that.
     pub srcset: String,
+    /// The `<source type="…">` MIME type (`"video/webm"`), verbatim, or empty
+    /// when the `<source>` declares none. How a `<video>`/`<audio>` frontend
+    /// picks a candidate it can actually decode; a `<picture>`'s sources
+    /// normally leave it empty and are chosen by [`media`](MediaSource::media).
+    pub mime: String,
 }
 
 /// The rendered document plus the offset⇄position mapping the caret rides on.
@@ -248,7 +304,7 @@ pub struct VisualMap {
     /// [`VRow::image`] mark once the rows are final (so it survives incremental
     /// row reuse), the same way [`code_blocks`](VisualMap::code_blocks) is
     /// derived from [`VRow::code`].
-    pub images: Vec<ImageInfo>,
+    pub media: Vec<MediaInfo>,
     /// Every **leaf** directive in the document, in order — one per placeholder
     /// row a frontend may replace with whatever the host app's vocabulary makes
     /// of it. Derived from the per-row [`VRow::leaf_directive`] mark once the
@@ -619,23 +675,33 @@ fn code_block_spans(rows: &[VRow]) -> Vec<CodeBlockInfo> {
     blocks
 }
 
-/// Collect one [`ImageInfo`] per row carrying an [`VRow::image`] mark — the
+/// Collect one [`MediaInfo`] per row carrying an [`VRow::image`] mark — the
 /// block-level view a frontend needs to replace each placeholder row with a real
 /// picture. The mark rides the block's *first* row and names how many rows the
-/// image reserves ([`ImageMark::rows`]); the rows below it are blank
+/// image reserves ([`MediaMark::rows`]); the rows below it are blank
 /// [`decoration`](VRow::decoration) fillers that hold the vertical space and no
 /// caret. So the span runs from the marked row across those fillers. Derived from
 /// the final rows rather than tracked through the builder so it survives however
 /// [`build_cached`] and [`build_spliced`] shuffle rows around.
-fn image_spans(rows: &[VRow]) -> Vec<ImageInfo> {
+/// The value of `node`'s `key` attribute, if it carries one *with* a value. A
+/// bare attribute (`controls`, `muted`) has a `None` value and so reads as
+/// absent here — a caller wanting presence-not-value tests the list directly.
+/// Shared by the media element and `<source>` readers.
+fn attr_of(node: &FlatNode, key: &str) -> Option<String> {
+    node.attrs.iter().find(|(k, _)| k == key).and_then(|(_, v)| v.clone())
+}
+
+fn media_spans(rows: &[VRow]) -> Vec<MediaInfo> {
     rows.iter()
         .enumerate()
         .filter_map(|(i, row)| {
-            row.image.as_ref().map(|m| ImageInfo {
+            row.media.as_ref().map(|m| MediaInfo {
                 rows_span: i..i + m.rows.max(1),
+                kind: m.kind,
                 destination: m.destination.clone(),
                 sources: m.sources.clone(),
                 alt: m.alt.clone(),
+                poster: m.poster.clone(),
             })
         })
         .collect()
@@ -643,7 +709,7 @@ fn image_spans(rows: &[VRow]) -> Vec<ImageInfo> {
 
 /// Collect one [`DirectiveInfo`] per row carrying a [`VRow::leaf_directive`]
 /// mark — the block-level view a frontend needs to replace each placeholder row
-/// with whatever the directive means to it. The peer of [`image_spans`], derived
+/// with whatever the directive means to it. The peer of [`media_spans`], derived
 /// from the final rows for the same reason: it survives however [`build_cached`]
 /// and [`build_spliced`] shuffle rows around.
 fn directive_spans(rows: &[VRow]) -> Vec<DirectiveInfo> {
@@ -712,7 +778,7 @@ pub fn build(
     source: &str,
     wrap: Option<usize>,
     preserve_soft: bool,
-    image_rows: &HashMap<String, usize>,
+    media_rows: &HashMap<String, usize>,
 ) -> VisualMap {
     let Some(doc) = nodes.iter().position(|n| n.kind == "doc") else {
         return VisualMap::default();
@@ -725,7 +791,7 @@ pub fn build(
         rows: Vec::new(),
         tables: Vec::new(),
         last_off: 0,
-        image_rows,
+        media_rows,
         break_glyph: Cell::new(' '),
         preserve_soft,
     };
@@ -734,7 +800,7 @@ pub fn build(
     let content_start = top.first().map_or(0, |&i| nodes[i].span.start);
     let stops = collect_stops(&b.rows);
     let code_blocks = code_block_spans(&b.rows);
-    let images = image_spans(&b.rows);
+    let media = media_spans(&b.rows);
     let directives = directive_spans(&b.rows);
     VisualMap {
         rows: b.rows,
@@ -742,7 +808,7 @@ pub fn build(
         stops,
         tables: b.tables,
         code_blocks,
-        images,
+        media,
         directives,
     }
 }
@@ -764,7 +830,7 @@ pub fn build_cached(
     source: &str,
     wrap: Option<usize>,
     preserve_soft: bool,
-    image_rows: &HashMap<String, usize>,
+    media_rows: &HashMap<String, usize>,
     cache: &mut BlockCache,
     mut fetch_subtree: impl FnMut(u32) -> Vec<FlatNode>,
 ) -> VisualMap {
@@ -793,7 +859,7 @@ pub fn build_cached(
         rows: Vec::new(),
         tables: Vec::new(),
         last_off: 0,
-        image_rows,
+        media_rows,
         break_glyph: Cell::new(' '),
         preserve_soft,
     };
@@ -836,7 +902,7 @@ pub fn build_cached(
                     rows: Vec::new(),
                     tables: Vec::new(),
                     last_off: 0,
-                    image_rows,
+                    media_rows,
                     break_glyph: Cell::new(' '),
                     preserve_soft,
                 };
@@ -900,7 +966,7 @@ pub fn build_cached(
     let content_start = blocks.first().map_or(0, |m| m.span.start);
     let stops = collect_stops(&b.rows);
     let code_blocks = code_block_spans(&b.rows);
-    let images = image_spans(&b.rows);
+    let media = media_spans(&b.rows);
     let directives = directive_spans(&b.rows);
     VisualMap {
         rows: b.rows,
@@ -908,7 +974,7 @@ pub fn build_cached(
         stops,
         tables: b.tables,
         code_blocks,
-        images,
+        media,
         directives,
     }
 }
@@ -944,7 +1010,7 @@ pub fn build_spliced(
     preserve_soft: bool,
     top: &[QueryMatch],
     dirty: Range<usize>,
-    image_rows: &HashMap<String, usize>,
+    media_rows: &HashMap<String, usize>,
     cache: &mut BlockCache,
     mut fetch_subtree: impl FnMut(u32) -> Vec<FlatNode>,
 ) -> Option<VisualMap> {
@@ -1019,7 +1085,7 @@ pub fn build_spliced(
         rows: Vec::new(),
         tables: Vec::new(),
         last_off: 0,
-        image_rows,
+        media_rows,
         break_glyph: Cell::new(' '),
         preserve_soft,
     };
@@ -1086,7 +1152,7 @@ pub fn build_spliced(
     };
 
     let code_blocks = code_block_spans(&rows);
-    let images = image_spans(&rows);
+    let media = media_spans(&rows);
     let directives = directive_spans(&rows);
     Some(VisualMap {
         rows,
@@ -1094,7 +1160,7 @@ pub fn build_spliced(
         stops,
         tables: Vec::new(),
         code_blocks,
-        images,
+        media,
         directives,
     })
 }
@@ -1265,7 +1331,7 @@ fn shift_row(row: &VRow, delta: isize) -> VRow {
         code_lang: row.code_lang.clone(),
         directive: row.directive,
         directive_label: row.directive_label.clone(),
-        image: row.image.clone(),
+        media: row.media.clone(),
         leaf_directive: row.leaf_directive.clone(),
     }
 }
@@ -1423,12 +1489,12 @@ struct Builder<'a> {
     /// separator rows so the caret never snaps onto one.
     last_off: usize,
     /// How many rows each block image reserves, keyed by its destination — the
-    /// frontend's per-image height, threaded in from [`crate::Doc::set_image_rows`]
-    /// so [`Builder::block_image`] can size the placeholder without core doing any
+    /// frontend's per-image height, threaded in from [`crate::Doc::set_media_rows`]
+    /// so [`Builder::block_media`] can size the placeholder without core doing any
     /// I/O. A destination absent from the map (or a `0`/`1` entry) reserves the
     /// bare one-row placeholder, which is the whole-document default and what
     /// every existing test — passing an empty map — still gets.
-    image_rows: &'a HashMap<String, usize>,
+    media_rows: &'a HashMap<String, usize>,
     /// The glyph a hard break renders as while the current inline run is built:
     /// a space in prose (a break folds into the flow the frontend wraps), but a
     /// newline (`\n`) inside a table cell, where a row is one source line and the
@@ -1559,7 +1625,7 @@ impl Builder<'_> {
                 code_lang: None,
                 directive: false,
                 directive_label: None,
-                image: None,
+                media: None,
                 leaf_directive: None,
             });
         }
@@ -1574,8 +1640,8 @@ impl Builder<'_> {
                 // banner set in an `<h1>` (`<h1><picture><img></picture></h1>`),
                 // or `# ![](banner.png)` — is a block picture, not text. Render
                 // it as one; anything with real heading text falls through.
-                if let Some(img) = self.image_only(id) {
-                    self.block_image(img, id, pf);
+                if let Some((m, kind)) = self.media_only(id) {
+                    self.block_media(m, kind, id, pf);
                     return;
                 }
                 let style = heading_style(node.level.unwrap_or(1));
@@ -1766,18 +1832,30 @@ impl Builder<'_> {
             // A block-level image node with no wrapping paragraph — a promoted
             // top-level HTML `<img>` lands as a direct `doc` child like this
             // (a Markdown `![](…)` comes wrapped in a `para`, handled below).
-            "image" => self.block_image(id, id, pf),
+            "image" => self.block_media(id, MediaKind::Image, id, pf),
+            // The same case for a promoted top-level `<video>`/`<audio>`, which
+            // arrives as a generic `element` rather than a node kind of its own.
+            // It can't be found by the `media_only` scan below the way a wrapped
+            // one is: that scan looks at a wrapper's *children*, and here the
+            // media element is itself the block.
+            "element" if matches!(node.name.as_deref(), Some("video") | Some("audio")) => {
+                let kind = match node.name.as_deref() {
+                    Some("audio") => MediaKind::Audio,
+                    _ => MediaKind::Video,
+                };
+                self.block_media(id, kind, id, pf);
+            }
             _ => {
                 // A container of blocks, or an inline-bearing paragraph.
                 let kids = self.children(id);
                 // A block-level image: a paragraph (or other wrapper — a
                 // `<picture>`, an `<h1>` banner) whose only visible content is a
                 // single `image` node. Render it as a placeholder row + record an
-                // [`ImageInfo`] a capable frontend replaces. An image mixed with
+                // [`MediaInfo`] a capable frontend replaces. An image mixed with
                 // real text or other images on the line isn't block-level and
                 // falls through to the inline path below, still as its alt text.
-                if let Some(img) = self.image_only(id) {
-                    self.block_image(img, id, pf);
+                if let Some((m, kind)) = self.media_only(id) {
+                    self.block_media(m, kind, id, pf);
                     return;
                 }
                 let inline = !kids.is_empty() && kids.iter().all(|&c| is_inline(&self.nodes[c]));
@@ -1937,7 +2015,7 @@ impl Builder<'_> {
             code_lang: None,
             directive: false,
             directive_label: None,
-            image: None,
+            media: None,
             leaf_directive: None,
         });
     }
@@ -2023,32 +2101,58 @@ impl Builder<'_> {
             code_lang: None,
             directive: false,
             directive_label: None,
-            image: None,
+            media: None,
             leaf_directive: None,
         });
         }
     }
 
-    /// Render a block-level image as one placeholder row: the `🖼 alt` label
-    /// styled [`Role::Image`], every glyph mapped to the image's start offset and
-    /// a caret stop there (they share the offset, so the stop table dedups them to
-    /// a single home in front of the image, as a rule's dashes do), and the row's
-    /// end stop set past the image so the caret can also rest after it. The row
-    /// carries an [`ImageMark`] so [`image_spans`] publishes it as an
-    /// [`ImageInfo`] a capable frontend replaces with the real picture; a plain
-    /// surface paints the label as-is. `pf` is the block prefix (a list indent, a
-    /// quote gutter) the row opens with, exactly as every other block honours it.
-    fn block_image(&mut self, img: usize, wrapper: usize, pf: &[Glyph]) {
+    /// Render a block-level image, video, or audio as one placeholder row: the
+    /// `🖼 alt` / `🎬 alt` / `🔊 alt` label styled [`Role::Image`], every glyph
+    /// mapped to the media's start offset and a caret stop there (they share the
+    /// offset, so the stop table dedups them to a single home in front of it, as
+    /// a rule's dashes do), and the row's end stop set past it so the caret can
+    /// also rest after it. The row carries a [`MediaMark`] so [`media_spans`]
+    /// publishes it as a [`MediaInfo`] a capable frontend replaces with the real
+    /// picture or player; a plain surface paints the label as-is. `pf` is the
+    /// block prefix (a list indent, a quote gutter) the row opens with, exactly
+    /// as every other block honours it.
+    fn block_media(&mut self, img: usize, kind: MediaKind, wrapper: usize, pf: &[Glyph]) {
         let node = &self.nodes[img];
         let start = node.span.start;
         let end = node.span.end;
-        let destination = node.destination.clone().unwrap_or_default();
-        let sources = self.picture_sources(wrapper);
+        // An `image`'s URL is twig's `destination`; a `<video>`/`<audio>` is a
+        // generic element, so its URL is the `src` attribute — and may be absent
+        // entirely, the element naming its candidates in child `<source>`s.
+        let destination = match kind {
+            MediaKind::Image => node.destination.clone().unwrap_or_default(),
+            MediaKind::Video | MediaKind::Audio => attr_of(node, "src").unwrap_or_default(),
+        };
+        let poster = match kind {
+            MediaKind::Video => attr_of(node, "poster").unwrap_or_default(),
+            MediaKind::Image | MediaKind::Audio => String::new(),
+        };
+        // The `<source>`s under the media element itself, not under `wrapper`: a
+        // `<video>` is its own container, unlike an `<img>`, whose `<picture>`
+        // alternatives are its *siblings* and so only reachable from the wrapper.
+        let sources = match kind {
+            MediaKind::Image => self.media_sources(wrapper),
+            MediaKind::Video | MediaKind::Audio => self.media_sources(img),
+        };
         let alt = self.image_alt(img);
+        let sigil = kind.sigil();
         let label = if alt.is_empty() {
-            format!("🖼 {}", image_label(&destination))
+            // With no alt, name the file — but a `<video>` with neither `src` nor
+            // alt has only its `<source>`s to be named by, so fall back to the
+            // first candidate rather than labelling the row a bare sigil.
+            let named = if destination.is_empty() {
+                sources.first().map(|s| s.srcset.as_str()).unwrap_or_default()
+            } else {
+                &destination
+            };
+            format!("{sigil} {}", media_label(named))
         } else {
-            format!("🖼 {alt}")
+            format!("{sigil} {alt}")
         };
         let style = Style::default().role(Role::Image);
         let mut glyphs = pf.to_vec();
@@ -2059,13 +2163,13 @@ impl Builder<'_> {
         // the blank fillers below it. Absent (a GUI that lays images out in
         // pixels, an image that didn't resolve, or a plain surface) means the
         // bare one-row placeholder.
-        let rows = self.image_rows.get(&destination).copied().unwrap_or(1).max(1);
+        let rows = self.media_rows.get(&destination).copied().unwrap_or(1).max(1);
         // End past the image so the caret has a stop after it: the last glyph's
         // offset is the image *start*, not its extent, so `push_row`'s
         // last-glyph rule would strand the end stop inside the markup.
         self.push_row_at(glyphs, end);
         if let Some(row) = self.rows.last_mut() {
-            row.image = Some(ImageMark { destination, sources, alt, rows });
+            row.media = Some(MediaMark { kind, destination, sources, alt, poster, rows });
         }
         // Reserve the picture's remaining height as blank `decoration` rows: drawn
         // (so the frontend has the vertical room to paint the raster over them),
@@ -2084,7 +2188,7 @@ impl Builder<'_> {
                 code_lang: None,
                 directive: false,
                 directive_label: None,
-                image: None,
+                media: None,
                 leaf_directive: None,
             });
         }
@@ -2094,7 +2198,7 @@ impl Builder<'_> {
     /// The `<picture>` alternatives inside block-image `wrapper`, in document
     /// order — every `<source>` element in its subtree. Empty when there's no
     /// `<picture>`. Each is a `<source>`'s `media` + `srcset`; core keeps them
-    /// verbatim and picks none (see [`ImageSource`]). A `<source>` with no
+    /// verbatim and picks none (see [`MediaSource`]). A `<source>` with no
     /// `srcset` is dropped (nothing to load); its `media` may be empty (an
     /// unconditional override), which a frontend treats as always-matching.
     ///
@@ -2109,28 +2213,33 @@ impl Builder<'_> {
     /// (known at the call site) is a trustworthy anchor. A block image is the
     /// sole visible content of its wrapper, so every `<source>` under it is its
     /// picture's.
-    fn picture_sources(&self, wrapper: usize) -> Vec<ImageSource> {
+    fn media_sources(&self, wrapper: usize) -> Vec<MediaSource> {
         let mut out = Vec::new();
         self.collect_sources(wrapper, &mut out);
         out
     }
 
-    fn collect_sources(&self, id: usize, out: &mut Vec<ImageSource>) {
+    fn collect_sources(&self, id: usize, out: &mut Vec<MediaSource>) {
         for c in self.children(id) {
             let node = &self.nodes[c];
             if node.name.as_deref() == Some("source") {
-                let attr = |key: &str| {
-                    node.attrs.iter().find(|(k, _)| k == key).and_then(|(_, v)| v.clone())
-                };
-                if let Some(srcset) = attr("srcset") {
-                    out.push(ImageSource { media: attr("media").unwrap_or_default(), srcset });
+                // `<picture>` spells its candidate `srcset`, `<video>`/`<audio>`
+                // spell it `src`. Both mean "the URL to load", so they normalise
+                // onto one field; `srcset` wins where (illegally) both appear.
+                let url = attr_of(node, "srcset").or_else(|| attr_of(node, "src"));
+                if let Some(srcset) = url {
+                    out.push(MediaSource {
+                        media: attr_of(node, "media").unwrap_or_default(),
+                        srcset,
+                        mime: attr_of(node, "type").unwrap_or_default(),
+                    });
                 }
             }
             self.collect_sources(c, out);
         }
     }
 
-    /// The single block-level image `id`'s subtree resolves to, or `None`.
+    /// The single block-level media `id`'s subtree resolves to, or `None`.
     ///
     /// A wrapper is a block picture when the only *visible* thing under it is one
     /// image: whitespace-only text and structure-only elements (a `<picture>`'s
@@ -2144,27 +2253,51 @@ impl Builder<'_> {
     /// [`FlatNode`]'s snapshot doesn't carry an element's tag name, so a
     /// `<source>` can't be skipped by name — but it needs no special case:
     /// contributing no image and no text, it's simply invisible to the scan.
-    fn image_only(&self, id: usize) -> Option<usize> {
-        let mut image = None;
-        let mut images = 0usize;
+    fn media_only(&self, id: usize) -> Option<(usize, MediaKind)> {
+        let mut found = None;
+        let mut count = 0usize;
         let mut has_text = false;
-        self.scan_visual(id, &mut image, &mut images, &mut has_text);
-        (images == 1 && !has_text).then(|| image.unwrap())
+        self.scan_visual(id, &mut found, &mut count, &mut has_text);
+        (count == 1 && !has_text).then(|| found.unwrap())
     }
 
-    /// Walk `id`'s subtree tallying visible leaves for [`image_only`]: each
-    /// `image` (remembering the last, counting the total) and whether any
-    /// non-whitespace text appears. Images aren't descended into — their inline
-    /// children are alt text, not document content.
+    /// Walk `id`'s subtree tallying visible leaves for [`media_only`]: each
+    /// image, `<video>`, or `<audio>` (remembering the last, counting the total)
+    /// and whether any non-whitespace text appears. Media isn't descended into —
+    /// an image's inline children are alt text, and a `<video>`'s are its
+    /// no-support fallback and its `<source>` declarations, none of which is
+    /// document content.
     ///
-    /// [`image_only`]: Self::image_only
-    fn scan_visual(&self, id: usize, image: &mut Option<usize>, images: &mut usize, has_text: &mut bool) {
+    /// [`media_only`]: Self::media_only
+    fn scan_visual(
+        &self,
+        id: usize,
+        found: &mut Option<(usize, MediaKind)>,
+        count: &mut usize,
+        has_text: &mut bool,
+    ) {
         for c in self.children(id) {
             let node = &self.nodes[c];
             match node.kind.as_str() {
                 "image" => {
-                    *image = Some(c);
-                    *images += 1;
+                    *found = Some((c, MediaKind::Image));
+                    *count += 1;
+                }
+                // A `<video>`/`<audio>` reaches core as a generic `element` (twig
+                // gives neither a semantic node, so `html_elements` promotion
+                // leaves the tag name on `name`). Counted as media and *not*
+                // descended into, so its `<source>` children and its
+                // "your browser does not support…" fallback text neither add a
+                // second count nor make the block look like text.
+                "element"
+                    if matches!(node.name.as_deref(), Some("video") | Some("audio")) =>
+                {
+                    let kind = match node.name.as_deref() {
+                        Some("audio") => MediaKind::Audio,
+                        _ => MediaKind::Video,
+                    };
+                    *found = Some((c, kind));
+                    *count += 1;
                 }
                 // Text leaves: only non-whitespace counts as visible content.
                 // (Twig keeps the whitespace `str`s between HTML tags — the
@@ -2178,13 +2311,13 @@ impl Builder<'_> {
                 "soft_break" | "hard_break" | "non_breaking_space" => {}
                 // Any other wrapper (emphasis, a link, a `<picture>`) is
                 // transparent to the scan — descend into it.
-                _ => self.scan_visual(c, image, images, has_text),
+                _ => self.scan_visual(c, found, count, has_text),
             }
         }
     }
 
     /// A leaf directive (`::name{…}`) as one placeholder row — the
-    /// [`block_image`](Self::block_image) recipe, for the same reason: it is a
+    /// [`block_media`](Self::block_media) recipe, for the same reason: it is a
     /// block that renders as *a thing*, not as text, and the frontend paints
     /// whatever the host app's vocabulary makes of it.
     ///
@@ -2210,7 +2343,7 @@ impl Builder<'_> {
             glyphs.push(Glyph { ch, style, src: start, stop: true });
         }
         // End past the directive so the caret has a stop after it — the same
-        // reason `block_image` anchors its row at the image's end.
+        // reason `block_media` anchors its row at the image's end.
         self.push_row_at(glyphs, end);
         if let Some(row) = self.rows.last_mut() {
             row.directive = true;
@@ -2624,7 +2757,7 @@ impl Builder<'_> {
             code_lang: None,
             directive: false,
             directive_label: None,
-            image: None,
+            media: None,
             leaf_directive: None,
         });
     }
@@ -2714,7 +2847,7 @@ impl Builder<'_> {
                 code_lang: None,
                 directive: false,
                 directive_label: None,
-                image: None,
+                media: None,
                 leaf_directive: None,
             });
         }
@@ -2953,33 +3086,45 @@ pub struct CodeBlockInfo {
 /// surface paints the `🖼 alt` placeholder glyphs as-is. An image-capable
 /// frontend instead **skips the row in `rows_span`** and paints the resolved
 /// picture there, exactly as it skips a [`TableInfo`]'s box-drawn rows. Derived
-/// from [`VRow::image`] by [`image_spans`], so it survives the row reuse of
+/// from [`VRow::image`] by [`media_spans`], so it survives the row reuse of
 /// [`BlockCache`] and [`build_spliced`].
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ImageInfo {
-    /// The single [`VisualMap::rows`] row this image's placeholder occupies —
-    /// what an image-capable frontend replaces with the picture.
+pub struct MediaInfo {
+    /// The [`VisualMap::rows`] rows this media's placeholder occupies — what a
+    /// capable frontend replaces with the picture or player.
     pub rows_span: Range<usize>,
-    /// The image's link destination — a path, URL, or `data:` URI, verbatim from
+    /// Whether this is a picture, a movie, or a sound — which widget the
+    /// frontend builds over [`rows_span`](MediaInfo::rows_span). A frontend that
+    /// handles only some kinds leaves the rest as core's placeholder rows, which
+    /// already read sensibly on their own.
+    pub kind: MediaKind,
+    /// The media's link destination — a path, URL, or `data:` URI, verbatim from
     /// the AST. A frontend resolves a relative path against the document's own
     /// directory; core does no I/O. For a `<picture>` this is the `<img>`
-    /// fallback — the source used when no [`sources`](ImageInfo::sources) media
-    /// query matches (or the frontend has no theme).
+    /// fallback — the source used when no [`sources`](MediaInfo::sources) media
+    /// query matches (or the frontend has no theme). Empty when a `<video>`/
+    /// `<audio>` carries no `src` and names its candidates in `<source>`s
+    /// instead; [`resolve`](MediaInfo::resolve) already accounts for that.
     pub destination: String,
-    /// A `<picture>`'s `<source>` alternatives in document order, or empty for a
-    /// plain image. See [`ImageSource`]; a theme-aware frontend picks one and
-    /// otherwise loads [`destination`](ImageInfo::destination).
-    pub sources: Vec<ImageSource>,
-    /// The image's alt text, flattened from its inline children (empty when it
+    /// The `<source>` alternatives in document order, or empty for a plain
+    /// image. See [`MediaSource`]; a theme- or codec-aware frontend picks one and
+    /// otherwise loads [`destination`](MediaInfo::destination).
+    pub sources: Vec<MediaSource>,
+    /// The media's alt text, flattened from its inline children (empty when it
     /// has none).
     pub alt: String,
+    /// A `<video poster="…">`'s still frame, or empty when there is none — an
+    /// image destination, resolved exactly as [`destination`] is.
+    ///
+    /// [`destination`]: MediaInfo::destination
+    pub poster: String,
 }
 
 /// One leaf directive (`::name{…}`) as a frontend sees it: which rows its
 /// placeholder occupies, its type, and its attributes. A plain surface paints
 /// the `⧉ name` placeholder glyphs as-is; a frontend that knows the host app's
 /// vocabulary **skips the rows in `rows_span`** and paints the real thing there,
-/// exactly as an image-capable one does with [`ImageInfo`]. Derived from
+/// exactly as an image-capable one does with [`MediaInfo`]. Derived from
 /// [`VRow::leaf_directive`] by [`directive_spans`].
 ///
 /// Core resolves nothing here — it has no idea what an `embed` or a `toc` is,
@@ -3010,7 +3155,7 @@ impl DirectiveInfo {
     }
 }
 
-impl ImageInfo {
+impl MediaInfo {
     /// The image URL to load under `scheme`: the first [`sources`] `<source>`
     /// whose media query matches, else the [`destination`] `<img>` fallback. The
     /// pick is a `<source>`'s first `srcset` URL or the destination — a frontend
@@ -3024,19 +3169,57 @@ impl ImageInfo {
     /// source — including every frontend that can't/doesn't theme and passes
     /// [`ColorScheme::Light`] to a dark-only picture — it's the plain `<img>`.
     ///
-    /// [`sources`]: ImageInfo::sources
-    /// [`destination`]: ImageInfo::destination
+    /// [`sources`]: MediaInfo::sources
+    /// [`destination`]: MediaInfo::destination
     pub fn resolve(&self, scheme: ColorScheme) -> &str {
-        self.sources
+        if let Some(url) = self
+            .sources
             .iter()
             .find(|s| media_matches(&s.media, scheme))
             .and_then(|s| first_srcset_url(&s.srcset))
-            .unwrap_or(&self.destination)
+        {
+            return url;
+        }
+        // A `<video>`/`<audio>` may carry no `src` of its own, naming its
+        // candidates only in child `<source>`s — none of which matched above,
+        // because a codec-typed `<source>` has no media query and core judges no
+        // MIME types. Falling through to an empty destination would hand the
+        // frontend nothing to load, so take the first candidate URL instead and
+        // let the frontend reject it if it can't decode it. An `<img>` never
+        // reaches this: its `src` is the picture.
+        if self.destination.is_empty() {
+            if let Some(url) = self.sources.iter().find_map(|s| first_srcset_url(&s.srcset)) {
+                return url;
+            }
+        }
+        &self.destination
+    }
+
+    /// The **still picture** that stands for this media under `scheme`, for a
+    /// frontend that can rasterize an image but not play a movie — a terminal, or
+    /// a GUI still growing its player. `None` when there is no picture to draw,
+    /// which is the honest answer for audio and for a poster-less video: the
+    /// caller leaves core's labelled placeholder row, which already reads as
+    /// *a thing that isn't text*.
+    ///
+    /// This exists so those frontends never hand a `.mp4` to an image decoder.
+    /// That fails harmlessly today (a failed decode falls back to the same
+    /// placeholder), but it spends a file read and a decode attempt per frame to
+    /// arrive where this gets in one match.
+    pub fn still(&self, scheme: ColorScheme) -> Option<&str> {
+        match self.kind {
+            MediaKind::Image => Some(self.resolve(scheme)),
+            // A `poster` is an image destination, so it resolves the same way —
+            // but it is named directly and has no `<source>` alternatives of its
+            // own, so it needs no theme matching.
+            MediaKind::Video if !self.poster.is_empty() => Some(&self.poster),
+            MediaKind::Video | MediaKind::Audio => None,
+        }
     }
 }
 
 /// A frontend's active color scheme — what a `<picture>`'s `prefers-color-scheme`
-/// `<source>`s are matched against by [`ImageInfo::resolve`]. A frontend with no
+/// `<source>`s are matched against by [`MediaInfo::resolve`]. A frontend with no
 /// notion of theme passes [`Light`](ColorScheme::Light), the web's own default.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ColorScheme {
@@ -3309,7 +3492,7 @@ fn prefix_width(prefix: &[Glyph]) -> usize {
 /// destination (`img/cat.png` → `cat.png`), the whole destination when it has no
 /// separator, and `"image"` when it's empty. A `data:` URI (which has no useful
 /// tail) shows its scheme so the placeholder isn't a wall of base64.
-fn image_label(dest: &str) -> String {
+fn media_label(dest: &str) -> String {
     if dest.is_empty() {
         return "image".to_string();
     }
@@ -3417,7 +3600,7 @@ pub(crate) fn assert_maps_eq(a: &VisualMap, b: &VisualMap, ctx: &str) {
         assert_eq!(ta.end_src, tb.end_src, "table {i} end_src ({ctx})");
     }
     assert_eq!(a.code_blocks, b.code_blocks, "code_blocks ({ctx})");
-    assert_eq!(a.images, b.images, "images ({ctx})");
+    assert_eq!(a.media, b.media, "images ({ctx})");
 }
 
 #[cfg(test)]
@@ -3457,7 +3640,7 @@ mod tests {
 
     /// The cache-free reference [`build`], with no per-image height overrides —
     /// every block image stays its default one-row placeholder. The tests that
-    /// need a taller image drive it through [`crate::Doc::set_image_rows`] instead.
+    /// need a taller image drive it through [`crate::Doc::set_media_rows`] instead.
     fn build_t(nodes: &[FlatNode], src: &str, wrap: Option<usize>) -> VisualMap {
         build(nodes, src, wrap, false, &HashMap::new())
     }
@@ -3480,10 +3663,10 @@ mod tests {
         cache: &mut BlockCache,
     ) -> (VisualMap, VisualMap) {
         let all = ed.nodes().unwrap();
-        let image_rows = HashMap::new();
-        let plain = build(&all, src, wrap, false, &image_rows);
+        let media_rows = HashMap::new();
+        let plain = build(&all, src, wrap, false, &media_rows);
         let top = top_blocks(ed, src);
-        let cached = build_cached(&top, src, wrap, false, &image_rows, cache, |id| {
+        let cached = build_cached(&top, src, wrap, false, &media_rows, cache, |id| {
             ed.subtree(NodeId(id)).unwrap_or_default()
         });
         (plain, cached)
@@ -4449,10 +4632,10 @@ mod tests {
     }
 
     #[test]
-    fn a_block_image_is_published_structurally_beside_its_placeholder() {
+    fn a_block_media_is_published_structurally_beside_its_placeholder() {
         let m = map("intro\n\n![a cat](img/cat.png)\n\nend\n");
-        assert_eq!(m.images.len(), 1, "one block image");
-        let img = &m.images[0];
+        assert_eq!(m.media.len(), 1, "one block image");
+        let img = &m.media[0];
         assert_eq!(img.destination, "img/cat.png");
         assert_eq!(img.alt, "a cat");
         // The placeholder row named by `rows_span` carries the label a plain
@@ -4462,26 +4645,26 @@ mod tests {
         };
         assert_eq!(img.rows_span.end - img.rows_span.start, 1, "one placeholder row");
         assert_eq!(row_text(img.rows_span.start), "🖼 a cat");
-        // The row carries the mark `image_spans` derives the side-table from.
-        assert!(m.rows[img.rows_span.start].image.is_some());
+        // The row carries the mark `media_spans` derives the side-table from.
+        assert!(m.rows[img.rows_span.start].media.is_some());
     }
 
     #[test]
     fn an_image_without_alt_labels_itself_with_its_filename() {
         let m = map("![](photos/beach.jpg)\n");
-        let row = &m.rows[m.images[0].rows_span.start];
+        let row = &m.rows[m.media[0].rows_span.start];
         assert_eq!(row.glyphs.iter().map(|g| g.ch).collect::<String>(), "🖼 beach.jpg");
-        assert_eq!(m.images[0].alt, "");
+        assert_eq!(m.media[0].alt, "");
     }
 
     #[test]
-    fn a_block_image_gives_the_caret_a_home_before_and_after_it() {
+    fn a_block_media_gives_the_caret_a_home_before_and_after_it() {
         // `![x](y)` on its own line: the caret can rest in front of the image
         // (its start) and just past it (the row end), and nowhere inside the
         // markup — the same coarse mapping a thematic break uses.
         let src = "![x](y.png)\n";
         let m = map(src);
-        let img = &m.rows[m.images[0].rows_span.start];
+        let img = &m.rows[m.media[0].rows_span.start];
         let start = 0; // the image opens the document
         let end = "![x](y.png)".len();
         // Every placeholder glyph maps to the image start and is a stop there.
@@ -4494,11 +4677,11 @@ mod tests {
     }
 
     #[test]
-    fn an_inline_image_amid_text_is_not_a_block_image() {
+    fn an_inline_image_amid_text_is_not_a_block_media() {
         // An image sharing its line with prose isn't block-level: it stays in the
-        // inline path (rendered as its alt text), and publishes no ImageInfo.
+        // inline path (rendered as its alt text), and publishes no MediaInfo.
         let m = map("see ![a cat](cat.png) here\n");
-        assert!(m.images.is_empty(), "not a block image");
+        assert!(m.media.is_empty(), "not a block image");
         assert!(rendered(&m).contains("a cat"), "alt text still renders inline");
     }
 
@@ -4508,10 +4691,85 @@ mod tests {
     /// other tests use: the editor's flat whole-arena snapshot tangles the links
     /// of inline-promoted HTML (phantom roots, dangling `parent`s), which only
     /// the per-block subtree walk `build_cached` does untangles.
-    fn doc_images(src: &str) -> Vec<ImageInfo> {
+    fn doc_media(src: &str) -> Vec<MediaInfo> {
         let mut doc = crate::Doc::from_source(src.to_string(), Format::Markdown).unwrap();
         doc.build_visual(80);
-        doc.vmap.images.clone()
+        doc.vmap.media.clone()
+    }
+
+    #[test]
+    fn a_video_block_is_media_with_its_src_poster_and_kind() {
+        // The load-bearing assumption of video support: twig has no `video` node
+        // kind, so `html_elements` promotion must land a `<video>` as a generic
+        // `element` whose tag name and attributes survive onto `FlatNode` — the
+        // same treatment `<picture>` gets. If that ever stops holding, this is
+        // the test that says so.
+        let m = doc_media("<video src=\"clip.mp4\" poster=\"still.png\" controls>\n</video>\n");
+        assert_eq!(m.len(), 1, "the video is one block media");
+        assert_eq!(m[0].kind, MediaKind::Video);
+        assert_eq!(m[0].destination, "clip.mp4");
+        assert_eq!(m[0].poster, "still.png");
+    }
+
+    #[test]
+    fn a_single_line_video_is_not_a_block_and_that_is_twigs_to_fix() {
+        // Documents the boundary rather than the behaviour we want. CommonMark
+        // opens an HTML block on a complete tag only when the line ends there
+        // ("type 7"), and `video`/`audio` are absent from the fixed tag list that
+        // opens one regardless ("type 6") — it predates both elements. So the
+        // one-line spelling everyone actually writes parses as a paragraph of raw
+        // inline HTML: no element node, nothing for core to mark up.
+        //
+        // Nothing in leaf can fix this — the tags never reach us as an element.
+        // Widening twig's type-6 list under `html_elements` would, and until then
+        // `Doc::insert_media` writes the multi-line form on purpose.
+        let m = doc_media("<video src=\"clip.mp4\" controls></video>\n");
+        assert!(m.is_empty(), "single-line <video> is a paragraph, not a block");
+    }
+
+    #[test]
+    fn an_audio_block_is_media_with_no_poster() {
+        let m = doc_media("<audio src=\"take.mp3\" controls>\n</audio>\n");
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].kind, MediaKind::Audio);
+        assert_eq!(m[0].destination, "take.mp3");
+        assert!(m[0].poster.is_empty(), "audio has no poster frame");
+    }
+
+    #[test]
+    fn a_videos_source_children_are_its_candidates_typed_by_mime() {
+        // A `<video>` with no `src` of its own — the common shape, since it's how
+        // you offer more than one codec. The candidates come from `<source src>`
+        // (not `srcset`, which is `<picture>`'s spelling) and carry their MIME.
+        let src = "<video controls>\n\
+                   <source src=\"a.webm\" type=\"video/webm\">\n\
+                   <source src=\"a.mp4\" type=\"video/mp4\">\n\
+                   fallback\n\
+                   </video>\n";
+        let m = doc_media(src);
+        assert_eq!(m.len(), 1);
+        assert!(m[0].destination.is_empty(), "no src attribute on the element");
+        assert_eq!(m[0].sources.len(), 2);
+        assert_eq!(m[0].sources[0].srcset, "a.webm");
+        assert_eq!(m[0].sources[0].mime, "video/webm");
+        assert_eq!(m[0].sources[1].srcset, "a.mp4");
+        // With an empty destination, `resolve` falls through to the first
+        // candidate rather than handing the frontend nothing to load.
+        assert_eq!(m[0].resolve(ColorScheme::Light), "a.webm");
+    }
+
+    #[test]
+    fn a_video_placeholder_row_carries_its_own_sigil_and_mark() {
+        // The placeholder contract images already hold, now for a video: the row
+        // renders as a labelled stand-in a plain surface can paint as-is, and
+        // carries the mark a capable frontend replaces it from.
+        let src = "<video src=\"clip.mp4\" controls>\n</video>\n";
+        let mut doc = crate::Doc::from_source(src.to_string(), Format::Markdown).unwrap();
+        doc.build_visual(80);
+        let row = &doc.vmap.rows[doc.vmap.media[0].rows_span.start];
+        let text: String = row.glyphs.iter().map(|g| g.ch).collect();
+        assert!(text.starts_with('🎬'), "video sigil, not the image one: {text:?}");
+        assert!(row.media.is_some(), "the mark rides the placeholder row");
     }
 
     #[test]
@@ -4520,25 +4778,26 @@ mod tests {
         // fallback destination is the `<img>` and whose `sources` carry the
         // `<source>`'s media + srcset for a theme-aware frontend to pick.
         let src = "<picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"dark.svg\"><img src=\"light.svg\" alt=\"banner\"></picture>\n";
-        let images = doc_images(src);
+        let images = doc_media(src);
         assert_eq!(images.len(), 1, "the picture is one block image");
         let img = &images[0];
         assert_eq!(img.destination, "light.svg", "fallback is the <img>");
         assert_eq!(img.alt, "banner");
         assert_eq!(
             img.sources,
-            vec![ImageSource {
+            vec![MediaSource {
                 media: "(prefers-color-scheme: dark)".into(),
                 srcset: "dark.svg".into(),
+                mime: String::new(),
             }],
         );
     }
 
     #[test]
-    fn a_picture_inside_a_heading_is_still_a_block_image_with_sources() {
+    fn a_picture_inside_a_heading_is_still_a_block_media_with_sources() {
         // fig.md's shape: the banner is an `<h1>` wrapping the `<picture>`.
         let src = "<h1><picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"d.svg\"><img src=\"l.svg\" alt=\"fig\"></picture></h1>\n";
-        let images = doc_images(src);
+        let images = doc_media(src);
         assert_eq!(images.len(), 1, "heading-wrapped picture is a block image");
         assert_eq!(images[0].destination, "l.svg");
         assert_eq!(images[0].sources.len(), 1);
@@ -4546,9 +4805,9 @@ mod tests {
     }
 
     #[test]
-    fn a_plain_image_has_no_picture_sources() {
+    fn a_plain_image_has_no_media_sources() {
         // A bare Markdown image carries an empty `sources` — nothing to pick from.
-        let images = doc_images("![alt](p.png)\n");
+        let images = doc_media("![alt](p.png)\n");
         assert_eq!(images.len(), 1);
         assert!(images[0].sources.is_empty(), "no <picture>, no alternatives");
     }
@@ -4556,7 +4815,7 @@ mod tests {
     #[test]
     fn resolve_picks_the_source_matching_the_scheme() {
         let src = "<picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"dark.svg\"><img src=\"light.svg\" alt=\"b\"></picture>\n";
-        let images = doc_images(src);
+        let images = doc_media(src);
         let img = &images[0];
         // Dark theme takes the dark source; light falls through to the <img>.
         assert_eq!(img.resolve(ColorScheme::Dark), "dark.svg");
@@ -4566,12 +4825,12 @@ mod tests {
     #[test]
     fn resolve_falls_back_for_a_plain_image_and_unknown_media() {
         // A plain image ignores the scheme.
-        let plain = doc_images("![a](p.png)\n");
+        let plain = doc_media("![a](p.png)\n");
         assert_eq!(plain[0].resolve(ColorScheme::Dark), "p.png");
 
         // A <source> with an unrecognized media query is skipped; a light source
         // is taken under a light theme.
-        let m = doc_images("<picture><source media=\"print\" srcset=\"p.svg\"><source media=\"(prefers-color-scheme: light)\" srcset=\"l.svg\"><img src=\"f.svg\" alt=\"x\"></picture>\n");
+        let m = doc_media("<picture><source media=\"print\" srcset=\"p.svg\"><source media=\"(prefers-color-scheme: light)\" srcset=\"l.svg\"><img src=\"f.svg\" alt=\"x\"></picture>\n");
         assert_eq!(m[0].resolve(ColorScheme::Light), "l.svg");
         assert_eq!(m[0].resolve(ColorScheme::Dark), "f.svg", "no dark source → <img>");
     }
@@ -4589,11 +4848,11 @@ mod tests {
     }
 
     #[test]
-    fn a_block_image_carries_its_list_prefix() {
+    fn a_block_media_carries_its_list_prefix() {
         // An image that is a list item's body opens past the bullet, like every
         // other block does.
         let m = map("- ![alt](p.png)\n");
-        let row = &m.rows[m.images[0].rows_span.start];
+        let row = &m.rows[m.media[0].rows_span.start];
         let text: String = row.glyphs.iter().map(|g| g.ch).collect();
         assert!(text.starts_with("• "), "the list marker prefixes the image row: {text:?}");
         assert!(text.contains("🖼 alt"));

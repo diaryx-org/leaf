@@ -60,12 +60,12 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
         #[cfg(feature = "images")]
         {
             let heights = state.images.reserve(
-                &doc.vmap.images,
+                &doc.vmap.media,
                 doc_dir.as_deref(),
                 width as u16,
                 height as u16,
             );
-            doc.set_image_rows(heights);
+            doc.set_media_rows(heights);
             doc.build_visual(width);
         }
     }
@@ -170,7 +170,7 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
     // inline `🖼 alt` text (drawn by the paragraph) is the placeholder.
     #[cfg(feature = "images")]
     if doc.view == View::Wysiwyg {
-        for info in &doc.vmap.images {
+        for info in &doc.vmap.media {
             let span = &info.rows_span;
             // The picture's cell size when it loaded; `None` for an image that
             // isn't a loadable local file — still framed, just as an empty box.
