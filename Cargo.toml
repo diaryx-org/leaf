@@ -38,7 +38,14 @@ edition = "2024"
 # rebased onto it every node inside reported `(0,0)` — read by anything that
 # trusts a span as "at byte 0", so a click on `:abbr[HTML]`'s label put the caret
 # at the top of the document and its stops collided with the real first line's.
-twig-doc = { version = "2.5.0" }
+# 2.5.1: `<video>`/`<audio>`/`<picture>` open an HTML block under `html_elements`.
+# CommonMark's block-tag list is fixed by the spec and predates all three, so the
+# one-line spelling everyone writes (`<video src=… controls></video>`) parsed as a
+# paragraph of raw inline HTML — no element, no attributes, tags surfacing as
+# text. Only the multi-line form worked, and only by accident of the closing tag
+# having its own line. Required for `Doc::insert_media` and for reading any
+# document with a video in it.
+twig-doc = { version = "2.5.1" }
 anyhow = "1"
 # Frontend-neutral core: the caret/selection model + AST→glyph map, styled with
 # a toolkit-agnostic Style. Each frontend crate maps that to its own styling.

@@ -4712,19 +4712,30 @@ mod tests {
     }
 
     #[test]
-    fn a_single_line_video_is_not_a_block_and_that_is_twigs_to_fix() {
-        // Documents the boundary rather than the behaviour we want. CommonMark
-        // opens an HTML block on a complete tag only when the line ends there
-        // ("type 7"), and `video`/`audio` are absent from the fixed tag list that
-        // opens one regardless ("type 6") — it predates both elements. So the
-        // one-line spelling everyone actually writes parses as a paragraph of raw
-        // inline HTML: no element node, nothing for core to mark up.
-        //
-        // Nothing in leaf can fix this — the tags never reach us as an element.
-        // Widening twig's type-6 list under `html_elements` would, and until then
-        // `Doc::insert_media` writes the multi-line form on purpose.
+    fn a_single_line_video_is_a_block_too() {
+        // The spelling everyone actually writes. It used to parse as a paragraph
+        // of raw inline HTML — CommonMark opens a block on a complete tag only
+        // when the line ends there, and its fixed tag list predates `<video>` —
+        // so the tags never reached core as an element at all. twig 2.5.1 widened
+        // that list under `html_elements`; this is the test that would catch the
+        // pin sliding back.
         let m = doc_media("<video src=\"clip.mp4\" controls></video>\n");
-        assert!(m.is_empty(), "single-line <video> is a paragraph, not a block");
+        assert_eq!(m.len(), 1, "single-line <video> is a block");
+        assert_eq!(m[0].kind, MediaKind::Video);
+        assert_eq!(m[0].destination, "clip.mp4");
+    }
+
+    #[test]
+    fn a_single_line_picture_is_a_block_with_its_alternatives() {
+        // `<picture>` had the identical gap and it went unnoticed because the
+        // conventional spelling breaks the lines. Same twig fix covers it.
+        let src = "<picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"d.svg\">\
+                   <img src=\"l.svg\" alt=\"banner\"></picture>\n";
+        let m = doc_media(src);
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].kind, MediaKind::Image);
+        assert_eq!(m[0].destination, "l.svg");
+        assert_eq!(m[0].resolve(ColorScheme::Dark), "d.svg");
     }
 
     #[test]

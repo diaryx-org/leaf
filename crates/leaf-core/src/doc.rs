@@ -2393,9 +2393,8 @@ impl Doc {
     /// HTML elements, which is the only spelling Markdown and Djot have for them:
     ///
     /// ```text
-    /// <video src="clip.mp4" controls>
-    /// alt
-    /// </video>
+    /// <video src="clip.mp4" controls>alt</video>
+    /// <audio src="take.mp3" controls>alt</audio>
     /// ```
     ///
     /// HTML rather than a `::video{…}` directive deliberately. A directive means
@@ -2404,16 +2403,10 @@ impl Doc {
     /// renderer already understands, and what leaf's own reader picks back up
     /// through `html_elements` promotion (see [`parse_extensions`]).
     ///
-    /// **The line breaks are load-bearing, not formatting.** CommonMark starts an
-    /// HTML block on a complete tag only when nothing follows it on the line
-    /// (its "type 7" rule), and `video`/`audio` aren't among the tag names that
-    /// open a block regardless (its fixed "type 6" list, which predates both
-    /// elements). Written on one line, `<video …></video>` is therefore a
-    /// *paragraph of raw inline HTML*: no element node, no attributes, no
-    /// [`MediaInfo`] — the placeholder never appears and the tags render as text.
-    /// Broken across lines it is an HTML block, twig promotes it, and it arrives
-    /// as an `element` carrying its attributes. Reading a single-line `<video>`
-    /// someone else wrote needs a change in twig, not here.
+    /// The one-line spelling needs twig ≥ 2.5.1, which widened CommonMark's
+    /// HTML-block tag list to cover `<video>`/`<audio>`/`<picture>` under
+    /// `html_elements`. Before that only the multi-line form parsed as a block at
+    /// all, and this wrote three lines to work around it.
     ///
     /// `controls` is always written: a player with no transport is a still frame
     /// the reader can't do anything with. Any selection becomes the element's
@@ -2438,7 +2431,7 @@ impl Doc {
             MediaKind::Audio => "audio",
             _ => "video",
         };
-        let markup = format!("<{tag} src=\"{destination}\" controls>\n{alt_text}\n</{tag}>");
+        let markup = format!("<{tag} src=\"{destination}\" controls>{alt_text}</{tag}>");
         self.edit(start, end, &markup);
     }
 
@@ -4873,6 +4866,53 @@ mod tests {
         d.caret = 0;
         d.insert_image("logo.svg", "");
         assert_eq!(d.source, "![](logo.svg)\n");
+    }
+
+    #[test]
+    fn insert_media_spells_a_video_as_html_and_reads_it_back_as_a_block() {
+        // The round trip is the point: it's no use writing markup the reader
+        // can't pick up again. This is the pair that only holds from twig 2.5.1
+        // on — before it, the one-line form went in fine and came back as a
+        // paragraph of raw tags, publishing no media at all.
+        let mut d = doc_with("vid_rt", "\n");
+        d.caret = 0;
+        d.insert_media(MediaKind::Video, "clip.mp4", "a clip");
+        assert_eq!(d.source, "<video src=\"clip.mp4\" controls>a clip</video>\n");
+
+        d.build_visual(80);
+        assert_eq!(d.vmap.media.len(), 1, "reads back as one block media");
+        assert_eq!(d.vmap.media[0].kind, MediaKind::Video);
+        assert_eq!(d.vmap.media[0].destination, "clip.mp4");
+        assert_eq!(d.vmap.media[0].alt, "a clip");
+    }
+
+    #[test]
+    fn insert_media_spells_audio_with_its_own_tag() {
+        let mut d = doc_with("aud_rt", "\n");
+        d.caret = 0;
+        d.insert_media(MediaKind::Audio, "take.mp3", "");
+        assert_eq!(d.source, "<audio src=\"take.mp3\" controls></audio>\n");
+        d.build_visual(80);
+        assert_eq!(d.vmap.media[0].kind, MediaKind::Audio);
+    }
+
+    #[test]
+    fn insert_media_uses_the_selection_as_fallback_text() {
+        // The same courtesy `insert_image` does with alt: select a caption,
+        // insert, and the caption labels the thing rather than being replaced.
+        let mut d = doc_with("vid_sel", "the talk here\n");
+        d.anchor = Some(0);
+        d.caret = 8; // "the talk"
+        d.insert_media(MediaKind::Video, "talk.mp4", "ignored fallback");
+        assert_eq!(d.source, "<video src=\"talk.mp4\" controls>the talk</video> here\n");
+    }
+
+    #[test]
+    fn insert_media_with_an_image_kind_is_just_insert_image() {
+        let mut d = doc_with("img_via_media", "\n");
+        d.caret = 0;
+        d.insert_media(MediaKind::Image, "logo.svg", "x");
+        assert_eq!(d.source, "![x](logo.svg)\n");
     }
 
     #[test]
