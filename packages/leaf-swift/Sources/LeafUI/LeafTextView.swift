@@ -83,10 +83,21 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// hands the source to `onOpenMedia` instead. See `MediaPlaybackMode`.
     public var mediaPlayback: MediaPlaybackMode = .inline
 
+    /// Asks the host to resolve a source this view can't read itself — a remote
+    /// URL, or a scheme only the host understands — to a local file it can.
+    /// See `MediaStore.onResolveMedia`; LeafUI never touches the network.
+    public var onResolveMedia: ((String, @escaping (URL?) -> Void) -> Void)? {
+        get { mediaStore.onResolveMedia }
+        set { mediaStore.onResolveMedia = newValue }
+    }
+
     /// Loads and caches the stills the media boxes draw.
     private let mediaStore = MediaStore()
     /// The AVKit players currently installed over media boxes.
     private let mediaPlayers = MediaPlayerHost()
+    /// The source the reader activated while the host was still resolving it,
+    /// so the answer can start playback rather than land silently.
+    private var pendingMediaActivation: String?
 
     private var docView: DocView
     private var layoutEngine: EditorLayout
@@ -129,6 +140,13 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         self.shapeCache = seed
         super.init(frame: .zero)
         autoresizingMask = [.width]
+        // A resolved source has a picture to draw, and may be the one the reader
+        // tapped while it was still being fetched.
+        mediaStore.onLoaded = { [weak self] src in
+            guard let self else { return }
+            self.needsDisplay = true
+            self.playIfAwaited(src)
+        }
         // Seed with the initial caret so the first reflow opens at the top rather
         // than scrolling to wherever the caret happens to start.
         lastCaretOffset = doc.caretOffset()
@@ -280,17 +298,40 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// — a remote URL is exactly the case a host is better placed to handle,
     /// since it can fetch asynchronously and this cannot.
     private func activateMedia(_ media: MediaView) -> Bool {
-        if mediaPlayback == .inline, let url = mediaStore.resolve(media.src) {
-            let rects = layoutEngine.mediaRects(theme: theme)
-            if let rect = rects[media.src],
-               mediaPlayers.activate(media, at: rect, in: self, url: url) {
-                needsDisplay = true   // the badge under the player must stop drawing
+        if mediaPlayback == .inline {
+            if let url = mediaStore.playableURL(for: media.src) {
+                let rects = layoutEngine.mediaRects(theme: theme)
+                if let rect = rects[media.src],
+                   mediaPlayers.activate(media, at: rect, in: self, url: url) {
+                    needsDisplay = true   // the badge under the player must stop drawing
+                    return true
+                }
+            } else if mediaStore.isResolving(media.src) {
+                // The host is fetching it. Remember what was asked for, so the
+                // answer starts playback instead of leaving the reader to tap a
+                // second time on a box that looks unchanged.
+                pendingMediaActivation = media.src
                 return true
             }
         }
         guard let open = onOpenMedia else { return false }
         open(media.src)
         return true
+    }
+
+    /// Play the media the reader tapped, now that the host has resolved it.
+    /// Called from the store's `onLoaded`; a no-op unless this is the source
+    /// they were waiting on.
+    private func playIfAwaited(_ src: String) {
+        guard pendingMediaActivation == src else { return }
+        pendingMediaActivation = nil
+        guard let url = mediaStore.playableURL(for: src),
+              let info = layoutEngine.rows.compactMap(\.media).first(where: { $0.media.src == src })
+        else { return }
+        if let rect = layoutEngine.mediaRects(theme: theme)[src] {
+            mediaPlayers.activate(info.media, at: rect, in: self, url: url)
+            needsDisplay = true
+        }
     }
 
     /// Draw a table as a proportional grid — header fill and body stripes, the

@@ -160,10 +160,21 @@ public final class LeafTextView: UIView, UITextInput {
     /// hands the source to `onOpenMedia` instead. See `MediaPlaybackMode`.
     public var mediaPlayback: MediaPlaybackMode = .inline
 
+    /// Asks the host to resolve a source this view can't read itself — a remote
+    /// URL, or a scheme only the host understands — to a local file it can.
+    /// See `MediaStore.onResolveMedia`; LeafUI never touches the network.
+    public var onResolveMedia: ((String, @escaping (URL?) -> Void) -> Void)? {
+        get { mediaStore.onResolveMedia }
+        set { mediaStore.onResolveMedia = newValue }
+    }
+
     /// Loads and caches the stills the media boxes draw.
     private let mediaStore = MediaStore()
     /// The AVKit players currently installed over media boxes.
     private let mediaPlayers = MediaPlayerHost()
+    /// The source the reader tapped while the host was still resolving it, so
+    /// the answer can start playback rather than land silently.
+    private var pendingMediaActivation: String?
 
     /// Follows a link on a plain tap. A phone has no ⌘ to hold and no pointer to
     /// hover, so the tap is the whole vocabulary. This rides *beside*
@@ -189,6 +200,13 @@ public final class LeafTextView: UIView, UITextInput {
         self.layoutEngine = EditorLayout(first, theme: renderTheme, wrapWidth: 0, cache: &seed)
         self.shapeCache = seed
         super.init(frame: .zero)
+        // A resolved source has a picture to draw, and may be the one the reader
+        // tapped while it was still being fetched.
+        mediaStore.onLoaded = { [weak self] src in
+            guard let self else { return }
+            self.setNeedsDisplay()
+            self.playIfAwaited(src)
+        }
         backgroundColor = .clear
         contentMode = .redraw
         addInteraction(textInteraction)
@@ -225,17 +243,39 @@ public final class LeafTextView: UIView, UITextInput {
     /// loader can't resolve to a local file, and (on iOS) a view with no owning
     /// view controller to parent the player to all fall through to `onOpenMedia`.
     private func activateMedia(_ media: MediaView) -> Bool {
-        if mediaPlayback == .inline, let url = mediaStore.resolve(media.src) {
-            let rects = layoutEngine.mediaRects(theme: renderTheme)
-            if let rect = rects[media.src],
-               mediaPlayers.activate(media, at: rect, in: self, url: url) {
-                setNeedsDisplay()   // the badge under the player must stop drawing
+        if mediaPlayback == .inline {
+            if let url = mediaStore.playableURL(for: media.src) {
+                let rects = layoutEngine.mediaRects(theme: renderTheme)
+                if let rect = rects[media.src],
+                   mediaPlayers.activate(media, at: rect, in: self, url: url) {
+                    setNeedsDisplay()   // the badge under the player must stop drawing
+                    return true
+                }
+            } else if mediaStore.isResolving(media.src) {
+                // The host is fetching it. Remember what was asked for, so the
+                // answer starts playback instead of leaving the reader to tap a
+                // second time on a box that looks unchanged.
+                pendingMediaActivation = media.src
                 return true
             }
         }
         guard let open = onOpenMedia else { return false }
         open(media.src)
         return true
+    }
+
+    /// Play the media the reader tapped, now that the host has resolved it.
+    /// A no-op unless this is the source they were waiting on.
+    private func playIfAwaited(_ src: String) {
+        guard pendingMediaActivation == src else { return }
+        pendingMediaActivation = nil
+        guard let url = mediaStore.playableURL(for: src),
+              let info = layoutEngine.rows.compactMap(\.media).first(where: { $0.media.src == src })
+        else { return }
+        if let rect = layoutEngine.mediaRects(theme: renderTheme)[src] {
+            mediaPlayers.activate(info.media, at: rect, in: self, url: url)
+            setNeedsDisplay()
+        }
     }
 
     /// The destination of the link at `point`, or nil if there isn't one.

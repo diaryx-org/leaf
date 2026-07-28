@@ -11,4 +11,7 @@
 # UniFFI-generated Swift are regenerated from crates/leaf-ffi, never committed.
 /packages/leaf-swift/generated/
 packages/leaf-swift/.build/
+# Xcode's own build directory for the package (distinct from SwiftPM's `.build`),
+# left behind when apps/leaf-editor is built against it as a local package.
+packages/leaf-swift/build/
 packages/leaf-swift/.swiftpm/xcode/xcuserdata/adamharris.xcuserdatad/xcschemes/

@@ -154,6 +154,16 @@ private func makeEditor() -> LeafEditorModel {
     model.onOpenMedia = { src in
         NSLog("leaf-editor: play %@", src)
     }
+    // The editor never touches the network. It hands us a source it can't read
+    // and we answer with a local file — here by pretending to fetch and handing
+    // back a bundled one, which is exactly the shape a real download-and-cache
+    // takes: answer whenever you have it, from whatever thread you are on.
+    model.onResolveMedia = { src, done in
+        NSLog("leaf-editor: resolve %@", src)
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.4) {
+            done(Bundle.main.url(forResource: "clip", withExtension: "mp4"))
+        }
+    }
     return model
 }
 
@@ -197,6 +207,16 @@ tap one, and then play right where they sit.
 <video src="clip.mp4" poster="banner.png" controls></video>
 
 <audio src="take.mp3" controls></audio>
+
+A `data:` picture carries its own bytes, so it needs neither a document
+directory nor the app — the editor decodes it:
+
+![a dot](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAIAAABt+uBvAAAACXBIWXMAAAABAAAAAQBPJcTWAAAA2ElEQVR4nO3QQQ3AIADAQEgwO5+IQM4ULH2yx52CpvPsZ/Bt3Q74O4OCQcGgYFAwKBgUDAoGBYOCQcGgYFAwKBgUDAoGBYOCQcGgYFAwKBgUDAoGBYOCQcGgYFAwKBgUDAoGBYOCQcGgYFAwKBgUDAoGBYOCQcGgYFAwKBgUDAoGBYOCQcGgYFAwKBgUDAoGBYOCQcGgYFAwKBgUDAoGBYOCQcGgYFAwKBgUDAoGBYOCQcGgYFAwKBgUDAoGBYOCQcGgYFAwKBgUDAoGBYOCQcGgYFAwKBgUXjPZA4Om5tBAAAAAAElFTkSuQmCC)
+
+And a source the editor can't read itself is handed to the app, which
+fetches it and answers with a file:
+
+<video src="https://example.invalid/remote.mp4" controls></video>
 
 Try the toolbar, or the keyboard's arrows and ⌘B / ⌘I.
 """

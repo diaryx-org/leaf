@@ -72,6 +72,25 @@ public final class LeafEditorModel: ObservableObject {
         didSet { textView?.mediaPlayback = mediaPlayback }
     }
 
+    /// Asks the app to turn a source the editor can't read itself into a local
+    /// file it can — a remote URL, or any scheme only the app understands.
+    ///
+    /// **LeafUI never touches the network.** A document that silently fetches
+    /// from a server on open discloses the reader's address and the moment they
+    /// opened it, and that is the app's call, not an editor's. Fetch (or
+    /// decline), cache wherever you like, and answer with a file URL — or `nil`,
+    /// which is remembered so you are not asked again.
+    ///
+    /// Answering with a file rather than with bytes is what lets the same answer
+    /// serve both uses: the picture decodes from it, and `AVPlayer` streams from
+    /// it, so a remote video plays inline like any other. Called on the main
+    /// thread; the completion is safe to call from anywhere.
+    ///
+    /// `data:` sources need none of this — the editor decodes those itself.
+    public var onResolveMedia: ((String, @escaping (URL?) -> Void) -> Void)? {
+        didSet { textView?.onResolveMedia = onResolveMedia }
+    }
+
     /// Called when the reader activates a block video or audio, with its raw
     /// `src`, in the cases the editor doesn't play it itself: `.host` playback,
     /// or a source its local-file loader can't resolve — a remote URL, which
@@ -212,6 +231,7 @@ public struct LeafEditor: NSViewRepresentable {
         hosted.recognizesWikilinks = model.recognizesWikilinks
         hosted.documentDirectory = model.documentDirectory
         hosted.mediaPlayback = model.mediaPlayback
+        hosted.onResolveMedia = model.onResolveMedia
     }
 
     /// Build a `LeafTextView` over `model.doc`, wired the way `makeNSView` and the
@@ -233,6 +253,7 @@ public struct LeafEditor: NSViewRepresentable {
         textView.recognizesWikilinks = model.recognizesWikilinks
         textView.documentDirectory = model.documentDirectory
         textView.mediaPlayback = model.mediaPlayback
+        textView.onResolveMedia = model.onResolveMedia
         // Weak, like `onOpenLink` above: the closure outlives a host that swaps
         // its model, and a strong capture would keep the old one alive.
         textView.onOpenMedia = { [weak model] src in
@@ -321,6 +342,7 @@ public struct LeafEditor: UIViewRepresentable {
         hosted.recognizesWikilinks = model.recognizesWikilinks
         hosted.documentDirectory = model.documentDirectory
         hosted.mediaPlayback = model.mediaPlayback
+        hosted.onResolveMedia = model.onResolveMedia
         // Refresh the accessory's content in place — its `UIHostingController`
         // persists in the coordinator across updates, so this is a live
         // content swap, not a rebuild (which would drop first-responder focus
@@ -361,6 +383,7 @@ public struct LeafEditor: UIViewRepresentable {
         textView.recognizesWikilinks = model.recognizesWikilinks
         textView.documentDirectory = model.documentDirectory
         textView.mediaPlayback = model.mediaPlayback
+        textView.onResolveMedia = model.onResolveMedia
         // Weak, like `onOpenLink` above: the closure outlives a host that swaps
         // its model, and a strong capture would keep the old one alive.
         textView.onOpenMedia = { [weak model] src in

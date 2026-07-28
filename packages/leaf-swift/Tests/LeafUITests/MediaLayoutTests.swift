@@ -56,12 +56,24 @@ final class MediaLayoutTests: XCTestCase {
         XCTAssertFalse(box.isBroken, "audio has no picture to be missing")
     }
 
-    func testAPosterlessVideoIsAChipWithAPlayBadge() {
+    func testAPosterlessVideoIsReservedAtVideoShapeNotAsAChip() {
+        // It has no poster to measure, but it is still a picture: reserving a
+        // chip would make the player letterbox a whole movie into a strip the
+        // height of a line of text the moment it starts.
         let box = MediaLayout(mkMedia("clip.mp4", kind: .video), still: nil,
                               contentWidth: 600, theme: theme)
         XCTAssertTrue(box.showsPlayBadge)
         XCTAssertFalse(box.isBroken, "a video with no poster isn't broken, just pictureless")
-        XCTAssertEqual(box.chipLabel, "clip.mp4")
+        XCTAssertEqual(box.size.width / box.size.height, 16.0 / 9.0, accuracy: 0.02)
+        XCTAssertGreaterThan(box.size.height, MediaMetrics.audioHeight * 2,
+                             "not the chip height")
+    }
+
+    func testABrokenImageIsStillAChip() {
+        // The chip is for something with nothing to show *and* nothing expected.
+        let box = MediaLayout(mkMedia("gone.png"), still: nil, contentWidth: 600, theme: theme)
+        XCTAssertEqual(box.size.width, MediaMetrics.chipWidth)
+        XCTAssertEqual(box.chipLabel, "gone.png")
     }
 
     func testAnImageThatDidNotLoadReadsAsBroken() {
@@ -233,6 +245,150 @@ final class MediaLayoutTests: XCTestCase {
     func testResolveDeclinesARelativePathWithNoDocumentDirectory() {
         // An untitled buffer has nothing for `./cat.png` to be relative *to*.
         XCTAssertNil(MediaStore(baseURL: nil).resolve("cat.png"))
+    }
+
+    // MARK: data: URIs — decoded here, no host, no network
+
+    /// A 1×1 PNG as a `data:` URI, the smallest real thing to decode.
+    private var dotDataURI: String {
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+            + "AAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+    }
+
+    func testADataURIDecodesWithoutAHostOrABaseDirectory() {
+        // The point of handling these natively: a self-contained document needs
+        // neither a document directory nor anything from the app around it.
+        let store = MediaStore(baseURL: nil)
+        let still = store.still(for: mkMedia(dotDataURI))
+        XCTAssertNotNil(still)
+        XCTAssertEqual(still?.width, 1)
+    }
+
+    func testADataURIIsNeverHandedToTheHost() {
+        var asked: [String] = []
+        let store = MediaStore()
+        store.onResolveMedia = { src, done in asked.append(src); done(nil) }
+        _ = store.still(for: mkMedia(dotDataURI))
+        XCTAssertTrue(asked.isEmpty, "it carries its own bytes; nothing to resolve")
+    }
+
+    func testADataURIPayloadMayBeWrapped() {
+        // Base64 in a document is often line-wrapped, and whitespace is fatal to
+        // the decoder — so it's stripped rather than the document being rejected.
+        let wrapped = dotDataURI.replacingOccurrences(of: "base64,", with: "base64,\n  ")
+        XCTAssertNotNil(MediaStore.decodeDataURI(wrapped))
+    }
+
+    func testAMalformedDataURIIsJustNoPicture() {
+        XCTAssertNil(MediaStore.decodeDataURI("data:image/png;base64"), "no comma")
+        XCTAssertNil(MediaStore.decodeDataURI("https://example.com/a.png"))
+        XCTAssertNil(MediaStore(baseURL: nil).still(for: mkMedia("data:image/png;base64,!!!!")))
+    }
+
+    func testADataURIIsNotPlayable() {
+        // Nothing can stream from a string; playing one would mean writing the
+        // whole movie to a file first, for a spelling nobody uses for video.
+        XCTAssertNil(MediaStore().playableURL(for: dotDataURI))
+    }
+
+    // MARK: the host resolver
+
+    func testAnUnreadableSourceIsHandedToTheHostOnceAndCached() {
+        var asked = 0
+        let store = MediaStore()
+        store.onResolveMedia = { _, done in asked += 1; done(nil) }
+        let remote = mkMedia("https://example.com/cat.png")
+        _ = store.still(for: remote)
+        _ = store.still(for: remote)
+        _ = store.still(for: remote)
+        XCTAssertEqual(asked, 1, "a declined source is remembered, not re-asked every frame")
+    }
+
+    func testWithNoHostAnUnreadableSourceIsSimplyNoPicture() {
+        let store = MediaStore()
+        XCTAssertNil(store.still(for: mkMedia("https://example.com/cat.png")))
+        XCTAssertFalse(store.isResolving("https://example.com/cat.png"))
+    }
+
+    func testAResolvedFileIsDecodedAndAnnounced() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("dot.png")
+        try onePixelPNG().write(to: file)
+
+        var announced: [String] = []
+        let store = MediaStore()
+        store.onLoaded = { announced.append($0) }
+        // A host that answers immediately — the completion runs inline, so no
+        // expectation/wait is needed and the test stays synchronous.
+        store.onResolveMedia = { _, done in done(file) }
+
+        let remote = mkMedia("https://example.com/cat.png")
+        XCTAssertNil(store.still(for: remote), "nothing to draw on the first pass")
+        XCTAssertEqual(announced, ["https://example.com/cat.png"],
+                       "the view is told to repaint when the answer lands")
+        XCTAssertNotNil(store.still(for: remote), "and now it has a picture")
+    }
+
+    func testAResolvedFileIsAlsoWhatPlaybackStreamsFrom() throws {
+        // Why the host answers with a file rather than with bytes: the same
+        // answer serves the still *and* the player.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("clip.mp4")
+        try Data([0, 1, 2, 3]).write(to: file)
+
+        let store = MediaStore()
+        store.onResolveMedia = { _, done in done(file) }
+        XCTAssertNil(store.playableURL(for: "https://example.com/clip.mp4"),
+                     "not yet — the host has only just been asked")
+        XCTAssertEqual(store.playableURL(for: "https://example.com/clip.mp4"), file)
+    }
+
+    func testASourceInFlightReportsItself() {
+        // So a tap can say "it's coming" rather than falling through as if the
+        // reader had hit nothing.
+        var pending: ((URL?) -> Void)?
+        let store = MediaStore()
+        store.onResolveMedia = { _, done in pending = done }
+        _ = store.still(for: mkMedia("https://example.com/cat.png"))
+        XCTAssertTrue(store.isResolving("https://example.com/cat.png"))
+        pending?(nil)
+        XCTAssertFalse(store.isResolving("https://example.com/cat.png"), "settled")
+    }
+
+    func testAnAnswerArrivingAfterAFlushIsDropped() throws {
+        // The document was swapped (or its directory repointed) while the host
+        // was still fetching; that answer belongs to a document that is gone.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("dot.png")
+        try onePixelPNG().write(to: file)
+
+        var pending: ((URL?) -> Void)?
+        var announced: [String] = []
+        let store = MediaStore()
+        store.onLoaded = { announced.append($0) }
+        store.onResolveMedia = { _, done in pending = done }
+
+        _ = store.still(for: mkMedia("https://example.com/cat.png"))
+        store.flush()
+        pending?(file)          // the late answer
+        XCTAssertTrue(announced.isEmpty, "no repaint for a document that is gone")
+        XCTAssertFalse(store.isResolving("https://example.com/cat.png"))
+    }
+
+    private func makeTempDir() throws -> URL {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("leaf-media-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private func onePixelPNG() -> Data {
+        Data(base64Encoded: """
+            iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==
+            """)!
     }
 
     func testStillIsNilForAudioAndForAPosterlessVideo() {

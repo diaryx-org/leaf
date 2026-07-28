@@ -95,19 +95,41 @@ enum BlockChrome {
         ]
         let text = box.chipLabel as NSString
         let size = text.size(withAttributes: attrs)
-        // Left of the label sits the play badge when there is one; both sides get
-        // the same padding otherwise.
-        let leftInset = box.showsPlayBadge ? MediaMetrics.badge + 16 : 12
+
+        // Where the label goes depends on where the badge went. In a short chip
+        // the badge sits at the left and the name runs beside it; in a tall box
+        // the badge is centred, so the name is centred under it instead of
+        // hugging an edge the badge isn't on.
+        let x: CGFloat
+        let y: CGFloat
+        var room = rect.width - 24
+        if !box.showsPlayBadge {
+            x = rect.minX + 12
+            y = rect.midY - size.height / 2
+        } else if badgeIsCentred(in: rect) {
+            x = rect.midX - min(size.width, room) / 2
+            y = rect.midY + MediaMetrics.badge / 2 + 8
+        } else {
+            let inset = MediaMetrics.badge + 16
+            x = rect.minX + inset
+            y = rect.midY - size.height / 2
+            room = rect.width - inset - 12
+        }
+
         // A name too long for what's left is clipped rather than spilling out of
-        // the chip and over the prose beside it.
-        let room = rect.width - leftInset - 12
+        // the box and over the prose beside it.
         guard room > 0 else { return }
         ctx.saveGState()
-        ctx.clip(to: CGRect(x: rect.minX + leftInset, y: rect.minY,
-                            width: room, height: rect.height))
-        text.draw(at: CGPoint(x: rect.minX + leftInset, y: rect.midY - size.height / 2),
-                  withAttributes: attrs)
+        ctx.clip(to: CGRect(x: x, y: rect.minY, width: room, height: rect.height))
+        text.draw(at: CGPoint(x: x, y: y), withAttributes: attrs)
         ctx.restoreGState()
+    }
+
+    /// Whether the play badge is centred in `rect` rather than tucked at its
+    /// left — true for a box tall enough to hold it comfortably. Shared by the
+    /// badge and the label so the two can't disagree about where it went.
+    private static func badgeIsCentred(in rect: CGRect) -> Bool {
+        rect.height >= MediaMetrics.badge * 1.5
     }
 
     /// A play badge — a translucent disc with a triangle — so a video or audio box
@@ -118,7 +140,7 @@ enum BlockChrome {
         guard d > 8 else { return }
         // A tall picture centres the badge; a short chip keeps it at the left so
         // the label has the rest of the width.
-        let cx = rect.height >= MediaMetrics.badge * 1.5 ? rect.midX : rect.minX + d / 2 + 8
+        let cx = badgeIsCentred(in: rect) ? rect.midX : rect.minX + d / 2 + 8
         let centre = CGPoint(x: cx, y: rect.midY)
         let disc = CGRect(x: centre.x - d / 2, y: centre.y - d / 2, width: d, height: d)
 
