@@ -46,10 +46,10 @@
 use leaf_core::style::{Role, Style as LStyle};
 use leaf_core::wysiwyg::text_width;
 use leaf_core::{
-    BlockKind, Doc, Format, InlineKind, LineFlow as CoreLineFlow, RevealMode as CoreRevealMode,
-    View, VisualMap,
+    BlockKind, ColorScheme, Doc, Format, InlineKind, LineFlow as CoreLineFlow, MediaKind,
+    RevealMode as CoreRevealMode, View, VisualMap,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tsify_next::Tsify;
 use unicode_segmentation::UnicodeSegmentation;
 use wasm_bindgen::prelude::*;
@@ -96,6 +96,61 @@ pub struct Row {
     heading: Option<u8>,
 }
 
+/// One `<source>` alternative of a block media element, as JS sees it — a
+/// candidate URL plus whichever of the two things HTML picks a `<source>` by.
+/// The renderer emits these as real `<source>` children and lets the browser
+/// choose, which is the one place the web frontend has it easier than the
+/// native ones: matching a media query or a codec is what a browser is for.
+#[derive(Serialize, Tsify)]
+pub struct MediaSourceView {
+    /// The `media="…"` query, or empty for an unconditional source.
+    media: String,
+    /// The candidate URL (a `<picture>` `srcset` or a `<video>`/`<audio>` `src`).
+    src: String,
+    /// The `type="…"` MIME, or empty when the source declares none.
+    mime: String,
+}
+
+/// One block-level image, video, or audio: which rows core reserved for it and
+/// what to build there. The web peer of [`leaf_core::MediaInfo`] — the renderer
+/// **skips the rows in `[row, row + rows)`** and positions one real `<img>`,
+/// `<video>`, or `<audio>` over them, instead of painting the `🖼`/`🎬`/`🔊`
+/// placeholder glyphs core put there for a surface that can't.
+#[derive(Serialize, Tsify)]
+pub struct MediaView {
+    /// The first [`DocView::rows`] row of the placeholder — where the element is
+    /// positioned.
+    row: usize,
+    /// How many rows the placeholder spans, the label row included. Core's
+    /// default is 1 until the renderer measures the real element and reports a
+    /// height back through [`LeafDoc::set_media_rows`].
+    rows: usize,
+    /// `"image"`, `"video"`, or `"audio"` — which element to build.
+    kind: String,
+    /// The URL to load, already resolved against the document's colour scheme
+    /// (see [`LeafDoc::set_color_scheme`]). Empty only when a `<video>`/`<audio>`
+    /// named no `src` and no `<source>` either, which is a broken document.
+    src: String,
+    /// A `<video>`'s poster frame URL, or empty — passed through to the
+    /// element's `poster` attribute so the browser shows a still before play.
+    poster: String,
+    /// The alt text / fallback text, for the `<img alt>` or the element's body.
+    alt: String,
+    /// The `<source>` alternatives, in document order; empty for a plain image.
+    sources: Vec<MediaSourceView>,
+}
+
+/// A per-destination measured height, the way JS reports one back — the input
+/// half of the height loop [`LeafDoc::set_media_rows`] closes.
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+pub struct MediaHeight {
+    /// The media's `destination`, keying it to a [`MediaView`].
+    destination: String,
+    /// How many visual rows the rendered element needs, measured by the renderer.
+    rows: usize,
+}
+
 /// A whole rendered frame: the rows to paint, where the caret sits, and the
 /// toolbar state — everything the JS side needs for one repaint, in one object.
 ///
@@ -139,6 +194,10 @@ pub struct DocView {
     /// toolbar lights the matching buttons, the same state the TUI prints in its
     /// footer.
     active: Vec<String>,
+    /// Every block-level image, video, and audio in the frame, in row order —
+    /// the placeholder rows the renderer replaces with real elements. Empty in
+    /// the source view, which shows the markup itself and has no placeholders.
+    media: Vec<MediaView>,
 }
 
 /// The UTF-16 offset into `text` of display column `col` — the position a DOM
@@ -215,6 +274,12 @@ pub struct LeafDoc {
     /// The wrap width in columns, from the viewport. `build_visual` caches on
     /// `(revision, width)`, so re-syncing when neither moved is free.
     width: usize,
+    /// The page's colour scheme, which a `<picture>`'s `prefers-color-scheme`
+    /// `<source>`s are matched against when resolving a block image's URL. Core
+    /// has no theme of its own, so this is the browser's answer on its behalf;
+    /// defaults to [`ColorScheme::Light`], the web's own default, until the host
+    /// calls [`set_color_scheme`](LeafDoc::set_color_scheme).
+    scheme: ColorScheme,
 }
 
 #[wasm_bindgen]
@@ -233,7 +298,7 @@ impl LeafDoc {
         };
         let doc = Doc::from_source(source.to_string(), format)
             .map_err(|e| JsValue::from_str(&format!("{e}")))?;
-        Ok(LeafDoc { doc, width: 80 })
+        Ok(LeafDoc { doc, width: 80, scheme: ColorScheme::Light })
     }
 
     /// Rebuild the visual map at the current width. Cheap (cached) when nothing
@@ -329,7 +394,62 @@ impl LeafDoc {
             view: self.doc.view_name().to_string(),
             heading,
             active,
+            // Only the WYSIWYG view has placeholder rows to replace; the source
+            // view is the markup itself, where a `<video>` tag *is* the content.
+            media: match self.doc.view {
+                View::Wysiwyg => media_views(&self.doc.vmap, self.scheme),
+                View::Source => Vec::new(),
+            },
         })
+    }
+
+    /// Tell core which colour scheme the page is in (`"dark"` / `"light"`), so a
+    /// `<picture>`'s `prefers-color-scheme` `<source>`s resolve to the right
+    /// banner. Anything unrecognised is treated as light, the web's default.
+    ///
+    /// Cheap to call on every `matchMedia` change: a repaint at the same scheme
+    /// re-resolves to the same URLs, and the elements the renderer already built
+    /// are keyed by destination, so nothing is torn down needlessly.
+    pub fn set_color_scheme(&mut self, scheme: &str) -> Result<DocView, JsValue> {
+        self.scheme = match scheme.to_ascii_lowercase().as_str() {
+            "dark" => ColorScheme::Dark,
+            _ => ColorScheme::Light,
+        };
+        self.view()
+    }
+
+    /// Report how many visual rows each block media actually needs, measured
+    /// from the real elements the renderer built, keyed by destination.
+    ///
+    /// Core does no I/O and can't know how tall a picture or a player is, so
+    /// this is the only way a placeholder grows past its default single row.
+    /// The loop is: paint at the current reservation → measure the elements →
+    /// call this → repaint if it changed. Handing over the same measurements
+    /// again is a no-op, so a renderer can just report its current state each
+    /// frame without checking whether anything moved.
+    pub fn set_media_rows(&mut self, heights: Vec<MediaHeight>) -> Result<DocView, JsValue> {
+        self.doc
+            .set_media_rows(heights.into_iter().map(|h| (h.destination, h.rows)).collect());
+        self.view()
+    }
+
+    /// Insert a block-level image, video, or audio at the caret — `kind` is
+    /// `"image"`, `"video"`, or `"audio"`. Any selection becomes the alt text.
+    /// See [`leaf_core::Doc::insert_media`] for the markup each spells.
+    pub fn insert_media(
+        &mut self,
+        kind: &str,
+        destination: &str,
+        alt: &str,
+    ) -> Result<DocView, JsValue> {
+        let kind = match kind.to_ascii_lowercase().as_str() {
+            "image" | "img" => MediaKind::Image,
+            "video" => MediaKind::Video,
+            "audio" => MediaKind::Audio,
+            other => return Err(JsValue::from_str(&format!("unknown media kind: {other}"))),
+        };
+        self.doc.insert_media(kind, destination, alt);
+        self.view()
     }
 
     /// Set the wrap width (in columns) the viewport implies and repaint.
@@ -695,6 +815,42 @@ impl LeafDoc {
 /// The WYSIWYG rows: each visual row's glyphs coalesced into maximal runs of
 /// identical `(style, selected)` — the same span merge the TUI does. A glyph is
 /// selected when its source byte lies in `[ss, se)`.
+/// Every block media in `vmap` as the renderer's [`MediaView`]s, with each URL
+/// already resolved under `scheme`.
+///
+/// Resolving here rather than in JS keeps the one piece of `<picture>` logic
+/// core owns (`prefers-color-scheme` matching) in core, and hands the renderer a
+/// URL it can use directly. The `<source>` list still goes across untouched, so
+/// the browser can *also* do its own native picking on a `<video>`'s codecs —
+/// something core has no business judging.
+fn media_views(vmap: &VisualMap, scheme: ColorScheme) -> Vec<MediaView> {
+    vmap.media
+        .iter()
+        .map(|m| MediaView {
+            row: m.rows_span.start,
+            rows: m.rows_span.len().max(1),
+            kind: match m.kind {
+                MediaKind::Image => "image",
+                MediaKind::Video => "video",
+                MediaKind::Audio => "audio",
+            }
+            .to_string(),
+            src: m.resolve(scheme).to_string(),
+            poster: m.poster.clone(),
+            alt: m.alt.clone(),
+            sources: m
+                .sources
+                .iter()
+                .map(|s| MediaSourceView {
+                    media: s.media.clone(),
+                    src: s.srcset.clone(),
+                    mime: s.mime.clone(),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
 fn wysiwyg_rows(vmap: &VisualMap, ss: usize, se: usize) -> Vec<Row> {
     vmap.rows
         .iter()
