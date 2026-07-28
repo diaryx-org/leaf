@@ -90,6 +90,13 @@ const STYLE_ID = "leaf-editor-styles";
  *  lowercase-heavy so the wrap budget tracks real prose, not capitals. */
 const WIDTH_SAMPLE = "the quick brown fox jumps over the lazy dog ";
 
+/**
+ * Zero-width space. A media row's only editable text is one of these on each
+ * side of the element, giving the caret somewhere to land in front of and past
+ * a picture that is itself not editable. See `_mediaRowEl`.
+ */
+const ZWSP = "​";
+
 let wasmReady = null;
 
 export class LeafEditor {
@@ -292,9 +299,30 @@ export class LeafEditor {
 
     for (const rEl of this.rowEls) rEl.remove();
     this.rowEls = [];
+    // Block media by its first row, so `_rowEl` can build a real element there
+    // instead of core's `🖼`/`🎬`/`🔊` placeholder glyphs, and skip the blank
+    // filler rows underneath it.
+    const mediaAt = new Map();
+    const covered = new Set();
+    for (const m of view.media || []) {
+      mediaAt.set(m.row, m);
+      for (let r = m.row + 1; r < m.row + m.rows; r++) covered.add(r);
+    }
     const frag = document.createDocumentFragment();
     for (let i = 0; i < view.rows.length; i++) {
-      frag.appendChild(this._rowEl(view.rows[i], i, view.rows));
+      // A filler row core reserved under the media: the element built on the
+      // first row already occupies that height in the flow, so drawing these
+      // would add blank lines below it. `rowEls` still needs an entry per core
+      // row — every caret/click path indexes it by core's row number — so the
+      // element is created and tracked, just never put in the document.
+      if (covered.has(i)) {
+        // `_rowEl` records it in `rowEls` itself, as it does for every row —
+        // pushing the return value here as well would double-count the fillers
+        // and shift every later row's index off by one.
+        this._rowEl(view.rows[i], i, view.rows, null, true);
+        continue;
+      }
+      frag.appendChild(this._rowEl(view.rows[i], i, view.rows, mediaAt.get(i) || null));
     }
     this.contentEl.appendChild(frag);
 
@@ -303,9 +331,21 @@ export class LeafEditor {
     this._emitChange(view);
   }
 
-  /** Build one row element from a `Row`. */
-  _rowEl(row, i, rows) {
+  /**
+   * Build one row element from a `Row`.
+   *
+   * `media` is the `MediaView` whose placeholder starts on this row, if any —
+   * the row then carries a real element instead of core's label glyphs.
+   * `detached` marks a filler row that is tracked but never inserted (see
+   * `render`).
+   */
+  _rowEl(row, i, rows, media = null, detached = false) {
     const div = el("div", "leaf-row");
+    if (detached) {
+      this.rowEls.push(div);
+      return div;
+    }
+    if (media) return this._mediaRowEl(div, media);
     // A block-boundary gap row holds no caret. Left editable, the browser's own
     // ArrowUp/ArrowDown lands in its short line box on the way between blocks, so
     // a step from a paragraph into the list or code block below it moves only
@@ -362,6 +402,72 @@ export class LeafEditor {
     // caret, so it needs none.
     if (row.runs.length === 0 && !gap) div.appendChild(document.createElement("br"));
 
+    this.rowEls.push(div);
+    return div;
+  }
+
+  /**
+   * Build the row for a block image, video, or audio: a real element in place of
+   * the placeholder glyphs core drew for surfaces that can't paint one.
+   *
+   * The element is `contenteditable="false"` — an atom the browser will not let
+   * the caret enter, edit, or split, the same trick the code-language label
+   * uses. Around it sit two zero-width spaces, and they are load-bearing rather
+   * than cosmetic: they are the row's only editable text, so they give the caret
+   * a place to land on each side of the media. Core publishes exactly two stops
+   * for a media row (one in front, one past it) and the two spaces are what
+   * those map onto — with no text at all, `rangeAtOffset` would collapse both to
+   * the row start and the caret could never be seen *after* a picture.
+   *
+   * Nothing here calls `set_media_rows`. On a proportional surface the element
+   * sits in the normal flow and the row grows to fit it, exactly as leaf-gpui
+   * lays images out in pixels and leaves core's reservation at one row. The
+   * measure-and-report loop is for a fixed-cell host (the terminal), and using
+   * it here would reserve blank rows the CSS has already accounted for.
+   */
+  _mediaRowEl(div, media) {
+    div.classList.add("leaf-media-row");
+    div.appendChild(document.createTextNode(ZWSP));
+
+    let node;
+    if (media.kind === "image") {
+      node = el("img", "leaf-media");
+      node.src = media.src;
+      node.alt = media.alt;
+    } else {
+      node = el(media.kind === "audio" ? "audio" : "video", "leaf-media");
+      node.controls = true;
+      // A `<video>`'s poster is a still the browser can show before the movie
+      // is ready — or instead of one it turns out not to be able to play.
+      if (media.kind === "video" && media.poster) node.poster = media.poster;
+      // An element-level `src` and child `<source>`s are alternatives, not
+      // partners: giving the element a `src` makes the browser ignore every
+      // `<source>` under it. So the candidate list wins when there is one,
+      // since it is the more specific statement of what will actually decode.
+      if (media.sources && media.sources.length) {
+        for (const s of media.sources) {
+          const src = document.createElement("source");
+          src.src = s.src;
+          if (s.mime) src.type = s.mime;
+          if (s.media) src.media = s.media;
+          node.appendChild(src);
+        }
+      } else {
+        node.src = media.src;
+      }
+      // The element's own text is its no-support fallback. It is excluded from
+      // the row's editable text by `textWalker`, so it can never count toward a
+      // caret offset — it is chrome the browser may show, not document content.
+      if (media.alt) node.appendChild(document.createTextNode(media.alt));
+      node.setAttribute("aria-label", media.alt || media.src);
+    }
+    node.setAttribute("contenteditable", "false");
+    // Cheap and correct: a media that fails to load leaves the row visibly
+    // empty otherwise, with no hint of what was meant to be there.
+    node.addEventListener("error", () => div.classList.add("leaf-media-broken"), { once: true });
+    div.appendChild(node);
+
+    div.appendChild(document.createTextNode(ZWSP));
     this.rowEls.push(div);
     return div;
   }
@@ -731,7 +837,7 @@ function isBlockGap(row) {
 function textWalker(rowEl) {
   return document.createTreeWalker(rowEl, NodeFilter.SHOW_TEXT, {
     acceptNode: (n) =>
-      n.parentElement && n.parentElement.closest(".leaf-code-lang")
+      n.parentElement && n.parentElement.closest(".leaf-code-lang, .leaf-media")
         ? NodeFilter.FILTER_REJECT
         : NodeFilter.FILTER_ACCEPT,
   });
@@ -787,7 +893,14 @@ function offsetTo(rowEl, node, offset) {
     let acc = 0;
     for (let i = 0; i < offset && i < node.childNodes.length; i++) {
       const c = node.childNodes[i];
-      if (c.nodeType === 1 && c.classList.contains("leaf-code-lang")) continue;
+      // Chrome, not document text: the code-language label and a media
+      // element's no-support fallback both sit outside the row's offsets.
+      if (
+        c.nodeType === 1 &&
+        (c.classList.contains("leaf-code-lang") || c.classList.contains("leaf-media"))
+      ) {
+        continue;
+      }
       acc += c.textContent.length;
     }
     return acc;
@@ -918,6 +1031,37 @@ const EDITOR_CSS = `
   position: absolute; right: 6px; top: 1px;
   font-size: 11px; color: var(--leaf-muted); font-family: var(--leaf-font);
   -webkit-user-select: none; user-select: none; /* chrome, not document text */
+}
+
+/* A block image / video / audio, in place of core's placeholder glyphs. The row
+   drops the surface's white-space:pre (its only text is the two zero-width
+   spaces that give the caret a home either side) and grows to fit — the
+   web equivalent of leaf-gpui laying images out in pixels rather than reserving
+   character rows. */
+.leaf-media-row {
+  white-space: normal;
+  padding: 4px 0;
+  line-height: 0; /* no half-line of leading under the element from the ZWSPs */
+}
+.leaf-media {
+  display: block;
+  max-width: 100%;
+  border-radius: 6px;
+  -webkit-user-select: none;
+  user-select: none; /* an atom: selected as a unit by the row, never internally */
+}
+/* Audio has no picture, so it is a transport at a natural control height rather
+   than something to fit a box. */
+audio.leaf-media { width: 100%; max-width: 420px; border-radius: 999px; }
+img.leaf-media, video.leaf-media { max-height: 60vh; }
+
+/* Didn't load: a missing file would otherwise leave the row blank, with nothing
+   to say what was meant to be there. */
+.leaf-media-broken .leaf-media {
+  min-height: var(--leaf-line);
+  min-width: 8em;
+  outline: 1px dashed var(--leaf-muted);
+  outline-offset: 2px;
 }
 
 .leaf-measure {

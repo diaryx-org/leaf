@@ -110,6 +110,16 @@ fn main() {
 }
 \`\`\`
 
+## Attachments
+Images, video, and audio are block media — core reserves the row, the browser
+paints the real element over it.
+
+![a leaf](leaf.svg)
+
+<video src="clip.mp4" poster="leaf.svg" controls></video>
+
+<audio src="take.mp3" controls></audio>
+
 *Everything you type is a real \`leaf_core::Doc\` edit — try it.*
 `;
 
@@ -138,6 +148,8 @@ async function main() {
     format: "markdown",
     onChange: syncChrome,
   });
+  // Exposed for poking at from the console (and for driving the demo in tests).
+  window.leafEditor = editor;
 
   // Wire the app's toolbar to the editor's command API.
   for (const btn of document.querySelectorAll("#toolbar button")) {
