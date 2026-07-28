@@ -44,8 +44,8 @@ use std::sync::{Arc, Mutex};
 use leaf_core::style::{Role, Style as LStyle};
 use leaf_core::wysiwyg::text_width;
 use leaf_core::{
-    Alignment, BlockKind, Doc, Format, InlineKind, LineFlow as CoreLineFlow,
-    RevealMode as CoreRevealMode, View, VisualMap,
+    Alignment, BlockKind, ColorScheme, Doc, Format, InlineKind, LineFlow as CoreLineFlow,
+    MediaKind as CoreMediaKind, RevealMode as CoreRevealMode, View, VisualMap,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -195,6 +195,74 @@ pub struct DirectiveAttr {
     pub value: String,
 }
 
+/// What a block-level media placeholder is, so Swift knows which view to build
+/// over the rows core reserved: an `NSImageView`/`UIImageView`, or an
+/// `AVPlayerView` with or without a picture to show. The peer of
+/// [`leaf_core::MediaKind`].
+#[derive(uniffi::Enum)]
+pub enum MediaKind {
+    Image,
+    Video,
+    Audio,
+}
+
+/// One `<source>` alternative of a block media element — a candidate URL plus
+/// whichever of the two things HTML picks a `<source>` by: a media query
+/// (`<picture>`) or a MIME type (`<video>`/`<audio>`).
+///
+/// Unlike the web frontend, which hands the whole list to the browser and lets
+/// it choose, a native renderer usually wants [`MediaView::src`] — already
+/// resolved for the current appearance — and reaches in here only to pick a
+/// codec `AVFoundation` can actually play.
+#[derive(uniffi::Record)]
+pub struct MediaSourceView {
+    /// The `media="…"` query, or empty for an unconditional source.
+    pub media: String,
+    /// The candidate URL (a `<picture>` `srcset` or a `<video>`/`<audio>` `src`).
+    pub src: String,
+    /// The `type="…"` MIME (`"video/webm"`), or empty when none is declared.
+    pub mime: String,
+}
+
+/// One block-level image, video, or audio: which rows core reserved for it and
+/// what to build there. The peer of [`leaf_core::MediaInfo`], and the media
+/// analogue of [`DirectiveView`] — a frontend **skips the rows in
+/// `start_row..end_row`** and lays its own view over them, rather than painting
+/// the `🖼`/`🎬`/`🔊` placeholder glyphs core put there for a surface that can't.
+#[derive(uniffi::Record)]
+pub struct MediaView {
+    /// The [`DocView::rows`] indices the placeholder occupies.
+    pub start_row: u32,
+    pub end_row: u32,
+    /// Which of the three this is — the view to build.
+    pub kind: MediaKind,
+    /// The URL to load, already resolved against the current appearance (see
+    /// [`LeafDoc::set_dark_appearance`]). A relative path resolves against the
+    /// document's own directory, which core does not know — the host does.
+    /// Empty only when a `<video>`/`<audio>` named neither a `src` nor a
+    /// `<source>`, which is a broken document.
+    pub src: String,
+    /// A `<video>`'s poster frame URL, or empty. An image destination, so it
+    /// loads exactly as an image `src` does — worth showing before the movie is
+    /// ready, or in place of one that won't play.
+    pub poster: String,
+    /// The alt / fallback text, for the view's accessibility label.
+    pub alt: String,
+    /// The `<source>` alternatives in document order; empty for a plain image.
+    pub sources: Vec<MediaSourceView>,
+}
+
+/// A per-destination measured height, the way Swift reports one back — the input
+/// half of the loop [`LeafDoc::set_media_rows`] closes.
+#[derive(uniffi::Record)]
+pub struct MediaHeight {
+    /// The media's `src` as it appeared in the document, keying it to a
+    /// [`MediaView`].
+    pub destination: String,
+    /// How many visual rows the laid-out view needs.
+    pub rows: u32,
+}
+
 /// A whole rendered frame: the rows to paint, where the caret sits, and the
 /// toolbar state — everything the Swift side needs for one repaint, in one value.
 /// Returned by every view-producing method.
@@ -210,6 +278,11 @@ pub struct DocView {
     /// placeholder row. Empty in the source view, where the directive is the
     /// literal text the caret is editing.
     pub directives: Vec<DirectiveView>,
+    /// Block-level images, videos, and audio described structurally, for a
+    /// frontend that lays real views over the rows core reserved instead of
+    /// painting the placeholder glyphs. Empty in the source view, where the
+    /// `![](…)` or `<video>` markup is the literal text being edited.
+    pub media: Vec<MediaView>,
     /// The caret's row: an index into [`Self::rows`].
     pub caret_row: u32,
     /// The caret's display *column* within its row — core's grid position. Kept
@@ -345,6 +418,12 @@ struct Inner {
     /// for a proportional GUI that wraps at its own pixel width. `build_visual`
     /// caches on `(revision, width)`, so re-syncing when neither moved is free.
     width: Option<usize>,
+    /// The host's current appearance, which a `<picture>`'s `prefers-color-scheme`
+    /// `<source>`s are matched against when resolving a block image's URL. Core
+    /// has no theme of its own, so this is AppKit/UIKit answering on its behalf;
+    /// defaults to light until the host calls
+    /// [`LeafDoc::set_dark_appearance`].
+    scheme: ColorScheme,
 }
 
 // SAFETY: `Doc` embeds a `twig::Editor`, which holds a `NonNull<TwigEditor>` and
@@ -540,6 +619,13 @@ impl Inner {
             View::Source => Vec::new(),
         };
 
+        // Block media, on the same terms again: only the rich view has
+        // placeholder rows to lay a view over.
+        let media = match self.doc.view {
+            View::Wysiwyg => wysiwyg_media(&self.doc.vmap, self.scheme),
+            View::Source => Vec::new(),
+        };
+
         let (caret_row, caret_col) = self.doc.caret_pos();
         // Map the caret's display column to a UTF-16 text offset so a native
         // renderer can place it past wide glyphs (see [`DocView::caret_ch`]).
@@ -565,6 +651,7 @@ impl Inner {
             rows,
             tables,
             directives,
+            media,
             caret_row: caret_row as u32,
             caret_col: caret_col as u32,
             caret_ch: caret_ch as u32,
@@ -595,7 +682,9 @@ impl LeafDoc {
         };
         let doc = Doc::from_source(source, format)
             .map_err(|e| LeafError::Parse { message: e.to_string() })?;
-        Ok(Arc::new(LeafDoc { inner: Mutex::new(Inner { doc, width: Some(80) }) }))
+        Ok(Arc::new(LeafDoc {
+            inner: Mutex::new(Inner { doc, width: Some(80), scheme: ColorScheme::Light }),
+        }))
     }
 
     /// Resolve the current document to a renderable frame — the first paint.
@@ -619,6 +708,53 @@ impl LeafDoc {
     pub fn set_unwrapped(&self) -> DocView {
         let mut g = self.lock();
         g.width = None;
+        g.view()
+    }
+
+    /// Tell core whether the host is in a dark appearance, so a `<picture>`'s
+    /// `prefers-color-scheme` `<source>`s resolve to the right banner. Call it
+    /// from `viewDidChangeEffectiveAppearance` (AppKit) or
+    /// `traitCollectionDidChange` (UIKit).
+    ///
+    /// Cheap to call repeatedly: resolving at the same appearance yields the same
+    /// URLs, and a renderer keying its views by `src` tears nothing down.
+    pub fn set_dark_appearance(&self, dark: bool) -> DocView {
+        let mut g = self.lock();
+        g.scheme = if dark { ColorScheme::Dark } else { ColorScheme::Light };
+        g.view()
+    }
+
+    /// Report how many visual rows each block media actually needs, measured from
+    /// the views the renderer laid out, keyed by the media's `src`.
+    ///
+    /// Core does no I/O and can't know how tall a picture or a player is, so this
+    /// is the only way a placeholder grows past its default single row. The loop
+    /// is: lay out at the current reservation → measure → call this → repaint if
+    /// it changed. Handing over the same measurements again is a no-op, so a
+    /// renderer can report its current state each frame without diffing first.
+    ///
+    /// A frontend that lays media out in its own units and simply reserves the
+    /// vertical space itself (the way the gpui GUI does with images) never needs
+    /// to call this at all.
+    pub fn set_media_rows(&self, heights: Vec<MediaHeight>) -> DocView {
+        let mut g = self.lock();
+        g.doc.set_media_rows(
+            heights.into_iter().map(|h| (h.destination, h.rows.max(1) as usize)).collect(),
+        );
+        g.view()
+    }
+
+    /// Insert a block-level image, video, or audio at the caret. Any selection
+    /// becomes the alt / fallback text. See [`leaf_core::Doc::insert_media`] for
+    /// the markup each kind spells.
+    pub fn insert_media(&self, kind: MediaKind, destination: String, alt: String) -> DocView {
+        let mut g = self.lock();
+        let kind = match kind {
+            MediaKind::Image => CoreMediaKind::Image,
+            MediaKind::Video => CoreMediaKind::Video,
+            MediaKind::Audio => CoreMediaKind::Audio,
+        };
+        g.doc.insert_media(kind, &destination, &alt);
         g.view()
     }
 
@@ -1439,6 +1575,41 @@ fn wysiwyg_directives(vmap: &VisualMap) -> Vec<DirectiveView> {
         .collect()
 }
 
+/// The block media of a WYSIWYG frame — each with the `rows` span its
+/// placeholder occupies (to be laid over) and what to build there. The peer of
+/// [`wysiwyg_directives`], with each URL already resolved under `scheme`.
+///
+/// Resolving here rather than in Swift keeps the one piece of `<picture>` logic
+/// core owns (`prefers-color-scheme` matching) in core. The `<source>` list
+/// still crosses untouched, so a renderer can additionally pick by MIME — which
+/// codecs AVFoundation has is not something core can know.
+fn wysiwyg_media(vmap: &VisualMap, scheme: ColorScheme) -> Vec<MediaView> {
+    vmap.media
+        .iter()
+        .map(|m| MediaView {
+            start_row: m.rows_span.start as u32,
+            end_row: m.rows_span.end as u32,
+            kind: match m.kind {
+                CoreMediaKind::Image => MediaKind::Image,
+                CoreMediaKind::Video => MediaKind::Video,
+                CoreMediaKind::Audio => MediaKind::Audio,
+            },
+            src: m.resolve(scheme).to_string(),
+            poster: m.poster.clone(),
+            alt: m.alt.clone(),
+            sources: m
+                .sources
+                .iter()
+                .map(|s| MediaSourceView {
+                    media: s.media.clone(),
+                    src: s.srcset.clone(),
+                    mime: s.mime.clone(),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
 /// The structural tables of a WYSIWYG frame — each with the `rows` span its
 /// box-glyph picture occupies (to be skipped) and its grid of styled cells.
 fn wysiwyg_tables(vmap: &VisualMap, ss: usize, se: usize) -> Vec<TableView> {
@@ -1541,6 +1712,72 @@ mod tests {
 
     fn doc(src: &str) -> Arc<LeafDoc> {
         LeafDoc::new(src.to_string(), "markdown".to_string()).unwrap()
+    }
+
+    #[test]
+    fn a_video_crosses_the_boundary_as_media_with_the_rows_to_lay_it_over() {
+        // What the Swift renderer actually consumes: a row span to cover, a kind
+        // to build a view from, and a URL to load. A frontend that skipped the
+        // span would paint core's `🎬` placeholder underneath its own player.
+        let d = doc("<video src=\"clip.mp4\" poster=\"still.png\" controls></video>\n");
+        let v = d.view();
+        assert_eq!(v.media.len(), 1);
+        let m = &v.media[0];
+        assert!(matches!(m.kind, MediaKind::Video));
+        assert_eq!(m.src, "clip.mp4");
+        assert_eq!(m.poster, "still.png");
+        assert!(m.end_row > m.start_row, "the span must cover at least its label row");
+    }
+
+    #[test]
+    fn a_pictures_dark_source_resolves_by_appearance() {
+        // The one piece of `<picture>` logic core owns, exercised across the
+        // boundary: the same document resolves to a different URL depending on
+        // what the host said its appearance was.
+        let d = doc(
+            "<picture><source media=\"(prefers-color-scheme: dark)\" srcset=\"d.svg\">\
+             <img src=\"l.svg\" alt=\"banner\"></picture>\n",
+        );
+        assert_eq!(d.view().media[0].src, "l.svg", "light by default");
+        assert_eq!(d.set_dark_appearance(true).media[0].src, "d.svg");
+        assert_eq!(d.set_dark_appearance(false).media[0].src, "l.svg");
+    }
+
+    #[test]
+    fn measured_heights_grow_the_reserved_span() {
+        // The height loop: core reserves one row until the renderer measures the
+        // real view and reports back, because core does no I/O and cannot know.
+        let d = doc("![a cat](cat.png)\n");
+        let before = &d.view().media[0];
+        assert_eq!(before.end_row - before.start_row, 1, "one row until measured");
+
+        let after = d.set_media_rows(vec![MediaHeight {
+            destination: "cat.png".to_string(),
+            rows: 6,
+        }]);
+        let m = &after.media[0];
+        assert_eq!(m.end_row - m.start_row, 6, "the span grew to what was measured");
+    }
+
+    #[test]
+    fn inserted_media_comes_straight_back_out_as_media() {
+        // Round trip across the boundary, the pair that matters: what Swift asks
+        // to insert, Swift sees on the very next frame.
+        let d = doc("\n");
+        let v = d.insert_media(MediaKind::Audio, "take.mp3".to_string(), "a take".to_string());
+        assert_eq!(v.media.len(), 1);
+        assert!(matches!(v.media[0].kind, MediaKind::Audio));
+        assert_eq!(v.media[0].src, "take.mp3");
+        assert_eq!(v.media[0].alt, "a take");
+    }
+
+    #[test]
+    fn the_source_view_publishes_no_media() {
+        // In the source view the `<video>` markup is the literal text the caret
+        // is editing — laying a player over it would cover what's being typed.
+        let d = doc("<video src=\"clip.mp4\" controls></video>\n");
+        assert_eq!(d.view().media.len(), 1);
+        assert!(d.toggle_view().media.is_empty(), "no placeholders in the source view");
     }
 
     /// **A foreign caller's offset must never panic.** Every offset entering
