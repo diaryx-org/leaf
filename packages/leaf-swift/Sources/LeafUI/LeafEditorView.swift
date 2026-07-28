@@ -23,6 +23,35 @@ public final class LeafEditorModel: ObservableObject {
     /// Live toolbar/footer state, refreshed after every edit, motion, and click.
     @Published public private(set) var state: EditorState
 
+    /// Called when the reader activates a link — a click or tap on it, ⌘-click,
+    /// or "Open Link" — with the link's raw destination exactly as the document
+    /// spells it. Return `true` to claim it; `false` (or leaving this nil) lets
+    /// the editor open it with the system as before.
+    ///
+    /// This exists because only the host can resolve the destinations that
+    /// aren't URLs. In a note app `[Last week](./2026-07-20.md)` and
+    /// `[2026](id:6tzwsxg)` mean *documents in this workspace*, and the right
+    /// response is to open one in the same window — something the editor has no
+    /// way to do and the system has no way to guess. Claim those, decline
+    /// `https:` and `mailto:`, and both kinds behave the way a reader expects.
+    ///
+    /// Called on the main actor, during the event that activated the link.
+    /// Resolution that has to go to disk should return `true` and continue
+    /// asynchronously — the destination is the host's now either way.
+    public var onOpenLink: ((String) -> Bool)?
+
+    /// Whether a bare `[[target]]` / `[[target|label]]` is a link the reader can
+    /// follow. Off by default, because it is a convention rather than a syntax:
+    /// neither Markdown nor Djot has it, so twig doesn't parse it and it reaches
+    /// the screen as the literal text it is. Turning this on makes it
+    /// *activatable* — clicking or tapping inside one calls `onOpenLink` with
+    /// the construct verbatim, brackets included — but it does not make it look
+    /// like a link, which needs the grammar, not the editor.
+    ///
+    /// Set it if your documents use the convention (a vault imported from
+    /// Obsidian will), leave it off otherwise and `[[…]]` stays inert text.
+    public var recognizesWikilinks = false
+
     let doc: LeafDoc
     fileprivate weak var textView: LeafTextView?
 
@@ -147,6 +176,10 @@ public struct LeafEditor: NSViewRepresentable {
             return
         }
         hosted.theme = theme
+        // Re-read rather than trusting the copy `makeTextView` took: a host that
+        // flips this on the model after the view exists (or per document, for a
+        // vault where only some files use the convention) gets it honoured.
+        hosted.recognizesWikilinks = model.recognizesWikilinks
     }
 
     /// Build a `LeafTextView` over `model.doc`, wired the way `makeNSView` and the
@@ -158,6 +191,14 @@ public struct LeafEditor: NSViewRepresentable {
         textView.onStateChange = { [weak model] s in
             DispatchQueue.main.async { model?.updateState(s) }
         }
+        // Read through to the model rather than copying its handler across: a
+        // host that sets `onOpenLink` after the editor is on screen (the usual
+        // shape — the model is built when a document loads, the handler wired
+        // where the view is composed) still gets its links.
+        textView.onOpenLink = { [weak model] destination in
+            model?.onOpenLink?(destination) ?? false
+        }
+        textView.recognizesWikilinks = model.recognizesWikilinks
         model.textView = textView
         return textView
     }
@@ -235,6 +276,10 @@ public struct LeafEditor: UIViewRepresentable {
             return
         }
         hosted.theme = theme
+        // Re-read rather than trusting the copy `makeTextView` took: a host that
+        // flips this on the model after the view exists (or per document, for a
+        // vault where only some files use the convention) gets it honoured.
+        hosted.recognizesWikilinks = model.recognizesWikilinks
         // Refresh the accessory's content in place — its `UIHostingController`
         // persists in the coordinator across updates, so this is a live
         // content swap, not a rebuild (which would drop first-responder focus
@@ -265,6 +310,14 @@ public struct LeafEditor: UIViewRepresentable {
         textView.onStateChange = { [weak model] s in
             DispatchQueue.main.async { model?.updateState(s) }
         }
+        // Read through to the model rather than copying its handler across: a
+        // host that sets `onOpenLink` after the editor is on screen (the usual
+        // shape — the model is built when a document loads, the handler wired
+        // where the view is composed) still gets its links.
+        textView.onOpenLink = { [weak model] destination in
+            model?.onOpenLink?(destination) ?? false
+        }
+        textView.recognizesWikilinks = model.recognizesWikilinks
         model.textView = textView
         return textView
     }

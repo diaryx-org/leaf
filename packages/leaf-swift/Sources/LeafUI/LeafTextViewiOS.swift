@@ -116,6 +116,33 @@ public final class LeafTextView: UIView, UITextInput {
         return interaction
     }()
 
+    /// Host hook for link activation. Called with the link's raw destination
+    /// before the view falls back to opening it with the system; return `true`
+    /// to claim it. This is how a host resolves destinations only *it* can make
+    /// sense of — a note app's `./sibling.md` or `id:6tzwsxg` names a document
+    /// in its own workspace, not a URL, and handing either to `UIApplication`
+    /// is at best a no-op. Nil (or a `false` return) keeps the system behaviour.
+    public var onOpenLink: ((String) -> Bool)?
+
+    /// Whether a bare `[[…]]` counts as a link to follow. Off by default: it is
+    /// not Markdown, not Djot, and not something twig parses, so the editor
+    /// makes no claim about it unless a host whose documents use the convention
+    /// asks. See `LeafDoc.activatableTargetAtCaret`.
+    public var recognizesWikilinks = false
+
+    /// Follows a link on a plain tap. A phone has no ⌘ to hold and no pointer to
+    /// hover, so the tap is the whole vocabulary. This rides *beside*
+    /// `textInteraction` rather than replacing it — it doesn't cancel touches
+    /// and recognises simultaneously — so the caret still lands where it always
+    /// did, and this only adds navigation when the tap was inside a link.
+    private lazy var linkTap: UITapGestureRecognizer = {
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleLinkTap(_:)))
+        tap.numberOfTapsRequired = 1
+        tap.cancelsTouchesInView = false
+        tap.delegate = self
+        return tap
+    }()
+
     public init(doc: LeafDoc, theme: EditorTheme = .default) {
         self.doc = doc
         self.hostTheme = theme
@@ -130,9 +157,35 @@ public final class LeafTextView: UIView, UITextInput {
         backgroundColor = .clear
         contentMode = .redraw
         addInteraction(textInteraction)
+        addGestureRecognizer(linkTap)
         // Seed with the initial caret so the first reflow opens at the top.
         lastCaretOffset = doc.caretOffset()
         applyDynamicType()   // scale type to the current trait environment
+    }
+
+    // MARK: link following
+
+    /// The tap handler. A tap that landed outside any link does nothing at all —
+    /// `textInteraction` has already placed the caret, which is the whole of what
+    /// a tap on ordinary prose should do.
+    @objc private func handleLinkTap(_ gesture: UITapGestureRecognizer) {
+        guard let destination = linkDestination(at: gesture.location(in: self)) else { return }
+        if onOpenLink?(destination) == true { return }
+        guard let url = URL(string: destination) else { return }
+        UIApplication.shared.open(url)
+    }
+
+    /// The destination of the link at `point`, or nil if there isn't one.
+    ///
+    /// Reading it moves the caret there, because core answers this question only
+    /// about the caret. That is not a side effect worth avoiding here: a tap
+    /// places the caret at exactly this point regardless, and `textInteraction`
+    /// is about to do the same thing with the same coordinate.
+    private func linkDestination(at point: CGPoint) -> String? {
+        guard let position = closestPosition(to: point) as? LeafTextPosition else { return nil }
+        let offset = UInt32(position.offset)
+        command { $0.setSelectionOffsets(anchor: offset, focus: offset) }
+        return doc.activatableTargetAtCaret(wikilinks: recognizesWikilinks)
     }
 
     @available(*, unavailable)
@@ -687,5 +740,19 @@ public final class LeafTextView: UIView, UITextInput {
         let o = off(p)
         return LeafTextRange(LeafTextPosition(o), LeafTextPosition(Int(doc.stepOffset(off: UInt32(o), delta: 1))))
     }
+}
+
+// MARK: - Gesture coexistence
+
+extension LeafTextView: UIGestureRecognizerDelegate {
+    /// `linkTap` never competes with `textInteraction`'s own recognisers — the
+    /// system owns caret placement, selection, the loupe and the edit menu, and
+    /// a link tap is strictly additive to whichever of those the touch was also
+    /// going to drive. Failing to say so would make the two exclusive, and the
+    /// system's would win.
+    public func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+    ) -> Bool { true }
 }
 #endif

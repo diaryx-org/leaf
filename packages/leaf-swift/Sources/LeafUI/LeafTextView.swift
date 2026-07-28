@@ -38,6 +38,19 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     }
     /// Fired after every repaint so a host can update a toolbar/footer.
     public var onStateChange: ((EditorState) -> Void)?
+    /// Host hook for link activation. Called with the link's raw destination
+    /// before the view falls back to opening it with the system; return `true`
+    /// to claim it. This is how a host resolves destinations only *it* can make
+    /// sense of — a note app's `./sibling.md` or `id:6tzwsxg` means a document
+    /// in its own workspace, not a file: URL, and handing either to
+    /// `NSWorkspace` is at best wrong and at worst opens the raw markdown in
+    /// another app. Nil (or a `false` return) keeps the system behaviour.
+    public var onOpenLink: ((String) -> Bool)?
+    /// Whether a bare `[[…]]` counts as a link to follow. Off by default: it is
+    /// not Markdown, not Djot, and not something twig parses, so the editor
+    /// makes no claim about it unless a host whose documents use the convention
+    /// asks. See `LeafDoc.activatableTargetAtCaret`.
+    public var recognizesWikilinks = false
 
     private var docView: DocView
     private var layoutEngine: EditorLayout
@@ -61,6 +74,12 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// so passive reflows (width/theme relayout, state refreshes) leave the reader's
     /// scroll position alone instead of yanking it back to the caret.
     private var lastCaretOffset: UInt32?
+    /// Set on a plain single click that landed inside a link, and consumed by the
+    /// matching `mouseUp`. Following on *up* rather than *down* is what keeps a
+    /// drag that starts inside link text selectable: `mouseDragged` clears this,
+    /// so a press-and-drag selects as it always did and only a clean click
+    /// navigates.
+    private var pendingLinkClick = false
 
     public init(doc: LeafDoc, theme: EditorTheme = .default) {
         self.doc = doc
@@ -383,27 +402,50 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         case 3:  render(doc.selectBlockCh(row: UInt32(row), ch: UInt32(ch)))
         default: render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: extend))
         }
+        // Arm the follow-on-up for a plain single click that landed in a link.
+        // The caret is already there, so this reads the link the click chose.
+        pendingLinkClick = event.clickCount == 1 && !extend
+            && event.modifierFlags.isDisjoint(with: [.command, .option, .control])
+            && targetAtCaret() != nil
     }
 
-    /// Open the link under the caret in the default app, if there is one and it
-    /// parses as a URL. Used by ⌘-click and the "Open Link" menu item.
+    public override func mouseUp(with event: NSEvent) {
+        guard pendingLinkClick else { return }
+        pendingLinkClick = false
+        openLinkAtCaret()
+    }
+
+    /// Open the link under the caret, if there is one. The host gets first
+    /// refusal (`onOpenLink`); otherwise it goes to the default app, which needs
+    /// the destination to parse as a URL. Used by click, ⌘-click and the "Open
+    /// Link" menu item.
     @discardableResult
     private func openLinkAtCaret() -> Bool {
-        guard let dest = doc.linkDestinationAtCaret(), let url = URL(string: dest) else { return false }
+        guard let dest = targetAtCaret() else { return false }
+        if onOpenLink?(dest) == true { return true }
+        guard let url = URL(string: dest) else { return false }
         NSWorkspace.shared.open(url)
         return true
+    }
+
+    /// The link the caret stands in, honouring this view's wikilink setting.
+    private func targetAtCaret() -> String? {
+        doc.activatableTargetAtCaret(wikilinks: recognizesWikilinks)
     }
 
     @objc private func openLink(_ sender: Any?) { openLinkAtCaret() }
 
     @objc private func copyLink(_ sender: Any?) {
-        guard let dest = doc.linkDestinationAtCaret() else { return }
+        guard let dest = targetAtCaret() else { return }
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(dest, forType: .string)
     }
 
     public override func mouseDragged(with event: NSEvent) {
+        // A drag is a selection, not a click — disarm the pending link follow so
+        // selecting text that starts inside a link doesn't navigate on release.
+        pendingLinkClick = false
         let p = convert(event.locationInWindow, from: nil)
         let (row, ch) = hitRowCh(p)
         render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: true))
@@ -641,7 +683,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
         let menu = NSMenu()
         // A link under the click (the caret was just placed there) leads the menu.
-        if doc.linkDestinationAtCaret() != nil {
+        if targetAtCaret() != nil {
             menu.addItem(withTitle: loc("menu.openLink", "Open Link"), action: #selector(openLink(_:)), keyEquivalent: "")
             menu.addItem(withTitle: loc("menu.copyLink", "Copy Link"), action: #selector(copyLink(_:)), keyEquivalent: "")
             menu.addItem(.separator())
