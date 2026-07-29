@@ -151,6 +151,17 @@ public final class LeafEditorModel: ObservableObject {
     public func outdent() { run { $0.outdent() } }
     public func insertLink(_ destination: String) { run { $0.insertLink(destination: destination) } }
 
+    /// Insert a block image, video, or audio at the caret, pointing at
+    /// `destination`. Any selection becomes the alt / fallback text.
+    ///
+    /// `destination` is written into the document verbatim, so it is spelled the
+    /// way the *document* should spell it — a path relative to the document's own
+    /// directory, matching `documentDirectory`, not an absolute file URL. What the
+    /// editor then does to resolve it is `onResolveMedia`'s business.
+    public func insertMedia(_ kind: MediaKind, destination: String, alt: String = "") {
+        run { $0.insertMedia(kind: kind, destination: destination, alt: alt) }
+    }
+
     // ── table editing ─────────────────────────────────────────────────────────
 
     public var caretInTable: Bool { doc.caretInTable() }
