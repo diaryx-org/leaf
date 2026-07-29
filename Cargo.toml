@@ -45,7 +45,13 @@ edition = "2024"
 # text. Only the multi-line form worked, and only by accident of the closing tag
 # having its own line. Required for `Doc::insert_media` and for reading any
 # document with a video in it.
-twig-doc = { version = "2.5.1" }
+# 2.6: `insert_image`, so an image destination is spelled by twig rather than by a
+# `format!` here. It is the same grammar production as a link's destination and
+# wants the same per-format escaping — Markdown moves whitespace into the `<…>`
+# form, Djot must not, since `<…>` there becomes the URL itself. Hand-rolled, the
+# first real filename an app inserted (`my photo.png`) wrote markup Markdown does
+# not read as an image at all.
+twig-doc = { version = "2.6.0" }
 anyhow = "1"
 # Frontend-neutral core: the caret/selection model + AST→glyph map, styled with
 # a toolkit-agnostic Style. Each frontend crate maps that to its own styling.

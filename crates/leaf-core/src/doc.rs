@@ -2366,26 +2366,46 @@ impl Doc {
     /// it); with no selection, `alt` is used — empty for none. The caret lands
     /// just past the inserted image.
     ///
-    /// Markdown and Djot spell an image identically, so this is a plain
-    /// span-splice through [`edit`](Self::edit) rather than a twig editor op —
-    /// there is no `insert_image` in twig's surface the way there is an
-    /// `insert_link`. One consequence: `destination` and `alt` are inserted
-    /// verbatim, so a `]`/`)` in either can break the markup. A frontend that
-    /// takes these from a prompt should keep them tame; format-correct escaping
-    /// (which twig's `insert_link` does because it owns the spelling) is a future
-    /// refinement.
+
+    /// Both halves go through twig (`insert_literal` for the alt text,
+    /// `insert_image` for the image), so neither is spelled here. That used to be a
+    /// `format!`, and it was wrong the first time an app inserted a real filename:
+    /// Markdown ends a destination at the first space, so `![](my photo.png)` is
+    /// not an image at all — and the fix is per-format, since moving into the
+    /// `<…>` form is exactly wrong for Djot, where `<…>` becomes the URL itself.
     pub fn insert_image(&mut self, destination: &str, alt: &str) {
         let (start, end) = self.selection().unwrap_or((self.caret, self.caret));
-        // A selection is the alt text; otherwise the caller's `alt`.
-        let alt_text = self
-            .selected_text()
-            .map(str::to_string)
-            .unwrap_or_else(|| alt.to_string());
-        let markup = format!("![{alt_text}]({destination})");
-        // `edit` (via `splice`) records the undo caret, refreshes, and lands the
-        // caret at the end of the inserted text — just past the image, which is
-        // where a caret belongs after inserting one.
-        self.edit(start, end, &markup);
+        self.record_caret();
+        // With no selection and an explicit `alt`, the alt text has to exist in the
+        // document before it can be the image's — and it is raw caller input, so
+        // it goes in through `insert_literal`, which escapes it for the format
+        // rather than letting a `]` in someone's caption close the image early.
+        let (start, end) = if start == end && !alt.is_empty() {
+            match self.editor.insert_literal(start, alt) {
+                Ok(change) => (change.new.start, change.new.end),
+                Err(e) => {
+                    self.status = Some(format!("image: {e}"));
+                    return;
+                }
+            }
+        } else {
+            (start, end)
+        };
+        match self.editor.insert_image(start, end, destination) {
+            Ok(change) => {
+                self.last_edit_kind = None;
+                self.refresh();
+                // Just past the image, nothing selected — where a caret belongs
+                // after inserting one.
+                self.anchor = None;
+                self.caret = change.new.end;
+                self.dirty = self.source != self.clean_source;
+                self.status = None;
+                self.clamp_caret();
+                self.record_caret();
+            }
+            Err(e) => self.status = Some(format!("image: {e}")),
+        }
     }
 
     /// Insert a block-level image, video, or audio at the caret. The image case
@@ -4849,6 +4869,39 @@ mod tests {
         // The caret sits just past the inserted image, nothing selected.
         assert_eq!(d.selection(), None);
         assert_eq!(d.caret, 7 + "![a cat](cat.png)".len());
+    }
+
+    /// The bug a real vault hit: a filename with spaces in it. Markdown ends a
+    /// destination at the first space, so the `format!` this used to be wrote
+    /// something that was not an image at all — and the reader saw the markup as
+    /// text. twig owns the spelling now, and moves it into the angle form.
+    #[test]
+    fn insert_image_spells_a_destination_with_spaces_so_it_stays_an_image() {
+        let mut d = doc_with("img_space", "x\n");
+        d.caret = 0;
+        d.insert_image("Jesus Commands the Apostles to Rest.jpg", "");
+        assert_eq!(
+            d.source,
+            "![](<Jesus Commands the Apostles to Rest.jpg>)x\n"
+        );
+        // And it reads back as an image pointing at the unescaped path — the angle
+        // brackets are spelling, not part of the destination.
+        d.caret = 2;
+        assert_eq!(
+            d.image_destination_at_caret(),
+            Some("Jesus Commands the Apostles to Rest.jpg".to_string())
+        );
+    }
+
+    /// A `)` in a caption or a filename must not close the image early.
+    #[test]
+    fn insert_image_escapes_a_paren_in_either_half() {
+        let mut d = doc_with("img_paren", "x\n");
+        d.caret = 0;
+        d.insert_image("a)b.png", "");
+        assert_eq!(d.source, "![](a\\)b.png)x\n");
+        d.caret = 2;
+        assert_eq!(d.image_destination_at_caret(), Some("a)b.png".to_string()));
     }
 
     #[test]
