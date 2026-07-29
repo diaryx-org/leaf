@@ -155,6 +155,9 @@ public final class LeafTextView: UIView, UITextInput {
         }
     }
 
+    /// Gets first refusal on a paste. See `LeafEditorModel.onPaste`.
+    public var onPaste: (() -> Bool)?
+
     /// Reconsider `src` — or every source, for nil — and redraw.
     /// See `LeafEditorModel.reloadMedia`.
     public func reloadMedia(_ src: String?) {
@@ -612,7 +615,12 @@ public final class LeafTextView: UIView, UITextInput {
     public override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
         switch action {
         case #selector(copy(_:)), #selector(cut(_:)): return docView.hasSelection
-        case #selector(paste(_:)):                    return UIPasteboard.general.hasStrings
+        // A host that claims pastes makes an image-only clipboard pasteable, so
+        // the item has to be offered for one — `hasStrings` alone would grey out
+        // Paste for a screenshot and there would be no way to reach `onPaste`.
+        case #selector(paste(_:)):
+            let pb = UIPasteboard.general
+            return pb.hasStrings || (onPaste != nil && (pb.hasImages || pb.hasURLs))
         case #selector(selectAll(_:)):                return true
         default: return super.canPerformAction(action, withSender: sender)
         }
@@ -638,6 +646,9 @@ public final class LeafTextView: UIView, UITextInput {
     /// formatting a `text/plain` copy out of another app has already lost; core
     /// falls back to the plain flavor when the HTML won't convert.
     public override func paste(_ sender: Any?) {
+        // Before the text flavors: an image-only clipboard has no text, so a host
+        // asked later would never hear about it. See `LeafEditorModel.onPaste`.
+        if onPaste?() == true { return }
         let pb = UIPasteboard.general
         let html = pb.data(forPasteboardType: "public.html").flatMap { String(data: $0, encoding: .utf8) }
             ?? (pb.value(forPasteboardType: "public.html") as? String)

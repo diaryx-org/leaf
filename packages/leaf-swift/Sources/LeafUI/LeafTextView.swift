@@ -78,6 +78,9 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         }
     }
 
+    /// Gets first refusal on a paste. See `LeafEditorModel.onPaste`.
+    public var onPaste: (() -> Bool)?
+
     /// Reconsider `src` — or every source, for nil — and redraw.
     /// See `LeafEditorModel.reloadMedia`.
     public func reloadMedia(_ src: String?) {
@@ -802,6 +805,11 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     }
 
     @objc public func paste(_ sender: Any?) {
+        // Asked before the text flavors, and before the guard below: a clipboard
+        // holding only an image has no text at all, so by the time this method
+        // decided there was nothing to paste, the host would never hear about the
+        // one thing that was there. See `LeafEditorModel.onPaste`.
+        if onPaste?() == true { return }
         let pb = NSPasteboard.general
         let html = pb.string(forType: .html)
         let text = pb.string(forType: .string) ?? ""

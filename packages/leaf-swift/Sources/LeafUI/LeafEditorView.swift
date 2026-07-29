@@ -91,6 +91,23 @@ public final class LeafEditorModel: ObservableObject {
         didSet { textView?.onResolveMedia = onResolveMedia }
     }
 
+    /// Gets first refusal on ⌘V, before the editor looks at the clipboard at all.
+    /// Return `true` to say the paste was handled and leave the document alone,
+    /// `false` to let the normal rich-then-plain text paste proceed.
+    ///
+    /// This exists for the flavors a text editor has no answer for. A screenshot
+    /// on the clipboard is image bytes and no text, so pasting one *as text* is
+    /// nothing — and turning it into something the document can point at means
+    /// writing a file somewhere, which is the app's decision and the app's
+    /// filesystem. Inspect the pasteboard yourself (the editor has not consumed
+    /// it), claim what you can use, decline the rest.
+    ///
+    /// Called on the main actor, inside the paste. Work that has to go to disk
+    /// should return `true` and continue asynchronously — the clipboard is the
+    /// host's now either way. The same division `onOpenLink` and `onResolveMedia`
+    /// draw.
+    public var onPaste: (() -> Bool)?
+
     /// Have `source` resolved again on the next draw — or every source, when it
     /// is nil.
     ///
@@ -280,6 +297,11 @@ public struct LeafEditor: NSViewRepresentable {
         textView.onOpenLink = { [weak model] destination in
             model?.onOpenLink?(destination) ?? false
         }
+        // Same read-through, same reason: an app wires its paste handler where
+        // the view is composed, after the model was built.
+        textView.onPaste = { [weak model] in
+            model?.onPaste?() ?? false
+        }
         textView.recognizesWikilinks = model.recognizesWikilinks
         textView.documentDirectory = model.documentDirectory
         textView.mediaPlayback = model.mediaPlayback
@@ -409,6 +431,11 @@ public struct LeafEditor: UIViewRepresentable {
         // where the view is composed) still gets its links.
         textView.onOpenLink = { [weak model] destination in
             model?.onOpenLink?(destination) ?? false
+        }
+        // Same read-through, same reason: an app wires its paste handler where
+        // the view is composed, after the model was built.
+        textView.onPaste = { [weak model] in
+            model?.onPaste?() ?? false
         }
         textView.recognizesWikilinks = model.recognizesWikilinks
         textView.documentDirectory = model.documentDirectory
