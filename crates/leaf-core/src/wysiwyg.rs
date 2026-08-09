@@ -167,6 +167,16 @@ pub enum MediaKind {
     Audio,
 }
 
+/// Which of the two caret homes a block media has — see
+/// [`VisualMap::block_media_stop`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MediaStop {
+    /// The stop in front of the picture. What is typed here belongs above it.
+    Before,
+    /// The stop just past it. What is typed here belongs below it.
+    After,
+}
+
 impl MediaKind {
     /// The emoji a plain surface prefixes the placeholder label with — the
     /// `🖼`/`🎬`/`🔊` that makes the row read as *a thing* rather than as text.
@@ -417,6 +427,53 @@ impl VisualMap {
             None if r.decoration => self.nearest_stop(r.end_src),
             None => r.end_src,
         }
+    }
+
+    /// Which of a block media's two caret homes `off` is, or `None` for every
+    /// other offset in the document.
+    ///
+    /// [`block_media`](Builder::block_media) gives a block-level image, video, or
+    /// audio exactly two stops — one in front of it and one just past it — and
+    /// nothing inside the markup. Both are ordinary offsets to everything else in
+    /// core, but they are the two places where inserting text would *dissolve the
+    /// picture*: `![](p.png)` with anything typed against it is no longer a block
+    /// image but a paragraph with an inline one, and the frontend that was
+    /// painting a photo there paints a text run instead. A caller that is about to
+    /// insert asks this so it can open a paragraph first — see
+    /// [`Doc::insert`](crate::Doc::insert).
+    ///
+    /// An *inline* image reports `None`: it has no placeholder row and no stops of
+    /// its own, and typing beside one is ordinary editing.
+    ///
+    /// Answers with the media's own source span as well, since a caller that has
+    /// to keep the picture whole usually has to address it — [`Doc::backspace`]
+    /// takes the picture out in one piece rather than nibbling a byte off its
+    /// markup, which is the same dissolution from the other side.
+    ///
+    /// [`Doc::backspace`]: crate::Doc::backspace
+    pub fn block_media_stop(&self, off: usize) -> Option<(MediaStop, Range<usize>)> {
+        for m in &self.media {
+            let Some(row) = self.rows.get(m.rows_span.start) else { continue };
+            // Every glyph of the `🖼 alt` label maps to the media's start offset;
+            // the row's end is past its markup. Read the start off the label
+            // rather than the first glyph, which on a quoted or listed picture is
+            // the block prefix and points at the gutter.
+            let Some(start) = row
+                .glyphs
+                .iter()
+                .find(|g| g.style.role == Role::Image)
+                .map(|g| g.src)
+            else {
+                continue;
+            };
+            if off == start {
+                return Some((MediaStop::Before, start..row.end_src));
+            }
+            if off == row.end_src {
+                return Some((MediaStop::After, start..row.end_src));
+            }
+        }
+        None
     }
 
     /// Snap `off` to the nearest caret stop — the funnel a frontend that

@@ -1744,6 +1744,51 @@ mod tests {
     }
 
     #[test]
+    fn tapping_below_a_trailing_picture_and_typing_keeps_it_a_picture() {
+        // The whole gesture, across the boundary, in the order the Apple frontend
+        // performs it: the layout clamps a point below the last row onto the
+        // picture's row and asks for the position past its label glyphs; that
+        // offset becomes the selection; then a character arrives. Before the two
+        // halves of this fix, the offset was the stop *in front of* the picture
+        // and the character dissolved it into a paragraph with an inline image —
+        // the photo stopped being drawn, and nothing said so.
+        let d = doc("hi\n\n![](p.png)\n");
+        let v = d.set_unwrapped();
+        let row = v.media[0].start_row;
+        let label: u32 = v.rows[row as usize]
+            .runs
+            .iter()
+            .map(|r| r.text.encode_utf16().count() as u32)
+            .sum();
+
+        let off = d.offset_for_pos(row, label);
+        assert_eq!(off, "hi\n\n![](p.png)".len() as u32, "the stop past the picture");
+
+        d.set_selection_offsets(off, off);
+        let after = d.insert("x".to_string());
+        assert_eq!(d.source(), "hi\n\n![](p.png)\n\nx\n");
+        assert_eq!(after.media.len(), 1, "still a picture, one paragraph up");
+    }
+
+    #[test]
+    fn backspace_from_that_same_tap_takes_the_picture_whole() {
+        // The other half of the same gesture, and the one that cost this project's
+        // own test vault a photo: tap under the picture, press Backspace. That
+        // offset is the stop past the markup, so a byte-step deleted the closing
+        // paren and left the literal text `![](p.png` where a photo had been.
+        let d = doc("hi\n\n![](p.png)\n");
+        d.set_unwrapped();
+        let off = "hi\n\n![](p.png)".len() as u32;
+        d.set_selection_offsets(off, off);
+        let after = d.backspace();
+        assert_eq!(d.source(), "hi\n");
+        assert_eq!(after.media.len(), 0, "gone as a picture, not as bytes");
+        let undone = d.undo();
+        assert_eq!(d.source(), "hi\n\n![](p.png)\n");
+        assert_eq!(undone.media.len(), 1, "and one undo brings the picture back");
+    }
+
+    #[test]
     fn measured_heights_grow_the_reserved_span() {
         // The height loop: core reserves one row until the renderer measures the
         // real view and reports back, because core does no I/O and cannot know.

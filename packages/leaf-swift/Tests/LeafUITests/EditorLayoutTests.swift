@@ -225,6 +225,23 @@ final class EditorLayoutTests: XCTestCase {
         XCTAssertGreaterThan(rect.minX, theme.padding.left, "caret at ch=2 is right of the left inset")
     }
 
+    func testAnEmptyDocumentStillHasALineBoxForTheCaret() throws {
+        // Core publishes no rows for an empty document — it describes blocks, and
+        // there is no block to describe — but the caret still has a home there, at
+        // offset 0. Regression: with no row, `rect` had nothing to answer about and
+        // a brand-new note drew no caret at all until the first character was typed.
+        let layout = EditorLayout(docView([]), theme: theme, wrapWidth: 400)
+        XCTAssertEqual(layout.rows.count, 1, "one empty line box stands in")
+        let caret = try XCTUnwrap(layout.rect(row: 0, ch: 0, theme: theme))
+        XCTAssertEqual(caret.minX, theme.padding.left, accuracy: 0.5)
+        XCTAssertEqual(caret.minY, theme.padding.top, accuracy: 0.5)
+        XCTAssertEqual(caret.height, theme.lineHeight, accuracy: 0.5)
+        // And a tap anywhere in the blank pane lands on it.
+        let (row, ch) = layout.hit(CGPoint(x: 200, y: 800), theme: theme)
+        XCTAssertEqual(row, 0)
+        XCTAssertEqual(ch, 0)
+    }
+
     func testRectIsNilForRowOutOfRange() {
         let layout = EditorLayout(docView([row([mkRun("x")])]), theme: theme)
         XCTAssertNil(layout.rect(row: 5, ch: 0, theme: theme))

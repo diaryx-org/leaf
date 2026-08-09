@@ -281,6 +281,20 @@ struct EditorLayout {
             layouts.append(rl)
             i += 1
         }
+        // An empty document has no rows at all: core describes blocks, and there
+        // is no block to describe. The caret still has a home there (offset 0),
+        // so it needs a line box to stand in — without one there is no row for
+        // `rect` to answer about and the caret is simply never drawn, which is
+        // what a brand-new note looked like until the first keystroke brought a
+        // row into being. The same reason `wrap` gives an empty row one empty
+        // line: a caret needs somewhere to be.
+        if layouts.isEmpty {
+            layouts.append(RowLayout(row: Row(runs: [], decoration: false, code: false,
+                                              codeLang: nil, directive: false,
+                                              directiveLabel: nil, heading: nil),
+                                     shaped: emptyShape, top: y))
+            y += theme.lineHeight
+        }
         rows = layouts
         contentHeight = y + theme.padding.bottom
         cache = next
@@ -428,6 +442,7 @@ struct EditorLayout {
     func rect(row: Int, ch: Int, theme: EditorTheme) -> CGRect? {
         guard rows.indices.contains(row) else { return nil }
         let rl = rows[row]
+        if rl.media != nil { return mediaCaretRect(rl, ch: ch, theme: theme) }
         let lines = rl.wrapped
         for (i, wl) in lines.enumerated() where ch < wl.start + wl.length || i == lines.count - 1 {
             let x = CTLineGetOffsetForStringIndex(wl.line, CFIndex(max(0, ch - wl.start)), nil)
@@ -435,6 +450,26 @@ struct EditorLayout {
             return CGRect(x: theme.padding.left + wl.indent + x, y: y, width: 1.5, height: rl.lineHeight)
         }
         return CGRect(x: theme.padding.left, y: rl.top + rl.labelInset, width: 1.5, height: rl.lineHeight)
+    }
+
+    /// The caret's frame on a block media row: the box's leading edge in front of
+    /// the picture, its trailing edge past it, and as tall as the box either way.
+    ///
+    /// Core gives a block image, video, or audio exactly two caret homes — one
+    /// before it and one just after it, with nothing inside the markup (see
+    /// `block_media`). The row's own glyphs are the `🖼 alt` label the box is
+    /// painted *over*, so measuring the caret against them puts it at some
+    /// arbitrary point inside the picture: a blinking bar in the middle of a
+    /// photo that says nothing about where the next character will land. Riding
+    /// the box's edges says what a word processor's caret beside a figure says.
+    private func mediaCaretRect(_ rl: RowLayout, ch: Int, theme: EditorTheme) -> CGRect? {
+        guard let box = rl.media else { return nil }
+        let r = box.rect(top: rl.mediaTop, left: theme.padding.left + rl.shaped.prefixWidth)
+        // Past the label's last glyph is core's trailing stop. The reserved rows
+        // below the first carry no glyphs at all, so they are only ever "after" —
+        // which is right: they are the picture's lower half.
+        let after = ch >= rl.attributed.length
+        return CGRect(x: after ? r.maxX - 1.5 : r.minX, y: r.minY, width: 1.5, height: r.height)
     }
 
     /// The caret's frame — `caret_ch` (UTF-16, within its block row) mapped through
@@ -564,6 +599,16 @@ struct EditorLayout {
         guard !rows.isEmpty else { return (0, 0) }
         let row = rows.firstIndex { point.y < $0.top + $0.height } ?? rows.count - 1
         let rl = rows[row]
+        // A picture holds no text positions: the caret's only homes on a media
+        // row are in front of the box and past it, and which one a point wants is
+        // which half of the box it fell in. Hit-testing the label glyphs the box
+        // covers would answer "in front of it" for a tap anywhere on the picture,
+        // including the blank space under a document that *ends* with one — where
+        // the clamp above lands every point on this row.
+        if let box = rl.media {
+            let r = box.rect(top: rl.mediaTop, left: theme.padding.left + rl.shaped.prefixWidth)
+            return (row, point.y < r.midY ? 0 : rl.attributed.length)
+        }
         let lines = rl.wrapped
         let li = min(max(0, Int((point.y - rl.top - rl.labelInset) / rl.lineHeight)), lines.count - 1)
         let wl = lines[li]

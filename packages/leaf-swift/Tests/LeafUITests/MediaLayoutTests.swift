@@ -172,6 +172,72 @@ final class MediaLayoutTests: XCTestCase {
         XCTAssertNil(layout.playableMedia(at: CGPoint(x: 5000, y: 5000), theme: theme))
     }
 
+    // MARK: the caret around a picture
+
+    /// A document that ends with a picture — the shape the caret bugs show up in.
+    private func pictureLast() -> EditorLayout {
+        let frame = docView(
+            [row([mkRun("prose above")]), row([mkRun("🖼 a cat")])],
+            media: [mkMedia("cat.png", startRow: 1, endRow: 2)]
+        )
+        return EditorLayout(frame, theme: theme, wrapWidth: 400)
+    }
+
+    func testATapBelowATrailingPictureLandsAfterItNotBeforeIt() {
+        // Regression: every point below the last row clamps onto it, and when
+        // that row is a picture the label glyphs it's painted over answered the
+        // hit — putting the caret in *front* of the photo (drawn as a bar down
+        // its left edge) for a tap on the empty page under it.
+        let layout = pictureLast()
+        let label = layout.rows[1].attributed.length
+        let (row, ch) = layout.hit(CGPoint(x: theme.padding.left + 4, y: 99_999), theme: theme)
+        XCTAssertEqual(row, 1)
+        XCTAssertEqual(ch, label, "past the label's last glyph — core's stop after the image")
+    }
+
+    func testTheTopHalfOfAPictureIsStillInFrontOfIt() {
+        // The other home: a tap on the picture's upper half means "before this".
+        let layout = pictureLast()
+        let box = layout.rows[1]
+        let top = box.mediaTop + MediaMetrics.gap + 2
+        let (row, ch) = layout.hit(CGPoint(x: theme.padding.left + 40, y: top), theme: theme)
+        XCTAssertEqual(row, 1)
+        XCTAssertEqual(ch, 0)
+    }
+
+    func testTheCaretRidesTheBoxEdgesAndIsAsTallAsThePicture() throws {
+        let layout = pictureLast()
+        let rl = layout.rows[1]
+        let drawn = rl.media!.rect(top: rl.mediaTop, left: theme.padding.left + rl.shaped.prefixWidth)
+
+        let before = try XCTUnwrap(layout.rect(row: 1, ch: 0, theme: theme))
+        XCTAssertEqual(before.minX, drawn.minX, accuracy: 0.5, "at the picture's leading edge")
+        XCTAssertEqual(before.minY, drawn.minY, accuracy: 0.5)
+        XCTAssertEqual(before.height, drawn.height, accuracy: 0.5, "as tall as the box")
+
+        let after = try XCTUnwrap(layout.rect(row: 1, ch: rl.attributed.length, theme: theme))
+        XCTAssertEqual(after.maxX, drawn.maxX, accuracy: 0.5, "at its trailing edge")
+        XCTAssertEqual(after.minY, drawn.minY, accuracy: 0.5)
+        XCTAssertEqual(after.height, drawn.height, accuracy: 0.5)
+        XCTAssertGreaterThan(after.minX, before.minX)
+    }
+
+    func testAReservedRowBelowThePictureIsTheCaretHomePastIt() throws {
+        // The blank rows core reserves under a measured picture carry no glyphs,
+        // so they're only ever the stop past it — and their caret must still draw
+        // on the box, not at the origin of a zero-height row.
+        let frame = docView(
+            [row([mkRun("🖼 a cat")]), row([])],
+            media: [mkMedia("cat.png", startRow: 0, endRow: 2)]
+        )
+        let layout = EditorLayout(frame, theme: theme, wrapWidth: 400)
+        let rl = layout.rows[0]
+        let drawn = rl.media!.rect(top: rl.mediaTop, left: theme.padding.left)
+        let caret = try XCTUnwrap(layout.rect(row: 1, ch: 0, theme: theme))
+        XCTAssertEqual(caret.maxX, drawn.maxX, accuracy: 0.5)
+        XCTAssertEqual(caret.height, drawn.height, accuracy: 0.5)
+    }
+
     // MARK: the rects a player is positioned onto
 
     func testMediaRectsAreKeyedBySrcNotByRow() {

@@ -31,7 +31,7 @@ use twig::{
 use unicode_segmentation::GraphemeCursor;
 
 use crate::html;
-use crate::wysiwyg::{self, MediaKind, VisualMap};
+use crate::wysiwyg::{self, MediaKind, MediaStop, VisualMap};
 
 /// Which view the body shows.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -736,6 +736,10 @@ impl Doc {
     ///
     /// Typed input only — clipboard text goes through [`paste`](Self::paste).
     pub fn insert(&mut self, text: &str) {
+        // Typing against a block picture would dissolve it — see
+        // `open_paragraph_at_block_media`. Give the text a paragraph first, so
+        // what the caret was standing beside stays a picture.
+        self.open_paragraph_at_block_media(text);
         // Armed sticky marks (⌘b with no selection) turn the next typed text
         // bold/italic/… and then retire — see `insert_with_marks`.
         let pending = self.pending_here();
@@ -774,6 +778,130 @@ impl Doc {
             EditKind::Other
         };
         self.splice(s, e, text, kind);
+    }
+
+    /// Open a paragraph for text about to be inserted at one of a block media's
+    /// two caret stops, and leave the caret standing in it.
+    ///
+    /// A block image is a paragraph whose entire content is the picture, and the
+    /// caret's only homes on it are in front of it and just past it (see
+    /// [`VisualMap::block_media_stop`]). Text inserted at either offset joins
+    /// *that* paragraph — and a paragraph holding anything besides the image is
+    /// no longer a block image but a line of text with an inline one in it. The
+    /// frontend that was painting a photo there paints a text run instead; the
+    /// picture is still in the file, and nothing said a word. Those two offsets
+    /// are also exactly where a click on the picture lands, so the whole accident
+    /// is one tap and one keystroke.
+    ///
+    /// So the break goes in first and the text lands in the new empty paragraph —
+    /// what pressing Return before typing would have done, which is a habit no
+    /// one should have to learn from losing a photo. A no-op everywhere else, and
+    /// over a selection (which is replaced, not joined into).
+    ///
+    /// A picture inside a quote or a list leaves its container, because `\n\n`
+    /// ends the block. The alternative is worse: the `\n> ` / next-item
+    /// continuation [`newline`](Self::newline) writes stays in the same
+    /// *paragraph*, which is the thing being prevented.
+    ///
+    /// Only in the rendered view. Source view is for typing raw markup, where
+    /// putting a character against an image is exactly what it looks like.
+    fn open_paragraph_at_block_media(&mut self, text: &str) {
+        if self.view != View::Wysiwyg || text.is_empty() || text == "\n" {
+            return;
+        }
+        if self.selection().is_some() {
+            return;
+        }
+        // The map may be a revision behind (nothing has drawn since the last
+        // edit), and this asks it about offsets — a stale answer would splice a
+        // break into the wrong place. Free when it is already current, which it
+        // is whenever a frontend drew a frame between keystrokes.
+        self.rebuild_map();
+        let at = self.caret;
+        let Some((side, _)) = self.vmap.block_media_stop(at) else {
+            return;
+        };
+        if !self.splice(at, at, "\n\n", EditKind::Other) {
+            return;
+        }
+        // The break is part of the keystroke, not an edit of its own: leave the
+        // run marked as typing so the character about to arrive folds into it and
+        // one undo puts the document back the way it was found. (A paste, or a
+        // multi-character insert, is `EditKind::Other` and stays its own step —
+        // as it would have been anywhere else in the document.)
+        self.last_edit_kind = Some(EditKind::Insert);
+        if side == MediaStop::Before {
+            // The break went in above the picture and the caret rode to the end
+            // of it — which is still hard against the picture. Step back onto the
+            // blank line it opened, so the text lands above rather than in front.
+            self.caret = at;
+        }
+    }
+
+    /// A delete key pressed at one of a block picture's two caret stops, handled
+    /// as the picture being an *atom* rather than a run of bytes. Returns whether
+    /// the key was consumed.
+    ///
+    /// The caret rests in front of a block image and just past it, never inside
+    /// its markup — which the rendered view doesn't show. So the byte a delete
+    /// key nominally takes there is one the writer cannot see, and taking it
+    /// leaves the picture as broken markup rather than as anything anyone asked
+    /// for: Backspace at the stop past `![](p.png)` removes the closing paren, and
+    /// a photo becomes the literal text `![](p.png`. That is how a picture goes
+    /// missing from a document with nobody having touched it — the same
+    /// dissolution [`open_paragraph_at_block_media`](Self::open_paragraph_at_block_media)
+    /// prevents from the typing side, and it cost this repository's own test vault
+    /// a photo before it was found.
+    ///
+    /// So the key aimed *at* the picture deletes the picture, whole — Backspace
+    /// when it is behind the caret, Delete when it is in front — which is what
+    /// every editor does with an embed, and one undo away. The key aimed *away*
+    /// from it would otherwise delete the paragraph break and merge a neighbour
+    /// into the picture's own paragraph, which dissolves it just as surely; it
+    /// steps the caret over the boundary instead and leaves the
+    /// next press to delete in the block it has reached — the same "first press
+    /// steps out of the atom, second press deletes" every delete key here gets,
+    /// word-deletes included (⌥⌫ in front of a picture is aimed at the prose
+    /// above, and reaches it on the second press rather than taking the break and
+    /// the picture with it on the first).
+    fn delete_around_block_media(&mut self, forward: bool) -> bool {
+        // The map answers about offsets, so it has to be this revision's — see
+        // the same call in `open_paragraph_at_block_media`.
+        self.rebuild_map();
+        let Some((side, span)) = self.vmap.block_media_stop(self.caret) else {
+            return false;
+        };
+        let aimed_at_it = side
+            == if forward {
+                MediaStop::Before
+            } else {
+                MediaStop::After
+            };
+        if !aimed_at_it {
+            let over = if forward {
+                self.vmap.stop_after(self.caret)
+            } else {
+                self.vmap.stop_before(self.caret)
+            };
+            if let Some(off) = over.filter(|&o| o >= self.caret_floor()) {
+                self.caret = off;
+                self.anchor = None;
+                self.goal_col = None;
+            }
+            return true;
+        }
+        // Take the break that held the picture apart from its neighbour with it,
+        // so the delete doesn't leave a blank paragraph standing where the
+        // picture was. The last arm is a picture that is the whole document.
+        let (from, to) = if self.source[..span.start].ends_with("\n\n") {
+            (span.start - 2, span.end)
+        } else if self.source[span.end..].starts_with("\n\n") {
+            (span.start, span.end + 2)
+        } else {
+            (span.start, span.end)
+        };
+        self.splice(from.max(self.caret_floor()), to, "", EditKind::Other);
+        true
     }
 
     /// The Hidden-mode typing path: replace any selection, then insert `text`
@@ -934,6 +1062,9 @@ impl Doc {
     /// apart — `⌘V` of `x` and typing `x` are the same string — so the door the
     /// caller comes through is what says which happened.
     pub fn paste(&mut self, text: &str) {
+        // Pasting against a block picture dissolves it exactly as typing does,
+        // and for the same reason — see `open_paragraph_at_block_media`.
+        self.open_paragraph_at_block_media(text);
         let (s, e) = self.selection().unwrap_or((self.caret, self.caret));
         self.splice(s, e, text, EditKind::Other);
     }
@@ -1423,6 +1554,12 @@ impl Doc {
         if self.view != View::Source && self.backspace_heading_start() {
             return;
         }
+        // WYSIWYG: at a block picture's stops, a byte-at-a-time delete would take
+        // the markup apart under a caret that cannot see it — see
+        // `delete_around_block_media`.
+        if self.view != View::Source && self.delete_around_block_media(false) {
+            return;
+        }
         // WYSIWYG: Backspace on a *blank line* deletes back to the previous caret
         // stop, not a single newline. On a line with no text of its own, the byte
         // before the caret is a `\n` that spells part of a block boundary — the gap
@@ -1616,6 +1753,11 @@ impl Doc {
         if let Some((s, e)) = self.selection() {
             self.splice(s, e, "", EditKind::Other);
         } else if self.caret < self.source.len() {
+            // The mirror of Backspace's: forward-delete in front of a picture
+            // would eat the `!` off its markup and leave a link where a photo was.
+            if self.view != View::Source && self.delete_around_block_media(true) {
+                return;
+            }
             // Delete forward over an in-cell `<br>` takes the whole tag, the mirror
             // of Backspace's swallow (see `cell_break_at`) — else a byte-step
             // strands a broken `<br` in the cell.
@@ -1636,6 +1778,13 @@ impl Doc {
         if let Some((s, e)) = self.selection() {
             self.splice(s, e, "", EditKind::Other);
         } else {
+            // A word back from just past a picture is a word *of its markup*, and
+            // a word back from in front of one runs through the paragraph break
+            // into the prose above — dissolving the picture either way. See
+            // `delete_around_block_media`.
+            if self.view != View::Source && self.delete_around_block_media(false) {
+                return;
+            }
             let start = self.word_left_from(self.caret).max(self.caret_floor());
             if start < self.caret {
                 let (s, e) = self.widen_over_emptied_inlines(start, self.caret);
@@ -1650,6 +1799,10 @@ impl Doc {
         if let Some((s, e)) = self.selection() {
             self.splice(s, e, "", EditKind::Other);
         } else {
+            // The mirror: a word forward from in front of a picture is its markup.
+            if self.view != View::Source && self.delete_around_block_media(true) {
+                return;
+            }
             let end = self.word_right_from(self.caret);
             if end > self.caret {
                 let (s, e) = self.widen_over_emptied_inlines(self.caret, end);
@@ -4966,6 +5119,186 @@ mod tests {
         d.caret = 0;
         d.insert_media(MediaKind::Image, "logo.svg", "x");
         assert_eq!(d.source, "![x](logo.svg)\n");
+    }
+
+    // ── typing against a block picture ────────────────────────────────────────
+
+    /// A rendered-view document with the caret parked on one of the picture's two
+    /// stops, and the map already built — the state a frontend is in between
+    /// drawing a frame and the next keystroke.
+    fn doc_at_picture(name: &str, src: &str, side: MediaStop) -> Doc {
+        let mut d = doc_in(View::Wysiwyg, name, src);
+        d.build_visual_unwrapped();
+        let start = src.find("![").unwrap();
+        d.caret = match side {
+            MediaStop::Before => start,
+            MediaStop::After => start + "![](p.png)".len(),
+        };
+        d
+    }
+
+    /// The block media the map publishes, after rebuilding it — "is this still a
+    /// picture, or has it become a line of text with an image in it?"
+    fn media_count(d: &mut Doc) -> usize {
+        d.build_visual_unwrapped();
+        d.vmap.media.len()
+    }
+
+    #[test]
+    fn typing_past_a_block_picture_opens_a_paragraph_under_it() {
+        // The accident this prevents: tap the blank page under a photo (which
+        // lands on the picture's trailing stop), type, and `![](p.png)xy` is a
+        // paragraph with an *inline* image — the photo stops being drawn.
+        let mut d = doc_at_picture("pic_after", "hi\n\n![](p.png)\n", MediaStop::After);
+        d.insert("xy");
+        assert_eq!(d.source, "hi\n\n![](p.png)\n\nxy\n");
+        assert_eq!(media_count(&mut d), 1, "still a picture");
+    }
+
+    #[test]
+    fn typing_in_front_of_a_block_picture_opens_a_paragraph_above_it() {
+        let mut d = doc_at_picture("pic_before", "hi\n\n![](p.png)\n", MediaStop::Before);
+        d.insert("xy");
+        assert_eq!(d.source, "hi\n\nxy\n\n![](p.png)\n");
+        assert_eq!(media_count(&mut d), 1);
+    }
+
+    #[test]
+    fn a_picture_that_opens_the_document_still_takes_a_paragraph_above_it() {
+        let mut d = doc_at_picture("pic_first", "![](p.png)\n", MediaStop::Before);
+        d.insert("x");
+        assert_eq!(d.source, "x\n\n![](p.png)\n");
+        assert_eq!(media_count(&mut d), 1);
+    }
+
+    #[test]
+    fn one_undo_puts_the_picture_back_the_way_it_was_found() {
+        // The opened paragraph is part of the keystroke, not an edit the writer
+        // made — so it undoes with the character, not a step later.
+        let mut d = doc_at_picture("pic_undo", "hi\n\n![](p.png)\n", MediaStop::After);
+        d.insert("x");
+        assert_eq!(d.source, "hi\n\n![](p.png)\n\nx\n");
+        d.undo();
+        assert_eq!(d.source, "hi\n\n![](p.png)\n");
+    }
+
+    #[test]
+    fn pasting_against_a_block_picture_opens_a_paragraph_too() {
+        // ⌘V dissolves the picture exactly as a keystroke does.
+        let mut d = doc_at_picture("pic_paste", "hi\n\n![](p.png)\n", MediaStop::After);
+        d.paste("pasted");
+        assert_eq!(d.source, "hi\n\n![](p.png)\n\npasted\n");
+        assert_eq!(media_count(&mut d), 1);
+    }
+
+    #[test]
+    fn typing_beside_an_inline_image_is_ordinary_editing() {
+        // An inline image has no placeholder row and no stops of its own. Opening
+        // a paragraph mid-sentence would be the bug, not the fix.
+        let mut d = doc_in(View::Wysiwyg, "pic_inline", "see ![](p.png) here\n");
+        d.build_visual_unwrapped();
+        d.caret = "see ![](p.png)".len();
+        d.insert("!");
+        assert_eq!(d.source, "see ![](p.png)! here\n");
+    }
+
+    #[test]
+    fn source_view_types_raw_markup_against_an_image_untouched() {
+        // Source view is for writing the markup itself; a break inserted behind
+        // the writer's back there would be the editor arguing with them.
+        let mut d = doc_in(View::Source, "pic_src", "![](p.png)\n");
+        d.caret = "![](p.png)".len();
+        d.insert("x");
+        assert_eq!(d.source, "![](p.png)x\n");
+    }
+
+    #[test]
+    fn typing_over_a_selection_that_starts_at_a_picture_stop_replaces_it() {
+        // A selection is replaced, not joined into, so there is nothing to
+        // protect: the range takes the picture with it.
+        let mut d = doc_at_picture("pic_sel", "hi\n\n![](p.png)\n", MediaStop::Before);
+        d.anchor = Some(d.caret);
+        d.caret = d.source.find("![").unwrap() + "![](p.png)".len();
+        d.insert("x");
+        assert_eq!(d.source, "hi\n\nx\n");
+    }
+
+    #[test]
+    fn backspace_past_a_block_picture_deletes_the_picture_not_its_last_byte() {
+        // What this actually cost: a real vault's photo, to one stray Backspace.
+        // The caret past `![](p.png)` was deleting the closing paren — invisible
+        // in the rendered view — and the photo became the text `![](p.png`.
+        let mut d = doc_at_picture("pic_bs", "hi\n\n![](p.png)\n", MediaStop::After);
+        d.backspace();
+        assert_eq!(d.source, "hi\n");
+        assert_eq!(media_count(&mut d), 0, "the picture went, in one piece");
+        d.undo();
+        assert_eq!(d.source, "hi\n\n![](p.png)\n", "and comes back in one piece");
+    }
+
+    #[test]
+    fn backspace_in_front_of_a_block_picture_steps_out_instead_of_merging_it() {
+        // Deleting the break here would join the picture to the paragraph above,
+        // where it is an *inline* image and stops being drawn. Step over the
+        // boundary; the next press deletes in the paragraph the caret reached.
+        let mut d = doc_at_picture("pic_bs_before", "hi\n\n![](p.png)\n", MediaStop::Before);
+        d.backspace();
+        assert_eq!(d.source, "hi\n\n![](p.png)\n", "nothing deleted");
+        assert_eq!(d.caret, 2, "the caret stepped up to the end of `hi`");
+        d.backspace();
+        assert_eq!(d.source, "h\n\n![](p.png)\n", "and now it deletes there");
+        assert_eq!(media_count(&mut d), 1, "the picture was never at risk");
+    }
+
+    #[test]
+    fn forward_delete_in_front_of_a_block_picture_deletes_the_picture() {
+        // The mirror. A byte-step here eats the `!` and leaves a link.
+        let mut d = doc_at_picture("pic_del", "hi\n\n![](p.png)\n\nbye\n", MediaStop::Before);
+        d.delete_forward();
+        assert_eq!(d.source, "hi\n\nbye\n");
+        assert_eq!(media_count(&mut d), 0);
+    }
+
+    #[test]
+    fn forward_delete_past_a_block_picture_steps_over_the_boundary() {
+        let mut d = doc_at_picture("pic_del_after", "hi\n\n![](p.png)\n\nbye\n", MediaStop::After);
+        d.delete_forward();
+        assert_eq!(d.source, "hi\n\n![](p.png)\n\nbye\n", "nothing deleted");
+        assert_eq!(d.caret, d.source.find("bye").unwrap(), "the caret stepped down to `bye`");
+    }
+
+    #[test]
+    fn a_picture_that_is_the_whole_document_still_deletes_cleanly() {
+        let mut d = doc_at_picture("pic_only", "![](p.png)\n", MediaStop::After);
+        d.backspace();
+        assert_eq!(d.source, "\n");
+        assert_eq!(media_count(&mut d), 0);
+    }
+
+    #[test]
+    fn a_word_delete_takes_the_picture_whole_or_steps_out_of_it() {
+        // ⌥⌫ past a picture would otherwise eat a "word" of its markup.
+        let mut d = doc_at_picture("pic_wordbs", "hi there\n\n![](p.png)\n", MediaStop::After);
+        d.delete_word_back();
+        assert_eq!(d.source, "hi there\n");
+
+        // And in front of one it runs *through* the paragraph break into the
+        // prose above, which merges the picture inline — so it steps out first,
+        // and the second press deletes the word it was aimed at.
+        let mut d = doc_at_picture("pic_wordbs2", "hi there\n\n![](p.png)\n", MediaStop::Before);
+        d.delete_word_back();
+        assert_eq!(d.source, "hi there\n\n![](p.png)\n");
+        d.delete_word_back();
+        assert_eq!(d.source, "hi \n\n![](p.png)\n", "the word above went, the picture stayed");
+        assert_eq!(media_count(&mut d), 1);
+    }
+
+    #[test]
+    fn source_view_deletes_raw_markup_against_an_image_untouched() {
+        let mut d = doc_in(View::Source, "pic_src_del", "![](p.png)\n");
+        d.caret = "![](p.png)".len();
+        d.backspace();
+        assert_eq!(d.source, "![](p.png\n", "raw editing, byte by byte");
     }
 
     #[test]
