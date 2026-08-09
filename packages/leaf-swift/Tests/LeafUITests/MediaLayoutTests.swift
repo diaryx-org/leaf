@@ -8,6 +8,7 @@
 //  are what these test, and neither should need a file on disk to exercise.
 
 import CoreGraphics
+import ImageIO
 import XCTest
 
 @testable import LeafUI
@@ -486,6 +487,101 @@ final class MediaLayoutTests: XCTestCase {
         try FileManager.default.removeItem(at: dir.appendingPathComponent("dot.png"))
         store.forget(nil)
         XCTAssertNil(store.still(for: mkMedia("dot.png")))
+    }
+
+    // MARK: the way up a photo says it goes
+
+    func testATaggedPhotoIsTurnedTheWayUpItSaysItGoes() throws {
+        // A camera stores the sensor's pixels and a tag saying how it was held,
+        // so a photo taken upside down is stored upside down. Decoding the
+        // pixels and dropping the tag draws it that way, which is what a phone
+        // showed for every picture it took in any orientation but one.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try cornerMarkedJPEG(width: 32, height: 32, orientation: .down)
+            .write(to: dir.appendingPathComponent("photo.jpg"))
+
+        let still = try XCTUnwrap(MediaStore(baseURL: dir).still(for: mkMedia("photo.jpg")))
+        XCTAssertFalse(isRed(still, x: 8, y: 8), "the stored corner is not where it is drawn")
+        XCTAssertTrue(isRed(still, x: 24, y: 24), "half a turn puts it opposite")
+    }
+
+    func testAQuarterTurnSwapsTheSizeTheBoxIsMeasuredFrom() throws {
+        // Why this isn't only a drawing nicety: `MediaLayout` measures the box
+        // from the picture's own dimensions, and a quarter turn exchanges them.
+        // A portrait photo laid out landscape is the wrong shape whatever is
+        // then painted into it.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try cornerMarkedJPEG(width: 400, height: 200, orientation: .right)
+            .write(to: dir.appendingPathComponent("photo.jpg"))
+
+        let still = try XCTUnwrap(MediaStore(baseURL: dir).still(for: mkMedia("photo.jpg")))
+        XCTAssertEqual(still.width, 200)
+        XCTAssertEqual(still.height, 400, "and at its own resolution, not a thumbnail's")
+
+        let box = MediaLayout(mkMedia("photo.jpg"), still: still, contentWidth: 600, theme: theme)
+        XCTAssertGreaterThan(box.size.height, box.size.width, "laid out as the portrait it is")
+    }
+
+    func testAnUntaggedPictureIsLeftExactlyAsItIs() throws {
+        // The common case — a screenshot, a drawing, anything not off a camera.
+        // It must not acquire a turn, and it takes the cheap decode.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try cornerMarkedJPEG(width: 32, height: 32, orientation: nil)
+            .write(to: dir.appendingPathComponent("shot.jpg"))
+
+        let still = try XCTUnwrap(MediaStore(baseURL: dir).still(for: mkMedia("shot.jpg")))
+        XCTAssertTrue(isRed(still, x: 8, y: 8), "the corner is where it was stored")
+    }
+
+    /// A JPEG with its top-left quarter red and the rest white, tagged with
+    /// `orientation` — or with no tag at all, which is how everything that isn't
+    /// a photograph arrives. The mark is a quarter rather than a pixel because
+    /// JPEG is lossy and a lone pixel would be smeared into its neighbours.
+    private func cornerMarkedJPEG(
+        width: Int, height: Int, orientation: CGImagePropertyOrientation?
+    ) throws -> Data {
+        let context = try XCTUnwrap(CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        context.setFillColor(gray: 1, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        context.setFillColor(red: 1, green: 0, blue: 0, alpha: 1)
+        // Quartz counts up from the bottom, so the *top* half is the far end.
+        context.fill(CGRect(x: 0, y: height / 2, width: width / 2, height: height / 2))
+        let image = try XCTUnwrap(context.makeImage())
+
+        let data = NSMutableData()
+        let out = try XCTUnwrap(CGImageDestinationCreateWithData(
+            data, "public.jpeg" as CFString, 1, nil))
+        var properties: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: 1.0]
+        if let orientation { properties[kCGImagePropertyOrientation] = orientation.rawValue }
+        CGImageDestinationAddImage(out, image, properties as CFDictionary)
+        XCTAssertTrue(CGImageDestinationFinalize(out))
+        return data as Data
+    }
+
+    /// Whether the pixel at (`x`, `y`), counted from the top-left the way a
+    /// picture is read, is the red mark rather than the white field. Loose about
+    /// the exact values, since JPEG does not hand back what it was given.
+    private func isRed(_ image: CGImage, x: Int, y: Int) -> Bool {
+        var pixel = [UInt8](repeating: 0, count: 4)
+        let drawn: Bool = pixel.withUnsafeMutableBytes { raw in
+            guard let context = CGContext(
+                data: raw.baseAddress, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return false }
+            // Slide the picture so the pixel wanted lands in the one-pixel
+            // window, remembering that Quartz's y runs the other way.
+            context.draw(image, in: CGRect(x: -x, y: y - image.height + 1,
+                                           width: image.width, height: image.height))
+            return true
+        }
+        guard drawn else { return false }
+        return pixel[0] > 200 && pixel[1] < 80 && pixel[2] < 80
     }
 
     private func makeTempDir() throws -> URL {

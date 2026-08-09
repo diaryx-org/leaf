@@ -399,13 +399,52 @@ final class MediaStore {
     private static func load(_ url: URL) -> CGImage? {
         guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
               CGImageSourceGetCount(src) > 0 else { return nil }
-        return CGImageSourceCreateImageAtIndex(src, 0, nil)
+        return decode(src)
     }
 
     /// Decode image bytes already in memory — a `data:` URI's payload.
     private static func decode(_ data: Data) -> CGImage? {
         guard let src = CGImageSourceCreateWithData(data as CFData, nil),
               CGImageSourceGetCount(src) > 0 else { return nil }
-        return CGImageSourceCreateImageAtIndex(src, 0, nil)
+        return decode(src)
+    }
+
+    /// The picture a source holds, the way up it says it goes.
+    ///
+    /// A camera writes the sensor's pixels and a tag saying how the phone was
+    /// held; every photo taken in any orientation but one is stored turned.
+    /// `CGImageSourceCreateImageAtIndex` hands back those raw pixels and drops
+    /// the tag, so a picture off a phone draws sideways or upside down — which
+    /// is not a rendering nicety, since a quarter turn also swaps the width and
+    /// height `MediaLayout` measures the box from.
+    ///
+    /// The turn is ImageIO's to do rather than a matrix here: the thumbnail path
+    /// is the one API that applies the tag, and asked for no maximum size it
+    /// returns the whole picture at its own resolution. It is only reached for
+    /// an image that is actually turned — an untagged screenshot or a drawing,
+    /// which is most of what a document holds, still takes the cheap path
+    /// untouched.
+    private static func decode(_ source: CGImageSource) -> CGImage? {
+        if orientation(of: source) != .up {
+            let options: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+            ]
+            if let turned = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
+                return turned
+            }
+        }
+        return CGImageSourceCreateImageAtIndex(source, 0, nil)
+    }
+
+    /// The EXIF orientation a source declares, or `.up` when it declares none —
+    /// which is both the default and the answer for every format that has no
+    /// place to put one.
+    private static func orientation(of source: CGImageSource) -> CGImagePropertyOrientation {
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
+                as? [CFString: Any],
+              let raw = properties[kCGImagePropertyOrientation] as? UInt32,
+              let declared = CGImagePropertyOrientation(rawValue: raw) else { return .up }
+        return declared
     }
 }
