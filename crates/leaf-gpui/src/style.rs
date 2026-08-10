@@ -71,7 +71,10 @@ pub fn text_run(len: usize, s: LStyle, rs: &RunStyle) -> TextRun {
     }
     let color = match s.role {
         Role::Link => rs.link,
-        Role::ListMarker | Role::QuoteGutter | Role::Rule => rs.muted,
+        // Revealed raw markup is muted for the same reason the list bullets and
+        // quote gutters are: it's the scaffolding around the prose, and the
+        // caret's line should still read as a line of text.
+        Role::ListMarker | Role::QuoteGutter | Role::Rule | Role::Delimiter => rs.muted,
         // Body, Heading, Code, Mark all read in the default text color.
         _ => rs.text,
     };

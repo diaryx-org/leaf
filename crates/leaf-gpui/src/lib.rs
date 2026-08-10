@@ -2241,7 +2241,8 @@ fn style_bits(s: CoreStyle) -> u16 {
         Role::QuoteGutter => 5,
         Role::Image => 6,
         Role::Rule => 7,
-        Role::Heading(l) => 8 + l.min(7) as u16, // 8..=15, four bits
+        Role::Delimiter => 8,
+        Role::Heading(l) => 9 + l.min(7) as u16, // 9..=16
     };
     (s.bold as u16)
         | ((s.italic as u16) << 1)

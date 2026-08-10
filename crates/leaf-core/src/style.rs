@@ -41,6 +41,17 @@ pub enum Role {
     /// A drawn rule: a thematic break (`───`) or a table's borders. A GUI that
     /// draws its own tables ignores the border glyphs; the rule still reaches it.
     Rule,
+    /// Raw markup a revealed line is showing: the `*` around an emphasis, the
+    /// `# ` opening a heading, a link's `](dest)`. Only ever emitted for the
+    /// caret's line under [`MarkdownMode::Full`](crate::MarkdownMode::Full) —
+    /// every other line resolves its markup away and has none of these.
+    ///
+    /// A role rather than a `Style` flag because it is what the glyph *is*: the
+    /// delimiter of an emphasis is not itself emphasised text. A frontend
+    /// typically dims it, so the revealed line still reads as prose with its
+    /// scaffolding visible rather than as source code. One that doesn't map it
+    /// draws it as body text, which is correct if unsubtle.
+    Delimiter,
     /// A block-level image's placeholder text (`🖼 alt`). The glyphs are a
     /// *default* rendering any surface can paint as-is (a terminal shows the
     /// label); an image-capable frontend skips the placeholder row named by the

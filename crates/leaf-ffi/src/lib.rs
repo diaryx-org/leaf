@@ -45,7 +45,7 @@ use leaf_core::style::{Role, Style as LStyle};
 use leaf_core::wysiwyg::text_width;
 use leaf_core::{
     Alignment, BlockKind, ColorScheme, Doc, Format, InlineKind, LineFlow as CoreLineFlow,
-    MediaKind as CoreMediaKind, RevealMode as CoreRevealMode, View, VisualMap,
+    MarkdownMode as CoreMarkdownMode, MediaKind as CoreMediaKind, View, VisualMap,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -349,27 +349,36 @@ impl TableAlignment {
     }
 }
 
-/// How the rich view reveals inline markup at the caret — the argument to
-/// [`LeafDoc::set_reveal_mode`]. Mirrors [`leaf_core::RevealMode`]; `Hidden` is
-/// the default (the clean surface Diaryx ships).
+/// How much Markdown the rich view exposes — the argument to
+/// [`LeafDoc::set_markdown_mode`]. Mirrors [`leaf_core::MarkdownMode`]; `None`
+/// is the default (the clean surface Diaryx ships, with typed syntax kept
+/// literal).
+///
+/// A single three-way ladder rather than a pair of toggles, because only three
+/// of the four combinations of its two axes — reveal the caret's delimiters,
+/// author markup from typing — are coherent. See [`leaf_core::MarkdownMode`]
+/// for which one is left out and why.
 #[derive(uniffi::Enum)]
-pub enum RevealMode {
-    Hidden,
-    CaretLine,
+pub enum MarkdownMode {
+    None,
+    Shortcuts,
+    Full,
 }
 
-impl RevealMode {
-    fn to_core(self) -> CoreRevealMode {
+impl MarkdownMode {
+    fn to_core(self) -> CoreMarkdownMode {
         match self {
-            RevealMode::Hidden => CoreRevealMode::Hidden,
-            RevealMode::CaretLine => CoreRevealMode::CaretLine,
+            MarkdownMode::None => CoreMarkdownMode::None,
+            MarkdownMode::Shortcuts => CoreMarkdownMode::Shortcuts,
+            MarkdownMode::Full => CoreMarkdownMode::Full,
         }
     }
 
-    fn from_core(mode: CoreRevealMode) -> Self {
+    fn from_core(mode: CoreMarkdownMode) -> Self {
         match mode {
-            CoreRevealMode::Hidden => RevealMode::Hidden,
-            CoreRevealMode::CaretLine => RevealMode::CaretLine,
+            CoreMarkdownMode::None => MarkdownMode::None,
+            CoreMarkdownMode::Shortcuts => MarkdownMode::Shortcuts,
+            CoreMarkdownMode::Full => MarkdownMode::Full,
         }
     }
 }
@@ -1182,17 +1191,18 @@ impl LeafDoc {
         g.view()
     }
 
-    /// The current inline-reveal preference (see [`RevealMode`]).
-    pub fn reveal_mode(&self) -> RevealMode {
-        RevealMode::from_core(self.lock().doc.reveal_mode())
+    /// The current Markdown-exposure preference (see [`MarkdownMode`]).
+    pub fn markdown_mode(&self) -> MarkdownMode {
+        MarkdownMode::from_core(self.lock().doc.markdown_mode())
     }
 
-    /// Set the inline-reveal preference. Returns a fresh view so a frontend can
-    /// repaint. Inert on rendering today (the setting is stored and honoured by a
-    /// later render phase); Diaryx leaves it at the `Hidden` default.
-    pub fn set_reveal_mode(&self, mode: RevealMode) -> DocView {
+    /// Set the Markdown-exposure preference. Returns a fresh view so a frontend
+    /// can repaint — and under `Full` it must, because the returned view is the
+    /// first one showing the caret's line raw. Diaryx leaves it at the `None`
+    /// default.
+    pub fn set_markdown_mode(&self, mode: MarkdownMode) -> DocView {
         let mut g = self.lock();
-        g.doc.set_reveal_mode(mode.to_core());
+        g.doc.set_markdown_mode(mode.to_core());
         g.view()
     }
 
@@ -1202,7 +1212,7 @@ impl LeafDoc {
     }
 
     /// Set the soft-break flow preference. Returns a fresh view so a frontend
-    /// can repaint: unlike the reveal preference this one changes rendering
+    /// can repaint: like the Markdown-exposure preference this one changes rendering
     /// immediately, laying preserved soft breaks out as their own rows.
     pub fn set_line_flow(&self, mode: LineFlow) -> DocView {
         let mut g = self.lock();
@@ -1437,6 +1447,7 @@ fn role_name(r: Role) -> String {
         Role::QuoteGutter => "quote".into(),
         Role::Rule => "rule".into(),
         Role::Image => "image".into(),
+        Role::Delimiter => "delimiter".into(),
     }
 }
 

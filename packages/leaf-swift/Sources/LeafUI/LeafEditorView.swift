@@ -194,18 +194,24 @@ public final class LeafEditorModel: ObservableObject {
     public func redo() { run { $0.redo() } }
     public func toggleView() { run { $0.toggleView() } }
 
-    // ── inline reveal preference ──────────────────────────────────────────────
-    // Hidden (the default) is the clean surface Diaryx ships; CaretLine reveals
-    // the caret line's raw markdown for Markdown-fluent users. Stored today;
-    // honoured by the renderer in a later phase.
+    // ── markdown exposure preference ──────────────────────────────────────────
+    // A three-rung ladder, not a pair of toggles. `.none` (the default) is the
+    // clean surface Diaryx ships: delimiters hidden, and typed syntax kept
+    // literal so formatting comes from the toolbar. `.shortcuts` keeps the clean
+    // surface but lets typing `*x*` author real emphasis. `.full` additionally
+    // shows the caret line's raw markdown, for Markdown-fluent users.
+    //
+    // The fourth combination — reveal the delimiters but refuse the ones you
+    // type — is deliberately absent; source view (`toggleView`) is what serves
+    // reading raw markup without authoring it.
 
-    public var revealMode: RevealMode { doc.revealMode() }
-    public func setRevealMode(_ mode: RevealMode) { run { $0.setRevealMode(mode: mode) } }
+    public var markdownMode: MarkdownMode { doc.markdownMode() }
+    public func setMarkdownMode(_ mode: MarkdownMode) { run { $0.setMarkdownMode(mode: mode) } }
 
     // ── soft-break flow preference ────────────────────────────────────────────
     // Fold (the default) reflows soft breaks into the paragraph; Preserve renders
     // each where it was written, so a source laid out in semantic line breaks
-    // shows that structure. Unlike reveal, the renderer honours this immediately.
+    // shows that structure.
 
     public var lineFlow: LineFlow { doc.lineFlow() }
     public func setLineFlow(_ mode: LineFlow) { run { $0.setLineFlow(mode: mode) } }

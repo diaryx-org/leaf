@@ -47,7 +47,7 @@ use leaf_core::style::{Role, Style as LStyle};
 use leaf_core::wysiwyg::text_width;
 use leaf_core::{
     BlockKind, ColorScheme, Doc, Format, InlineKind, LineFlow as CoreLineFlow, MediaKind,
-    RevealMode as CoreRevealMode, View, VisualMap,
+    MarkdownMode as CoreMarkdownMode, View, VisualMap,
 };
 use serde::{Deserialize, Serialize};
 use tsify_next::Tsify;
@@ -248,6 +248,7 @@ fn role_name(r: Role) -> String {
         Role::QuoteGutter => "quote".into(),
         Role::Rule => "rule".into(),
         Role::Image => "image".into(),
+        Role::Delimiter => "delimiter".into(),
     }
 }
 
@@ -767,23 +768,26 @@ impl LeafDoc {
         self.view()
     }
 
-    /// The current inline-reveal preference as `"hidden"` or `"caret-line"`.
-    pub fn reveal_mode(&self) -> String {
-        match self.doc.reveal_mode() {
-            CoreRevealMode::Hidden => "hidden",
-            CoreRevealMode::CaretLine => "caret-line",
+    /// The current Markdown-exposure preference as `"none"`, `"shortcuts"` or
+    /// `"full"`.
+    pub fn markdown_mode(&self) -> String {
+        match self.doc.markdown_mode() {
+            CoreMarkdownMode::None => "none",
+            CoreMarkdownMode::Shortcuts => "shortcuts",
+            CoreMarkdownMode::Full => "full",
         }
         .to_string()
     }
 
-    /// Set the inline-reveal preference from `"hidden"` / `"caret-line"` (an
-    /// unknown value is ignored). Returns a fresh view to repaint. Inert on
-    /// rendering today — a later phase teaches the builder to honour it; the web
-    /// demo defaults to `"hidden"`, the clean surface.
-    pub fn set_reveal_mode(&mut self, mode: &str) -> Result<DocView, JsValue> {
+    /// Set the Markdown-exposure preference from `"none"` / `"shortcuts"` /
+    /// `"full"` (an unknown value is ignored). Returns a fresh view to repaint,
+    /// which under `"full"` is the first one showing the caret's line raw. The
+    /// web demo defaults to `"none"`, the clean surface.
+    pub fn set_markdown_mode(&mut self, mode: &str) -> Result<DocView, JsValue> {
         match mode {
-            "hidden" => self.doc.set_reveal_mode(CoreRevealMode::Hidden),
-            "caret-line" => self.doc.set_reveal_mode(CoreRevealMode::CaretLine),
+            "none" => self.doc.set_markdown_mode(CoreMarkdownMode::None),
+            "shortcuts" => self.doc.set_markdown_mode(CoreMarkdownMode::Shortcuts),
+            "full" => self.doc.set_markdown_mode(CoreMarkdownMode::Full),
             _ => {}
         }
         self.view()
@@ -799,8 +803,7 @@ impl LeafDoc {
     }
 
     /// Set the soft-break flow preference from `"fold"` / `"preserve"` (an
-    /// unknown value is ignored). Returns a fresh view to repaint. Unlike the
-    /// reveal preference this one changes rendering immediately: `"preserve"`
+    /// unknown value is ignored). Returns a fresh view to repaint: `"preserve"`
     /// lays each soft break out as its own row.
     pub fn set_line_flow(&mut self, mode: &str) -> Result<DocView, JsValue> {
         match mode {

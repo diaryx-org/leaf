@@ -851,6 +851,7 @@ pub fn build(
     wrap: Option<usize>,
     preserve_soft: bool,
     media_rows: &HashMap<String, usize>,
+    reveal: Option<Range<usize>>,
 ) -> VisualMap {
     let Some(doc) = nodes.iter().position(|n| n.kind == "doc") else {
         return VisualMap::default();
@@ -866,6 +867,7 @@ pub fn build(
         media_rows,
         break_glyph: Cell::new(' '),
         preserve_soft,
+        reveal: reveal.clone(),
     };
     b.top_blocks(&top);
     b.emit_trailing_blank_lines();
@@ -903,6 +905,7 @@ pub fn build_cached(
     wrap: Option<usize>,
     preserve_soft: bool,
     media_rows: &HashMap<String, usize>,
+    reveal: Option<Range<usize>>,
     cache: &mut BlockCache,
     mut fetch_subtree: impl FnMut(u32) -> Vec<FlatNode>,
 ) -> VisualMap {
@@ -934,6 +937,7 @@ pub fn build_cached(
         media_rows,
         break_glyph: Cell::new(' '),
         preserve_soft,
+        reveal: reveal.clone(),
     };
 
     // Record the per-block row decomposition as we go, so a later
@@ -950,11 +954,14 @@ pub fn build_cached(
         let after_sep = b.rows.len();
         let bytes = source.as_bytes().get(block.span.clone()).unwrap_or(&[]);
         let hash = block_hash(bytes);
+        // How this block meets the reveal line, if at all — part of its cache
+        // key, since the same bytes render differently on the caret's line.
+        let rkey = reveal_key(&reveal, &block.span);
 
         // Hit: clone the block's rows shifted to its current offset and restore
         // the (shifted) `last_off` so the next separator lands right — no marshal.
         // Only shift-safe blocks are ever cached, so a hit is safe by construction.
-        if let Some(hit) = cache.reuse(hash, bytes) {
+        if let Some(hit) = cache.reuse(hash, bytes, &rkey) {
             let delta = start as isize - hit.built_start as isize;
             for row in &hit.rows {
                 b.rows.push(shift_row(row, delta));
@@ -977,6 +984,7 @@ pub fn build_cached(
                     media_rows,
                     break_glyph: Cell::new(' '),
                     preserve_soft,
+                    reveal: reveal.clone(),
                 };
                 sub.block(0, &[], &[]);
                 let last_off = sub.last_off;
@@ -986,7 +994,7 @@ pub fn build_cached(
                 // fresh render always matches a fresh whole-document build).
                 if sub.tables.is_empty() {
                     if rows_within(&sub.rows, &block.span) {
-                        cache.store(hash, bytes, start, sub.rows.clone(), last_off);
+                        cache.store(hash, bytes, start, sub.rows.clone(), last_off, rkey);
                     }
                     b.rows.extend(sub.rows);
                 } else {
@@ -1030,6 +1038,7 @@ pub fn build_cached(
         built_len: source.len(),
         has_tables: !b.tables.is_empty(),
         all_shift_safe,
+        reveal: reveal.clone(),
     };
 
     // The first rendered offset is the first non-metadata block's start (0 when
@@ -1083,12 +1092,22 @@ pub fn build_spliced(
     top: &[QueryMatch],
     dirty: Range<usize>,
     media_rows: &HashMap<String, usize>,
+    reveal: Option<Range<usize>>,
     cache: &mut BlockCache,
     mut fetch_subtree: impl FnMut(u32) -> Vec<FlatNode>,
 ) -> Option<VisualMap> {
     let wrap = wrap.map(|w| w.max(8));
     // A width change invalidates every cached row — a full rebuild's job.
     if cache.wrap != Some(wrap) {
+        return None;
+    }
+    // So does a moved reveal line, and for the same reason: this path reuses
+    // every row outside the dirty block, and those rows encode which line was
+    // showing its raw markup when they were built. Typing almost always moves
+    // the caret, so under `MarkdownMode::Full` this bails to `build_cached` on
+    // most keystrokes — still block-cached, so only the edited block and the
+    // revealed one actually re-render.
+    if cache.layout.reveal != reveal {
         return None;
     }
     // Take the previous layout; on any bail below the caller rebuilds it (and the
@@ -1160,6 +1179,7 @@ pub fn build_spliced(
         media_rows,
         break_glyph: Cell::new(' '),
         preserve_soft,
+        reveal: reveal.clone(),
     };
     sub.block(0, &[], &[]);
     // A table, or content that renders outside the block's span (a degenerate
@@ -1221,6 +1241,7 @@ pub fn build_spliced(
         // otherwise) and the re-rendered block was just checked, so the patched
         // document is still entirely shift-safe.
         all_shift_safe: true,
+        reveal,
     };
 
     let code_blocks = code_block_spans(&rows);
@@ -1302,6 +1323,11 @@ struct Layout {
     /// outside its block — can't be shifted correctly, so its presence makes
     /// [`build_spliced`] bail to a full rebuild.
     all_shift_safe: bool,
+    /// The reveal line this layout was built under (see [`Builder::reveal`]).
+    /// A splice reuses every row it isn't re-rendering, so a reveal line that
+    /// has moved would leave the old line still showing its delimiters and the
+    /// new one still hiding them — [`build_spliced`] bails when this changes.
+    reveal: Option<Range<usize>>,
 }
 
 /// One top-level block's contribution to the last build: its span and kind (for
@@ -1329,28 +1355,67 @@ struct CachedBlock {
     /// `last_off` after this block was emitted, absolute as built — restored
     /// (shifted) on reuse so the following separator lands correctly.
     last_off: usize,
+    /// Where the reveal line fell *within this block* when the rows were built,
+    /// as a block-relative byte range — see [`reveal_key`]. Compared alongside
+    /// `bytes` on a hit, because identical source renders to different rows
+    /// depending on whether the caret's line is inside it: the same `*em*`
+    /// shows its asterisks on the revealed line and hides them everywhere else.
+    ///
+    /// Block-relative rather than absolute so an unaffected block still hits
+    /// after an edit shifts it, and `None` for the overwhelmingly common
+    /// no-reveal case — which is why an entry stored under `MarkdownMode::None`
+    /// keeps hitting for every block that isn't the caret's.
+    reveal: Option<Range<usize>>,
     /// The build that last reused or inserted this entry (see `generation`).
     generation: u64,
 }
 
+/// Where `reveal` falls inside a block, in block-relative bytes — the extra key
+/// a cached block is stored and matched under.
+///
+/// `None` when the block doesn't meet the reveal line at all, which is every
+/// block on every build in the two hidden modes, and all but one of them under
+/// [`crate::MarkdownMode::Full`]. So the cache keeps its hit rate as the caret
+/// moves: only the line the caret leaves and the line it arrives at re-render.
+fn reveal_key(reveal: &Option<Range<usize>>, span: &Range<usize>) -> Option<Range<usize>> {
+    let r = reveal.as_ref()?;
+    // The same generous intersection test `Builder::revealed` uses, so a block
+    // is keyed as revealed exactly when its glyphs will be built that way.
+    (span.start <= r.end && r.start <= span.end).then(|| {
+        let start = r.start.max(span.start) - span.start;
+        let end = r.end.min(span.end) - span.start;
+        start..end
+    })
+}
+
 impl BlockCache {
-    /// Look up a block by hash, verify its bytes, and on a hit stamp it used
-    /// this build and hand back a borrow to shift-and-clone from. `None` on a
-    /// miss (unknown hash, or a collision whose bytes differ).
-    fn reuse(&mut self, hash: u64, bytes: &[u8]) -> Option<&CachedBlock> {
+    /// Look up a block by hash, verify its bytes and reveal key, and on a hit
+    /// stamp it used this build and hand back a borrow to shift-and-clone from.
+    /// `None` on a miss (unknown hash, a collision whose bytes differ, or the
+    /// same bytes built under a different reveal).
+    fn reuse(&mut self, hash: u64, bytes: &[u8], reveal: &Option<Range<usize>>) -> Option<&CachedBlock> {
         let g = self.generation;
         let bucket = self.entries.get_mut(&hash)?;
-        let e = bucket.iter_mut().find(|e| &*e.bytes == bytes)?;
+        let e = bucket.iter_mut().find(|e| &*e.bytes == bytes && &e.reveal == reveal)?;
         e.generation = g;
         Some(&*e)
     }
 
     /// Cache the rows a freshly-rendered block produced (or refresh an existing
-    /// entry for the same bytes — an identical block elsewhere, or a re-render).
-    fn store(&mut self, hash: u64, bytes: &[u8], built_start: usize, rows: Vec<VRow>, last_off: usize) {
+    /// entry for the same bytes and reveal — an identical block elsewhere, or a
+    /// re-render).
+    fn store(
+        &mut self,
+        hash: u64,
+        bytes: &[u8],
+        built_start: usize,
+        rows: Vec<VRow>,
+        last_off: usize,
+        reveal: Option<Range<usize>>,
+    ) {
         let g = self.generation;
         let bucket = self.entries.entry(hash).or_default();
-        if let Some(e) = bucket.iter_mut().find(|e| &*e.bytes == bytes) {
+        if let Some(e) = bucket.iter_mut().find(|e| &*e.bytes == bytes && e.reveal == reveal) {
             e.built_start = built_start;
             e.rows = rows;
             e.last_off = last_off;
@@ -1361,6 +1426,7 @@ impl BlockCache {
                 built_start,
                 rows,
                 last_off,
+                reveal,
                 generation: g,
             });
         }
@@ -1601,9 +1667,107 @@ struct Builder<'a> {
     /// cell (where `break_glyph` is already `'\n'`) it has no effect: a cell is
     /// one line and folds its own soft breaks regardless.
     preserve_soft: bool,
+    /// The source byte range of the one line that should render its markup
+    /// *raw* — the caret's line under `MarkdownMode::Full` (see
+    /// [`crate::Doc::reveal_line`]). `None` in every other mode and view, which
+    /// is the delimiters-always-hidden behaviour every build had before the
+    /// preference existed.
+    ///
+    /// Read only by [`Builder::revealed`], which every delimiter-bearing arm of
+    /// [`Builder::inline`] consults. A range rather than a bare caret offset
+    /// because the decision is per-*node*, not per-caret: a node is revealed
+    /// when its span meets this line, so `*em*` shows both its asterisks even
+    /// with the caret at one end of it.
+    reveal: Option<Range<usize>>,
 }
 
 impl Builder<'_> {
+    /// Whether `span` belongs to the line that is showing its raw markup. True
+    /// only when a reveal line is set (`MarkdownMode::Full`) and the two ranges
+    /// actually meet.
+    ///
+    /// Touching at an endpoint counts: an emphasis ending exactly where the line
+    /// does is on that line, and a zero-length reveal range (the caret alone on
+    /// a blank line) still meets a node that starts there. The test is
+    /// deliberately generous — the failure it avoids is revealing one delimiter
+    /// of a pair while hiding the other, which looks like corruption rather than
+    /// like markup.
+    fn revealed(&self, span: &Range<usize>) -> bool {
+        self.reveal
+            .as_ref()
+            .is_some_and(|r| span.start <= r.end && r.start <= span.end)
+    }
+
+    /// The `(opening, closing)` source byte ranges of a node's delimiters — the
+    /// bytes its `span` holds that its `content_span` doesn't.
+    ///
+    /// This is how *every* inline delimiter is recovered, rather than a table of
+    /// spellings per kind: twig gives `*em*` a span of `13..17` and a content
+    /// span of `14..16`, so the gaps at each end are the delimiters, whatever
+    /// they happen to be. That matters because one kind has many spellings —
+    /// `*em*` and `_em_` are both emphasis, `` `x` `` and ``` ``x`` ``` both
+    /// verbatim — and re-deriving the text from the source is the only way to
+    /// show back what the author actually typed. It also gets a link's
+    /// asymmetric `[` / `](dest)` right for free.
+    ///
+    /// `None` when the node has no content span, or when content and span
+    /// coincide (nothing was elided, so there is nothing to reveal).
+    fn delims(&self, id: usize) -> Option<(Range<usize>, Range<usize>)> {
+        let node = &self.nodes[id];
+        let content = node.content_span.clone()?;
+        let span = node.span.clone();
+        // A content span that escapes its own node's span means the two are
+        // describing different things; reveal nothing rather than slice wildly.
+        if content.start < span.start || content.end > span.end {
+            return None;
+        }
+        let (open, close) = (span.start..content.start, content.end..span.end);
+        // A delimiter that spans a newline isn't this line's to reveal — a setext
+        // heading's `\n=====` underline is the case that arises in practice. It
+        // would also inject a `'\n'` glyph, which `emit_wrapped` reads as a hard
+        // row break, so the row would split where the author wrote no break.
+        let multiline = |r: &Range<usize>| self.source.get(r.clone()).is_some_and(|s| s.contains('\n'));
+        if multiline(&open) || multiline(&close) {
+            return None;
+        }
+        (!open.is_empty() || !close.is_empty()).then_some((open, close))
+    }
+
+    /// Emit the source bytes of `range` as revealed markup — real glyphs, each
+    /// mapped to its own source byte and each a caret stop, so a delimiter shown
+    /// is a delimiter that can be selected, edited and deleted like any other
+    /// text. Styled [`Role::Delimiter`] on top of the run's own style, which is
+    /// how a frontend tells scaffolding from prose and dims it.
+    ///
+    /// Deliberately *not* [`push_escaped_text`]: this is raw source, not parsed
+    /// text, so there is no escape-driven drift between the two to correct.
+    fn push_delim(&self, out: &mut Vec<Glyph>, range: &Range<usize>, base: Style) {
+        let Some(text) = self.source.get(range.clone()) else {
+            return;
+        };
+        push_text(out, text, range.start, base.role(Role::Delimiter));
+    }
+
+    /// Render an inline node's children wrapped in its raw delimiters when the
+    /// node is on the revealed line, and bare (delimiters resolved away) when it
+    /// isn't — the shared body of every delimiter-bearing arm of
+    /// [`inline`](Self::inline).
+    ///
+    /// `style` is the resolved styling the content still gets in *both* modes:
+    /// revealing `*em*` shows the asterisks *and* keeps the text italic, the
+    /// live-preview behaviour. Showing the markup is not the same as turning the
+    /// rendering off — that is what [`crate::View::Source`] is for.
+    fn inline_delimited(&self, id: usize, style: Style, out: &mut Vec<Glyph>) {
+        let show = self.revealed(&self.nodes[id].span).then(|| self.delims(id)).flatten();
+        if let Some((open, _)) = &show {
+            self.push_delim(out, open, style);
+        }
+        self.recurse(id, style, out);
+        if let Some((_, close)) = &show {
+            self.push_delim(out, close, style);
+        }
+    }
+
     fn children(&self, id: usize) -> Vec<usize> {
         let mut out = Vec::new();
         let mut c = self.nodes[id].first_child;
@@ -1739,7 +1903,19 @@ impl Builder<'_> {
                 }
                 let level = node.level.unwrap_or(1);
                 let style = heading_style(level);
-                let glyphs = self.inline_children_with_trailing(id, style);
+                let mut glyphs = Vec::new();
+                // On the revealed line the `# ` comes back as real, editable
+                // text in front of the heading. Only the opening marker: a
+                // closing `#`-run (`## title ##`) is covered by the same
+                // `delims` pair, and a setext underline is excluded there for
+                // being on another line entirely.
+                if let Some((open, close)) = self.revealed(&node.span).then(|| self.delims(id)).flatten() {
+                    self.push_delim(&mut glyphs, &open, style);
+                    glyphs.extend(self.inline_children_with_trailing(id, style));
+                    self.push_delim(&mut glyphs, &close, style);
+                } else {
+                    glyphs = self.inline_children_with_trailing(id, style);
+                }
                 // An *empty* heading — `# ` with nothing typed after it, which is
                 // what the toolbar's H1 leaves on a blank line — has no glyph for
                 // its row to end on, so the fallback below is the row's whole
@@ -2592,18 +2768,30 @@ impl Builder<'_> {
             "raw_inline" if self.break_glyph.get() == '\n' && is_br(node.text.as_deref()) => {
                 out.push(Glyph { ch: '\n', style: base, src: node.span.start, stop: true });
             }
-            "emph" => self.recurse(id, base.italic(), out),
-            "strong" => self.recurse(id, base.bold(), out),
-            "mark" => self.recurse(id, base.role(Role::Mark), out),
-            "insert" => self.recurse(id, base.underline(), out),
-            "delete" => self.recurse(id, base.strikethrough(), out),
-            "superscript" | "subscript" => self.recurse(id, base, out),
+            "emph" => self.inline_delimited(id, base.italic(), out),
+            "strong" => self.inline_delimited(id, base.bold(), out),
+            "mark" => self.inline_delimited(id, base.role(Role::Mark), out),
+            "insert" => self.inline_delimited(id, base.underline(), out),
+            "delete" => self.inline_delimited(id, base.strikethrough(), out),
+            "superscript" | "subscript" => self.inline_delimited(id, base, out),
             "verbatim" | "inline_math" => {
                 // The interior begins at `content_span.start` — past however many
                 // backticks the fence used, which `span.start + 1` only guessed
                 // right for a single one. Fall back to that guess if it's absent.
                 let at = node.content_span.as_ref().map_or(node.span.start + 1, |c| c.start);
-                push_text(out, node.text.as_deref().unwrap_or(""), at, base.role(Role::Code));
+                let style = base.role(Role::Code);
+                // Not `inline_delimited`: verbatim has no child nodes to recurse
+                // into — its content is its own `text` — so the fences bracket a
+                // `push_text` instead. The fences themselves keep `Role::Code`'s
+                // sibling treatment via `push_delim`'s role override.
+                let show = self.revealed(&node.span).then(|| self.delims(id)).flatten();
+                if let Some((open, _)) = &show {
+                    self.push_delim(out, open, style);
+                }
+                push_text(out, node.text.as_deref().unwrap_or(""), at, style);
+                if let Some((_, close)) = &show {
+                    self.push_delim(out, close, style);
+                }
             }
             // A text directive (`:name[label]{…}`) — the inline form of a generic
             // directive. Its `[label]` children are the visible text; the name and
@@ -2666,6 +2854,15 @@ impl Builder<'_> {
             // invisible, not that it was underspecified.
             "footnote_reference" => {
                 let style = base.role(Role::Link);
+                // Revealed, the reference is just its source bytes: the `^` that
+                // is normally elided comes back and every byte becomes a real
+                // stop, so the brackets stop being decoration and start being
+                // text. That's the whole point of the mode, and it replaces the
+                // hand-built chip below rather than decorating it.
+                if self.revealed(&node.span) {
+                    self.push_delim(out, &node.span, style);
+                    return;
+                }
                 // The label's own span, so its glyphs map to their true bytes.
                 // Absent one, it starts past the `[^` that opens the reference.
                 let (label, at) = match &node.content_span {
@@ -2684,9 +2881,15 @@ impl Builder<'_> {
             "link" | "url" | "email" => {
                 let style = base.role(Role::Link);
                 if self.children(id).is_empty() {
+                    // A bare autolink (`<a@b.c>`, a naked URL): the destination
+                    // *is* the visible text, so there is nothing elided to
+                    // reveal and both modes draw the same thing.
                     push_text(out, node.destination.as_deref().or(node.text.as_deref()).unwrap_or("link"), node.span.start, style);
                 } else {
-                    self.recurse(id, style, out);
+                    // An inline link reveals asymmetrically — `[` before the
+                    // label, `](dest)` after it — which the generic
+                    // span-minus-content derivation already produces.
+                    self.inline_delimited(id, style, out);
                 }
             }
             _ => {
@@ -3753,14 +3956,14 @@ mod tests {
     /// [`map`] with soft breaks preserved (`LineFlow::Preserve`).
     fn map_preserve(src: &str, wrap: Option<usize>) -> VisualMap {
         let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
-        build(&ed.nodes().unwrap(), src, wrap, true, &HashMap::new())
+        build(&ed.nodes().unwrap(), src, wrap, true, &HashMap::new(), None)
     }
 
     /// The cache-free reference [`build`], with no per-image height overrides —
     /// every block image stays its default one-row placeholder. The tests that
     /// need a taller image drive it through [`crate::Doc::set_media_rows`] instead.
     fn build_t(nodes: &[FlatNode], src: &str, wrap: Option<usize>) -> VisualMap {
-        build(nodes, src, wrap, false, &HashMap::new())
+        build(nodes, src, wrap, false, &HashMap::new(), None)
     }
 
     fn rendered(m: &VisualMap) -> String {
@@ -3782,9 +3985,9 @@ mod tests {
     ) -> (VisualMap, VisualMap) {
         let all = ed.nodes().unwrap();
         let media_rows = HashMap::new();
-        let plain = build(&all, src, wrap, false, &media_rows);
+        let plain = build(&all, src, wrap, false, &media_rows, None);
         let top = top_blocks(ed, src);
-        let cached = build_cached(&top, src, wrap, false, &media_rows, cache, |id| {
+        let cached = build_cached(&top, src, wrap, false, &media_rows, None, cache, |id| {
             ed.subtree(NodeId(id)).unwrap_or_default()
         });
         (plain, cached)

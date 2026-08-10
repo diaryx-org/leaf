@@ -99,10 +99,15 @@ export class LeafEditor {
   selectAll(): void;
   /** Switch between the WYSIWYG surface and the raw source. */
   toggleView(): void;
-  /** The inline-reveal preference. */
-  revealMode(): "hidden" | "caret-line";
-  /** Set the inline-reveal preference (inert on rendering until a later phase). */
-  setRevealMode(mode: "hidden" | "caret-line"): void;
+  /** The Markdown-exposure preference. */
+  markdownMode(): "none" | "shortcuts" | "full";
+  /**
+   * Set the Markdown-exposure preference. `"none"` (the default) hides
+   * delimiters and keeps typed syntax literal; `"shortcuts"` still hides them
+   * but lets typing author markup; `"full"` also shows the caret line's raw
+   * markdown, whose delimiters arrive as runs with `role: "delimiter"`.
+   */
+  setMarkdownMode(mode: "none" | "shortcuts" | "full"): void;
 }
 
 // Selection gestures are handled internally on mousedown by click count

@@ -995,6 +995,10 @@ const EDITOR_CSS = `
 .leaf-r-list { color: var(--leaf-muted); }
 .leaf-r-quote { color: var(--leaf-muted); }
 .leaf-r-rule { color: var(--leaf-muted); }
+/* Raw markup revealed on the caret's line under the "full" markdown mode: the
+   `*` around an emphasis, a heading's `# `, a link's `](dest)`. Muted like the
+   other scaffolding roles so the line still reads as prose, not as source. */
+.leaf-r-delimiter { color: var(--leaf-muted); }
 
 /* Inline code (a run outside a fenced block): a monospace pill. */
 .leaf-row:not(.code) .leaf-r-code {
