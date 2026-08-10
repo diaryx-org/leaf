@@ -5590,6 +5590,38 @@ mod tests {
     }
 
     #[test]
+    fn a_heading_typed_on_a_blank_line_keeps_the_caret_on_its_own_row() {
+        // The reported bug, end to end: click a blank line with another one under
+        // it, press H1, type. The text landed in the heading and the caret's
+        // offset was right (the source view drew it there), but the rich view
+        // drew it two rows lower, on the trailing blank line — the empty `# `
+        // heading had left every row below it short by the marker's two bytes,
+        // and the blank line ended up claiming the heading's own end offset.
+        let mut d = wysiwyg_doc("head_blank", "one\n\ntwo\n\n\n\n");
+        d.build_visual_unwrapped();
+        d.caret = d.vmap.offset_of_pos(4, 0); // the first of the two blank lines
+        d.toggle_heading(1);
+        for c in "title".chars() {
+            d.insert(&c.to_string());
+            d.build_visual_unwrapped(); // as a frontend does, one frame per key
+        }
+        assert_eq!(d.source, "one\n\ntwo\n\n# title\n\n");
+        assert_eq!(d.caret_pos(), (4, 5), "the caret draws at the end of the heading");
+    }
+
+    #[test]
+    fn clicking_an_empty_heading_types_after_its_marker() {
+        // The same anchor from the other side: the empty heading's row is its own
+        // caret home, so a click on it must land past the hidden `# `. Landing in
+        // front of the hashes made the first keystroke un-heading the line.
+        let mut d = wysiwyg_doc("head_click", "# \n");
+        d.build_visual_unwrapped();
+        d.caret = d.vmap.offset_of_pos(0, 0);
+        d.insert("x");
+        assert_eq!(d.source, "# x\n");
+    }
+
+    #[test]
     fn wysiwyg_enter_after_a_heading_makes_a_paragraph() {
         let mut d = wysiwyg_doc("head_enter", "# Title\n");
         d.caret = 7; // end of the heading

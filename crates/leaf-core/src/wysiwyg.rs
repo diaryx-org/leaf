@@ -1531,6 +1531,25 @@ fn footnote_label(source: &str, start: usize) -> Option<&str> {
     Some(&rest[..end])
 }
 
+/// Where a heading's *content* starts — past the `#`s and the space the rich
+/// view hides, for an ATX heading; the block's own start for a setext one (which
+/// has no leading marker) and for a format that spells headings some other way.
+///
+/// Only an empty heading needs asking: with any content at all, the row ends on
+/// its last glyph. Bounded to the heading's own first line so a marker-less
+/// heading can't scan into the text under it.
+fn heading_content_start(source: &str, span: &Range<usize>) -> usize {
+    let end = span.end.min(source.len());
+    let Some(line) = source.get(span.start..end) else { return span.start };
+    let line = line.split('\n').next().unwrap_or("");
+    let hashes = line.len() - line.trim_start_matches('#').len();
+    if hashes == 0 {
+        return span.start;
+    }
+    let after = &line[hashes..];
+    span.start + hashes + (after.len() - after.trim_start_matches([' ', '\t']).len())
+}
+
 struct Builder<'a> {
     nodes: &'a [FlatNode],
     /// The document source, consulted to place blank-line rows at the source
@@ -1703,7 +1722,18 @@ impl Builder<'_> {
                 }
                 let style = heading_style(node.level.unwrap_or(1));
                 let glyphs = self.inline_children_with_trailing(id, style);
-                self.emit_wrapped(glyphs, node.span.start, pf, pc);
+                // An *empty* heading — `# ` with nothing typed after it, which is
+                // what the toolbar's H1 leaves on a blank line — has no glyph for
+                // its row to end on, so the fallback below is the row's whole
+                // extent: its only caret stop, and the offset every row after it
+                // is measured from. The block's start is the wrong answer for
+                // both, because it sits *in front of* the `# ` the rich view
+                // hides: the caret drew (and typed) before the hashes, and the
+                // rows below inherited an offset short by the marker's length,
+                // which put the caret on one of them the moment the heading grew
+                // text. Its content's start is where the caret belongs.
+                let home = heading_content_start(self.source, &node.span);
+                self.emit_wrapped(glyphs, home, pf, pc);
             }
             "block_quote" => {
                 let gutter = synth("│ ", Role::QuoteGutter, node.span.start);
@@ -5102,6 +5132,40 @@ mod tests {
         assert_eq!(m.rows[1].glyphs.iter().map(|g| g.ch).collect::<String>(), "2. ");
         assert!(m.is_stop(m.rows[1].end_src));
         assert_eq!(m.pos_of_offset(m.rows[1].end_src), (1, 3), "caret sits after '2. '");
+    }
+
+    #[test]
+    fn an_empty_headings_caret_home_is_past_its_hidden_marker() {
+        // The toolbar's H1 on a blank line writes `# ` and nothing else. The row
+        // it renders is empty (the marker is hidden), so its end *is* its only
+        // caret stop — and it has to be the offset past the `# `, where typing
+        // continues the heading. Anchored at the block's start instead, the caret
+        // drew in front of the hashes and the first character typed there landed
+        // before them (`x# `), which isn't a heading at all.
+        let m = map("# \n");
+        assert_eq!(m.num_rows(), 1);
+        assert!(m.rows[0].glyphs.is_empty(), "the `# ` marker is hidden");
+        assert_eq!(m.rows[0].end_src, 2, "the caret home is past the marker");
+        assert!(m.is_stop(2), "the empty heading's caret home is not a stop");
+    }
+
+    #[test]
+    fn an_empty_heading_leaves_the_rows_under_it_at_their_own_offsets() {
+        // The row's end is also what the *next* row's separator is measured from,
+        // so an empty heading that under-reported it shifted every offset below —
+        // and the blank line under the heading then claimed the same offset as the
+        // heading's own end. `pos_of_offset` resolves such a tie downstream (a
+        // soft wrap belongs to the row below), so the caret at the end of the
+        // heading was drawn two rows lower, on the blank line.
+        // `text\n\n# \n\n`: the heading's content opens at 8, and the two rows
+        // under it end at 9 and 10 — the blank line and the document's end.
+        let m = map("text\n\n# \n\n");
+        let end = m.rows.last().expect("a trailing blank row").end_src;
+        assert_eq!(end, 10, "the trailing rows must end at their real offsets");
+        // The heading's caret home is its own row's, not one shared with a row
+        // below — the tie that drew the caret two rows down.
+        assert_eq!(m.pos_of_offset(8), (2, 0), "the empty heading's own row");
+        assert!(m.rows[3..].iter().all(|r| r.end_src > 8), "rows below own later offsets");
     }
 
     #[test]
