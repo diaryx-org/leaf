@@ -1156,6 +1156,78 @@ impl Doc {
             .unwrap_or(off)
     }
 
+    /// The offset a *delete* aimed at the character before `off` should stop at,
+    /// when `off` is the start of a run's text and the bytes behind it are that
+    /// run's opening delimiter. The rich view draws no glyph for a `**`, so the
+    /// byte behind the caret at the start of a bold word is not a character the
+    /// writer can see, let alone one they aimed Backspace at: taking it leaves
+    /// `a *bold** c` — the styling gone and a literal asterisk in its place. The
+    /// delete steps over the whole delimiter to the visible character in front of
+    /// it instead. Walks out to the *outermost* mark opening there, so
+    /// `**_x_**` clears every delimiter at once, and is a no-op anywhere else.
+    fn skip_leading_open_delims(&mut self, off: usize) -> usize {
+        let off = off.min(self.source.len());
+        self.editor
+            .ancestors_at(off)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|m| inline_kind(&m.kind).is_some())
+            .filter(|m| m.span.start < off && m.content_span.as_ref().is_some_and(|c| c.start == off))
+            .map(|m| m.span.start)
+            .min()
+            .unwrap_or(off)
+    }
+
+    /// `off` moved *inside* the run whose closing delimiters end there — the
+    /// other offset the rich view draws in the same place, since a `**` renders
+    /// no glyph of its own. `**bold**` has a caret home on each side of its
+    /// closing delimiter, one column apart on screen and eight bytes and a whole
+    /// run apart in the file, and a plain ← lands on the outer one whenever a
+    /// space follows the phrase. The inner one is what the writer is pointing at
+    /// there: the end of their bold word. Walks in through every mark closing at
+    /// that point, innermost last, so `***both***` lands inside both. A no-op
+    /// anywhere else — mid-run, or in prose, no mark's span ends at `off`.
+    fn step_inside_close_delims(&mut self, off: usize) -> usize {
+        let mut off = off.min(self.source.len());
+        loop {
+            let inner = self
+                .editor
+                .ancestors_at(prev_boundary(&self.source, off))
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|m| inline_kind(&m.kind).is_some() && m.span.end == off)
+                .filter_map(|m| m.content_span.clone().map(|c| c.end))
+                .filter(|&end| end < off)
+                .max();
+            match inner {
+                Some(end) => off = end,
+                None => return off,
+            }
+        }
+    }
+
+    /// The mirror at the opening edge: `off` moved inside the run whose
+    /// delimiters *start* there, onto the first character of its text. See
+    /// [`step_inside_close_delims`](Self::step_inside_close_delims).
+    fn step_inside_open_delims(&mut self, off: usize) -> usize {
+        let mut off = off.min(self.source.len());
+        loop {
+            let inner = self
+                .editor
+                .ancestors_at(off)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|m| inline_kind(&m.kind).is_some() && m.span.start == off)
+                .filter_map(|m| m.content_span.clone().map(|c| c.start))
+                .filter(|&start| start > off)
+                .min();
+            match inner {
+                Some(start) => off = start,
+                None => return off,
+            }
+        }
+    }
+
     /// The inline mark kinds whose span covers `off`, each with that span — the
     /// span-carrying sibling of [`marks_at`](Self::marks_at), which reports node
     /// ids instead. Used to shed a mark by stepping past the end of its run.
@@ -1714,9 +1786,23 @@ impl Doc {
                     return;
                 }
             }
+            // Aim the delete at the character the writer can *see* behind the
+            // caret, never at a delimiter the rich view drew nothing for. Two
+            // steps, and either can apply: from the far side of a run's closing
+            // `**` step back into the run (the caret is drawn at the end of its
+            // word), and at the start of a run's text step out past its opening
+            // `**` to the character in front of it, leaving the run standing.
+            // Without them a plain Backspace unspells the phrase it is editing
+            // and leaves a literal asterisk on screen.
+            let end = if self.view == View::Source {
+                self.caret
+            } else {
+                let inside = self.step_inside_close_delims(self.caret);
+                self.skip_leading_open_delims(inside).max(self.caret_floor())
+            };
             // Never delete back across the floor — that would eat hidden
             // frontmatter the WYSIWYG caret can't even see.
-            let mut prev = prev_boundary(&self.source, self.caret).max(self.caret_floor());
+            let mut prev = prev_boundary(&self.source, end).max(self.caret_floor());
             // Take a hidden escape backslash with the char it escapes: the rich
             // view draws `\*` as a single `*`, so Backspace over it must delete
             // both bytes, never strand the `\` as a lone visible backslash (the
@@ -1728,7 +1814,9 @@ impl Doc {
             {
                 prev -= 1;
             }
-            self.splice(prev, self.caret, "", EditKind::Delete);
+            if prev < end {
+                self.splice(prev, end, "", EditKind::Delete);
+            }
         }
     }
 
@@ -1886,8 +1974,23 @@ impl Doc {
                 self.splice(start, end, "", EditKind::Delete);
                 return;
             }
-            let next = next_boundary(&self.source, self.caret);
-            self.splice(self.caret, next, "", EditKind::Delete);
+            // The mirror of Backspace's two steps: from in front of a run's
+            // opening `**` step into it, onto the first letter of its text, and
+            // at the end of a run's text step out past its closing `**` to the
+            // character beyond. Either way Delete takes the character it looks
+            // like it is pointing at, and never a delimiter drawn as nothing.
+            // The caret then settles back inside the run it was standing in —
+            // see `settle_inside_close_delims`.
+            let from = if self.view == View::Source {
+                self.caret
+            } else {
+                let inside = self.step_inside_open_delims(self.caret);
+                self.skip_trailing_close_delims(inside)
+            };
+            let next = next_boundary(&self.source, from);
+            if from < next {
+                self.splice(from, next, "", EditKind::Delete);
+            }
         }
     }
 
@@ -2043,7 +2146,46 @@ impl Doc {
         if let Some(fix) = fix {
             self.repair_mark_edges(fix);
         }
+        if text.is_empty() && end > start {
+            self.settle_inside_close_delims();
+        }
         true
+    }
+
+    /// After a delete, take a caret left standing past a run's closing delimiters
+    /// back inside the run.
+    ///
+    /// A delete leaves the caret where the deleted bytes began, and when those
+    /// bytes were the last thing after a marked phrase — the space the mark-edge
+    /// rule pushed out of `**bold** `, say — that spot is the far side of the
+    /// closing `**`. The rich view has nothing to draw there: the delimiters are
+    /// hidden, so the caret shows at the end of the word either way, and the two
+    /// offsets are one place on screen with two different meanings. Typing at the
+    /// outer one lands past the run, so the writer who backspaced a space out of
+    /// their bold phrase watches the next character come out plain, and the
+    /// toolbar button go dark, with the caret never appearing to move.
+    ///
+    /// The end of the run's text is the caret's home there — a delete that took
+    /// away everything after a phrase leaves the caret at the end of that phrase,
+    /// which is inside it — so it settles onto that
+    /// ([`step_inside_close_delims`](Self::step_inside_close_delims) does the
+    /// walk, through every mark closing at the point): the word stays bold, the
+    /// button stays lit, and the next character carries on the phrase.
+    ///
+    /// Rich view only, and only where a mark really closes at the caret — mid-run
+    /// or in plain prose no span ends there and the caret stays put. The opening
+    /// edge is left alone on purpose: a caret in front of a run inherits from the
+    /// text on its left, which is the plain text outside.
+    fn settle_inside_close_delims(&mut self) {
+        if self.view != View::Wysiwyg {
+            return;
+        }
+        let at = self.step_inside_close_delims(self.caret);
+        if at != self.caret {
+            self.caret = at;
+            self.clear_pending();
+            self.record_caret();
+        }
     }
 
     /// The splice exactly as asked, with no mark-edge repair — for the callers
@@ -5065,6 +5207,158 @@ mod tests {
         d.caret = 7;
         d.insert(" ");
         assert_eq!(d.source, "a `code ` c\n");
+    }
+
+    #[test]
+    fn a_delete_from_a_runs_outer_edge_reaches_into_the_run() {
+        // A run's closing delimiter has a caret home on each side of it, one
+        // column apart on screen — and a plain ← off the space after a bold word
+        // lands on the outer one. The character drawn behind the caret there is
+        // still the last letter of the phrase, so that is what Backspace takes;
+        // the byte behind it is a `*` nobody can see.
+        let mut d = wysiwyg_doc("edge_outer_close", "**bold** x\n");
+        d.caret = 9;
+        d.move_left(false);
+        assert_eq!(d.caret, 8, "← rests past the delimiters, not inside them");
+        d.backspace();
+        assert_eq!(d.source, "**bol** x\n", "a letter of the phrase, not its `*`");
+        assert_eq!(d.caret, 5);
+
+        // And the mirror in front of the opening delimiter, where Delete's
+        // character is the first letter of the run.
+        let mut d = wysiwyg_doc("edge_outer_open", "x**bold**\n");
+        d.caret = 1;
+        d.delete_forward();
+        assert_eq!(d.source, "x**old**\n");
+        assert_eq!(d.caret, 3, "inside the run, in front of what is left of it");
+    }
+
+    #[test]
+    fn a_delete_at_a_run_edge_never_eats_a_delimiter() {
+        // The byte beside the caret at either edge of a bold word is a `*` the
+        // rich view draws nothing for. Taking it is not the character delete the
+        // key was pressed for — it unspells the run and puts a literal asterisk
+        // on screen (`a *bold** c`). The visible character is the one that goes.
+        let mut d = wysiwyg_doc("edge_open_bksp", "a **bold** c\n");
+        d.caret = 4; // in front of the "b"
+        d.backspace();
+        assert_eq!(d.source, "a**bold** c\n", "the space goes, the run stands");
+
+        let mut d = wysiwyg_doc("edge_close_del", "a **bold** c\n");
+        d.caret = 8; // past the "d"
+        d.delete_forward();
+        assert_eq!(d.source, "a **bold**c\n");
+        assert_eq!(d.caret, 8, "and the caret stays inside the run");
+        d.insert("x");
+        assert_eq!(d.source, "a **boldx**c\n");
+
+        // A code span's backticks are hidden the same way, so they are covered
+        // by the same rule and not by a list of kinds.
+        let mut d = wysiwyg_doc("edge_open_code", "a `code` c\n");
+        d.caret = 3;
+        d.backspace();
+        assert_eq!(d.source, "a`code` c\n");
+    }
+
+    #[test]
+    fn the_source_view_deletes_the_delimiter_byte_it_is_shown() {
+        // The asterisks are on the screen there and the caret can stand between
+        // them, so a delete takes exactly the byte it is aimed at.
+        let mut d = doc_with("edge_open_src", "a **bold** c\n");
+        d.caret = 4;
+        d.backspace();
+        assert_eq!(d.source, "a *bold** c\n");
+
+        let mut d = doc_with("edge_close_src", "a **bold** c\n");
+        d.caret = 8;
+        d.delete_forward();
+        assert_eq!(d.source, "a **bold* c\n");
+    }
+
+    #[test]
+    fn backspacing_the_space_out_of_a_bold_phrase_leaves_the_caret_in_it() {
+        // The reported bug, keystroke for keystroke: ⌘b, "bold", space, Backspace.
+        // The space had stepped outside the run (the mark-edge rule), taking the
+        // caret with it, so the delete put it back down on the far side of the
+        // closing `**` — one place on screen, and the wrong side of it. Typing
+        // came out plain and the toolbar went dark, with nothing to see.
+        let mut d = wysiwyg_doc("edge_bksp_space", "\n");
+        d.caret = 0;
+        d.toggle(InlineKind::Strong);
+        for c in "bold".chars() {
+            d.insert(&c.to_string());
+        }
+        d.insert(" ");
+        assert_eq!(d.source, "**bold** \n");
+        d.backspace();
+        assert_eq!(d.source, "**bold**\n", "the space goes, the delimiters stay");
+        assert_eq!(d.caret, 6, "and the caret comes back inside the run");
+        assert!(
+            d.active_inline_marks().contains(InlineKind::Strong),
+            "so the button is still lit"
+        );
+        d.insert("x");
+        assert_eq!(d.source, "**boldx**\n", "and the next character is still bold");
+    }
+
+    #[test]
+    fn a_second_backspace_there_deletes_a_letter_of_the_phrase() {
+        // What the stranded caret did next: the byte behind it was the closing
+        // `*`, so a second press took that instead of a letter — `**bold*`, the
+        // styling gone and an asterisk on the screen where the word had been.
+        let mut d = wysiwyg_doc("edge_bksp_twice", "\n");
+        d.caret = 0;
+        d.toggle(InlineKind::Strong);
+        for c in "bold ".chars() {
+            d.insert(&c.to_string());
+        }
+        assert_eq!(d.source, "**bold** \n");
+        d.backspace();
+        d.backspace();
+        assert_eq!(d.source, "**bol**\n", "the delete lands inside the run");
+        assert_eq!(d.caret, 5);
+    }
+
+    #[test]
+    fn a_delete_that_ends_at_a_nested_run_settles_inside_every_delimiter() {
+        // `***both***` closes two runs with one stack of asterisks: the caret has
+        // to walk in through all of them, or it lands between the emph and the
+        // strong and types half-marked.
+        let mut d = wysiwyg_doc("edge_bksp_nested", "***both*** \n");
+        d.caret = 11;
+        d.backspace();
+        assert_eq!(d.source, "***both***\n");
+        assert_eq!(d.caret, 7, "past the last letter, inside both runs");
+        d.insert("x");
+        assert_eq!(d.source, "***bothx***\n");
+    }
+
+    #[test]
+    fn a_delete_that_ends_mid_run_leaves_the_caret_where_it_fell() {
+        // The settle only moves a caret a run actually closed over. Ordinary
+        // deletes — inside a run, or in plain prose — are untouched.
+        let mut d = wysiwyg_doc("edge_bksp_mid", "a **bold** c\n");
+        d.caret = 8;
+        d.backspace();
+        assert_eq!(d.source, "a **bol** c\n");
+        assert_eq!(d.caret, 7);
+
+        let mut d = wysiwyg_doc("edge_bksp_plain", "plain\n");
+        d.caret = 5;
+        d.backspace();
+        assert_eq!(d.source, "plai\n");
+        assert_eq!(d.caret, 4);
+    }
+
+    #[test]
+    fn the_source_view_leaves_a_delete_where_it_landed() {
+        // The delimiters are on the screen there, so the offset past them is a
+        // place the caret can be seen to be — nothing to settle.
+        let mut d = doc_with("edge_bksp_src", "**bold** \n");
+        d.caret = 9;
+        d.backspace();
+        assert_eq!(d.source, "**bold**\n");
+        assert_eq!(d.caret, 8);
     }
 
     #[test]
