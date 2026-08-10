@@ -232,6 +232,16 @@ public final class LeafTextView: UIView, UITextInput {
     /// `textInteraction` has already placed the caret, which is the whole of what
     /// a tap on ordinary prose should do.
     @objc private func handleLinkTap(_ gesture: UITapGestureRecognizer) {
+        // A tap that lands while text is selected is the *selection's* — the
+        // system answers it by showing the edit menu over the selection or by
+        // dismissing it — and this handler has no business moving the caret out
+        // from under either. Which is also what keeps selection working at all:
+        // `linkTap` recognises simultaneously with `textInteraction`'s own
+        // gestures, so the second tap of a double-tap-to-select reaches both, and
+        // without this guard whichever ran last collapsed the word the other had
+        // just selected. Selecting text was impossible, and the Copy/Paste menu
+        // never appeared, because every tap ended as a bare caret.
+        guard !docView.hasSelection else { return }
         let point = gesture.location(in: self)
         // A tap on a video or audio box starts it — the box draws a play badge,
         // so that is what a tap on it should mean — and a tap on an *empty*
@@ -306,10 +316,18 @@ public final class LeafTextView: UIView, UITextInput {
     /// about the caret. That is not a side effect worth avoiding here: a tap
     /// places the caret at exactly this point regardless, and `textInteraction`
     /// is about to do the same thing with the same coordinate.
+    ///
+    /// Announced as the selection change it is, though, not as an edit:
+    /// `command`'s bracketing includes `textWillChange`/`textDidChange`, and
+    /// telling the text system the document changed under it mid-gesture is
+    /// enough for it to abandon the selection it was building. Nothing is edited
+    /// here, so only the selection pair is sent — which still leaves the system
+    /// re-reading `selectedTextRange`, and so agreeing with core about where the
+    /// caret ended up when core snapped the offset to a stop of its own.
     private func linkDestination(at point: CGPoint) -> String? {
         guard let position = closestPosition(to: point) as? LeafTextPosition else { return nil }
         let offset = UInt32(position.offset)
-        command { $0.setSelectionOffsets(anchor: offset, focus: offset) }
+        notifyingSelection { render(doc.setSelectionOffsets(anchor: offset, focus: offset)) }
         return doc.activatableTargetAtCaret(wikilinks: recognizesWikilinks)
     }
 
@@ -678,6 +696,16 @@ public final class LeafTextView: UIView, UITextInput {
         inputDelegate?.textWillChange(self)
         body()
         inputDelegate?.textDidChange(self)
+        inputDelegate?.selectionDidChange(self)
+    }
+
+    /// The same, for a change that moves the caret and leaves the text alone.
+    /// Worth keeping distinct from `notifyingDelegate`: a `textDidChange` says an
+    /// *edit* landed, and the text system acts on that — dropping the selection
+    /// it is mid-gesture on, and any marked text with it.
+    private func notifyingSelection(_ body: () -> Void) {
+        inputDelegate?.selectionWillChange(self)
+        body()
         inputDelegate?.selectionDidChange(self)
     }
 

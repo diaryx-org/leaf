@@ -103,3 +103,32 @@ targets:
           echo "leaf-ffi: cargo build -p leaf-ffi --target ${RUST_TARGET} ${CARGO_FLAGS}"
           rustup target add "${RUST_TARGET}" 2>/dev/null || true
           cargo build -p leaf-ffi --target "${RUST_TARGET}" ${CARGO_FLAGS}
+
+  # The iOS selection surface is the system's, not ours: `UITextInteraction`
+  # drives the double-tap, the handles and the edit menu through the
+  # `UITextInput` conformance. Nothing about that is reachable from a unit test,
+  # so this target taps the real thing on a simulator. iOS only.
+  LeafEditorUITests:
+    type: bundle.ui-testing
+    supportedDestinations: [iOS]
+    sources: [UITests]
+    dependencies:
+      - target: LeafEditorApp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.leaf.editor.ui.uitests
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGN_IDENTITY: ""
+        TEST_TARGET_NAME: LeafEditorApp
+
+schemes:
+  LeafEditorApp:
+    build:
+      targets:
+        LeafEditorApp: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets: [LeafEditorUITests]
