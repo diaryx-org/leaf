@@ -214,6 +214,30 @@ enum BreakEdge {
     Forward,
 }
 
+/// A re-spelling of one inline mark run, held ready in case the edit about to
+/// happen breaks it — see [`Doc::mark_edge_fix`] and [`Doc::repair_mark_edges`].
+/// Every offset in it is in the coordinates the document will have *after* the
+/// plain edit, since that is when it may be applied.
+struct MarkEdgeFix {
+    /// The run's kind, and an offset inside what was its content: together they
+    /// answer "did the plain edit actually break this mark?" — the question that
+    /// decides whether any of this is applied at all.
+    kind: InlineKind,
+    probe: usize,
+    /// The byte range to re-spell (the run's delimiters included) and its new
+    /// spelling, with the edge whitespace moved outside the delimiters.
+    start: usize,
+    end: usize,
+    text: String,
+    /// Where the caret belongs afterwards — the same place on screen it would
+    /// have had, which is now on the other side of a delimiter.
+    caret: usize,
+    /// The marks in force for text typed at that caret. The caret can land
+    /// outside a run it was inside, and the marks have to survive the move or
+    /// the toolbar goes dark mid-word.
+    want: InlineMarks,
+}
+
 /// The caret and selection at one moment — the part of a history step twig's
 /// `Change` cannot carry, because the caret is leaf's state and twig only knows
 /// about bytes. leaf serializes it into the opaque per-state blob twig now
@@ -741,10 +765,16 @@ impl Doc {
         // what the caret was standing beside stays a picture.
         self.open_paragraph_at_block_media(text);
         // Armed sticky marks (⌘b with no selection) turn the next typed text
-        // bold/italic/… and then retire — see `insert_with_marks`.
+        // bold/italic/… and then retire — see `insert_with_marks`. Whitespace is
+        // the exception: it takes no mark of its own and keeps the delta armed
+        // for the character behind it — see `insert_space_with_marks`.
         let pending = self.pending_here();
         if !pending.is_empty() && self.selection().is_none() && !text.is_empty() {
-            self.insert_with_marks(self.caret, text, pending);
+            if text.trim().is_empty() {
+                self.insert_space_with_marks(self.caret, text, pending);
+            } else {
+                self.insert_with_marks(self.caret, text, pending);
+            }
             return;
         }
         // Hidden reveal mode: typed syntax stays literal — twig escapes anything
@@ -772,12 +802,7 @@ impl Doc {
     /// markup by design and must not be escaped.
     fn insert_raw(&mut self, text: &str) {
         let (s, e) = self.selection().unwrap_or((self.caret, self.caret));
-        let kind = if text.chars().take(2).count() == 1 && text != "\n" {
-            EditKind::Insert
-        } else {
-            EditKind::Other
-        };
-        self.splice(s, e, text, kind);
+        self.splice(s, e, text, typed_edit_kind(text));
     }
 
     /// Open a paragraph for text about to be inserted at one of a block media's
@@ -909,14 +934,20 @@ impl Doc {
     /// fold into one undo step, so an overwrite undoes atomically (and restores
     /// the selection) exactly as a plain one does.
     fn insert_literal_typed(&mut self, text: &str) {
-        let kind = if text.chars().take(2).count() == 1 && text != "\n" {
-            EditKind::Insert
-        } else {
-            EditKind::Other
-        };
+        let kind = typed_edit_kind(text);
         match self.selection() {
             Some((s, e)) => {
                 if !self.splice(s, e, "", EditKind::Other) {
+                    return;
+                }
+                // Typing over a whole marked run takes its delimiters with it
+                // (the empty content couldn't hold them — see
+                // `repair_mark_edges`) and leaves its marks armed at the caret.
+                // The text taking the run's place inherits them, exactly as it
+                // would have by landing inside a run that survived.
+                let pending = self.pending_here();
+                if !pending.is_empty() && !text.trim().is_empty() {
+                    self.insert_with_marks(self.caret, text, pending);
                     return;
                 }
                 self.insert_literal_at(self.caret, text, kind, true);
@@ -956,6 +987,12 @@ impl Doc {
     fn insert_with_marks(&mut self, at: usize, text: &str, marks: InlineMarks) {
         let base = self.mark_spans_at(at);
         let base_set: InlineMarks = base.iter().map(|(k, _)| *k).collect();
+        // Nothing to shed, and a run of exactly these marks standing just behind
+        // the caret: carry on writing *that* run rather than opening a second
+        // one beside it.
+        if base_set.is_empty() && self.rejoin_run(at, text, marks) {
+            return;
+        }
         // Shed the marks we're turning off: step the insertion point past the
         // end of each run the caret sits in, so the new text falls outside it.
         let mut ins_at = at;
@@ -964,7 +1001,7 @@ impl Doc {
                 ins_at = ins_at.max(span.end);
             }
         }
-        if !self.splice(ins_at, ins_at, text, EditKind::Other) {
+        if !self.splice_exact(ins_at, ins_at, text, EditKind::Other) {
             return;
         }
         // The plain splice inserted exactly `text` at `ins_at`; that byte range
@@ -986,6 +1023,88 @@ impl Doc {
         self.pending_marks = InlineMarks::empty();
         self.pending_at = Some(self.caret);
         self.clamp_caret();
+        self.record_caret();
+    }
+
+    /// Carry on the marked run just behind `at` — moving its closing delimiters
+    /// out past the new text — instead of opening a second run of the same marks
+    /// beside it. Returns whether it did.
+    ///
+    /// This is the far half of the mark-edge rule (see [`splice`](Self::splice)).
+    /// A space typed after a bold word steps the caret out of the run, because
+    /// `**bold **` is not bold; the next character has to step back *in*, or the
+    /// writer who typed one bold phrase is left with `**bold** **and**` — two
+    /// runs that read the same to a reader but spell the file in a way nobody
+    /// wrote. Only whitespace may stand in the gap (a run doesn't reach across
+    /// words it isn't marking), and the marks behind it must be exactly the ones
+    /// armed — a run of *some* other kind is a neighbour, not this phrase.
+    fn rejoin_run(&mut self, at: usize, text: &str, marks: InlineMarks) -> bool {
+        if text.is_empty() || text.trim() != text {
+            return false;
+        }
+        let gap_at = self.source[..at].trim_end_matches(|c: char| c == ' ' || c == '\t').len();
+        // Walk in through the delimiters stacked at that point, innermost last:
+        // `***both*** ` closes two runs with one `***`, and rejoining means
+        // getting behind all of them.
+        let (mut cut, mut kinds) = (gap_at, InlineMarks::empty());
+        loop {
+            let Some((kind, content_end)) = self
+                .editor
+                .ancestors_at(prev_boundary(&self.source, cut))
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|m| m.span.end == cut)
+                .find_map(|m| Some((inline_kind(&m.kind)?, m.content_span.clone()?.end)))
+            else {
+                break;
+            };
+            if content_end >= cut {
+                break; // a mark with no closing delimiter to step behind
+            }
+            kinds.insert(kind);
+            cut = content_end;
+        }
+        if cut == gap_at || kinds != marks {
+            return false;
+        }
+        // Re-spell the tail: the gap, then the new text, then the delimiters that
+        // used to close in front of them — read out of the document rather than
+        // written from a table, so whatever twig spells them with is what moves.
+        let tail = format!("{}{text}{}", &self.source[gap_at..at], &self.source[cut..gap_at]);
+        if !self.splice_exact(cut, at, &tail, EditKind::Other) {
+            return false;
+        }
+        self.caret = (cut + (at - gap_at) + text.len()).min(self.source.len());
+        self.anchor = None;
+        self.last_edit_kind = None;
+        self.pending_marks = InlineMarks::empty();
+        self.pending_at = Some(self.caret);
+        self.clamp_caret();
+        self.record_caret();
+        true
+    }
+
+    /// Insert typed whitespace at a caret with sticky marks armed. Whitespace is
+    /// never itself wrapped: a mark around a space draws nothing a reader can
+    /// see, and in Markdown and Djot it draws its own delimiters instead
+    /// (`** **`). So the space goes in unmarked — outside any run the armed
+    /// marks are shedding — and the marks stay armed for the character after it,
+    /// which rejoins the run (see [`rejoin_run`](Self::rejoin_run)).
+    fn insert_space_with_marks(&mut self, at: usize, text: &str, marks: InlineMarks) {
+        let base = self.mark_spans_at(at);
+        // What the *next* character carries: the armed delta resolved against the
+        // marks in force here, which the space must not quietly drop.
+        let want = base.iter().map(|(k, _)| *k).collect::<InlineMarks>().xor(marks);
+        let mut ins_at = at;
+        for (kind, span) in &base {
+            if marks.contains(*kind) {
+                ins_at = ins_at.max(span.end);
+            }
+        }
+        if !self.splice(ins_at, ins_at, text, typed_edit_kind(text)) {
+            return;
+        }
+        self.rearm(want);
         self.record_caret();
     }
 
@@ -1897,14 +2016,49 @@ impl Doc {
         }
     }
 
-    /// One splice via twig's `edit_range`, then re-anchor the caret from the
-    /// returned `Change` and refresh the cached source. A reparse-breaking edit
-    /// (rare for Markdown/Djot) leaves the document untouched and reports.
+    /// One splice of document text, keeping the **mark-edge rule**: an inline
+    /// mark's content never begins or ends with whitespace. In Markdown and Djot
+    /// a delimiter standing against a space is not a delimiter at all — `**bold **`
+    /// is four literal asterisks around a word, and a rich view drawing the
+    /// document faithfully has no choice but to show them. That is correct
+    /// rendering of what the file says, and nobody typing a space after a bold
+    /// word meant to say it.
+    ///
+    /// So the space goes *outside* the run instead — `**bold** ` — which is the
+    /// same document to a reader and a live one to a parser. The caret follows it
+    /// out and keeps the marks armed (see [`rearm`](Self::rearm)), so the next
+    /// character rejoins the run (see [`rejoin_run`](Self::rejoin_run)) and the
+    /// writer sees one unbroken bold phrase, never a flash of raw syntax.
+    ///
+    /// Every ordinary edit — typing, deleting, pasting, an IME step — comes
+    /// through here, so the rule holds however the whitespace arrives at the
+    /// edge. The repair is decided *after* the plain edit, by asking whether the
+    /// mark actually died: a code span's backticks aren't whitespace-sensitive
+    /// (`` `code ` `` is still code), and nothing is re-spelled when nothing broke.
+    fn splice(&mut self, start: usize, end: usize, text: &str, kind: EditKind) -> bool {
+        let fix = self.mark_edge_fix(start, end, text);
+        if !self.splice_exact(start, end, text, kind) {
+            return false;
+        }
+        if let Some(fix) = fix {
+            self.repair_mark_edges(fix);
+        }
+        true
+    }
+
+    /// The splice exactly as asked, with no mark-edge repair — for the callers
+    /// that are *writing* the delimiters themselves ([`insert_with_marks`](Self::insert_with_marks)
+    /// and [`rejoin_run`](Self::rejoin_run)) and place their own offsets around
+    /// the bytes they inserted.
+    ///
+    /// One `edit_range` through twig, then re-anchor the caret from the returned
+    /// `Change` and refresh the cached source. A reparse-breaking edit (rare for
+    /// Markdown/Djot) leaves the document untouched and reports.
     ///
     /// Returns whether the edit landed — for a caller that has offsets of its
     /// own to place afterwards, which a rolled-back splice would leave pointing
     /// into text that never came to exist.
-    fn splice(&mut self, start: usize, end: usize, text: &str, kind: EditKind) -> bool {
+    fn splice_exact(&mut self, start: usize, end: usize, text: &str, kind: EditKind) -> bool {
         // twig records an undo step for every edit; when this one continues a
         // run of the same kind (typing, deleting), tell twig to fold it into the
         // step before it so the whole run undoes at once.
@@ -1939,6 +2093,159 @@ impl Doc {
         }
     }
 
+    /// The re-spelling that would keep the mark-edge rule for the edit
+    /// `[start, end)` → `text`, or `None` when the edit leaves no whitespace
+    /// against a delimiter and the plain splice is already right. Computed
+    /// *before* the edit, while the run's spans and delimiters can still be read
+    /// off the document; applied afterwards, and only if the mark really died —
+    /// see [`repair_mark_edges`](Self::repair_mark_edges).
+    ///
+    /// Rich view only. Source view is for typing raw markup, where a space put
+    /// against a `**` is exactly the character it looks like.
+    fn mark_edge_fix(&mut self, start: usize, end: usize, text: &str) -> Option<MarkEdgeFix> {
+        if self.view != View::Wysiwyg || start > end || end > self.source.len() {
+            return None;
+        }
+        // Every inline mark standing over the edit, outermost first, with the
+        // content span that says where its delimiters are.
+        let chain: Vec<(InlineKind, std::ops::Range<usize>, std::ops::Range<usize>)> = self
+            .editor
+            .ancestors_at(start)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|m| {
+                let kind = inline_kind(&m.kind)?;
+                let content = m.content_span.clone()?;
+                Some((kind, m.span.clone(), content))
+            })
+            .collect();
+        // The innermost run whose *content* holds the whole edit: the one whose
+        // text is being changed, rather than one the edit merely sits under.
+        let (kind, span, content) = chain
+            .iter()
+            .rev()
+            .find(|(_, _, c)| c.start <= start && end <= c.end)?
+            .clone();
+        // What that content becomes. Whitespace at either end of it is what
+        // would put out the mark.
+        let body = format!(
+            "{}{text}{}",
+            &self.source[content.start..start],
+            &self.source[end..content.end]
+        );
+        let (lead, trail) = if body.trim().is_empty() {
+            // Nothing but whitespace left: there is no content to mark at all,
+            // and the delimiters go with it rather than closing on a space.
+            (body.len(), 0)
+        } else {
+            (
+                body.len() - body.trim_start().len(),
+                body.len() - body.trim_end().len(),
+            )
+        };
+        // Nothing against a delimiter, and something still between them: the
+        // plain edit stands. An emptied run is broken just as surely (`**b**`
+        // with the `b` deleted is the literal `****`) and is re-spelt as the
+        // nothing it now says.
+        if lead == 0 && trail == 0 && !body.is_empty() {
+            return None;
+        }
+        // Marks that open or close exactly where this one does — `***both***` is
+        // two runs sharing an edge — spell their delimiters as one run of bytes,
+        // so the whitespace has to clear all of them together.
+        let (mut open_at, mut close_at) = (span.start, span.end);
+        for _ in 0..chain.len() {
+            match chain.iter().find(|(_, _, c)| c.start == open_at) {
+                Some((_, s, _)) => open_at = s.start,
+                None => break,
+            }
+        }
+        for _ in 0..chain.len() {
+            match chain.iter().find(|(_, _, c)| c.end == close_at) {
+                Some((_, s, _)) => close_at = s.end,
+                None => break,
+            }
+        }
+        let open = &self.source[open_at..content.start];
+        let close = &self.source[content.end..close_at];
+        let core = &body[lead..body.len() - trail];
+        let respelt = if core.is_empty() {
+            body.clone()
+        } else {
+            format!("{}{open}{core}{close}{}", &body[..lead], &body[body.len() - trail..])
+        };
+        // The caret sits just past the inserted text within the new content —
+        // which, when that lands in the whitespace, is now outside the delimiters.
+        let pos = (start - content.start) + text.len();
+        let caret = if core.is_empty() || pos <= lead {
+            open_at + pos
+        } else if pos >= lead + core.len() {
+            open_at + lead + open.len() + core.len() + close.len() + (pos - lead - core.len())
+        } else {
+            open_at + lead + open.len() + (pos - lead)
+        };
+        Some(MarkEdgeFix {
+            kind,
+            probe: content.start,
+            start: open_at,
+            end: close_at + text.len() - (end - start),
+            text: respelt,
+            caret,
+            // The marks in force here, resolved against any armed sticky delta —
+            // what the writer is typing in, and so what has to still be true on
+            // the far side of the delimiter the caret just stepped over.
+            want: chain
+                .iter()
+                .filter(|(_, s, _)| start < s.end)
+                .map(|(k, _, _)| *k)
+                .collect::<InlineMarks>()
+                .xor(self.pending_here()),
+        })
+    }
+
+    /// Apply a [`MarkEdgeFix`] — but only if the edit it was computed for really
+    /// did break the mark. Whether whitespace at a delimiter is fatal is the
+    /// format's business, not leaf's: `**bold **` is no longer strong, while
+    /// `` `code ` `` is still perfectly good verbatim, and Djot's braced spellings
+    /// don't care either. Asking the parser afterwards settles it for every kind
+    /// and format at once, and costs a re-spelling only where one is due.
+    ///
+    /// The repair rides along with the edit that caused it — one undo step puts
+    /// back what the writer typed, not a delimiter shuffle they never saw.
+    fn repair_mark_edges(&mut self, fix: MarkEdgeFix) {
+        if fix.end > self.source.len() {
+            return;
+        }
+        if self.marks_at(fix.probe).iter().any(|(k, _)| *k == fix.kind) {
+            return; // still a mark: these delimiters don't mind the whitespace
+        }
+        let resumed = self.last_edit_kind;
+        if !self.splice_exact(fix.start, fix.end, &fix.text, EditKind::Other) {
+            return;
+        }
+        let _ = self.editor.coalesce_last_undo();
+        // The keystroke owns the undo step, so the run of typing it belongs to
+        // keeps coalescing over the repair rather than breaking in two here.
+        self.last_edit_kind = resumed;
+        self.caret = fix.caret.min(self.source.len());
+        self.anchor = None;
+        self.goal_col = None;
+        self.rearm(fix.want);
+        self.clamp_caret();
+        self.record_caret();
+    }
+
+    /// Arm whatever sticky delta reproduces `want` at the caret — the marks the
+    /// writer is typing in, carried across an edit that moved the caret out of
+    /// the run holding them. Arms nothing when the caret already stands in
+    /// exactly those marks, but still remembers the spot, so a further ⌘b starts
+    /// a clean delta here (see [`toggle`](Self::toggle)).
+    fn rearm(&mut self, want: InlineMarks) {
+        let here: InlineMarks = self.marks_at(self.caret).into_iter().map(|(k, _)| k).collect();
+        self.pending_marks = want.xor(here);
+        self.pending_at = Some(self.caret);
+    }
+
     /// Insert `text` at `at` as a *literal* run via twig's `insert_literal`,
     /// which backslash-escapes any character that would otherwise open markup in
     /// this format and position (`*` → `\*`, a line-start `#` → `\#`). The mirror
@@ -1951,6 +2258,11 @@ impl Doc {
         // selection-delete of an overwrite) so the pair is one undo step; else it
         // coalesces only when it continues a run of the same-kind typing.
         let coalesce = force_coalesce || (kind != EditKind::Other && self.last_edit_kind == Some(kind));
+        // The mark-edge rule holds for typed text however it is spelled — see
+        // `splice`. Only an insert twig passed through unchanged can use it,
+        // since a fix is measured in the bytes that actually land, and an escape
+        // adds bytes this couldn't have counted.
+        let fix = self.mark_edge_fix(at, at, text);
         self.record_caret();
         match self.editor.insert_literal(at, text) {
             Ok(change) => {
@@ -1966,6 +2278,9 @@ impl Doc {
                 self.dirty = self.source != self.clean_source;
                 self.status = None;
                 self.record_caret();
+                if let Some(fix) = fix.filter(|_| change.new.end - change.new.start == text.len()) {
+                    self.repair_mark_edges(fix);
+                }
                 true
             }
             Err(e) => {
@@ -2091,6 +2406,19 @@ impl Doc {
             self.status = None;
             return;
         };
+        // Whitespace at the edge of a selection is not part of what was chosen —
+        // a double-click takes the space after the word with it — and a mark
+        // cannot close against one anyway: `**word **` is four literal asterisks
+        // (the mark-edge rule, see `splice`). Mark the words, leave the spaces.
+        let picked = &self.source[s..e];
+        let (s, e) = (
+            s + (picked.len() - picked.trim_start().len()),
+            e - (picked.len() - picked.trim_end().len()),
+        );
+        if s >= e {
+            self.status = Some(format!("{kind:?}: nothing selected to mark"));
+            return;
+        }
         // Styling a selection is a one-shot act, not a sticky mode.
         self.clear_pending();
         self.record_caret();
@@ -3751,6 +4079,17 @@ impl Doc {
 // marks moves and deletes as the single character a user sees. Grapheme
 // boundaries are a superset of char boundaries, so the caret stays valid for twig.
 
+/// How an insert of `text` groups for undo: a single typed character folds into
+/// the run of typing around it, while a newline or a multi-character insert is a
+/// step of its own.
+fn typed_edit_kind(text: &str) -> EditKind {
+    if text.chars().take(2).count() == 1 && text != "\n" {
+        EditKind::Insert
+    } else {
+        EditKind::Other
+    }
+}
+
 fn prev_boundary(s: &str, i: usize) -> usize {
     let mut cursor = GraphemeCursor::new(i, s.len(), true);
     cursor.prev_boundary(s, 0).ok().flatten().unwrap_or(0)
@@ -4602,6 +4941,184 @@ mod tests {
         let marks = d.active_inline_marks();
         assert!(marks.contains(InlineKind::Strong), "bold: {}", d.source);
         assert!(marks.contains(InlineKind::Emph), "italic: {}", d.source);
+    }
+
+    // ── the mark-edge rule (see `Doc::splice`) ───────────────────────────────
+
+    #[test]
+    fn a_space_typed_in_a_bold_run_never_leaves_the_delimiters_showing() {
+        // The reported bug, keystroke for keystroke: ⌘b, "bold", space, "hey".
+        // The space inside the run made `**bold **`, which is *not* bold — four
+        // literal asterisks — so the rich view drew them, correctly and
+        // uselessly, until the next character happened to close the run again.
+        let mut d = wysiwyg_doc("edge_typing", "a \n");
+        d.caret = 2;
+        d.toggle(InlineKind::Strong);
+        for c in "bold".chars() {
+            d.insert(&c.to_string());
+        }
+        assert_eq!(d.source, "a **bold**\n");
+        d.insert(" ");
+        assert_eq!(d.source, "a **bold** \n", "the space belongs outside the run");
+        assert!(
+            d.active_inline_marks().contains(InlineKind::Strong),
+            "bold is still what's being typed, so the button stays lit"
+        );
+        // What the writer is looking at while all this happens: their words.
+        d.build_visual(80);
+        let drawn: String = d.vmap.rows[0].glyphs.iter().map(|g| g.ch).collect();
+        assert_eq!(drawn, "a bold ", "no delimiter ever surfaces: {}", d.source);
+        for c in "hey".chars() {
+            d.insert(&c.to_string());
+        }
+        assert_eq!(d.source, "a **bold hey**\n", "one bold phrase, not two runs");
+    }
+
+    #[test]
+    fn typing_past_a_space_can_still_leave_the_bold_behind() {
+        // The other half: the marks stay armed across the space, so ⌘b turns
+        // them off again there and the next word is plain — the run isn't
+        // rejoined by a caret that was told not to.
+        let mut d = wysiwyg_doc("edge_shed", "\n");
+        d.caret = 0;
+        d.toggle(InlineKind::Strong);
+        for c in "bold ".chars() {
+            d.insert(&c.to_string());
+        }
+        assert_eq!(d.source, "**bold** \n");
+        d.toggle(InlineKind::Strong);
+        assert!(!d.active_inline_marks().contains(InlineKind::Strong));
+        d.insert("x");
+        assert_eq!(d.source, "**bold** x\n");
+    }
+
+    #[test]
+    fn a_space_typed_first_of_all_still_leaves_the_mark_armed() {
+        // ⌘b and then a space before any word: the space is not marked (nothing
+        // is), and the word after it is.
+        let mut d = wysiwyg_doc("edge_space_first", "a\n");
+        d.caret = 1;
+        d.toggle(InlineKind::Strong);
+        d.insert(" ");
+        assert_eq!(d.source, "a \n");
+        assert!(d.active_inline_marks().contains(InlineKind::Strong));
+        d.insert("b");
+        assert_eq!(d.source, "a **b**\n");
+    }
+
+    #[test]
+    fn a_space_typed_at_either_edge_of_an_existing_mark_steps_outside_it() {
+        let mut d = wysiwyg_doc("edge_tail", "x **bold**\n");
+        d.caret = 8; // the caret's home at the end of the run's text
+        d.insert(" ");
+        assert_eq!(d.source, "x **bold** \n", "the space lands past the delimiters");
+        assert_eq!(d.caret, 11, "and the caret stands past it, outside the run");
+
+        let mut d = wysiwyg_doc("edge_head", "x **bold** y\n");
+        d.caret = 4; // in front of the "b"
+        d.insert(" ");
+        assert_eq!(d.source, "x  **bold** y\n");
+        assert_eq!(d.caret, 3, "in front of the run, where the space was typed");
+    }
+
+    #[test]
+    fn a_delete_that_backs_a_space_onto_a_delimiter_moves_the_delimiter() {
+        // Backspace over the last letter of a bold phrase.
+        let mut d = wysiwyg_doc("edge_bksp", "a **bold h**\n");
+        d.caret = 10; // past the "h"
+        d.backspace();
+        assert_eq!(d.source, "a **bold** \n");
+        assert_eq!(d.caret, 11, "the caret keeps the place on screen it had");
+        assert!(d.active_inline_marks().contains(InlineKind::Strong));
+        d.insert("x");
+        assert_eq!(d.source, "a **bold x**\n", "and typing rejoins the run");
+    }
+
+    #[test]
+    fn deleting_the_last_of_a_run_takes_its_delimiters_with_it() {
+        // `**b**` with the `b` gone is `****`: two delimiters with nothing to
+        // mark, which is only text. The marks live on in the caret instead.
+        let mut d = wysiwyg_doc("edge_empty", "a **b** c\n");
+        d.caret = 5;
+        d.backspace();
+        assert_eq!(d.source, "a  c\n");
+        assert!(d.active_inline_marks().contains(InlineKind::Strong));
+        d.insert("x");
+        assert_eq!(d.source, "a **x** c\n");
+    }
+
+    #[test]
+    fn typing_over_a_whole_bold_word_keeps_it_bold() {
+        let mut d = wysiwyg_doc("edge_replace", "a **bold** c\n");
+        d.anchor = Some(4);
+        d.caret = 8; // the word, not its delimiters
+        d.insert("x");
+        assert_eq!(d.source, "a **x** c\n");
+    }
+
+    #[test]
+    fn a_code_span_keeps_the_space_it_is_given() {
+        // Backticks are not whitespace-sensitive the way `**` is: `` `code ` ``
+        // is still verbatim, so nothing is re-spelt. The repair asks the parser
+        // rather than a table of kinds, and this is the answer it gets.
+        let mut d = wysiwyg_doc("edge_code", "a `code` c\n");
+        d.caret = 7;
+        d.insert(" ");
+        assert_eq!(d.source, "a `code ` c\n");
+    }
+
+    #[test]
+    fn the_mark_edge_rule_clears_every_delimiter_of_a_nested_run() {
+        // `***both***` closes two runs with one stack of asterisks; a space that
+        // clears only the inner one lands against the outer's and breaks that
+        // instead.
+        let mut d = wysiwyg_doc("edge_nested", "a ***both***\n");
+        d.caret = 9;
+        d.insert(" ");
+        assert_eq!(d.source, "a ***both*** \n");
+        assert_eq!(d.caret, 13);
+        d.insert("x");
+        assert_eq!(d.source, "a ***both x***\n");
+    }
+
+    #[test]
+    fn the_mark_edge_repair_undoes_with_the_keystroke_that_caused_it() {
+        // The delimiter shuffle is not an edit the writer made, so it is not a
+        // step they have to undo past.
+        let mut d = wysiwyg_doc("edge_undo", "a **bold**\n");
+        d.caret = 8;
+        d.insert(" ");
+        assert_eq!(d.source, "a **bold** \n");
+        d.undo();
+        assert_eq!(d.source, "a **bold**\n");
+    }
+
+    #[test]
+    fn the_source_view_types_the_space_where_it_was_asked_to() {
+        // The rule is a rich-view courtesy. In the source view the delimiters are
+        // on the screen and the user is editing the bytes they can see.
+        let mut d = doc_with("edge_src", "a **bold** c\n");
+        d.caret = 8;
+        d.insert(" ");
+        assert_eq!(d.source, "a **bold ** c\n");
+    }
+
+    #[test]
+    fn toggling_a_mark_over_a_selection_leaves_its_edge_whitespace_out() {
+        // Double-clicking a word takes the space after it; bolding that must not
+        // spell `**word **`, which is not bold at all.
+        let mut d = wysiwyg_doc("edge_sel", "a word b\n");
+        d.anchor = Some(2);
+        d.caret = 7; // "word "
+        d.toggle(InlineKind::Strong);
+        assert_eq!(d.source, "a **word** b\n");
+        // And a selection of nothing but whitespace has no word to mark.
+        let mut d = wysiwyg_doc("edge_sel_ws", "a word b\n");
+        d.anchor = Some(6);
+        d.caret = 7;
+        d.toggle(InlineKind::Strong);
+        assert_eq!(d.source, "a word b\n");
+        assert!(d.status.is_some());
     }
 
     #[test]
@@ -7615,12 +8132,15 @@ mod tests {
     #[test]
     fn wysiwyg_word_delete_keeps_a_mark_that_still_has_text() {
         // Only an *emptied* node goes. Take one word of two and the `**` still
-        // has a job to do.
+        // has a job to do — over the word that's left, with the space the delete
+        // pushed against the opening delimiter moved out in front of it, or the
+        // run would be no run at all (`** words**` is literal asterisks — see
+        // the mark-edge rule on `splice`).
         let src = "a **two words** c\n";
         let mut d = wysiwyg_doc("wys_word_del_partial", src);
         d.caret = src.find(" words").unwrap();
         d.delete_word_back();
-        assert_eq!(d.source, "a ** words** c\n");
+        assert_eq!(d.source, "a  **words** c\n");
     }
 
     #[test]
