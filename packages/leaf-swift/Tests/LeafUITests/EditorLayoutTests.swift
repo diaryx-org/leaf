@@ -19,6 +19,20 @@ final class EditorLayoutTests: XCTestCase {
         XCTAssertEqual(layout.contentHeight, expected, accuracy: 0.5)
     }
 
+    func testAnEmptyHeadingRowLaysOutAtHeadingHeight() {
+        // `# ` with nothing typed after it — what the toolbar's H1 leaves on a
+        // blank line. Core carries the level on the row itself (an empty heading
+        // has no run to read it from), so the line box, and the caret standing in
+        // it, are heading-sized before the first character rather than after it.
+        let empty = row([], heading: 1)
+        let dv = docView([row([mkRun("a")]), empty], caretRow: 1)
+        let layout = EditorLayout(dv, theme: theme)
+        XCTAssertEqual(layout.rows[1].height, theme.rowHeight(heading: 1), accuracy: 0.5)
+        XCTAssertGreaterThan(layout.rows[1].height, layout.rows[0].height)
+        let caret = layout.caretRect(dv, theme: theme)
+        XCTAssertEqual(caret?.height ?? 0, theme.rowHeight(heading: 1), accuracy: 0.5)
+    }
+
     func testBlockGapRowIsShorterThanALine() {
         // Core spells a paragraph boundary with an empty decoration row. It must
         // lay out at the shrunk gap height, not a full line box — otherwise the

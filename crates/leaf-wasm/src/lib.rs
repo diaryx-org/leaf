@@ -855,14 +855,12 @@ fn wysiwyg_rows(vmap: &VisualMap, ss: usize, se: usize) -> Vec<Row> {
     vmap.rows
         .iter()
         .map(|vrow| {
-            // The row's heading level, if any: read off the first heading glyph.
-            // A heading block's whole line shares one level, so the first is the
-            // row's — this is what lets the renderer size the entire row rather
-            // than each run (see [`Row::heading`]).
-            let heading = vrow.glyphs.iter().find_map(|g| match g.style.role {
-                Role::Heading(level) => Some(level),
-                _ => None,
-            });
+            // The row's heading level, if any — straight off the row rather than
+            // scanned out of its glyphs (see [`Row::heading`]). An empty heading
+            // (`# ` with nothing typed yet) has no glyph to read a role from, and
+            // a renderer sizing the line by one drew it at body height until the
+            // first character landed.
+            let heading = vrow.heading;
 
             let mut runs: Vec<Run> = Vec::new();
             let mut buf = String::new();

@@ -2124,6 +2124,12 @@ impl Shaper<'_> {
         self.line_size(glyphs) * self.line_ratio
     }
 
+    /// The height a heading of `level` lays out at, for a row with no glyphs to
+    /// read the level off — see [`Logical::Line`]'s `heading`.
+    fn heading_row_height(&self, level: u8) -> Pixels {
+        self.body_size * heading_scale(level, &self.heading_scale) * self.line_ratio
+    }
+
     /// Shape `glyphs`, reusing an identical shape from the last paint if there
     /// is one.
     fn shape(&mut self, glyphs: &[Glyph], marked: Option<&Range<usize>>) -> Rc<ShapedLine> {
@@ -2487,7 +2493,17 @@ struct LayoutKey {
 /// output rows it produces are gathered into that block's on-screen span so the
 /// element can draw one border-and-tint box around the whole run.
 enum Logical {
-    Line { glyphs: Vec<Glyph>, end_src: usize, code: Option<usize>, decoration: bool },
+    /// `heading` is the row's heading level, straight off the map row: an empty
+    /// heading (`# ` with nothing typed after it) carries no glyph to read a
+    /// [`Role::Heading`] from, so its row would otherwise be laid out — and its
+    /// caret drawn — at body height until the first character landed.
+    Line {
+        glyphs: Vec<Glyph>,
+        end_src: usize,
+        code: Option<usize>,
+        decoration: bool,
+        heading: Option<u8>,
+    },
     Table(TableInfo),
     /// A block-level image, whose placeholder row (the `🖼 alt` picture core
     /// draws) is skipped the way a table's box rows are — the GUI paints the real
@@ -2527,6 +2543,8 @@ fn gather_logical(doc: &Doc) -> Vec<Logical> {
                     end_src: start + line.len(),
                     code: None,
                     decoration: false,
+                    // Source view draws raw markup at one size: the `# ` is text.
+                    heading: None,
                 });
                 start += line.len() + 1;
             }
@@ -2581,6 +2599,7 @@ fn gather_logical(doc: &Doc) -> Vec<Logical> {
                             // only decoration rows reaching here are the blank
                             // block-gap separators — laid out short below.
                             decoration: vrow.decoration,
+                            heading: vrow.heading,
                         });
                         r += 1;
                     }
@@ -3663,7 +3682,7 @@ impl Element for TextElement {
                 let mut image_geoms: Vec<ImageGeom> = Vec::new();
                 for logical in &logical_lines {
                     match logical {
-                        Logical::Line { glyphs, end_src, code, decoration } => {
+                        Logical::Line { glyphs, end_src, code, decoration, heading } => {
                             let before = rows.len();
                             // A code line never wraps — it scrolls inside its box —
                             // so it's laid out at an unbounded width and stays one
@@ -3673,7 +3692,16 @@ impl Element for TextElement {
                             // spacing, not a full blank line.
                             let gap = decoration
                                 .then(|| px(f32::from(line_height) * style.block_gap_scale));
-                            wrap_logical(&mut shaper, glyphs, *end_src, w, marked.as_ref(), gap, &mut rows);
+                            // An empty heading has no glyph to size its row by,
+                            // so the level the row carries does it instead. Only
+                            // when there are no glyphs: with text, the shaper
+                            // reads the same level off them and also handles a
+                            // heading that wraps.
+                            let head = (glyphs.is_empty() && gap.is_none())
+                                .then(|| heading.map(|l| shaper.heading_row_height(l)))
+                                .flatten();
+                            wrap_logical(&mut shaper, glyphs, *end_src, w, marked.as_ref(),
+                                         gap.or(head), &mut rows);
                             if let Some(id) = code {
                                 // Lines of one block are consecutive, so the first
                                 // opens its span and the rest extend it.
@@ -5161,6 +5189,31 @@ mod table_layout_tests {
     }
 
     // ── typographic roles ────────────────────────────────────────────────────
+
+    #[gpui::test]
+    fn an_empty_heading_row_is_still_a_heading_row(cx: &mut TestAppContext) {
+        // `# ` with nothing typed after it — what the toolbar's H1 leaves on a
+        // blank line — has no glyph carrying a `Role::Heading`, so sizing the row
+        // by its glyphs drew it (and the caret standing on it) at body height
+        // until the first character landed. The level rides the row instead.
+        let doc = doc_with("empty_heading_row", "body\n\n# \n");
+        let logical = gather_logical(&doc);
+        let heads: Vec<Option<u8>> = logical
+            .iter()
+            .filter_map(|l| match l {
+                Logical::Line { heading, .. } => Some(*heading),
+                _ => None,
+            })
+            .collect();
+        assert!(heads.contains(&Some(1)), "the empty heading's row lost its level: {heads:?}");
+
+        with_shaper(cx, |sh| {
+            assert!(
+                sh.heading_row_height(1) > sh.row_height(&[]),
+                "an empty h1 row must still be taller than a blank body row",
+            );
+        });
+    }
 
     #[gpui::test]
     fn a_heading_row_is_taller_than_a_body_row(cx: &mut TestAppContext) {

@@ -1461,14 +1461,6 @@ fn wysiwyg_rows(vmap: &VisualMap, ss: usize, se: usize) -> Vec<Row> {
     vmap.rows
         .iter()
         .map(|vrow| {
-            // The row's heading level, if any: read off the first heading glyph.
-            // A heading block's whole line shares one level, so the first is the
-            // row's — what lets the renderer size the entire row.
-            let heading = vrow.glyphs.iter().find_map(|g| match g.style.role {
-                Role::Heading(level) => Some(level),
-                _ => None,
-            });
-
             Row {
                 runs: runs_of(&vrow.glyphs, ss, se),
                 decoration: vrow.decoration,
@@ -1476,7 +1468,10 @@ fn wysiwyg_rows(vmap: &VisualMap, ss: usize, se: usize) -> Vec<Row> {
                 code_lang: vrow.code_lang.clone(),
                 directive: vrow.directive,
                 directive_label: vrow.directive_label.clone(),
-                heading,
+                // Straight off the row, not scanned out of its glyphs: an empty
+                // heading has none to scan, and a renderer sizing the line by a
+                // glyph's role drew `# ` at body height until it had text.
+                heading: vrow.heading,
             }
         })
         .collect()
@@ -1712,6 +1707,38 @@ mod tests {
 
     fn doc(src: &str) -> Arc<LeafDoc> {
         LeafDoc::new(src.to_string(), "markdown".to_string()).unwrap()
+    }
+
+    #[test]
+    fn an_empty_heading_crosses_the_boundary_carrying_its_level() {
+        // What the toolbar's H1 leaves on a blank line: a heading with no text
+        // yet. The renderer sizes a row by this field, so a `nil` here is a line
+        // (and a caret) drawn at body height that jumps to heading height on the
+        // first keystroke — the level can't be scanned out of the runs, because
+        // an empty heading has none.
+        let d = doc("body\n\n# \n");
+        let v = d.view();
+        let head = v.rows.last().expect("the heading's row");
+        assert!(head.runs.iter().all(|r| r.text.is_empty()), "the `# ` marker is hidden");
+        assert_eq!(head.heading, Some(1));
+        assert_eq!(v.rows[0].heading, None, "the paragraph above is not a heading");
+    }
+
+    #[test]
+    fn typing_into_a_heading_made_on_a_blank_line_keeps_the_caret_on_its_row() {
+        // The reported bug at the boundary the Swift renderer reads: with a blank
+        // line under it, the caret came back on a row two below the heading it
+        // was actually in, and the view drew it there.
+        let d = doc("one\n\ntwo\n\n\n\n");
+        let _ = d.click(4, 0, false); // the first of the two blank lines
+        let _ = d.set_heading(1);
+        let mut v = d.view();
+        for c in "title".chars() {
+            v = d.insert(c.to_string());
+        }
+        assert_eq!(d.source(), "one\n\ntwo\n\n# title\n\n");
+        assert_eq!((v.caret_row, v.caret_ch), (4, 5), "the caret is on the heading's row");
+        assert_eq!(v.rows[4].heading, Some(1));
     }
 
     #[test]

@@ -121,6 +121,21 @@ pub struct VRow {
     /// [`directives`](VisualMap::directives) side-table is derived from it once
     /// the rows are final.
     pub leaf_directive: Option<DirectiveMark>,
+    /// The heading level (1–6) of the block this row belongs to, on every row a
+    /// `heading` emits (a long one wraps to several) and `None` everywhere else.
+    ///
+    /// A frontend that sizes a whole line — a proportional renderer giving the
+    /// row a bigger line box — needs the level *per row*, and the glyphs can't
+    /// always supply it: an empty heading (`# ` with nothing typed after it,
+    /// which is what the toolbar's H1 leaves on a blank line) has no glyph to
+    /// carry a [`Role::Heading`] at all, so a glyph scan called it body text and
+    /// the line drew at body height until the first character landed. Riding the
+    /// row says it once, for the empty case and the wrapped case alike.
+    ///
+    /// Per-*glyph* styling still comes from [`Role::Heading`] on the glyphs; this
+    /// is the row-level fact, and the two agree wherever a heading has content —
+    /// same `u8` level, clamped the same way [`heading_style`] clamps it.
+    pub heading: Option<u8>,
 }
 
 /// The name and attributes a leaf directive's placeholder row carries, so a
@@ -1390,6 +1405,7 @@ fn shift_row(row: &VRow, delta: isize) -> VRow {
         directive_label: row.directive_label.clone(),
         media: row.media.clone(),
         leaf_directive: row.leaf_directive.clone(),
+        heading: row.heading,
     }
 }
 
@@ -1703,6 +1719,7 @@ impl Builder<'_> {
                 directive_label: None,
                 media: None,
                 leaf_directive: None,
+                heading: None,
             });
         }
     }
@@ -1720,7 +1737,8 @@ impl Builder<'_> {
                     self.block_media(m, kind, id, pf);
                     return;
                 }
-                let style = heading_style(node.level.unwrap_or(1));
+                let level = node.level.unwrap_or(1);
+                let style = heading_style(level);
                 let glyphs = self.inline_children_with_trailing(id, style);
                 // An *empty* heading — `# ` with nothing typed after it, which is
                 // what the toolbar's H1 leaves on a blank line — has no glyph for
@@ -1733,7 +1751,15 @@ impl Builder<'_> {
                 // which put the caret on one of them the moment the heading grew
                 // text. Its content's start is where the caret belongs.
                 let home = heading_content_start(self.source, &node.span);
+                let first = self.rows.len();
                 self.emit_wrapped(glyphs, home, pf, pc);
+                // Stamp the level on every row the heading just emitted — a
+                // wrapped heading's continuation rows as much as its first, and
+                // an empty one's single glyphless row, which is the whole point
+                // (see [`VRow::heading`]).
+                for row in &mut self.rows[first..] {
+                    row.heading = Some(level.min(255) as u8);
+                }
             }
             "block_quote" => {
                 let gutter = synth("│ ", Role::QuoteGutter, node.span.start);
@@ -2104,6 +2130,7 @@ impl Builder<'_> {
             directive_label: None,
             media: None,
             leaf_directive: None,
+            heading: None,
         });
     }
 
@@ -2190,6 +2217,7 @@ impl Builder<'_> {
             directive_label: None,
             media: None,
             leaf_directive: None,
+            heading: None,
         });
         }
     }
@@ -2277,6 +2305,7 @@ impl Builder<'_> {
                 directive_label: None,
                 media: None,
                 leaf_directive: None,
+                heading: None,
             });
         }
         self.last_off = end;
@@ -2846,6 +2875,7 @@ impl Builder<'_> {
             directive_label: None,
             media: None,
             leaf_directive: None,
+            heading: None,
         });
     }
 
@@ -2936,6 +2966,7 @@ impl Builder<'_> {
                 directive_label: None,
                 media: None,
                 leaf_directive: None,
+                heading: None,
             });
         }
     }
@@ -5147,6 +5178,26 @@ mod tests {
         assert!(m.rows[0].glyphs.is_empty(), "the `# ` marker is hidden");
         assert_eq!(m.rows[0].end_src, 2, "the caret home is past the marker");
         assert!(m.is_stop(2), "the empty heading's caret home is not a stop");
+    }
+
+    #[test]
+    fn a_headings_rows_carry_its_level_even_with_nothing_typed_in_it() {
+        // The row-level fact a proportional frontend sizes a whole line by. An
+        // empty heading has no glyph to read a `Role::Heading` off, so a renderer
+        // scanning glyphs drew `# ` (and its caret) at body height until the
+        // first character landed.
+        let m = map("# \n");
+        assert_eq!(m.rows[0].heading, Some(1), "the empty heading knows its level");
+
+        // Every row of one that wraps, not just the first — and nothing else.
+        let m = map_at("## a heading long enough to wrap over two rows\n\nbody\n", Some(20));
+        let heads: Vec<Option<u8>> = m.rows.iter().map(|r| r.heading).collect();
+        assert!(heads.iter().filter(|h| **h == Some(2)).count() >= 2, "got {heads:?}");
+        assert_eq!(
+            m.rows.last().and_then(|r| r.heading),
+            None,
+            "the paragraph under it is not a heading",
+        );
     }
 
     #[test]
