@@ -179,6 +179,12 @@ public final class LeafEditorModel: ObservableObject {
         run { $0.insertMedia(kind: kind, destination: destination, alt: alt) }
     }
 
+    /// Insert a thematic break (`---`) at the caret — the toolbar's Horizontal
+    /// Rule button. Splits a paragraph if the caret sits mid-text, and exits a
+    /// list or block quote rather than nesting inside it; see
+    /// `leaf_core::Doc::insert_thematic_break` for the full behavior.
+    public func insertThematicBreak() { run { $0.insertThematicBreak() } }
+
     // ── table editing ─────────────────────────────────────────────────────────
 
     public var caretInTable: Bool { doc.caretInTable() }

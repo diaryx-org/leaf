@@ -34,6 +34,7 @@ struct ContentView: View {
                 btn("h2", "2.square", active: editor.state.heading == 2) { editor.setHeading(2) }
                 btn("list", "list.bullet", active: false) { editor.toggleList(ordered: false) }
                 btn("quote", "text.quote", active: false) { editor.toggleBlockquote() }
+                btn("hr", "rectangle.compress.vertical", active: false) { editor.insertThematicBreak() }
                 Divider().frame(height: 22)
                 tableMenu
                 Divider().frame(height: 22)

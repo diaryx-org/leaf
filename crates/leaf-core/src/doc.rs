@@ -3156,6 +3156,51 @@ impl Doc {
         self.edit(start, end, &markup);
     }
 
+    /// Insert a thematic break (`---`) at the caret — the toolbar's Horizontal
+    /// Rule button. Twig has no primitive for minting a brand-new block (only
+    /// for retagging or wrapping one that already exists), so this leans on the
+    /// same block-context reasoning [`newline`](Self::newline) uses for Enter: a
+    /// selection is replaced outright, a blank line gets the rule with no
+    /// leading break, and non-blank text is split into a paragraph break first —
+    /// mid-word, mid-list-item, or mid-quote, wherever the caret happens to be.
+    ///
+    /// The blank line on both sides is not cosmetic: a bare `---` with no blank
+    /// line above it is a *setext* heading underline in Markdown, not a rule,
+    /// and one with no blank line below would fuse with whatever follows. The
+    /// leading break's un-indented `---` also does the work of leaving a list or
+    /// quote — CommonMark and djot both end a container on unindented content,
+    /// so the rule always lands at the top level rather than nested a level deep
+    /// inside whatever the caret started in.
+    ///
+    /// Refuses inside a code block, where `---` would be three literal
+    /// characters of code rather than a rule.
+    pub fn insert_thematic_break(&mut self) {
+        self.caret = self.skip_trailing_close_delims(self.caret);
+        let off = self.block_offset_for_caret().unwrap_or(self.caret);
+        let in_code_block = self
+            .editor
+            .ancestors_at(off)
+            .map(|c| c.into_iter().any(|m| m.kind == "code_block"))
+            .unwrap_or(false);
+        if in_code_block {
+            self.status = Some("thematic break: not available inside a code block".into());
+            return;
+        }
+        if let Some((s, e)) = self.selection() {
+            self.splice(s, e, "\n\n---\n\n", EditKind::Other);
+            return;
+        }
+        let line_start = self.source[..self.caret].rfind('\n').map_or(0, |i| i + 1);
+        let line_end = self.source[self.caret..]
+            .find('\n')
+            .map_or(self.source.len(), |i| self.caret + i);
+        if self.source[line_start..line_end].trim().is_empty() {
+            self.insert_raw("---\n\n");
+        } else {
+            self.insert_raw("\n\n---\n\n");
+        }
+    }
+
     /// The destination of the link under the caret — what a Link prompt shows so
     /// ⌘K on an existing link edits its URL instead of asking for it again.
     /// `None` when the caret stands in no link.
@@ -6057,6 +6102,88 @@ mod tests {
         d.caret = 0;
         d.insert_media(MediaKind::Image, "logo.svg", "x");
         assert_eq!(d.source, "![x](logo.svg)\n");
+    }
+
+    // ── thematic breaks ─────────────────────────────────────────────────────
+
+    /// The node the source parses as at `caret` — what confirms an inserted
+    /// `---` actually reads back as a rule, not stray text or a setext heading.
+    fn kind_at(d: &mut Doc, caret: usize) -> Option<String> {
+        d.nodes()
+            .into_iter()
+            .find(|n| n.span.start <= caret && caret < n.span.end)
+            .map(|n| n.kind)
+    }
+
+    #[test]
+    fn insert_thematic_break_splits_a_paragraph_and_lands_past_it() {
+        let mut d = doc_with("hr_mid", "before after\n");
+        d.caret = 7; // between "before " and "after"
+        d.insert_thematic_break();
+        assert_eq!(d.source, "before \n\n---\n\nafter\n");
+        assert_eq!(d.selection(), None);
+        assert_eq!(d.caret, "before \n\n---\n\n".len());
+        assert_eq!(kind_at(&mut d, "before \n\n".len()), Some("thematic_break".to_string()));
+    }
+
+    #[test]
+    fn insert_thematic_break_on_a_blank_line_needs_no_leading_break() {
+        let mut d = doc_with("hr_blank", "abc\n\n\ndef\n");
+        d.caret = "abc\n\n".len(); // the blank line between the two paragraphs
+        d.insert_thematic_break();
+        assert_eq!(d.source, "abc\n\n---\n\n\ndef\n");
+    }
+
+    #[test]
+    fn insert_thematic_break_replaces_the_selection() {
+        let mut d = doc_with("hr_sel", "one two three\n");
+        d.anchor = Some(4);
+        d.caret = 7; // "two"
+        d.insert_thematic_break();
+        assert_eq!(d.source, "one \n\n---\n\n three\n");
+    }
+
+    #[test]
+    fn insert_thematic_break_refuses_inside_a_code_block() {
+        let mut d = doc_with("hr_code", "```\nfn x() {}\n```\n");
+        d.caret = 5; // inside the fenced code
+        d.insert_thematic_break();
+        assert_eq!(d.source, "```\nfn x() {}\n```\n", "refused, so nothing changed");
+        assert!(d.status.is_some(), "the refusal should reach the status line");
+    }
+
+    #[test]
+    fn insert_thematic_break_in_a_list_item_ends_the_list() {
+        // The un-indented `---` cannot continue the list, so it closes the list
+        // and lands the rule at the top level rather than nested inside it.
+        let mut d = doc_with("hr_list", "- one\n- two\n");
+        d.caret = "- one\n- tw".len(); // mid "two"
+        d.insert_thematic_break();
+        d.build_visual(80);
+        let rule_at = d.source.find("---\n\n").unwrap();
+        assert_eq!(kind_at(&mut d, rule_at), Some("thematic_break".to_string()));
+        assert!(
+            !d.nodes().iter().any(|n| n.kind == "bullet_list"
+                && n.span.start <= rule_at
+                && rule_at < n.span.end),
+            "the rule must not be nested inside the list"
+        );
+    }
+
+    #[test]
+    fn insert_thematic_break_in_a_blockquote_ends_the_quote() {
+        let mut d = doc_with("hr_quote", "> hello\n");
+        d.caret = 4; // inside the quoted text
+        d.insert_thematic_break();
+        d.build_visual(80);
+        let rule_at = d.source.find("---\n\n").unwrap();
+        assert_eq!(kind_at(&mut d, rule_at), Some("thematic_break".to_string()));
+        assert!(
+            !d.nodes().iter().any(|n| n.kind == "block_quote"
+                && n.span.start <= rule_at
+                && rule_at < n.span.end),
+            "the rule must not be nested inside the quote"
+        );
     }
 
     // ── typing against a block picture ────────────────────────────────────────

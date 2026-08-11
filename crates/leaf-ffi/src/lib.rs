@@ -767,6 +767,16 @@ impl LeafDoc {
         g.view()
     }
 
+    /// Insert a thematic break (`---`) at the caret — the toolbar's Horizontal
+    /// Rule button. See [`leaf_core::Doc::insert_thematic_break`] for how it
+    /// handles a selection, a blank line, and the caret sitting mid-paragraph,
+    /// mid-list, or inside a quote.
+    pub fn insert_thematic_break(&self) -> DocView {
+        let mut g = self.lock();
+        g.doc.insert_thematic_break();
+        g.view()
+    }
+
     /// The current source text — for a save (write to disk / iCloud / a document
     /// wrapper) or a source-view display.
     pub fn source(&self) -> String {

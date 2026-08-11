@@ -99,6 +99,7 @@ public struct LeafFormattingToolbar: View {
             tool("quote.opening", "Quote") { editor.toggleBlockquote() }
             tool("list.bullet", "Bulleted list") { editor.toggleList(ordered: false) }
             tool("list.number", "Numbered list") { editor.toggleList(ordered: true) }
+            tool("rectangle.compress.vertical", "Horizontal Rule") { editor.insertThematicBreak() }
         }
     }
 
