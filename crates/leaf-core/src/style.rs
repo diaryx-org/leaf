@@ -43,7 +43,7 @@ pub enum Role {
     Rule,
     /// Raw markup a revealed line is showing: the `*` around an emphasis, the
     /// `# ` opening a heading, a link's `](dest)`. Only ever emitted for the
-    /// caret's line under [`MarkdownMode::Full`](crate::MarkdownMode::Full) —
+    /// caret's line under [`MarkupMode::Full`](crate::MarkupMode::Full) —
     /// every other line resolves its markup away and has none of these.
     ///
     /// A role rather than a `Style` flag because it is what the glyph *is*: the

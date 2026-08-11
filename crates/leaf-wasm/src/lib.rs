@@ -47,7 +47,7 @@ use leaf_core::style::{Role, Style as LStyle};
 use leaf_core::wysiwyg::text_width;
 use leaf_core::{
     BlockKind, ColorScheme, Doc, Format, InlineKind, LineFlow as CoreLineFlow, MediaKind,
-    MarkdownMode as CoreMarkdownMode, View, VisualMap,
+    MarkupMode as CoreMarkupMode, View, VisualMap,
 };
 use serde::{Deserialize, Serialize};
 use tsify_next::Tsify;
@@ -768,26 +768,26 @@ impl LeafDoc {
         self.view()
     }
 
-    /// The current Markdown-exposure preference as `"none"`, `"shortcuts"` or
+    /// The current markup-exposure preference as `"none"`, `"shortcuts"` or
     /// `"full"`.
-    pub fn markdown_mode(&self) -> String {
-        match self.doc.markdown_mode() {
-            CoreMarkdownMode::None => "none",
-            CoreMarkdownMode::Shortcuts => "shortcuts",
-            CoreMarkdownMode::Full => "full",
+    pub fn markup_mode(&self) -> String {
+        match self.doc.markup_mode() {
+            CoreMarkupMode::None => "none",
+            CoreMarkupMode::Shortcuts => "shortcuts",
+            CoreMarkupMode::Full => "full",
         }
         .to_string()
     }
 
-    /// Set the Markdown-exposure preference from `"none"` / `"shortcuts"` /
+    /// Set the markup-exposure preference from `"none"` / `"shortcuts"` /
     /// `"full"` (an unknown value is ignored). Returns a fresh view to repaint,
     /// which under `"full"` is the first one showing the caret's line raw. The
     /// web demo defaults to `"none"`, the clean surface.
-    pub fn set_markdown_mode(&mut self, mode: &str) -> Result<DocView, JsValue> {
+    pub fn set_markup_mode(&mut self, mode: &str) -> Result<DocView, JsValue> {
         match mode {
-            "none" => self.doc.set_markdown_mode(CoreMarkdownMode::None),
-            "shortcuts" => self.doc.set_markdown_mode(CoreMarkdownMode::Shortcuts),
-            "full" => self.doc.set_markdown_mode(CoreMarkdownMode::Full),
+            "none" => self.doc.set_markup_mode(CoreMarkupMode::None),
+            "shortcuts" => self.doc.set_markup_mode(CoreMarkupMode::Shortcuts),
+            "full" => self.doc.set_markup_mode(CoreMarkupMode::Full),
             _ => {}
         }
         self.view()

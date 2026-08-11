@@ -113,7 +113,7 @@ enum AttributedRow {
         // other rule glyph (a table picture's box drawing, when the grid can't be
         // laid out) still paints as text.
         case "rule": attrs[.foregroundColor] = theme.ruleColor
-        // Raw markup shown on the caret's line under `MarkdownMode.full` — the
+        // Raw markup shown on the caret's line under `MarkupMode.full` — the
         // `*` around an emphasis, a heading's `# `, a link's `](dest)`. Drawn in
         // the secondary colour so the delimiters recede and the line still reads
         // as prose with its scaffolding visible, rather than as source. It keeps

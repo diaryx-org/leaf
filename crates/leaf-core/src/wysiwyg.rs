@@ -1104,7 +1104,7 @@ pub fn build_spliced(
     // So does a moved reveal line, and for the same reason: this path reuses
     // every row outside the dirty block, and those rows encode which line was
     // showing its raw markup when they were built. Typing almost always moves
-    // the caret, so under `MarkdownMode::Full` this bails to `build_cached` on
+    // the caret, so under `MarkupMode::Full` this bails to `build_cached` on
     // most keystrokes — still block-cached, so only the edited block and the
     // revealed one actually re-render.
     if cache.layout.reveal != reveal {
@@ -1363,7 +1363,7 @@ struct CachedBlock {
     ///
     /// Block-relative rather than absolute so an unaffected block still hits
     /// after an edit shifts it, and `None` for the overwhelmingly common
-    /// no-reveal case — which is why an entry stored under `MarkdownMode::None`
+    /// no-reveal case — which is why an entry stored under `MarkupMode::None`
     /// keeps hitting for every block that isn't the caret's.
     reveal: Option<Range<usize>>,
     /// The build that last reused or inserted this entry (see `generation`).
@@ -1375,7 +1375,7 @@ struct CachedBlock {
 ///
 /// `None` when the block doesn't meet the reveal line at all, which is every
 /// block on every build in the two hidden modes, and all but one of them under
-/// [`crate::MarkdownMode::Full`]. So the cache keeps its hit rate as the caret
+/// [`crate::MarkupMode::Full`]. So the cache keeps its hit rate as the caret
 /// moves: only the line the caret leaves and the line it arrives at re-render.
 fn reveal_key(reveal: &Option<Range<usize>>, span: &Range<usize>) -> Option<Range<usize>> {
     let r = reveal.as_ref()?;
@@ -1668,7 +1668,7 @@ struct Builder<'a> {
     /// one line and folds its own soft breaks regardless.
     preserve_soft: bool,
     /// The source byte range of the one line that should render its markup
-    /// *raw* — the caret's line under `MarkdownMode::Full` (see
+    /// *raw* — the caret's line under `MarkupMode::Full` (see
     /// [`crate::Doc::reveal_line`]). `None` in every other mode and view, which
     /// is the delimiters-always-hidden behaviour every build had before the
     /// preference existed.
@@ -1683,7 +1683,7 @@ struct Builder<'a> {
 
 impl Builder<'_> {
     /// Whether `span` belongs to the line that is showing its raw markup. True
-    /// only when a reveal line is set (`MarkdownMode::Full`) and the two ranges
+    /// only when a reveal line is set (`MarkupMode::Full`) and the two ranges
     /// actually meet.
     ///
     /// Touching at an endpoint counts: an emphasis ending exactly where the line

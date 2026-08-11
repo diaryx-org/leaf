@@ -67,7 +67,7 @@ fn role_style(role: Role) -> Style {
         Role::QuoteGutter => s.fg(Color::Green),
         // Thematic breaks and table rules are quiet grey.
         Role::Rule => s.fg(Color::DarkGray),
-        // Raw markup on the revealed line (`MarkdownMode::Full`). Dim grey, the
+        // Raw markup on the revealed line (`MarkupMode::Full`). Dim grey, the
         // same quiet the rules get: the delimiters are scaffolding around the
         // prose, and the line should still read as a line of text rather than
         // as a line of source. It sits *under* the author's own emphasis, which

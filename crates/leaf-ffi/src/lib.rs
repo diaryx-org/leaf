@@ -45,7 +45,7 @@ use leaf_core::style::{Role, Style as LStyle};
 use leaf_core::wysiwyg::text_width;
 use leaf_core::{
     Alignment, BlockKind, ColorScheme, Doc, Format, InlineKind, LineFlow as CoreLineFlow,
-    MarkdownMode as CoreMarkdownMode, MediaKind as CoreMediaKind, View, VisualMap,
+    MarkupMode as CoreMarkupMode, MediaKind as CoreMediaKind, View, VisualMap,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -349,36 +349,36 @@ impl TableAlignment {
     }
 }
 
-/// How much Markdown the rich view exposes — the argument to
-/// [`LeafDoc::set_markdown_mode`]. Mirrors [`leaf_core::MarkdownMode`]; `None`
+/// How much of the source markup the rich view exposes — the argument to
+/// [`LeafDoc::set_markup_mode`]. Mirrors [`leaf_core::MarkupMode`]; `None`
 /// is the default (the clean surface Diaryx ships, with typed syntax kept
 /// literal).
 ///
 /// A single three-way ladder rather than a pair of toggles, because only three
 /// of the four combinations of its two axes — reveal the caret's delimiters,
-/// author markup from typing — are coherent. See [`leaf_core::MarkdownMode`]
+/// author markup from typing — are coherent. See [`leaf_core::MarkupMode`]
 /// for which one is left out and why.
 #[derive(uniffi::Enum)]
-pub enum MarkdownMode {
+pub enum MarkupMode {
     None,
     Shortcuts,
     Full,
 }
 
-impl MarkdownMode {
-    fn to_core(self) -> CoreMarkdownMode {
+impl MarkupMode {
+    fn to_core(self) -> CoreMarkupMode {
         match self {
-            MarkdownMode::None => CoreMarkdownMode::None,
-            MarkdownMode::Shortcuts => CoreMarkdownMode::Shortcuts,
-            MarkdownMode::Full => CoreMarkdownMode::Full,
+            MarkupMode::None => CoreMarkupMode::None,
+            MarkupMode::Shortcuts => CoreMarkupMode::Shortcuts,
+            MarkupMode::Full => CoreMarkupMode::Full,
         }
     }
 
-    fn from_core(mode: CoreMarkdownMode) -> Self {
+    fn from_core(mode: CoreMarkupMode) -> Self {
         match mode {
-            CoreMarkdownMode::None => MarkdownMode::None,
-            CoreMarkdownMode::Shortcuts => MarkdownMode::Shortcuts,
-            CoreMarkdownMode::Full => MarkdownMode::Full,
+            CoreMarkupMode::None => MarkupMode::None,
+            CoreMarkupMode::Shortcuts => MarkupMode::Shortcuts,
+            CoreMarkupMode::Full => MarkupMode::Full,
         }
     }
 }
@@ -1191,18 +1191,18 @@ impl LeafDoc {
         g.view()
     }
 
-    /// The current Markdown-exposure preference (see [`MarkdownMode`]).
-    pub fn markdown_mode(&self) -> MarkdownMode {
-        MarkdownMode::from_core(self.lock().doc.markdown_mode())
+    /// The current markup-exposure preference (see [`MarkupMode`]).
+    pub fn markup_mode(&self) -> MarkupMode {
+        MarkupMode::from_core(self.lock().doc.markup_mode())
     }
 
-    /// Set the Markdown-exposure preference. Returns a fresh view so a frontend
+    /// Set the markup-exposure preference. Returns a fresh view so a frontend
     /// can repaint — and under `Full` it must, because the returned view is the
     /// first one showing the caret's line raw. Diaryx leaves it at the `None`
     /// default.
-    pub fn set_markdown_mode(&self, mode: MarkdownMode) -> DocView {
+    pub fn set_markup_mode(&self, mode: MarkupMode) -> DocView {
         let mut g = self.lock();
-        g.doc.set_markdown_mode(mode.to_core());
+        g.doc.set_markup_mode(mode.to_core());
         g.view()
     }
 
@@ -1212,7 +1212,7 @@ impl LeafDoc {
     }
 
     /// Set the soft-break flow preference. Returns a fresh view so a frontend
-    /// can repaint: like the Markdown-exposure preference this one changes rendering
+    /// can repaint: like the markup-exposure preference this one changes rendering
     /// immediately, laying preserved soft breaks out as their own rows.
     pub fn set_line_flow(&self, mode: LineFlow) -> DocView {
         let mut g = self.lock();

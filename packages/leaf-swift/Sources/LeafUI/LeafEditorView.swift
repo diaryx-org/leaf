@@ -194,19 +194,19 @@ public final class LeafEditorModel: ObservableObject {
     public func redo() { run { $0.redo() } }
     public func toggleView() { run { $0.toggleView() } }
 
-    // ── markdown exposure preference ──────────────────────────────────────────
+    // ── markup exposure preference ──────────────────────────────────────────
     // A three-rung ladder, not a pair of toggles. `.none` (the default) is the
     // clean surface Diaryx ships: delimiters hidden, and typed syntax kept
     // literal so formatting comes from the toolbar. `.shortcuts` keeps the clean
     // surface but lets typing `*x*` author real emphasis. `.full` additionally
-    // shows the caret line's raw markdown, for Markdown-fluent users.
+    // shows the caret line's raw markup, for markup-fluent users.
     //
     // The fourth combination — reveal the delimiters but refuse the ones you
     // type — is deliberately absent; source view (`toggleView`) is what serves
     // reading raw markup without authoring it.
 
-    public var markdownMode: MarkdownMode { doc.markdownMode() }
-    public func setMarkdownMode(_ mode: MarkdownMode) { run { $0.setMarkdownMode(mode: mode) } }
+    public var markupMode: MarkupMode { doc.markupMode() }
+    public func setMarkupMode(_ mode: MarkupMode) { prefer { $0.setMarkupMode(mode: mode) } }
 
     // ── soft-break flow preference ────────────────────────────────────────────
     // Fold (the default) reflows soft breaks into the paragraph; Preserve renders
@@ -214,7 +214,7 @@ public final class LeafEditorModel: ObservableObject {
     // shows that structure.
 
     public var lineFlow: LineFlow { doc.lineFlow() }
-    public func setLineFlow(_ mode: LineFlow) { run { $0.setLineFlow(mode: mode) } }
+    public func setLineFlow(_ mode: LineFlow) { prefer { $0.setLineFlow(mode: mode) } }
 
     // ── convenience toolbar queries ───────────────────────────────────────────
 
@@ -227,6 +227,19 @@ public final class LeafEditorModel: ObservableObject {
     }
 
     private func run(_ op: @escaping (LeafDoc) -> DocView) { textView?.command(op) }
+
+    /// Apply a *preference* — one of the rendering modes above — whether or not
+    /// the view exists yet. A command dropped because there is nothing on screen
+    /// to repaint is no loss (nobody could have issued it), but a preference is
+    /// set by the host as it builds the model, one line after `init` and long
+    /// before SwiftUI makes the text view: routing it through `run` left it on
+    /// the floor, so every freshly opened document rendered at the default mode
+    /// no matter what the app had chosen. Set it on the doc regardless; the text
+    /// view seeds itself from the doc when it is finally made.
+    private func prefer(_ op: @escaping (LeafDoc) -> DocView) {
+        guard let textView else { _ = op(doc); return }
+        textView.command(op)
+    }
     fileprivate func updateState(_ s: EditorState) { if s != state { state = s } }
 }
 

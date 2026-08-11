@@ -224,18 +224,18 @@ export class LeafEditor {
   toggleView() { this._command((d) => d.toggle_view()); }
 
   /**
-   * The inline-reveal preference: `"hidden"` (the clean default — delimiters
-   * stay hidden even on the caret's line) or `"caret-line"` (the caret's line
-   * shows its raw markdown, Obsidian-style).
+   * The markup-exposure preference: `"none"`, `"shortcuts"`, or `"full"`.
    */
-  revealMode() { return this.doc.reveal_mode(); }
+  markupMode() { return this.doc.markup_mode(); }
 
   /**
-   * Set the inline-reveal preference (`"hidden"` / `"caret-line"`). Inert on
-   * rendering today — the setting is stored and a later phase teaches the
-   * renderer to honour it. Diaryx leaves the `"hidden"` default.
+   * Set the markup-exposure preference. `"none"` (the clean default Diaryx
+   * ships) hides delimiters and keeps typed syntax literal; `"shortcuts"` still
+   * hides them but lets typing author markup; `"full"` also shows the caret
+   * line's raw markup, whose delimiters arrive as runs with
+   * `role: "delimiter"`.
    */
-  setRevealMode(mode) { this._command((d) => d.set_reveal_mode(String(mode))); }
+  setMarkupMode(mode) { this._command((d) => d.set_markup_mode(String(mode))); }
 
   /** Sync core's selection from the DOM, run a model op, and repaint. */
   _command(op) {

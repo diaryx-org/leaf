@@ -43,9 +43,14 @@ pub enum View {
     Wysiwyg,
 }
 
-/// How much Markdown the WYSIWYG view exposes — a per-editor preference,
-/// orthogonal to [`View`]. A single ladder over two underlying axes, because
-/// only three of their four combinations are coherent:
+/// How much of the source markup the WYSIWYG view exposes — a per-editor
+/// preference, orthogonal to [`View`]. Named for markup rather than for Markdown
+/// because leaf is grammar-agnostic: twig hands it Djot, HTML and XML on the same
+/// terms, and every rung below is about *delimiters*, whatever grammar spells
+/// them. The examples are Markdown only because that is what most documents are.
+///
+/// A single ladder over two underlying axes, because only three of their four
+/// combinations are coherent:
 ///
 /// | | authoring off | authoring on |
 /// |---|---|---|
@@ -62,12 +67,12 @@ pub enum View {
 /// [`authors`](Self::authors) — so neither behaviour has to know it's spelled
 /// as a ladder.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum MarkdownMode {
+pub enum MarkupMode {
     /// Delimiters stay hidden even on the caret's line, and typed syntax stays
     /// literal — twig escapes anything that would open markup, so formatting
     /// comes from commands (⌘b, the toolbar) instead of from spelling. The clean
-    /// reading surface for people who don't write Markdown; the default, and
-    /// what Diaryx ships.
+    /// reading surface for people who don't write markup by hand; the default,
+    /// and what Diaryx ships.
     #[default]
     None,
     /// Delimiters stay hidden, but typing them authors real markup: `*x*`
@@ -75,30 +80,30 @@ pub enum MarkdownMode {
     /// (Typora/Bear-shaped). For someone who knows the syntax but wants the
     /// clean surface back once it has been applied.
     Shortcuts,
-    /// The caret's line shows its raw markdown while every other line renders
+    /// The caret's line shows its raw markup while every other line renders
     /// resolved (Obsidian live-preview-shaped), and typed syntax authors markup
-    /// — for people fluent in Markdown who want to see and edit the delimiters
-    /// they type.
+    /// — for people fluent in the document's grammar who want to see and edit
+    /// the delimiters they type.
     Full,
 }
 
-impl MarkdownMode {
+impl MarkupMode {
     /// Whether the rich view shows raw delimiters on the line holding the caret.
     /// The rendering axis — read by [`Doc::reveal_line`] and threaded into the
     /// WYSIWYG builder.
     pub fn reveals_caret_line(self) -> bool {
-        matches!(self, MarkdownMode::Full)
+        matches!(self, MarkupMode::Full)
     }
 
     /// Whether typed markup characters author real formatting. The editing axis
     /// — read by [`Doc::insert`], which escapes typed syntax when this is false.
     pub fn authors(self) -> bool {
-        !matches!(self, MarkdownMode::None)
+        !matches!(self, MarkupMode::None)
     }
 }
 
 /// How the WYSIWYG view treats a *soft break* — a bare newline inside a
-/// paragraph. An axis of its own, orthogonal to [`MarkdownMode`] (which governs
+/// paragraph. An axis of its own, orthogonal to [`MarkupMode`] (which governs
 /// inline-markup delimiters) and to [`View`]: any reveal preference pairs with
 /// either flow. The renderer consults it when it lays a block's inline content
 /// into visual rows.
@@ -319,11 +324,11 @@ pub struct Doc {
     pub dirty: bool,
     pub status: Option<String>,
     pub view: View,
-    /// How much Markdown the rich view exposes — a frontend preference (see
-    /// [`MarkdownMode`]). Its two axes are read apart: the rendering one by
+    /// How much of the source markup the rich view exposes — a frontend preference (see
+    /// [`MarkupMode`]). Its two axes are read apart: the rendering one by
     /// [`reveal_line`](Self::reveal_line), the editing one by
     /// [`insert`](Self::insert).
-    markdown_mode: MarkdownMode,
+    markup_mode: MarkupMode,
     /// Whether soft breaks fold into the reflowed paragraph or render where
     /// they were written (see [`LineFlow`]) — an independent frontend
     /// preference the WYSIWYG builder consults when it lays out a block.
@@ -387,7 +392,7 @@ pub struct Doc {
     /// [`Doc::build_visual`].
     ///
     /// The reveal line ([`Doc::reveal_line`]) is the caret's, and is `None` in
-    /// every mode but [`MarkdownMode::Full`] — so outside that mode the key is
+    /// every mode but [`MarkupMode::Full`] — so outside that mode the key is
     /// text and width alone, and a caret motion still rebuilds nothing.
     vmap_key: Option<(u64, Option<usize>, Option<Range<usize>>)>,
     /// Per-block row cache backing the incremental rebuild: when the text
@@ -521,9 +526,9 @@ impl Doc {
             // toggles at runtime.
             view: View::Wysiwyg,
             // `None` by default — the clean surface Diaryx ships, with typed
-            // syntax kept literal; a Markdown-fluent frontend can climb the
+            // syntax kept literal; a markup-fluent frontend can climb the
             // ladder to `Shortcuts` or `Full`.
-            markdown_mode: MarkdownMode::default(),
+            markup_mode: MarkupMode::default(),
             // Fold by default — flowing prose that reflows to the viewport, the
             // behaviour every frontend had before this preference existed.
             line_flow: LineFlow::default(),
@@ -564,21 +569,21 @@ impl Doc {
         self.clamp_caret();
     }
 
-    /// The current Markdown-exposure preference (see [`MarkdownMode`]).
-    pub fn markdown_mode(&self) -> MarkdownMode {
-        self.markdown_mode
+    /// The current markup-exposure preference (see [`MarkupMode`]).
+    pub fn markup_mode(&self) -> MarkupMode {
+        self.markup_mode
     }
 
-    /// Set the Markdown-exposure preference. Both of its axes take effect at
+    /// Set the markup-exposure preference. Both of its axes take effect at
     /// once: the editing one on the next [`insert`](Self::insert), and the
     /// rendering one on the next build — which is why this drops the cached
     /// visual map and the per-block render cache, exactly as
     /// [`set_line_flow`](Self::set_line_flow) does.
-    pub fn set_markdown_mode(&mut self, mode: MarkdownMode) {
-        if self.markdown_mode == mode {
+    pub fn set_markup_mode(&mut self, mode: MarkupMode) {
+        if self.markup_mode == mode {
             return;
         }
-        self.markdown_mode = mode;
+        self.markup_mode = mode;
         // Neither cache is keyed on the mode, and moving between `Full` and the
         // hidden modes changes every row the caret's line renders to — so
         // invalidate both explicitly.
@@ -600,7 +605,7 @@ impl Doc {
     /// Only in [`View::Wysiwyg`]: source view already shows every byte, so
     /// there is nothing there to reveal.
     pub(crate) fn reveal_line(&self) -> Option<Range<usize>> {
-        if !self.markdown_mode.reveals_caret_line() || self.view != View::Wysiwyg {
+        if !self.markup_mode.reveals_caret_line() || self.view != View::Wysiwyg {
             return None;
         }
         Some(source_line_range(&self.source, self.caret))
@@ -703,7 +708,7 @@ impl Doc {
     /// runs on every call: the caret moves without the document changing, and
     /// keeping it on a legal stop is this function's job either way.
     fn build_map(&mut self, wrap: Option<usize>) {
-        // Under `MarkdownMode::Full` the map is a function of the caret's *line*
+        // Under `MarkupMode::Full` the map is a function of the caret's *line*
         // as well as the text, so the line joins the key: moving within a line
         // still reuses the map, and crossing into another one rebuilds it. In
         // every other mode `reveal_line` is `None` and the key is what it was,
@@ -848,7 +853,7 @@ impl Doc {
             }
             return;
         }
-        // `MarkdownMode::None`: typed syntax stays literal — twig escapes
+        // `MarkupMode::None`: typed syntax stays literal — twig escapes
         // anything that would open markup, so a Diaryx user never mints
         // formatting by keyboard (it comes from commands instead). The other two
         // rungs of the ladder author markup from what you type, which is the
@@ -858,7 +863,7 @@ impl Doc {
         // Marks (⌘b) still format — that path returned above; and leaf's own
         // structural inserts go through `insert_raw`, never here, so a list
         // marker or quote gutter is written as the markup it is.
-        if !self.markdown_mode.authors()
+        if !self.markup_mode.authors()
             && self.view == View::Wysiwyg
             && !text.is_empty()
             && matches!(self.format, Format::Markdown | Format::Djot)
@@ -6479,7 +6484,7 @@ mod tests {
     }
 
     /// [`reference_map`] with a reveal line — the ground truth for the
-    /// `MarkdownMode::Full` builds, where the map is a function of the caret's
+    /// `MarkupMode::Full` builds, where the map is a function of the caret's
     /// line as well as the text.
     fn reference_map_revealing(
         source: &str,
@@ -6567,7 +6572,7 @@ mod tests {
     #[test]
     fn incremental_build_matches_a_fresh_build_under_full_reveal() {
         // The same correctness net as `incremental_build_matches_a_fresh_build_
-        // across_edits`, under `MarkdownMode::Full` — where the map depends on
+        // across_edits`, under `MarkupMode::Full` — where the map depends on
         // the caret's *line* as well as the text, so the two caches have a new
         // way to be wrong. Both are exercised: the block cache can hand back
         // rows built for a line that is no longer the revealed one, and the
@@ -6583,7 +6588,7 @@ mod tests {
         let inserts = ["x", "*", "\n\n", "#", "`", " ", "_"];
         for src in docs {
             let mut d = wysiwyg_doc("reveal_diff", src);
-            d.set_markdown_mode(MarkdownMode::Full);
+            d.set_markup_mode(MarkupMode::Full);
 
             for step in 0..60usize {
                 let len = d.source.len();
@@ -6630,7 +6635,7 @@ mod tests {
         let body = "*one* here\n\n*two* there\n";
 
         let mut full = doc_in(View::Wysiwyg, "motion_full", body);
-        full.set_markdown_mode(MarkdownMode::Full);
+        full.set_markup_mode(MarkupMode::Full);
         caret_at(&mut full, "one");
         let before = full.revision();
         caret_at(&mut full, "two");
@@ -7554,12 +7559,12 @@ mod tests {
         // (no escape), the same as source view — escaping is `None`'s alone, and
         // it's the axis, not the reveal, that decides.
         for (view, mode) in [
-            (View::Wysiwyg, MarkdownMode::Shortcuts),
-            (View::Wysiwyg, MarkdownMode::Full),
-            (View::Source, MarkdownMode::None),
+            (View::Wysiwyg, MarkupMode::Shortcuts),
+            (View::Wysiwyg, MarkupMode::Full),
+            (View::Source, MarkupMode::None),
         ] {
             let mut d = doc_in(view, "live_markup", "");
-            d.set_markdown_mode(mode);
+            d.set_markup_mode(mode);
             d.insert("*hi*");
             assert_eq!(d.source, "*hi*", "{mode:?} in {view:?} types raw markup");
         }
@@ -7609,14 +7614,14 @@ mod tests {
     }
 
     #[test]
-    fn markdown_mode_defaults_to_none_and_round_trips() {
-        // Diaryx's default is the clean `None` surface; a Markdown-fluent
+    fn markup_mode_defaults_to_none_and_round_trips() {
+        // Diaryx's default is the clean `None` surface; a markup-fluent
         // frontend can climb the ladder, and the choice sticks.
-        let mut d = doc_in(View::Wysiwyg, "markdown_mode", "hi\n");
-        assert_eq!(d.markdown_mode(), MarkdownMode::None, "None by default");
-        for mode in [MarkdownMode::Shortcuts, MarkdownMode::Full, MarkdownMode::None] {
-            d.set_markdown_mode(mode);
-            assert_eq!(d.markdown_mode(), mode);
+        let mut d = doc_in(View::Wysiwyg, "markup_mode", "hi\n");
+        assert_eq!(d.markup_mode(), MarkupMode::None, "None by default");
+        for mode in [MarkupMode::Shortcuts, MarkupMode::Full, MarkupMode::None] {
+            d.set_markup_mode(mode);
+            assert_eq!(d.markup_mode(), mode);
         }
     }
 
@@ -7626,7 +7631,7 @@ mod tests {
         // every other line stays resolved. Two paragraphs with identical markup
         // so the only difference between the rows is where the caret is.
         let mut d = doc_in(View::Wysiwyg, "reveal_caret_line", "*one* here\n\n*two* there\n");
-        d.set_markdown_mode(MarkdownMode::Full);
+        d.set_markup_mode(MarkupMode::Full);
 
         caret_at(&mut d, "one");
         let rows = drawn_rows(&d);
@@ -7646,9 +7651,9 @@ mod tests {
         // The two rungs below `Full` share a rendering: delimiters stay hidden
         // even under the caret. `Shortcuts` differing from `None` only in what
         // typing does is exactly the point of splitting the axes.
-        for mode in [MarkdownMode::None, MarkdownMode::Shortcuts] {
+        for mode in [MarkupMode::None, MarkupMode::Shortcuts] {
             let mut d = doc_in(View::Wysiwyg, "reveal_hidden", "*one* here\n");
-            d.set_markdown_mode(mode);
+            d.set_markup_mode(mode);
             caret_at(&mut d, "one");
             let rows = drawn_rows(&d);
             assert!(rows.iter().any(|r| r == "one here"), "{mode:?} hides: {rows:?}");
@@ -7663,7 +7668,7 @@ mod tests {
         // not turn into `*em*`, and a two-backtick fence keeps both backticks.
         let body = "_em_ and __st__ and ``lit ` tick`` and [lk](http://x) and ~~del~~\n";
         let mut d = doc_in(View::Wysiwyg, "reveal_spelling", body);
-        d.set_markdown_mode(MarkdownMode::Full);
+        d.set_markup_mode(MarkupMode::Full);
         caret_at(&mut d, "em");
         let rows = drawn_rows(&d);
         assert!(
@@ -7677,7 +7682,7 @@ mod tests {
         // The `# ` marker is a block-level prefix, not an inline delimiter, so
         // it takes its own path — but it reveals on the same rule.
         let mut d = doc_in(View::Wysiwyg, "reveal_heading", "# Title\n\nbody\n");
-        d.set_markdown_mode(MarkdownMode::Full);
+        d.set_markup_mode(MarkupMode::Full);
 
         caret_at(&mut d, "Title");
         assert!(drawn_rows(&d).iter().any(|r| r == "# Title"), "{:?}", drawn_rows(&d));
@@ -7693,7 +7698,7 @@ mod tests {
         // that's hidden: the mode exists so the markup can be *edited*. Every
         // revealed byte must be somewhere the caret can stand.
         let mut d = doc_in(View::Wysiwyg, "reveal_stops", "*em* x\n");
-        d.set_markdown_mode(MarkdownMode::Full);
+        d.set_markup_mode(MarkupMode::Full);
         caret_at(&mut d, "em");
         let opener = d.source.find('*').unwrap();
         assert!(d.vmap.is_stop(opener), "the opening `*` is a caret stop");
@@ -7706,7 +7711,7 @@ mod tests {
         // caret line's to reveal — and emitting it would inject a `\n` glyph
         // that splits the row where the author wrote no break.
         let mut d = doc_in(View::Wysiwyg, "reveal_setext", "Title\n=====\n\nbody\n");
-        d.set_markdown_mode(MarkdownMode::Full);
+        d.set_markup_mode(MarkupMode::Full);
         caret_at(&mut d, "Title");
         let rows = drawn_rows(&d);
         assert!(rows.iter().any(|r| r == "Title"), "title renders alone: {rows:?}");
@@ -7714,16 +7719,16 @@ mod tests {
     }
 
     #[test]
-    fn markdown_mode_axes_split_the_ladder() {
+    fn markup_mode_axes_split_the_ladder() {
         // The two behaviours the ladder spells: `Shortcuts` is the middle rung
         // that authors markup but still hides it, and it's the only rung where
         // the two axes disagree.
-        assert!(!MarkdownMode::None.authors());
-        assert!(!MarkdownMode::None.reveals_caret_line());
-        assert!(MarkdownMode::Shortcuts.authors());
-        assert!(!MarkdownMode::Shortcuts.reveals_caret_line());
-        assert!(MarkdownMode::Full.authors());
-        assert!(MarkdownMode::Full.reveals_caret_line());
+        assert!(!MarkupMode::None.authors());
+        assert!(!MarkupMode::None.reveals_caret_line());
+        assert!(MarkupMode::Shortcuts.authors());
+        assert!(!MarkupMode::Shortcuts.reveals_caret_line());
+        assert!(MarkupMode::Full.authors());
+        assert!(MarkupMode::Full.reveals_caret_line());
     }
 
     #[test]
