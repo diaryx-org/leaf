@@ -26,7 +26,8 @@ func row(
     codeLang: String? = nil,
     directive: Bool = false,
     directiveLabel: String? = nil,
-    heading: UInt8? = nil
+    heading: UInt8? = nil,
+    boundary: Boundary? = nil
 ) -> Row {
     Row(
         runs: runs,
@@ -35,8 +36,17 @@ func row(
         codeLang: codeLang,
         directive: directive,
         directiveLabel: directiveLabel,
-        heading: heading
+        heading: heading,
+        boundary: boundary
     )
+}
+
+/// The blank row core spells a block boundary with — `decoration` plus the
+/// label saying which pair it divides, exactly as `emit_separators_before`
+/// emits it. Fixtures build gaps through this so a test can't invent one core
+/// wouldn't produce (an unlabelled "gap" is no longer a gap at all).
+func gapRow(_ above: BlockClass, _ below: BlockClass, prefix: [Run] = []) -> Row {
+    row(prefix, decoration: true, boundary: Boundary(above: above, below: below))
 }
 
 func mkCell(_ text: String, align: String = "default", start: UInt32 = 0, end: UInt32 = 0) -> TableCellView {

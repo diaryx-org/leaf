@@ -136,6 +136,90 @@ pub struct VRow {
     /// is the row-level fact, and the two agree wherever a heading has content —
     /// same `u8` level, clamped the same way [`heading_style`] clamps it.
     pub heading: Option<u8>,
+    /// What this row divides, on the blank rows a block boundary is *drawn* with
+    /// and `None` on every other row — including the navigable blank lines of
+    /// preserve-soft flow, which are somewhere text can go rather than a gap
+    /// between blocks. So `boundary.is_some()` is exactly "this row is a drawn
+    /// block boundary", the [`decoration`](Self::decoration) rows that come from
+    /// [`Builder::emit_separators_before`].
+    ///
+    /// It exists because a boundary's *height* is a frontend decision but its
+    /// *kind* is not. Typography spaces a boundary by what it separates — the
+    /// margin above a heading is wider than the one between two paragraphs, so
+    /// the heading groups with the text it introduces — and a frontend that has
+    /// only rows to look at has to re-derive the structure by sniffing glyph
+    /// roles. Three frontends sniffing separately is three chances to disagree
+    /// about the same document. Core already knows, having just walked the AST
+    /// to emit this row, so it says so once here and each frontend multiplies by
+    /// its own spacing.
+    pub boundary: Option<Boundary>,
+}
+
+/// What a drawn block boundary separates: the kinds of the blocks it falls
+/// between — the pair a frontend spaces by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Boundary {
+    pub above: BlockClass,
+    pub below: BlockClass,
+}
+
+/// The block kinds core tells apart when it walks a document — the vocabulary
+/// [`Boundary`] is spelled in. A statement about *structure*, not about how any
+/// of it should look: what a frontend does with "this gap sits above a heading"
+/// is entirely the frontend's.
+///
+/// `Class` rather than `Kind` because [`twig::BlockKind`] already means
+/// something else in this crate's public surface — the *command* vocabulary
+/// (`Paragraph | Heading(n)`) a toolbar passes to [`Doc::set_block`](crate::Doc::set_block).
+/// This is the reverse direction: what a block already *is*, read back off a
+/// rendered row.
+///
+/// [`BlockClass::Other`] is the honest answer for a node kind core doesn't
+/// separate out, so adding one here is additive for every frontend: nothing has
+/// to change until it wants to space that kind differently.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockClass {
+    Paragraph,
+    Heading,
+    /// A whole list. Its *items* are [`BlockClass::ListItem`]; note that core
+    /// draws no boundary row between two items of one list, tight or loose, so
+    /// an item↔item pair never reaches a frontend.
+    List,
+    ListItem,
+    Quote,
+    Code,
+    Table,
+    /// A block-level image, video, or audio.
+    Media,
+    /// A `:::name{.class}` directive container.
+    Directive,
+    Rule,
+    Footnote,
+    Other,
+}
+
+impl BlockClass {
+    /// Classify a twig node kind — the same strings [`Builder::block`] matches
+    /// on, so the two can't drift about what a block is. Both the whole-arena
+    /// walk (which has [`FlatNode`]s) and the incremental top-level walk (which
+    /// has only a query match's kind string) reach it by this one door.
+    pub fn from_node_kind(kind: &str) -> BlockClass {
+        match kind {
+            // twig spells a paragraph `para`, not `paragraph`.
+            "para" | "paragraph" => BlockClass::Paragraph,
+            "heading" => BlockClass::Heading,
+            "bullet_list" | "ordered_list" | "task_list" => BlockClass::List,
+            "list_item" | "task_list_item" => BlockClass::ListItem,
+            "block_quote" => BlockClass::Quote,
+            "code_block" => BlockClass::Code,
+            "table" => BlockClass::Table,
+            "image" => BlockClass::Media,
+            "directive" => BlockClass::Directive,
+            "thematic_break" => BlockClass::Rule,
+            "footnote" => BlockClass::Footnote,
+            _ => BlockClass::Other,
+        }
+    }
 }
 
 /// The name and attributes a leaf directive's placeholder row carries, so a
@@ -870,7 +954,9 @@ pub fn build(
         reveal: reveal.clone(),
     };
     b.top_blocks(&top);
-    b.emit_trailing_blank_lines();
+    b.emit_trailing_blank_lines(
+        top.last().map_or(BlockClass::Paragraph, |&i| BlockClass::from_node_kind(&nodes[i].kind)),
+    );
     let content_start = top.first().map_or(0, |&i| nodes[i].span.start);
     let stops = collect_stops(&b.rows);
     let code_blocks = code_block_spans(&b.rows);
@@ -948,7 +1034,19 @@ pub fn build_cached(
         let start = block.span.start;
         let before_sep = b.rows.len();
         if i > 0 {
-            b.emit_separators_before(start, &[], true);
+            // This walker has no node arena at all (see the `nodes: &[]` above),
+            // but a top-level query match carries its kind — the same string
+            // `BlockClass::from_node_kind` classifies for the whole-arena walk, so
+            // the incremental and full builds label a boundary identically.
+            b.emit_separators_before(
+                start,
+                &[],
+                true,
+                Boundary {
+                    above: BlockClass::from_node_kind(&blocks[i - 1].kind),
+                    below: BlockClass::from_node_kind(&block.kind),
+                },
+            );
         }
         let sep_rows = b.rows.len() - before_sep;
         let after_sep = b.rows.len();
@@ -1021,7 +1119,9 @@ pub fn build_cached(
     }
 
     let before_trailing = b.rows.len();
-    b.emit_trailing_blank_lines();
+    b.emit_trailing_blank_lines(
+        blocks.last().map_or(BlockClass::Paragraph, |m| BlockClass::from_node_kind(&m.kind)),
+    );
     let trailing_rows = b.rows.len() - before_trailing;
 
     // Evict every entry no block reused this build, so the cache tracks the
@@ -1472,6 +1572,9 @@ fn shift_row(row: &VRow, delta: isize) -> VRow {
         media: row.media.clone(),
         leaf_directive: row.leaf_directive.clone(),
         heading: row.heading,
+        // Structure, not offsets: a reused block's rows divide the same blocks
+        // wherever the edit above moved them to.
+        boundary: row.boundary,
     }
 }
 
@@ -1792,12 +1895,20 @@ impl Builder<'_> {
             .into_iter()
             .filter(|&c| self.nodes[c].kind != "metadata")
             .collect();
+        let mut above: Option<BlockClass> = None;
         for (i, child) in kids.into_iter().enumerate() {
-            if i > 0 {
-                self.emit_separators_before(self.nodes[child].span.start, pc, !tight);
+            let below = BlockClass::from_node_kind(&self.nodes[child].kind);
+            if let Some(above) = above {
+                self.emit_separators_before(
+                    self.nodes[child].span.start,
+                    pc,
+                    !tight,
+                    Boundary { above, below },
+                );
             }
             let first = if i == 0 { pf } else { pc };
             self.block(child, first, pc);
+            above = Some(below);
         }
     }
 
@@ -1812,8 +1923,15 @@ impl Builder<'_> {
     /// looks.
     fn top_blocks(&mut self, ids: &[usize]) {
         for (i, &child) in ids.iter().enumerate() {
+            let below = BlockClass::from_node_kind(&self.nodes[child].kind);
             if i > 0 {
-                self.emit_separators_before(self.nodes[child].span.start, &[], true);
+                let above = BlockClass::from_node_kind(&self.nodes[ids[i - 1]].kind);
+                self.emit_separators_before(
+                    self.nodes[child].span.start,
+                    &[],
+                    true,
+                    Boundary { above, below },
+                );
             }
             self.block(child, &[], &[]);
         }
@@ -1836,7 +1954,13 @@ impl Builder<'_> {
     /// `…\n\n\n\n…`) must be a navigable empty row, not vanish — else the caret
     /// in it snaps onto the *next* block's start and Enter looks like it did
     /// nothing.
-    fn emit_separators_before(&mut self, next_start: usize, pc: &[Glyph], synthetic: bool) {
+    fn emit_separators_before(
+        &mut self,
+        next_start: usize,
+        pc: &[Glyph],
+        synthetic: bool,
+        boundary: Boundary,
+    ) {
         let mut offs = self.blank_rows_between(self.last_off, next_start);
         if offs.is_empty() {
             if !synthetic {
@@ -1855,6 +1979,11 @@ impl Builder<'_> {
         }
         let last = offs.len() - 1;
         for (k, end_src) in offs.into_iter().enumerate() {
+            // Only the drawn-only rows carry the boundary: the navigable blank
+            // lines between them (and every blank line under preserve-soft flow)
+            // are somewhere text can go, not a gap between blocks, and a frontend
+            // that shrank one would be shrinking a line the author is typing on.
+            let drawn = !self.preserve_soft && (k == 0 || k == last);
             // The blank line a boundary is *drawn* with isn't a place text can
             // go. The first one closes the block above and the last one opens the
             // block below — with a single blank line, the usual case, doing both
@@ -1876,7 +2005,7 @@ impl Builder<'_> {
             self.rows.push(VRow {
                 glyphs: pc.to_vec(),
                 end_src,
-                decoration: !self.preserve_soft && (k == 0 || k == last),
+                decoration: drawn,
                 code: false,
                 code_lang: None,
                 directive: false,
@@ -1884,6 +2013,7 @@ impl Builder<'_> {
                 media: None,
                 leaf_directive: None,
                 heading: None,
+                boundary: drawn.then_some(boundary),
             });
         }
     }
@@ -1984,7 +2114,8 @@ impl Builder<'_> {
             "bullet_list" | "ordered_list" | "task_list" => {
                 let ordered = node.kind == "ordered_list";
                 let mut item_no = 0usize;
-                for (i, child) in self.children(id).into_iter().enumerate() {
+                let kids = self.children(id);
+                for (i, child) in kids.iter().copied().enumerate() {
                     let kind = self.nodes[child].kind.as_str();
                     if kind == "list_item" || kind == "task_list_item" {
                         let start = self.nodes[child].span.start;
@@ -2005,7 +2136,15 @@ impl Builder<'_> {
                         // no bullet, at the list's own prefix, with the usual block
                         // separator — never `• │ quote`.
                         if i > 0 {
-                            self.emit_separators_before(self.nodes[child].span.start, pc, true);
+                            self.emit_separators_before(
+                                self.nodes[child].span.start,
+                                pc,
+                                true,
+                                Boundary {
+                                    above: BlockClass::from_node_kind(&self.nodes[kids[i - 1]].kind),
+                                    below: BlockClass::from_node_kind(&self.nodes[child].kind),
+                                },
+                            );
                         }
                         self.block(child, pc, pc);
                     }
@@ -2307,6 +2446,7 @@ impl Builder<'_> {
             media: None,
             leaf_directive: None,
             heading: None,
+            boundary: None,
         });
     }
 
@@ -2394,6 +2534,7 @@ impl Builder<'_> {
             media: None,
             leaf_directive: None,
             heading: None,
+            boundary: None,
         });
         }
     }
@@ -2482,6 +2623,7 @@ impl Builder<'_> {
                 media: None,
                 leaf_directive: None,
                 heading: None,
+                boundary: None,
             });
         }
         self.last_off = end;
@@ -3079,6 +3221,7 @@ impl Builder<'_> {
             media: None,
             leaf_directive: None,
             heading: None,
+            boundary: None,
         });
     }
 
@@ -3135,7 +3278,12 @@ impl Builder<'_> {
     /// and the caret appears stuck on the old line. Reconstruct one empty row
     /// per extra trailing newline from the source, each at its own offset, so
     /// the caret rides down onto the new line the moment it's created.
-    fn emit_trailing_blank_lines(&mut self) {
+    ///
+    /// `above` is the class of the last block in the document — the one this gap
+    /// closes. A document with no blocks at all has nothing above these rows, and
+    /// [`BlockClass::Paragraph`] is the honest answer there too: what they are is
+    /// empty paragraphs, on both sides of the gap.
+    fn emit_trailing_blank_lines(&mut self, above: BlockClass) {
         let last_end = self.rows.last().map_or(0, |r| r.end_src);
         if last_end >= self.source.len() {
             return;
@@ -3170,6 +3318,15 @@ impl Builder<'_> {
                 media: None,
                 leaf_directive: None,
                 heading: None,
+                // The one drawn row here is a block boundary like any other —
+                // "rendered the way a block boundary is rendered" is the whole
+                // point of it — so it says so, and a frontend spacing boundaries
+                // spaces this one the same. The rows below it are navigable empty
+                // paragraphs, not gaps.
+                boundary: (!self.preserve_soft && k == 1).then_some(Boundary {
+                    above,
+                    below: BlockClass::Paragraph,
+                }),
             });
         }
     }
@@ -3902,6 +4059,10 @@ pub(crate) fn assert_maps_eq(a: &VisualMap, b: &VisualMap, ctx: &str) {
     for (i, (ra, rb)) in a.rows.iter().zip(&b.rows).enumerate() {
         assert_eq!(ra.end_src, rb.end_src, "row {i} end_src ({ctx})");
         assert_eq!(ra.decoration, rb.decoration, "row {i} decoration ({ctx})");
+        // The incremental walk labels a boundary from a query match's kind
+        // string and the whole-arena walk from a `FlatNode`'s; this is what says
+        // the two doors reach the same answer.
+        assert_eq!(ra.boundary, rb.boundary, "row {i} boundary ({ctx})");
         assert_eq!(ra.code, rb.code, "row {i} code ({ctx})");
         assert_eq!(ra.code_lang, rb.code_lang, "row {i} code_lang ({ctx})");
         assert_eq!(ra.glyphs.len(), rb.glyphs.len(), "row {i} glyph count ({ctx})");
@@ -5422,6 +5583,108 @@ mod tests {
         assert!(m.rows[3..].iter().all(|r| r.end_src > 8), "rows below own later offsets");
     }
 
+    // ── block boundaries ─────────────────────────────────────────────────────
+
+    /// Every drawn boundary in `src`, in order, as `(above, below)`.
+    fn boundaries(m: &VisualMap) -> Vec<(BlockClass, BlockClass)> {
+        m.rows
+            .iter()
+            .filter_map(|r| r.boundary)
+            .map(|b| (b.above, b.below))
+            .collect()
+    }
+
+    #[test]
+    fn a_boundary_says_which_blocks_it_divides() {
+        use BlockClass::*;
+        let m = map("one\n\ntwo\n\n# Head\n\ntail\n\n> quoted\n\n```\ncode\n```\n");
+        assert_eq!(
+            boundaries(&m),
+            vec![
+                (Paragraph, Paragraph),
+                (Paragraph, Heading),
+                (Heading, Paragraph),
+                (Paragraph, Quote),
+                (Quote, Code),
+                // The blank the document trails off with is a boundary too — it
+                // closes the last block above the empty paragraph the caret rests
+                // on. See `emit_trailing_blank_lines`.
+                (Code, Paragraph),
+            ],
+            "each gap names the pair it falls between, in document order"
+        );
+    }
+
+    #[test]
+    fn the_trailing_gap_closes_the_last_block() {
+        // Two Enters at the end of a document: a drawn gap, then the navigable
+        // empty paragraph. Only the gap is labelled, so a frontend that shrinks
+        // boundaries shrinks the spacer and leaves the row being typed on alone.
+        let m = map("# Head\n\n\n");
+        assert_eq!(boundaries(&m), vec![(BlockClass::Heading, BlockClass::Paragraph)]);
+    }
+
+    #[test]
+    fn only_the_drawn_gap_rows_carry_a_boundary() {
+        let m = map("one\n\ntwo\n");
+        for row in &m.rows {
+            assert_eq!(
+                row.boundary.is_some(),
+                row.decoration,
+                "a boundary is exactly a drawn gap row: {:?}",
+                row.glyphs.iter().map(|g| g.ch).collect::<String>()
+            );
+        }
+    }
+
+    #[test]
+    fn preserve_flow_labels_no_boundary() {
+        // Every blank line is a caret home there — somewhere text can go, not a
+        // gap between blocks — so nothing is drawn-only and nothing is labelled.
+        // A frontend keying its spacing off `boundary` can't shrink a row the
+        // author is about to type on.
+        let m = map_preserve("one\n\ntwo\n\n# Head\n", Some(80));
+        assert!(boundaries(&m).is_empty());
+    }
+
+    #[test]
+    fn a_list_draws_no_boundary_between_its_items() {
+        // Tight or loose, core puts no gap row between two items of one list —
+        // so an item↔item boundary is a shape no frontend will ever be handed,
+        // and spacing one is spacing something that isn't there.
+        for src in ["- one\n- two\n", "- one\n\n- two\n"] {
+            let m = map(src);
+            assert!(boundaries(&m).is_empty(), "no gap row inside the list of {src:?}");
+        }
+        // Leaving the list is an ordinary boundary, and the list is named as
+        // what sits above it.
+        let m = map("- one\n- two\n\npara\n");
+        assert_eq!(boundaries(&m), vec![(BlockClass::List, BlockClass::Paragraph)]);
+    }
+
+    #[test]
+    fn a_nested_boundary_names_the_blocks_inside_the_container() {
+        // Two paragraphs inside a blockquote are divided by a Paragraph↔Paragraph
+        // boundary — the quote is the container they're both in, not what the gap
+        // separates.
+        let m = map("> one\n>\n> two\n");
+        assert_eq!(boundaries(&m), vec![(BlockClass::Paragraph, BlockClass::Paragraph)]);
+    }
+
+    #[test]
+    fn the_incremental_walk_labels_boundaries_like_the_full_one() {
+        // `assert_maps_eq` compares boundaries too, so this pins the two doors
+        // into `BlockClass::from_node_kind` — a `FlatNode`'s kind on the full
+        // build, a query match's on the cached one — against a document with one
+        // of every boundary in it.
+        let src = "one\n\n# Head\n\ntwo\n\n- a\n- b\n\n> q\n\n```\nc\n```\n\npara\n";
+        let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
+        let mut cache = BlockCache::default();
+        let (full, cached) = render_both(&mut ed, src, Some(80), &mut cache);
+        assert_maps_eq(&full, &cached, "boundary labelling");
+        assert!(!boundaries(&full).is_empty(), "the fixture has boundaries to compare");
+    }
+
     #[test]
     fn every_caret_stop_opens_a_cluster_of_its_row() {
         // The two ways of finding a cluster have to agree. `push_text` marks the
@@ -5446,3 +5709,5 @@ mod tests {
         }
     }
 }
+
+

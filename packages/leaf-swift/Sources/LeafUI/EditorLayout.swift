@@ -32,20 +32,17 @@ public struct EditorState: Equatable {
 }
 
 extension Row {
-    /// Whether this is the blank decoration row core spells a block boundary
-    /// with — no caret home, and (unlike a table rule or a quote gutter) no
-    /// visible glyphs. These are the paragraph gaps the layout draws short so a
-    /// boundary reads as spacing, not an empty line.
+    /// Whether this is the blank row core spells a block boundary with — no caret
+    /// home, and drawn short so a boundary reads as spacing rather than as an
+    /// empty line the user didn't type.
     ///
-    /// Its block decoration doesn't count against it: the boundary between two
-    /// paragraphs *inside* a quote carries the quote's gutter, and would otherwise
-    /// lay out as a full blank line while the same boundary outside the quote
-    /// reads as spacing.
-    var isBlockGap: Bool {
-        decoration && !code
-            && runs.drop { $0.role == "quote" || $0.role == "list" }
-                .allSatisfy { $0.text.allSatisfy(\.isWhitespace) }
-    }
+    /// Core's own answer, not a guess read back out of the glyphs. It used to be
+    /// the latter — a decoration row whose runs were all whitespace once the
+    /// quote/list prefix was dropped — which had to know that a boundary *inside*
+    /// a blockquote still carries the quote's gutter, and would have gone on
+    /// growing a clause per block decoration core learned to draw. `boundary`
+    /// says it once, for every frontend.
+    var isBlockGap: Bool { boundary != nil }
 
     /// The row's leading block decoration — a blockquote's `│ ` gutters and a
     /// list's indent/bullet. Core emits these as synthetic glyphs in front of the
@@ -53,13 +50,6 @@ extension Row {
     /// the run of leading `quote`/`list` runs.
     var prefixRuns: [Run] {
         Array(runs.prefix { $0.role == "quote" || $0.role == "list" })
-    }
-
-    /// Whether this row belongs to a list — it carries a list marker or indent in
-    /// its block decoration. What `EditorTheme.blockGap(between:and:)` reads to
-    /// set two items of one list closer together than two paragraphs.
-    var isListItem: Bool {
-        prefixRuns.contains { $0.role == "list" }
     }
 
     /// Whether this row is a thematic break — a `---` drawn as a line across the
@@ -322,13 +312,10 @@ struct EditorLayout {
                 row: row, shaped: shaped, top: y,
                 originX: originX, columnWidth: wrapWidth,
                 labelInset: hasLabel ? theme.directiveLabelHeight : 0,
-                // A boundary is spaced by what it separates, so its height is
-                // settled here (where the neighbours are in hand) rather than in
-                // the row's own shaping.
-                gapHeight: row.isBlockGap
-                    ? theme.blockGap(between: EditorLayout.neighbour(docView.rows, from: i, step: -1),
-                                     and: EditorLayout.neighbour(docView.rows, from: i, step: 1))
-                    : nil)
+                // A boundary is spaced by what it separates, and core says what
+                // that is (`row.boundary`) — so this is a lookup, not a walk over
+                // the neighbouring rows.
+                gapHeight: row.isBlockGap ? theme.blockGap(row.boundary) : nil)
             y += rl.height
             layouts.append(rl)
             i += 1
@@ -343,7 +330,8 @@ struct EditorLayout {
         if layouts.isEmpty {
             layouts.append(RowLayout(row: Row(runs: [], decoration: false, code: false,
                                               codeLang: nil, directive: false,
-                                              directiveLabel: nil, heading: nil),
+                                              directiveLabel: nil, heading: nil,
+                                              boundary: nil),
                                      shaped: emptyShape, top: y,
                                      originX: originX, columnWidth: wrapWidth))
             y += theme.lineHeight
@@ -351,20 +339,6 @@ struct EditorLayout {
         rows = layouts
         contentHeight = y + theme.padding.bottom
         cache = next
-    }
-
-    /// The nearest real block on one side of the boundary row at `index` — the
-    /// pair whose gap `EditorTheme.blockGap(between:and:)` sizes. Walks past any
-    /// further blank rows, so a boundary core spells with more than one still
-    /// reads the blocks it actually divides, and answers nil at the document's
-    /// own edges.
-    private static func neighbour(_ rows: [Row], from index: Int, step: Int) -> Row? {
-        var j = index + step
-        while rows.indices.contains(j) {
-            if !rows[j].isBlockGap { return rows[j] }
-            j += step
-        }
-        return nil
     }
 
     /// The media whose box contains `point`, of any kind, or `nil`. `point` is in

@@ -39,10 +39,6 @@ public struct EditorTheme {
     /// the block above should be the wider of its two margins — otherwise it
     /// floats between its neighbours and reads as belonging to neither.
     public var headingGapScale: CGFloat
-    /// The gap between two items of the same list, as a multiple of the ordinary
-    /// block gap. Tighter than a paragraph boundary, so a list reads as one block
-    /// rather than a column of separate paragraphs.
-    public var listGapScale: CGFloat
     /// How much larger than the body each heading level is, `[h1…h6]`.
     public var headingScale: [CGFloat]
     /// The leading ratio (line box ÷ font size) at the *largest* heading on the
@@ -107,7 +103,6 @@ public struct EditorTheme {
         lineHeight: CGFloat = 24,
         blockGapScale: CGFloat = 0.5,
         headingGapScale: CGFloat = 1.8,
-        listGapScale: CGFloat = 0.4,
         headingScale: [CGFloat] = [1.625, 1.375, 1.1875, 1.0625, 1.0, 0.9375],
         headingLineRatio: CGFloat = 1.2,
         measure: CGFloat? = 68,
@@ -138,7 +133,6 @@ public struct EditorTheme {
         self.lineHeight = lineHeight
         self.blockGapScale = blockGapScale
         self.headingGapScale = headingGapScale
-        self.listGapScale = listGapScale
         self.headingScale = headingScale
         self.headingLineRatio = headingLineRatio
         self.measure = measure
@@ -178,7 +172,6 @@ public struct EditorTheme {
             || lineHeight != other.lineHeight
             || blockGapScale != other.blockGapScale
             || headingGapScale != other.headingGapScale
-            || listGapScale != other.listGapScale
             || headingScale != other.headingScale
             || headingLineRatio != other.headingLineRatio
             || measure != other.measure
@@ -226,20 +219,19 @@ public struct EditorTheme {
     /// box, so a paragraph boundary reads as spacing rather than a blank line.
     var blockGap: CGFloat { lineHeight * blockGapScale }
 
-    /// The height of the boundary between the blocks `before` and `after` (either
-    /// nil at the document's edges).
+    /// The height of the boundary core labelled `boundary` — nil for a gap row
+    /// core didn't label (nothing does today, and the plain gap is the right
+    /// answer if anything ever does).
     ///
     /// One gap for every boundary is what makes a document read as an undivided
     /// column of paragraphs. Real typography spaces a boundary by what it
-    /// separates: a heading takes its wider margin above, so it groups with the
-    /// text it introduces rather than floating between two blocks, and successive
-    /// list items sit closer than paragraphs do so the list reads as one thing.
-    func blockGap(between before: Row?, and after: Row?) -> CGFloat {
-        if after?.heading != nil { return blockGap * headingGapScale }
-        if before?.isListItem == true, after?.isListItem == true {
-            return blockGap * listGapScale
-        }
-        return blockGap
+    /// separates: a heading takes the wider of its two margins above, so it
+    /// groups with the text it introduces rather than floating between two
+    /// blocks. Which pair a gap falls between is core's answer (`Row.boundary`),
+    /// not something re-derived here from glyph roles — see `leaf_core::Boundary`
+    /// for why that division is where it is.
+    func blockGap(_ boundary: Boundary?) -> CGFloat {
+        boundary?.below == .heading ? blockGap * headingGapScale : blockGap
     }
 
     // ── the text column ──────────────────────────────────────────────────────

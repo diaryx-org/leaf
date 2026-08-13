@@ -37,7 +37,7 @@ final class EditorLayoutTests: XCTestCase {
         // Core spells a paragraph boundary with an empty decoration row. It must
         // lay out at the shrunk gap height, not a full line box — otherwise the
         // boundary reads as a blank line the user never typed.
-        let gap = row([], decoration: true)
+        let gap = gapRow(.paragraph, .paragraph)
         let dv = docView([row([mkRun("a")]), gap, row([mkRun("b")])])
         let layout = EditorLayout(dv, theme: theme)
         let expected = theme.padding.top + theme.padding.bottom
@@ -406,45 +406,52 @@ final class EditorLayoutTests: XCTestCase {
         XCTAssertEqual(ch, 0)
     }
 
-    // MARK: block boundaries — spaced by what they separate
+    // MARK: block boundaries — spaced by the pair core says they divide
 
-    /// The height of the gap row in a three-row `[before, gap, after]` frame.
-    private func gapHeight(between before: Row, and after: Row) -> CGFloat {
-        let dv = docView([before, row([], decoration: true), after])
+    /// The height of the labelled gap row in a three-row `[prose, gap, prose]`
+    /// frame. What the gap divides is core's answer, carried on the row, so a
+    /// test states it rather than arranging neighbours for one to be inferred.
+    private func gapHeight(_ above: BlockClass, _ below: BlockClass) -> CGFloat {
+        let dv = docView([row([mkRun("a")]), gapRow(above, below), row([mkRun("b")])])
         return EditorLayout(dv, theme: theme, wrapWidth: 400).rows[1].height
     }
 
     func testHeadingTakesAWiderGapAboveThanBelow() {
-        let prose = row([mkRun("a")])
-        let heading = row([mkRun("Title")], heading: 1)
-        let above = gapHeight(between: prose, and: heading)
-        let below = gapHeight(between: heading, and: prose)
+        let above = gapHeight(.paragraph, .heading)
+        let below = gapHeight(.heading, .paragraph)
         XCTAssertEqual(above, theme.blockGap * theme.headingGapScale, accuracy: 0.5)
         XCTAssertEqual(below, theme.blockGap, accuracy: 0.5)
         XCTAssertGreaterThan(above, below, "a heading groups with the text it introduces")
     }
 
-    func testListItemsSitCloserThanParagraphs() {
-        let item = row([mkRun("• ", role: "list"), mkRun("one")])
-        let prose = row([mkRun("a")])
-        let betweenItems = gapHeight(between: item, and: item)
-        let betweenParagraphs = gapHeight(between: prose, and: prose)
-        XCTAssertEqual(betweenItems, theme.blockGap * theme.listGapScale, accuracy: 0.5)
-        XCTAssertLessThan(betweenItems, betweenParagraphs, "a list reads as one block")
-        // Leaving the list is an ordinary boundary again.
-        XCTAssertEqual(gapHeight(between: item, and: prose), betweenParagraphs, accuracy: 0.5)
+    func testOrdinaryBoundariesTakeThePlainGap() {
+        for boundary: (BlockClass, BlockClass) in [(.paragraph, .paragraph), (.list, .paragraph),
+                                                   (.quote, .code), (.paragraph, .table)] {
+            XCTAssertEqual(gapHeight(boundary.0, boundary.1), theme.blockGap, accuracy: 0.5)
+        }
+    }
+
+    func testAnUnlabelledRowIsNoLongerAGapAtAll() {
+        // A blank decoration row core didn't label isn't a block boundary — a
+        // table's rules and a picture's reserved filler rows are decoration too.
+        // It lays out as its own line box, and nothing here shrinks it.
+        let dv = docView([row([mkRun("a")]), row([], decoration: true), row([mkRun("b")])])
+        let rl = EditorLayout(dv, theme: theme, wrapWidth: 400).rows[1]
+        XCTAssertFalse(rl.row.isBlockGap)
+        XCTAssertEqual(rl.height, theme.rowHeight(heading: nil), accuracy: 0.5)
     }
 
     func testTheSameGapRowTakesDifferentHeightsInDifferentPlaces() {
-        // The shaping cache is keyed by row *value*, and every block gap is the
-        // same empty row — so a contextual height has to live outside the cache or
-        // the first boundary laid out would hand its height to all the others.
-        let prose = row([mkRun("a")])
-        let heading = row([mkRun("Title")], heading: 1)
-        let gap = row([], decoration: true)
+        // The shaping cache is keyed by row *value*. Two gaps dividing different
+        // pairs are now different values, so they can't collide — but the height
+        // still has to come from the layout rather than the shaping, since a
+        // `ShapedRow`'s line height is what the cache would hand back.
         var cache: [Row: ShapedRow] = [:]
-        let layout = EditorLayout(docView([prose, gap, prose, gap, heading]),
-                                  theme: theme, wrapWidth: 400, cache: &cache)
+        let layout = EditorLayout(
+            docView([row([mkRun("a")]), gapRow(.paragraph, .paragraph),
+                     row([mkRun("b")]), gapRow(.paragraph, .heading),
+                     row([mkRun("Title")], heading: 1)]),
+            theme: theme, wrapWidth: 400, cache: &cache)
         XCTAssertEqual(layout.rows[1].height, theme.blockGap, accuracy: 0.5)
         XCTAssertEqual(layout.rows[3].height, theme.blockGap * theme.headingGapScale, accuracy: 0.5)
     }

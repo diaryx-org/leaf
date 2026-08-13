@@ -106,6 +106,63 @@ pub struct Row {
     /// `None`. A proportional renderer sizes the *whole* row from this so an
     /// inline `` `code` `` run inside a heading still reads at the heading's size.
     pub heading: Option<u8>,
+    /// What this row divides, on the blank rows a block boundary is drawn with
+    /// and `None` everywhere else — so `boundary != nil` is exactly "this row is
+    /// a drawn block boundary". A frontend spaces a boundary by the pair it
+    /// falls between (the margin above a heading is wider than the one between
+    /// two paragraphs); the *height* is the frontend's, the *kind* is core's.
+    /// See [`leaf_core::Boundary`].
+    pub boundary: Option<Boundary>,
+}
+
+/// What a drawn block boundary separates. The FFI mirror of
+/// [`leaf_core::Boundary`].
+#[derive(uniffi::Record)]
+pub struct Boundary {
+    pub above: BlockClass,
+    pub below: BlockClass,
+}
+
+/// The block kinds core tells apart — the vocabulary a [`Boundary`] is spelled
+/// in. The FFI mirror of [`leaf_core::BlockClass`]; `Other` covers every kind
+/// core doesn't separate out, so a frontend's `match` stays exhaustive as the
+/// list grows.
+#[derive(uniffi::Enum)]
+pub enum BlockClass {
+    Paragraph,
+    Heading,
+    /// A whole list. Core draws no boundary row *between* two items of one list,
+    /// tight or loose, so an `ListItem`↔`ListItem` pair never reaches a frontend.
+    List,
+    ListItem,
+    Quote,
+    Code,
+    Table,
+    Media,
+    Directive,
+    Rule,
+    Footnote,
+    Other,
+}
+
+impl From<leaf_core::BlockClass> for BlockClass {
+    fn from(k: leaf_core::BlockClass) -> Self {
+        use leaf_core::BlockClass as K;
+        match k {
+            K::Paragraph => BlockClass::Paragraph,
+            K::Heading => BlockClass::Heading,
+            K::List => BlockClass::List,
+            K::ListItem => BlockClass::ListItem,
+            K::Quote => BlockClass::Quote,
+            K::Code => BlockClass::Code,
+            K::Table => BlockClass::Table,
+            K::Media => BlockClass::Media,
+            K::Directive => BlockClass::Directive,
+            K::Rule => BlockClass::Rule,
+            K::Footnote => BlockClass::Footnote,
+            K::Other => BlockClass::Other,
+        }
+    }
 }
 
 /// One *visual line* of a table cell: its styled runs and the source offsets
@@ -1493,6 +1550,10 @@ fn wysiwyg_rows(vmap: &VisualMap, ss: usize, se: usize) -> Vec<Row> {
                 // heading has none to scan, and a renderer sizing the line by a
                 // glyph's role drew `# ` at body height until it had text.
                 heading: vrow.heading,
+                boundary: vrow.boundary.map(|b| Boundary {
+                    above: b.above.into(),
+                    below: b.below.into(),
+                }),
             }
         })
         .collect()
@@ -1702,6 +1763,7 @@ fn source_rows(source: &str, ss: usize, se: usize) -> Vec<Row> {
             directive: false,
             directive_label: None,
             heading: None, // source view is raw text — no resolved heading rows
+            boundary: None, // …and no resolved block structure to divide
         });
         byte = end + 1; // skip the '\n' that `split` consumed
     }
