@@ -55,6 +55,13 @@ extension Row {
         Array(runs.prefix { $0.role == "quote" || $0.role == "list" })
     }
 
+    /// Whether this row belongs to a list — it carries a list marker or indent in
+    /// its block decoration. What `EditorTheme.blockGap(between:and:)` reads to
+    /// set two items of one list closer together than two paragraphs.
+    var isListItem: Bool {
+        prefixRuns.contains { $0.role == "list" }
+    }
+
     /// Whether this row is a thematic break — a `---` drawn as a line across the
     /// text column rather than as core's row of `─` glyphs.
     ///
@@ -120,6 +127,12 @@ struct RowLayout {
     let row: Row
     let shaped: ShapedRow
     let top: CGFloat
+    /// The text column this row was laid out in — its left edge and width in view
+    /// coordinates. Uniform across a frame (every row shares the layout's column),
+    /// but carried here so a row can answer where its own chrome goes without the
+    /// caller threading the column through. See `EditorTheme.column(in:)`.
+    var originX: CGFloat = 0
+    var columnWidth: CGFloat = 0
     /// The grid, on every picture row of a table; `nil` for an ordinary row.
     var table: TableLayout? = nil
     /// The grid's top (all of a table's rows share it — they collapse onto it).
@@ -138,16 +151,24 @@ struct RowLayout {
     /// label (nonzero only on a directive block's first, labeled row) — keeps the
     /// label from painting over that row's real content. See `EditorTheme.directiveLabelHeight`.
     var labelInset: CGFloat = 0
+    /// The height of a block-boundary gap row, which depends on the blocks it
+    /// falls *between* (see `EditorTheme.blockGap(between:and:)`) and so can't
+    /// come from the row's own shaping — the same blank row is a wide margin above
+    /// a heading and a tight one inside a list. Nil on every other row, and the
+    /// reason gap height isn't folded into `ShapedRow`, whose cache is keyed by
+    /// row *value* and would hand a heading's margin to a list.
+    var gapHeight: CGFloat? = nil
 
     var attributed: NSAttributedString { shaped.attributed }
     var wrapped: [WrappedLine] { shaped.wrapped }
     var lineHeight: CGFloat { shaped.lineHeight }
     /// The block's total height — the grid's height on a table's first row, zero
-    /// on its other (collapsed) rows, else the label inset (if any) plus one
-    /// `lineHeight` per visual line.
+    /// on its other (collapsed) rows, a boundary's contextual gap, else the label
+    /// inset (if any) plus one `lineHeight` per visual line.
     var height: CGFloat {
         if let t = table { return tableFirst ? t.height : 0 }
         if let m = media { return mediaFirst ? m.height : 0 }
+        if let gapHeight { return gapHeight }
         return labelInset + CGFloat(shaped.wrapped.count) * shaped.lineHeight
     }
 
@@ -163,18 +184,18 @@ struct RowLayout {
         // block — so a quoted picture keeps its bar beside it.
         guard table == nil else { return [] }
         return shaped.quoteBarXs.map { x in
-            CGRect(x: theme.padding.left + x, y: top,
+            CGRect(x: originX + x, y: top,
                    width: theme.quoteBarWidth, height: height)
         }
     }
 
     /// A thematic break's drawn line, in view coordinates: a hairline centred in
-    /// the row's box, running from past the row's own prefix to the right margin.
-    /// `nil` on every other row. `contentWidth` is the text column's width.
-    func ruleLine(theme: EditorTheme, contentWidth: CGFloat) -> CGRect? {
+    /// the row's box, running from past the row's own prefix to the right edge of
+    /// the text column. `nil` on every other row.
+    func ruleLine(theme: EditorTheme) -> CGRect? {
         guard row.isThematicBreak, table == nil else { return nil }
-        let x = theme.padding.left + shaped.prefixWidth
-        let right = theme.padding.left + max(contentWidth, shaped.prefixWidth)
+        let x = originX + shaped.prefixWidth
+        let right = originX + max(columnWidth, shaped.prefixWidth)
         return CGRect(x: x, y: (top + labelInset + height * 0.5 - theme.ruleThickness / 2).rounded(),
                       width: max(0, right - x), height: theme.ruleThickness)
     }
@@ -185,19 +206,39 @@ struct EditorLayout {
     let rows: [RowLayout]
     /// Total content height including top+bottom padding — the view's fitting size.
     let contentHeight: CGFloat
+    /// The text column's left edge in view coordinates. Every x here is measured
+    /// from this, not from `theme.padding.left`: with a `measure` set the column
+    /// is centred in the view, so the padding is only the floor it can't cross.
+    let originX: CGFloat
+    /// The text column's width — what rows wrap to, and how far a thematic break
+    /// or a directive outline runs.
+    let columnWidth: CGFloat
 
-    /// Lay out `docView`, wrapping each row to `wrapWidth` points. Reuses shaped rows
-    /// from `cache` (same content *and* same width) and replaces it with the exact
-    /// set this frame used, so deleted rows are evicted and the cache stays bounded.
-    /// The caller must clear `cache` when the theme's geometry changes.
-    /// `wrapWidth <= 0` means "don't wrap" (one visual line per row) — the state
-    /// before the view knows its bounds.
+    /// Lay out `docView` in a view `viewWidth` points wide, wrapping each row to
+    /// the text column `theme` puts inside it (see `EditorTheme.column(in:)`).
+    /// Reuses shaped rows from `cache` (same content *and* same column width) and
+    /// replaces it with the exact set this frame used, so deleted rows are evicted
+    /// and the cache stays bounded. The caller must clear `cache` when the theme's
+    /// geometry changes.
     /// `media` loads the stills a block image or video poster draws. `nil` (the
     /// default, and what the tests use) still lays every media box out — at its
     /// no-picture size, as a labelled chip — so geometry can be exercised without
     /// touching the filesystem.
-    init(_ docView: DocView, theme: EditorTheme, wrapWidth: CGFloat,
+    init(_ docView: DocView, theme: EditorTheme, viewWidth: CGFloat,
          cache: inout [Row: ShapedRow], media: MediaStore? = nil) {
+        let column = theme.column(in: viewWidth)
+        self.init(docView, theme: theme, originX: column.originX, columnWidth: column.width,
+                  cache: &cache, media: media)
+    }
+
+    /// Lay out into an explicit column — the designated initializer the others
+    /// resolve to. `columnWidth <= 0` means "don't wrap" (one visual line per
+    /// row), the state before a view knows its bounds.
+    init(_ docView: DocView, theme: EditorTheme, originX: CGFloat, columnWidth: CGFloat,
+         cache: inout [Row: ShapedRow], media: MediaStore? = nil) {
+        let wrapWidth = columnWidth
+        self.originX = originX
+        self.columnWidth = max(0, columnWidth)
         var layouts: [RowLayout] = []
         layouts.reserveCapacity(docView.rows.count)
         var next = Dictionary<Row, ShapedRow>(minimumCapacity: docView.rows.count)
@@ -234,6 +275,7 @@ struct EditorLayout {
                 for r in Int(t.startRow)..<Int(t.endRow) where r < docView.rows.count {
                     layouts.append(RowLayout(
                         row: docView.rows[r], shaped: emptyShape, top: tableTop,
+                        originX: originX, columnWidth: wrapWidth,
                         table: grid, tableTop: tableTop, tableFirst: r == Int(t.startRow)
                     ))
                 }
@@ -258,6 +300,7 @@ struct EditorLayout {
                         row: docView.rows[r],
                         shaped: r == Int(mv.startRow) ? shaped : emptyShape,
                         top: mediaTop,
+                        originX: originX, columnWidth: wrapWidth,
                         media: box, mediaTop: mediaTop, mediaFirst: r == Int(mv.startRow)
                     ))
                 }
@@ -275,8 +318,17 @@ struct EditorLayout {
             }
             next[row] = shaped
             let hasLabel = row.directive && !(row.directiveLabel ?? "").isEmpty
-            let rl = RowLayout(row: row, shaped: shaped, top: y,
-                              labelInset: hasLabel ? theme.directiveLabelHeight : 0)
+            let rl = RowLayout(
+                row: row, shaped: shaped, top: y,
+                originX: originX, columnWidth: wrapWidth,
+                labelInset: hasLabel ? theme.directiveLabelHeight : 0,
+                // A boundary is spaced by what it separates, so its height is
+                // settled here (where the neighbours are in hand) rather than in
+                // the row's own shaping.
+                gapHeight: row.isBlockGap
+                    ? theme.blockGap(between: EditorLayout.neighbour(docView.rows, from: i, step: -1),
+                                     and: EditorLayout.neighbour(docView.rows, from: i, step: 1))
+                    : nil)
             y += rl.height
             layouts.append(rl)
             i += 1
@@ -292,12 +344,27 @@ struct EditorLayout {
             layouts.append(RowLayout(row: Row(runs: [], decoration: false, code: false,
                                               codeLang: nil, directive: false,
                                               directiveLabel: nil, heading: nil),
-                                     shaped: emptyShape, top: y))
+                                     shaped: emptyShape, top: y,
+                                     originX: originX, columnWidth: wrapWidth))
             y += theme.lineHeight
         }
         rows = layouts
         contentHeight = y + theme.padding.bottom
         cache = next
+    }
+
+    /// The nearest real block on one side of the boundary row at `index` — the
+    /// pair whose gap `EditorTheme.blockGap(between:and:)` sizes. Walks past any
+    /// further blank rows, so a boundary core spells with more than one still
+    /// reads the blocks it actually divides, and answers nil at the document's
+    /// own edges.
+    private static func neighbour(_ rows: [Row], from index: Int, step: Int) -> Row? {
+        var j = index + step
+        while rows.indices.contains(j) {
+            if !rows[j].isBlockGap { return rows[j] }
+            j += step
+        }
+        return nil
     }
 
     /// The media whose box contains `point`, of any kind, or `nil`. `point` is in
@@ -307,10 +374,10 @@ struct EditorLayout {
     /// video and audio always are, an image only while there is nothing drawn in
     /// its box and the host might still supply it. The views decide that, since
     /// only they can see what the media store has loaded.
-    func mediaBox(at point: CGPoint, theme: EditorTheme) -> MediaView? {
+    func mediaBox(at point: CGPoint) -> MediaView? {
         for rl in rows {
             guard rl.mediaFirst, let box = rl.media else { continue }
-            let r = box.rect(top: rl.mediaTop, left: theme.padding.left + rl.shaped.prefixWidth)
+            let r = box.rect(top: rl.mediaTop, left: rl.originX + rl.shaped.prefixWidth)
             if r.contains(point) { return box.media }
         }
         return nil
@@ -318,8 +385,8 @@ struct EditorLayout {
 
     /// The playable media whose box contains `point`, or `nil` — `mediaBox`
     /// narrowed to the kinds that have something to play.
-    func playableMedia(at point: CGPoint, theme: EditorTheme) -> MediaView? {
-        guard let hit = mediaBox(at: point, theme: theme), hit.kind != .image else { return nil }
+    func playableMedia(at point: CGPoint) -> MediaView? {
+        guard let hit = mediaBox(at: point), hit.kind != .image else { return nil }
         return hit
     }
 
@@ -332,21 +399,36 @@ struct EditorLayout {
     /// A document naming the same `src` twice collapses to one entry, and only
     /// one of the two boxes can host a player. That is the honest consequence of
     /// keying by source, and a rare enough shape not to complicate this for.
-    func mediaRects(theme: EditorTheme) -> [String: CGRect] {
+    func mediaRects() -> [String: CGRect] {
         var out: [String: CGRect] = [:]
         for rl in rows where rl.mediaFirst {
             guard let box = rl.media else { continue }
             out[box.media.src] = box.rect(top: rl.mediaTop,
-                                          left: theme.padding.left + rl.shaped.prefixWidth)
+                                          left: rl.originX + rl.shaped.prefixWidth)
         }
         return out
     }
 
-    /// Build with no cross-frame cache — every row shaped fresh. Convenience for
-    /// one-off layouts and tests.
+    /// Lay out into a column `wrapWidth` wide at the theme's left inset — the text
+    /// column stated directly rather than worked back out of a view width and a
+    /// measure. Convenience for tests.
+    init(_ docView: DocView, theme: EditorTheme, wrapWidth: CGFloat,
+         cache: inout [Row: ShapedRow], media: MediaStore? = nil) {
+        self.init(docView, theme: theme, originX: theme.padding.left, columnWidth: wrapWidth,
+                  cache: &cache, media: media)
+    }
+
+    /// The same with no cross-frame cache — every row shaped fresh.
     init(_ docView: DocView, theme: EditorTheme, wrapWidth: CGFloat, media: MediaStore? = nil) {
         var scratch: [Row: ShapedRow] = [:]
         self.init(docView, theme: theme, wrapWidth: wrapWidth, cache: &scratch, media: media)
+    }
+
+    /// Lay out for a view `viewWidth` wide with no cross-frame cache — the
+    /// column-from-the-theme path (`measure` and all), one frame at a time.
+    init(_ docView: DocView, theme: EditorTheme, viewWidth: CGFloat, media: MediaStore? = nil) {
+        var scratch: [Row: ShapedRow] = [:]
+        self.init(docView, theme: theme, viewWidth: viewWidth, cache: &scratch, media: media)
     }
 
     /// Build unwrapped (one visual line per row). Convenience for tests.
@@ -439,17 +521,17 @@ struct EditorLayout {
     /// caret or a selection endpoint occupies, resolved to the visual line `ch` falls
     /// on. `nil` if the row is out of range. At a soft-wrap boundary the position
     /// belongs to the *start* of the following line.
-    func rect(row: Int, ch: Int, theme: EditorTheme) -> CGRect? {
+    func rect(row: Int, ch: Int) -> CGRect? {
         guard rows.indices.contains(row) else { return nil }
         let rl = rows[row]
-        if rl.media != nil { return mediaCaretRect(rl, ch: ch, theme: theme) }
+        if rl.media != nil { return mediaCaretRect(rl, ch: ch) }
         let lines = rl.wrapped
         for (i, wl) in lines.enumerated() where ch < wl.start + wl.length || i == lines.count - 1 {
             let x = CTLineGetOffsetForStringIndex(wl.line, CFIndex(max(0, ch - wl.start)), nil)
             let y = rl.top + rl.labelInset + CGFloat(i) * rl.lineHeight
-            return CGRect(x: theme.padding.left + wl.indent + x, y: y, width: 1.5, height: rl.lineHeight)
+            return CGRect(x: rl.originX + wl.indent + x, y: y, width: 1.5, height: rl.lineHeight)
         }
-        return CGRect(x: theme.padding.left, y: rl.top + rl.labelInset, width: 1.5, height: rl.lineHeight)
+        return CGRect(x: rl.originX, y: rl.top + rl.labelInset, width: 1.5, height: rl.lineHeight)
     }
 
     /// The caret's frame on a block media row: the box's leading edge in front of
@@ -462,9 +544,9 @@ struct EditorLayout {
     /// arbitrary point inside the picture: a blinking bar in the middle of a
     /// photo that says nothing about where the next character will land. Riding
     /// the box's edges says what a word processor's caret beside a figure says.
-    private func mediaCaretRect(_ rl: RowLayout, ch: Int, theme: EditorTheme) -> CGRect? {
+    private func mediaCaretRect(_ rl: RowLayout, ch: Int) -> CGRect? {
         guard let box = rl.media else { return nil }
-        let r = box.rect(top: rl.mediaTop, left: theme.padding.left + rl.shaped.prefixWidth)
+        let r = box.rect(top: rl.mediaTop, left: rl.originX + rl.shaped.prefixWidth)
         // Past the label's last glyph is core's trailing stop. The reserved rows
         // below the first carry no glyphs at all, so they are only ever "after" —
         // which is right: they are the picture's lower half.
@@ -479,23 +561,23 @@ struct EditorLayout {
     func caretRect(_ docView: DocView, theme: EditorTheme) -> CGRect? {
         let cr = Int(docView.caretRow)
         if rows.indices.contains(cr), let grid = rows[cr].table {
-            return tableCaretRect(grid, tableTop: rows[cr].tableTop,
+            return tableCaretRect(grid, tableTop: rows[cr].tableTop, originX: rows[cr].originX,
                                   caretSrc: Int(docView.caretSrc), theme: theme)
         }
-        return rect(row: cr, ch: Int(docView.caretCh), theme: theme)
+        return rect(row: cr, ch: Int(docView.caretCh))
     }
 
     /// The caret's frame inside a table: the cell *line* its source offset falls
     /// on, at the x the offset maps to within that line and the y of the line's
     /// band. A multi-line cell (an in-cell `<br>`) puts later offsets lower.
-    private func tableCaretRect(_ grid: TableLayout, tableTop: CGFloat, caretSrc: Int,
-                                theme: EditorTheme) -> CGRect? {
+    private func tableCaretRect(_ grid: TableLayout, tableTop: CGFloat, originX: CGFloat,
+                                caretSrc: Int, theme: EditorTheme) -> CGRect? {
         guard let (row, _, line, lineIndex) = grid.locate(src: caretSrc) else { return nil }
         // Byte offset within the line ≈ UTF-16 index (exact for ASCII text). The
         // line carries no break, so this holds even across an in-cell `<br>`.
         let idx = max(0, min(caretSrc - line.start, line.attributed.length))
         let dx = CTLineGetOffsetForStringIndex(line.line, CFIndex(idx), nil)
-        return CGRect(x: theme.padding.left + line.textX + dx,
+        return CGRect(x: originX + line.textX + dx,
                       y: tableTop + row.top + TableMetrics.padY + CGFloat(lineIndex) * grid.lineHeight,
                       width: 1.5, height: theme.lineHeight)
     }
@@ -503,12 +585,12 @@ struct EditorLayout {
     /// The source offset a click at `point` resolves to when it lands in a table,
     /// else `nil` (the caller falls back to the row/ch hit path). The offset is
     /// approximate for a cell with inline markup; core snaps it to a real stop.
-    func tableHitOffset(_ point: CGPoint, theme: EditorTheme) -> Int? {
+    func tableHitOffset(_ point: CGPoint) -> Int? {
         for rl in rows {
             guard let grid = rl.table, rl.tableFirst else { continue }
             let yInTable = point.y - rl.tableTop
             guard yInTable >= 0, yInTable < grid.height else { continue }
-            let xInTable = point.x - theme.padding.left
+            let xInTable = point.x - rl.originX
             guard let (_, _, line, _) = grid.locate(atX: xInTable, y: yInTable) else { return nil }
             let rel = CTLineGetStringIndexForPosition(
                 line.line, CGPoint(x: max(0, xInTable - line.textX), y: 0))
@@ -526,7 +608,7 @@ struct EditorLayout {
     /// row-based selection walk skips right over them and the system (iOS) or the
     /// caller would otherwise draw no highlight over a table. `from`/`to` are
     /// source byte offsets; each rect flags whether it holds an endpoint.
-    func tableSelectionRects(from: Int, to: Int, theme: EditorTheme)
+    func tableSelectionRects(from: Int, to: Int)
         -> [(rect: CGRect, containsStart: Bool, containsEnd: Bool)]
     {
         guard to > from else { return [] }
@@ -547,7 +629,7 @@ struct EditorLayout {
                         let y = rl.tableTop + row.top + TableMetrics.padY
                             + CGFloat(i) * grid.lineHeight
                         out.append((
-                            CGRect(x: theme.padding.left + line.textX + x0, y: y,
+                            CGRect(x: rl.originX + line.textX + x0, y: y,
                                    width: x1 - x0, height: grid.lineHeight),
                             cs == from, ce == to
                         ))
@@ -595,7 +677,7 @@ struct EditorLayout {
     /// vertical band it lands in, the visual line within it from the y offset, and
     /// the UTF-16 offset from Core Text's hit-test of the horizontal position.
     /// `click_ch` then clamps `ch` to a real caret stop.
-    func hit(_ point: CGPoint, theme: EditorTheme) -> (row: Int, ch: Int) {
+    func hit(_ point: CGPoint) -> (row: Int, ch: Int) {
         guard !rows.isEmpty else { return (0, 0) }
         let row = rows.firstIndex { point.y < $0.top + $0.height } ?? rows.count - 1
         let rl = rows[row]
@@ -606,13 +688,13 @@ struct EditorLayout {
         // including the blank space under a document that *ends* with one — where
         // the clamp above lands every point on this row.
         if let box = rl.media {
-            let r = box.rect(top: rl.mediaTop, left: theme.padding.left + rl.shaped.prefixWidth)
+            let r = box.rect(top: rl.mediaTop, left: rl.originX + rl.shaped.prefixWidth)
             return (row, point.y < r.midY ? 0 : rl.attributed.length)
         }
         let lines = rl.wrapped
         let li = min(max(0, Int((point.y - rl.top - rl.labelInset) / rl.lineHeight)), lines.count - 1)
         let wl = lines[li]
-        let localX = point.x - theme.padding.left - wl.indent
+        let localX = point.x - rl.originX - wl.indent
         let rel = CTLineGetStringIndexForPosition(wl.line, CGPoint(x: max(0, localX), y: 0))
         let ch = wl.start + min(max(0, rel), wl.length)
         return (row, ch)
@@ -633,7 +715,7 @@ struct EditorLayout {
     /// Fill the selection background behind the runs core marked `sel`, split across
     /// the row's visual lines, into `ctx`. Core carves the selection into run
     /// boundaries; we coalesce those into ranges and clip each to a visual line.
-    func fillSelection(row rl: RowLayout, padLeft: CGFloat, color: LeafColor, in ctx: CGContext) {
+    func fillSelection(row rl: RowLayout, color: LeafColor, in ctx: CGContext) {
         var ranges: [(Int, Int)] = []
         var utf16 = 0
         for run in rl.row.runs {
@@ -657,7 +739,7 @@ struct EditorLayout {
                 guard cs < ce else { continue }
                 let x0 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(cs - lineStart), nil)
                 let x1 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(ce - lineStart), nil)
-                ctx.fill(CGRect(x: padLeft + wl.indent + x0, y: y, width: x1 - x0, height: rl.lineHeight))
+                ctx.fill(CGRect(x: rl.originX + wl.indent + x0, y: y, width: x1 - x0, height: rl.lineHeight))
             }
         }
     }

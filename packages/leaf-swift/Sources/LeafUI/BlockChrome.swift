@@ -209,9 +209,9 @@ enum BlockChrome {
     /// own selection) fills the row's box first, so a selection running through a
     /// rule shows on it — the collapsed row has no glyphs of its own to highlight.
     /// No-op on a row that isn't a break.
-    static func drawRule(_ rl: RowLayout, theme: EditorTheme, contentWidth: CGFloat,
+    static func drawRule(_ rl: RowLayout, theme: EditorTheme,
                          selColor: LeafColor?, in ctx: CGContext) {
-        guard let line = rl.ruleLine(theme: theme, contentWidth: contentWidth) else { return }
+        guard let line = rl.ruleLine(theme: theme) else { return }
         if let selColor, rl.row.runs.contains(where: { $0.sel }) {
             ctx.setFillColor(selColor.cgColor)
             ctx.fill(CGRect(x: line.minX, y: rl.top + rl.labelInset,

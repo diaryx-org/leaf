@@ -56,7 +56,7 @@ final class EditorLayoutTests: XCTestCase {
         XCTAssertEqual(rl.labelInset, theme.directiveLabelHeight)
         XCTAssertEqual(rl.height, theme.directiveLabelHeight + theme.rowHeight(heading: nil), accuracy: 0.5)
         // The row's own text draws below the label strip, not at the row's top.
-        let textRect = try! XCTUnwrap(layout.rect(row: 0, ch: 0, theme: theme))
+        let textRect = try! XCTUnwrap(layout.rect(row: 0, ch: 0))
         XCTAssertEqual(textRect.minY, rl.top + theme.directiveLabelHeight, accuracy: 0.5)
     }
 
@@ -203,7 +203,7 @@ final class EditorLayoutTests: XCTestCase {
         XCTAssertFalse(table.rows[0].cells[0].lines[0].selRanges.isEmpty, "selected cell records its range")
         XCTAssertTrue(table.rows[0].cells[1].lines[0].selRanges.isEmpty, "unselected cell records none")
 
-        let rects = layout.tableSelectionRects(from: 2, to: 4, theme: theme)
+        let rects = layout.tableSelectionRects(from: 2, to: 4)
         XCTAssertEqual(rects.count, 1, "one rect for the one covered cell line")
         let r = try XCTUnwrap(rects.first)
         XCTAssertTrue(r.containsStart)
@@ -219,7 +219,7 @@ final class EditorLayoutTests: XCTestCase {
         ], startRow: 0, endRow: 2)
         let dv = docView([row([], decoration: true), row([], decoration: true)], tables: [grid])
         let layout = EditorLayout(dv, theme: theme)
-        XCTAssertTrue(layout.tableSelectionRects(from: 20, to: 30, theme: theme).isEmpty)
+        XCTAssertTrue(layout.tableSelectionRects(from: 20, to: 30).isEmpty)
     }
 
     func testHeadingRowIsTaller() {
@@ -246,25 +246,25 @@ final class EditorLayoutTests: XCTestCase {
         // a brand-new note drew no caret at all until the first character was typed.
         let layout = EditorLayout(docView([]), theme: theme, wrapWidth: 400)
         XCTAssertEqual(layout.rows.count, 1, "one empty line box stands in")
-        let caret = try XCTUnwrap(layout.rect(row: 0, ch: 0, theme: theme))
+        let caret = try XCTUnwrap(layout.rect(row: 0, ch: 0))
         XCTAssertEqual(caret.minX, theme.padding.left, accuracy: 0.5)
         XCTAssertEqual(caret.minY, theme.padding.top, accuracy: 0.5)
         XCTAssertEqual(caret.height, theme.lineHeight, accuracy: 0.5)
         // And a tap anywhere in the blank pane lands on it.
-        let (row, ch) = layout.hit(CGPoint(x: 200, y: 800), theme: theme)
+        let (row, ch) = layout.hit(CGPoint(x: 200, y: 800))
         XCTAssertEqual(row, 0)
         XCTAssertEqual(ch, 0)
     }
 
     func testRectIsNilForRowOutOfRange() {
         let layout = EditorLayout(docView([row([mkRun("x")])]), theme: theme)
-        XCTAssertNil(layout.rect(row: 5, ch: 0, theme: theme))
+        XCTAssertNil(layout.rect(row: 5, ch: 0))
     }
 
     func testCaretXAdvancesWithColumn() throws {
         let layout = EditorLayout(docView([row([mkRun("hello world")])]), theme: theme)
-        let x0 = try XCTUnwrap(layout.rect(row: 0, ch: 0, theme: theme)).minX
-        let x5 = try XCTUnwrap(layout.rect(row: 0, ch: 5, theme: theme)).minX
+        let x0 = try XCTUnwrap(layout.rect(row: 0, ch: 0)).minX
+        let x5 = try XCTUnwrap(layout.rect(row: 0, ch: 5)).minX
         XCTAssertGreaterThan(x5, x0)
     }
 
@@ -272,19 +272,19 @@ final class EditorLayoutTests: XCTestCase {
         let layout = EditorLayout(docView([row([mkRun("first")]), row([mkRun("second")]), row([mkRun("third")])]), theme: theme)
         let rh = theme.rowHeight(heading: nil)
         let yMidRow1 = theme.padding.top + rh * 1.5
-        let (r, _) = layout.hit(CGPoint(x: theme.padding.left + 4, y: yMidRow1), theme: theme)
+        let (r, _) = layout.hit(CGPoint(x: theme.padding.left + 4, y: yMidRow1))
         XCTAssertEqual(r, 1)
     }
 
     func testHitBelowLastRowClampsToLastRow() {
         let layout = EditorLayout(docView([row([mkRun("only")]), row([mkRun("last")])]), theme: theme)
-        let (r, _) = layout.hit(CGPoint(x: 10, y: 99_999), theme: theme)
+        let (r, _) = layout.hit(CGPoint(x: 10, y: 99_999))
         XCTAssertEqual(r, 1)
     }
 
     func testHitChIsWithinRowLength() {
         let layout = EditorLayout(docView([row([mkRun("hello")])]), theme: theme)
-        let (_, ch) = layout.hit(CGPoint(x: 10_000, y: theme.padding.top + 4), theme: theme)
+        let (_, ch) = layout.hit(CGPoint(x: 10_000, y: theme.padding.top + 4))
         XCTAssertLessThanOrEqual(ch, "hello".utf16.count, "hit clamps past end-of-line to the line length")
     }
 
@@ -343,9 +343,9 @@ final class EditorLayoutTests: XCTestCase {
         let layout = EditorLayout(docView([row([mkRun(long)])]), theme: theme, wrapWidth: 120)
         try XCTAssertGreaterThan(layout.rows[0].wrapped.count, 1)
         let firstLineEnd = layout.rows[0].wrapped[0].length
-        let start = try XCTUnwrap(layout.rect(row: 0, ch: 0, theme: theme))
+        let start = try XCTUnwrap(layout.rect(row: 0, ch: 0))
         // A ch just past the first wrap point sits on line 2: lower, and back near the left.
-        let wrapped = try XCTUnwrap(layout.rect(row: 0, ch: firstLineEnd, theme: theme))
+        let wrapped = try XCTUnwrap(layout.rect(row: 0, ch: firstLineEnd))
         XCTAssertGreaterThan(wrapped.minY, start.minY, "wrapped position is on a lower visual line")
     }
 
@@ -354,8 +354,98 @@ final class EditorLayoutTests: XCTestCase {
         let layout = EditorLayout(docView([row([mkRun(long)])]), theme: theme, wrapWidth: 120)
         let lineHeight = layout.rows[0].lineHeight
         let onLine2 = CGPoint(x: theme.padding.left + 5, y: theme.padding.top + lineHeight * 1.5)
-        let (r, ch) = layout.hit(onLine2, theme: theme)
+        let (r, ch) = layout.hit(onLine2)
         XCTAssertEqual(r, 0)
         XCTAssertGreaterThan(ch, 0, "a hit on the second visual line maps past the first line's text")
+    }
+
+    // MARK: the measure — a capped, centred text column
+
+    /// A view wide enough that the measure, not the padding, decides the column.
+    private let wideView: CGFloat = 2000
+
+    func testMeasureCapsAndCentresTheColumnInAWideView() {
+        let layout = EditorLayout(docView([row([mkRun("hello")])]), theme: theme, viewWidth: wideView)
+        let measured = theme.measure! * theme.averageCharWidth
+        XCTAssertEqual(layout.columnWidth, measured, accuracy: 0.5, "the column stops at the measure")
+        XCTAssertLessThan(layout.columnWidth, wideView - theme.padding.left - theme.padding.right)
+        // Centred: the room left over is split evenly, so the right margin matches
+        // the left one rather than the whole surplus piling up on one side.
+        let right = wideView - (layout.originX + layout.columnWidth)
+        XCTAssertEqual(layout.originX, right, accuracy: 1.0, "equal margins either side")
+        XCTAssertGreaterThan(layout.originX, theme.padding.left, "padding is a floor, not the origin")
+    }
+
+    func testNarrowViewShrinksToThePaddingRatherThanOverflowing() {
+        // Narrower than the measure: the column is what the padding leaves, so the
+        // text reflows instead of running off the edge (or scrolling sideways).
+        let narrow: CGFloat = 300
+        let layout = EditorLayout(docView([row([mkRun("hello")])]), theme: theme, viewWidth: narrow)
+        XCTAssertEqual(layout.originX, theme.padding.left, accuracy: 0.5)
+        XCTAssertEqual(layout.columnWidth, narrow - theme.padding.left - theme.padding.right, accuracy: 0.5)
+    }
+
+    func testNoMeasureFillsTheView() {
+        var t = theme
+        t.measure = nil
+        let layout = EditorLayout(docView([row([mkRun("hello")])]), theme: t, viewWidth: wideView)
+        XCTAssertEqual(layout.originX, t.padding.left, accuracy: 0.5)
+        XCTAssertEqual(layout.columnWidth, wideView - t.padding.left - t.padding.right, accuracy: 0.5)
+    }
+
+    func testCaretAndHitRideTheCentredColumn() throws {
+        let layout = EditorLayout(docView([row([mkRun("hello")])]), theme: theme, viewWidth: wideView)
+        // Everything geometric is measured from the column, not the view's edge:
+        // the caret at offset 0 sits at its left edge…
+        let caret = try XCTUnwrap(layout.rect(row: 0, ch: 0))
+        XCTAssertEqual(caret.minX, layout.originX, accuracy: 0.5)
+        // …and a click in the left margin still lands at the start of the line,
+        // rather than being measured from x=0 and landing somewhere inside it.
+        let (r, ch) = layout.hit(CGPoint(x: 4, y: theme.padding.top + 2))
+        XCTAssertEqual(r, 0)
+        XCTAssertEqual(ch, 0)
+    }
+
+    // MARK: block boundaries — spaced by what they separate
+
+    /// The height of the gap row in a three-row `[before, gap, after]` frame.
+    private func gapHeight(between before: Row, and after: Row) -> CGFloat {
+        let dv = docView([before, row([], decoration: true), after])
+        return EditorLayout(dv, theme: theme, wrapWidth: 400).rows[1].height
+    }
+
+    func testHeadingTakesAWiderGapAboveThanBelow() {
+        let prose = row([mkRun("a")])
+        let heading = row([mkRun("Title")], heading: 1)
+        let above = gapHeight(between: prose, and: heading)
+        let below = gapHeight(between: heading, and: prose)
+        XCTAssertEqual(above, theme.blockGap * theme.headingGapScale, accuracy: 0.5)
+        XCTAssertEqual(below, theme.blockGap, accuracy: 0.5)
+        XCTAssertGreaterThan(above, below, "a heading groups with the text it introduces")
+    }
+
+    func testListItemsSitCloserThanParagraphs() {
+        let item = row([mkRun("• ", role: "list"), mkRun("one")])
+        let prose = row([mkRun("a")])
+        let betweenItems = gapHeight(between: item, and: item)
+        let betweenParagraphs = gapHeight(between: prose, and: prose)
+        XCTAssertEqual(betweenItems, theme.blockGap * theme.listGapScale, accuracy: 0.5)
+        XCTAssertLessThan(betweenItems, betweenParagraphs, "a list reads as one block")
+        // Leaving the list is an ordinary boundary again.
+        XCTAssertEqual(gapHeight(between: item, and: prose), betweenParagraphs, accuracy: 0.5)
+    }
+
+    func testTheSameGapRowTakesDifferentHeightsInDifferentPlaces() {
+        // The shaping cache is keyed by row *value*, and every block gap is the
+        // same empty row — so a contextual height has to live outside the cache or
+        // the first boundary laid out would hand its height to all the others.
+        let prose = row([mkRun("a")])
+        let heading = row([mkRun("Title")], heading: 1)
+        let gap = row([], decoration: true)
+        var cache: [Row: ShapedRow] = [:]
+        let layout = EditorLayout(docView([prose, gap, prose, gap, heading]),
+                                  theme: theme, wrapWidth: 400, cache: &cache)
+        XCTAssertEqual(layout.rows[1].height, theme.blockGap, accuracy: 0.5)
+        XCTAssertEqual(layout.rows[3].height, theme.blockGap * theme.headingGapScale, accuracy: 0.5)
     }
 }

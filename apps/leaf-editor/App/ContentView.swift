@@ -12,15 +12,32 @@ struct ContentView: View {
     /// model each paint) because flipping it doesn't change the toolbar's other
     /// state, so this is what drives the menu's checkmark.
     @State private var flowPreserved = false
+    /// The reader's display choices. These are the host's to own — `LeafUI` takes
+    /// a whole `EditorTheme` and doesn't remember one — so a real app would
+    /// persist them (`@AppStorage`) rather than reset them each launch.
+    @State private var columnWidth: ColumnWidth = .medium
+    @State private var textSize: TextSize = .medium
 
     var body: some View {
         VStack(spacing: 0) {
             toolbar
             Divider()
-            LeafEditor(model: editor)
+            LeafEditor(model: editor, theme: theme)
                 .background(editorBackground)
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)
+    }
+
+    /// The two display choices resolved into a theme. Everything else stays at
+    /// the default — the point of the measure being counted in *characters* is
+    /// that width and text size compose without a table of point widths: pick a
+    /// size, and the column that holds ~65 characters of it follows.
+    private var theme: EditorTheme {
+        var t = EditorTheme.default
+        t.fontSize = textSize.points
+        t.lineHeight = textSize.points * 1.5
+        t.measure = columnWidth.measure
+        return t
     }
 
     private var toolbar: some View {
@@ -45,6 +62,7 @@ struct ContentView: View {
                     active: editor.isSource) { editor.toggleView() }
                 Divider().frame(height: 22)
                 flowMenu
+                appearanceMenu
                 if editor.state.dirty {
                     Circle().fill(.secondary).frame(width: 6, height: 6)
                 }
@@ -114,6 +132,36 @@ struct ContentView: View {
         .accessibilityLabel("line flow")
     }
 
+    /// The display menu — how wide the text column runs and how big it's set.
+    /// Both take effect on the next paint: the editor re-wraps when the theme's
+    /// *geometry* changes and only repaints when it doesn't, so holding the menu
+    /// open and stepping through the widths reflows the document live.
+    private var appearanceMenu: some View {
+        Menu {
+            Text("Column width")
+            ForEach(ColumnWidth.allCases) { width in
+                Button { columnWidth = width } label: {
+                    Label(width.label, systemImage: columnWidth == width ? "checkmark" : "")
+                }
+            }
+            Divider()
+            Text("Text size")
+            ForEach(TextSize.allCases) { size in
+                Button { textSize = size } label: {
+                    Label(size.label, systemImage: textSize == size ? "checkmark" : "")
+                }
+            }
+        } label: {
+            Image(systemName: "textformat.size")
+                .font(.system(size: 17))
+                .frame(minWidth: 24, minHeight: 24)
+                .foregroundStyle(Color.primary)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .accessibilityLabel("appearance")
+    }
+
     private func setFlow(_ preserve: Bool) {
         flowPreserved = preserve
         editor.setLineFlow(preserve ? .preserve : .fold)
@@ -128,6 +176,56 @@ struct ContentView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(id)
+    }
+}
+
+/// How wide the text column may run, in characters of the body font — the
+/// typographic "measure". The named tiers are what a reader actually chooses
+/// between; 45–75 characters is the comfortable range for continuous prose, and
+/// `.full` is the escape hatch for anyone who'd rather fill the window.
+private enum ColumnWidth: String, CaseIterable, Identifiable {
+    case narrow, medium, wide, full
+    var id: String { rawValue }
+
+    var measure: CGFloat? {
+        switch self {
+        case .narrow: return 52
+        case .medium: return 68
+        case .wide:   return 88
+        case .full:   return nil
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .narrow: return "Narrow"
+        case .medium: return "Medium"
+        case .wide:   return "Wide"
+        case .full:   return "Full width"
+        }
+    }
+}
+
+/// The body point size. Everything else in the theme is derived from it — the
+/// line height here, and the column width through the character-counted measure.
+private enum TextSize: String, CaseIterable, Identifiable {
+    case small, medium, large
+    var id: String { rawValue }
+
+    var points: CGFloat {
+        switch self {
+        case .small:  return 14
+        case .medium: return 16
+        case .large:  return 19
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .small:  return "Small"
+        case .medium: return "Medium"
+        case .large:  return "Large"
+        }
     }
 }
 

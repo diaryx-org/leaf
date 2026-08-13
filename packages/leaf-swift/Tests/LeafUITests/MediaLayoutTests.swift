@@ -153,23 +153,23 @@ final class MediaLayoutTests: XCTestCase {
 
         let image = layout.rows[0]
         let inImage = CGPoint(x: theme.padding.left + 4, y: image.mediaTop + MediaMetrics.gap + 4)
-        XCTAssertNil(layout.playableMedia(at: inImage, theme: theme), "an image isn't playable")
+        XCTAssertNil(layout.playableMedia(at: inImage), "an image isn't playable")
 
         let video = layout.rows[1]
         let inVideo = CGPoint(x: theme.padding.left + 4, y: video.mediaTop + MediaMetrics.gap + 4)
-        XCTAssertEqual(layout.playableMedia(at: inVideo, theme: theme)?.src, "clip.mp4")
+        XCTAssertEqual(layout.playableMedia(at: inVideo)?.src, "clip.mp4")
 
         // The superset does answer for the image — an empty picture box is what
         // the reader clicks to ask the host for it.
-        XCTAssertEqual(layout.mediaBox(at: inImage, theme: theme)?.src, "cat.png")
-        XCTAssertEqual(layout.mediaBox(at: inVideo, theme: theme)?.src, "clip.mp4")
+        XCTAssertEqual(layout.mediaBox(at: inImage)?.src, "cat.png")
+        XCTAssertEqual(layout.mediaBox(at: inVideo)?.src, "clip.mp4")
     }
 
     func testAPointOutsideEveryBoxHitsNothing() {
         let frame = docView([row([mkRun("🎬 clip")])],
                             media: [mkMedia("clip.mp4", kind: .video, startRow: 0, endRow: 1)])
         let layout = EditorLayout(frame, theme: theme, wrapWidth: 400)
-        XCTAssertNil(layout.playableMedia(at: CGPoint(x: 5000, y: 5000), theme: theme))
+        XCTAssertNil(layout.playableMedia(at: CGPoint(x: 5000, y: 5000)))
     }
 
     // MARK: the caret around a picture
@@ -190,7 +190,7 @@ final class MediaLayoutTests: XCTestCase {
         // its left edge) for a tap on the empty page under it.
         let layout = pictureLast()
         let label = layout.rows[1].attributed.length
-        let (row, ch) = layout.hit(CGPoint(x: theme.padding.left + 4, y: 99_999), theme: theme)
+        let (row, ch) = layout.hit(CGPoint(x: theme.padding.left + 4, y: 99_999))
         XCTAssertEqual(row, 1)
         XCTAssertEqual(ch, label, "past the label's last glyph — core's stop after the image")
     }
@@ -200,7 +200,7 @@ final class MediaLayoutTests: XCTestCase {
         let layout = pictureLast()
         let box = layout.rows[1]
         let top = box.mediaTop + MediaMetrics.gap + 2
-        let (row, ch) = layout.hit(CGPoint(x: theme.padding.left + 40, y: top), theme: theme)
+        let (row, ch) = layout.hit(CGPoint(x: theme.padding.left + 40, y: top))
         XCTAssertEqual(row, 1)
         XCTAssertEqual(ch, 0)
     }
@@ -210,12 +210,12 @@ final class MediaLayoutTests: XCTestCase {
         let rl = layout.rows[1]
         let drawn = rl.media!.rect(top: rl.mediaTop, left: theme.padding.left + rl.shaped.prefixWidth)
 
-        let before = try XCTUnwrap(layout.rect(row: 1, ch: 0, theme: theme))
+        let before = try XCTUnwrap(layout.rect(row: 1, ch: 0))
         XCTAssertEqual(before.minX, drawn.minX, accuracy: 0.5, "at the picture's leading edge")
         XCTAssertEqual(before.minY, drawn.minY, accuracy: 0.5)
         XCTAssertEqual(before.height, drawn.height, accuracy: 0.5, "as tall as the box")
 
-        let after = try XCTUnwrap(layout.rect(row: 1, ch: rl.attributed.length, theme: theme))
+        let after = try XCTUnwrap(layout.rect(row: 1, ch: rl.attributed.length))
         XCTAssertEqual(after.maxX, drawn.maxX, accuracy: 0.5, "at its trailing edge")
         XCTAssertEqual(after.minY, drawn.minY, accuracy: 0.5)
         XCTAssertEqual(after.height, drawn.height, accuracy: 0.5)
@@ -233,7 +233,7 @@ final class MediaLayoutTests: XCTestCase {
         let layout = EditorLayout(frame, theme: theme, wrapWidth: 400)
         let rl = layout.rows[0]
         let drawn = rl.media!.rect(top: rl.mediaTop, left: theme.padding.left)
-        let caret = try XCTUnwrap(layout.rect(row: 1, ch: 0, theme: theme))
+        let caret = try XCTUnwrap(layout.rect(row: 1, ch: 0))
         XCTAssertEqual(caret.maxX, drawn.maxX, accuracy: 0.5)
         XCTAssertEqual(caret.height, drawn.height, accuracy: 0.5)
     }
@@ -248,7 +248,7 @@ final class MediaLayoutTests: XCTestCase {
             media: [mkMedia("cat.png", startRow: 0, endRow: 1),
                     mkMedia("clip.mp4", kind: .video, startRow: 1, endRow: 2)]
         )
-        let rects = EditorLayout(frame, theme: theme, wrapWidth: 400).mediaRects(theme: theme)
+        let rects = EditorLayout(frame, theme: theme, wrapWidth: 400).mediaRects()
         XCTAssertEqual(Set(rects.keys), ["cat.png", "clip.mp4"])
     }
 
@@ -264,8 +264,8 @@ final class MediaLayoutTests: XCTestCase {
             [row([mkRun("intro")]), row([mkRun("a new line")]), row([mkRun("🎬 clip")])],
             media: [mkMedia("clip.mp4", kind: .video, startRow: 2, endRow: 3)]
         )
-        let r1 = EditorLayout(before, theme: theme, wrapWidth: 400).mediaRects(theme: theme)
-        let r2 = EditorLayout(after, theme: theme, wrapWidth: 400).mediaRects(theme: theme)
+        let r1 = EditorLayout(before, theme: theme, wrapWidth: 400).mediaRects()
+        let r2 = EditorLayout(after, theme: theme, wrapWidth: 400).mediaRects()
         XCTAssertNotNil(r1["clip.mp4"])
         XCTAssertNotNil(r2["clip.mp4"])
         XCTAssertGreaterThan(r2["clip.mp4"]!.minY, r1["clip.mp4"]!.minY,
@@ -276,7 +276,7 @@ final class MediaLayoutTests: XCTestCase {
         // What stops playback: a player whose src is absent from the new frame's
         // rects has been edited away, and the host removes it.
         let frame = docView([row([mkRun("just prose")])])
-        let rects = EditorLayout(frame, theme: theme, wrapWidth: 400).mediaRects(theme: theme)
+        let rects = EditorLayout(frame, theme: theme, wrapWidth: 400).mediaRects()
         XCTAssertNil(rects["clip.mp4"])
         XCTAssertTrue(rects.isEmpty)
     }
@@ -290,7 +290,7 @@ final class MediaLayoutTests: XCTestCase {
         let rl = layout.rows[0]
         let drawn = rl.media!.rect(top: rl.mediaTop,
                                    left: theme.padding.left + rl.shaped.prefixWidth)
-        XCTAssertEqual(layout.mediaRects(theme: theme)["clip.mp4"], drawn)
+        XCTAssertEqual(layout.mediaRects()["clip.mp4"], drawn)
     }
 
     // MARK: resolving a src

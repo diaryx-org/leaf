@@ -103,7 +103,24 @@ persistence, and a `@Published state` (active marks, heading, dirty, view) for
 toolbar binding. Keyboard (typing, arrows/word/line/doc motion with shift-select,
 delete/word-delete, ⌘B/I/U/E, ⌘Z/⇧⌘Z, ⌘C/X/V/A, ⇧⌘V), mouse (click, shift-click,
 double/triple-click select), and the rich HTML clipboard all work out of the box.
-Customize fonts/colours via `EditorTheme`.
+Customize fonts, colours, and page layout via `EditorTheme`.
+
+**A measured text column.** `EditorTheme.measure` caps the text at a number of
+*characters* of the body font (68 by default — the comfortable range for prose is
+45–75) and centres that column in the view, so a maximised window sets a readable
+line rather than a 200-character one. `padding` is the floor it can't cross: a
+window narrower than the measure just reflows to it, never scrolls sideways. The
+count is in characters rather than points so it survives a change of font or text
+size — pick a body size and the column follows. Set `measure = nil` to fill the
+view as before.
+
+```swift
+var theme = EditorTheme.default
+theme.fontSize = 19
+theme.lineHeight = 19 * 1.5
+theme.measure = 52          // a narrower column; nil fills the view
+LeafEditor(model: editor, theme: theme)
+```
 
 **Smart, rich clipboard** (the same behaviour as leaf-tui / leaf-gpui via
 `arboard`, reached here through `NSPasteboard`/`UIPasteboard`). A copy publishes

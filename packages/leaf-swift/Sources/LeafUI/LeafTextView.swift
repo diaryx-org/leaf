@@ -111,9 +111,10 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     private var docView: DocView
     private var layoutEngine: EditorLayout
-    /// The pixel width rows wrap to (content width, minus insets). Core lays out
-    /// unwrapped; the view soft-wraps at this width.
-    private var wrapWidth: CGFloat = 0
+    /// The view width the current layout was built for. The text column inside it
+    /// — where it starts, how wide it wraps — is the theme's to decide (see
+    /// `EditorTheme.column(in:)`), and the layout carries the answer.
+    private var viewWidth: CGFloat = 0
     /// Per-row shaped-text cache reused across frames; an edit re-shapes only the
     /// changed row(s). Cleared when the theme geometry changes (see `theme`).
     private var shapeCache: [Row: ShapedRow] = [:]
@@ -146,7 +147,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         let first = doc.setUnwrapped()
         self.docView = first
         var seed: [Row: ShapedRow] = [:]
-        self.layoutEngine = EditorLayout(first, theme: theme, wrapWidth: 0, cache: &seed)
+        self.layoutEngine = EditorLayout(first, theme: theme, viewWidth: 0, cache: &seed)
         self.shapeCache = seed
         super.init(frame: .zero)
         autoresizingMask = [.width]
@@ -178,10 +179,10 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     }
 
     private func relayoutForWidth(force: Bool) {
-        let w = bounds.width - theme.padding.left - theme.padding.right
-        guard w > 0 else { return }
-        if force || abs(w - wrapWidth) > 0.5 {
-            wrapWidth = w
+        let w = bounds.width
+        guard w > theme.padding.left + theme.padding.right else { return }
+        if force || abs(w - viewWidth) > 0.5 {
+            viewWidth = w
             // Re-wrap the current frame at the new pixel width — the unwrapped map is
             // width-independent, so no round trip to core is needed.
             render(docView, keepVerticalGoal: true)
@@ -214,14 +215,14 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     private func render(_ view: DocView, keepVerticalGoal: Bool = false) {
         if !keepVerticalGoal { verticalGoalX = nil }
         docView = view
-        layoutEngine = EditorLayout(view, theme: theme, wrapWidth: wrapWidth, cache: &shapeCache,
+        layoutEngine = EditorLayout(view, theme: theme, viewWidth: viewWidth, cache: &shapeCache,
                                     media: mediaStore)
         // Installed players follow their boxes: the layout just moved every one
         // of them, and any media edited out of the document is gone from the
         // rects, which is what stops its playback. Skipped entirely when nothing
         // is installed, which is the overwhelmingly common case.
         if !mediaPlayers.isEmpty {
-            mediaPlayers.reposition(layoutEngine.mediaRects(theme: theme))
+            mediaPlayers.reposition(layoutEngine.mediaRects())
         }
         applyContentHeight()
         needsDisplay = true
@@ -240,8 +241,8 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     public override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
-        let padX = theme.padding.left
-        let fullWidth = bounds.width - theme.padding.left - theme.padding.right
+        let padX = layoutEngine.originX
+        let fullWidth = layoutEngine.columnWidth
         let active = selectionIsActive
         let selColor = active ? theme.selectionColor : theme.inactiveSelectionColor
 
@@ -285,8 +286,8 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
                 ctx.fill(rowRect.insetBy(dx: -4, dy: 0))
                 if let lang = rl.row.codeLang, !lang.isEmpty { drawCodeLang(lang, in: rowRect) }
             }
-            BlockChrome.drawRule(rl, theme: theme, contentWidth: fullWidth, selColor: selColor, in: ctx)
-            layoutEngine.fillSelection(row: rl, padLeft: padX, color: selColor, in: ctx)
+            BlockChrome.drawRule(rl, theme: theme, selColor: selColor, in: ctx)
+            layoutEngine.fillSelection(row: rl, color: selColor, in: ctx)
             // Draw each wrapped visual line's substring on its own line box, hung
             // at the row's indent (zero on the first line, the prefix width after).
             for (i, wl) in rl.wrapped.enumerated() {
@@ -329,7 +330,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         }
         if mediaPlayback == .inline {
             if let url = mediaStore.playableURL(for: media.src) {
-                let rects = layoutEngine.mediaRects(theme: theme)
+                let rects = layoutEngine.mediaRects()
                 if let rect = rects[media.src],
                    mediaPlayers.activate(media, at: rect, in: self, url: url) {
                     needsDisplay = true   // the badge under the player must stop drawing
@@ -357,7 +358,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         guard let url = mediaStore.playableURL(for: src),
               let info = layoutEngine.rows.compactMap(\.media).first(where: { $0.media.src == src })
         else { return }
-        if let rect = layoutEngine.mediaRects(theme: theme)[src] {
+        if let rect = layoutEngine.mediaRects()[src] {
             mediaPlayers.activate(info.media, at: rect, in: self, url: url)
             needsDisplay = true
         }
@@ -367,7 +368,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// cell text, then the grid rules over them — the Apple peer of leaf-gpui's
     /// `table_chrome`. `tableTop` is the grid's top in view coordinates.
     private func drawTable(_ grid: TableLayout, tableTop: CGFloat, selColor: LeafColor, in ctx: CGContext) {
-        let left = theme.padding.left
+        let left = layoutEngine.originX
         let border = TableMetrics.border
         let x0 = left + (grid.colX.first ?? 0)
         let x1 = left + (grid.colX.last ?? 0)
@@ -453,7 +454,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
                 let x0 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(cs - lineStart), nil)
                 let x1 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(ce - lineStart), nil)
                 let y = rl.top + rl.labelInset + CGFloat(i) * rl.lineHeight + rl.lineHeight - 1.5
-                ctx.fill(CGRect(x: theme.padding.left + wl.indent + x0, y: y, width: x1 - x0, height: 1))
+                ctx.fill(CGRect(x: layoutEngine.originX + wl.indent + x0, y: y, width: x1 - x0, height: 1))
             }
         }
     }
@@ -491,8 +492,8 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// reverse. Skips a table row (it has no drawable rect of its own here; a
     /// directive-wrapped table isn't chromed today).
     private func drawDirectiveBorders(in ctx: CGContext, dirtyRect: NSRect) {
-        let padX = theme.padding.left
-        let fullWidth = bounds.width - theme.padding.left - theme.padding.right
+        let padX = layoutEngine.originX
+        let fullWidth = layoutEngine.columnWidth
         let rows = layoutEngine.rows
         var i = 0
         while i < rows.count {
@@ -527,11 +528,11 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// coordinate, so the ordinary `clickCh` path (which snaps to a cell stop)
     /// still applies; elsewhere it's the plain visual hit-test.
     private func hitRowCh(_ p: CGPoint) -> (Int, Int) {
-        if let off = layoutEngine.tableHitOffset(p, theme: theme) {
+        if let off = layoutEngine.tableHitOffset(p) {
             let rc = doc.posForOffset(off: UInt32(off))
             return (Int(rc.row), Int(rc.ch))
         }
-        return layoutEngine.hit(p, theme: theme)
+        return layoutEngine.hit(p)
     }
 
     public override func mouseDown(with event: NSEvent) {
@@ -543,7 +544,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // ignores the media (no `onOpenMedia`) behaves exactly as before, and the
         // reader can still type around the block afterwards.
         if event.clickCount == 1, !event.modifierFlags.contains(.shift),
-           let hit = layoutEngine.mediaBox(at: p, theme: theme),
+           let hit = layoutEngine.mediaBox(at: p),
            activateMedia(hit) {
             let (row, ch) = hitRowCh(p)
             render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: false))
@@ -882,7 +883,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     @objc private func lookUpSelection(_ sender: Any?) {
         guard let text = doc.selectedText(), !text.isEmpty else { return }
         let rc = doc.posForOffset(off: UInt32(selLowByte))
-        let origin = layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch), theme: theme)?.origin ?? .zero
+        let origin = layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch))?.origin ?? .zero
         showDefinition(for: NSAttributedString(string: text),
                        at: NSPoint(x: origin.x, y: origin.y + theme.lineHeight))
     }
@@ -890,7 +891,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     @objc private func shareSelection(_ sender: Any?) {
         guard let text = doc.selectedText(), !text.isEmpty else { return }
         let rc = doc.posForOffset(off: UInt32(selLowByte))
-        let anchor = layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch), theme: theme) ?? .zero
+        let anchor = layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch)) ?? .zero
         NSSharingServicePicker(items: [text]).show(relativeTo: anchor, of: self, preferredEdge: .minY)
     }
 
@@ -1053,7 +1054,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     public func characterIndex(for point: NSPoint) -> Int {
         guard let window else { return NSNotFound }
         let local = convert(window.convertPoint(fromScreen: point), from: nil)
-        let (row, ch) = layoutEngine.hit(local, theme: theme)
+        let (row, ch) = layoutEngine.hit(local)
         return Int(doc.offsetForPos(row: UInt32(row), ch: UInt32(ch)))
     }
 
@@ -1061,7 +1062,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         guard let window else { return .zero }
         actualRange?.pointee = range
         let rc = doc.posForOffset(off: UInt32(max(0, range.location)))
-        guard let rect = layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch), theme: theme) else { return .zero }
+        guard let rect = layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch)) else { return .zero }
         return window.convertToScreen(convert(rect, to: nil))
     }
 

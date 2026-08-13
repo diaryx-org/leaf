@@ -95,9 +95,10 @@ public final class LeafTextView: UIView, UITextInput {
 
     private var docView: DocView
     private var layoutEngine: EditorLayout
-    /// The pixel width rows wrap to (content width, minus insets). Core lays out
-    /// unwrapped; the view soft-wraps at this width.
-    private var wrapWidth: CGFloat = 0
+    /// The view width the current layout was built for. The text column inside it
+    /// — where it starts, how wide it wraps — is the theme's to decide (see
+    /// `EditorTheme.column(in:)`), and the layout carries the answer.
+    private var viewWidth: CGFloat = 0
     /// The caret offset the view last scrolled to reveal. Only a *move* re-scrolls,
     /// so passive reflows leave the reader's scroll position alone.
     private var lastCaretOffset: UInt32?
@@ -207,7 +208,7 @@ public final class LeafTextView: UIView, UITextInput {
         let first = doc.setUnwrapped()
         self.docView = first
         var seed: [Row: ShapedRow] = [:]
-        self.layoutEngine = EditorLayout(first, theme: renderTheme, wrapWidth: 0, cache: &seed)
+        self.layoutEngine = EditorLayout(first, theme: renderTheme, viewWidth: 0, cache: &seed)
         self.shapeCache = seed
         super.init(frame: .zero)
         // A resolved source has a picture to draw, and may be the one the reader
@@ -247,7 +248,7 @@ public final class LeafTextView: UIView, UITextInput {
         // so that is what a tap on it should mean — and a tap on an *empty*
         // picture box asks the host for it. Checked before links because a media
         // box occupies its whole row and holds no link text anyway.
-        if let hit = layoutEngine.mediaBox(at: point, theme: renderTheme),
+        if let hit = layoutEngine.mediaBox(at: point),
            activateMedia(hit) {
             return
         }
@@ -277,7 +278,7 @@ public final class LeafTextView: UIView, UITextInput {
         }
         if mediaPlayback == .inline {
             if let url = mediaStore.playableURL(for: media.src) {
-                let rects = layoutEngine.mediaRects(theme: renderTheme)
+                let rects = layoutEngine.mediaRects()
                 if let rect = rects[media.src],
                    mediaPlayers.activate(media, at: rect, in: self, url: url) {
                     setNeedsDisplay()   // the badge under the player must stop drawing
@@ -304,7 +305,7 @@ public final class LeafTextView: UIView, UITextInput {
         guard let url = mediaStore.playableURL(for: src),
               let info = layoutEngine.rows.compactMap(\.media).first(where: { $0.media.src == src })
         else { return }
-        if let rect = layoutEngine.mediaRects(theme: renderTheme)[src] {
+        if let rect = layoutEngine.mediaRects()[src] {
             mediaPlayers.activate(info.media, at: rect, in: self, url: url)
             setNeedsDisplay()
         }
@@ -376,10 +377,10 @@ public final class LeafTextView: UIView, UITextInput {
     }
 
     private func relayoutForWidth(force: Bool) {
-        let w = bounds.width - renderTheme.padding.left - renderTheme.padding.right
-        guard w > 0 else { return }
-        if force || abs(w - wrapWidth) > 0.5 {
-            wrapWidth = w
+        let w = bounds.width
+        guard w > renderTheme.padding.left + renderTheme.padding.right else { return }
+        if force || abs(w - viewWidth) > 0.5 {
+            viewWidth = w
             // Re-wrap the current frame at the new pixel width — no round trip to core.
             render(docView)
         }
@@ -391,12 +392,12 @@ public final class LeafTextView: UIView, UITextInput {
     /// and re-lays its selection overlays afterward.
     private func render(_ view: DocView) {
         docView = view
-        layoutEngine = EditorLayout(view, theme: renderTheme, wrapWidth: wrapWidth, cache: &shapeCache,
+        layoutEngine = EditorLayout(view, theme: renderTheme, viewWidth: viewWidth, cache: &shapeCache,
                                     media: mediaStore)
         // Installed players follow their boxes; media edited out of the document
         // is absent from the rects, which is what stops its playback.
         if !mediaPlayers.isEmpty {
-            mediaPlayers.reposition(layoutEngine.mediaRects(theme: renderTheme))
+            mediaPlayers.reposition(layoutEngine.mediaRects())
         }
         invalidateIntrinsicContentSize()
         setNeedsDisplay()
@@ -425,8 +426,8 @@ public final class LeafTextView: UIView, UITextInput {
 
     public override func draw(_ rect: CGRect) {
         guard let ctx = UIGraphicsGetCurrentContext() else { return }
-        let padX = renderTheme.padding.left
-        let fullWidth = bounds.width - renderTheme.padding.left - renderTheme.padding.right
+        let padX = layoutEngine.originX
+        let fullWidth = layoutEngine.columnWidth
 
         drawDirectiveBorders(in: ctx, dirtyRect: rect)
         // One pass for the quote bars (a run of quoted rows merges into a single
@@ -465,7 +466,7 @@ public final class LeafTextView: UIView, UITextInput {
                 if let lang = rl.row.codeLang, !lang.isEmpty { drawCodeLang(lang, in: rowRect) }
             }
             // The system paints selection on iOS, so no selection fill here.
-            BlockChrome.drawRule(rl, theme: renderTheme, contentWidth: fullWidth, selColor: nil, in: ctx)
+            BlockChrome.drawRule(rl, theme: renderTheme, selColor: nil, in: ctx)
             // Draw each wrapped visual line's substring on its own line box, hung
             // at the row's indent (zero on the first line, the prefix width after).
             for (i, wl) in rl.wrapped.enumerated() {
@@ -482,7 +483,7 @@ public final class LeafTextView: UIView, UITextInput {
     /// Draw a table as a proportional grid — header fill and body stripes, cell
     /// text, then the grid rules — the UIKit peer of the AppKit `drawTable`.
     private func drawTable(_ grid: TableLayout, tableTop: CGFloat, in ctx: CGContext) {
-        let left = renderTheme.padding.left
+        let left = layoutEngine.originX
         let border = TableMetrics.border
         let x0 = left + (grid.colX.first ?? 0)
         let x1 = left + (grid.colX.last ?? 0)
@@ -548,8 +549,8 @@ public final class LeafTextView: UIView, UITextInput {
     /// One dashed outline per maximal run of consecutive `directive` rows — the
     /// UIKit peer of the AppKit `drawDirectiveBorders`.
     private func drawDirectiveBorders(in ctx: CGContext, dirtyRect: CGRect) {
-        let padX = renderTheme.padding.left
-        let fullWidth = bounds.width - renderTheme.padding.left - renderTheme.padding.right
+        let padX = layoutEngine.originX
+        let fullWidth = layoutEngine.columnWidth
         let rows = layoutEngine.rows
         var i = 0
         while i < rows.count {
@@ -795,7 +796,7 @@ public final class LeafTextView: UIView, UITextInput {
         var cur = o
         for _ in 0..<max(0, times) {
             let rc = doc.posForOffset(off: UInt32(cur))
-            guard let caret = layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch), theme: renderTheme) else { break }
+            guard let caret = layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch)) else { break }
             // Probe from the caret's full line band (a table cell's padding is
             // cleared) and resolve the table-aware way, or a probe into a table
             // teleports to its top-left cell. See the AppKit peer's `moveVertical`.
@@ -803,10 +804,10 @@ public final class LeafTextView: UIView, UITextInput {
             var probeY = up ? (band?.minY ?? caret.minY) - 1 : (band?.maxY ?? caret.maxY) + 1
             let probe = CGPoint(x: caret.minX, y: probeY)
             let next: Int
-            if let off = layoutEngine.tableHitOffset(probe, theme: renderTheme) {
+            if let off = layoutEngine.tableHitOffset(probe) {
                 next = Int(doc.snapOffset(off: UInt32(off)))
             } else {
-                var (row, ch) = layoutEngine.hit(probe, theme: renderTheme)
+                var (row, ch) = layoutEngine.hit(probe)
                 // Step over the short blank gap row a block boundary is drawn with:
                 // probing one line past the caret lands inside it, where the hit
                 // snaps back and the step stalls between a paragraph and the list or
@@ -816,7 +817,7 @@ public final class LeafTextView: UIView, UITextInput {
                 while rows.indices.contains(row), rows[row].row.isBlockGap, guardCount < rows.count {
                     let r = rows[row]
                     probeY = up ? r.top - 1 : r.top + r.height + 1
-                    (row, ch) = layoutEngine.hit(CGPoint(x: caret.minX, y: probeY), theme: renderTheme)
+                    (row, ch) = layoutEngine.hit(CGPoint(x: caret.minX, y: probeY))
                     guardCount += 1
                 }
                 next = Int(doc.offsetForPos(row: UInt32(row), ch: UInt32(ch)))
@@ -865,7 +866,7 @@ public final class LeafTextView: UIView, UITextInput {
 
     public func caretRect(for position: UITextPosition) -> CGRect {
         let rc = doc.posForOffset(off: UInt32(off(position)))
-        return layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch), theme: renderTheme) ?? .zero
+        return layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch)) ?? .zero
     }
 
     public func selectionRects(for range: UITextRange) -> [UITextSelectionRect] {
@@ -888,7 +889,7 @@ public final class LeafTextView: UIView, UITextInput {
                 guard cs < ce else { continue }
                 let x0 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(cs - lineStart), nil)
                 let x1 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(ce - lineStart), nil)
-                let rect = CGRect(x: renderTheme.padding.left + wl.indent + x0,
+                let rect = CGRect(x: layoutEngine.originX + wl.indent + x0,
                                   y: rl.top + rl.labelInset + CGFloat(i) * rl.lineHeight,
                                   width: x1 - x0, height: rl.lineHeight)
                 rects.append(LeafSelectionRect(rect: rect,
@@ -900,7 +901,7 @@ public final class LeafTextView: UIView, UITextInput {
         // the highlight over any table cells the range covers, keyed by source
         // offset (the coordinate a cell is laid out by).
         rects.append(contentsOf: layoutEngine.tableSelectionRects(
-            from: r.from.offset, to: r.to.offset, theme: renderTheme
+            from: r.from.offset, to: r.to.offset
         ).map { LeafSelectionRect(rect: $0.rect, containsStart: $0.containsStart, containsEnd: $0.containsEnd) })
         return rects
     }
@@ -912,10 +913,10 @@ public final class LeafTextView: UIView, UITextInput {
     public func closestPosition(to point: CGPoint) -> UITextPosition? {
         // Inside a table, the point maps through the grid straight to a source
         // offset; elsewhere it's the plain row/ch hit-test.
-        if let off = layoutEngine.tableHitOffset(point, theme: renderTheme) {
+        if let off = layoutEngine.tableHitOffset(point) {
             return LeafTextPosition(off)
         }
-        let (row, ch) = layoutEngine.hit(point, theme: renderTheme)
+        let (row, ch) = layoutEngine.hit(point)
         return LeafTextPosition(Int(doc.offsetForPos(row: UInt32(row), ch: UInt32(ch))))
     }
 

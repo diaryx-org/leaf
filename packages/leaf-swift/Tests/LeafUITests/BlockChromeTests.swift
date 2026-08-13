@@ -54,7 +54,7 @@ final class BlockChromeTests: XCTestCase {
     func testBreakDrawsALineAcrossTheColumn() throws {
         let layout = EditorLayout(docView([ruleRow()]), theme: theme, wrapWidth: 400)
         let rl = layout.rows[0]
-        let line = try XCTUnwrap(rl.ruleLine(theme: theme, contentWidth: 400))
+        let line = try XCTUnwrap(rl.ruleLine(theme: theme))
         XCTAssertEqual(line.minX, theme.padding.left, accuracy: 0.5, "starts at the text margin")
         XCTAssertEqual(line.maxX, theme.padding.left + 400, accuracy: 0.5, "runs to the right margin")
         XCTAssertEqual(line.height, theme.ruleThickness)
@@ -66,7 +66,7 @@ final class BlockChromeTests: XCTestCase {
         let quoted = ruleRow(prefix: [gutter(1)])
         let layout = EditorLayout(docView([quoted]), theme: theme, wrapWidth: 400)
         let rl = layout.rows[0]
-        let line = try XCTUnwrap(rl.ruleLine(theme: theme, contentWidth: 400))
+        let line = try XCTUnwrap(rl.ruleLine(theme: theme))
         XCTAssertGreaterThanOrEqual(line.minX, theme.padding.left + theme.quoteIndent - 0.5,
                                     "the line starts past the quote's gutter")
         XCTAssertEqual(rl.quoteBars(theme: theme).count, 1, "the bar carries on through the rule")
@@ -74,7 +74,7 @@ final class BlockChromeTests: XCTestCase {
 
     func testOrdinaryRowHasNoRuleLine() {
         let layout = EditorLayout(docView([row([mkRun("hello")])]), theme: theme, wrapWidth: 400)
-        XCTAssertNil(layout.rows[0].ruleLine(theme: theme, contentWidth: 400))
+        XCTAssertNil(layout.rows[0].ruleLine(theme: theme))
     }
 
     // MARK: quote bars
@@ -97,7 +97,7 @@ final class BlockChromeTests: XCTestCase {
         // gutter run is stretched so the text clears the painted bar.
         let dv = docView([row([gutter(1), mkRun("quoted")])])
         let layout = EditorLayout(dv, theme: theme, wrapWidth: 400)
-        let textStart = try XCTUnwrap(layout.rect(row: 0, ch: 2, theme: theme))  // just past "│ "
+        let textStart = try XCTUnwrap(layout.rect(row: 0, ch: 2))  // just past "│ "
         XCTAssertEqual(textStart.minX, theme.padding.left + theme.quoteIndent, accuracy: 1.0)
     }
 
@@ -163,7 +163,7 @@ final class BlockChromeTests: XCTestCase {
                            "continuations hang clear of the bar")
         }
         // A caret on the second visual line draws at the hanging indent, not the margin.
-        let secondLine = try XCTUnwrap(layout.rect(row: 0, ch: rl.wrapped[0].length, theme: theme))
+        let secondLine = try XCTUnwrap(layout.rect(row: 0, ch: rl.wrapped[0].length))
         XCTAssertEqual(secondLine.minX, theme.padding.left + rl.shaped.prefixWidth, accuracy: 1.0)
     }
 
@@ -177,7 +177,7 @@ final class BlockChromeTests: XCTestCase {
         let secondLineStart = rl.wrapped[1].start
         let p = CGPoint(x: theme.padding.left + rl.shaped.prefixWidth + 0.5,
                         y: rl.top + rl.lineHeight * 1.5)
-        let (r, ch) = layout.hit(p, theme: theme)
+        let (r, ch) = layout.hit(p)
         XCTAssertEqual(r, 0)
         XCTAssertEqual(ch, secondLineStart, "the hit resolves to the start of the hanging line")
     }

@@ -10,8 +10,15 @@
 //  gpui/web frontends — so `headingScale` is the whole hierarchy.
 
 import CoreGraphics
+import CoreText
 import Foundation
 import LeafFFI
+
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 
 public struct EditorTheme {
     /// Proportional body family — prose and headings shape with this.
@@ -27,9 +34,35 @@ public struct EditorTheme {
     /// line box it reads as an empty line the user didn't type. A fraction turns
     /// it into ordinary paragraph spacing. `1.0` restores the old full-line gap.
     public var blockGapScale: CGFloat
+    /// The gap *above* a heading, as a multiple of the ordinary block gap. A
+    /// heading belongs to the text under it, so the space that separates it from
+    /// the block above should be the wider of its two margins — otherwise it
+    /// floats between its neighbours and reads as belonging to neither.
+    public var headingGapScale: CGFloat
+    /// The gap between two items of the same list, as a multiple of the ordinary
+    /// block gap. Tighter than a paragraph boundary, so a list reads as one block
+    /// rather than a column of separate paragraphs.
+    public var listGapScale: CGFloat
     /// How much larger than the body each heading level is, `[h1…h6]`.
     public var headingScale: [CGFloat]
-    /// Horizontal/vertical text inset from the view's edges.
+    /// The leading ratio (line box ÷ font size) at the *largest* heading on the
+    /// ramp. Display type wants tighter leading than body text — set a two-line
+    /// h1 at the body's ratio and its lines drift apart — so heading rows
+    /// interpolate from `lineRatio` at body size down to this at the top of the
+    /// ramp. See `lineRatio(forHeadingScale:)`.
+    public var headingLineRatio: CGFloat
+    /// The widest the text column may run, **in characters of the body font** —
+    /// the classic typographic "measure". Nil fills whatever `padding` leaves.
+    ///
+    /// Counted in characters rather than points because that is the quantity
+    /// legibility actually depends on (45–75 is the usual range, ~66 the classic
+    /// target) and because it then survives a change of font or text size, which
+    /// a point width doesn't. `padding.left`/`.right` become *minimum* insets: a
+    /// column narrower than the room they leave is centred in it, and one wider
+    /// is clamped down to it, so a narrow window simply reflows instead of
+    /// scrolling sideways. See `column(in:)`.
+    public var measure: CGFloat?
+    /// Minimum horizontal/vertical text inset from the view's edges.
     public var padding: LeafInsets
 
     // Colours default to dynamic system colours (light/dark aware) per platform.
@@ -73,7 +106,11 @@ public struct EditorTheme {
         fontSize: CGFloat = 16,
         lineHeight: CGFloat = 24,
         blockGapScale: CGFloat = 0.5,
+        headingGapScale: CGFloat = 1.8,
+        listGapScale: CGFloat = 0.4,
         headingScale: [CGFloat] = [1.625, 1.375, 1.1875, 1.0625, 1.0, 0.9375],
+        headingLineRatio: CGFloat = 1.2,
+        measure: CGFloat? = 68,
         padding: LeafInsets = LeafInsets(top: 12, left: 16, bottom: 12, right: 16),
         textColor: LeafColor = Palette.label,
         secondaryColor: LeafColor = Palette.secondary,
@@ -100,7 +137,11 @@ public struct EditorTheme {
         self.fontSize = fontSize
         self.lineHeight = lineHeight
         self.blockGapScale = blockGapScale
+        self.headingGapScale = headingGapScale
+        self.listGapScale = listGapScale
         self.headingScale = headingScale
+        self.headingLineRatio = headingLineRatio
+        self.measure = measure
         self.padding = padding
         self.textColor = textColor
         self.secondaryColor = secondaryColor
@@ -136,7 +177,11 @@ public struct EditorTheme {
             || fontSize != other.fontSize
             || lineHeight != other.lineHeight
             || blockGapScale != other.blockGapScale
+            || headingGapScale != other.headingGapScale
+            || listGapScale != other.listGapScale
             || headingScale != other.headingScale
+            || headingLineRatio != other.headingLineRatio
+            || measure != other.measure
             || padding != other.padding
             // The quote gutter is stretched to `quoteIndent` at shaping time, so
             // it moves every quoted glyph — a geometry change, not a repaint.
@@ -145,8 +190,7 @@ public struct EditorTheme {
 
     // ── derived metrics ──────────────────────────────────────────────────────
 
-    /// The ratio the line box grows relative to the font — a heading row scales
-    /// its height in proportion to its larger size.
+    /// The ratio the line box grows relative to the font — the body's leading.
     var lineRatio: CGFloat { lineHeight / fontSize }
 
     /// The point size for a heading of `level` (1–6), clamped to the ramp.
@@ -155,15 +199,82 @@ public struct EditorTheme {
         return fontSize * headingScale[i]
     }
 
-    /// The height of a row: the body line box, or a heading's scaled line box.
+    /// The leading ratio for a heading set at `scale` times the body size.
+    ///
+    /// Leading and type size don't scale together: the bigger the type, the less
+    /// space its lines need between them to stay distinct, and a display line set
+    /// at body leading reads as two stranded lines rather than one heading. So
+    /// this walks from `lineRatio` at body size to `headingLineRatio` at the
+    /// largest scale on the ramp, which leaves h5/h6 (at or under body size) on
+    /// the body's own leading and tightens only what's actually large.
+    func lineRatio(forHeadingScale scale: CGFloat) -> CGFloat {
+        let top = headingScale.max() ?? 1
+        guard scale > 1, top > 1 else { return lineRatio }
+        let t = min(1, (scale - 1) / (top - 1))
+        return lineRatio + (headingLineRatio - lineRatio) * t
+    }
+
+    /// The height of a row: the body line box, or a heading's scaled line box at
+    /// its own (tighter) leading.
     func rowHeight(heading: UInt8?) -> CGFloat {
         guard let h = heading else { return lineHeight }
-        return headingSize(Int(h)) * lineRatio
+        let scale = headingScale[min(max(Int(h), 1), 6) - 1]
+        return fontSize * scale * lineRatio(forHeadingScale: scale)
     }
 
     /// The height a between-blocks gap row occupies — a fraction of the body line
     /// box, so a paragraph boundary reads as spacing rather than a blank line.
     var blockGap: CGFloat { lineHeight * blockGapScale }
+
+    /// The height of the boundary between the blocks `before` and `after` (either
+    /// nil at the document's edges).
+    ///
+    /// One gap for every boundary is what makes a document read as an undivided
+    /// column of paragraphs. Real typography spaces a boundary by what it
+    /// separates: a heading takes its wider margin above, so it groups with the
+    /// text it introduces rather than floating between two blocks, and successive
+    /// list items sit closer than paragraphs do so the list reads as one thing.
+    func blockGap(between before: Row?, and after: Row?) -> CGFloat {
+        if after?.heading != nil { return blockGap * headingGapScale }
+        if before?.isListItem == true, after?.isListItem == true {
+            return blockGap * listGapScale
+        }
+        return blockGap
+    }
+
+    // ── the text column ──────────────────────────────────────────────────────
+
+    /// The mean advance of a lowercase body character — what turns a
+    /// character-count `measure` into points. Measured off the real font rather
+    /// than assumed (the usual 0.5em guess is fine for some families and badly
+    /// off for others), on the alphabet plus a space so the space's narrowness
+    /// counts the way it does in prose.
+    var averageCharWidth: CGFloat {
+        let sample = "abcdefghijklmnopqrstuvwxyz "
+        let attributed = NSAttributedString(
+            string: sample,
+            attributes: [.font: proportionalFont(size: fontSize, bold: false, italic: false)])
+        let line = CTLineCreateWithAttributedString(attributed as CFAttributedString)
+        let width = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+        return width / CGFloat(sample.count)
+    }
+
+    /// The text column inside a view `viewWidth` points wide: where it starts and
+    /// how wide it is.
+    ///
+    /// `padding` is the floor and `measure` the ceiling. When the measure is the
+    /// narrower of the two the column is centred in the room the padding leaves —
+    /// which is what keeps a maximised window from setting 200-character lines —
+    /// and when the window is the narrower one the column just shrinks to it. The
+    /// origin is rounded so glyphs land on the same subpixel phase every frame.
+    func column(in viewWidth: CGFloat) -> (originX: CGFloat, width: CGFloat) {
+        let available = viewWidth - padding.left - padding.right
+        guard let measure, measure > 0, available > 0 else {
+            return (padding.left, max(0, available))
+        }
+        let width = min(available, measure * averageCharWidth)
+        return ((padding.left + (available - width) / 2).rounded(), width)
+    }
 
     /// The header strip reserved above a directive block's first row for its
     /// audience-name label, sized to the small font `drawDirectiveLabel` paints it
