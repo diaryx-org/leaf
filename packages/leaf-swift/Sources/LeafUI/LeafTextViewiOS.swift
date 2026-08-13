@@ -336,7 +336,17 @@ public final class LeafTextView: UIView, UITextInput {
 
     public override var canBecomeFirstResponder: Bool { true }
     public override var intrinsicContentSize: CGSize {
-        CGSize(width: UIView.noIntrinsicMetric, height: layoutEngine.contentHeight)
+        let raw = layoutEngine.contentHeight
+        // Once the document already needs to scroll, pad another half screen below
+        // the last line — the AppKit peer's `applyContentHeight` mirrors this — so a
+        // long entry can be pulled up to a comfortable reading height instead of
+        // staying glued to the bottom edge. Content that already fits the viewport
+        // (the common short-document case) gets no extra room, so nothing here makes
+        // a short document scrollable; `pin(_:into:)`'s own minimum-height
+        // constraint still fills the viewport exactly as before in that case.
+        let viewportHeight = enclosingScrollView()?.bounds.height ?? 0
+        let extra = raw > viewportHeight ? viewportHeight * 0.5 : 0
+        return CGSize(width: UIView.noIntrinsicMetric, height: raw + extra)
     }
 
     /// A custom view shown above the system keyboard while this view is first

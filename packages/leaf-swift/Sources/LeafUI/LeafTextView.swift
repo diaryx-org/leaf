@@ -197,7 +197,15 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// text lands the caret at the document's end, same as most text editors.
     private func applyContentHeight() {
         let minHeight = enclosingScrollView?.contentView.bounds.height ?? 0
-        let h = max(layoutEngine.contentHeight, minHeight)
+        let raw = layoutEngine.contentHeight
+        // Once the document already needs to scroll, pad another half screen below
+        // the last line, so a long entry can be pulled up to a comfortable reading
+        // height instead of staying glued to the bottom edge. Content that already
+        // fits the clip area (the common short-document case) gets no extra room —
+        // `raw > minHeight` is false — so nothing here makes a short document
+        // scrollable.
+        let extra = raw > minHeight ? minHeight * 0.5 : 0
+        let h = max(raw + extra, minHeight)
         if abs(frame.height - h) > 0.5 { setFrameSize(NSSize(width: frame.width, height: h)) }
     }
 
