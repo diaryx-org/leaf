@@ -151,12 +151,16 @@ struct RowLayout {
     /// The sheet this row starts on, in the paginated flow. Always 0 in the
     /// continuous one, which is a single unbounded sheet.
     var page: Int = 0
-    /// The top of each visual line, when the row's lines are *not* evenly spaced
-    /// down from `top` — which is what a page break inside a paragraph makes of
-    /// them. Empty in the continuous flow, where `top + labelInset + i·lineHeight`
-    /// is exact and there is nothing to store; `lineTop(_:)` is the one accessor
-    /// both cases go through, so every caller reads line positions the same way.
-    var lineTops: [CGFloat] = []
+    /// The origin of each visual line, when the row's lines are *not* evenly
+    /// spaced down from `top` at a single x — which is what a break inside a
+    /// paragraph makes of them. A page break moves a line's y; a *column* break
+    /// moves its x as well, and back up the sheet.
+    ///
+    /// Empty in the continuous flow, where `(originX, top + labelInset +
+    /// i·lineHeight)` is exact and there is nothing to store. `lineOrigin(_:)` is
+    /// the one accessor both cases go through, so every caller reads line
+    /// positions the same way.
+    var lineOrigins: [CGPoint] = []
 
     var attributed: NSAttributedString { shaped.attributed }
     var wrapped: [WrappedLine] { shaped.wrapped }
@@ -165,67 +169,76 @@ struct RowLayout {
     /// on its other (collapsed) rows, a boundary's contextual gap, else the label
     /// inset (if any) plus one `lineHeight` per visual line.
     ///
-    /// A row split across a page break measures from its first line to its last,
-    /// so the height spans the join between the two sheets. That is what the
-    /// row-band scan in `hit` wants (the bands stay contiguous and ordered, so
-    /// every point still lands on exactly one row), and it is why the chrome drawn
-    /// *behind* a row goes through `bands` instead — see there.
+    /// A split row measures from the top of its highest line to the bottom of its
+    /// lowest — the union of its `bands`, not a reach downward from `top`, since a
+    /// column break puts some of its lines *above* where it started. Continuously
+    /// that is exactly the old formula.
     var height: CGFloat {
         if let t = table { return tableFirst ? t.height : 0 }
         if let m = media { return mediaFirst ? m.height : 0 }
         if let gapHeight { return gapHeight }
-        if let last = lineTops.last { return last + lineHeight - top }
-        return labelInset + CGFloat(shaped.wrapped.count) * shaped.lineHeight
-    }
-
-    /// The top of visual line `i`. Evenly spaced down from the row's own top in
-    /// the continuous flow; read off `lineTops` once pagination has placed the
-    /// lines itself, which it does the moment a page is set.
-    func lineTop(_ i: Int) -> CGFloat {
-        lineTops.indices.contains(i) ? lineTops[i] : top + labelInset + CGFloat(i) * lineHeight
-    }
-
-    /// The visual line the y coordinate `y` falls on, clamped to the row's own
-    /// lines. A division while the lines are evenly spaced, a search once a page
-    /// break has put a gap between two of them.
-    func lineIndex(at y: CGFloat) -> Int {
-        let last = max(0, wrapped.count - 1)
-        guard !lineTops.isEmpty else {
-            return min(max(0, Int((y - top - labelInset) / lineHeight)), last)
+        guard !lineOrigins.isEmpty else {
+            return labelInset + CGFloat(shaped.wrapped.count) * shaped.lineHeight
         }
-        return min(lineTops.lastIndex { y >= $0 } ?? 0, last)
+        let boxes = lineBoxes
+        guard let first = boxes.first else { return 0 }
+        let minY = boxes.reduce(first.minY) { min($0, $1.minY) }
+        let maxY = boxes.reduce(first.maxY) { max($0, $1.maxY) }
+        return maxY - minY
     }
 
-    /// One contiguous vertical band per run of visual lines that share a sheet —
-    /// a single band covering the whole row in the continuous flow, and one per
-    /// sheet once a page break has split it.
+    /// The origin of visual line `i`. Evenly spaced down from the row's own top at
+    /// the row's own x in the continuous flow; read off `lineOrigins` once
+    /// pagination has placed the lines itself, which it does the moment a page is
+    /// set.
+    func lineOrigin(_ i: Int) -> CGPoint {
+        lineOrigins.indices.contains(i)
+            ? lineOrigins[i]
+            : CGPoint(x: originX, y: top + labelInset + CGFloat(i) * lineHeight)
+    }
+
+    /// The top of visual line `i` — `lineOrigin(_:).y`, for the callers that only
+    /// ever wanted the vertical half.
+    func lineTop(_ i: Int) -> CGFloat { lineOrigin(i).y }
+
+    /// The row's drawn boxes, one per visual line — or the single box a table, a
+    /// media block, or a boundary row occupies, those being placed whole. What a
+    /// hit-test searches, since a point resolves to a *line*.
+    var lineBoxes: [CGRect] {
+        if table != nil || media != nil || gapHeight != nil {
+            return height > 0
+                ? [CGRect(x: originX, y: top, width: columnWidth, height: height)]
+                : []
+        }
+        return wrapped.indices.map { i in
+            let o = lineOrigin(i)
+            return CGRect(x: o.x, y: o.y, width: columnWidth, height: lineHeight)
+        }
+    }
+
+    /// `lineBoxes` merged wherever two lines actually touch — one band covering
+    /// the whole row in the continuous flow, and one per column once a break has
+    /// split it.
     ///
     /// This is what anything painted *behind* the text measures itself against: a
     /// code block's fill, a blockquote's gutter bar, a directive's outline. Using
-    /// `height` for those would stretch them across the gap between two sheets and
-    /// over the backdrop, which is the one place a block's own background must not
-    /// appear. The label strip belongs to the first band, since it sits above the
-    /// first line and travels with it.
-    var bands: [(top: CGFloat, height: CGFloat)] {
-        // The rows that stand in for something drawn as a whole — a grid, a media
-        // box, a boundary's blank space — occupy exactly their own height, and are
-        // placed atomically, so they are always one band or (collapsed) none.
-        if table != nil || media != nil || gapHeight != nil {
-            return height > 0 ? [(top, height)] : []
-        }
-        guard !wrapped.isEmpty else { return [] }
-        var out: [(top: CGFloat, height: CGFloat)] = []
-        for i in wrapped.indices {
-            let t = lineTop(i)
-            if let last = out.last, abs(last.top + last.height - t) < 0.5 {
-                out[out.count - 1].height += lineHeight
+    /// `height` for those would stretch them over the gap between two sheets, or
+    /// clean across the gutter between two columns — and the backdrop and the
+    /// gutter are the two places a block's own background must never appear. The
+    /// label strip belongs to the first band, since it sits above the first line
+    /// and travels with it.
+    var bands: [CGRect] {
+        var out: [CGRect] = []
+        for box in lineBoxes {
+            if let last = out.last, abs(last.maxY - box.minY) < 0.5, abs(last.minX - box.minX) < 0.5 {
+                out[out.count - 1].size.height += box.height
             } else {
-                out.append((t, lineHeight))
+                out.append(box)
             }
         }
-        if labelInset > 0 {
-            out[0].top -= labelInset
-            out[0].height += labelInset
+        if labelInset > 0, !out.isEmpty {
+            out[0].origin.y -= labelInset
+            out[0].size.height += labelInset
         }
         return out
     }
@@ -241,11 +254,13 @@ struct RowLayout {
         // emits the same gutter glyphs in front of a block image as any other
         // block — so a quoted picture keeps its bar beside it.
         guard table == nil else { return [] }
-        // One bar per level per band, so a quote broken across two sheets gets a
-        // bar down each of them rather than one running over the gap between.
+        // One bar per level per band, so a quote broken across two sheets — or two
+        // columns — gets a bar down each of them rather than one running over the
+        // gap between. The band carries its own x, which is what a column break
+        // moves.
         return bands.flatMap { band in
             shaped.quoteBarXs.map { x in
-                CGRect(x: originX + x, y: band.top,
+                CGRect(x: band.minX + x, y: band.minY,
                        width: theme.quoteBarWidth, height: band.height)
             }
         }
@@ -256,12 +271,13 @@ struct RowLayout {
     /// the text column. `nil` on every other row.
     func ruleLine(theme: EditorTheme) -> CGRect? {
         guard row.isThematicBreak, table == nil else { return nil }
-        let x = originX + shaped.prefixWidth
-        let right = originX + max(columnWidth, shaped.prefixWidth)
-        // Centred in its own line box rather than in `height`: a break is a
+        // Measured off the line's own origin rather than the row's: a break is a
         // single line, but reading its position off the line keeps it right
-        // wherever pagination put that line.
-        return CGRect(x: x, y: (lineTop(0) + lineHeight * 0.5 - theme.ruleThickness / 2).rounded(),
+        // wherever pagination put that line — including in the second column.
+        let o = lineOrigin(0)
+        let x = o.x + shaped.prefixWidth
+        let right = o.x + max(columnWidth, shaped.prefixWidth)
+        return CGRect(x: x, y: (o.y + lineHeight * 0.5 - theme.ruleThickness / 2).rounded(),
                       width: max(0, right - x), height: theme.ruleThickness)
     }
 }
@@ -277,33 +293,57 @@ struct RowLayout {
 /// downstream of `RowLayout.top` needs to know which flow produced it.
 private struct Flow {
     let page: PageSetup?
+    /// The stack's left edge — what turns a column number into an x.
+    let sheetX: CGFloat
     var y: CGFloat
-    /// The sheet `y` currently sits on.
+    /// The sheet `y` currently sits on, and the column within it.
     var index = 0
+    var column = 0
 
-    /// Whether `height` fits in the room left on this sheet. Always true in the
+    /// The left edge of the column rows are being placed in.
+    func originX(_ fallback: CGFloat) -> CGFloat {
+        page.map { $0.columnX(column, sheetX: sheetX) } ?? fallback
+    }
+
+    /// The reading-order slot the cursor is in. Zero throughout the continuous
+    /// flow, which is one unbounded column.
+    var slot: Int { page.map { $0.slot(index, column) } ?? 0 }
+
+    /// Whether `height` fits in the room left in this column. Always true in the
     /// continuous flow, which has no bottom to run out of.
     func fits(_ height: CGFloat) -> Bool {
         guard let page else { return true }
         return y + height <= page.contentBottom(index)
     }
 
-    /// Make room for `height`, opening the next sheet if it doesn't fit here.
+    /// Make room for `height`, opening the next column if it doesn't fit here.
     ///
-    /// A block too tall for any sheet is left to overflow rather than bounced
-    /// between sheets forever: the `y > contentTop` guard means a block that has
-    /// a whole empty sheet and still doesn't fit is simply placed, and `open`
+    /// A block too tall for a column is left to overflow rather than bounced
+    /// between columns forever: the `y > contentTop` guard means a block that has
+    /// a whole empty column and still doesn't fit is simply placed, and `open`
     /// then resumes below wherever it ended — so an oversized figure or table
-    /// takes the sheets it covers to itself instead of hanging the walk.
+    /// takes the space it covers to itself instead of hanging the walk.
     mutating func fit(_ height: CGFloat) {
         guard let page, !fits(height), y > page.contentTop(index) else { return }
         open()
     }
 
-    /// Move to the first sheet whose top margin is at or below `y`.
+    /// Move to the next slot in reading order: the next column of this sheet, or
+    /// the first column of the next sheet.
     private mutating func open() {
         guard let page else { return }
-        repeat { index += 1 } while page.contentTop(index) < y
+        if y > page.contentBottom(index) {
+            // The block just placed ran past this sheet altogether, so every
+            // column on it is already covered. Resume on the first sheet whose
+            // columns start at or below where that block ended.
+            repeat { index += 1 } while page.contentTop(index) < y
+            column = 0
+        } else if column + 1 < page.columns {
+            column += 1
+        } else {
+            column = 0
+            index += 1
+        }
         y = page.contentTop(index)
     }
 }
@@ -323,8 +363,15 @@ struct EditorLayout {
     /// The text column's left edge in view coordinates. Every x here is measured
     /// from this, not from `theme.padding.left`: with a `measure` set the column
     /// is centred in the view, so the padding is only the floor it can't cross.
-    /// With a page set it is the sheet's own left margin instead.
+    /// With a page set it is the sheet's own left margin — the *first* column's,
+    /// once there is more than one; a row's own column is `RowLayout.originX` and
+    /// a line's is `RowLayout.lineOrigin(_:)`.
     let originX: CGFloat
+    /// The sheet this frame was laid onto and where its left edge sits — kept so
+    /// the geometry queries can work out which column a point is in. Nil in the
+    /// continuous flow.
+    let setup: PageSetup?
+    private let sheetX: CGFloat
     /// The text column's width — what rows wrap to, and how far a thematic break
     /// or a directive outline runs.
     let columnWidth: CGFloat
@@ -372,12 +419,14 @@ struct EditorLayout {
         let wrapWidth = columnWidth
         self.originX = originX
         self.columnWidth = max(0, columnWidth)
+        self.setup = page
+        self.sheetX = sheetX
         var layouts: [RowLayout] = []
         layouts.reserveCapacity(docView.rows.count)
         var next = Dictionary<Row, ShapedRow>(minimumCapacity: docView.rows.count)
         // The continuous flow opens under the theme's top padding; the paginated
-        // one at the first sheet's top margin, which is the padding's counterpart.
-        var flow = Flow(page: page, y: page?.contentTop(0) ?? theme.padding.top)
+        // one at the first column's top margin, which is the padding's counterpart.
+        var flow = Flow(page: page, sheetX: sheetX, y: page?.contentTop(0) ?? theme.padding.top)
 
         // A table's box-glyph picture rows are replaced by one grid element that
         // stands in for the whole `[startRow, endRow)` span.
@@ -408,13 +457,14 @@ struct EditorLayout {
                 // sheet, and one too tall for any sheet gets its own.
                 flow.fit(grid.height)
                 let tableTop = flow.y
+                let tableX = flow.originX(originX)
                 // Keep every picture row (rows stay 1:1 with the frame), but
                 // collapse them onto the grid: the first carries its height, the
                 // rest are zero-height, and all defer drawing/caret to the grid.
                 for r in Int(t.startRow)..<Int(t.endRow) where r < docView.rows.count {
                     layouts.append(RowLayout(
                         row: docView.rows[r], shaped: emptyShape, top: tableTop,
-                        originX: originX, columnWidth: wrapWidth,
+                        originX: tableX, columnWidth: wrapWidth,
                         table: grid, tableTop: tableTop, tableFirst: r == Int(t.startRow),
                         page: flow.index
                     ))
@@ -439,12 +489,13 @@ struct EditorLayout {
                 // sheet is not a thing to draw.
                 flow.fit(box.height)
                 let mediaTop = flow.y
+                let mediaX = flow.originX(originX)
                 for r in Int(mv.startRow)..<Int(mv.endRow) where r < docView.rows.count {
                     layouts.append(RowLayout(
                         row: docView.rows[r],
                         shaped: r == Int(mv.startRow) ? shaped : emptyShape,
                         top: mediaTop,
-                        originX: originX, columnWidth: wrapWidth,
+                        originX: mediaX, columnWidth: wrapWidth,
                         media: box, mediaTop: mediaTop, mediaFirst: r == Int(mv.startRow),
                         page: flow.index
                     ))
@@ -478,7 +529,7 @@ struct EditorLayout {
                 let gap = theme.blockGap(row.boundary)
                 let placed = flow.fits(gap) ? gap : 0
                 layouts.append(RowLayout(row: row, shaped: shaped, top: flow.y,
-                                         originX: originX, columnWidth: wrapWidth,
+                                         originX: flow.originX(originX), columnWidth: wrapWidth,
                                          gapHeight: placed, page: flow.index))
                 flow.y += placed
                 i += 1
@@ -487,11 +538,11 @@ struct EditorLayout {
 
             let count = max(1, shaped.wrapped.count)
             // A heading is placed whole. Split, its first line is stranded at the
-            // foot of one sheet and the rest of it heads the next, which reads as
+            // foot of one column and the rest of it heads the next, which reads as
             // two headings rather than one — and a heading is short enough that
-            // moving it whole costs a line or two of a sheet, not a screen.
+            // moving it whole costs a line or two of a column, not a screen.
             let splittable = page != nil && row.heading == nil && count > 1
-            var lineTops: [CGFloat] = []
+            var lineOrigins: [CGPoint] = []
             var startPage = flow.index
             if page != nil {
                 if splittable {
@@ -501,7 +552,11 @@ struct EditorLayout {
                         let h = (k == 0 ? labelInset : 0) + shaped.lineHeight
                         flow.fit(h)
                         if k == 0 { startPage = flow.index }
-                        lineTops.append(flow.y + (k == 0 ? labelInset : 0))
+                        // Each line takes the column it actually landed in — a
+                        // break between two of them moves the x as well as the y
+                        // once a sheet carries more than one.
+                        lineOrigins.append(CGPoint(x: flow.originX(originX),
+                                                   y: flow.y + (k == 0 ? labelInset : 0)))
                         flow.y += h
                     }
                 } else {
@@ -522,18 +577,22 @@ struct EditorLayout {
                             .contains { !$0.isBlockGap }
                     flow.fit(h + (followed ? theme.blockGap + theme.lineHeight : 0))
                     startPage = flow.index
+                    let x = flow.originX(originX)
                     for k in 0..<count {
-                        lineTops.append(flow.y + labelInset + CGFloat(k) * shaped.lineHeight)
+                        lineOrigins.append(CGPoint(
+                            x: x, y: flow.y + labelInset + CGFloat(k) * shaped.lineHeight))
                     }
                     flow.y += h
                 }
             }
             let rl = RowLayout(
                 row: row, shaped: shaped,
-                top: lineTops.first.map { $0 - labelInset } ?? flow.y,
-                originX: originX, columnWidth: wrapWidth,
+                top: lineOrigins.first.map { $0.y - labelInset } ?? flow.y,
+                // The row's own column is the one it *starts* in; a split row's
+                // later lines carry their own (see `lineOrigin(_:)`).
+                originX: lineOrigins.first?.x ?? originX, columnWidth: wrapWidth,
                 labelInset: labelInset,
-                page: startPage, lineTops: lineTops)
+                page: startPage, lineOrigins: lineOrigins)
             // Paginated, the lines are already placed and `flow.y` is past them.
             if page == nil { flow.y += rl.height }
             layouts.append(rl)
@@ -734,10 +793,11 @@ struct EditorLayout {
         let lines = rl.wrapped
         for (i, wl) in lines.enumerated() where ch < wl.start + wl.length || i == lines.count - 1 {
             let x = CTLineGetOffsetForStringIndex(wl.line, CFIndex(max(0, ch - wl.start)), nil)
-            return CGRect(x: rl.originX + wl.indent + x, y: rl.lineTop(i),
-                          width: 1.5, height: rl.lineHeight)
+            let o = rl.lineOrigin(i)
+            return CGRect(x: o.x + wl.indent + x, y: o.y, width: 1.5, height: rl.lineHeight)
         }
-        return CGRect(x: rl.originX, y: rl.lineTop(0), width: 1.5, height: rl.lineHeight)
+        let o = rl.lineOrigin(0)
+        return CGRect(x: o.x, y: o.y, width: 1.5, height: rl.lineHeight)
     }
 
     /// The caret's frame on a block media row: the box's leading edge in front of
@@ -883,9 +943,51 @@ struct EditorLayout {
     /// vertical band it lands in, the visual line within it from the y offset, and
     /// the UTF-16 offset from Core Text's hit-test of the horizontal position.
     /// `click_ch` then clamps `ch` to a real caret stop.
+    /// The reading-order slot a layout point falls in — its (sheet, column).
+    ///
+    /// Zero everywhere in the continuous flow, and just the sheet index while a
+    /// sheet has one column, which is what lets `locate` be the same walk in every
+    /// flow rather than three of them.
+    private func slot(at p: CGPoint) -> Int {
+        setup.map { $0.slot(at: p, sheetX: sheetX) } ?? 0
+    }
+
+    /// The row a point resolves to, and the visual line within it.
+    ///
+    /// While a sheet has one text column, `rows` runs top to bottom and this is
+    /// the scan it always was. A second column breaks that ordering outright — it
+    /// starts back at the *top* of the same sheet, so `top` is no longer
+    /// increasing down the array and "the first row the point is above" stops
+    /// meaning anything. So the point's slot picks the candidates first, and the
+    /// vertical scan runs inside it.
+    ///
+    /// Over lines rather than rows, because a row can straddle a column boundary
+    /// exactly as it can a page one, and its two halves are then in different
+    /// slots. A table, a media box, and a boundary gap are each one whole box (see
+    /// `lineBoxes`), being placed atomically.
+    private func locate(_ point: CGPoint) -> (row: Int, line: Int) {
+        let target = slot(at: point)
+        var first: (Int, Int)?      // the slot's first line — the point is above it
+        var above: (Int, Int)?      // the last line in the slot starting at or above the point
+        var before: (Int, Int)?     // the last line in any earlier slot
+        for (r, rl) in rows.enumerated() {
+            for (i, box) in rl.lineBoxes.enumerated() {
+                let s = slot(at: CGPoint(x: box.midX, y: box.midY))
+                if s < target { before = (r, i); continue }
+                guard s == target else { continue }
+                if first == nil { first = (r, i) }
+                if point.y >= box.minY { above = (r, i) }
+            }
+        }
+        // In the slot the point landed in; else above everything in it; else the
+        // end of the content before it — which is what a click into a column the
+        // document never reached should mean.
+        return above ?? first ?? before ?? (0, 0)
+    }
+
     func hit(_ point: CGPoint) -> (row: Int, ch: Int) {
         guard !rows.isEmpty else { return (0, 0) }
-        let row = rows.firstIndex { point.y < $0.top + $0.height } ?? rows.count - 1
+        let (row, li) = locate(point)
         let rl = rows[row]
         // A picture holds no text positions: the caret's only homes on a media
         // row are in front of the box and past it, and which one a point wants is
@@ -897,9 +999,9 @@ struct EditorLayout {
             let r = box.rect(top: rl.mediaTop, left: rl.originX + rl.shaped.prefixWidth)
             return (row, point.y < r.midY ? 0 : rl.attributed.length)
         }
-        let li = rl.lineIndex(at: point.y)
+        guard rl.wrapped.indices.contains(li) else { return (row, 0) }
         let wl = rl.wrapped[li]
-        let localX = point.x - rl.originX - wl.indent
+        let localX = point.x - rl.lineOrigin(li).x - wl.indent
         let rel = CTLineGetStringIndexForPosition(wl.line, CGPoint(x: max(0, localX), y: 0))
         let ch = wl.start + min(max(0, rel), wl.length)
         return (row, ch)
@@ -938,13 +1040,13 @@ struct EditorLayout {
         ctx.setFillColor(color.cgColor)
         for (i, wl) in rl.wrapped.enumerated() {
             let lineStart = wl.start, lineEnd = wl.start + wl.length
-            let y = rl.lineTop(i)
+            let o = rl.lineOrigin(i)
             for (s, e) in ranges {
                 let cs = max(s, lineStart), ce = min(e, lineEnd)
                 guard cs < ce else { continue }
                 let x0 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(cs - lineStart), nil)
                 let x1 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(ce - lineStart), nil)
-                ctx.fill(CGRect(x: rl.originX + wl.indent + x0, y: y, width: x1 - x0, height: rl.lineHeight))
+                ctx.fill(CGRect(x: o.x + wl.indent + x0, y: o.y, width: x1 - x0, height: rl.lineHeight))
             }
         }
     }

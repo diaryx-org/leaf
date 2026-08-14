@@ -337,8 +337,6 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         ctx.scaleBy(x: zoom, y: zoom)
         let band = layoutRect(dirtyRect)
 
-        let padX = layoutEngine.originX
-        let fullWidth = layoutEngine.columnWidth
         let active = selectionIsActive
         let selColor = active ? theme.selectionColor : theme.inactiveSelectionColor
 
@@ -351,11 +349,11 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         BlockChrome.drawQuoteBars(layoutEngine.rows, theme: theme, in: ctx)
 
         for rl in layoutEngine.rows {
-            // Rows are laid out top-down, so cull to the dirty band: skip rows above
-            // it, stop once past the bottom. A scroll or caret blink then repaints
-            // only the visible rows, not the whole document.
-            if rl.top >= band.maxY { break }
-            if rl.top + rl.height <= band.minY { continue }
+            // Cull to the dirty band, so a scroll or a caret blink repaints only
+            // what's on screen. Skipped rather than stopped at the first row past
+            // the band: rows run top-down only while a sheet has one column, and a
+            // second one starts back at the top of the same sheet.
+            if rl.top >= band.maxY || rl.top + rl.height <= band.minY { continue }
             // A table draws its own grid (once, on its first picture row); its
             // rows carry no text to paint.
             if let grid = rl.table {
@@ -369,19 +367,20 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             if let box = rl.media {
                 if rl.mediaFirst {
                     BlockChrome.drawMedia(box,
-                                          at: box.rect(top: rl.mediaTop, left: padX + rl.shaped.prefixWidth),
+                                          at: box.rect(top: rl.mediaTop,
+                                                       left: rl.originX + rl.shaped.prefixWidth),
                                           theme: theme,
                                           playing: mediaPlayers.isPlaying(box.media.src), in: ctx)
                 }
                 continue
             }
-            // The row's bands, not one rect over its whole height: a row split
-            // across a page break has a sheet edge through the middle of it, and a
-            // code fill drawn over that would tile the backdrop too.
-            let bands = rl.bands.map {
-                CGRect(x: padX, y: $0.top, width: fullWidth, height: $0.height)
-            }
-            let rowRect = bands.first ?? CGRect(x: padX, y: rl.top, width: fullWidth, height: rl.height)
+            // The row's bands, not one rect over its whole height: a split row has
+            // a sheet edge — or a column gutter — through the middle of it, and a
+            // code fill drawn over that would tile the backdrop or the gutter too.
+            // Each band carries its own column, so this is where the x comes from.
+            let bands = rl.bands
+            let rowRect = bands.first
+                ?? CGRect(x: rl.originX, y: rl.top, width: rl.columnWidth, height: rl.height)
             if rl.row.directive, let label = rl.row.directiveLabel, !label.isEmpty {
                 drawDirectiveLabel(label, in: rowRect)
             }
@@ -395,11 +394,14 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             // Draw each wrapped visual line's substring on its own line box, hung
             // at the row's indent (zero on the first line, the prefix width after).
             for (i, wl) in rl.wrapped.enumerated() {
-                let lineTop = rl.lineTop(i)
-                if lineTop >= band.maxY { break }
-                if lineTop + rl.lineHeight <= band.minY { continue }
-                wl.attributed.draw(with: CGRect(x: padX + wl.indent, y: lineTop,
-                                                width: fullWidth - wl.indent, height: rl.lineHeight),
+                // `continue`, not `break`: a row's lines run down one column and
+                // then back up to the top of the next, so passing the dirty band
+                // once says nothing about the lines after it.
+                let o = rl.lineOrigin(i)
+                if o.y >= band.maxY || o.y + rl.lineHeight <= band.minY { continue }
+                wl.attributed.draw(with: CGRect(x: o.x + wl.indent, y: o.y,
+                                                width: rl.columnWidth - wl.indent,
+                                                height: rl.lineHeight),
                                    options: [.usesLineFragmentOrigin])
             }
         }
@@ -557,8 +559,9 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
                 guard cs < ce else { continue }
                 let x0 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(cs - lineStart), nil)
                 let x1 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(ce - lineStart), nil)
-                let y = rl.lineTop(i) + rl.lineHeight - 1.5
-                ctx.fill(CGRect(x: layoutEngine.originX + wl.indent + x0, y: y, width: x1 - x0, height: 1))
+                let o = rl.lineOrigin(i)
+                ctx.fill(CGRect(x: o.x + wl.indent + x0, y: o.y + rl.lineHeight - 1.5,
+                                width: x1 - x0, height: 1))
             }
         }
     }
@@ -596,8 +599,6 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// reverse. Skips a table row (it has no drawable rect of its own here; a
     /// directive-wrapped table isn't chromed today).
     private func drawDirectiveBorders(in ctx: CGContext, dirtyRect: NSRect) {
-        let padX = layoutEngine.originX
-        let fullWidth = layoutEngine.columnWidth
         let rows = layoutEngine.rows
         var i = 0
         while i < rows.count {
@@ -609,18 +610,19 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             // this drew before. Paginated, a run crossing a sheet edge — between
             // two of its rows, or through the middle of one of them — comes out as
             // one box per sheet, so no outline is ever stroked across the backdrop.
-            var spans: [(top: CGFloat, height: CGFloat)] = []
+            var spans: [CGRect] = []
             for rl in rows[start..<i] {
                 for b in rl.bands {
-                    if let last = spans.last, abs(last.top + last.height - b.top) < 0.5 {
-                        spans[spans.count - 1].height += b.height
+                    if let last = spans.last, abs(last.maxY - b.minY) < 0.5,
+                       abs(last.minX - b.minX) < 0.5 {
+                        spans[spans.count - 1].size.height += b.height
                     } else {
                         spans.append(b)
                     }
                 }
             }
             for span in spans {
-                let rect = CGRect(x: padX - 4, y: span.top, width: fullWidth + 8, height: span.height)
+                let rect = span.insetBy(dx: -4, dy: 0)
                 if rect.maxY < dirtyRect.minY || rect.minY > dirtyRect.maxY { continue }
                 ctx.saveGState()
                 ctx.setStrokeColor(theme.directiveBorderColor.cgColor)

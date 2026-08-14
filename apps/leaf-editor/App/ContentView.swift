@@ -214,12 +214,22 @@ struct ContentView: View {
                 Label("Continuous", systemImage: page == nil ? "checkmark" : "")
             }
             Divider()
-            Button { page = .usLetter } label: {
-                Label("US Letter", systemImage: page == .usLetter ? "checkmark" : "")
+            Text("Paper")
+            Button { setPaper(.usLetter) } label: {
+                Label("US Letter", systemImage: paperIs(.usLetter) ? "checkmark" : "")
             }
-            Button { page = .a4 } label: {
-                Label("A4", systemImage: page == .a4 ? "checkmark" : "")
+            Button { setPaper(.a4) } label: {
+                Label("A4", systemImage: paperIs(.a4) ? "checkmark" : "")
             }
+            Divider()
+            Text("Columns")
+            Button { setColumns(1) } label: {
+                Label("One", systemImage: (page?.columns ?? 1) == 1 ? "checkmark" : "")
+            }
+            Button { setColumns(2) } label: {
+                Label("Two", systemImage: page?.columns == 2 ? "checkmark" : "")
+            }
+            .disabled(page == nil)
         } label: {
             Image(systemName: page == nil ? "doc.plaintext" : "doc.on.doc")
                 .font(.system(size: 17))
@@ -229,6 +239,18 @@ struct ContentView: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .accessibilityLabel("page")
+    }
+    /// Paper and column count are separate choices on one `PageSetup`, so
+    /// switching the sheet keeps the columns and vice versa.
+    private func paperIs(_ paper: PageSetup) -> Bool { page?.size == paper.size }
+
+    private func setPaper(_ paper: PageSetup) {
+        page = paper.columned(page?.columns ?? 1)
+    }
+
+    private func setColumns(_ n: Int) {
+        guard let page else { return }
+        self.page = page.columned(n)
     }
     #endif
 

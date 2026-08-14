@@ -73,7 +73,7 @@ final class PaginationTests: XCTestCase {
         XCTAssertTrue(layout.pages.isEmpty)
         XCTAssertEqual(layout.contentWidth, 0)
         let rl = layout.rows[0]
-        XCTAssertTrue(rl.lineTops.isEmpty)
+        XCTAssertTrue(rl.lineOrigins.isEmpty)
         XCTAssertEqual(rl.lineTop(0), rl.top, accuracy: 0.5)
         XCTAssertEqual(rl.lineTop(2), rl.top + 2 * rl.lineHeight, accuracy: 0.5)
         XCTAssertEqual(rl.bands.count, 1, "an unbroken row is one band")
@@ -218,6 +218,151 @@ final class PaginationTests: XCTestCase {
         XCTAssertEqual(row, 0)
         XCTAssertGreaterThanOrEqual(ch, wl.start)
         XCTAssertLessThanOrEqual(ch, wl.start + wl.length)
+    }
+
+    // MARK: two columns to a sheet
+
+    /// The same sheet in two columns: 170pt each, still six body lines tall.
+    private var twoUp: PageSetup { page.columned(2, gutter: 20) }
+
+    private func laidTwoUp(_ rows: [Row]) -> EditorLayout {
+        var cache: [Row: ShapedRow] = [:]
+        return EditorLayout(docView(rows), theme: theme, viewWidth: viewWidth,
+                            page: twoUp, cache: &cache)
+    }
+
+    private var twoUpSheetX: CGFloat { twoUp.sheetX(in: viewWidth) }
+
+    /// Enough to overrun one 170pt column but not two — so a split lands in the
+    /// second column of the *same* sheet, which is the shape these tests are about.
+    /// `longText` at this width runs to seven columns and would prove nothing
+    /// specific about the first break.
+    private let columnText = String(repeating: "lorem ipsum dolor sit amet ", count: 6)
+
+    /// Every band of `rl` sits inside one column of one sheet — the invariant a
+    /// gutter exists to enforce, and the one thing that must hold whatever the
+    /// fixture's length turns out to be.
+    private func assertBandsRespectTheColumns(_ rl: RowLayout,
+                                              file: StaticString = #filePath, line: UInt = #line) {
+        for band in rl.bands {
+            let col = twoUp.columnIndex(atX: band.midX, sheetX: twoUpSheetX)
+            let left = twoUp.columnX(col, sheetX: twoUpSheetX)
+            XCTAssertEqual(band.minX, left, accuracy: 0.5, "a band off its column's left edge",
+                           file: file, line: line)
+            XCTAssertLessThanOrEqual(band.maxX, left + twoUp.columnWidth + 0.5,
+                                     "a band running into the gutter", file: file, line: line)
+            let sheet = twoUp.index(at: band.midY)
+            XCTAssertGreaterThanOrEqual(band.minY, twoUp.contentTop(sheet) - 0.5,
+                                        "a band above the top margin", file: file, line: line)
+            XCTAssertLessThanOrEqual(band.maxY, twoUp.contentBottom(sheet) + 0.5,
+                                     "a band below the bottom margin", file: file, line: line)
+        }
+    }
+
+    func testTwoColumnsSplitTheTextBoxAndPayForTheGutter() {
+        XCTAssertEqual(twoUp.columnWidth, (400 - 40 - 20) / 2)
+        XCTAssertEqual(twoUp.columnX(0, sheetX: 0), twoUp.margins.left)
+        XCTAssertEqual(twoUp.columnX(1, sheetX: 0),
+                       twoUp.margins.left + twoUp.columnWidth + twoUp.columnGutter)
+        // The second column's right edge lands exactly on the right margin —
+        // nothing is lost or overhangs.
+        XCTAssertEqual(twoUp.columnX(1, sheetX: 0) + twoUp.columnWidth,
+                       twoUp.size.width - twoUp.margins.right, accuracy: 0.01)
+        XCTAssertEqual(laidTwoUp([row([mkRun("hi")])]).columnWidth, twoUp.columnWidth)
+    }
+
+    func testAColumnFillsBeforeTheNextOneStartsAndBothBeforeTheNextSheet() {
+        // Reading order, not two independent streams: down column one, back up to
+        // the top of the sheet for column two, and only then a new sheet.
+        let layout = laidTwoUp((0..<14).map { _ in row([mkRun("x")]) })
+        XCTAssertEqual(layout.rows[5].lineTop(0),
+                       twoUp.contentTop(0) + 5 * theme.lineHeight, accuracy: 0.5)
+        XCTAssertEqual(layout.rows[5].lineOrigin(0).x,
+                       twoUp.columnX(0, sheetX: twoUpSheetX), accuracy: 0.5)
+
+        // The seventh row heads the second column — back at the sheet's top margin.
+        XCTAssertEqual(layout.rows[6].lineTop(0), twoUp.contentTop(0), accuracy: 0.5)
+        XCTAssertEqual(layout.rows[6].lineOrigin(0).x,
+                       twoUp.columnX(1, sheetX: twoUpSheetX), accuracy: 0.5)
+
+        // And only the thirteenth reaches a second sheet, in its first column.
+        XCTAssertEqual(layout.rows[12].lineTop(0), twoUp.contentTop(1), accuracy: 0.5)
+        XCTAssertEqual(layout.rows[12].lineOrigin(0).x,
+                       twoUp.columnX(0, sheetX: twoUpSheetX), accuracy: 0.5)
+        XCTAssertEqual(layout.pages.count, 2)
+    }
+
+    func testAParagraphSplitAtAColumnBreakMovesSidewaysAndBackUp() {
+        // The case per-line *origins* exist for. A page break moves a line's y; a
+        // column break moves its x too, and puts it back above where the row
+        // started — which is why `top + i·lineHeight` could not have carried this.
+        let layout = laidTwoUp([row([mkRun(columnText)])])
+        let rl = layout.rows[0]
+        XCTAssertGreaterThan(rl.wrapped.count, 6, "the fixture must outrun one column")
+        XCTAssertLessThanOrEqual(rl.wrapped.count, 12, "and must not outrun two")
+
+        let first = rl.lineOrigin(0)
+        let carried = try! XCTUnwrap(rl.wrapped.indices.first {
+            rl.lineOrigin($0).x > first.x + 1
+        })
+        XCTAssertEqual(rl.lineOrigin(carried).x,
+                       twoUp.columnX(1, sheetX: twoUpSheetX), accuracy: 0.5)
+        XCTAssertEqual(rl.lineOrigin(carried).y, twoUp.contentTop(0), accuracy: 0.5)
+        XCTAssertLessThan(rl.lineOrigin(carried).y, rl.lineOrigin(carried - 1).y,
+                          "the second column starts above where the first ended")
+        XCTAssertEqual(rl.bands.count, 2, "one band per column, so nothing paints across the gutter")
+        assertBandsRespectTheColumns(rl)
+    }
+
+    func testARowSpanningManyColumnsKeepsEveryBandInsideOne() {
+        // The general case of the above: text long enough to run over four sheets'
+        // worth of columns still never puts a band in a gutter or a margin.
+        let rl = laidTwoUp([row([mkRun(longText)])]).rows[0]
+        XCTAssertGreaterThan(rl.bands.count, 2)
+        assertBandsRespectTheColumns(rl)
+    }
+
+    func testAPointInTheSecondColumnHitsTheLineDrawnThere() {
+        // The regression the whole `locate` rewrite exists for: `rows` is no longer
+        // ordered by y, so "the first row the point is above" would have answered
+        // with a line from column one at the same height.
+        let layout = laidTwoUp((0..<10).map { r in row([mkRun("row \(r)")]) })
+        let target = layout.rows[7]
+        let (hitRow, _) = layout.hit(CGPoint(x: target.lineOrigin(0).x + 4,
+                                             y: target.lineTop(0) + target.lineHeight / 2))
+        XCTAssertEqual(hitRow, 7)
+
+        // And the same height in the *first* column still answers with that column.
+        let (leftRow, _) = layout.hit(CGPoint(x: layout.rows[1].lineOrigin(0).x + 4,
+                                              y: target.lineTop(0) + target.lineHeight / 2))
+        XCTAssertEqual(leftRow, 1)
+    }
+
+    func testTheCaretRidesTheColumnItsLineLandedIn() {
+        let layout = laidTwoUp((0..<10).map { r in row([mkRun("row \(r)")]) })
+        let dv = docView((0..<10).map { r in row([mkRun("row \(r)")]) }, caretRow: 7, caretCh: 0)
+        let caret = try! XCTUnwrap(layout.caretRect(dv, theme: theme))
+        XCTAssertEqual(caret.minX, twoUp.columnX(1, sheetX: twoUpSheetX), accuracy: 0.5)
+        XCTAssertEqual(caret.minY, layout.rows[7].lineTop(0), accuracy: 0.5)
+    }
+
+    func testAQuoteSplitAcrossColumnsGetsABarInEachOfThem() {
+        let rl = laidTwoUp([row([gutter(1), mkRun(columnText)])]).rows[0]
+        XCTAssertEqual(rl.bands.count, 2)
+        let bars = rl.quoteBars(theme: theme)
+        XCTAssertEqual(bars.count, 2, "one bar per column, not one spanning the gutter")
+        XCTAssertNotEqual(bars[0].minX, bars[1].minX, accuracy: 1,
+                          "and they sit in different columns")
+        assertBandsRespectTheColumns(rl)
+    }
+
+    func testOneColumnIsExactlyTheSheetItAlwaysWas() {
+        // `columns: 1` must not be a special case that drifted — it is the same
+        // geometry the single-column tests above assert.
+        XCTAssertEqual(page.columns, 1)
+        XCTAssertEqual(page.columnX(0, sheetX: 7), 7 + page.margins.left)
+        XCTAssertEqual(page.slot(3, 0), 3, "one column per sheet ⇒ a slot is a sheet")
+        XCTAssertEqual(twoUp.slot(3, 1), 7)
     }
 
     func testAQuoteSplitAcrossSheetsGetsABarOnEachOfThem() {

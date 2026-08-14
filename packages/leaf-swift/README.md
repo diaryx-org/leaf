@@ -132,17 +132,32 @@ LeafEditor(model: editor, theme: theme, page: nil)          // continuous (the d
 ```
 
 `PageSetup` is points at 72 to the inch: `.usLetter` and `.a4` are one-inch
-margins, and any other sheet is `PageSetup(size:margins:gap:backdrop:)`. Setting
-one is a *mode*, not a style — that's why it isn't a field on `EditorTheme`. A
-page supersedes `measure` (the sheet's margins decide the text column now) and
-gives the document a fixed height and width it doesn't otherwise have, so a window
-narrower than a sheet scrolls sideways rather than reflowing.
+margins, and any other sheet is `PageSetup(size:margins:gap:backdrop:columns:columnGutter:)`.
+Setting one is a *mode*, not a style — that's why it isn't a field on
+`EditorTheme`. A page supersedes `measure` (the sheet's margins decide the text
+column now) and gives the document a fixed height and width it doesn't otherwise
+have, so a window narrower than a sheet scrolls sideways rather than reflowing.
+
+**Columns.** A sheet can carry more than one, and `columned(_:)` is the shorthand:
+
+```swift
+LeafEditor(model: editor, page: .usLetter.columned(2))
+LeafEditor(model: editor, page: .a4.columned(3, gutter: 18))
+```
+
+They fill in reading order — down the first, back to the top of the *same sheet*
+for the second, then on to the next sheet — so two columns read as a newspaper
+does rather than as two independent streams. Every column is the same width,
+which is what lets the shaping cache (keyed by wrap width) survive a row moving
+between them.
 
 What it breaks on:
 
 - **A paragraph splits at the break**, line by line, rather than moving whole —
   otherwise a ten-line paragraph starting five lines from the foot leaves five
-  blank ones, which in prose is constant.
+  blank ones, which in prose is constant. Across a *column* break that moves a
+  line's x as well as its y, and back up the sheet, which is why a line carries a
+  whole origin (`RowLayout.lineOrigin(_:)`) rather than just a top.
 - **A heading, a table, and a media box move whole.** A split heading reads as two
   headings; half a photograph is not a thing to draw.
 - **A heading is kept with the text it introduces** — one left alone at the foot
