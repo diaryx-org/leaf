@@ -51,7 +51,19 @@ edition = "2024"
 # form, Djot must not, since `<…>` there becomes the URL itself. Hand-rolled, the
 # first real filename an app inserted (`my photo.png`) wrote markup Markdown does
 # not read as an image at all.
-twig-doc = { version = "2.6.0" }
+# 2.7: djot tables round-trip — a caption is written back with its table, a header
+# row is spelled by the separator line under it, and raw content keeps its raw
+# spelling on the way out. HTML tables land in the same table vocabulary, so a
+# pasted `<table>` reads as one rather than as a wall of elements.
+# 2.8: `div`/`span`/`directive`/`element` collapse into one `container` kind —
+# four spellings of "named container with attributes and children", split only by
+# which parser made them. Identity moves to the `name` and `directive_form` this
+# already reads for the directive arms, so every `kind ==` test against those four
+# becomes a test on `container` plus the discriminator. Also `cell_extent` (a
+# cell's `(columns, rows)`, for the merged cells HTML and rST grids can spell) and
+# `Target`/`serialize_to`, which types the output axis separately from the input
+# one so an export-only target is nameable.
+twig-doc = { version = "2.8.0" }
 anyhow = "1"
 # Frontend-neutral core: the caret/selection model + AST→glyph map, styled with
 # a toolkit-agnostic Style. Each frontend crate maps that to its own styling.

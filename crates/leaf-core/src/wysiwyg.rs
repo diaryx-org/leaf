@@ -214,7 +214,17 @@ impl BlockClass {
             "code_block" => BlockClass::Code,
             "table" => BlockClass::Table,
             "image" => BlockClass::Media,
-            "directive" => BlockClass::Directive,
+            // twig 2.8 folded `div`/`span`/`directive`/`element` into one
+            // `container` kind, so a `:::note` panel and a promoted `<video>`
+            // arrive here indistinguishable — telling them apart needs the
+            // node's `name` (or its opening byte), and the incremental walk has
+            // only this string. `Directive` is the right answer for the case
+            // that motivates the class (nothing else draws a tinted panel) and a
+            // harmless one for the rest: `BlockClass` is descriptive, core never
+            // branches on it, and the only frontend that reads a boundary spaces
+            // by `below == Heading` alone. Anything that must be exact reads
+            // [`container_is_directive`] off a real node.
+            "container" => BlockClass::Directive,
             "thematic_break" => BlockClass::Rule,
             "footnote" => BlockClass::Footnote,
             _ => BlockClass::Other,
@@ -2097,10 +2107,13 @@ impl Builder<'_> {
             // is inline and never reaches the block walker (see `is_inline`); a
             // `leaf` one is a standalone block with no body, drawn as a
             // placeholder the way an image is.
-            "directive" if node.directive_form == Some(DirectiveForm::Leaf) => {
+            "container"
+                if container_is_directive(node, self.source)
+                    && node.directive_form == Some(DirectiveForm::Leaf) =>
+            {
                 self.block_directive(id, pf);
             }
-            "directive" => {
+            "container" if container_is_directive(node, self.source) => {
                 let label = directive_attr_label(&node.attrs);
                 let start_row = self.rows.len();
                 self.blocks(id, pf, pc, false);
@@ -2262,12 +2275,14 @@ impl Builder<'_> {
             // (a Markdown `![](…)` comes wrapped in a `para`, handled below).
             "image" => self.block_media(id, MediaKind::Image, id, pf),
             // The same case for a promoted top-level `<video>`/`<audio>`, which
-            // arrives as a generic `element` rather than a node kind of its own.
-            // It can't be found by the `media_only` scan below the way a wrapped
-            // one is: that scan looks at a wrapper's *children*, and here the
-            // media element is itself the block.
-            "element" if matches!(node.name.as_deref(), Some("video") | Some("audio")) => {
-                let kind = match node.name.as_deref() {
+            // arrives as a generic `container` rather than a node kind of its
+            // own. It can't be found by the `media_only` scan below the way a
+            // wrapped one is: that scan looks at a wrapper's *children*, and here
+            // the media element is itself the block.
+            "container"
+                if matches!(element_tag(node, self.source), Some("video") | Some("audio")) =>
+            {
+                let kind = match element_tag(node, self.source) {
                     Some("audio") => MediaKind::Audio,
                     _ => MediaKind::Video,
                 };
@@ -2286,7 +2301,8 @@ impl Builder<'_> {
                     self.block_media(m, kind, id, pf);
                     return;
                 }
-                let inline = !kids.is_empty() && kids.iter().all(|&c| is_inline(&self.nodes[c]));
+                let inline =
+                    !kids.is_empty() && kids.iter().all(|&c| is_inline(&self.nodes[c], self.source));
                 if inline || kids.is_empty() {
                     let glyphs = self.inline_children_with_trailing(id, Style::default());
                     if !glyphs.is_empty() {
@@ -2717,16 +2733,19 @@ impl Builder<'_> {
                     *found = Some((c, MediaKind::Image));
                     *count += 1;
                 }
-                // A `<video>`/`<audio>` reaches core as a generic `element` (twig
-                // gives neither a semantic node, so `html_elements` promotion
-                // leaves the tag name on `name`). Counted as media and *not*
-                // descended into, so its `<source>` children and its
+                // A `<video>`/`<audio>` reaches core as a generic `container`
+                // (twig gives neither a semantic node, so `html_elements`
+                // promotion leaves the tag name on `name`). Counted as media and
+                // *not* descended into, so its `<source>` children and its
                 // "your browser does not support…" fallback text neither add a
                 // second count nor make the block look like text.
-                "element"
-                    if matches!(node.name.as_deref(), Some("video") | Some("audio")) =>
+                "container"
+                    if matches!(
+                        element_tag(node, self.source),
+                        Some("video") | Some("audio")
+                    ) =>
                 {
-                    let kind = match node.name.as_deref() {
+                    let kind = match element_tag(node, self.source) {
                         Some("audio") => MediaKind::Audio,
                         _ => MediaKind::Video,
                     };
@@ -2942,7 +2961,11 @@ impl Builder<'_> {
             // Drawn in the surrounding style: a role of its own would need one
             // every frontend maps, and the bug this fixes is that the text was
             // invisible, not that it was unstyled.
-            "directive" if !self.children(id).is_empty() => self.recurse(id, base, out),
+            "container"
+                if container_is_directive(node, self.source) && !self.children(id).is_empty() =>
+            {
+                self.recurse(id, base, out)
+            }
             // No `[label]`, so there are no children to render and recursing
             // emitted *nothing*: the directive's bytes vanished from the document
             // and left no caret stop behind. What to draw instead turns on
@@ -2956,7 +2979,7 @@ impl Builder<'_> {
             // colon typed by accident can be seen and deleted. Hiding them behind
             // a placeholder would be the invisible-and-unreachable failure this
             // arm exists to fix, just wearing a nicer glyph.
-            "directive" if node.attrs.is_empty() => {
+            "container" if container_is_directive(node, self.source) && node.attrs.is_empty() => {
                 let span = node.span.clone();
                 push_text(out, self.source.get(span.clone()).unwrap_or(""), span.start, base);
             }
@@ -2970,7 +2993,7 @@ impl Builder<'_> {
             // directive's start offset: the caret treats it as one atomic thing
             // rather than walking hidden markup a byte at a time, and a paragraph
             // holding nothing but a chip still has a stop to be navigated to.
-            "directive" => {
+            "container" if container_is_directive(node, self.source) => {
                 let start = node.span.start;
                 let name = node.name.clone().unwrap_or_default();
                 let shown = match directive_attr_label(&node.attrs) {
@@ -4019,7 +4042,48 @@ fn heading_style(level: u32) -> Style {
     Style::default().role(Role::Heading(level.min(255) as u8))
 }
 
-pub(crate) fn is_inline(node: &FlatNode) -> bool {
+/// Is this `container` node a *directive* (`:::note{…}`, `::embed{…}`,
+/// `:vis[…]`) rather than an HTML element (`<video>`, `<picture>`, `<div>`)?
+///
+/// twig 2.8 folded `div`/`span`/`directive`/`element` into one `container` kind
+/// — one concept in its core, a named container with attributes and children —
+/// so `kind` no longer separates them. Neither does `directive_form`, despite
+/// reading as though it would: a block-level `<div>` reports
+/// `Some(DirectiveForm::Container)` exactly as a `:::note` does. (`<video>`,
+/// `<audio>`, `<picture>` and `<source>` do report `None`, so the field is only
+/// *sometimes* wrong — which is worse than never, and why nothing here leans on
+/// it to answer this question.)
+///
+/// What does separate them is the surface spelling: a directive opens with `:`
+/// in all three of its forms, an element with `<`. So the test is which of those
+/// two bytes the span reaches first. Not simply the byte *at* `span.start` — a
+/// nested container's span opens with its block prefix, and `> ::embed{…}`
+/// starts at the `>` — and not "contains a `:`" either, since an element's
+/// attributes are full of them (`<a href="http://…">`). First one wins,
+/// and only a directive can put a `:` in front of every `<`.
+///
+/// Sniffing source is a smaller lie than trusting a field that disagrees with
+/// its own documentation, and it is what `has_footnote_definition` already scans
+/// lines for.
+pub(crate) fn container_is_directive(node: &FlatNode, source: &str) -> bool {
+    let span = source.get(node.span.clone()).unwrap_or("");
+    match span.bytes().find(|&b| b == b':' || b == b'<') {
+        Some(b) => b == b':',
+        None => false,
+    }
+}
+
+/// The tag a `container` node carries when it is an HTML element rather than a
+/// directive — `Some("video")` for a promoted `<video>`, `None` for a `:::note`
+/// or for any node that is not a container at all. The read that used to be
+/// `kind == "element"` plus a look at `name`.
+pub(crate) fn element_tag<'a>(node: &'a FlatNode, source: &str) -> Option<&'a str> {
+    (node.kind == "container" && !container_is_directive(node, source))
+        .then_some(node.name.as_deref())
+        .flatten()
+}
+
+pub(crate) fn is_inline(node: &FlatNode, source: &str) -> bool {
     // A directive is inline only in its `text` form (`:name[label]{…}`); the
     // `leaf` and `container` forms are blocks. All three report the same `kind`,
     // so the form is the only thing telling them apart — and getting it wrong
@@ -4027,8 +4091,12 @@ pub(crate) fn is_inline(node: &FlatNode) -> bool {
     // paragraph fail the "all children inline" test in `block`, and the line is
     // then walked as a container of blocks, rendering as empty rows with no
     // caret home at all.
-    if node.kind == "directive" {
-        return node.directive_form == Some(DirectiveForm::Text);
+    //
+    // An HTML element shares the `container` kind but never the `text` form, so
+    // it answers `false` here and is walked as the block it is.
+    if node.kind == "container" {
+        return container_is_directive(node, source)
+            && node.directive_form == Some(DirectiveForm::Text);
     }
     is_inline_kind(&node.kind)
 }
@@ -4044,7 +4112,7 @@ pub(crate) fn is_inline_kind(kind: &str) -> bool {
         kind,
         "str" | "soft_break" | "hard_break" | "non_breaking_space" | "emph" | "strong" | "mark"
             | "insert" | "delete" | "verbatim" | "inline_math" | "display_math" | "url" | "email"
-            | "link" | "image" | "smart_punctuation" | "superscript" | "subscript" | "span"
+            | "link" | "image" | "smart_punctuation" | "superscript" | "subscript"
             | "footnote_reference"
     )
 }
@@ -4946,6 +5014,107 @@ mod tests {
         assert!(m.rows.iter().all(|r| r.leaf_directive.is_none()));
         assert_eq!(rendered(&m).trim_end(), "Body");
         assert!(m.rows.iter().any(|r| r.directive && r.directive_label.as_deref() == Some("warning")));
+    }
+
+    /// A production-path build with both extensions on — the only way to put a
+    /// promoted HTML element and a directive in one document, which is what the
+    /// `container` kind made necessary to tell apart. Returns the whole `Doc`
+    /// because [`VisualMap`] is not `Clone`; read `doc.vmap`.
+    fn doc_built(src: &str) -> crate::Doc {
+        let mut doc = crate::Doc::from_source(src.to_string(), Format::Markdown).unwrap();
+        doc.build_visual(80);
+        doc
+    }
+
+    /// Every `container` node in `src`, parsed the way production does (both
+    /// extensions on), paired with what [`container_is_directive`] makes of it.
+    fn containers(src: &str) -> Vec<(String, bool, Option<DirectiveForm>)> {
+        let mut ed = Editor::new_ext(
+            src.as_bytes(),
+            Format::Markdown,
+            twig::MarkdownExtensions {
+                directives: true,
+                html_elements: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        ed.nodes()
+            .unwrap()
+            .iter()
+            .filter(|n| n.kind == "container")
+            .map(|n| {
+                (
+                    n.name.clone().unwrap_or_default(),
+                    container_is_directive(n, src),
+                    n.directive_form,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_directive_and_an_html_element_are_told_apart_by_spelling_not_by_form() {
+        // twig 2.8 folded `div`/`span`/`directive`/`element` into one `container`
+        // kind. `directive_form` reads as though it separates them and does not:
+        // a block-level `<div>` reports `Some(DirectiveForm::Container)` exactly
+        // as a `:::note` does. Trusting it would draw directive chrome — a tinted
+        // panel, a `.class` audience label — on every pasted Slack/Docs div.
+        for (src, name, want) in [
+            (":::note{.a}\nbody\n:::\n", "note", true),
+            ("::embed{src=x}\n", "embed", true),
+            ("a :vis[hi]{.b} b\n", "vis", true),
+            ("<div class=\"x\">\nhi\n</div>\n", "div", false),
+            ("<video src=\"v.mp4\" controls></video>\n", "video", false),
+            ("<audio src=\"a.mp3\" controls></audio>\n", "audio", false),
+            ("<figure>\n\nhi\n\n</figure>\n", "figure", false),
+            // The `:` in an attribute must not read as a directive opener: the
+            // `<` of the tag comes first, and first one wins.
+            ("<video src=\"http://x.test/v.mp4\" controls></video>\n", "video", false),
+            ("<source media=\"(prefers-color-scheme: dark)\" srcset=\"d.svg\">\n", "source", false),
+        ] {
+            let found = containers(src);
+            let hit = found.iter().find(|(n, ..)| n == name);
+            let Some((_, is_directive, form)) = hit else {
+                panic!("no `{name}` container in {src:?} — found {found:?}");
+            };
+            assert_eq!(*is_directive, want, "{name} in {src:?} (form was {form:?})");
+        }
+
+        // And the reason this can't just read the field: for the one collision
+        // that matters, the field says the same thing for both.
+        let div = containers("<div class=\"x\">\nhi\n</div>\n");
+        let note = containers(":::note{.a}\nbody\n:::\n");
+        assert_eq!(
+            div[0].2, note[0].2,
+            "if these ever differ, `directive_form` became usable and this rule can go"
+        );
+    }
+
+    #[test]
+    fn a_directive_nested_in_a_quote_or_list_is_still_a_directive() {
+        // A container's span opens with its *block prefix*, not its own markup —
+        // `> ::embed{…}` starts at the `>`. Reading only the first byte to tell a
+        // directive from an element (both `container` since 2.8) therefore misses
+        // every nested one, and the placeholder silently renders as nothing.
+        for (src, ctx) in [
+            ("> ::embed{src=\"x\"}\n", "quoted"),
+            ("- ::embed{src=\"x\"}\n", "listed"),
+            (">> ::embed{src=\"x\"}\n", "twice quoted"),
+        ] {
+            let m = map_directives(src);
+            assert_eq!(m.directives.len(), 1, "{ctx} directive was lost");
+            assert_eq!(m.directives[0].name, "embed", "{ctx}");
+        }
+    }
+
+    #[test]
+    fn a_video_is_still_media_and_not_a_directive() {
+        // The other side of the same coin: `<video>` is a `container` too, and
+        // must reach `block_media` rather than the directive arms.
+        let doc = doc_built("<video src=\"clip.mp4\" controls></video>\n");
+        assert_eq!(doc.vmap.media.len(), 1, "the video is block media");
+        assert!(doc.vmap.rows.iter().all(|r| !r.directive), "the video drew directive chrome");
     }
 
     #[test]

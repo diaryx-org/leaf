@@ -44,6 +44,32 @@ pub(crate) fn render_fragment(source: &str, format: Format) -> Option<String> {
 pub(crate) fn parse_fragment(html: &str, format: Format) -> Option<String> {
     let cleaned = sanitize(html);
     let mut doc = Document::parse_str(&cleaned, Format::Html).ok()?;
+
+    // An element twig has no semantic node for lands as a generic `container`,
+    // and since 2.8 that is the same kind a directive uses — so Markdown, which
+    // has no way to spell an element, spells it as a directive instead:
+    // `<my-widget></my-widget>` serializes to the literal text `:my-widget`.
+    // That is markup the author never wrote, in a syntax leaf's own parser reads
+    // back as a directive, so the paste is worse than the plain flavor.
+    //
+    // Asked here, of the *HTML* parse, rather than of the converted source:
+    // twig reads a bare `:word` back as a directive too, so looking for one in
+    // the output would decline `see :below` and every other prose colon on the
+    // clipboard. The input is HTML and the author wrote no directives in it —
+    // so a container here is the cause, and there is nothing to second-guess.
+    // ([`sanitize`] has already rewritten `<div>` and dropped the namespaced
+    // Office tags, which is why the shapes that reach this are the genuinely
+    // unknown ones.)
+    let invented = doc.nodes().is_ok_and(|ns| {
+        ns.iter().any(|n| {
+            n.kind == "container"
+                && !n.name.as_deref().is_some_and(|t| TABLE_STRUCTURE.contains(&t))
+        })
+    });
+    if invented {
+        return None;
+    }
+
     let source = String::from_utf8(doc.serialize(format).ok()?).ok()?;
 
     // twig's serializers terminate a block with a newline, because a document
@@ -52,10 +78,38 @@ pub(crate) fn parse_fragment(html: &str, format: Format) -> Option<String> {
     // its own line. Only `\n` is trimmed: a trailing *space* pair is Markdown's
     // hard line break and belongs to the text.
     let source = source.trim_matches('\n');
-    if source.is_empty() || unfaithful(source) {
+    if source.is_empty() || unfaithful(source) || pipes_that_are_not_a_table(source, format) {
         return None;
     }
     Some(source.to_string())
+}
+
+/// Does this conversion spell a table that isn't one?
+///
+/// [`unfaithful`] catches markup twig left as-is; this catches markup twig
+/// *wrote*. twig 2.7 maps an HTML `<table>` onto the shared table vocabulary, so
+/// a clipboard table now converts to pipe rows instead of passing through as
+/// tags — but that is the right shape only when the HTML had a header. GFM
+/// spells a table's header with a delimiter row (`| --- |`) under the first
+/// line, and a `<table>` with no `<thead>` has no header to write one from, so
+/// `| a | b |` lands on its own and reparses as an ordinary paragraph of literal
+/// pipes. Pasting that puts visible markup into a prose document, which is the
+/// plain flavor's cue.
+///
+/// Read by parsing the output back rather than by pattern: "is this a table"
+/// is exactly the question the parser answers, and a delimiter row is not the
+/// only thing that decides it.
+fn pipes_that_are_not_a_table(source: &str, format: Format) -> bool {
+    if !source.lines().any(|l| l.trim_start().starts_with('|')) {
+        return false;
+    }
+    let Ok(mut doc) = Document::parse_str(source, format) else {
+        return true;
+    };
+    let Ok(nodes) = doc.nodes() else {
+        return true;
+    };
+    !nodes.iter().any(|n| n.kind == "table")
 }
 
 /// Strip a sole wrapping `<p>`, for a selection that lives inside one block.
@@ -99,12 +153,30 @@ fn unfaithful(source: &str) -> bool {
     })
 }
 
+/// A table's structural wrappers, which arrive as generic `container`s and are
+/// the one kind that does *not* mean an invented directive: twig folds them into
+/// the shared table vocabulary, so the rows and cells inside them come out as a
+/// real pipe table and the wrapper itself is never spelled in the output. Every
+/// other unknown element reaches the serializer intact and becomes a `:name`.
+const TABLE_STRUCTURE: [&str; 6] = ["thead", "tbody", "tfoot", "colgroup", "col", "caption"];
+
 /// Elements whose *content* is not prose and must go with them. `head` is Word's
 /// (and arboard's own wrapper's); `script`/`style` are every rich web page's.
 const DROP_TREE: [&str; 4] = ["script", "style", "head", "title"];
 
 /// Void elements that carry no text and that twig would pass through raw.
 const DROP_TAG: [&str; 3] = ["meta", "link", "base"];
+
+/// A namespaced tag — `<o:p>`, `<w:sdt>`, `<v:shape>` — which is Office's, never
+/// prose, and which twig no longer passes through harmlessly: since 2.8 an
+/// unknown element and a text directive are one `container` kind, and Markdown
+/// has only the directive spelling to write one with, so `<o:p></o:p>` comes
+/// back as the literal text `:o:p` in the middle of the pasted sentence.
+/// Dropping the tag and keeping its content is what `DROP_TAG` already does, and
+/// what Word's empty-paragraph marker deserves on its own merits.
+fn namespaced(name: &str) -> bool {
+    name.contains(':')
+}
 
 /// Rewrite clipboard HTML into the subset twig converts faithfully.
 ///
@@ -177,7 +249,8 @@ fn sanitize(html: &str) -> String {
                     owed.truncate(at);
                 }
                 None if DROP_TREE.contains(&tag.name.as_str())
-                    || DROP_TAG.contains(&tag.name.as_str()) => {}
+                    || DROP_TAG.contains(&tag.name.as_str())
+                    || namespaced(&tag.name) => {}
                 None => out.push_str(&html[lt..tag.end]),
             }
             continue;
@@ -187,7 +260,7 @@ fn sanitize(html: &str) -> String {
             i = skip_tree(html, tag.end, &tag.name);
             continue;
         }
-        if DROP_TAG.contains(&tag.name.as_str()) {
+        if DROP_TAG.contains(&tag.name.as_str()) || namespaced(&tag.name) {
             continue;
         }
 
@@ -492,10 +565,39 @@ mod tests {
     // ── the bad cases fall back ──────────────────────────────────────────────
 
     #[test]
-    fn a_table_declines_rather_than_pasting_raw_html() {
-        // twig builds no table from HTML — it passes the tags through — and raw
-        // `<table>` markup in a prose document is worse than the plain flavor.
+    fn a_headed_table_converts_and_a_headless_one_declines() {
+        // twig 2.7 maps HTML tables onto the shared table vocabulary, so a
+        // clipboard table converts instead of passing through as raw tags.
+        assert_eq!(
+            md("<table><thead><tr><th>h1</th><th>h2</th></tr></thead>\
+                <tbody><tr><td>a</td><td>b</td></tr></tbody></table>")
+            .as_deref(),
+            Some("| h1 | h2 |\n| --- | --- |\n| a | b |")
+        );
+        // But only when there was a header to write the delimiter row from. With
+        // no `<thead>` the conversion is `| a | b |` alone, which is not a GFM
+        // table at all — it reparses as a paragraph of literal pipes — so this
+        // declines and the caller pastes the plain flavor.
         assert_eq!(md("<table><tr><td>a</td><td>b</td></tr></table>"), None);
+        assert_eq!(md("<table><tr><td>a</td></tr><tr><td>b</td></tr></table>"), None);
+    }
+
+    #[test]
+    fn an_unknown_element_declines_rather_than_inventing_a_directive() {
+        // twig 2.8 made an unknown element and a text directive one `container`
+        // kind, and Markdown can only spell one as a directive — so a custom
+        // element comes back as `:my-widget`, markup the author never wrote and
+        // twig would read back as a directive. Worse than the plain flavor.
+        assert_eq!(md("<p>a<my-widget></my-widget>b</p>"), None);
+        // The namespaced Office tags `sanitize` knows about are dropped instead,
+        // so the surrounding prose still pastes (see the Word case above).
+        assert_eq!(md("<p>a<o:p></o:p>b</p>").as_deref(), Some("ab"));
+        // …and prose that merely *looks* like a directive is not an invention:
+        // twig reads `:below` and `:bar` back as directives too, so declining on
+        // the reparse alone would throw away half the prose on the clipboard.
+        // The tag has to actually be in the input to have been invented from.
+        assert_eq!(md("<p>see :below for the ratio</p>").as_deref(), Some("see :below for the ratio"));
+        assert_eq!(md("<p>the key is foo:bar here</p>").as_deref(), Some("the key is foo:bar here"));
     }
 
     #[test]

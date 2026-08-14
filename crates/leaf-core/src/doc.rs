@@ -2177,7 +2177,7 @@ impl Doc {
         let (mut s, mut e) = (start, end);
         loop {
             let mut grew = false;
-            for n in nodes.iter().filter(|n| wysiwyg::is_inline(n)) {
+            for n in nodes.iter().filter(|n| wysiwyg::is_inline(n, &self.source)) {
                 let Some(text) = inline_content_span(n, &self.source) else {
                     continue;
                 };
@@ -4429,7 +4429,14 @@ fn is_block_container(kind: &str) -> bool {
             | "task_list"
             | "list_item"
             | "task_list_item"
-            | "directive"
+            // Every `container` — a directive in any of its three forms, or a
+            // promoted HTML element. A *text* directive is really inline, so
+            // claiming it here is a small overreach, and the deliberate one this
+            // function's kind-only peer `is_inline_kind` documents: the pair is
+            // consulted together, and answering "block container" for something
+            // inline is what keeps an ancestor walk from stopping short of the
+            // paragraph that actually holds it.
+            | "container"
     )
 }
 
@@ -6108,10 +6115,16 @@ mod tests {
 
     /// The node the source parses as at `caret` — what confirms an inserted
     /// `---` actually reads back as a rule, not stray text or a setext heading.
+    ///
+    /// The *narrowest* node covering the offset. Every ancestor covers it too,
+    /// and since twig 2.8 that includes the `doc` root, which now carries a real
+    /// span (it reported none before, so taking the first match used to land on
+    /// the block by luck and now always answers `"doc"`).
     fn kind_at(d: &mut Doc, caret: usize) -> Option<String> {
         d.nodes()
             .into_iter()
-            .find(|n| n.span.start <= caret && caret < n.span.end)
+            .filter(|n| n.span.start <= caret && caret < n.span.end)
+            .min_by_key(|n| n.span.end - n.span.start)
             .map(|n| n.kind)
     }
 
