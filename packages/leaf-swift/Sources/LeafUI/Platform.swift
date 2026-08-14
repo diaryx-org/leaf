@@ -45,6 +45,11 @@ public enum Palette {
     public static var selection: LeafColor { UIColor.systemBlue.withAlphaComponent(0.30) }
     public static var inactiveSelection: LeafColor { UIColor.systemGray.withAlphaComponent(0.30) }
     public static var accent: LeafColor { .tintColor }
+    /// The paper a paginated document's sheets are drawn on, and the surface they
+    /// sit on. Semantic on both platforms, so a page tracks light/dark like the
+    /// rest of the chrome.
+    public static var page: LeafColor { .systemBackground }
+    public static var pageBackdrop: LeafColor { .systemGray2 }
     #elseif canImport(AppKit)
     public static var label: LeafColor { .labelColor }
     public static var secondary: LeafColor { .secondaryLabelColor }
@@ -54,6 +59,11 @@ public enum Palette {
     public static var selection: LeafColor { .selectedTextBackgroundColor }
     public static var inactiveSelection: LeafColor { .unemphasizedSelectedTextBackgroundColor }
     public static var accent: LeafColor { .controlAccentColor }
+    /// AppKit names both of these outright — `underPageBackgroundColor` is the
+    /// surface Preview and Pages set a sheet on — so the paginated view gets the
+    /// system's own answer rather than a hand-picked grey.
+    public static var page: LeafColor { .textBackgroundColor }
+    public static var pageBackdrop: LeafColor { .underPageBackgroundColor }
     #endif
     public static var codeBackground: LeafColor { secondary.withAlphaComponent(0.08) }
     /// A `:::name{.class}` directive container's (diaryx's `:::vis{.audience}`

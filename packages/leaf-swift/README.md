@@ -122,6 +122,46 @@ theme.measure = 52          // a narrower column; nil fills the view
 LeafEditor(model: editor, theme: theme)
 ```
 
+**A paginated view** (macOS). Pass a `PageSetup` and the document is laid onto a
+stack of sheets instead of one scrolling column — the word-processor view, with a
+zoom that scales the surface without re-laying it out:
+
+```swift
+LeafEditor(model: editor, theme: theme, page: .usLetter, zoom: 1.0)
+LeafEditor(model: editor, theme: theme, page: nil)          // continuous (the default)
+```
+
+`PageSetup` is points at 72 to the inch: `.usLetter` and `.a4` are one-inch
+margins, and any other sheet is `PageSetup(size:margins:gap:backdrop:)`. Setting
+one is a *mode*, not a style — that's why it isn't a field on `EditorTheme`. A
+page supersedes `measure` (the sheet's margins decide the text column now) and
+gives the document a fixed height and width it doesn't otherwise have, so a window
+narrower than a sheet scrolls sideways rather than reflowing.
+
+What it breaks on:
+
+- **A paragraph splits at the break**, line by line, rather than moving whole —
+  otherwise a ten-line paragraph starting five lines from the foot leaves five
+  blank ones, which in prose is constant.
+- **A heading, a table, and a media box move whole.** A split heading reads as two
+  headings; half a photograph is not a thing to draw.
+- **A heading is kept with the text it introduces** — one left alone at the foot
+  of a sheet announces nothing the reader can see. Unless nothing follows it.
+- **A paragraph gap at the break collapses**, as space-before does at the head of a
+  page: it exists to hold two blocks apart on one sheet, and the break is the
+  separation now. This is what `Row.boundary` is for.
+- **A block too tall for any sheet** is placed and left to overflow, taking the
+  sheets it covers to itself. Bouncing it to a fresh sheet forever is a hang.
+
+Zoom is a view transform and nothing more: the layout always works in unzoomed
+page space, the draw scales the context, and points coming back the other way are
+divided out. So dragging a zoom slider re-*draws* but never re-shapes — the
+per-row shaping cache survives untouched — and the text stays vector-crisp at
+every scale, which resampling a rasterized layer would cost. `LeafTextView.zoomRange`
+is 25%–400%.
+
+The iOS surface stays on the continuous flow.
+
 **Smart, rich clipboard** (the same behaviour as leaf-tui / leaf-gpui via
 `arboard`, reached here through `NSPasteboard`/`UIPasteboard`). A copy publishes
 *two* flavours: the plain flavour is the leaf **source** (`selectedText`), the rich

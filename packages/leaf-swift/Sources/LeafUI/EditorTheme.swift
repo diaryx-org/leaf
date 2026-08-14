@@ -95,6 +95,13 @@ public struct EditorTheme {
     public var caretColor: LeafColor
     /// The drag-handle knobs on iOS selection (the loupe-free native peers).
     public var handleColor: LeafColor
+    /// The paginated view's chrome: the paper, the surface behind the stack, and
+    /// the hairline round each sheet. Inert while no `PageSetup` is set — the
+    /// continuous flow draws no paper — and pure colour either way, so changing
+    /// one repaints rather than re-wrapping (see `metricsDiffer`).
+    public var pageColor: LeafColor
+    public var pageBackdropColor: LeafColor
+    public var pageBorderColor: LeafColor
 
     public init(
         bodyFontName: String = "Helvetica Neue",
@@ -125,7 +132,10 @@ public struct EditorTheme {
         selectionColor: LeafColor = Palette.selection,
         inactiveSelectionColor: LeafColor = Palette.inactiveSelection,
         caretColor: LeafColor = Palette.label,
-        handleColor: LeafColor = Palette.accent
+        handleColor: LeafColor = Palette.accent,
+        pageColor: LeafColor = Palette.page,
+        pageBackdropColor: LeafColor = Palette.pageBackdrop,
+        pageBorderColor: LeafColor = Palette.separator
     ) {
         self.bodyFontName = bodyFontName
         self.monoFontName = monoFontName
@@ -156,6 +166,9 @@ public struct EditorTheme {
         self.inactiveSelectionColor = inactiveSelectionColor
         self.caretColor = caretColor
         self.handleColor = handleColor
+        self.pageColor = pageColor
+        self.pageBackdropColor = pageBackdropColor
+        self.pageBorderColor = pageBorderColor
     }
 
     public static let `default` = EditorTheme()

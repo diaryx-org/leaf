@@ -17,16 +17,54 @@ struct ContentView: View {
     /// persist them (`@AppStorage`) rather than reset them each launch.
     @State private var columnWidth: ColumnWidth = .medium
     @State private var textSize: TextSize = .medium
+    #if os(macOS)
+    /// The paginated view: nil is the continuous flow, a `PageSetup` puts the
+    /// document on paper. macOS only for now — a stack of fixed-width sheets is a
+    /// desktop idiom, and the iOS surface stays on the flow it has.
+    @State private var page: PageSetup?
+    @State private var zoom: CGFloat = 1
+    #endif
 
     var body: some View {
         VStack(spacing: 0) {
             toolbar
             Divider()
+            #if os(macOS)
+            LeafEditor(model: editor, theme: theme, page: page, zoom: zoom)
+                .background(page == nil ? editorBackground : Color.clear)
+            if page != nil { zoomBar }
+            #else
             LeafEditor(model: editor, theme: theme)
                 .background(editorBackground)
+            #endif
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)
     }
+
+    #if os(macOS)
+    /// The zoom control, shown only on paper — the continuous flow reflows to the
+    /// window, so scaling it says nothing a text-size choice doesn't say better.
+    /// A page is a fixed width, which is exactly when a zoom is the right knob.
+    private var zoomBar: some View {
+        HStack(spacing: 10) {
+            Spacer()
+            Image(systemName: "minus.magnifyingglass").foregroundStyle(.secondary)
+            Slider(value: $zoom, in: 0.25...4)
+                .frame(width: 180)
+                .accessibilityLabel("zoom")
+            Image(systemName: "plus.magnifyingglass").foregroundStyle(.secondary)
+            Button("\(Int((zoom * 100).rounded()))%") { zoom = 1 }
+                .buttonStyle(.plain)
+                .monospacedDigit()
+                .frame(width: 44, alignment: .trailing)
+                .foregroundStyle(.secondary)
+                .help("Reset to 100%")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+        .background(.bar)
+    }
+    #endif
 
     /// The two display choices resolved into a theme. Everything else stays at
     /// the default — the point of the measure being counted in *characters* is
@@ -63,6 +101,9 @@ struct ContentView: View {
                 Divider().frame(height: 22)
                 flowMenu
                 appearanceMenu
+                #if os(macOS)
+                pageMenu
+                #endif
                 if editor.state.dirty {
                     Circle().fill(.secondary).frame(width: 6, height: 6)
                 }
@@ -161,6 +202,35 @@ struct ContentView: View {
         .fixedSize()
         .accessibilityLabel("appearance")
     }
+
+    #if os(macOS)
+    /// The page menu — continuous scrolling, or a document laid onto sheets of a
+    /// chosen size. Switching between them re-wraps: a page's margins decide the
+    /// text column while one is set, and the theme's `measure` decides it when
+    /// none is.
+    private var pageMenu: some View {
+        Menu {
+            Button { page = nil } label: {
+                Label("Continuous", systemImage: page == nil ? "checkmark" : "")
+            }
+            Divider()
+            Button { page = .usLetter } label: {
+                Label("US Letter", systemImage: page == .usLetter ? "checkmark" : "")
+            }
+            Button { page = .a4 } label: {
+                Label("A4", systemImage: page == .a4 ? "checkmark" : "")
+            }
+        } label: {
+            Image(systemName: page == nil ? "doc.plaintext" : "doc.on.doc")
+                .font(.system(size: 17))
+                .frame(minWidth: 24, minHeight: 24)
+                .foregroundStyle(page == nil ? Color.primary : Color.accentColor)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .accessibilityLabel("page")
+    }
+    #endif
 
     private func setFlow(_ preserve: Bool) {
         flowPreserved = preserve

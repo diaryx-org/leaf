@@ -36,6 +36,68 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             relayoutForWidth(force: true)
         }
     }
+
+    /// The sheet this document is laid onto, or `nil` (the default) for the
+    /// continuous scrolling flow the editor has always had.
+    ///
+    /// Setting one is a *mode*, not a style: rows break across a stack of pages
+    /// and wrap to the sheet's margins instead of the theme's `measure`, which a
+    /// page supersedes. See `PageSetup`.
+    public var pageSetup: PageSetup? {
+        didSet {
+            guard pageSetup != oldValue else { return }
+            // The column width changed, and the shape cache is only valid at the
+            // width it was built for.
+            shapeCache.removeAll(keepingCapacity: true)
+            // A paginated document is a fixed width the scroll view may have to
+            // scroll sideways to, so it stops tracking the viewport's.
+            autoresizingMask = pageSetup == nil ? [.width] : []
+            relayoutForWidth(force: true)
+        }
+    }
+
+    /// The on-screen scale, `1` being one layout point per screen point.
+    ///
+    /// A view-level transform and nothing more: `EditorLayout` always works in
+    /// unzoomed page space, `draw` scales the context, and points coming the other
+    /// way (clicks, drags, the IME's screen rects) are divided back out. So a drag
+    /// of a zoom slider re-*draws* but never re-shapes — the row cache, which is
+    /// keyed by wrap width, survives untouched — and the text stays vector-crisp
+    /// at every stop, which is what scaling a rasterized layer would cost.
+    public var zoom: CGFloat {
+        get { zoomScale }
+        set {
+            let clamped = min(max(newValue, Self.zoomRange.lowerBound), Self.zoomRange.upperBound)
+            guard clamped != zoomScale else { return }
+            zoomScale = clamped
+            // No re-shaping: the wrap width is the sheet's (or the theme's) and
+            // neither moved. This re-runs the layout only because the viewport
+            // measured in layout points just changed, which is what decides where
+            // the stack centres.
+            relayoutForWidth(force: true)
+            needsDisplay = true
+        }
+    }
+    private var zoomScale: CGFloat = 1
+
+    /// The scales the view will hold — 25% to 400%, the range a word processor's
+    /// zoom control usually offers.
+    public static let zoomRange: ClosedRange<CGFloat> = 0.25...4
+
+    /// A point in view coordinates in layout (page) space — the inverse of the
+    /// scale `draw` applies. The identity at `zoom == 1`.
+    private func layoutPoint(_ p: CGPoint) -> CGPoint { CGPoint(x: p.x / zoom, y: p.y / zoom) }
+
+    /// A rect in layout space back out in view coordinates.
+    private func viewRect(_ r: CGRect) -> CGRect {
+        r.applying(CGAffineTransform(scaleX: zoom, y: zoom))
+    }
+
+    /// A rect in view coordinates back in layout space — how a dirty band becomes
+    /// something the row and page loops can cull against.
+    private func layoutRect(_ r: CGRect) -> CGRect {
+        r.applying(CGAffineTransform(scaleX: 1 / zoom, y: 1 / zoom))
+    }
     /// Fired after every repaint so a host can update a toolbar/footer.
     public var onStateChange: ((EditorState) -> Void)?
     /// Host hook for link activation. Called with the link's raw destination
@@ -175,11 +237,23 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     public override func layout() {
         super.layout()
         relayoutForWidth(force: false)
-        applyContentHeight()
+        applyContentSize()
+    }
+
+    /// The width the layout is asked to fill, in unzoomed points: the *viewport's*,
+    /// not this view's own.
+    ///
+    /// They are the same thing in the continuous flow, where the document view
+    /// tracks the clip view's width. Paginated they part company — the frame grows
+    /// to the stack's width so a sheet wider than the window can be scrolled to —
+    /// and it is the viewport the stack should centre in, since that is what the
+    /// reader is looking through.
+    private var layoutWidth: CGFloat {
+        (enclosingScrollView?.contentView.bounds.width ?? bounds.width) / zoom
     }
 
     private func relayoutForWidth(force: Bool) {
-        let w = bounds.width
+        let w = layoutWidth
         guard w > theme.padding.left + theme.padding.right else { return }
         if force || abs(w - viewWidth) > 0.5 {
             viewWidth = w
@@ -196,18 +270,29 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// impossible. `EditorLayout.hit` already clamps a point below the last row to
     /// it, so filling the clip area just makes that reachable: clicking below the
     /// text lands the caret at the document's end, same as most text editors.
-    private func applyContentHeight() {
-        let minHeight = enclosingScrollView?.contentView.bounds.height ?? 0
-        let raw = layoutEngine.contentHeight
+    private func applyContentSize() {
+        let clip = enclosingScrollView?.contentView.bounds.size ?? bounds.size
+        let raw = layoutEngine.contentHeight * zoom
         // Once the document already needs to scroll, pad another half screen below
         // the last line, so a long entry can be pulled up to a comfortable reading
         // height instead of staying glued to the bottom edge. Content that already
         // fits the clip area (the common short-document case) gets no extra room —
-        // `raw > minHeight` is false — so nothing here makes a short document
+        // `raw > clip.height` is false — so nothing here makes a short document
         // scrollable.
-        let extra = raw > minHeight ? minHeight * 0.5 : 0
-        let h = max(raw + extra, minHeight)
-        if abs(frame.height - h) > 0.5 { setFrameSize(NSSize(width: frame.width, height: h)) }
+        //
+        // Not in the paginated flow. There the document's height is the stack's,
+        // and a sheet of blank paper below the last page is already the room this
+        // was reaching for — half a screen more would just be backdrop, and would
+        // let the reader scroll a whole page past the end of their document.
+        let extra = pageSetup == nil && raw > clip.height ? clip.height * 0.5 : 0
+        let h = max(raw + extra, clip.height)
+        // Continuously the layout has no width of its own: it fills the viewport
+        // (and `autoresizingMask` keeps it there). A stack of sheets is a fixed
+        // width, so a window narrower than one scrolls sideways to it.
+        let w = max(layoutEngine.contentWidth * zoom, clip.width)
+        if abs(frame.height - h) > 0.5 || abs(frame.width - w) > 0.5 {
+            setFrameSize(NSSize(width: w, height: h))
+        }
     }
 
     // MARK: applying a frame
@@ -215,8 +300,8 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     private func render(_ view: DocView, keepVerticalGoal: Bool = false) {
         if !keepVerticalGoal { verticalGoalX = nil }
         docView = view
-        layoutEngine = EditorLayout(view, theme: theme, viewWidth: viewWidth, cache: &shapeCache,
-                                    media: mediaStore)
+        layoutEngine = EditorLayout(view, theme: theme, viewWidth: viewWidth, page: pageSetup,
+                                    cache: &shapeCache, media: mediaStore)
         // Installed players follow their boxes: the layout just moved every one
         // of them, and any media edited out of the document is gone from the
         // rects, which is what stops its playback. Skipped entirely when nothing
@@ -224,7 +309,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         if !mediaPlayers.isEmpty {
             mediaPlayers.reposition(layoutEngine.mediaRects())
         }
-        applyContentHeight()
+        applyContentSize()
         needsDisplay = true
         resetBlink()
         // Only follow the caret when it actually moved (typing, motion, click), not
@@ -241,12 +326,25 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     public override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        // Everything below this line is in layout coordinates. Scaling the context
+        // once — rather than multiplying every rect on the way out — is what keeps
+        // zoom out of the geometry: `EditorLayout` never learns it exists, and the
+        // text is re-rendered at the new scale rather than resampled, so it stays
+        // crisp. `dirtyRect` comes in already scaled, so the culling band is it
+        // divided back out.
+        ctx.saveGState()
+        defer { ctx.restoreGState() }
+        ctx.scaleBy(x: zoom, y: zoom)
+        let band = layoutRect(dirtyRect)
+
         let padX = layoutEngine.originX
         let fullWidth = layoutEngine.columnWidth
         let active = selectionIsActive
         let selColor = active ? theme.selectionColor : theme.inactiveSelectionColor
 
-        drawDirectiveBorders(in: ctx, dirtyRect: dirtyRect)
+        // The paper first: every other thing here paints onto a sheet.
+        PageChrome.draw(layoutEngine.pages, theme: theme, clip: band, in: ctx)
+        drawDirectiveBorders(in: ctx, dirtyRect: band)
         // The quote bars are one pass over the frame (a run of quoted rows merges
         // into a single bar), so they're painted before the rows, like the
         // directive outlines — the text then draws beside them.
@@ -256,8 +354,8 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             // Rows are laid out top-down, so cull to the dirty band: skip rows above
             // it, stop once past the bottom. A scroll or caret blink then repaints
             // only the visible rows, not the whole document.
-            if rl.top >= dirtyRect.maxY { break }
-            if rl.top + rl.height <= dirtyRect.minY { continue }
+            if rl.top >= band.maxY { break }
+            if rl.top + rl.height <= band.minY { continue }
             // A table draws its own grid (once, on its first picture row); its
             // rows carry no text to paint.
             if let grid = rl.table {
@@ -277,13 +375,19 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
                 }
                 continue
             }
-            let rowRect = CGRect(x: padX, y: rl.top, width: fullWidth, height: rl.height)
+            // The row's bands, not one rect over its whole height: a row split
+            // across a page break has a sheet edge through the middle of it, and a
+            // code fill drawn over that would tile the backdrop too.
+            let bands = rl.bands.map {
+                CGRect(x: padX, y: $0.top, width: fullWidth, height: $0.height)
+            }
+            let rowRect = bands.first ?? CGRect(x: padX, y: rl.top, width: fullWidth, height: rl.height)
             if rl.row.directive, let label = rl.row.directiveLabel, !label.isEmpty {
                 drawDirectiveLabel(label, in: rowRect)
             }
             if rl.row.code {
                 ctx.setFillColor(theme.codeBackground.cgColor)
-                ctx.fill(rowRect.insetBy(dx: -4, dy: 0))
+                for b in bands { ctx.fill(b.insetBy(dx: -4, dy: 0)) }
                 if let lang = rl.row.codeLang, !lang.isEmpty { drawCodeLang(lang, in: rowRect) }
             }
             BlockChrome.drawRule(rl, theme: theme, selColor: selColor, in: ctx)
@@ -291,9 +395,9 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             // Draw each wrapped visual line's substring on its own line box, hung
             // at the row's indent (zero on the first line, the prefix width after).
             for (i, wl) in rl.wrapped.enumerated() {
-                let lineTop = rl.top + rl.labelInset + CGFloat(i) * rl.lineHeight
-                if lineTop >= dirtyRect.maxY { break }
-                if lineTop + rl.lineHeight <= dirtyRect.minY { continue }
+                let lineTop = rl.lineTop(i)
+                if lineTop >= band.maxY { break }
+                if lineTop + rl.lineHeight <= band.minY { continue }
                 wl.attributed.draw(with: CGRect(x: padX + wl.indent, y: lineTop,
                                                 width: fullWidth - wl.indent, height: rl.lineHeight),
                                    options: [.usesLineFragmentOrigin])
@@ -453,7 +557,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
                 guard cs < ce else { continue }
                 let x0 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(cs - lineStart), nil)
                 let x1 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(ce - lineStart), nil)
-                let y = rl.top + rl.labelInset + CGFloat(i) * rl.lineHeight + rl.lineHeight - 1.5
+                let y = rl.lineTop(i) + rl.lineHeight - 1.5
                 ctx.fill(CGRect(x: layoutEngine.originX + wl.indent + x0, y: y, width: x1 - x0, height: 1))
             }
         }
@@ -500,24 +604,39 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             guard rows[i].row.directive, rows[i].table == nil else { i += 1; continue }
             let start = i
             while i < rows.count, rows[i].row.directive, rows[i].table == nil { i += 1 }
-            let first = rows[start], last = rows[i - 1]
-            let rect = CGRect(x: padX - 4, y: first.top,
-                              width: fullWidth + 8, height: last.top + last.height - first.top)
-            if rect.maxY < dirtyRect.minY || rect.minY > dirtyRect.maxY { continue }
-            ctx.saveGState()
-            ctx.setStrokeColor(theme.directiveBorderColor.cgColor)
-            ctx.setLineWidth(1)
-            ctx.setLineDash(phase: 0, lengths: [3, 3])
-            ctx.addPath(CGPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5),
-                               cornerWidth: 6, cornerHeight: 6, transform: nil))
-            ctx.strokePath()
-            ctx.restoreGState()
+            // The run's rows reduced to their vertical bands, merged where they
+            // touch. Continuously that always collapses back to the single box
+            // this drew before. Paginated, a run crossing a sheet edge — between
+            // two of its rows, or through the middle of one of them — comes out as
+            // one box per sheet, so no outline is ever stroked across the backdrop.
+            var spans: [(top: CGFloat, height: CGFloat)] = []
+            for rl in rows[start..<i] {
+                for b in rl.bands {
+                    if let last = spans.last, abs(last.top + last.height - b.top) < 0.5 {
+                        spans[spans.count - 1].height += b.height
+                    } else {
+                        spans.append(b)
+                    }
+                }
+            }
+            for span in spans {
+                let rect = CGRect(x: padX - 4, y: span.top, width: fullWidth + 8, height: span.height)
+                if rect.maxY < dirtyRect.minY || rect.minY > dirtyRect.maxY { continue }
+                ctx.saveGState()
+                ctx.setStrokeColor(theme.directiveBorderColor.cgColor)
+                ctx.setLineWidth(1)
+                ctx.setLineDash(phase: 0, lengths: [3, 3])
+                ctx.addPath(CGPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5),
+                                   cornerWidth: 6, cornerHeight: 6, transform: nil))
+                ctx.strokePath()
+                ctx.restoreGState()
+            }
         }
     }
 
     private func scrollCaretToVisible() {
         if let rect = layoutEngine.caretRect(docView, theme: theme) {
-            scrollToVisible(rect.insetBy(dx: 0, dy: -theme.lineHeight))
+            scrollToVisible(viewRect(rect.insetBy(dx: 0, dy: -theme.lineHeight)))
         }
     }
 
@@ -537,7 +656,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     public override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
-        let p = convert(event.locationInWindow, from: nil)
+        let p = layoutPoint(convert(event.locationInWindow, from: nil))
         // A plain click on a video or audio box starts it — the box's whole point
         // is the play badge drawn on it — and a click on an *empty* picture box
         // asks the host for it. The caret still moves there first, so a host that
@@ -608,7 +727,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // A drag is a selection, not a click — disarm the pending link follow so
         // selecting text that starts inside a link doesn't navigate on release.
         pendingLinkClick = false
-        let p = convert(event.locationInWindow, from: nil)
+        let p = layoutPoint(convert(event.locationInWindow, from: nil))
         let (row, ch) = hitRowCh(p)
         render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: true))
     }
@@ -641,7 +760,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     }
 
     private func moveCaretToDrop(_ sender: NSDraggingInfo) {
-        let p = convert(sender.draggingLocation, from: nil)
+        let p = layoutPoint(convert(sender.draggingLocation, from: nil))
         let (row, ch) = hitRowCh(p)
         render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: false))
     }
@@ -843,7 +962,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // Right-clicking outside the selection moves the caret there first, like a
         // native text view; a click inside an existing selection keeps it.
         if !hasSelection {
-            let p = convert(event.locationInWindow, from: nil)
+            let p = layoutPoint(convert(event.locationInWindow, from: nil))
             let (row, ch) = hitRowCh(p)
             render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: false))
         }
@@ -973,7 +1092,18 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         let nc = NotificationCenter.default
         nc.removeObserver(self, name: NSWindow.didBecomeKeyNotification, object: nil)
         nc.removeObserver(self, name: NSWindow.didResignKeyNotification, object: nil)
+        nc.removeObserver(self, name: NSView.frameDidChangeNotification, object: nil)
         guard let window else { return }
+        // Paginated, the frame is the stack's own width rather than the clip
+        // view's, so `layout()` no longer fires on a window resize — and where the
+        // stack centres is decided by exactly that width. Watch the viewport
+        // instead. (Continuously this is redundant with the autoresized frame's
+        // own `layout()`, and both paths guard on the width actually changing.)
+        if let clip = enclosingScrollView?.contentView {
+            clip.postsFrameChangedNotifications = true
+            nc.addObserver(self, selector: #selector(viewportResized),
+                           name: NSView.frameDidChangeNotification, object: clip)
+        }
         // Advertise the selection to the app-wide Services menu (Edit ▸ Services).
         NSApp.registerServicesMenuSendTypes([.string], returnTypes: [.string])
         // Accept text/rich content dropped into the editor.
@@ -983,6 +1113,11 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     }
 
     @objc private func keyStateChanged() { resetBlink(); needsDisplay = true }
+
+    @objc private func viewportResized() {
+        relayoutForWidth(force: false)
+        applyContentSize()
+    }
 
     deinit { NotificationCenter.default.removeObserver(self) }
 
@@ -1053,7 +1188,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     public func characterIndex(for point: NSPoint) -> Int {
         guard let window else { return NSNotFound }
-        let local = convert(window.convertPoint(fromScreen: point), from: nil)
+        let local = layoutPoint(convert(window.convertPoint(fromScreen: point), from: nil))
         let (row, ch) = layoutEngine.hit(local)
         return Int(doc.offsetForPos(row: UInt32(row), ch: UInt32(ch)))
     }
@@ -1063,7 +1198,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         actualRange?.pointee = range
         let rc = doc.posForOffset(off: UInt32(max(0, range.location)))
         guard let rect = layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch)) else { return .zero }
-        return window.convertToScreen(convert(rect, to: nil))
+        return window.convertToScreen(convert(viewRect(rect), to: nil))
     }
 
     // MARK: host access

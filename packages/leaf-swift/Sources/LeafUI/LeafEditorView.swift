@@ -257,9 +257,17 @@ import AppKit
 public struct LeafEditor: NSViewRepresentable {
     @ObservedObject private var model: LeafEditorModel
     private let theme: EditorTheme
+    private let page: PageSetup?
+    private let zoom: CGFloat
 
-    public init(model: LeafEditorModel, theme: EditorTheme = .default) {
-        self.model = model; self.theme = theme
+    /// `page` puts the document on paper — a stack of sheets broken at the page
+    /// boundaries, wrapping to the sheet's margins rather than the theme's
+    /// `measure`. `nil` (the default) is the continuous scrolling flow.
+    /// `zoom` scales the surface on screen without re-laying it out; it applies to
+    /// both flows, though a zoom control is really a paginated idiom.
+    public init(model: LeafEditorModel, theme: EditorTheme = .default,
+                page: PageSetup? = nil, zoom: CGFloat = 1) {
+        self.model = model; self.theme = theme; self.page = page; self.zoom = zoom
     }
 
     public func makeNSView(context: Context) -> NSScrollView {
@@ -268,8 +276,12 @@ public struct LeafEditor: NSViewRepresentable {
         let scroll = NSScrollView()
         scroll.documentView = textView
         scroll.hasVerticalScroller = true
+        // A sheet is a fixed width: a window narrower than one scrolls sideways to
+        // it rather than reflowing, which is the whole point of setting a page.
+        scroll.hasHorizontalScroller = true
+        scroll.autohidesScrollers = true
         scroll.drawsBackground = false
-        textView.autoresizingMask = [.width]
+        textView.autoresizingMask = page == nil ? [.width] : []
         textView.frame = CGRect(origin: .zero, size: CGSize(width: scroll.contentSize.width, height: 0))
 
         DispatchQueue.main.async { scroll.window?.makeFirstResponder(textView) }
@@ -287,8 +299,10 @@ public struct LeafEditor: NSViewRepresentable {
         guard model.textView === hosted else {
             let textView = makeTextView()
             scroll.documentView = textView
-            textView.autoresizingMask = [.width]
+            textView.autoresizingMask = page == nil ? [.width] : []
             textView.frame = CGRect(origin: .zero, size: CGSize(width: scroll.contentSize.width, height: 0))
+            textView.pageSetup = page
+            textView.zoom = zoom
             // `doc.view()` is a read-only snapshot — routing it through `command`
             // forces an immediate render → `onStateChange`, rather than waiting on
             // whatever layout pass happens to come next.
@@ -297,6 +311,11 @@ public struct LeafEditor: NSViewRepresentable {
             return
         }
         hosted.theme = theme
+        // Both guard themselves against an unchanged value, so re-applying them on
+        // every SwiftUI update (which is every state change at all) costs a
+        // comparison rather than a relayout.
+        hosted.pageSetup = page
+        hosted.zoom = zoom
         // Re-read rather than trusting the copy `makeTextView` took: a host that
         // flips this on the model after the view exists (or per document, for a
         // vault where only some files use the convention) gets it honoured.
@@ -310,6 +329,8 @@ public struct LeafEditor: NSViewRepresentable {
     /// stale-binding rebuild in `updateNSView` both need it.
     private func makeTextView() -> LeafTextView {
         let textView = LeafTextView(doc: model.doc, theme: theme)
+        textView.pageSetup = page
+        textView.zoom = zoom
         // Defer the publish: `render()` can fire during a SwiftUI layout pass, and
         // mutating an `@Published` mid-update loops the view system.
         textView.onStateChange = { [weak model] s in
