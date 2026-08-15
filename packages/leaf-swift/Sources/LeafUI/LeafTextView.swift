@@ -24,7 +24,7 @@
 import AppKit
 import LeafFFI
 
-public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuRequestor {
+public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuRequestor, FootnotePeekDelegate {
     let doc: LeafDoc
     public var theme: EditorTheme {
         didSet {
@@ -297,6 +297,11 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     private func render(_ view: DocView, keepVerticalGoal: Bool = false) {
         if !keepVerticalGoal { verticalGoalX = nil }
+        // Whatever the peek was pointing at has just moved, changed or gone: an
+        // edit reflowed the line under it, or a relayout put the reference
+        // somewhere else. It is chrome about a position, and the positions are
+        // being rebuilt.
+        dismissFootnotePeek()
         docView = view
         layoutEngine = EditorLayout(view, theme: theme, viewWidth: viewWidth, page: pageSetup,
                                     cache: &shapeCache, media: mediaStore)
@@ -672,9 +677,16 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         let (row, ch) = hitRowCh(p)
         // ⌘-click opens a link under the pointer (the native convention), leaving the
         // caret there. A plain click still places the caret to edit the link text.
+        //
+        // A footnote gets the same gesture and is tried first — the two can't
+        // both answer (a reference is not a link node), so the order only decides
+        // which query runs, not which wins. Same modifier for both because to a
+        // reader they are one idea, "take me to where this points"; that a
+        // footnote's destination happens to be further down this page rather than
+        // in another document is leaf's distinction, not theirs.
         if event.modifierFlags.contains(.command), event.clickCount == 1 {
             render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: false))
-            openLinkAtCaret()
+            if !followFootnoteAtCaret() { openLinkAtCaret() }
             return
         }
         let extend = event.modifierFlags.contains(.shift)
@@ -717,6 +729,201 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // already kept `.edit` off the menu for one.
         guard let dest = doc.linkDestinationAtCaret() else { return }
         onEditLink?(dest)
+    }
+
+    // MARK: footnotes
+
+    /// Follow the footnote under the caret — down to the note from a reference,
+    /// back up to the reference from a note — and say whether there was one.
+    ///
+    /// Both directions are one call because to the reader they are one gesture:
+    /// ⌘-click a footnote and you go to its other half, whichever half you were
+    /// standing on. `FootnoteJump` has already worked out which that is.
+    @discardableResult
+    private func followFootnoteAtCaret() -> Bool {
+        guard let jump = doc.footnoteJumpAtCaret() else { return false }
+        // The peek was about where the reader *was*.
+        dismissFootnotePeek()
+        render(doc.caretMoved(to: jump.offset))
+        return true
+    }
+
+    @objc private func followFootnote(_ sender: Any?) { followFootnoteAtCaret() }
+
+    // MARK: footnote peek (hover)
+
+    /// The popover a resting pointer raises over a footnote reference, and the
+    /// bookkeeping that decides when to raise and drop it.
+    ///
+    /// `peekAnchor` is the rect that raised the one currently up, in layout
+    /// space. The pointer staying inside it means "still the same reference", and
+    /// testing that rather than the byte offset is what stops a one-glyph label —
+    /// whose two ends are two different offsets — flickering the popover as the
+    /// pointer crosses it.
+    private lazy var footnotePeek: FootnotePeekPresenter = {
+        let presenter = FootnotePeekPresenter()
+        presenter.delegate = self
+        return presenter
+    }()
+    private var peekAnchor: CGRect?
+    private var peekOffset: UInt32?
+    private var peekTimer: Timer?
+    private var peekTracking: NSTrackingArea?
+    /// Counts down to taking a peek away once the pointer has left the reference,
+    /// so the reader has time to travel into the popover. Cancelled when they
+    /// arrive; see `footnotePeek(_:pointerIsInside:)`.
+    private var peekCloseTimer: Timer?
+    /// Whether the pointer is inside the popover right now — the one state that
+    /// makes a peek unclosable, because closing it would be closing it under a
+    /// reader who is reading or selecting from it.
+    private var pointerInPeek = false
+
+    public override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let peekTracking { removeTrackingArea(peekTracking) }
+        // `.inVisibleRect` keeps the area in step with scrolling and resizing on
+        // its own, so the zero rect is never consulted.
+        let area = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            owner: self, userInfo: nil)
+        addTrackingArea(area)
+        peekTracking = area
+    }
+
+    public override func mouseMoved(with event: NSEvent) {
+        let p = layoutPoint(convert(event.locationInWindow, from: nil))
+        // Still over the reference the popover is about: leave it up, and cancel
+        // any close the pointer's last excursion started.
+        if let peekAnchor, peekAnchor.insetBy(dx: -6, dy: -2).contains(p) {
+            peekCloseTimer?.invalidate()
+            peekCloseTimer = nil
+            return
+        }
+
+        let (row, ch) = hitRowCh(p)
+        let off = doc.offsetForPos(row: UInt32(row), ch: UInt32(ch))
+        guard off != peekOffset else { return }
+        // Off the reference and onto something else. A peek that is up gets a
+        // moment first: the pointer may be on its way *into* it, and the path
+        // from a reference to the popover below it crosses ordinary prose.
+        if footnotePeek.isShowing {
+            scheduleFootnotePeekClose()
+        } else {
+            dismissFootnotePeek()
+        }
+        peekOffset = off
+
+        // Asked only once the pointer has rested. `footnotePeekContent` walks the
+        // document's nodes — far too much work to repeat for every point a
+        // pointer sweeps across a paragraph — and a popover that appeared the
+        // instant the pointer touched a reference would strobe along the line
+        // anyway. This is the delay a tooltip has, for the reason a tooltip has
+        // it.
+        peekTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
+            self?.showFootnotePeek(at: off, row: row, ch: ch)
+        }
+    }
+
+    public override func mouseExited(with event: NSEvent) {
+        // The pointer may have left this view *into* the popover, which sits over
+        // it in a window of its own — so this is a candidate for closing, not a
+        // close. The popover says whether the reader arrived.
+        peekOffset = nil
+        if footnotePeek.isShowing {
+            scheduleFootnotePeekClose()
+        } else {
+            dismissFootnotePeek()
+        }
+    }
+
+    /// Take the peek down shortly, unless the reader turns out to be in it.
+    ///
+    /// The delay is what makes a peek usable at all: with an immediate close the
+    /// popover vanished the moment the pointer left the `[1]`, so there was no
+    /// way to reach it — and a note you can't reach is a note you can't select,
+    /// copy, or follow a link out of.
+    private func scheduleFootnotePeekClose() {
+        guard peekCloseTimer == nil else { return }
+        peekCloseTimer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            self.peekCloseTimer = nil
+            guard !self.pointerInPeek else { return }
+            self.dismissFootnotePeek()
+        }
+    }
+
+    private func showFootnotePeek(at off: UInt32, row: Int, ch: Int) {
+        peekTimer = nil
+        // `docView` is the frame on screen, so the note is drawn from the rows
+        // the page below is already drawing it from — the popover and the
+        // document can't disagree about the same note.
+        guard let content = doc.footnotePeekContent(at: off, in: docView, theme: theme),
+              let caret = layoutEngine.rect(row: row, ch: ch)
+        else { return }
+        // A caret rect is a hairline; widened so the popover's arrow points at the
+        // reference rather than balancing on its edge.
+        let anchor = caret.insetBy(dx: -6, dy: 0)
+        peekAnchor = anchor
+        footnotePeek.show(content, from: viewRect(anchor), in: self)
+    }
+
+    /// Take the peek down and forget what it was about. Called for everything
+    /// that makes it stale — the pointer leaving, a click, a keystroke, a
+    /// relayout — since an answer about a place the reader has left is worse than
+    /// no answer.
+    private func dismissFootnotePeek() {
+        peekTimer?.invalidate()
+        peekTimer = nil
+        peekCloseTimer?.invalidate()
+        peekCloseTimer = nil
+        pointerInPeek = false
+        peekAnchor = nil
+        footnotePeek.hide()
+    }
+
+    // MARK: a peek the reader is using
+
+    /// The pointer arrived in (or left) the popover.
+    ///
+    /// Arriving cancels the pending close, which is what lets a reader move from
+    /// the reference into the note and stay there — reading it, selecting a
+    /// sentence, following a link. Leaving starts the countdown again rather than
+    /// closing outright, for the same reason arriving needed a grace period: the
+    /// pointer may be crossing back to the reference.
+    func footnotePeek(_ presenter: FootnotePeekPresenter, pointerIsInside inside: Bool) {
+        pointerInPeek = inside
+        if inside {
+            peekCloseTimer?.invalidate()
+            peekCloseTimer = nil
+        } else {
+            scheduleFootnotePeekClose()
+        }
+    }
+
+    /// The reader clicked something followable inside the note.
+    ///
+    /// Either way the peek is over: it was about the reference they have now
+    /// left, and leaving it up over a document that has just scrolled somewhere
+    /// else would point at the wrong words.
+    func footnotePeek(_ presenter: FootnotePeekPresenter, didFollow target: FootnotePeekTarget) {
+        switch target.kind {
+        case .link(let destination):
+            dismissFootnotePeek()
+            // The same division the document draws: the host gets first refusal,
+            // because a note's `./sibling.md` means what it means everywhere else
+            // in this document.
+            if onOpenLink?(destination) == true { return }
+            guard let url = URL(string: destination) else { return }
+            NSWorkspace.shared.open(url)
+        case .footnote(let offset):
+            // Navigate rather than stack a second popover: the note it names is a
+            // place in this document, and `render` scrolls the caret into view,
+            // so the reader lands looking at it.
+            dismissFootnotePeek()
+            render(doc.caretMoved(to: offset))
+            followFootnoteAtCaret()
+        }
     }
 
     @objc private func copyLink(_ sender: Any?) {
@@ -968,6 +1175,21 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         }
 
         let menu = NSMenu()
+        // A footnote under the click leads the menu, for the reason a link does:
+        // since a plain click no longer follows anything, the menu and ⌘-click
+        // are the only ways to get there. At most one entry, and never alongside
+        // a link's — the caret is either on a reference, in a note, or in neither.
+        let footnotes = doc.footnoteActionsAtCaret()
+        for action in footnotes {
+            switch action {
+            case .goToNote:
+                menu.addItem(withTitle: loc("menu.goToNote", "Go to Note"),
+                             action: #selector(followFootnote(_:)), keyEquivalent: "")
+            case .backToReference:
+                menu.addItem(withTitle: loc("menu.backToReference", "Back to Reference"),
+                             action: #selector(followFootnote(_:)), keyEquivalent: "")
+            }
+        }
         // A link under the click (the caret was just placed there) leads the menu.
         // Since a plain click no longer follows, this — with ⌘-click — is how a
         // reader gets to the destination at all, so it stays first.
@@ -982,7 +1204,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
                 menu.addItem(withTitle: loc("menu.copyLink", "Copy Link"), action: #selector(copyLink(_:)), keyEquivalent: "")
             }
         }
-        if !links.isEmpty {
+        if !links.isEmpty || !footnotes.isEmpty {
             menu.addItem(.separator())
         }
         if hasSelection {
@@ -1000,14 +1222,6 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             menu.addItem(withTitle: loc("menu.share", "Share…"), action: #selector(shareSelection(_:)), keyEquivalent: "")
         }
         return menu
-    }
-
-    /// A localized UI string with an English fallback, looked up in the bundle this
-    /// class ships in — the host app's, for a statically linked package. So a host
-    /// can translate the menu (drop a `Localizable.strings` with these keys) without
-    /// the library owning a resource bundle, and the English `value` shows otherwise.
-    private func loc(_ key: String, _ value: String) -> String {
-        NSLocalizedString(key, tableName: nil, bundle: Bundle(for: LeafTextView.self), value: value, comment: "")
     }
 
     @objc private func lookUpSelection(_ sender: Any?) {

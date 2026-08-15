@@ -311,6 +311,88 @@ public final class LeafTextView: UIView, UITextInput {
         onEditLink?(dest)
     }
 
+    // MARK: footnotes
+
+    /// The popover a "Show Note" raises. Owned here for the AppKit peer's reason:
+    /// it outlives the tap that raised it, and something has to take it down.
+    private let footnotePeek = FootnotePeekPresenter()
+
+    /// Follow the footnote under the caret — down to the note from a reference,
+    /// back up to the reference from a note — and say whether there was one.
+    @discardableResult
+    private func followFootnoteAtCaret() -> Bool {
+        guard let jump = doc.footnoteJumpAtCaret() else { return false }
+        footnotePeek.hide()
+        render(doc.caretMoved(to: jump.offset))
+        return true
+    }
+
+    /// Show the note the caret's reference names, anchored to the caret.
+    ///
+    /// The phone's answer to the Mac's hover. A finger has no resting state to
+    /// read as "tell me about this", so the peek is something the reader asks for
+    /// by name in the menu the long press already raises — and the jump rides
+    /// inside the popover rather than beside it in the menu, so the common case
+    /// (read the note, carry on reading) costs one tap and never moves the caret.
+    private func showFootnotePeekAtCaret() {
+        // `docView` is the frame on screen, so the note is drawn from the rows
+        // the page below is already drawing it from.
+        guard let content = doc.footnotePeekContent(at: doc.caretOffset(), in: docView, theme: renderTheme),
+              let parent = owningViewController
+        else { return }
+        let rc = doc.posForOffset(off: doc.caretOffset())
+        guard let caret = layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch)) else { return }
+        // Nil when the reference names no note: a button that led nowhere would
+        // contradict the sentence right above it.
+        let follow: (() -> Void)? = doc.footnoteJumpAtCaret() == nil
+            ? nil
+            : { [weak self] in self?.followFootnoteAtCaret() }
+        footnotePeek.show(content, from: caret.insetBy(dx: -6, dy: -2), in: self,
+                          presentedBy: parent, onFollow: follow,
+                          onTarget: { [weak self] in self?.followPeekTarget($0) })
+    }
+
+    /// Answer a tap on something followable inside the note — a link, or a
+    /// reference to another footnote.
+    ///
+    /// The same two answers the Mac gives, for the same reasons: a link is the
+    /// host's first (a note's `./sibling.md` means what it means everywhere else
+    /// in the document), and a nested reference navigates rather than stacking a
+    /// second popover on top of the first.
+    private func followPeekTarget(_ target: FootnotePeekTarget) {
+        switch target.kind {
+        case .link(let destination):
+            if onOpenLink?(destination) == true { return }
+            guard let url = URL(string: destination) else { return }
+            UIApplication.shared.open(url)
+        case .footnote(let offset):
+            render(doc.caretMoved(to: offset))
+            followFootnoteAtCaret()
+        }
+    }
+
+    /// The footnote entries the edit menu should show, in the order it shows them.
+    ///
+    /// Two shapes, because the two ends of a footnote want different things. On a
+    /// *reference* the question is almost always "what does it say", so the entry
+    /// is the peek — and it is offered even for a `[^99]` nothing defines, since
+    /// the popover is the one place that can say so. In a *note* there is nothing
+    /// to peek at (the reader is looking at it) and only one useful move, so the
+    /// entry is the jump itself.
+    private func footnoteMenuActions() -> [UIAction] {
+        // "Is the caret on a reference at all" — the raw query, not the rendered
+        // content, which is a menu's worth of work too early.
+        if doc.footnotePeek(at: doc.caretOffset()) != nil {
+            return [UIAction(title: loc("menu.showNote", "Show Note")) { [weak self] _ in
+                self?.showFootnotePeekAtCaret()
+            }]
+        }
+        guard doc.footnoteJumpAtCaret()?.action == .backToReference else { return [] }
+        return [UIAction(title: loc("menu.backToReference", "Back to Reference")) { [weak self] _ in
+            self?.followFootnoteAtCaret()
+        }]
+    }
+
     /// Answer a tap on a block media box, returning whether it was handled.
     ///
     /// In `.inline` mode this installs an AVKit player over the box and starts
@@ -423,6 +505,10 @@ public final class LeafTextView: UIView, UITextInput {
     /// Install a fresh `DocView` and repaint. The system re-reads `selectedTextRange`
     /// and re-lays its selection overlays afterward.
     private func render(_ view: DocView) {
+        // A peek is chrome anchored to a position, and the positions are being
+        // rebuilt — an edit reflowed the line it points at, or a relayout moved
+        // the reference out from under it.
+        footnotePeek.hide()
         docView = view
         layoutEngine = EditorLayout(view, theme: renderTheme, viewWidth: viewWidth, cache: &shapeCache,
                                     media: mediaStore)
@@ -685,16 +771,6 @@ public final class LeafTextView: UIView, UITextInput {
         case #selector(selectAll(_:)):                return true
         default: return super.canPerformAction(action, withSender: sender)
         }
-    }
-
-    /// A localized UI string with an English fallback, looked up in the bundle
-    /// this class ships in — the host app's, for a statically linked package. So a
-    /// host can translate the menu (drop a `Localizable.strings` with these keys)
-    /// without the library owning a resource bundle, and the English `value`
-    /// shows otherwise. The AppKit peer carries the same helper and the same keys,
-    /// so one translation covers both menus.
-    private func loc(_ key: String, _ value: String) -> String {
-        NSLocalizedString(key, tableName: nil, bundle: Bundle(for: LeafTextView.self), value: value, comment: "")
     }
 
     public override func copy(_ sender: Any?) {
@@ -981,19 +1057,22 @@ extension LeafTextView: UIGestureRecognizerDelegate {
 // MARK: - Edit menu
 
 extension LeafTextView: UIEditMenuInteractionDelegate {
-    /// Add the link actions to the menu the long press raises, ahead of the
-    /// system's Cut/Copy/Paste. They appear only when the caret stands in a
-    /// link, so an ordinary press gets exactly the menu it always did.
+    /// Add the footnote and link actions to the menu the long press raises, ahead
+    /// of the system's Cut/Copy/Paste. They appear only when the caret stands in
+    /// one, so an ordinary press gets exactly the menu it always did.
     ///
-    /// This is the phone's whole vocabulary for reaching a link now that a tap
+    /// This is the phone's whole vocabulary for reaching either now that a tap
     /// places the caret: no ⌘ to hold, no pointer to hover, and a long press is
     /// the one gesture that means "something other than typing here".
+    ///
+    /// Footnotes lead, and never appear beside a link's entries — the caret is on
+    /// a reference, in a note, in a link, or in none of them.
     public func editMenuInteraction(
         _ interaction: UIEditMenuInteraction,
         menuFor configuration: UIEditMenuConfiguration,
         suggestedActions: [UIMenuElement]
     ) -> UIMenu? {
-        let actions: [UIAction] = doc
+        let actions: [UIAction] = footnoteMenuActions() + doc
             .linkActionsAtCaret(wikilinks: recognizesWikilinks, canEdit: onEditLink != nil)
             .map { action in
                 switch action {
