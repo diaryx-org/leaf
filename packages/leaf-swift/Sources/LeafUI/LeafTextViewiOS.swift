@@ -129,6 +129,10 @@ public final class LeafTextView: UIView, UITextInput {
     /// current destination to seed a field with. See `LeafEditorModel.onEditLink`.
     public var onEditLink: ((String) -> Void)?
 
+    /// Asked what a link points at, so a long press can show it. See
+    /// `LeafEditorModel.onPeekLink`.
+    public var onPeekLink: ((String, @escaping (LinkPeekSource?) -> Void) -> Void)?
+
     /// Whether a bare `[[…]]` counts as a link to follow. Off by default: it is
     /// not Markdown, not Djot, and not something twig parses, so the editor
     /// makes no claim about it unless a host whose documents use the convention
@@ -288,6 +292,9 @@ public final class LeafTextView: UIView, UITextInput {
     @discardableResult
     private func openLinkAtCaret() -> Bool {
         guard let dest = targetAtCaret() else { return false }
+        // A bare `#v2` is a place in this document, so following it is a scroll
+        // rather than a departure — the AppKit peer's rule, and the same one.
+        if let landing = doc.selfLanding(of: dest) { reveal(offset: landing); return true }
         if onOpenLink?(dest) == true { return true }
         guard let url = URL(string: dest) else { return false }
         UIApplication.shared.open(url)
@@ -352,6 +359,39 @@ public final class LeafTextView: UIView, UITextInput {
                           onTarget: { [weak self] in self?.followPeekTarget($0) })
     }
 
+    /// Show what the link under the caret points at, anchored to the caret — the
+    /// phone's answer to the Mac's hover-a-link, reached from the same long-press
+    /// menu that offers "Show Note" for a footnote.
+    ///
+    /// Two sources, as on the Mac: a `#v2` is a place in the document already on
+    /// screen, and anything else is a file only the host can read.
+    private func showLinkPeekAtCaret() {
+        guard let destination = doc.activatableTargetAtCaret(wikilinks: recognizesWikilinks)
+        else { return }
+        if destination.hasPrefix("#") {
+            let locator = String(destination.dropFirst())
+            present(FootnotePeekContent(
+                peeking: locator, of: doc, in: docView, theme: renderTheme))
+            return
+        }
+        let caret = doc.caretOffset()
+        onPeekLink?(destination) { [weak self] fetched in
+            guard let self, let fetched, self.doc.caretOffset() == caret else { return }
+            self.present(FootnotePeekContent(peeking: fetched, theme: self.renderTheme))
+        }
+    }
+
+    /// Put a link's peek on screen at the caret. Nothing in it leads anywhere
+    /// (see `FootnotePeekContent`'s peeking initializer), so unlike the footnote
+    /// peek it needs neither a jump button nor a target handler.
+    private func present(_ content: FootnotePeekContent?) {
+        guard let content, let parent = owningViewController else { return }
+        let rc = doc.posForOffset(off: doc.caretOffset())
+        guard let caret = layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch)) else { return }
+        footnotePeek.show(content, from: caret.insetBy(dx: -6, dy: -2), in: self,
+                          presentedBy: parent, onFollow: nil, onTarget: { _ in })
+    }
+
     /// Answer a tap on something followable inside the note — a link, or a
     /// reference to another footnote.
     ///
@@ -362,6 +402,9 @@ public final class LeafTextView: UIView, UITextInput {
     private func followPeekTarget(_ target: FootnotePeekTarget) {
         switch target.kind {
         case .link(let destination):
+            // A `#v2` in a note names a place in the document the note belongs
+            // to, so it navigates here rather than going out to the host.
+            if let landing = doc.selfLanding(of: destination) { reveal(offset: landing); return }
             if onOpenLink?(destination) == true { return }
             guard let url = URL(string: destination) else { return }
             UIApplication.shared.open(url)
@@ -526,6 +569,15 @@ public final class LeafTextView: UIView, UITextInput {
             scrollCaretToVisible()
         }
         onStateChange?(EditorState(view))
+    }
+
+    /// Put the caret at `offset` and scroll it into sight — how a host lands a
+    /// reader on the place a `#v2` names. The AppKit peer's twin; see it for why
+    /// this scrolls unconditionally where `render` scrolls only on a move.
+    public func reveal(offset: UInt32) {
+        command { $0.caretMoved(to: offset) }
+        lastCaretOffset = offset
+        scrollCaretToVisible()
     }
 
     private func scrollCaretToVisible() {
@@ -1073,9 +1125,14 @@ extension LeafTextView: UIEditMenuInteractionDelegate {
         suggestedActions: [UIMenuElement]
     ) -> UIMenu? {
         let actions: [UIAction] = footnoteMenuActions() + doc
-            .linkActionsAtCaret(wikilinks: recognizesWikilinks, canEdit: onEditLink != nil)
+            .linkActionsAtCaret(wikilinks: recognizesWikilinks, canEdit: onEditLink != nil,
+                                canPeek: onPeekLink != nil)
             .map { action in
                 switch action {
+                case .peek:
+                    return UIAction(title: loc("menu.previewLink", "Preview Link")) { [weak self] _ in
+                        self?.showLinkPeekAtCaret()
+                    }
                 case .open:
                     return UIAction(title: loc("menu.openLink", "Open Link")) { [weak self] _ in
                         self?.openLinkAtCaret()

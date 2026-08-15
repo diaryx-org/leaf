@@ -293,12 +293,12 @@ final class FootnoteTargetTests: XCTestCase {
         let src = "a[^1] b [t](https://x.dev)\n\n[^1]: note\n"
         let d = try doc(src, caret: offset(of: "^1]", in: src))
         XCTAssertNotNil(d.footnoteJumpAtCaret())
-        XCTAssertEqual(d.linkActionsAtCaret(wikilinks: true, canEdit: true), [])
+        XCTAssertEqual(d.linkActionsAtCaret(wikilinks: true, canEdit: true, canPeek: false), [])
 
         _ = d.setSelectionOffsets(anchor: offset(of: "t](", in: src),
                                   focus: offset(of: "t](", in: src))
         XCTAssertNil(d.footnoteJumpAtCaret())
-        XCTAssertEqual(d.linkActionsAtCaret(wikilinks: true, canEdit: true), [.open, .edit, .copy])
+        XCTAssertEqual(d.linkActionsAtCaret(wikilinks: true, canEdit: true, canPeek: false), [.open, .edit, .copy])
     }
 
     /// `caretMoved` collapses the selection: arriving with the note highlighted

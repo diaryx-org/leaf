@@ -18,7 +18,9 @@ mod html;
 pub mod style;
 pub mod wysiwyg;
 
-pub use doc::{DiskState, Doc, FootnoteDef, FootnoteRef, InlineMarks, LineFlow, MarkupMode, View};
+pub use doc::{
+    DiskState, Doc, FootnoteDef, FootnoteRef, InlineMarks, Landing, LineFlow, MarkupMode, View,
+};
 pub use style::{Baseline, Role, Style};
 pub use wysiwyg::{
     BlockClass, Boundary, CodeBlockInfo, ColorScheme, Glyph, MediaInfo, MediaKind, MediaSource,

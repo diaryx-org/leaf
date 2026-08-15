@@ -95,13 +95,13 @@ final class LinkTargetTests: XCTestCase {
     func testNoLinkOffersNoMenuEntries() throws {
         let src = "plain prose, no links"
         let d = try doc(src, caret: 3)
-        XCTAssertEqual(d.linkActionsAtCaret(wikilinks: true, canEdit: true), [])
+        XCTAssertEqual(d.linkActionsAtCaret(wikilinks: true, canEdit: true, canPeek: false), [])
     }
 
     func testParsedLinkOffersOpenEditCopy() throws {
         let src = "see [t](https://x.dev) ok"
         let d = try doc(src, caret: 5)
-        XCTAssertEqual(d.linkActionsAtCaret(wikilinks: false, canEdit: true), [.open, .edit, .copy])
+        XCTAssertEqual(d.linkActionsAtCaret(wikilinks: false, canEdit: true, canPeek: false), [.open, .edit, .copy])
     }
 
     /// Without a host to ask for the new destination there is no way to carry an
@@ -109,7 +109,7 @@ final class LinkTargetTests: XCTestCase {
     func testNoHostEditorHidesEditEntry() throws {
         let src = "see [t](https://x.dev) ok"
         let d = try doc(src, caret: 5)
-        XCTAssertEqual(d.linkActionsAtCaret(wikilinks: false, canEdit: false), [.open, .copy])
+        XCTAssertEqual(d.linkActionsAtCaret(wikilinks: false, canEdit: false, canPeek: false), [.open, .copy])
     }
 
     /// A wikilink can be followed and copied, but it is literal text with no node
@@ -117,14 +117,14 @@ final class LinkTargetTests: XCTestCase {
     func testWikilinkOffersNoEditEntry() throws {
         let src = "see [[notes/a.md]] for more"
         let d = try doc(src, caret: offset(of: "notes", in: src))
-        XCTAssertEqual(d.linkActionsAtCaret(wikilinks: true, canEdit: true), [.open, .copy])
+        XCTAssertEqual(d.linkActionsAtCaret(wikilinks: true, canEdit: true, canPeek: false), [.open, .copy])
     }
 
     /// …and with wikilinks off it is not a link at all, so it offers nothing.
     func testWikilinkOffersNothingWhenTheFlagIsOff() throws {
         let src = "see [[notes/a.md]] for more"
         let d = try doc(src, caret: offset(of: "notes", in: src))
-        XCTAssertEqual(d.linkActionsAtCaret(wikilinks: false, canEdit: true), [])
+        XCTAssertEqual(d.linkActionsAtCaret(wikilinks: false, canEdit: true, canPeek: false), [])
     }
 
     /// An autolink has no separate destination — its text is the URL — but it is
@@ -132,6 +132,6 @@ final class LinkTargetTests: XCTestCase {
     func testAutolinkIsEditable() throws {
         let src = "see <https://x.dev> ok"
         let d = try doc(src, caret: 10)
-        XCTAssertEqual(d.linkActionsAtCaret(wikilinks: false, canEdit: true), [.open, .edit, .copy])
+        XCTAssertEqual(d.linkActionsAtCaret(wikilinks: false, canEdit: true, canPeek: false), [.open, .edit, .copy])
     }
 }

@@ -112,6 +112,11 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// Asked to edit the destination of the link under the caret, with its
     /// current destination to seed a field with. See `LeafEditorModel.onEditLink`.
     public var onEditLink: ((String) -> Void)?
+
+    /// Asked what a link points at, so a hover can show it. See
+    /// `LeafEditorModel.onPeekLink`.
+    public var onPeekLink: ((String, @escaping (LinkPeekSource?) -> Void) -> Void)?
+
     /// Whether a bare `[[…]]` counts as a link to follow. Off by default: it is
     /// not Markdown, not Djot, and not something twig parses, so the editor
     /// makes no claim about it unless a host whose documents use the convention
@@ -639,6 +644,19 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         }
     }
 
+    /// Put the caret at `offset` and scroll it into sight — how a host lands a
+    /// reader on the place a `#v2` names.
+    ///
+    /// Unconditional, unlike the caret-following in `render`: that one scrolls
+    /// only when the caret *moved*, so that a passive reflow doesn't snap the
+    /// reader back. Following the same locator twice moves the caret nowhere,
+    /// and the second time has to work too.
+    public func reveal(offset: UInt32) {
+        command { $0.caretMoved(to: offset) }
+        lastCaretOffset = offset
+        scrollCaretToVisible()
+    }
+
     private func scrollCaretToVisible() {
         if let rect = layoutEngine.caretRect(docView, theme: theme) {
             scrollToVisible(viewRect(rect.insetBy(dx: 0, dy: -theme.lineHeight)))
@@ -710,6 +728,10 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     @discardableResult
     private func openLinkAtCaret() -> Bool {
         guard let dest = targetAtCaret() else { return false }
+        // A bare `#v2` is a place in this document, so following it is a scroll
+        // rather than a departure — the host has nothing to resolve and the
+        // system has nothing to open.
+        if let landing = doc.selfLanding(of: dest) { reveal(offset: landing); return true }
         if onOpenLink?(dest) == true { return true }
         guard let url = URL(string: dest) else { return false }
         NSWorkspace.shared.open(url)
@@ -722,6 +744,16 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     }
 
     @objc private func openLink(_ sender: Any?) { openLinkAtCaret() }
+
+    /// "Preview Link" — the menu's way to the same popover a resting pointer
+    /// raises, for a reader who arrived by right-click or by keyboard rather than
+    /// by hovering.
+    @objc private func previewLink(_ sender: Any?) {
+        let rc = doc.posForOffset(off: doc.caretOffset())
+        guard let caret = layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch)) else { return }
+        peekOffset = doc.caretOffset()
+        showLinkPeek(at: doc.caretOffset(), anchor: caret.insetBy(dx: -6, dy: 0))
+    }
 
     @objc private func editLink(_ sender: Any?) {
         // The parsed destination, not `targetAtCaret()`: a wikilink can be
@@ -855,17 +887,50 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     private func showFootnotePeek(at off: UInt32, row: Int, ch: Int) {
         peekTimer = nil
-        // `docView` is the frame on screen, so the note is drawn from the rows
-        // the page below is already drawing it from — the popover and the
-        // document can't disagree about the same note.
-        guard let content = doc.footnotePeekContent(at: off, in: docView, theme: theme),
-              let caret = layoutEngine.rect(row: row, ch: ch)
-        else { return }
+        guard let caret = layoutEngine.rect(row: row, ch: ch) else { return }
         // A caret rect is a hairline; widened so the popover's arrow points at the
         // reference rather than balancing on its edge.
         let anchor = caret.insetBy(dx: -6, dy: 0)
-        peekAnchor = anchor
-        footnotePeek.show(content, from: viewRect(anchor), in: self)
+        // `docView` is the frame on screen, so the note is drawn from the rows
+        // the page below is already drawing it from — the popover and the
+        // document can't disagree about the same note.
+        if let content = doc.footnotePeekContent(at: off, in: docView, theme: theme) {
+            peekAnchor = anchor
+            footnotePeek.show(content, from: viewRect(anchor), in: self)
+            return
+        }
+        showLinkPeek(at: off, anchor: anchor)
+    }
+
+    /// Show what the link at `off` points *at*, the way a footnote reference
+    /// shows its note.
+    ///
+    /// Two sources, and only the first is leaf's. A `#v2` names a place in this
+    /// document, which is already laid out on screen. Anything else names a file,
+    /// and reading a file is the host's — `onPeekLink` fetches, and the answer
+    /// comes back whenever it comes back.
+    private func showLinkPeek(at off: UInt32, anchor: CGRect) {
+        guard let destination = doc.linkDestinationAt(off: off) else { return }
+        if destination.hasPrefix("#") {
+            let locator = String(destination.dropFirst())
+            guard let content = FootnotePeekContent(
+                peeking: locator, of: doc, in: docView, theme: theme) else { return }
+            peekAnchor = anchor
+            footnotePeek.show(content, from: viewRect(anchor), in: self)
+            return
+        }
+        guard let onPeekLink else { return }
+        onPeekLink(destination) { [weak self] fetched in
+            guard let self, let fetched,
+                  // The pointer may have moved on, or moved on and come back to a
+                  // different link, while the host was reading a file. Answering
+                  // the old question over the new one is worse than not answering.
+                  self.peekOffset == off,
+                  let content = FootnotePeekContent(peeking: fetched, theme: self.theme)
+            else { return }
+            self.peekAnchor = anchor
+            self.footnotePeek.show(content, from: self.viewRect(anchor), in: self)
+        }
     }
 
     /// Take the peek down and forget what it was about. Called for everything
@@ -910,6 +975,9 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         switch target.kind {
         case .link(let destination):
             dismissFootnotePeek()
+            // A `#v2` in a note names a place in the document the note belongs
+            // to, so it navigates here rather than going out to the host.
+            if let landing = doc.selfLanding(of: destination) { reveal(offset: landing); return }
             // The same division the document draws: the host gets first refusal,
             // because a note's `./sibling.md` means what it means everywhere else
             // in this document.
@@ -1193,9 +1261,12 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // A link under the click (the caret was just placed there) leads the menu.
         // Since a plain click no longer follows, this — with ⌘-click — is how a
         // reader gets to the destination at all, so it stays first.
-        let links = doc.linkActionsAtCaret(wikilinks: recognizesWikilinks, canEdit: onEditLink != nil)
+        let links = doc.linkActionsAtCaret(wikilinks: recognizesWikilinks, canEdit: onEditLink != nil,
+                                           canPeek: onPeekLink != nil)
         for action in links {
             switch action {
+            case .peek:
+                menu.addItem(withTitle: loc("menu.previewLink", "Preview Link"), action: #selector(previewLink(_:)), keyEquivalent: "")
             case .open:
                 menu.addItem(withTitle: loc("menu.openLink", "Open Link"), action: #selector(openLink(_:)), keyEquivalent: "")
             case .edit:

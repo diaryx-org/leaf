@@ -107,6 +107,28 @@ pub struct Run {
     pub sel: bool,
 }
 
+/// Where a locator lands — what [`LeafDoc::locate`] answers with, and the FFI
+/// mirror of [`leaf_core::Landing`].
+///
+/// A span rather than an offset because the two things a host does with a
+/// locator want different halves of it: following one puts a caret at `start`,
+/// while peeking at one draws the rows between `start` and `end`. Only the first
+/// can be recovered from an offset alone.
+#[derive(uniffi::Record)]
+pub struct LandingView {
+    /// The first byte of the block the locator names — where a caret goes.
+    pub start: u32,
+    /// One past its last byte, so the pair maps through `pos_for_offset` to the
+    /// rendered rows the block occupies, the way [`FootnoteView`]'s pair does.
+    pub end: u32,
+}
+
+impl From<leaf_core::Landing> for LandingView {
+    fn from(l: leaf_core::Landing) -> Self {
+        LandingView { start: l.start as u32, end: l.end as u32 }
+    }
+}
+
 /// A footnote reference and the note it names — what [`LeafDoc::footnote_at`]
 /// answers with. The FFI mirror of [`leaf_core::FootnoteRef`].
 ///
@@ -1366,6 +1388,22 @@ impl LeafDoc {
     /// not what it means.
     pub fn link_destination_at(&self, off: u32) -> Option<String> {
         self.lock().doc.link_destination_at(off as usize)
+    }
+
+    /// Where the locator `id` lands in this document — the `#v2` half of a
+    /// `chapter.dj#v2`, resolved to the block it names. `None` when nothing here
+    /// answers to it, which is a host's cue to open the document at its top
+    /// rather than refuse to go.
+    ///
+    /// The query that gives a link finer granularity than the file. It reads an
+    /// explicit `{#v1}`, a djot heading's minted id, or (for Markdown, which
+    /// mints none) a heading's own words slugged — see [`leaf_core::Doc::locate`].
+    ///
+    /// Asked of *any* document, not only the open one: a host peeking at a
+    /// citation builds a [`LeafDoc`] over the other file's bytes and asks this,
+    /// which is what lets a hover show the verse instead of the filename.
+    pub fn locate(&self, id: String) -> Option<LandingView> {
+        self.lock().doc.locate(&id).map(LandingView::from)
     }
 
     /// The footnote reference under the caret, resolved to the note it names —

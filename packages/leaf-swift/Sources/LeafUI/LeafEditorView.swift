@@ -61,6 +61,30 @@ public final class LeafEditorModel: ObservableObject {
     /// but there is nothing to repoint — so it gets no "Edit Link…".
     public var onEditLink: ((String) -> Void)?
 
+    /// Asked what a link points *at*, so a reader resting on one can be shown it
+    /// without going there — the cross-document half of the popover a footnote
+    /// reference already raises.
+    ///
+    /// Called with the destination exactly as the document spells it
+    /// (`./chapter.md#v2`, `id:6tzwsxg`, `[[Some Note]]`). Resolve it however you
+    /// resolve it for `onOpenLink`, read the document's *body*, and answer with a
+    /// `LinkPeekSource` — or with nil, for a destination you do not claim, cannot
+    /// reach, or would rather not disclose you fetched. Nil is also the right
+    /// answer for a `https:` URL: the editor will not go to the network, and a
+    /// host that wants to is choosing that for its reader.
+    ///
+    /// Called on the main actor when the pointer has rested on a link (or a
+    /// finger has held it); the completion is safe to call from anywhere and may
+    /// arrive whenever the read finishes — the peek appears if the reader is
+    /// still pointing at the same link, and is dropped if they have moved on. So
+    /// a read that has to touch a synced or evicted file should go and do it,
+    /// rather than blocking here to keep the popover instant.
+    ///
+    /// Leaving this nil is the old behaviour: a link shows nothing on hover.
+    /// Nothing here is followable in either case — see `FootnotePeekContent`'s
+    /// peeking initializer for why a foreign document's links stay inert.
+    public var onPeekLink: ((String, @escaping (LinkPeekSource?) -> Void) -> Void)?
+
     /// Whether a bare `[[target]]` / `[[target|label]]` is a link the reader can
     /// follow. Off by default, because it is a convention rather than a syntax:
     /// neither Markdown nor Djot has it, so twig doesn't parse it and it reaches
@@ -172,6 +196,51 @@ public final class LeafEditorModel: ObservableObject {
 
     public func source() -> String { doc.source() }
     public func markSaved() { textView?.markSaved() }
+
+    /// Land the reader on the place `locator` names — the `#v2` of a
+    /// `chapter.dj#v2`, once the host has opened the document that carries it.
+    /// `false` when this document answers to no such name, which is a host's cue
+    /// to leave the reader at the top rather than pretend the jump worked.
+    ///
+    /// The half of a located link the editor owns. Resolving `chapter.dj` to a
+    /// file is a vault's business and always was; what had no answer until now is
+    /// the rest of the destination, so a citation into a chapter dropped the
+    /// reader at its first verse to hunt for the twentieth.
+    ///
+    /// Safe to call the instant a document is opened, before SwiftUI has made the
+    /// text view — which is exactly when a host calls it, one line after building
+    /// the model. The landing is remembered and applied when the view appears;
+    /// see `pendingLanding`.
+    @discardableResult
+    public func goTo(locator: String) -> Bool {
+        guard let landing = doc.locate(id: locator) else { return false }
+        reveal(offset: landing.start)
+        return true
+    }
+
+    /// Put the caret at `offset` and scroll it into sight.
+    public func reveal(offset: UInt32) {
+        guard let textView else { pendingLanding = offset; return }
+        textView.reveal(offset: offset)
+    }
+
+    /// An offset to land on as soon as there is a view to land in.
+    ///
+    /// A command dropped for want of a text view is normally no loss — nobody
+    /// could have issued it — but this one is issued *by the host*, in the same
+    /// breath as opening the document, and the view it needs is made a run loop
+    /// later. Worse, dropping it silently is invisible: the reader lands at the
+    /// top of the right document, which is precisely what the old behaviour
+    /// looked like. `prefer` solves the same problem for rendering modes.
+    fileprivate var pendingLanding: UInt32?
+
+    /// Take the pending landing, if there is one — called once by the view that
+    /// has just been made. Taken rather than read, so a later relayout doesn't
+    /// yank the reader back to a place they have since scrolled away from.
+    fileprivate func takePendingLanding() -> UInt32? {
+        defer { pendingLanding = nil }
+        return pendingLanding
+    }
 
     // ── formatting commands (mirror leaf-gpui's EditorCommand) ────────────────
 
@@ -370,6 +439,13 @@ public struct LeafEditor: NSViewRepresentable {
         textView.onEditLink = { [weak model] destination in
             model?.onEditLink?(destination)
         }
+        // Read-through as well: a peek handler is wired where the view is
+        // composed, and gating it on being set at construction time would leave
+        // hovers silent for the life of the document.
+        textView.onPeekLink = { [weak model] destination, done in
+            guard let peek = model?.onPeekLink else { return done(nil) }
+            peek(destination, done)
+        }
         // Same read-through, same reason: an app wires its paste handler where
         // the view is composed, after the model was built.
         textView.onPaste = { [weak model] in
@@ -385,6 +461,13 @@ public struct LeafEditor: NSViewRepresentable {
             model?.onOpenMedia?(src)
         }
         model.textView = textView
+        // A locator the host followed before there was anything to scroll. After
+        // the frame lands, not during: the view has no size yet, so a reveal here
+        // would measure the caret against a zero-height viewport and scroll
+        // nowhere.
+        if let landing = model.takePendingLanding() {
+            DispatchQueue.main.async { [weak textView] in textView?.reveal(offset: landing) }
+        }
         return textView
     }
 }
@@ -511,6 +594,13 @@ public struct LeafEditor: UIViewRepresentable {
         textView.onEditLink = { [weak model] destination in
             model?.onEditLink?(destination)
         }
+        // Read-through as well: a peek handler is wired where the view is
+        // composed, and gating it on being set at construction time would leave
+        // hovers silent for the life of the document.
+        textView.onPeekLink = { [weak model] destination, done in
+            guard let peek = model?.onPeekLink else { return done(nil) }
+            peek(destination, done)
+        }
         // Same read-through, same reason: an app wires its paste handler where
         // the view is composed, after the model was built.
         textView.onPaste = { [weak model] in
@@ -526,6 +616,11 @@ public struct LeafEditor: UIViewRepresentable {
             model?.onOpenMedia?(src)
         }
         model.textView = textView
+        // A locator the host followed before there was anything to scroll — see
+        // the AppKit peer for why this waits a turn.
+        if let landing = model.takePendingLanding() {
+            DispatchQueue.main.async { [weak textView] in textView?.reveal(offset: landing) }
+        }
         return textView
     }
 

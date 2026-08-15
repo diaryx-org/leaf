@@ -374,6 +374,23 @@ pub struct FootnoteDef {
     pub offset: Option<usize>,
 }
 
+/// Where a locator lands — the answer to [`Doc::locate`].
+///
+/// A locator (the `v2` of a `chapter.dj#v2`) names a *place* rather than a
+/// document, and a place is a span rather than a point: a reader following one
+/// wants the caret at its first byte, and a reader merely *peeking* at one wants
+/// the block it covers drawn. Both are served by carrying the whole span, and
+/// only one of the two can be recovered from an offset alone.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Landing {
+    /// The first byte of the block the locator names — where a caret goes.
+    pub start: usize,
+    /// One past its last byte, so a frontend can map the pair through
+    /// [`Doc::pos_for_offset`] to the rendered rows the block occupies and draw
+    /// those, the way a footnote peek draws a note ([`FootnoteRef::end`]).
+    pub end: usize,
+}
+
 pub struct Doc {
     editor: Editor,
     pub format: Format,
@@ -3581,6 +3598,94 @@ impl Doc {
             .and_then(|n| n.destination.or(n.text))
     }
 
+    /// Where the locator `id` lands in this document — the `#v2` half of a
+    /// `chapter.dj#v2`, resolved to the block it names. `None` when nothing here
+    /// answers to it.
+    ///
+    /// The other end of a link, and the reason this exists: without it a
+    /// destination has only file granularity, so following a citation into a
+    /// chapter drops the reader at the top of it to hunt for the verse. Which is
+    /// also why it is a *document* query rather than a caret one — the document
+    /// being asked is usually not the one the reader is in.
+    ///
+    /// Three readings, tried in order, because the same `#some-heading` is
+    /// written three ways across the formats leaf opens:
+    ///
+    /// 1. **A declared id**, exactly as written: djot's `{#v1}` on a block, and
+    ///    the auto-ids djot mints for its headings. The only exact answer, so it
+    ///    goes first — a document that says `{#v1}` has settled the question.
+    /// 2. **A declared id, slugged.** djot spells a heading's auto-id
+    ///    `Some-Heading-Here`; nearly every tool that *writes* a link to one
+    ///    spells it `#some-heading-here`. Comparing slugs is what lets a link
+    ///    authored anywhere land on a djot heading.
+    /// 3. **A heading's text, slugged.** Markdown has no ids at all — twig mints
+    ///    none and `{#custom}` is literal text in a Markdown heading — so for
+    ///    the format most vaults are written in, the heading's own words are the
+    ///    only thing a fragment can name. This is the rule every Markdown
+    ///    renderer already follows, which is what makes `#a-heading` mean in
+    ///    diaryx what it means on the web.
+    ///
+    /// Ties go to the earliest match, then to the widest: a duplicated id is the
+    /// document's mistake and the first one is the answer every anchor
+    /// implementation gives, while preferring the wider span picks the section
+    /// over the heading that opens it — more for a peek to show, same place to
+    /// land.
+    pub fn locate(&mut self, id: &str) -> Option<Landing> {
+        let id = id.trim();
+        if id.is_empty() {
+            return None;
+        }
+        let nodes = self.nodes();
+
+        // Earliest wins, then widest. `Reverse` on the end because `min_by_key`
+        // is picking, among nodes that start together, the one that ends last.
+        let pick = |matches: &mut dyn Iterator<Item = &FlatNode>| {
+            matches
+                .min_by_key(|n| (n.span.start, std::cmp::Reverse(n.span.end)))
+                .map(|n| Landing { start: n.span.start, end: n.span.end })
+        };
+
+        if let Some(landing) = pick(&mut nodes.iter().filter(|n| declared_id(n) == Some(id))) {
+            return Some(landing);
+        }
+        let want = slug(id);
+        if want.is_empty() {
+            return None;
+        }
+        if let Some(landing) =
+            pick(&mut nodes.iter().filter(|n| declared_id(n).map(slug).as_deref() == Some(&*want)))
+        {
+            return Some(landing);
+        }
+
+        // A heading by its words. Its span is one line, so the end comes from
+        // where the *section* it opens gives out — the next heading that is not
+        // under it, or the end of the document. A Markdown heading has no
+        // section node to ask (twig only builds those for djot), and a peek that
+        // showed the heading alone would answer "what does that say" with the
+        // title of the thing it says.
+        let heading = nodes
+            .iter()
+            .filter(|n| n.kind == Kind::Heading)
+            .filter(|n| {
+                n.content_span
+                    .clone()
+                    .and_then(|s| self.source.get(s))
+                    .is_some_and(|text| slug(text) == want)
+            })
+            .min_by_key(|n| n.span.start)?;
+        let level = heading.level.unwrap_or(u32::MAX);
+        let end = nodes
+            .iter()
+            .filter(|n| n.kind == Kind::Heading)
+            .filter(|n| n.span.start > heading.span.start)
+            .filter(|n| n.level.unwrap_or(u32::MAX) <= level)
+            .map(|n| n.span.start)
+            .min()
+            .unwrap_or(self.source.len());
+        Some(Landing { start: heading.span.start, end })
+    }
+
     /// The footnote reference under the caret, resolved to the note it names.
     /// [`footnote_at`](Self::footnote_at) at the caret's offset.
     pub fn footnote_at_caret(&mut self) -> Option<FootnoteRef> {
@@ -4886,6 +4991,42 @@ fn inline_content_span(n: &FlatNode, source: &str) -> Option<std::ops::Range<usi
         }
         _ => None,
     }
+}
+
+/// The `id` a node declares, or `None` for one that declares none — the
+/// attribute djot writes for a `{#v1}` and mints for a heading.
+///
+/// A bare attribute (`{#v1 hidden}`'s `hidden`) has no value, and a bare `id`
+/// names nothing, so it reads as absent rather than as the empty string.
+fn declared_id(n: &FlatNode) -> Option<&str> {
+    n.attrs.iter().find(|(k, _)| k == "id")?.1.as_deref()
+}
+
+/// A heading's words reduced to the form a link fragment spells them in:
+/// lowercase, runs of anything else collapsed to a single `-`, with none left
+/// dangling at either end. `## Some Heading Here` → `some-heading-here`.
+///
+/// The rule every Markdown renderer follows, and applied to djot's own auto-ids
+/// too so that `#some-heading-here` and `#Some-Heading-Here` are one question.
+/// Unicode-aware (`is_alphanumeric`, not an ASCII test), because a heading in
+/// any other language is still a heading someone will link to. Underscores
+/// survive for the same reason they do on the web: they are word characters
+/// wherever identifiers are written.
+fn slug(text: &str) -> String {
+    let mut out = String::new();
+    let mut pending = false;
+    for c in text.chars() {
+        if c.is_alphanumeric() || c == '_' {
+            if pending && !out.is_empty() {
+                out.push('-');
+            }
+            pending = false;
+            out.extend(c.to_lowercase());
+        } else {
+            pending = true;
+        }
+    }
+    out
 }
 
 fn is_block_container(kind: &Kind) -> bool {
@@ -7335,6 +7476,80 @@ mod tests {
         assert_eq!(a.link_destination_at_caret().as_deref(), Some("https://x.dev"));
         a.caret = 21;
         assert_eq!(a.link_destination_at_caret(), None);
+    }
+
+    #[test]
+    fn locate_finds_the_block_a_declared_id_names() {
+        // The Book of Mormon shape: one document per chapter, one `{#v…}` per
+        // verse. The locator has to land on the *verse*, which is the whole
+        // reason a link carries one.
+        let src = "{#v1}\nI, Nephi, having been born of goodly parents.\n\n\
+                   {#v2}\nYea, I make a record in the language of my father.\n";
+        let mut d = Doc::from_source(src.to_string(), Format::Djot).unwrap();
+        let v2 = d.locate("v2").expect("the document declares `{#v2}`");
+        assert_eq!(
+            d.source[v2.start..v2.end].trim_end(),
+            "Yea, I make a record in the language of my father."
+        );
+        // The attribute line is not part of it: `start` is a place to put a
+        // caret, and `{#v2}` is markup the caret has no business landing in.
+        assert!(d.source[..v2.start].ends_with("{#v2}\n"));
+        assert_eq!(d.locate("v99"), None);
+    }
+
+    #[test]
+    fn locate_reads_a_heading_by_its_words_when_the_format_mints_no_ids() {
+        // Markdown has no ids at all — twig mints none, and `{#custom}` in a
+        // Markdown heading is literal text. So `#the-second-part` can only be
+        // the heading's own words, which is the rule every Markdown renderer
+        // already follows and therefore the one a link was authored against.
+        let src = "# Title\n\nintro\n\n## The Second Part\n\nbody\n\n## Third\n\nmore\n";
+        let mut d = doc_with("locate_md", src);
+        let hit = d.locate("the-second-part").expect("the heading's slug");
+        assert!(d.source[hit.start..].starts_with("## The Second Part"));
+        // Bounded by the next heading that isn't under it, so a peek shows the
+        // section rather than only its title.
+        assert_eq!(&d.source[hit.start..hit.end], "## The Second Part\n\nbody\n\n");
+
+        // A subsection does not end its parent: `# Title` runs to `## Third`'s
+        // sibling only because there is no other `#`, so it covers the lot.
+        let title = d.locate("title").expect("the top heading");
+        assert_eq!(title.end, d.source.len());
+    }
+
+    #[test]
+    fn locate_reads_a_djot_auto_id_however_the_link_spelled_it() {
+        // djot mints `Some-Heading-Here`; a link to it is written
+        // `#some-heading-here` by nearly everything that writes links. Both
+        // spellings are one question.
+        let src = "## Some Heading Here\n\nbody\n";
+        let mut d = Doc::from_source(src.to_string(), Format::Djot).unwrap();
+        let exact = d.locate("Some-Heading-Here").expect("djot's own spelling");
+        let slugged = d.locate("some-heading-here").expect("the link's spelling");
+        assert_eq!(exact, slugged);
+        // The section, not the heading line — there is more to show than a title.
+        assert_eq!(&d.source[exact.start..exact.end], src);
+    }
+
+    #[test]
+    fn locate_ignores_an_empty_locator_and_one_that_slugs_to_nothing() {
+        let mut d = doc_with("locate_empty", "# Title\n\nbody\n");
+        assert_eq!(d.locate(""), None);
+        assert_eq!(d.locate("   "), None);
+        // All punctuation: it names nothing, and must not be read as "match the
+        // first heading whose slug is also empty".
+        assert_eq!(d.locate("!!!"), None);
+    }
+
+    #[test]
+    fn locate_gives_a_duplicated_id_to_the_first_block_that_claims_it() {
+        // The document's mistake, and the answer every other anchor
+        // implementation gives — the alternative is for a link to mean whichever
+        // of the two a walk happened to reach first.
+        let src = "{#dup}\nfirst.\n\n{#dup}\nsecond.\n";
+        let mut d = Doc::from_source(src.to_string(), Format::Djot).unwrap();
+        let hit = d.locate("dup").expect("the first `{#dup}`");
+        assert_eq!(d.source[hit.start..hit.end].trim_end(), "first.");
     }
 
     #[test]

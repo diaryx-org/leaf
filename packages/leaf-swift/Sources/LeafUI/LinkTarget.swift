@@ -18,6 +18,11 @@ import LeafFFI
 /// menu and the UIKit edit menu answer the same question — what can I do with the
 /// link under the caret — and two copies of that answer would drift.
 enum LinkAction {
+    /// Show what the destination points at, without going there — the link's
+    /// answer to a footnote's "Show Note". Offered first, because "what does
+    /// that say" is asked far more often than "take me there", and it is the
+    /// only one of these a reader can undo by looking away.
+    case peek
     /// Leave for the destination. Offered for anything activatable, wikilinks
     /// included.
     case open
@@ -39,6 +44,23 @@ extension LeafDoc {
         return wikilinks ? wikilinkAtCaret() : nil
     }
 
+    /// Where `destination` lands *in this document*, when it names a place in it
+    /// rather than somewhere to leave for — the offset a bare `#v2` sends the
+    /// caret to. Nil for every other destination, including a `#v2` this
+    /// document has no answer for.
+    ///
+    /// Handled before the host is asked, for the reason a footnote reference is:
+    /// a same-document reference is a move within the page, and there is nothing
+    /// in it for a vault to resolve or a browser to open. It is also the one link
+    /// spelling that used to do *nothing at all* — not opened, not claimed, not
+    /// reported.
+    ///
+    /// See `landing(for:)` for why both spellings of the fragment are tried.
+    func selfLanding(of destination: String) -> UInt32? {
+        guard destination.hasPrefix("#") else { return nil }
+        return landing(for: String(destination.dropFirst()))?.start
+    }
+
     /// The link entries a menu should show for the caret's position — empty when
     /// the caret stands in no link at all, which is what tells a caller to show
     /// no link section rather than an empty one.
@@ -46,10 +68,19 @@ extension LeafDoc {
     /// `canEdit` is the host's answer to "can I ask for a new destination"
     /// (`LeafEditorModel.onEditLink` being set). Without it there is no way to
     /// carry out an edit, so no menu offers one.
-    func linkActionsAtCaret(wikilinks: Bool, canEdit: Bool) -> [LinkAction] {
-        guard activatableTargetAtCaret(wikilinks: wikilinks) != nil else { return [] }
-        guard canEdit, linkDestinationAtCaret() != nil else { return [.open, .copy] }
-        return [.open, .edit, .copy]
+    ///
+    /// `canPeek` is the same question for the other host hook
+    /// (`LeafEditorModel.onPeekLink`) — with one exception the view doesn't have
+    /// to be told about: a `#v2` names a place in the document already on
+    /// screen, so the editor can show that one on its own.
+    func linkActionsAtCaret(wikilinks: Bool, canEdit: Bool, canPeek: Bool) -> [LinkAction] {
+        guard let target = activatableTargetAtCaret(wikilinks: wikilinks) else { return [] }
+        var actions: [LinkAction] = []
+        if canPeek || target.hasPrefix("#") { actions.append(.peek) }
+        actions.append(.open)
+        if canEdit, linkDestinationAtCaret() != nil { actions.append(.edit) }
+        actions.append(.copy)
+        return actions
     }
 
     /// The whole `[[…]]` construct the caret stands inside, brackets and all
