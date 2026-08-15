@@ -1096,7 +1096,7 @@ pub fn build_cached(
         }
         let sep_rows = b.rows.len() - before_sep;
         let after_sep = b.rows.len();
-        let bytes = source.as_bytes().get(block.span.clone()).unwrap_or(&[]);
+        let bytes = block_bytes(source, &block.span);
         let hash = block_hash(bytes);
         // How this block meets the reveal line, if at all — part of its cache
         // key, since the same bytes render differently on the caret's line.
@@ -1577,6 +1577,31 @@ impl BlockCache {
             });
         }
     }
+}
+
+/// The source bytes a top-level block covers — the block cache's key material.
+///
+/// Clamped to the source rather than sliced by the span as twig gives it,
+/// because that span can end *past* the last byte: the final block of a document
+/// with no trailing newline is closed on the virtual newline the parser supplies
+/// at EOF, so its `span.end` is `source.len() + 1`. Slicing by such a range
+/// yields `None`, and the obvious `unwrap_or(&[])` reads that as *this block has
+/// no bytes* — the wrong answer twice over.
+///
+/// Two blocks whose spans both overrun then key alike, and the second is served
+/// the first one's rows. That is not hypothetical: a footnote definition is a
+/// root beside `doc` merged back into the top level by [`top_blocks`], while the
+/// `section` above it spans the definition's bytes too, so both end at EOF —
+/// and a document ending in `[^note]: …` renders that definition as a second
+/// copy of the heading. Even alone, a block that keeps hashing empty as the user
+/// types in it is served the stale rows built before the edit.
+///
+/// Clamping hands back the bytes the block really covers, which tells both cases
+/// apart, and costs nothing for a span that was in range to begin with.
+fn block_bytes<'a>(source: &'a str, span: &Range<usize>) -> &'a [u8] {
+    let bytes = source.as_bytes();
+    let start = span.start.min(bytes.len());
+    &bytes[start..span.end.clamp(start, bytes.len())]
 }
 
 /// A fast, allocation-free content hash (FNV-1a) for a block's bytes. Weak by
@@ -4325,6 +4350,13 @@ mod tests {
             // one could disagree about what the top-level blocks even are.
             "A claim[^1] and another[^src].\n\n[^1]: First note.\n\n[^src]: Second.\n\ntail\n",
             "note[^a]\n\n[^a]: body **bold**\n    wrapped on\n    three lines\n\nafter\n",
+            // No trailing newline. twig closes the document's last block on the
+            // virtual newline it supplies at EOF, so that block's `span.end` is
+            // `source.len() + 1` — a range that slices no bytes at all. Keying
+            // the block cache off such a slice made every last block hash alike;
+            // see [`block_bytes`].
+            "# Title\n\nThe quick brown fox.\n\nA tail with no newline",
+            "A claim[^1] and another[^src].\n\n[^1]: First note.\n[^src]: Second, ending the file.",
         ];
         for wrap in [None, Some(80usize), Some(20)] {
             for src in docs {
@@ -4356,6 +4388,57 @@ mod tests {
                 assert_maps_eq(&plain3, &cached3, &format!("after delete {ctx}"));
             }
         }
+    }
+
+    /// A document that does not end in a newline is the one place twig hands
+    /// leaf a top-level span that addresses no source: the last block is closed
+    /// on the virtual newline the parser supplies at EOF, so its `span.end` is
+    /// `source.len() + 1`. The block cache keys on the bytes under that span, and
+    /// reading the out-of-range slice as *no bytes* broke it two ways at once —
+    /// [`block_bytes`] has the full account. Both ways are checked here, because
+    /// they fail independently.
+    #[test]
+    fn a_block_running_past_the_last_byte_still_keys_the_cache_by_its_own_bytes() {
+        // One: two overrunning blocks collide. A footnote definition is a root
+        // beside `doc` that [`top_blocks`] merges into the top level, while the
+        // `section` above it spans the definition's bytes too — so when the
+        // definition ends the file, both blocks end past it. The second was
+        // served the first's rows, and the definition rendered as a copy of the
+        // heading.
+        let src = "A claim[^1] worth checking.\n\n# A heading with a reference[^1] in it\n\n[^1]: The first note.\n[^note]: A note with a word for a label.";
+        let mut ed = Editor::new_str(src, Format::Djot).unwrap();
+        let (plain, cached) = render_both(&mut ed, src, Some(80), &mut BlockCache::default());
+        assert_maps_eq(&plain, &cached, "a definition ending the file");
+        let text = rendered(&cached);
+        assert!(
+            text.ends_with("[note] A note with a word for a label."),
+            "the last definition should render itself: {text:?}"
+        );
+        assert_eq!(
+            text.matches("A heading with a reference").count(),
+            1,
+            "the heading should render exactly once: {text:?}"
+        );
+
+        // Two: one overrunning block goes stale. Its bytes are its cache key, so
+        // a block that keeps hashing the same however it is edited is served the
+        // rows built before the edit — the whole last line frozen as the user
+        // types in it.
+        let mut cache = BlockCache::default();
+        let first = "first para\n\n# A heading\n\nlast para with no newline";
+        let mut ed = Editor::new_str(first, Format::Djot).unwrap();
+        let (_, warm) = render_both(&mut ed, first, Some(80), &mut cache);
+        assert!(rendered(&warm).ends_with("last para with no newline"));
+
+        let second = "first para\n\n# A heading\n\nDIFFERENT text without a newline";
+        let mut ed = Editor::new_str(second, Format::Djot).unwrap();
+        let (plain, cached) = render_both(&mut ed, second, Some(80), &mut cache);
+        assert_maps_eq(&plain, &cached, "edited last block, warm cache");
+        let text = rendered(&cached);
+        assert!(
+            text.ends_with("DIFFERENT text without a newline"),
+            "the warm cache served the pre-edit rows: {text:?}"
+        );
     }
 
     #[test]
