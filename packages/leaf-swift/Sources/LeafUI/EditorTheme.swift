@@ -47,6 +47,23 @@ public struct EditorTheme {
     /// interpolate from `lineRatio` at body size down to this at the top of the
     /// ramp. See `lineRatio(forHeadingScale:)`.
     public var headingLineRatio: CGFloat
+    /// How much smaller a superscript or subscript is set than the text it rides
+    /// on, as a fraction of that text's size. Sized off the *run's* size rather
+    /// than the body's, so a footnote reference in a heading stays in proportion
+    /// to the heading.
+    public var baselineScale: CGFloat
+    /// How far a superscript is raised, as a fraction of the run's size. A
+    /// subscript is lowered by `baselineSubScale` of the same.
+    ///
+    /// Both are deliberately modest: a row's height is the theme's, not the
+    /// measured glyphs' (see `rowHeight(for:)`), so a raised glyph has only the
+    /// line box's leading to grow into and a bold shift would clip against the
+    /// row above.
+    public var baselineSuperShift: CGFloat
+    /// How far a subscript is lowered, as a fraction of the run's size. Smaller
+    /// than `baselineSuperShift` because a descender has less room under the
+    /// baseline than an ascender has above it.
+    public var baselineSubShift: CGFloat
     /// The widest the text column may run, **in characters of the body font** —
     /// the classic typographic "measure". Nil fills whatever `padding` leaves.
     ///
@@ -112,6 +129,9 @@ public struct EditorTheme {
         headingGapScale: CGFloat = 1.8,
         headingScale: [CGFloat] = [1.625, 1.375, 1.1875, 1.0625, 1.0, 0.9375],
         headingLineRatio: CGFloat = 1.2,
+        baselineScale: CGFloat = 0.72,
+        baselineSuperShift: CGFloat = 0.34,
+        baselineSubShift: CGFloat = 0.16,
         measure: CGFloat? = 68,
         padding: LeafInsets = LeafInsets(top: 12, left: 16, bottom: 12, right: 16),
         textColor: LeafColor = Palette.label,
@@ -145,6 +165,9 @@ public struct EditorTheme {
         self.headingGapScale = headingGapScale
         self.headingScale = headingScale
         self.headingLineRatio = headingLineRatio
+        self.baselineScale = baselineScale
+        self.baselineSuperShift = baselineSuperShift
+        self.baselineSubShift = baselineSubShift
         self.measure = measure
         self.padding = padding
         self.textColor = textColor
@@ -187,6 +210,11 @@ public struct EditorTheme {
             || headingGapScale != other.headingGapScale
             || headingScale != other.headingScale
             || headingLineRatio != other.headingLineRatio
+            // A raised run is set at its own size, so these change how wide it
+            // shapes — and therefore where the line it sits on wraps.
+            || baselineScale != other.baselineScale
+            || baselineSuperShift != other.baselineSuperShift
+            || baselineSubShift != other.baselineSubShift
             || measure != other.measure
             || padding != other.padding
             // The quote gutter is stretched to `quoteIndent` at shaping time, so

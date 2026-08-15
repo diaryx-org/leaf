@@ -88,10 +88,26 @@ enum AttributedRow {
         let bold = run.bold || headingRow
         let isCode = run.role == "code"
 
+        // A raised or lowered run — a footnote reference's `[1]`, an author's
+        // `^x^` — is set smaller and shifted off the baseline. Both are measured
+        // against the size the run would otherwise have taken, so a reference in
+        // a heading scales with the heading rather than with the body.
+        //
+        // `.baselineOffset` shifts the glyphs without touching the string, so the
+        // run's UTF-16 indices still line up 1:1 with core's `caret_ch` — the
+        // whole file's contract. Core Text measures the smaller font's advances,
+        // so hit-testing and the caret rect follow on their own.
+        let runSize = size * (run.sup || run.sub ? theme.baselineScale : 1)
+
         var attrs: [NSAttributedString.Key: Any] = [:]
         attrs[.font] = isCode
-            ? theme.monospaceFont(size: size, bold: bold, italic: run.italic)
-            : theme.proportionalFont(size: size, bold: bold, italic: run.italic)
+            ? theme.monospaceFont(size: runSize, bold: bold, italic: run.italic)
+            : theme.proportionalFont(size: runSize, bold: bold, italic: run.italic)
+        if run.sup {
+            attrs[.baselineOffset] = runSize * theme.baselineSuperShift
+        } else if run.sub {
+            attrs[.baselineOffset] = -runSize * theme.baselineSubShift
+        }
 
         // Foreground colour by role. Headings/body share the text colour — the
         // hierarchy is size + weight, never colour.

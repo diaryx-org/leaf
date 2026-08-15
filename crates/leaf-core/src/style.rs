@@ -61,6 +61,28 @@ pub enum Role {
     Image,
 }
 
+/// Which line a glyph sits on relative to the text around it.
+///
+/// Not a [`Role`], because a raised glyph keeps whatever it already was — the
+/// `1` of a footnote reference is still a link, an author's `^2^` inside a
+/// heading is still heading text. And not one of [`Style`]'s `bool` flags,
+/// because unlike bold-and-italic these do not compose: a glyph is raised, or
+/// lowered, or neither, and two flags would let a caller ask for both.
+///
+/// A frontend that ignores this draws every glyph on the normal baseline, which
+/// is what every frontend did before the variant existed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Baseline {
+    /// The ordinary text baseline.
+    #[default]
+    Normal,
+    /// Raised and typically drawn smaller — an author's `^x^`, and the label of
+    /// a footnote reference.
+    Super,
+    /// Lowered and typically drawn smaller — an author's `~x~`.
+    Sub,
+}
+
 /// A glyph's style: a typographic [`Role`] plus the compositional emphasis flags
 /// the author wrote. Deliberately *no* color — that is a frontend's call, keyed
 /// on the [`Role`]. Builder methods (`.bold`, `.italic`, …) mirror the shape of
@@ -74,6 +96,8 @@ pub struct Style {
     pub strikethrough: bool,
     /// The typographic role — [`Role::Body`] for ordinary text.
     pub role: Role,
+    /// Which line the glyph sits on — [`Baseline::Normal`] for ordinary text.
+    pub baseline: Baseline,
 }
 
 impl Style {
@@ -99,6 +123,11 @@ impl Style {
 
     pub const fn role(mut self, r: Role) -> Self {
         self.role = r;
+        self
+    }
+
+    pub const fn baseline(mut self, b: Baseline) -> Self {
+        self.baseline = b;
         self
     }
 }

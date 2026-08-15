@@ -41,7 +41,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use leaf_core::style::{Role, Style as LStyle};
+use leaf_core::style::{Baseline, Role, Style as LStyle};
 use leaf_core::wysiwyg::text_width;
 use leaf_core::{
     Alignment, BlockKind, ColorScheme, Doc, Format, InlineKind, LineFlow as CoreLineFlow,
@@ -77,9 +77,45 @@ pub struct Run {
     pub italic: bool,
     pub underline: bool,
     pub strike: bool,
+    /// Raised off the baseline and drawn smaller — a footnote reference's `[1]`,
+    /// or an author's `^x^`. Mutually exclusive with [`sub`](Self::sub); core's
+    /// `Baseline` is one value, and these are its two non-default cases flattened
+    /// to the flag shape the rest of this record is spelled in.
+    pub sup: bool,
+    /// Lowered off the baseline and drawn smaller — an author's `~x~`.
+    pub sub: bool,
     /// Whether this run lies inside the active selection — so the renderer can
     /// paint a selection background without re-deriving it from offsets.
     pub sel: bool,
+}
+
+/// A footnote reference and the note it names — what
+/// [`LeafDoc::footnote_at_caret`] answers with. The FFI mirror of
+/// [`leaf_core::FootnoteRef`].
+///
+/// A reference whose definition the document is missing still comes back, with
+/// its `label` and no `text`: that a `[^99]` names nothing is a thing to tell
+/// the reader, and it is not the same as the caret standing on no reference at
+/// all (which is `None`).
+#[derive(uniffi::Record)]
+pub struct FootnoteView {
+    /// The reference's label — the `1` of `[^1]`, without the `^` or brackets.
+    pub label: String,
+    /// The note's body as source text, or `None` when nothing defines it.
+    pub text: Option<String>,
+    /// The byte offset the definition starts at, for a "go to note" that moves
+    /// the caret there. `None` alongside a `None` `text`.
+    pub offset: Option<u32>,
+}
+
+impl From<leaf_core::FootnoteRef> for FootnoteView {
+    fn from(f: leaf_core::FootnoteRef) -> Self {
+        FootnoteView {
+            label: f.label,
+            text: f.text,
+            offset: f.offset.map(|o| o as u32),
+        }
+    }
 }
 
 /// One visual line: its styled runs plus the row-level flags a frontend draws
@@ -1269,6 +1305,15 @@ impl LeafDoc {
         self.lock().doc.link_destination_at_caret()
     }
 
+    /// The footnote reference under the caret, resolved to the note it names —
+    /// so a frontend can show the note when a reader activates a `[1]`, instead
+    /// of the nothing a reference click used to do. `None` when the caret isn't
+    /// on a reference; see [`FootnoteView`] for the reference that resolved to
+    /// no definition.
+    pub fn footnote_at_caret(&self) -> Option<FootnoteView> {
+        self.lock().doc.footnote_at_caret().map(FootnoteView::from)
+    }
+
     pub fn undo(&self) -> DocView {
         let mut g = self.lock();
         g.doc.undo();
@@ -1810,6 +1855,8 @@ fn make_run(text: String, style: LStyle, sel: bool) -> Run {
         italic: style.italic,
         underline: style.underline,
         strike: style.strikethrough,
+        sup: style.baseline == Baseline::Super,
+        sub: style.baseline == Baseline::Sub,
         sel,
     }
 }
@@ -1820,6 +1867,33 @@ mod tests {
 
     fn doc(src: &str) -> Arc<LeafDoc> {
         LeafDoc::new(src.to_string(), "markdown".to_string()).unwrap()
+    }
+
+    #[test]
+    fn a_footnote_definition_ending_the_file_is_itself_not_a_copy() {
+        // No trailing newline: twig closes the last block on the virtual newline
+        // it supplies at EOF, so the block's `span.end` is one past the source.
+        // The definition and the `section` whose bytes contain it then both
+        // overran, both keyed the block cache as *empty*, and the definition was
+        // served the section's rows — this rendered the heading a second time.
+        let src = "A claim[^1] worth checking.\n\n# A heading with a reference[^1] in it\n\n[^1]: The first note.\n[^note]: A note with a word for a label.";
+        let d = LeafDoc::new(src.to_string(), "djot".to_string()).unwrap();
+        let text: Vec<String> = d
+            .view()
+            .rows
+            .iter()
+            .map(|r| r.runs.iter().map(|x| x.text.as_str()).collect())
+            .collect();
+        assert_eq!(
+            text.last().map(String::as_str),
+            Some("[note] A note with a word for a label."),
+            "the last definition should render itself: {text:?}"
+        );
+        assert_eq!(
+            text.iter().filter(|t| t.contains("A heading with a reference")).count(),
+            1,
+            "the heading should render exactly once: {text:?}"
+        );
     }
 
     #[test]
@@ -2114,6 +2188,37 @@ mod tests {
         assert_eq!(d.link_destination_at_caret().as_deref(), Some("https://x.dev"));
         d.set_selection_offsets(0, 0); // caret on plain text
         assert_eq!(d.link_destination_at_caret(), None);
+    }
+
+    #[test]
+    fn footnote_at_caret_crosses_with_its_note_and_its_offset() {
+        let d = doc("A claim[^1] and more.\n\n[^1]: the note\n");
+        d.set_selection_offsets(9, 9); // caret on the reference's label
+        let f = d.footnote_at_caret().expect("the caret stands in a reference");
+        assert_eq!(f.label, "1");
+        assert_eq!(f.text.as_deref(), Some("the note"));
+        assert_eq!(f.offset, Some(23));
+
+        d.set_selection_offsets(0, 0); // caret on plain text
+        assert!(d.footnote_at_caret().is_none());
+    }
+
+    #[test]
+    fn a_footnote_reference_crosses_the_ffi_raised() {
+        // The whole point of the `sup` flag: without it a reference reaches
+        // Swift as a run indistinguishable from a hyperlink's, which is why it
+        // used to draw at body size.
+        let d = doc("A claim[^1] and more.\n");
+        let view = d.view();
+        let runs: Vec<&Run> = view.rows.iter().flat_map(|r| &r.runs).collect();
+        let chip = runs.iter().find(|r| r.text.contains('1')).expect("the reference's chip");
+        assert!(chip.sup, "the reference should cross raised");
+        assert!(!chip.sub);
+        assert_eq!(chip.role, "link", "and still carrying the role every frontend paints");
+        // The prose it interrupts is a run of its own, on the normal baseline —
+        // which is what proves the flag splits runs rather than bleeding.
+        let prose = runs.iter().find(|r| r.text.contains("claim")).expect("the prose");
+        assert!(!prose.sup && !prose.sub);
     }
 
     #[test]

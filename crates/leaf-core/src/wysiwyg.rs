@@ -28,7 +28,7 @@ use twig::{Alignment, ContainerOrigin, DirectiveForm, Editor, FlatNode, Kind, Qu
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::style::{Role, Style};
+use crate::style::{Baseline, Role, Style};
 
 /// One rendered character plus the source byte offset it originates from.
 /// Synthetic glyphs (a list bullet, a quote gutter) point at their block's
@@ -1738,15 +1738,7 @@ fn top_level(nodes: &[FlatNode], doc: usize) -> Vec<usize> {
 /// prepares their input.
 pub(crate) fn top_blocks(editor: &mut Editor) -> Vec<QueryMatch> {
     let mut top = editor.child_spans(None).unwrap_or_default();
-    let notes: Vec<QueryMatch> = match editor.document() {
-        Ok(mut doc) => doc
-            .definitions()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|m| m.kind == Kind::Footnote)
-            .collect(),
-        Err(_) => return top,
-    };
+    let notes = footnote_definitions(editor);
     if notes.is_empty() {
         return top;
     }
@@ -1757,14 +1749,66 @@ pub(crate) fn top_blocks(editor: &mut Editor) -> Vec<QueryMatch> {
     top
 }
 
+/// Every `[^label]: …` definition in the document, in whatever order twig
+/// reports them.
+///
+/// Filtered to [`Kind::Footnote`]: `definitions()` also reports the *link*
+/// reference definitions (`[foo]: /url`), which leaf has never rendered as
+/// blocks and which are not this function's business.
+///
+/// Empty when the document can't be walked, which leaves [`top_blocks`] with
+/// the ordinary top-level children and [`crate::Doc::footnote_at_caret`] with an
+/// undefined reference — in both cases the same answer as a document that has
+/// no definitions, which is the right way to degrade.
+pub(crate) fn footnote_definitions(editor: &mut Editor) -> Vec<QueryMatch> {
+    let Ok(mut doc) = editor.document() else {
+        return Vec::new();
+    };
+    doc.definitions()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|m| m.kind == Kind::Footnote)
+        .collect()
+}
+
 /// The label of the footnote definition starting at `start` — the `1` in
 /// `[^1]: …`. twig gives the `footnote` node no label of its own (no `text`, no
 /// `name`), and the bytes that spell it belong to no child node either — the
 /// body `para` starts its *content* past them — so the source is the only place
 /// to read it from. `None` when what's there isn't a definition after all.
-fn footnote_label(source: &str, start: usize) -> Option<&str> {
+pub(crate) fn footnote_label(source: &str, start: usize) -> Option<&str> {
     let rest = source.get(start..)?.strip_prefix("[^")?;
     let end = rest.find("]:")?;
+    Some(&rest[..end])
+}
+
+/// The body of the footnote definition spanning `span` — everything past the
+/// `[^1]:` marker, which is the part a reader actually wants when they follow a
+/// reference.
+///
+/// Source bytes, verbatim but for the whitespace trimmed off each end: a note
+/// that says `see *later*` answers with the asterisks in. Rendering that body is
+/// a frontend's business the same way painting a [`Role`] is, and a caller that
+/// wants it laid out already has the definition on screen where it was written.
+///
+/// The trim is what makes the common case read right — `[^1]: text` has a space
+/// after the colon that belongs to the marker, not the note, and a definition's
+/// span runs to the newline ending it.
+pub(crate) fn footnote_body(source: &str, span: Range<usize>) -> Option<&str> {
+    let rest = source.get(span)?.strip_prefix("[^")?;
+    let end = rest.find("]:")?;
+    Some(rest[end + 2..].trim())
+}
+
+/// The label of the footnote *reference* spanning `span` — the `1` in `[^1]`.
+///
+/// The peer of [`footnote_label`] for the other half of the pair, and needed for
+/// the same reason: a reference whose node carries neither a `content_span` nor
+/// a `text` still spells its label plainly in the source. `None` when the bytes
+/// aren't a reference after all.
+pub(crate) fn footnote_reference_label(source: &str, span: Range<usize>) -> Option<&str> {
+    let rest = source.get(span)?.strip_prefix("[^")?;
+    let end = rest.find(']')?;
     Some(&rest[..end])
 }
 
@@ -2996,7 +3040,12 @@ impl Builder<'_> {
             "mark" => self.inline_delimited(id, base.role(Role::Mark), out),
             "insert" => self.inline_delimited(id, base.underline(), out),
             "delete" => self.inline_delimited(id, base.strikethrough(), out),
-            "superscript" | "subscript" => self.inline_delimited(id, base, out),
+            // The one pair whose whole meaning is *where the glyphs sit*. Drawn
+            // in the surrounding style otherwise, so `^**2**^` stays bold and a
+            // superscript inside a heading keeps the heading's role — which is
+            // exactly why this is a `Baseline` and not a `Role`.
+            "superscript" => self.inline_delimited(id, base.baseline(Baseline::Super), out),
+            "subscript" => self.inline_delimited(id, base.baseline(Baseline::Sub), out),
             "verbatim" | "inline_math" => {
                 // The interior begins at `content_span.start` — past however many
                 // backticks the fence used, which `span.start + 1` only guessed
@@ -3077,19 +3126,27 @@ impl Builder<'_> {
             //
             // Styled `Role::Link`: a reference *is* a link to its definition, and
             // every frontend already paints that role. A role of its own would
-            // need one in each of them, and the bug here is that the text was
-            // invisible, not that it was underspecified.
+            // need one in each of them, and what a frontend needs to tell the two
+            // apart is not a paint colour but an answer to "what does clicking
+            // here do" — which is [`Doc::footnote_at_caret`]'s job, not a glyph's.
+            //
+            // Raised, though, because that a reference is *set* differently from
+            // the prose it interrupts is exactly what makes it read as a
+            // reference. `[1]` at body size reads as bracketed text.
             "footnote_reference" => {
                 let style = base.role(Role::Link);
                 // Revealed, the reference is just its source bytes: the `^` that
                 // is normally elided comes back and every byte becomes a real
                 // stop, so the brackets stop being decoration and start being
                 // text. That's the whole point of the mode, and it replaces the
-                // hand-built chip below rather than decorating it.
+                // hand-built chip below rather than decorating it — including the
+                // raised baseline, since what's on screen there is source, and
+                // source is set as prose.
                 if self.revealed(&node.span) {
                     self.push_delim(out, &node.span, style);
                     return;
                 }
+                let style = style.baseline(Baseline::Super);
                 // The label's own span, so its glyphs map to their true bytes.
                 // Absent one, it starts past the `[^` that opens the reference.
                 let (label, at) = match &node.content_span {
@@ -4224,6 +4281,25 @@ mod tests {
         build_t(&ed.nodes().unwrap(), src, Some(80))
     }
 
+    /// [`map`] over a Djot source. Djot is the format that spells superscript
+    /// and subscript at all — Markdown has no syntax for either.
+    fn map_djot(src: &str) -> VisualMap {
+        let mut ed = Editor::new_str(src, Format::Djot).unwrap();
+        build_t(&ed.nodes().unwrap(), src, Some(80))
+    }
+
+    /// The baseline every glyph spelling `ch` was built with, in row order —
+    /// how a test reads a raised or lowered run off the map without caring
+    /// which row it landed on.
+    fn baselines_of(m: &VisualMap, ch: char) -> Vec<Baseline> {
+        m.rows
+            .iter()
+            .flat_map(|r| r.glyphs.iter())
+            .filter(|g| g.ch == ch)
+            .map(|g| g.style.baseline)
+            .collect()
+    }
+
     /// [`map`] at a chosen wrap width.
     fn map_at(src: &str, wrap: Option<usize>) -> VisualMap {
         let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
@@ -5261,6 +5337,47 @@ mod tests {
     }
 
     #[test]
+    fn a_footnote_reference_is_raised_and_the_prose_around_it_is_not() {
+        // What makes `[1]` read as a reference rather than as bracketed text.
+        // The brackets ride with the label: the chip is one raised mark.
+        let m = map("A claim[^1] and more.\n");
+        assert_eq!(baselines_of(&m, '1'), vec![Baseline::Super]);
+        assert_eq!(baselines_of(&m, '['), vec![Baseline::Super]);
+        assert_eq!(baselines_of(&m, ']'), vec![Baseline::Super]);
+        assert_eq!(baselines_of(&m, 'A'), vec![Baseline::Normal]);
+    }
+
+    #[test]
+    fn a_footnote_reference_keeps_the_link_role_it_had() {
+        // The raised baseline is added to the role, not swapped for it: every
+        // frontend already paints `Role::Link`, and a reference is one.
+        let m = map("A claim[^1].\n");
+        let label = m.rows.iter().flat_map(|r| &r.glyphs).find(|g| g.ch == '1').unwrap();
+        assert_eq!(label.style.role, Role::Link);
+        assert_eq!(label.style.baseline, Baseline::Super);
+    }
+
+    #[test]
+    fn a_superscript_and_a_subscript_sit_off_the_baseline() {
+        // Regression: both rendered flat, so the toolbar's superscript button
+        // produced markup that looked exactly like the text around it.
+        let m = map_djot("H~2~O and x^2^\n");
+        assert_eq!(baselines_of(&m, '2'), vec![Baseline::Sub, Baseline::Super]);
+        assert_eq!(baselines_of(&m, 'H'), vec![Baseline::Normal]);
+        assert_eq!(baselines_of(&m, 'O'), vec![Baseline::Normal]);
+    }
+
+    #[test]
+    fn a_raised_glyph_keeps_the_style_it_was_raised_out_of() {
+        // Why this is a `Baseline` and not a `Role`: raising a glyph says where
+        // it sits, and must not cost it what it already was.
+        let m = map_djot("# Heading x^2^\n");
+        let two = m.rows.iter().flat_map(|r| &r.glyphs).find(|g| g.ch == '2').unwrap();
+        assert_eq!(two.style.baseline, Baseline::Super);
+        assert_eq!(two.style.role, Role::Heading(1), "still heading text");
+    }
+
+    #[test]
     fn a_footnote_references_brackets_are_decoration_and_only_its_label_is_a_stop() {
         let src = "see[^note] here\n";
         let m = map(src);
@@ -6029,5 +6146,3 @@ mod tests {
         }
     }
 }
-
-

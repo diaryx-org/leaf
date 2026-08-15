@@ -310,6 +310,26 @@ impl CaretState {
     }
 }
 
+/// A footnote reference and the note it names — the answer to
+/// [`Doc::footnote_at_caret`].
+///
+/// The two `Option`s move together: a reference whose definition is missing has
+/// neither a body to show nor a place to jump to, and one that resolved has
+/// both.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct FootnoteRef {
+    /// The reference's label — the `1` of `[^1]`, with neither the `^` that
+    /// spells it a footnote nor the brackets around it.
+    pub label: String,
+    /// The note's body as source bytes (see
+    /// [`wysiwyg::footnote_body`](crate::wysiwyg)), or `None` when the document
+    /// defines no `[^label]:` to read one from.
+    pub text: Option<String>,
+    /// Where the definition starts, for a "go to note" that moves the caret
+    /// there. `None` alongside a `None` `text`.
+    pub offset: Option<usize>,
+}
+
 pub struct Doc {
     editor: Editor,
     pub format: Format,
@@ -3503,6 +3523,48 @@ impl Doc {
             .filter(|n| n.span.start <= off && off < n.span.end)
             .max_by_key(|n| n.span.start)
             .and_then(|n| n.destination.or(n.text))
+    }
+
+    /// The footnote reference under the caret, resolved to the note it names —
+    /// what a frontend shows when a reader activates a `[^1]`.
+    ///
+    /// A reference is not a link node, so
+    /// [`link_destination_at_caret`](Self::link_destination_at_caret) does not
+    /// (and should not) answer for one: a link names a destination to leave for,
+    /// a reference names a note that is already in this document. Following one
+    /// is a move within the page, which is why this hands back an `offset`
+    /// rather than something to open.
+    ///
+    /// `None` when the caret stands in no reference. A reference whose note the
+    /// document never defines is *not* `None` — it answers with the label it
+    /// looked for and no text, which is what lets a frontend say so instead of
+    /// silently doing nothing.
+    pub fn footnote_at_caret(&mut self) -> Option<FootnoteRef> {
+        let off = self.caret;
+        // Innermost-wins by latest start, the rule its link sibling uses.
+        let span = self
+            .nodes()
+            .into_iter()
+            .filter(|n| n.kind == Kind::FootnoteReference)
+            .filter(|n| n.span.start <= off && off < n.span.end)
+            .max_by_key(|n| n.span.start)?
+            .span;
+        let label = wysiwyg::footnote_reference_label(&self.source, span)?.to_string();
+
+        // The note itself. Definitions are roots beside `doc` rather than
+        // children of it, so they're asked for directly — see
+        // `wysiwyg::footnote_definitions`.
+        let note = wysiwyg::footnote_definitions(&mut self.editor)
+            .into_iter()
+            .find(|m| wysiwyg::footnote_label(&self.source, m.span.start) == Some(&label));
+        let Some(note) = note else {
+            return Some(FootnoteRef { label, text: None, offset: None });
+        };
+        Some(FootnoteRef {
+            label,
+            text: wysiwyg::footnote_body(&self.source, note.span.clone()).map(str::to_string),
+            offset: Some(note.span.start),
+        })
     }
 
     /// The destination of the image under the caret — what an image prompt shows
@@ -7155,6 +7217,70 @@ mod tests {
         assert_eq!(a.link_destination_at_caret().as_deref(), Some("https://x.dev"));
         a.caret = 21;
         assert_eq!(a.link_destination_at_caret(), None);
+    }
+
+    #[test]
+    fn footnote_at_caret_resolves_a_reference_to_its_note() {
+        // `[^1]` spans 7..11; its label byte is at 9. The definition follows a
+        // blank line, as one has to.
+        let mut d = doc_with("fn_at_caret", "A claim[^1] and more.\n\n[^1]: the note\n");
+        d.caret = 9;
+        let f = d.footnote_at_caret().expect("the caret stands in a reference");
+        assert_eq!(f.label, "1");
+        assert_eq!(f.text.as_deref(), Some("the note"));
+        // The offset points at the definition's `[`, so a "go to note" lands on
+        // the block rather than inside it.
+        assert_eq!(f.offset, Some(23));
+        assert_eq!(&d.source[23..25], "[^");
+    }
+
+    #[test]
+    fn footnote_at_caret_ignores_a_caret_that_stands_in_no_reference() {
+        let mut d = doc_with("fn_at_caret_none", "A claim[^1] and more.\n\n[^1]: the note\n");
+        d.caret = 2; // in the prose
+        assert_eq!(d.footnote_at_caret(), None);
+    }
+
+    #[test]
+    fn footnote_at_caret_is_not_a_link_query_and_vice_versa() {
+        // The two are deliberately separate: a reference names a note in this
+        // document, a link names somewhere to leave for, and answering one with
+        // the other is what made a reference click do nothing at all.
+        let mut d = doc_with("fn_vs_link", "a[^1] b [t](https://x.dev)\n\n[^1]: note\n");
+        d.caret = 3; // the `1` of `[^1]`
+        assert!(d.footnote_at_caret().is_some());
+        assert_eq!(d.link_destination_at_caret(), None, "a reference is not a link");
+
+        d.caret = 10; // inside the link's label
+        assert_eq!(d.footnote_at_caret(), None, "a link is not a reference");
+        assert_eq!(d.link_destination_at_caret().as_deref(), Some("https://x.dev"));
+    }
+
+    #[test]
+    fn footnote_at_caret_reports_an_undefined_reference_rather_than_nothing() {
+        // A `[^99]` the document never defines is a real state — a note deleted
+        // out from under its reference — and the label is what lets a frontend
+        // say so. `None` here would be indistinguishable from "not on a
+        // reference", which is the wrong thing to tell a reader.
+        let mut d = doc_with("fn_undefined", "A claim[^99] and more.\n");
+        d.caret = 9;
+        let f = d.footnote_at_caret().expect("the reference is still a reference");
+        assert_eq!(f.label, "99");
+        assert_eq!(f.text, None);
+        assert_eq!(f.offset, None);
+    }
+
+    #[test]
+    fn footnote_at_caret_reads_a_word_label_and_a_multiline_note() {
+        // Labels are not always numbers, and a note's body runs past its first
+        // line — the indented continuation belongs to the note, so it comes back
+        // with it (source bytes, verbatim, as documented).
+        let src = "see[^note] here\n\n[^note]: first line\n    second line\n";
+        let mut d = doc_with("fn_word_label", src);
+        d.caret = 6;
+        let f = d.footnote_at_caret().expect("the caret stands in a reference");
+        assert_eq!(f.label, "note");
+        assert_eq!(f.text.as_deref(), Some("first line\n    second line"));
     }
 
     #[test]

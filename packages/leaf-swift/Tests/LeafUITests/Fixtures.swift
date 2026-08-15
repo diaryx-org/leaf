@@ -14,9 +14,12 @@ func mkRun(
     italic: Bool = false,
     underline: Bool = false,
     strike: Bool = false,
+    sup: Bool = false,
+    sub: Bool = false,
     sel: Bool = false
 ) -> Run {
-    Run(text: text, role: role, bold: bold, italic: italic, underline: underline, strike: strike, sel: sel)
+    Run(text: text, role: role, bold: bold, italic: italic, underline: underline,
+        strike: strike, sup: sup, sub: sub, sel: sel)
 }
 
 func row(

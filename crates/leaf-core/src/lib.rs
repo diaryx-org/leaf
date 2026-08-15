@@ -18,8 +18,8 @@ mod html;
 pub mod style;
 pub mod wysiwyg;
 
-pub use doc::{DiskState, Doc, InlineMarks, LineFlow, MarkupMode, View};
-pub use style::{Role, Style};
+pub use doc::{DiskState, Doc, FootnoteRef, InlineMarks, LineFlow, MarkupMode, View};
+pub use style::{Baseline, Role, Style};
 pub use wysiwyg::{
     BlockClass, Boundary, CodeBlockInfo, ColorScheme, Glyph, MediaInfo, MediaKind, MediaSource,
     TableCell, TableInfo, TableRow, VRow, VisualMap,
