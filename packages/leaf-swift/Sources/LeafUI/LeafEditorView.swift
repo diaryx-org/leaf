@@ -59,7 +59,9 @@ public final class LeafEditorModel: ObservableObject {
     /// Offered only for a *parsed* link (`[t](dest)`, a bare URL, an autolink).
     /// A wikilink is literal text with no node behind it — it can be followed,
     /// but there is nothing to repoint — so it gets no "Edit Link…".
-    public var onEditLink: ((String) -> Void)?
+    public var onEditLink: ((String) -> Void)? {
+        didSet { textView?.onEditLink = editBridge }
+    }
 
     /// Asked what a link points *at*, so a reader resting on one can be shown it
     /// without going there — the cross-document half of the popover a footnote
@@ -83,7 +85,38 @@ public final class LeafEditorModel: ObservableObject {
     /// Leaving this nil is the old behaviour: a link shows nothing on hover.
     /// Nothing here is followable in either case — see `FootnotePeekContent`'s
     /// peeking initializer for why a foreign document's links stay inert.
-    public var onPeekLink: ((String, @escaping (LinkPeekSource?) -> Void) -> Void)?
+    public var onPeekLink: ((String, @escaping (LinkPeekSource?) -> Void) -> Void)? {
+        didSet { textView?.onPeekLink = peekBridge }
+    }
+
+    /// The two handlers the views hand *to a menu* rather than merely call, wired
+    /// so that "is a host listening?" survives being asked through them.
+    ///
+    /// Both are read-through closures: they look the handler up on the model at
+    /// call time, so a host that wires one after the editor is on screen — the
+    /// usual shape, since the model is built when a document loads and the
+    /// handlers where the view is composed — still gets its links. But a
+    /// read-through closure is never nil, and both views gate a menu item on the
+    /// hook being non-nil ("Edit Link…", "Preview Link"). Installed
+    /// unconditionally, the wrapper answered *yes* on behalf of a host that had
+    /// said nothing, and the menu offered an item that did nothing at all.
+    ///
+    /// So the bridge is nil when the handler is, and `didSet` re-installs it
+    /// whenever that changes. The view gets both properties: read-through when
+    /// there is something to read through to, and honestly absent when there
+    /// isn't.
+    fileprivate var editBridge: ((String) -> Void)? {
+        guard onEditLink != nil else { return nil }
+        return { [weak self] destination in self?.onEditLink?(destination) }
+    }
+
+    fileprivate var peekBridge: ((String, @escaping (LinkPeekSource?) -> Void) -> Void)? {
+        guard onPeekLink != nil else { return nil }
+        return { [weak self] destination, done in
+            guard let peek = self?.onPeekLink else { return done(nil) }
+            peek(destination, done)
+        }
+    }
 
     /// Whether a bare `[[target]]` / `[[target|label]]` is a link the reader can
     /// follow. Off by default, because it is a convention rather than a syntax:
@@ -433,19 +466,10 @@ public struct LeafEditor: NSViewRepresentable {
         textView.onOpenLink = { [weak model] destination in
             model?.onOpenLink?(destination) ?? false
         }
-        // Read through as well, so the menu item appears exactly when the host
-        // has something to answer with — the views gate "Edit Link…" on this
-        // being non-nil, and a copied-across nil would hide it forever.
-        textView.onEditLink = { [weak model] destination in
-            model?.onEditLink?(destination)
-        }
-        // Read-through as well: a peek handler is wired where the view is
-        // composed, and gating it on being set at construction time would leave
-        // hovers silent for the life of the document.
-        textView.onPeekLink = { [weak model] destination, done in
-            guard let peek = model?.onPeekLink else { return done(nil) }
-            peek(destination, done)
-        }
+        // The two the menus *gate* on, through the bridges that keep "is a host
+        // listening?" answerable — see `editBridge`.
+        textView.onEditLink = model.editBridge
+        textView.onPeekLink = model.peekBridge
         // Same read-through, same reason: an app wires its paste handler where
         // the view is composed, after the model was built.
         textView.onPaste = { [weak model] in
@@ -588,19 +612,10 @@ public struct LeafEditor: UIViewRepresentable {
         textView.onOpenLink = { [weak model] destination in
             model?.onOpenLink?(destination) ?? false
         }
-        // Read through as well, so the menu item appears exactly when the host
-        // has something to answer with — the views gate "Edit Link…" on this
-        // being non-nil, and a copied-across nil would hide it forever.
-        textView.onEditLink = { [weak model] destination in
-            model?.onEditLink?(destination)
-        }
-        // Read-through as well: a peek handler is wired where the view is
-        // composed, and gating it on being set at construction time would leave
-        // hovers silent for the life of the document.
-        textView.onPeekLink = { [weak model] destination, done in
-            guard let peek = model?.onPeekLink else { return done(nil) }
-            peek(destination, done)
-        }
+        // The two the menus *gate* on, through the bridges that keep "is a host
+        // listening?" answerable — see `editBridge`.
+        textView.onEditLink = model.editBridge
+        textView.onPeekLink = model.peekBridge
         // Same read-through, same reason: an app wires its paste handler where
         // the view is composed, after the model was built.
         textView.onPaste = { [weak model] in
