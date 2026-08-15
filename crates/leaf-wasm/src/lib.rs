@@ -747,6 +747,30 @@ impl LeafDoc {
         self.view()
     }
 
+    /// Tick or untick the task item at the caret.
+    pub fn toggle_task_checked(&mut self) -> Result<DocView, JsValue> {
+        self.doc.toggle_task_checked();
+        self.view()
+    }
+
+    /// Tick or untick the task item covering `offset` — a click on a rendered
+    /// checkbox, which leaves the caret where it was.
+    pub fn toggle_task_at(&mut self, offset: usize) -> Result<DocView, JsValue> {
+        self.doc.toggle_task_at(offset);
+        self.view()
+    }
+
+    /// Give the list item at the caret a checkbox, or take its checkbox away.
+    pub fn toggle_task_item(&mut self) -> Result<DocView, JsValue> {
+        self.doc.toggle_task_item();
+        self.view()
+    }
+
+    /// Whether the item at the caret has a box, and which way it faces.
+    pub fn task_checked_at_caret(&mut self) -> Option<bool> {
+        self.doc.task_checked_at_caret()
+    }
+
     pub fn insert_link(&mut self, destination: &str) -> Result<DocView, JsValue> {
         self.doc.insert_link(destination);
         self.view()

@@ -26,7 +26,7 @@ use anyhow::{Result, anyhow};
 #[cfg(feature = "fs")]
 use anyhow::Context;
 use twig::{
-    Alignment, BlockContainerKind, BlockKind, Change, Editor, FlatNode, Format, InlineKind,
+    Alignment, BlockContainerKind, BlockKind, Change, Editor, FlatNode, Format, InlineKind, Kind,
     MarkdownExtensions, NodeId, QueryMatch,
 };
 use unicode_segmentation::GraphemeCursor;
@@ -767,16 +767,19 @@ impl Doc {
     /// The document's top-level blocks for the incremental render. See
     /// [`wysiwyg::top_blocks`] for why this isn't simply `child_spans(None)`.
     fn top_blocks(&mut self) -> Vec<QueryMatch> {
-        let source = &self.source;
-        wysiwyg::top_blocks(&mut self.editor, source)
+        wysiwyg::top_blocks(&mut self.editor)
     }
 
     pub fn format_name(&self) -> &'static str {
+        // `Format` is `#[non_exhaustive]` as of twig 3.0, so the wildcard is
+        // required. It also covers `Asciidoc`, which twig parses but cannot
+        // serialize — leaf never opens a document in it (see `Doc::open`).
         match self.format {
             Format::Djot => "djot",
             Format::Markdown => "markdown",
             Format::Xml => "xml",
             Format::Html => "html",
+            _ => "unknown",
         }
     }
 
@@ -1514,48 +1517,65 @@ impl Doc {
         let mut out = String::with_capacity(region.len() + lines.len() * Self::INDENT.len());
         let mut deltas: Vec<isize> = Vec::with_capacity(lines.len());
         let mut line_off = start;
-        for (i, line) in lines.iter().enumerate() {
+        for (i, full) in lines.iter().enumerate() {
             if i > 0 {
                 out.push('\n');
             }
+            // A list item moves by having its whole leading prefix *replaced*,
+            // never by having spaces pushed in front of the line. twig spells
+            // both prefixes, so the quote markers, the parent's indent and an
+            // ordered marker's extra column all come out right without leaf
+            // measuring any of them — and a line that only looks like an item
+            // (a Djot continuation) reports no marker and is left to the plain
+            // path, where a Tab is just a Tab.
+            let marker = self.list_marker_on_line(line_off);
+            let own = marker
+                .as_ref()
+                .map(|m| m.marker_start - m.line_start)
+                .unwrap_or(0);
             let delta = if add {
-                if skip_blank && line.trim().is_empty() {
-                    out.push_str(line);
+                if skip_blank && full.trim().is_empty() {
+                    out.push_str(full);
                     0
-                } else if list_marker_width(line).is_some() && self.first_item_of_list(line_off) {
+                } else if marker.is_some() && self.first_item_of_list(line_off) {
                     // The first item of a list has no preceding sibling to nest
                     // under, so a Tab here can't spell a sub-list — twig would
                     // reparse the shoved-over marker as the same list, only
                     // indented, which Shift+Tab then can't cleanly undo. Leave the
                     // item where it is, the way every list editor refuses to
                     // over-indent a list's first line.
-                    out.push_str(line);
+                    out.push_str(full);
                     0
+                } else if marker.is_some() {
+                    // Nesting means standing where a *continuation* of this line
+                    // would stand: past the parent's marker, inside its content
+                    // column. That is `continuation_prefix`, less a checkbox.
+                    let new = self.nesting_prefix_at(line_off);
+                    let delta = new.len() as isize - own as isize;
+                    out.push_str(&new);
+                    out.push_str(&full[own..]);
+                    delta
                 } else {
-                    // Indent by the line's own *marker width* when it's a list
-                    // item, so Tab nests it under its sibling: an ordered item's
-                    // `1. ` marker is 3 wide, and only 3 spaces push the new
-                    // marker to the parent's content column where twig reparses
-                    // it as a sub-list. A fixed two-space step nests a bullet
-                    // (`- ` is 2 wide) but leaves an ordered item flat. A plain
-                    // line still indents by the ordinary step.
-                    let unit = indent_unit(line);
-                    for _ in 0..unit {
-                        out.push(' ');
-                    }
-                    out.push_str(line);
-                    unit as isize
+                    out.push_str(Self::INDENT);
+                    out.push_str(full);
+                    Self::INDENT.len() as isize
                 }
+            } else if marker.is_some() {
+                // Unnesting is the mirror: stand where the parent item's own
+                // line starts, which drops exactly the level it contributed.
+                let new = self.outdent_prefix_at(line_off);
+                let delta = new.len() as isize - own as isize;
+                out.push_str(&new);
+                out.push_str(&full[own..]);
+                delta
             } else {
-                // Outdent one level: a nested item gives back its marker width,
-                // an ordinary line the ordinary step (Shift+Tab unnests in one
-                // press, the mirror of the indent above).
-                let strip = outdent_width(line, indent_unit(line));
-                out.push_str(&line[strip..]);
+                // A plain line gives back the ordinary step.
+                let strip = outdent_width(full, Self::INDENT.len());
+                out.push_str(&full[strip..]);
                 -(strip as isize)
             };
             deltas.push(delta);
-            line_off += line.len() + 1;
+            line_off += full.len() + 1;
         }
         // Nothing to give back. Returning before the splice keeps an outdent at
         // column zero from spending an undo step on a document it never changed.
@@ -1605,19 +1625,33 @@ impl Doc {
 
     /// The Enter key.
     ///
-    /// In source view it's a literal newline. In WYSIWYG it's **AST-aware**: it
-    /// reads the block the caret is in and splices the source that reparses into
-    /// the structurally right thing — because a bare `\n` is only a markdown soft
-    /// break (same paragraph), which is why a paragraph needs a blank-line
-    /// separator, a list item needs the next marker, and so on.
+    /// In source view it's a literal newline. In WYSIWYG it's **AST-aware**: a
+    /// bare `\n` is only a markdown soft break (same paragraph), so the block the
+    /// caret is in decides what actually gets written.
     ///
-    ///   - paragraph / heading  → a new paragraph (blank line), or a single soft
-    ///                            break under [`LineFlow::Preserve`], where that
-    ///                            break renders as a visible line
-    ///   - list item            → the next item (same bullet, next number);
-    ///                            an *empty* item exits the list
-    ///   - block quote          → a new quoted line
+    ///   - paragraph            → twig's [`Editor::split_block`], which parts the
+    ///                            block at the caret and reopens its container
+    ///   - list item            → likewise: the next item, its indent, quote
+    ///                            prefix and `[ ]` box all reproduced by twig —
+    ///                            except an *empty* item, which exits the list
+    ///   - block quote          → likewise: a new paragraph inside the quote
+    ///   - heading              → a new *paragraph*, not another heading
     ///   - code block           → a literal newline (stay in the block)
+    ///   - blank line           → a literal newline (one Backspace undoes it)
+    ///   - [`LineFlow::Preserve`] → a single soft break, which renders as a
+    ///                            visible line
+    ///
+    /// Where `split_block` is used it replaces markup leaf used to spell by hand,
+    /// and it is better at it: it drops the whitespace the caret was sitting in
+    /// front of instead of stranding it at the head of the second half, and it
+    /// knows continuations leaf's marker scan never covered — a checklist item
+    /// continues as an *unchecked* checklist item rather than a plain bullet.
+    ///
+    /// The exceptions above are exceptions because `split_block` is either wrong
+    /// there or refuses: parting a fence yields two fences with the code split
+    /// between them, parting a heading yields a second heading where every editor
+    /// gives a paragraph, and a blank line, an empty item, a setext heading and a
+    /// table all report an error rather than a split.
     pub fn newline(&mut self) {
         if self.view == View::Source {
             self.insert_raw("\n");
@@ -1640,41 +1674,32 @@ impl Doc {
         // empty list item) fall back to the caret so the enclosing list/quote is
         // still visible in the ancestors.
         let off = self.block_offset_for_caret().unwrap_or(self.caret);
-        let kinds: Vec<String> = self
+        let kinds: Vec<Kind> = self
             .editor
             .ancestors_at(off)
             .map(|c| c.into_iter().map(|m| m.kind).collect())
             .unwrap_or_default();
-        let has = |k: &str| kinds.iter().any(|x| x == k);
+        let has = |k: Kind| kinds.contains(&k);
 
-        if has("code_block") {
+        if has(Kind::CodeBlock) {
             self.insert_raw("\n");
             return;
         }
-        // Lists: an empty item exits the list, a non-empty one opens the next.
-        // Gate on the AST, not the marker bytes alone — a `- ` line reads as a
-        // list marker byte-for-byte whether or not it is one, and `text\n- \n`
-        // is a *setext heading*, not a list. twig does report an empty item as a
-        // childless `list_item`; the marker text is still read from source to
-        // spell the next item's bullet. Ask the AST at the marker, not the
-        // caret: on a bare `- ` line the caret sits on the trailing newline,
-        // past the item's span, where the enclosing `list_item` is out of reach.
-        if let Some((line_start, marker)) = self.list_marker_on_line(self.caret)
-            && self.is_inside_list(line_start)
+        // An *empty* list item exits the list — the standard double-Enter — which
+        // `split_block` reports as an error rather than a split (there is no
+        // content to part), so it stays leaf's. `list_marker_on_line` is itself
+        // the AST gate — it answers from the tree, so a `- ` that reads as a
+        // marker byte-for-byte but opens no item (a setext underline, a Djot
+        // continuation line) never reaches here.
+        if let Some(marker) = self.list_marker_on_line(self.caret)
+            && self.item_is_empty(&marker)
         {
-            self.list_newline(line_start, marker);
-            // A new item mid-list leaves the source markers stale (`next_list_marker`
-            // only bumps the one it wrote); renumber the whole list to match.
-            self.renumber_here();
-            return;
-        }
-        if has("block_quote") {
-            self.insert_raw("\n> ");
+            self.exit_list(&marker);
             return;
         }
         // On an *empty* paragraph line, a lone Enter should add a single blank line,
         // not another full paragraph break — so it moves down one line and one
-        // Backspace undoes it, not two.
+        // Backspace undoes it, not two. (`split_block` errors here too.)
         let line_start = self.source[..self.caret].rfind('\n').map_or(0, |i| i + 1);
         let line_end = self.source[self.caret..]
             .find('\n')
@@ -1683,86 +1708,267 @@ impl Doc {
             self.insert_raw("\n");
             return;
         }
-        // A non-empty paragraph normally opens a fresh paragraph with `\n\n`
-        // (splitting it there when the caret is mid-line). In `Preserve` flow a
-        // soft break is a *visible* line the author means to make, so Enter writes
-        // a single `\n` and typing continues the same paragraph on the next line —
-        // the behaviour of an ordinary text editor. A second Enter then lands on
-        // the blank line above and takes the empty-line branch, so double-Enter
-        // still promotes to a full paragraph break; and Backspace, which deletes a
-        // lone `\n` over a soft break, undoes a single Enter symmetrically. In
-        // `Fold` flow a lone `\n` would render as an invisible space, so Enter
-        // keeps making the paragraph break that actually shows.
-        if self.line_flow == LineFlow::Preserve {
+        // In `Preserve` flow a soft break is a *visible* line the author means to
+        // make, so Enter writes a single `\n` and typing continues the same
+        // paragraph on the next line — the behaviour of an ordinary text editor.
+        // A second Enter then lands on the blank line above and takes the
+        // empty-line branch, so double-Enter still promotes to a full paragraph
+        // break; and Backspace, which deletes a lone `\n` over a soft break,
+        // undoes a single Enter symmetrically. In `Fold` flow a lone `\n` would
+        // render as an invisible space, so Enter keeps making the paragraph break
+        // that actually shows.
+        //
+        // Only in running prose. A list or a quote has a continuation of its own
+        // to write, and a `\n` there is not a soft line but a lost container.
+        let in_container =
+            has(Kind::ListItem) || has(Kind::TaskListItem) || has(Kind::BlockQuote);
+        if self.line_flow == LineFlow::Preserve && !in_container {
             self.insert_raw("\n");
             return;
         }
-        self.insert_raw("\n\n");
+        // A heading gets a *paragraph*, never a second heading: Enter at the end
+        // of a title is how every editor is asked for the body under it, and
+        // `split_block` would repeat the `#` instead. Whitespace at the split
+        // point goes with the break rather than opening the new paragraph, which
+        // is what `split_block` does everywhere else.
+        if has(Kind::Heading) {
+            let mut end = self.caret;
+            while self.source.as_bytes().get(end) == Some(&b' ') {
+                end += 1;
+            }
+            self.splice(self.caret, end, "\n\n", EditKind::Other);
+            return;
+        }
+        self.split_block_here();
     }
 
-    /// Enter inside a list: start the next item, or exit the list if the current
-    /// item is empty (the standard "double-Enter leaves the list" behaviour).
-    fn list_newline(&mut self, line_start: usize, marker: String) {
-        let caret = self.caret;
-        let content_start = (line_start + marker.len()).min(self.source.len());
-        let line_end = self.source[caret..]
-            .find('\n')
-            .map(|i| caret + i)
-            .unwrap_or(self.source.len());
-        let item_is_empty = self.source[content_start..line_end.max(content_start)]
-            .trim()
-            .is_empty();
-        if item_is_empty {
-            // Exit the list: replace the empty item's marker with a blank line,
-            // so the caret lands in a fresh paragraph below the list.
-            self.splice(line_start, caret, "\n", EditKind::Other);
-        } else {
-            self.insert_raw(&format!("\n{}", next_list_marker(&marker)));
+    /// Part the block at the caret with twig's [`Editor::split_block`], leaving
+    /// the caret in the second half.
+    ///
+    /// twig reopens whatever the first half was inside of — the bullet with its
+    /// indent, the quote's `>`, a checklist item's `[ ]` — which is the whole
+    /// reason this replaced the markup leaf used to spell from the line's bytes.
+    /// It renumbers nothing, though: a new item mid-list is written with its
+    /// neighbour's number, so [`renumber_here`](Self::renumber_here) still runs
+    /// behind it, folded into the same undo step.
+    ///
+    /// Falls back to a plain paragraph break if twig declines, so an unhandled
+    /// shape still moves the caret down rather than swallowing the keystroke.
+    fn split_block_here(&mut self) {
+        match self.editor.split_block(self.caret) {
+            Ok(change) => {
+                self.last_edit_kind = None;
+                self.refresh();
+                self.anchor = None;
+                self.caret = change.new.end;
+                self.dirty = self.source != self.clean_source;
+                self.status = None;
+                self.clamp_caret();
+                self.record_caret();
+                // Aimed at the new block's *start*: the caret twig leaves is one
+                // past the marker it wrote, where there is no list in reach.
+                self.renumber_at(change.new.start);
+            }
+            Err(_) => self.insert_raw("\n\n"),
         }
     }
 
-    /// Whether `off` falls inside a list item, per the AST — the honest test
-    /// for "is this a list line," which the `- ` marker bytes alone can't answer
-    /// (they read identically in a setext underline). Pass the marker offset,
-    /// not the caret: on a bare `- ` line the caret rests on the trailing
-    /// newline, one past the item's span, where its `list_item` is out of reach.
-    fn is_inside_list(&mut self, off: usize) -> bool {
+    /// Whether the item on the marker's line carries no content — the shape
+    /// double-Enter reads as "I'm done with this list."
+    fn item_is_empty(&self, line: &ListMarker) -> bool {
+        let content_start = line.content_start().min(self.source.len());
+        let line_end = self.source[self.caret..]
+            .find('\n')
+            .map(|i| self.caret + i)
+            .unwrap_or(self.source.len());
+        self.source[content_start..line_end.max(content_start)]
+            .trim()
+            .is_empty()
+    }
+
+    /// Leave the list: replace the empty item's marker with a blank line, so the
+    /// caret lands in a fresh paragraph below it.
+    ///
+    /// Inside a quote the blank line has to stay quoted (a bare one would end the
+    /// quote), and the caret's new line keeps the `> ` it was already behind —
+    /// leaving the list without also leaving the quote.
+    fn exit_list(&mut self, line: &ListMarker) {
+        let prefix = self.quote_prefix_at(line.marker_start);
+        let blank = prefix.trim_end();
+        self.splice(
+            line.line_start,
+            self.caret,
+            &format!("{blank}\n{prefix}"),
+            EditKind::Other,
+        );
+    }
+
+    /// What a line continuing the containers at `off` has to open with — the
+    /// quote markers reproduced, each enclosing item's marker as its width in
+    /// spaces. Also the column a nested item's marker stands in, which is what
+    /// makes it Tab's answer.
+    fn continuation_prefix_at(&mut self, off: usize) -> String {
         self.editor
-            .ancestors_at(off)
-            .map(|c| c.into_iter().any(|m| m.kind == "list_item" || m.kind == "task_list_item"))
+            .document()
+            .and_then(|mut d| d.continuation_prefix(off))
+            .map(|p| p.text)
+            .unwrap_or_default()
+    }
+
+    /// The column a *nested list* may open at inside the item at `off` — which
+    /// is not always where the item's own text continues.
+    ///
+    /// twig counts a task item's `[ ] ` box as part of its marker, correctly:
+    /// it is markup a rich view hides, and the item's own wrapped text does
+    /// stand past it. But a nested list may only open at the *list* marker's
+    /// column, and four columns further in is an indented continuation of the
+    /// paragraph instead — `- [ ] a` + `      - [ ] b` is one item, not two.
+    /// So the box's own width goes back.
+    ///
+    /// The one place leaf still reads a checkbox's spelling. It goes when twig
+    /// reports the list marker's column apart from the box; `checked` is what
+    /// says a box is there at all, so only its width is being measured here.
+    fn nesting_prefix_at(&mut self, off: usize) -> String {
+        let cont = self.continuation_prefix_at(off);
+        let Some(item) = self.innermost_list_item(off) else {
+            return cont;
+        };
+        if item.checked.is_none() {
+            return cont;
+        }
+        let box_width = item
+            .marker_span
+            .and_then(|m| self.source.get(m))
+            .and_then(|marker| marker.rfind('[').map(|i| marker.len() - i))
+            .unwrap_or(0);
+        // The trailing columns are the ones the item's own marker contributed,
+        // so trimming from the end leaves any quote prefix standing.
+        cont[..cont.len().saturating_sub(box_width)].to_string()
+    }
+
+    /// Where the line of the item *containing* the item at `off` begins — the
+    /// prefix Shift+Tab moves back to, which gives up exactly the level the
+    /// parent contributed. The quote prefix alone for a top-level item, which
+    /// has no level left to give.
+    fn outdent_prefix_at(&mut self, off: usize) -> String {
+        let items: Vec<usize> = self
+            .editor
+            .document()
+            .and_then(|mut d| d.ancestors_at_caret(off))
+            .map(|c| {
+                c.into_iter()
+                    .filter(|m| m.kind == Kind::ListItem || m.kind == Kind::TaskListItem)
+                    .map(|m| m.span.start)
+                    .collect()
+            })
+            .unwrap_or_default();
+        // The second-innermost item is the parent; its own line's indent is the
+        // target. `list_marker_on_line` gives that line's prefix directly.
+        let parent = items.len().checked_sub(2).map(|i| items[i]);
+        match parent.and_then(|p| self.list_marker_on_line(p)) {
+            Some(m) => self.source[m.line_start..m.marker_start].to_string(),
+            None => self.quote_prefix_at(off),
+        }
+    }
+
+    /// The block-quote prefix in force at `off` — `""` outside a quote, `"> "`
+    /// inside one, `"> > "` inside two.
+    ///
+    /// Assembled from each enclosing quote's own [`FlatNode::marker_span`], so
+    /// the `>` and the space after it are twig's spelling rather than leaf's.
+    /// The whole line prefix can't answer this: it also carries the indent of
+    /// whatever the quote holds, which a blank separator line must *not* repeat.
+    fn quote_prefix_at(&mut self, off: usize) -> String {
+        let Ok(chain) = self
+            .editor
+            .document()
+            .and_then(|mut d| d.ancestors_at_caret(off))
+        else {
+            return String::new();
+        };
+        let quotes: Vec<usize> = chain
+            .iter()
+            .filter(|m| m.kind == Kind::BlockQuote)
+            .map(|m| m.node_id as usize)
+            .collect();
+        let Ok(nodes) = self.editor.nodes() else {
+            return String::new();
+        };
+        quotes
+            .iter()
+            .filter_map(|id| nodes.get(*id)?.marker_span.clone())
+            .filter_map(|s| self.source.get(s))
+            .collect()
+    }
+
+    /// Whether the item at `off` sits inside another one — the test Backspace
+    /// uses to choose between outdenting and dropping the marker.
+    ///
+    /// Counted from the AST rather than from the line's leading whitespace,
+    /// which is indentation in Markdown and, in Djot, may be nothing at all.
+    fn item_is_nested(&mut self, off: usize) -> bool {
+        self.editor
+            .document()
+            .and_then(|mut d| d.ancestors_at_caret(off))
+            .map(|c| {
+                c.into_iter()
+                    .filter(|m| m.kind == Kind::ListItem || m.kind == Kind::TaskListItem)
+                    .count()
+                    > 1
+            })
             .unwrap_or(false)
     }
 
-    /// Parse a list marker at the start of `off`'s line, e.g. `"- "`, `"  * "`,
-    /// `"1. "`, `"3) "`. Returns `(line_start, marker_text)`.
-    fn list_marker_on_line(&self, off: usize) -> Option<(usize, String)> {
+    /// The innermost list item containing `probe`, under twig's **caret**
+    /// containment rule — a block's end is inside it.
+    ///
+    /// Half-open containment can't answer this. An empty item's span is exactly
+    /// its marker, so the caret sitting after `- ` is one past the end and the
+    /// item it is plainly in tests as out of reach; that is the shape
+    /// double-Enter has to recognise to leave the list.
+    fn innermost_list_item(&mut self, probe: usize) -> Option<FlatNode> {
+        let chain = self
+            .editor
+            .document()
+            .and_then(|mut d| d.ancestors_at_caret(probe))
+            .ok()?;
+        let id = chain
+            .iter()
+            .rev()
+            .find(|m| m.kind == Kind::ListItem || m.kind == Kind::TaskListItem)?
+            .node_id as usize;
+        self.editor.nodes().ok()?.get(id).cloned()
+    }
+
+    /// The list marker opening `off`'s line, per twig — `None` when that line
+    /// opens no list item.
+    ///
+    /// [`Document::line_prefix`] is the whole hidden run from the line start:
+    /// `>   1. ` is a quote's marker, an indent, and an item's marker together,
+    /// and it is `None` on a *continuation* line, which opens nothing. That last
+    /// case is the one leaf could never get right by reading bytes. `- a\n  - b`
+    /// is two items in Markdown and one in Djot, where a marker cannot interrupt
+    /// a paragraph and `  - b` is literal text — identical bytes, and only the
+    /// parser knows which document it is looking at.
+    ///
+    /// The item's own marker is separated out via its
+    /// [`FlatNode::marker_span`], so `marker_start` splits the prefix into what
+    /// the containers around it contribute and what the item does.
+    fn list_marker_on_line(&mut self, off: usize) -> Option<ListMarker> {
         let off = off.min(self.source.len());
-        let line_start = self.source[..off].rfind('\n').map(|i| i + 1).unwrap_or(0);
-        let bytes = self.source.as_bytes();
-        let mut i = line_start;
-        while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
-            i += 1;
+        let prefix = self.editor.document().ok()?.line_prefix(off).ok()??;
+        // The prefix belongs to a list only when an item's marker closes it —
+        // a heading's `# ` or a bare quote's `> ` is a prefix too.
+        let item = self.innermost_list_item(prefix.end.min(self.source.len()))?;
+        let marker = item.marker_span.clone()?;
+        if marker.end != prefix.end {
+            return None;
         }
-        if i < bytes.len() && matches!(bytes[i], b'-' | b'*' | b'+') {
-            i += 1;
-        } else {
-            let digits_start = i;
-            while i < bytes.len() && bytes[i].is_ascii_digit() {
-                i += 1;
-            }
-            if i == digits_start || !(i < bytes.len() && matches!(bytes[i], b'.' | b')')) {
-                return None;
-            }
-            i += 1; // the . or )
-        }
-        let after_marker = i;
-        while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
-            i += 1;
-        }
-        if i == after_marker {
-            return None; // a marker needs a trailing space
-        }
-        Some((line_start, self.source[line_start..i].to_string()))
+        Some(ListMarker {
+            line_start: prefix.start,
+            marker_start: marker.start,
+            text: self.source.get(prefix)?.to_string(),
+        })
     }
 
     /// Whether the list item on `line_start`'s line is the **first item** of its
@@ -1772,26 +1978,17 @@ impl Doc {
     /// one Tab *can* nest). Gated on the AST, not the marker bytes: `- ` reads
     /// the same in a setext underline that opens no list at all.
     fn first_item_of_list(&mut self, line_start: usize) -> bool {
-        let Some((_, marker)) = self.list_marker_on_line(line_start) else {
+        let Some(marker) = self.list_marker_on_line(line_start) else {
             return false;
         };
         // Probe just inside the marker, where the item's own node is in reach —
         // the marker offset itself can resolve to the enclosing list, not the
         // `list_item`, whose span starts at the marker.
-        let probe = (line_start + marker.len()).min(self.source.len());
-        let Ok(nodes) = self.editor.nodes() else {
+        let probe = marker.content_start().min(self.source.len());
+        let Some(item) = self.innermost_list_item(probe) else {
             return false;
         };
-        // The innermost list item covering the probe (smallest span wins).
-        let Some(item) = nodes
-            .iter()
-            .filter(|n| {
-                (n.kind == "list_item" || n.kind == "task_list_item")
-                    && n.span.start <= probe
-                    && probe < n.span.end
-            })
-            .min_by_key(|n| n.span.end - n.span.start)
-        else {
+        let Ok(nodes) = self.editor.nodes() else {
             return false;
         };
         match item.parent {
@@ -1928,7 +2125,7 @@ impl Doc {
         nodes
             .iter()
             .find(|n| {
-                n.kind == "hard_break"
+                n.kind == Kind::HardBreak
                     && n.span.start < n.span.end
                     && src.get(n.span.start) == Some(&b'<')
                     && match edge {
@@ -1954,22 +2151,23 @@ impl Doc {
     /// nested, else strip the marker so it becomes a paragraph. Returns whether
     /// it acted — `false` leaves Backspace its ordinary character delete.
     fn backspace_list_start(&mut self) -> bool {
-        let Some((line_start, marker)) = self.list_marker_on_line(self.caret) else {
+        let Some(marker) = self.list_marker_on_line(self.caret) else {
             return false;
         };
-        // Only right after the marker, and only in a real list (an AST-gated
-        // test — `- ` bytes alone read the same in a setext underline).
-        if self.caret != line_start + marker.len() || !self.is_inside_list(line_start) {
+        // Only right after the marker. That the line opens a real item is
+        // already settled: `list_marker_on_line` answers from the tree.
+        if self.caret != marker.content_start() {
             return false;
         }
-        if marker.len() > marker.trim_start().len() {
-            // Nested (the marker carries leading indent): give back one level,
-            // keeping the marker and carrying the caret with it.
+        if self.item_is_nested(marker.marker_start) {
+            // Nested: give back one level, keeping the marker and carrying the
+            // caret with it.
             self.outdent();
         } else {
             // Top level: drop the marker, leaving a paragraph, then renumber the
-            // siblings the removed item was counted among.
-            self.splice(line_start, self.caret, "", EditKind::Other);
+            // siblings the removed item was counted among. Only the marker goes —
+            // a quote prefix in front of it still has a quote to hold up.
+            self.splice(marker.marker_start, self.caret, "", EditKind::Other);
             self.renumber_here();
         }
         true
@@ -1993,31 +2191,26 @@ impl Doc {
         let caret = self.caret;
         // The heading whose content opens exactly at the caret. A bare `#` has no
         // content span at all — its content starts (and ends) where the line does.
-        let Some((span, content_end)) = self.nodes().iter().find_map(|n| {
+        let Some((span, content_end, marker)) = self.nodes().iter().find_map(|n| {
             let (start, end) = match &n.content_span {
                 Some(c) => (c.start, c.end),
                 None => (n.span.end, n.span.end),
             };
-            (n.kind == "heading" && start == caret).then(|| (n.span.clone(), end))
+            (n.kind == Kind::Heading && start == caret)
+                .then(|| (n.span.clone(), end, n.marker_span.clone()))
         }) else {
             return false;
         };
-        // Walk back over the marker: the space between it and the text, then the
-        // hashes. A setext heading has neither — its content opens the line — so
-        // it falls through to the ordinary delete, as does anything else sitting
-        // at a content start.
-        let bytes = self.source.as_bytes();
-        let mut start = caret;
-        while start > span.start && matches!(bytes[start - 1], b' ' | b'\t') {
-            start -= 1;
-        }
-        let spaces_end = start;
-        while start > span.start && bytes[start - 1] == b'#' {
-            start -= 1;
-        }
-        if start == spaces_end {
+        // twig reports the marker's own extent, so there is nothing to walk back
+        // over and no `#` in this file. A setext heading has no marker — its
+        // content opens the line — so it falls through to the ordinary delete,
+        // as does anything else sitting at a content start.
+        // `m.end == caret` is what excludes a setext heading, whose marker is the
+        // underline *after* the content rather than a prefix before it.
+        let Some(marker) = marker.filter(|m| m.end == caret) else {
             return false;
-        }
+        };
+        let start = marker.start;
         // A closing `#` sequence is hidden too, so it can't be left behind. Only
         // when the tail really is one: trailing spaces alone are nothing to strip.
         let tail = &self.source[content_end..span.end];
@@ -2177,7 +2370,7 @@ impl Doc {
         let (mut s, mut e) = (start, end);
         loop {
             let mut grew = false;
-            for n in nodes.iter().filter(|n| wysiwyg::is_inline(n, &self.source)) {
+            for n in nodes.iter().filter(|n| wysiwyg::is_inline(n)) {
                 let Some(text) = inline_content_span(n, &self.source) else {
                     continue;
                 };
@@ -2518,8 +2711,15 @@ impl Doc {
     /// a caret outside any ordered list must not coalesce the real edit into the
     /// step before it).
     fn renumber_here(&mut self) {
+        self.renumber_at(self.caret);
+    }
+
+    /// [`renumber_here`](Self::renumber_here) aimed somewhere other than the
+    /// caret — for an edit that leaves the caret one past the item it just wrote,
+    /// where twig resolves no list to renumber.
+    fn renumber_at(&mut self, off: usize) {
         let before = self.source.clone();
-        if self.editor.renumber_ordered_lists(self.caret).is_err() {
+        if self.editor.renumber_ordered_lists(off).is_err() {
             return; // not inside an ordered list — nothing to renumber
         }
         self.refresh();
@@ -2546,33 +2746,43 @@ impl Doc {
     /// touched. This has to live in the *edit*, not the renderer: leaving the
     /// hazardous bytes on disk and only painting over them would ship a file
     /// every other CommonMark tool reads as a heading.
+    ///
+    /// This one keeps its own byte scan, and has to: the hazard is precisely
+    /// that the dash stopped being a list marker, so [`list_marker_on_line`] —
+    /// which asks twig which lines open an item — reports nothing here. There is
+    /// no node to ask about. It is also the last Markdown spelling leaf writes on
+    /// purpose rather than for want of an answer; once twig spells continuations
+    /// itself, avoiding the trap becomes twig's, and this goes.
+    ///
+    /// [`list_marker_on_line`]: Self::list_marker_on_line
     fn avoid_setext_collapse(&mut self) {
-        let Some((line_start, marker)) = self.list_marker_on_line(self.caret) else {
-            return;
-        };
-        let indent_len = marker.len() - marker.trim_start().len();
+        let caret = self.caret.min(self.source.len());
+        let line_start = self.source[..caret].rfind('\n').map_or(0, |i| i + 1);
+        let bytes = self.source.as_bytes();
+        let mut dash = line_start;
+        while matches!(bytes.get(dash), Some(b' ' | b'\t')) {
+            dash += 1;
+        }
         // A dash bullet is the only marker that doubles as a setext underline.
-        if marker.as_bytes().get(indent_len) != Some(&b'-') {
+        if bytes.get(dash) != Some(&b'-') {
             return;
         }
         // Only an *empty* item is a bare underline; `- x` carries content and
         // can't fold the line above into a heading.
-        let content_start = line_start + marker.len();
-        let line_end = self.source[content_start..]
+        let line_end = self.source[dash..]
             .find('\n')
-            .map_or(self.source.len(), |i| content_start + i);
-        if !self.source[content_start..line_end].trim().is_empty() {
+            .map_or(self.source.len(), |i| dash + i);
+        if !self.source[dash + 1..line_end].trim().is_empty() {
             return;
         }
         // The tell: that dash was swallowed into a `heading`. A properly nested
         // empty item sits under a `list_item`, with no heading in reach. Probe
         // the dash byte itself (well inside the heading), not the caret, whose
         // end-of-line offset can fall on the half-open span boundary.
-        let dash = line_start + indent_len;
         let collapsed = self
             .editor
             .ancestors_at(dash)
-            .map(|c| c.into_iter().any(|m| m.kind == "heading"))
+            .map(|c| c.into_iter().any(|m| m.kind == Kind::Heading))
             .unwrap_or(false);
         if !collapsed {
             return;
@@ -2659,23 +2869,24 @@ impl Doc {
     /// Convert the block at the caret to a heading level or paragraph.
     pub fn set_block(&mut self, kind: BlockKind) {
         self.record_caret();
-        match self.block_offset_for_caret() {
-            Some(offset) => match self.editor.set_block(offset, kind) {
-                Ok(_) => {
-                    self.last_edit_kind = None;
-                    self.refresh();
-                    self.clamp_caret();
-                    self.anchor = None;
-                    self.dirty = self.source != self.clean_source;
-                    self.status = None;
-                    self.record_caret();
-                }
-                Err(e) => self.status = Some(format!("{kind:?}: {e}")),
-            },
-            // A blank line — a fresh, empty paragraph with no AST node to convert.
-            // Insert the block's marker so it becomes an (empty) block to type
-            // into (twig's `set_block` needs an existing block at the offset).
-            None => self.insert_block_prefix(kind),
+        // A blank line has no node to convert, and twig opens a block there
+        // rather than declining — so the caret's own offset is the right thing
+        // to hand it when `block_offset_for_caret` finds nothing.
+        let offset = self.block_offset_for_caret().unwrap_or(self.caret);
+        match self.editor.set_block(offset, kind) {
+            Ok(change) => {
+                self.last_edit_kind = None;
+                self.refresh();
+                // Opening a block on a blank line writes a marker the caret
+                // belongs *after*; converting an existing one moves nothing.
+                self.caret = self.caret.max(change.new.end);
+                self.clamp_caret();
+                self.anchor = None;
+                self.dirty = self.source != self.clean_source;
+                self.status = None;
+                self.record_caret();
+            }
+            Err(e) => self.status = Some(format!("{kind:?}: {e}")),
         }
     }
 
@@ -2707,30 +2918,13 @@ impl Doc {
         None
     }
 
-    /// Insert the source marker for `kind` at the caret, to create a block on an
-    /// otherwise-empty line. Markdown/djot spell headings with leading `#`s; a
-    /// paragraph needs no marker (a blank line is already a paragraph slot).
-    fn insert_block_prefix(&mut self, kind: BlockKind) {
-        let prefix = match kind {
-            BlockKind::Heading(n) if matches!(self.format, Format::Markdown | Format::Djot) => {
-                format!("{} ", "#".repeat(n as usize))
-            }
-            BlockKind::Paragraph => return,
-            _ => {
-                self.status = Some(format!("{kind:?}: nothing to convert on an empty line"));
-                return;
-            }
-        };
-        self.insert_raw(&prefix);
-    }
-
     /// The heading level of the text block at the caret, or `None` when that
     /// block is not a heading.
     pub fn current_heading_level(&mut self) -> Option<u32> {
         let caret = self.caret;
         self.nodes()
             .into_iter()
-            .filter(|n| n.kind == "heading")
+            .filter(|n| n.kind == Kind::Heading)
             .find(|n| n.span.start <= caret && caret <= n.span.end)
             .and_then(|n| n.level)
     }
@@ -2838,6 +3032,73 @@ impl Doc {
         });
     }
 
+    // ── Task list items ──────────────────────────────────────────────────────
+    // The checkbox in `- [x] done`. twig owns all three gestures: the box is
+    // inline content of the item's first paragraph rather than part of its
+    // marker, so adding or removing one must leave the item's continuation
+    // indentation alone, and an item inside a quote is found past the quote
+    // markers. leaf names the gesture and the offset; the spelling is twig's.
+
+    /// Whether the list item at the caret carries a checkbox, and which way it
+    /// faces — `Some(true)` ticked, `Some(false)` empty, `None` for a plain list
+    /// item or no item at all. What a toolbar reads to light its checkbox button.
+    pub fn task_checked_at_caret(&mut self) -> Option<bool> {
+        self.task_checked_at(self.caret)
+    }
+
+    /// [`task_checked_at_caret`](Self::task_checked_at_caret) for an arbitrary
+    /// offset — what a frontend asks before deciding a click landed on a box.
+    pub fn task_checked_at(&mut self, offset: usize) -> Option<bool> {
+        self.innermost_list_item(offset.min(self.source.len()))?
+            .checked
+    }
+
+    /// Tick or untick the task item at the caret (the checkbox's keyboard half).
+    /// A no-op with a reported reason when the caret is in no task item — minting
+    /// a box here is [`toggle_task_item`](Self::toggle_task_item)'s job.
+    pub fn toggle_task_checked(&mut self) {
+        self.toggle_task_at(self.caret);
+    }
+
+    /// Tick or untick the task item covering `offset` — what a *click* on a
+    /// rendered checkbox is. Separate from the caret form because a click carries
+    /// its own offset and must not first move the caret there: ticking a box
+    /// three paragraphs away should not take the cursor with it.
+    pub fn toggle_task_at(&mut self, offset: usize) {
+        let offset = offset.min(self.source.len());
+        self.record_caret();
+        match self.editor.toggle_task_checked(offset) {
+            Ok(_) => self.after_task_edit(),
+            Err(e) => self.status = Some(format!("task: {e}")),
+        }
+    }
+
+    /// Give the list item at the caret a checkbox, or take its checkbox away —
+    /// the gesture that converts between a plain bullet and a task. A new box
+    /// arrives unticked.
+    pub fn toggle_task_item(&mut self) {
+        let caret = self.caret.min(self.source.len());
+        self.record_caret();
+        match self.editor.toggle_task_item(caret) {
+            Ok(_) => self.after_task_edit(),
+            Err(e) => self.status = Some(format!("task: {e}")),
+        }
+    }
+
+    /// Settle after a task gesture. The caret rides its old byte offset and is
+    /// clamped back in: a box is three or four bytes on the item's first line, so
+    /// text after it shifts by that much at most, and `clamp_caret` lands it on a
+    /// real stop either way.
+    fn after_task_edit(&mut self) {
+        self.last_edit_kind = None;
+        self.refresh();
+        self.anchor = None;
+        self.dirty = self.source != self.clean_source;
+        self.status = None;
+        self.clamp_caret();
+        self.record_caret();
+    }
+
     // ── Tables ───────────────────────────────────────────────────────────────
     // A table is a grid, and twig edits it as one — add/remove/move a row or
     // column, set a column's alignment — re-spelling the whole table in a single
@@ -2851,7 +3112,7 @@ impl Doc {
         let caret = self.caret.min(self.source.len());
         self.editor
             .ancestors_at(caret)
-            .map(|c| c.into_iter().any(|m| m.kind == "table"))
+            .map(|c| c.into_iter().any(|m| m.kind == Kind::Table))
             .unwrap_or(false)
     }
 
@@ -3156,49 +3417,76 @@ impl Doc {
         self.edit(start, end, &markup);
     }
 
-    /// Insert a thematic break (`---`) at the caret — the toolbar's Horizontal
-    /// Rule button. Twig has no primitive for minting a brand-new block (only
-    /// for retagging or wrapping one that already exists), so this leans on the
-    /// same block-context reasoning [`newline`](Self::newline) uses for Enter: a
-    /// selection is replaced outright, a blank line gets the rule with no
-    /// leading break, and non-blank text is split into a paragraph break first —
-    /// mid-word, mid-list-item, or mid-quote, wherever the caret happens to be.
+    /// Insert a thematic break at the caret — the toolbar's Horizontal Rule
+    /// button. Spelling and placement are both twig's; leaf used to write `---`
+    /// itself, which was the Markdown spelling in a djot document too.
     ///
-    /// The blank line on both sides is not cosmetic: a bare `---` with no blank
-    /// line above it is a *setext* heading underline in Markdown, not a rule,
-    /// and one with no blank line below would fuse with whatever follows. The
-    /// leading break's un-indented `---` also does the work of leaving a list or
-    /// quote — CommonMark and djot both end a container on unindented content,
-    /// so the rule always lands at the top level rather than nested a level deep
-    /// inside whatever the caret started in.
+    /// A rule is a block, so `insert_thematic_break` alone has nowhere to put one
+    /// mid-paragraph and lands it after the caret's whole block. To get a rule
+    /// *at* the caret — the paragraph parted in two around it, which is what a
+    /// rule button is understood to do — the paragraph is first divided with
+    /// `split_block` and the rule then aimed at the **first** half. Aiming it at
+    /// the offset `split_block` returns puts the rule after the *second* half
+    /// instead, which is a rule in the right document and the wrong place.
     ///
-    /// Refuses inside a code block, where `---` would be three literal
-    /// characters of code rather than a rule.
+    /// Only a plain paragraph is split. Everywhere else the rule simply lands
+    /// after the block, which is both twig's own answer and the better one:
+    /// splitting a fenced code block would leave two fences with a rule between
+    /// them, and splitting a list item would mint an item nobody asked for on the
+    /// way to a rule that lands after the list regardless. A table and a setext
+    /// heading refuse the split outright, so they take the same path by
+    /// themselves.
     pub fn insert_thematic_break(&mut self) {
         self.caret = self.skip_trailing_close_delims(self.caret);
-        let off = self.block_offset_for_caret().unwrap_or(self.caret);
-        let in_code_block = self
-            .editor
-            .ancestors_at(off)
-            .map(|c| c.into_iter().any(|m| m.kind == "code_block"))
-            .unwrap_or(false);
-        if in_code_block {
-            self.status = Some("thematic break: not available inside a code block".into());
-            return;
-        }
+        // A selection is replaced by the rule, so collapse it first and let the
+        // split-and-rule below run from the caret it leaves behind.
         if let Some((s, e)) = self.selection() {
-            self.splice(s, e, "\n\n---\n\n", EditKind::Other);
-            return;
+            self.splice(s, e, "", EditKind::Other);
         }
-        let line_start = self.source[..self.caret].rfind('\n').map_or(0, |i| i + 1);
-        let line_end = self.source[self.caret..]
-            .find('\n')
-            .map_or(self.source.len(), |i| self.caret + i);
-        if self.source[line_start..line_end].trim().is_empty() {
-            self.insert_raw("---\n\n");
-        } else {
-            self.insert_raw("\n\n---\n\n");
+        self.anchor = None;
+        self.record_caret();
+        let at = self.caret;
+        if self.caret_in_bare_paragraph() {
+            // A failure here is not fatal: the rule still lands after the block,
+            // which is exactly what this call was trying to improve on.
+            let _ = self.editor.split_block(at);
         }
+        match self.editor.insert_thematic_break(at) {
+            Ok(change) => {
+                self.last_edit_kind = None;
+                self.refresh();
+                self.anchor = None;
+                self.caret = change.new.end;
+                self.dirty = self.source != self.clean_source;
+                self.status = None;
+                self.clamp_caret();
+                self.record_caret();
+            }
+            Err(e) => self.status = Some(format!("thematic break: {e}")),
+        }
+    }
+
+    /// Whether the caret sits in a paragraph and nothing else — no list item, no
+    /// quote, no fence, no table. The one shape where parting the block around
+    /// the caret is unambiguously what a rule button means; see
+    /// [`insert_thematic_break`](Self::insert_thematic_break) for why every other
+    /// container is left to take the rule after itself.
+    fn caret_in_bare_paragraph(&mut self) -> bool {
+        let caret = self.caret.min(self.source.len());
+        let Ok(chain) = self.editor.ancestors_at(caret) else { return false };
+        let mut in_para = false;
+        for m in chain {
+            match m.kind {
+                Kind::Para => in_para = true,
+                Kind::ListItem
+                | Kind::TaskListItem
+                | Kind::BlockQuote
+                | Kind::CodeBlock
+                | Kind::Table => return false,
+                _ => {}
+            }
+        }
+        in_para
     }
 
     /// The destination of the link under the caret — what a Link prompt shows so
@@ -3228,7 +3516,7 @@ impl Doc {
         let off = self.caret;
         self.nodes()
             .into_iter()
-            .filter(|n| n.kind == "image")
+            .filter(|n| n.kind == Kind::Image)
             .filter(|n| n.span.start <= off && off < n.span.end)
             .max_by_key(|n| n.span.start)
             .and_then(|n| n.destination)
@@ -3252,19 +3540,37 @@ impl Doc {
     }
 
     /// Set (or clear, with `""`) the language of the fenced code block the caret
-    /// is in — the prompt's confirm. Replaces the fence's info string in place;
-    /// a no-op when the caret is in no fenced block.
+    /// is in — the prompt's confirm. A no-op when the caret is in no fenced
+    /// block, and a reported error for a language the format's fence cannot
+    /// carry.
+    ///
+    /// twig rewrites the info string, so the fence's own width — measured
+    /// against a body neither side touches — is kept, and a language holding a
+    /// space, a line end or the fence character is refused rather than written
+    /// out to reparse as something else. Leaf used to splice over the info span
+    /// itself and `trim()` the input, which handled the one bad case it had
+    /// thought of.
     pub fn set_code_language(&mut self, lang: &str) {
-        let Some(start) = self.code_block_start_at_caret() else {
+        if self.code_block_start_at_caret().is_none() {
             return;
-        };
-        let Some(span) = wysiwyg::code_info_span(&self.source, start) else {
-            return;
-        };
-        // Trim what the user typed: an info string is a single token, and a
-        // stray space would render as part of the label and re-open the prompt
-        // with it next time.
-        self.splice(span.start, span.end, lang.trim(), EditKind::Other);
+        }
+        let lang = lang.trim();
+        // `None` clears the info string; `Some("")` asks for an empty one. Both
+        // write a bare fence, and the prompt's empty value means "clear".
+        let want = (!lang.is_empty()).then_some(lang);
+        self.record_caret();
+        match self.editor.set_code_language(self.caret, want) {
+            Ok(_) => {
+                self.last_edit_kind = None;
+                self.refresh();
+                self.anchor = None;
+                self.dirty = self.source != self.clean_source;
+                self.status = None;
+                self.clamp_caret();
+                self.record_caret();
+            }
+            Err(e) => self.status = Some(format!("code language: {e}")),
+        }
     }
 
     /// The `span.start` of the code block covering the caret — the anchor
@@ -3274,7 +3580,7 @@ impl Doc {
         let off = self.caret;
         self.nodes()
             .into_iter()
-            .filter(|n| n.kind == "code_block" && n.span.start <= off && off <= n.span.end)
+            .filter(|n| n.kind == Kind::CodeBlock && n.span.start <= off && off <= n.span.end)
             .max_by_key(|n| n.span.start)
             .map(|n| n.span.start)
     }
@@ -3287,7 +3593,7 @@ impl Doc {
             // Two links can touch (`[a](x)[b](y)`), and then one's `span.end` is
             // the other's `span.start`; the link that starts latest at or before
             // `off` is the one `off` is actually in.
-            .filter(|n| n.kind == "link" && n.span.start <= off && off < n.span.end)
+            .filter(|n| n.kind == Kind::Link && n.span.start <= off && off < n.span.end)
             .max_by_key(|n| n.span.start)
             .and_then(|n| n.content_span)
     }
@@ -4378,23 +4684,6 @@ enum Class {
     Other,
 }
 
-/// A block that holds other blocks (not a single line of text). `select_block_at`
-/// skips these so a triple-click grabs the paragraph, not the whole list/section.
-/// The marker for the *next* list item given the current one: a bullet repeats
-/// (`"- "` → `"- "`), an ordered marker increments (`"1. "` → `"2. "`), keeping
-/// any leading indentation and the delimiter/spacing.
-fn next_list_marker(marker: &str) -> String {
-    let indent_len = marker.len() - marker.trim_start().len();
-    let (indent, rest) = marker.split_at(indent_len);
-    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-    if let Ok(n) = digits.parse::<u64>() {
-        // ordered: bump the number, keep the delimiter + trailing space(s).
-        format!("{indent}{}{}", n + 1, &rest[digits.len()..])
-    } else {
-        marker.to_string()
-    }
-}
-
 /// The source range of an inline node's own visible text — the part of it a
 /// WYSIWYG caret can reach, as against the delimiters that only spell it.
 /// `None` for a node with no interior to empty (a `str`, a break).
@@ -4419,16 +4708,17 @@ fn inline_content_span(n: &FlatNode, source: &str) -> Option<std::ops::Range<usi
     }
 }
 
-fn is_block_container(kind: &str) -> bool {
+fn is_block_container(kind: &Kind) -> bool {
     matches!(
         kind,
-        "doc" | "section"
-            | "block_quote"
-            | "bullet_list"
-            | "ordered_list"
-            | "task_list"
-            | "list_item"
-            | "task_list_item"
+        Kind::Doc
+            | Kind::Section
+            | Kind::BlockQuote
+            | Kind::BulletList
+            | Kind::OrderedList
+            | Kind::TaskList
+            | Kind::ListItem
+            | Kind::TaskListItem
             // Every `container` — a directive in any of its three forms, or a
             // promoted HTML element. A *text* directive is really inline, so
             // claiming it here is a small overreach, and the deliberate one this
@@ -4436,7 +4726,7 @@ fn is_block_container(kind: &str) -> bool {
             // consulted together, and answering "block container" for something
             // inline is what keeps an ancestor walk from stopping short of the
             // paragraph that actually holds it.
-            | "container"
+            | Kind::Container
     )
 }
 
@@ -4466,46 +4756,33 @@ fn outdent_width(line: &str, unit: usize) -> usize {
         .count()
 }
 
-/// The indentation step for `line`: one list-marker width when the line opens a
-/// list item (so Tab nests it), otherwise the ordinary [`Doc::INDENT`] step. See
-/// [`list_marker_width`].
-fn indent_unit(line: &str) -> usize {
-    list_marker_width(line).unwrap_or(Doc::INDENT.len())
+
+/// A list marker found at the head of a line, together with everything before it
+/// that a sibling line has to repeat.
+///
+/// The three offsets differ only inside a block quote, where `>   - b` opens with
+/// a `> ` quote marker the line's own text doesn't own. Outside one they collapse:
+/// `line_start == marker_start`, and `text` is the plain `"  - "`.
+#[derive(Clone, Debug)]
+struct ListMarker {
+    /// The line's first byte.
+    line_start: usize,
+    /// Where the marker proper begins, past any quote prefix. The offset to hand
+    /// the AST: a quoted item's span opens at its bullet, not at the `>`.
+    marker_start: usize,
+    /// `line_start` through the marker's trailing space — quote prefix, indent
+    /// and bullet together, which is what the next item's line opens with.
+    text: String,
 }
 
-/// The display width of the list marker `line` opens with — the bullet or number
-/// through its trailing space, *excluding* any indentation before it — or `None`
-/// when the line isn't a list item. `"- "` → 2, `"1. "` → 3, `"  10) "` → 4.
-/// This is exactly how far the marker's content is inset, so indenting a sibling
-/// by it lands the sibling's marker at this item's content column and nests it.
-fn list_marker_width(line: &str) -> Option<usize> {
-    let b = line.as_bytes();
-    let mut i = 0;
-    while i < b.len() && (b[i] == b' ' || b[i] == b'\t') {
-        i += 1;
+impl ListMarker {
+    /// Where the item's content starts — one past the marker's trailing space.
+    fn content_start(&self) -> usize {
+        self.line_start + self.text.len()
     }
-    let marker_start = i;
-    if i < b.len() && matches!(b[i], b'-' | b'*' | b'+') {
-        i += 1;
-    } else {
-        let digits_start = i;
-        while i < b.len() && b[i].is_ascii_digit() {
-            i += 1;
-        }
-        if i == digits_start || !(i < b.len() && matches!(b[i], b'.' | b')')) {
-            return None;
-        }
-        i += 1; // the . or )
-    }
-    let after_marker = i;
-    while i < b.len() && (b[i] == b' ' || b[i] == b'\t') {
-        i += 1;
-    }
-    if i == after_marker {
-        return None; // a marker needs a trailing space
-    }
-    Some(i - marker_start)
 }
+
+
 
 fn classify(c: char) -> Class {
     if c == '_' || c.is_alphanumeric() {
@@ -5851,7 +6128,7 @@ mod tests {
         // leaves the underline intact.
         let mut d = wysiwyg_doc("wys_setext", "text\n- \n");
         assert!(
-            d.nodes().iter().any(|n| n.kind == "heading"),
+            d.nodes().iter().any(|n| n.kind == Kind::Heading),
             "precondition: twig parses this as a heading, not a list",
         );
         d.caret = 7; // on the `- ` underline line
@@ -5874,11 +6151,24 @@ mod tests {
 
     #[test]
     fn wysiwyg_enter_continues_a_block_quote() {
+        // Enter opens a new *paragraph* inside the quote, not a second line of
+        // the same one. `> quote\n> more` is a soft break, which under
+        // `LineFlow::Fold` renders as a space — the keystroke would look like it
+        // did nothing. The quoted blank line is what makes the break visible, and
+        // it's the same thing Enter does in running prose.
         let mut d = wysiwyg_doc("wys_quote", "> quote\n");
         d.caret = 7; // end of "quote"
         d.newline();
         d.insert("more");
-        assert_eq!(d.source, "> quote\n> more\n");
+        assert_eq!(d.source, "> quote\n>\n> more\n");
+        // Still one quote, now holding two paragraphs — not a quote and a stray
+        // line that fell out of it.
+        let quotes = d
+            .nodes()
+            .iter()
+            .filter(|n| n.kind == Kind::BlockQuote)
+            .count();
+        assert_eq!(quotes, 1);
     }
 
     #[test]
@@ -6120,7 +6410,7 @@ mod tests {
     /// and since twig 2.8 that includes the `doc` root, which now carries a real
     /// span (it reported none before, so taking the first match used to land on
     /// the block by luck and now always answers `"doc"`).
-    fn kind_at(d: &mut Doc, caret: usize) -> Option<String> {
+    fn kind_at(d: &mut Doc, caret: usize) -> Option<Kind> {
         d.nodes()
             .into_iter()
             .filter(|n| n.span.start <= caret && caret < n.span.end)
@@ -6129,54 +6419,379 @@ mod tests {
     }
 
     #[test]
-    fn insert_thematic_break_splits_a_paragraph_and_lands_past_it() {
+    fn a_task_box_toggles_at_the_caret_and_reads_back() {
+        let mut d = doc_with("task_toggle", "- [ ] todo\n- [x] done\n");
+        d.caret = 8; // inside "todo"
+        assert_eq!(d.task_checked_at_caret(), Some(false));
+        d.toggle_task_checked();
+        assert_eq!(d.source, "- [x] todo\n- [x] done\n");
+        assert_eq!(d.task_checked_at_caret(), Some(true));
+        d.toggle_task_checked();
+        assert_eq!(d.source, "- [ ] todo\n- [x] done\n");
+    }
+
+    #[test]
+    fn a_click_toggles_a_box_without_taking_the_caret_with_it() {
+        // The whole reason `toggle_task_at` exists apart from the caret form:
+        // ticking a box elsewhere must not move the cursor out of what's being
+        // typed.
+        let mut d = doc_with("task_click", "- [ ] first\n- [ ] second\n");
+        d.caret = 8; // inside "first"
+        let second = d.source.find("second").unwrap();
+        d.toggle_task_at(second);
+        assert_eq!(d.source, "- [ ] first\n- [x] second\n");
+        assert_eq!(d.caret, 8, "the caret stayed in the first item");
+    }
+
+    #[test]
+    fn a_plain_item_gains_and_loses_a_box() {
+        let mut d = doc_with("task_mint", "- plain\n");
+        d.caret = 4;
+        assert_eq!(d.task_checked_at_caret(), None);
+        d.toggle_task_item();
+        assert_eq!(d.source, "- [ ] plain\n");
+        assert_eq!(d.task_checked_at_caret(), Some(false), "a new box arrives unticked");
+        d.toggle_task_item();
+        assert_eq!(d.source, "- plain\n");
+    }
+
+    #[test]
+    fn ticking_a_box_that_isnt_there_reports_rather_than_minting_one() {
+        // `set checked` must not silently convert a bullet into a task — that is
+        // `toggle_task_item`'s job, and twig refuses it here.
+        let mut d = doc_with("task_none", "- plain\n");
+        d.caret = 4;
+        d.toggle_task_checked();
+        assert_eq!(d.source, "- plain\n", "nothing written");
+        assert!(d.status.is_some(), "the refusal should reach the status line");
+    }
+
+    #[test]
+    fn a_task_item_in_a_quote_is_found_past_the_quote_marker() {
+        let mut d = doc_with("task_quote", "> - [ ] nested\n");
+        d.caret = d.source.find("nested").unwrap();
+        assert_eq!(d.task_checked_at_caret(), Some(false));
+        d.toggle_task_checked();
+        assert_eq!(d.source, "> - [x] nested\n");
+    }
+
+    #[test]
+    fn insert_thematic_break_parts_the_paragraph_around_the_caret() {
+        // A rule is a block, so twig's `insert_thematic_break` alone lands it
+        // after the whole paragraph. `split_block` parts the paragraph first and
+        // the rule is aimed at the *first* half, which is what a rule button is
+        // understood to do — and what leaf spelled by hand until twig grew both
+        // halves of the gesture.
         let mut d = doc_with("hr_mid", "before after\n");
         d.caret = 7; // between "before " and "after"
         d.insert_thematic_break();
         assert_eq!(d.source, "before \n\n---\n\nafter\n");
         assert_eq!(d.selection(), None);
-        assert_eq!(d.caret, "before \n\n---\n\n".len());
-        assert_eq!(kind_at(&mut d, "before \n\n".len()), Some("thematic_break".to_string()));
+        assert_eq!(kind_at(&mut d, "before \n\n".len()), Some(Kind::ThematicBreak));
     }
 
     #[test]
-    fn insert_thematic_break_on_a_blank_line_needs_no_leading_break() {
-        let mut d = doc_with("hr_blank", "abc\n\n\ndef\n");
-        d.caret = "abc\n\n".len(); // the blank line between the two paragraphs
-        d.insert_thematic_break();
-        assert_eq!(d.source, "abc\n\n---\n\n\ndef\n");
+    fn insert_thematic_break_spells_the_rule_the_format_s_own_way() {
+        // The whole point of delegating: `---` is Markdown's, `* * *` is djot's,
+        // and leaf wrote the first into both until twig started spelling it.
+        let mut md = doc_with("hr_md", "para\n");
+        md.caret = 2;
+        md.insert_thematic_break();
+        assert_eq!(md.source, "pa\n\n---\n\nra\n");
+
+        let mut dj = Doc::from_source("para\n".into(), Format::Djot).unwrap();
+        dj.caret = 2;
+        dj.insert_thematic_break();
+        assert_eq!(dj.source, "pa\n\n* * *\n\nra\n");
+    }
+
+    #[test]
+    fn enter_in_a_nested_list_item_keeps_the_new_item_nested() {
+        // The same bytes are two documents. In Markdown `  - b` is a nested item
+        // and the next one belongs beside it, at its indent. In Djot a list
+        // marker can't interrupt a paragraph, so those bytes are literal text in
+        // item `a` and there is only one item — writing `  - ` under it would add
+        // no item at all, just more text, and the new sibling has to go to
+        // column zero. Both spellings come out of the *enclosing item's* line.
+        let mut md = wysiwyg_doc("enter_nested_md", "- a\n  - b\n");
+        md.caret = "- a\n  - b".len();
+        md.newline();
+        assert_eq!(md.source, "- a\n  - b\n  - \n");
+        assert_eq!(list_items(&mut md), 3);
+
+        let mut dj = Doc::from_source("- a\n  - b\n".into(), Format::Djot).unwrap();
+        dj.view = View::Wysiwyg;
+        dj.build_visual(80);
+        dj.caret = "- a\n  - b".len();
+        dj.newline();
+        assert_eq!(dj.source, "- a\n  - b\n- \n");
+        assert_eq!(list_items(&mut dj), 2);
+
+        // Where Djot's nesting is real — opened by a blank line — the indent is
+        // reproduced there too, and the two formats agree again.
+        let mut dj = Doc::from_source("- a\n\n  - b\n".into(), Format::Djot).unwrap();
+        dj.view = View::Wysiwyg;
+        dj.build_visual(80);
+        dj.caret = "- a\n\n  - b".len();
+        dj.newline();
+        assert_eq!(dj.source, "- a\n\n  - b\n  - \n");
+        assert_eq!(list_items(&mut dj), 3);
+    }
+
+    #[test]
+    fn tab_nests_an_item_at_the_column_its_own_marker_asks_for() {
+        // Tab replaces the line's whole prefix with the one twig spells, so the
+        // quote markers, the parent's indent and an ordered marker's extra
+        // column are all its answer rather than leaf's arithmetic.
+        for (name, body, caret, want) in [
+            ("bullet", "- a\n- b\n", 6, "- a\n  - b\n"),
+            ("ordered", "1. a\n2. b\n", 8, "1. a\n   1. b\n"),
+            ("quoted", "> - a\n> - b\n", 10, "> - a\n>   - b\n"),
+            // A checkbox is markup the item's own text wraps past, but a nested
+            // list may only open at the *list* marker's column — four in from
+            // there is a paragraph continuation, and `- [ ] a\n      - [ ] b`
+            // parses as one item, not two.
+            ("task", "- [ ] a\n- [ ] b\n", 14, "- [ ] a\n  - [ ] b\n"),
+            (
+                "quoted task",
+                "> - [ ] a\n> - [ ] b\n",
+                18,
+                "> - [ ] a\n>   - [ ] b\n",
+            ),
+        ] {
+            let mut doc = wysiwyg_doc(name, body);
+            doc.caret = caret;
+            doc.indent();
+            assert_eq!(doc.source, want, "{name}");
+            // The nesting is real, not just indented text.
+            assert_eq!(list_items(&mut doc), 2, "{name}");
+        }
+    }
+
+    #[test]
+    fn backspace_only_outdents_where_the_format_says_there_is_an_item() {
+        // The same bytes, the two formats disagreeing, and a gesture that used
+        // to read the bytes. `  - b` is a nested item in Markdown, so Backspace
+        // at its marker outdents. In Djot a marker can't interrupt a paragraph,
+        // so those bytes are literal text inside item `a` — there is nothing to
+        // outdent, and treating them as a marker turned one item into two, a
+        // structural edit from a keystroke that should delete one character.
+        //
+        // twig's `line_prefix` is what tells them apart: it reports the marker
+        // on the Markdown line and nothing on the Djot one, which is a
+        // continuation. No byte scan can reach that answer.
+        let src = "- a\n  - b\n";
+        let at = "- a\n  - ".len();
+
+        let mut md = Doc::from_source(src.into(), Format::Markdown).unwrap();
+        md.view = View::Wysiwyg;
+        md.build_visual(80);
+        md.caret = at;
+        md.backspace();
+        assert_eq!(md.source, "- a\n- b\n");
+        assert_eq!(list_items(&mut md), 2);
+
+        let mut dj = Doc::from_source(src.into(), Format::Djot).unwrap();
+        dj.view = View::Wysiwyg;
+        dj.build_visual(80);
+        dj.caret = at;
+        dj.backspace();
+        assert_eq!(dj.source, "- a\n  -b\n"); // an ordinary character delete
+        assert_eq!(list_items(&mut dj), 1); // and the structure is untouched
+    }
+
+    #[test]
+    fn enter_in_a_checklist_item_starts_another_unchecked_one() {
+        // Leaf used to spell the next item from the marker bytes it scanned, and
+        // its scanner stopped at the bullet — so Enter in a checklist wrote `- `
+        // and dropped out of the checklist. twig reproduces the whole
+        // continuation, and a fresh item is always unticked however the one above
+        // it stands.
+        for (name, body, want) in [
+            ("unchecked", "- [ ] a\n", "- [ ] a\n- [ ] \n"),
+            ("checked", "- [x] a\n", "- [x] a\n- [ ] \n"),
+        ] {
+            let mut doc = wysiwyg_doc(name, body);
+            doc.caret = body.trim_end_matches('\n').len();
+            doc.newline();
+            assert_eq!(doc.source, want, "{name}");
+            // Both items are checklist items — the new one is a box, not the
+            // plain bullet the old marker scan left behind — and it is unticked
+            // whichever way the one above it faces.
+            let boxes: Vec<Option<bool>> = doc
+                .nodes()
+                .iter()
+                .filter(|n| n.kind == Kind::TaskListItem)
+                .map(|n| n.checked)
+                .collect();
+            assert_eq!(boxes.len(), 2, "{name}");
+            assert_eq!(boxes[1], Some(false), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_split_takes_the_space_the_caret_was_in_front_of() {
+        // Splicing a break at the caret strands the space the words were parted
+        // at on the head of the second block, where it reads as an indent nobody
+        // typed. twig's split consumes it.
+        for (name, body, caret, want) in [
+            ("para", "one two\n", 3, "one\n\ntwo\n"),
+            ("item", "- one two\n", 5, "- one\n- two\n"),
+            ("quote", "> one two\n", 5, "> one\n>\n> two\n"),
+            // A heading takes leaf's own path, which has to match.
+            ("heading", "# one two\n", 5, "# one\n\ntwo\n"),
+        ] {
+            let mut doc = wysiwyg_doc(name, body);
+            doc.caret = caret;
+            doc.newline();
+            assert_eq!(doc.source, want, "{name}");
+        }
+    }
+
+    #[test]
+    fn enter_at_the_end_of_a_heading_opens_a_paragraph() {
+        // The one place leaf keeps its own break: `split_block` repeats the `#`,
+        // and Enter after a title is how the body under it is asked for.
+        let mut doc = wysiwyg_doc("head_enter", "# Title\n");
+        doc.caret = "# Title".len();
+        doc.newline();
+        doc.insert("body");
+        assert_eq!(doc.source, "# Title\n\nbody\n");
+        assert_eq!(
+            doc.nodes()
+                .iter()
+                .filter(|n| n.kind == Kind::Heading)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn enter_in_a_quoted_list_item_starts_the_next_quoted_item() {
+        // A quoted item's marker doesn't open its line, so a scan that starts at
+        // column zero finds a `>` where it wanted a bullet, calls the line "not a
+        // list" and hands Enter to the plain-quote branch — which writes `> ` and
+        // drops the list. The next item has to carry the whole prefix.
+        for (name, body, want) in [
+            ("flat", "> - a\n", "> - a\n> - \n"),
+            ("sibling", "> - a\n> - b\n", "> - a\n> - b\n> - \n"),
+            ("nested", "> - a\n>   - b\n", "> - a\n>   - b\n>   - \n"),
+            ("ordered", "> 1. a\n> 2. b\n", "> 1. a\n> 2. b\n> 3. \n"),
+            ("twice quoted", "> > - a\n", "> > - a\n> > - \n"),
+        ] {
+            let mut doc = wysiwyg_doc(name, body);
+            doc.caret = body.trim_end_matches('\n').len();
+            doc.newline();
+            assert_eq!(doc.source, want, "{name}");
+            // The marker isn't just spelled right, it parses as an item.
+            assert_eq!(list_items(&mut doc), body.lines().count() + 1, "{name}");
+        }
+    }
+
+    #[test]
+    fn an_empty_quoted_item_leaves_the_list_and_stays_in_the_quote() {
+        // Double-Enter exits the list. Unquoted that means a blank line, but a
+        // *bare* blank line would end the quote too and drop the caret out of it,
+        // so the separator keeps its `>` and the caret's line keeps its `> `.
+        let mut doc = wysiwyg_doc("quoted_exit", "> - a\n> - \n");
+        doc.caret = "> - a\n> - ".len();
+        doc.newline();
+        assert_eq!(doc.source, "> - a\n>\n> \n");
+        assert_eq!(list_items(&mut doc), 1);
+        // What "still in the quote" means for the next keystroke: the caret sits
+        // behind the prefix, and what's typed there lands inside the quote as a
+        // paragraph of its own — not as more of item `a`.
+        doc.insert("x");
+        assert_eq!(doc.source, "> - a\n>\n> x\n");
+        assert!(
+            doc.editor
+                .ancestors_at(doc.caret - 1)
+                .is_ok_and(|c| c.into_iter().any(|m| m.kind == Kind::BlockQuote))
+        );
+    }
+
+    #[test]
+    fn backspace_at_a_quoted_marker_takes_the_marker_and_leaves_the_quote() {
+        // The marker is hidden block markup, so Backspace over it is structural —
+        // but only the marker is the list's. Splicing from the line start would
+        // take the `>` with it and silently unquote the line.
+        let mut doc = wysiwyg_doc("quoted_bksp", "> - a\n");
+        doc.caret = "> - ".len();
+        doc.backspace();
+        assert_eq!(doc.source, "> a\n");
+        assert_eq!(list_items(&mut doc), 0);
+
+        // A nested one outdents instead, moving the bullet within the quote
+        // rather than moving the quote.
+        let mut doc = wysiwyg_doc("quoted_outdent", "> - a\n>   - b\n");
+        doc.caret = "> - a\n>   - ".len();
+        doc.backspace();
+        assert_eq!(doc.source, "> - a\n> - b\n");
+        assert_eq!(list_items(&mut doc), 2);
+    }
+
+    #[test]
+    fn only_a_bare_paragraph_is_parted_around_the_caret() {
+        // The split is deliberately narrow. Parting a fenced block would leave
+        // two fences with a rule between them, and parting a list item would
+        // mint an item nobody asked for on the way to a rule that lands after
+        // the list either way — so both keep the whole block intact and take the
+        // rule after it. A caret in a quote is likewise left alone.
+        for (name, body, caret, want) in [
+            ("code", "```\nfn x() {}\n```\n", 8, "```\nfn x() {}\n```\n\n---\n"),
+            ("list", "- one two\n", 6, "- one two\n\n---\n"),
+            ("quote", "> one two\n", 6, "> one two\n>\n> ---\n"),
+        ] {
+            let mut d = doc_with(&format!("hr_narrow_{name}"), body);
+            d.caret = caret;
+            d.insert_thematic_break();
+            assert_eq!(d.source, want, "{name}: the block should stay whole");
+        }
     }
 
     #[test]
     fn insert_thematic_break_replaces_the_selection() {
+        // Now that the rule lands *at* the caret again, replacing the selection
+        // is coherent once more: the text goes, and the rule takes its place.
+        // The space the deletion left leading the second half is consumed by the
+        // split rather than opening the new paragraph with it.
         let mut d = doc_with("hr_sel", "one two three\n");
         d.anchor = Some(4);
         d.caret = 7; // "two"
         d.insert_thematic_break();
-        assert_eq!(d.source, "one \n\n---\n\n three\n");
+        assert_eq!(d.source, "one \n\n---\n\nthree\n");
+        assert_eq!(d.selection(), None);
     }
 
     #[test]
-    fn insert_thematic_break_refuses_inside_a_code_block() {
-        let mut d = doc_with("hr_code", "```\nfn x() {}\n```\n");
-        d.caret = 5; // inside the fenced code
-        d.insert_thematic_break();
-        assert_eq!(d.source, "```\nfn x() {}\n```\n", "refused, so nothing changed");
-        assert!(d.status.is_some(), "the refusal should reach the status line");
+    fn insert_thematic_break_clears_a_code_block_and_a_table_rather_than_refusing() {
+        // Both are blocks the rule lands *after*. Leaf used to refuse a fence,
+        // because writing `---` into one is code, not a rule — twig now walks out
+        // to the block that owns the caret's line, so there is nothing to refuse.
+        let mut code = doc_with("hr_code", "```\nfn x() {}\n```\n");
+        code.caret = 5; // inside the fenced code
+        code.insert_thematic_break();
+        assert_eq!(code.source, "```\nfn x() {}\n```\n\n---\n");
+        assert_eq!(code.status, None, "no refusal to report any more");
+
+        let mut table = doc_with("hr_table", "| a | b |\n|---|---|\n| 1 | 2 |\n");
+        table.caret = 3; // in the header row
+        table.insert_thematic_break();
+        assert_eq!(table.source, "| a | b |\n|---|---|\n| 1 | 2 |\n\n---\n");
     }
 
     #[test]
     fn insert_thematic_break_in_a_list_item_ends_the_list() {
-        // The un-indented `---` cannot continue the list, so it closes the list
-        // and lands the rule at the top level rather than nested inside it.
+        // The un-indented rule cannot continue the list, so it closes the list
+        // and lands at the top level rather than nested inside it.
         let mut d = doc_with("hr_list", "- one\n- two\n");
         d.caret = "- one\n- tw".len(); // mid "two"
         d.insert_thematic_break();
         d.build_visual(80);
-        let rule_at = d.source.find("---\n\n").unwrap();
-        assert_eq!(kind_at(&mut d, rule_at), Some("thematic_break".to_string()));
+        let rule_at = d.source.find("---").unwrap();
+        assert_eq!(kind_at(&mut d, rule_at), Some(Kind::ThematicBreak));
         assert!(
-            !d.nodes().iter().any(|n| n.kind == "bullet_list"
+            !d.nodes().iter().any(|n| n.kind == Kind::BulletList
                 && n.span.start <= rule_at
                 && rule_at < n.span.end),
             "the rule must not be nested inside the list"
@@ -6184,18 +6799,21 @@ mod tests {
     }
 
     #[test]
-    fn insert_thematic_break_in_a_blockquote_ends_the_quote() {
+    fn insert_thematic_break_in_a_blockquote_stays_in_the_quote() {
+        // Leaf used to end the quote. twig gives the rule the quote's own prefix,
+        // which is the document the gesture was actually asked for.
         let mut d = doc_with("hr_quote", "> hello\n");
         d.caret = 4; // inside the quoted text
         d.insert_thematic_break();
+        assert_eq!(d.source, "> hello\n>\n> ---\n");
         d.build_visual(80);
-        let rule_at = d.source.find("---\n\n").unwrap();
-        assert_eq!(kind_at(&mut d, rule_at), Some("thematic_break".to_string()));
+        let rule_at = d.source.find("---").unwrap();
+        assert_eq!(kind_at(&mut d, rule_at), Some(Kind::ThematicBreak));
         assert!(
-            !d.nodes().iter().any(|n| n.kind == "block_quote"
+            d.nodes().iter().any(|n| n.kind == Kind::BlockQuote
                 && n.span.start <= rule_at
                 && rule_at < n.span.end),
-            "the rule must not be nested inside the quote"
+            "the rule belongs to the quote it was asked for"
         );
     }
 
@@ -6510,6 +7128,20 @@ mod tests {
     }
 
     #[test]
+    fn a_language_the_fence_cannot_carry_is_refused_not_written() {
+        // Markdown's info string ends at whitespace, so `two words` would write
+        // a fence that reads back with a different language than the one asked
+        // for. twig refuses it; leaf reports that and leaves the source alone.
+        // The old splice trimmed the ends and wrote whatever was left.
+        let mut d = doc_with("code_lang_bad", "```rust\nx\n```\n");
+        d.caret = 10;
+        d.set_code_language("two words");
+        assert_eq!(d.source, "```rust\nx\n```\n", "source should be untouched");
+        assert!(d.status.is_some(), "the refusal should be reported");
+        assert_eq!(d.code_language_at_caret().as_deref(), Some("rust"));
+    }
+
+    #[test]
     fn link_destination_at_caret_reads_both_spellings() {
         let mut d = doc_with("link_dest", "see [t](https://x.dev) ok\n");
         d.caret = 5;
@@ -6615,6 +7247,17 @@ mod tests {
 
     fn wysiwyg_doc(name: &str, body: &str) -> Doc {
         doc_in(View::Wysiwyg, name, body)
+    }
+
+    /// How many list items the source actually parses into — the check that a
+    /// marker Leaf wrote is a marker the format agrees is one.
+    fn list_items(doc: &mut Doc) -> usize {
+        doc.editor
+            .nodes()
+            .unwrap()
+            .iter()
+            .filter(|n| n.kind == Kind::ListItem || n.kind == Kind::TaskListItem)
+            .count()
     }
 
     /// A from-scratch, cache-free WYSIWYG map for `source` — the ground truth the
@@ -7128,9 +7771,9 @@ mod tests {
         let mut d = wysiwyg_doc("tbl_break_semantic", TABLE);
         d.caret = TABLE.find("Pear").unwrap() + 4;
         assert!(d.cell_line_break());
-        let kinds: Vec<String> = d.editor.nodes().unwrap().iter().map(|n| n.kind.clone()).collect();
-        assert!(kinds.iter().any(|k| k == "hard_break"), "got {kinds:?}");
-        assert!(!kinds.iter().any(|k| k == "raw_inline"), "still raw HTML: {kinds:?}");
+        let kinds: Vec<Kind> = d.editor.nodes().unwrap().iter().map(|n| n.kind.clone()).collect();
+        assert!(kinds.contains(&Kind::HardBreak), "got {kinds:?}");
+        assert!(!kinds.contains(&Kind::RawInline), "still raw HTML: {kinds:?}");
     }
 
     #[test]
@@ -7610,17 +8253,17 @@ mod tests {
         d.indent();
         assert_eq!(d.source, "  hello\n");
         assert!(
-            d.nodes().iter().any(|n| n.kind == "para"),
+            d.nodes().iter().any(|n| n.kind == Kind::Para),
             "still prose after a Tab"
         );
-        assert!(!d.nodes().iter().any(|n| n.kind == "code_block"));
+        assert!(!d.nodes().iter().any(|n| n.kind == Kind::CodeBlock));
 
         // The four-space level this replaces, for contrast: same text, and twig
         // reparses the paragraph into a code block.
         let mut wide = doc_with("indent_kind_4", "    hello\n");
         wide.build_visual(80);
         assert!(
-            wide.nodes().iter().any(|n| n.kind == "code_block"),
+            wide.nodes().iter().any(|n| n.kind == Kind::CodeBlock),
             "four spaces is a code block, not an indented paragraph"
         );
     }
@@ -7634,7 +8277,7 @@ mod tests {
             d.caret = 6; // on the second item
             d.indent();
             assert_eq!(d.source, "- a\n  - b\n");
-            let lists = d.nodes().iter().filter(|n| n.kind == "bullet_list").count();
+            let lists = d.nodes().iter().filter(|n| n.kind == Kind::BulletList).count();
             assert_eq!(lists, 2, "the indented item is a nested list");
         }
     }
@@ -7650,7 +8293,7 @@ mod tests {
             d.caret = d.source.find('b').unwrap();
             d.indent();
             assert_eq!(d.source, "1. a\n   1. b\n2. c\n");
-            let lists = d.nodes().iter().filter(|n| n.kind == "ordered_list").count();
+            let lists = d.nodes().iter().filter(|n| n.kind == Kind::OrderedList).count();
             assert_eq!(lists, 2, "the indented item is a nested ordered list");
         }
     }
@@ -7680,7 +8323,7 @@ mod tests {
         let mut d = doc_in(View::Wysiwyg, "hidden_literal", "");
         d.insert("*hi*");
         assert_eq!(d.source, "\\*hi\\*");
-        assert!(d.nodes().iter().all(|n| n.kind != "emph" && n.kind != "strong"));
+        assert!(d.nodes().iter().all(|n| n.kind != Kind::Emph && n.kind != Kind::Strong));
     }
 
     #[test]
@@ -7690,7 +8333,7 @@ mod tests {
         let mut d = doc_in(View::Wysiwyg, "hidden_block", "");
         d.insert("# hi");
         assert_eq!(d.source, "\\# hi");
-        assert!(d.nodes().iter().all(|n| n.kind != "heading"));
+        assert!(d.nodes().iter().all(|n| n.kind != Kind::Heading));
     }
 
     #[test]
@@ -7883,9 +8526,9 @@ mod tests {
             d.caret = d.source.find("- \n").unwrap() + 2; // after the empty marker
             d.indent();
             assert_eq!(d.source, "- hello\n  * \n");
-            assert!(d.nodes().iter().all(|n| n.kind != "heading"), "no heading");
+            assert!(d.nodes().iter().all(|n| n.kind != Kind::Heading), "no heading");
             // And it's genuinely a nested list, not a flat one.
-            assert_eq!(d.nodes().iter().filter(|n| n.kind == "bullet_list").count(), 2);
+            assert_eq!(d.nodes().iter().filter(|n| n.kind == Kind::BulletList).count(), 2);
         }
     }
 
@@ -8023,7 +8666,7 @@ mod tests {
         d.caret = d.source.find('b').unwrap();
         d.outdent();
         assert_eq!(d.source, "1. a\n2. b\n3. c\n");
-        let lists = d.nodes().iter().filter(|n| n.kind == "ordered_list").count();
+        let lists = d.nodes().iter().filter(|n| n.kind == Kind::OrderedList).count();
         assert_eq!(lists, 1, "back to one flat list");
     }
 
@@ -9557,16 +10200,16 @@ mod tests {
 /// `None` for every other kind, including the inline nodes that aren't marks at
 /// all (`str`, `link`, `image`, the math and break kinds): they're things a
 /// caret stands in, not formatting a button toggles.
-fn inline_kind(kind: &str) -> Option<InlineKind> {
+fn inline_kind(kind: &Kind) -> Option<InlineKind> {
     Some(match kind {
-        "strong" => InlineKind::Strong,
-        "emph" => InlineKind::Emph,
-        "verbatim" => InlineKind::Verbatim,
-        "mark" => InlineKind::Mark,
-        "superscript" => InlineKind::Superscript,
-        "subscript" => InlineKind::Subscript,
-        "insert" => InlineKind::Insert,
-        "delete" => InlineKind::Delete,
+        Kind::Strong => InlineKind::Strong,
+        Kind::Emph => InlineKind::Emph,
+        Kind::Verbatim => InlineKind::Verbatim,
+        Kind::Mark => InlineKind::Mark,
+        Kind::Superscript => InlineKind::Superscript,
+        Kind::Subscript => InlineKind::Subscript,
+        Kind::Insert => InlineKind::Insert,
+        Kind::Delete => InlineKind::Delete,
         _ => return None,
     })
 }

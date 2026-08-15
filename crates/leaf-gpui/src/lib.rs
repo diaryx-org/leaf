@@ -75,6 +75,10 @@ pub enum EditorCommand {
     Heading5,
     Heading6,
     ToggleView,
+    /// Tick or untick the task item at the caret.
+    ToggleTaskChecked,
+    /// Give the list item at the caret a checkbox, or take it away.
+    ToggleTaskItem,
     Undo,
     Redo,
     Save,
@@ -248,6 +252,9 @@ actions!(
         Outdent, DeleteToLineStart, DeleteToLineEnd,
         // Strikethrough / underline — twig's Delete / Insert inline kinds.
         ToggleStrikethrough, ToggleUnderline,
+        // Task list items (⌘⇧X ticks the box, ⌘⇧T mints or removes one). A
+        // rendered box is also clickable — see `task_box_at`.
+        ToggleTaskChecked, ToggleTaskItem,
         // Document lifecycle the widget owns: Save As (⌘⇧S) and a new blank
         // document (⌘N). Plain quit/open stay the host's.
         SaveAs, NewDocument,
@@ -320,6 +327,8 @@ pub fn register_keybindings(cx: &mut App) {
         KeyBinding::new("cmd-shift-7", ToggleOrderedList, ctx),
         KeyBinding::new("cmd-k", InsertLink, ctx),
         KeyBinding::new("cmd-shift-l", SetLanguage, ctx),
+        KeyBinding::new("cmd-shift-x", ToggleTaskChecked, ctx),
+        KeyBinding::new("cmd-shift-t", ToggleTaskItem, ctx),
         KeyBinding::new("shift-tab", Outdent, ctx),
         // The line kills, as `NSStandardKeyBindingResponding` spells them:
         // ⌘⌫ is `deleteToBeginningOfLine:` and ⌃K is `deleteToEndOfLine:`.
@@ -572,6 +581,10 @@ impl Editor {
             EditorCommand::Heading5 => self.heading5(&Heading5, window, cx),
             EditorCommand::Heading6 => self.heading6(&Heading6, window, cx),
             EditorCommand::ToggleView => self.toggle_view(&ToggleView, window, cx),
+            EditorCommand::ToggleTaskChecked => {
+                self.toggle_task_checked(&ToggleTaskChecked, window, cx)
+            }
+            EditorCommand::ToggleTaskItem => self.toggle_task_item(&ToggleTaskItem, window, cx),
             EditorCommand::Undo => self.undo(&Undo, window, cx),
             EditorCommand::Redo => self.redo(&Redo, window, cx),
             EditorCommand::Save => self.save(&Save, window, cx),
@@ -1240,6 +1253,21 @@ impl Editor {
         doc.toggle_blockquote();
         cx.notify();
     }
+    fn toggle_task_checked(
+        &mut self,
+        _: &ToggleTaskChecked,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(doc) = self.doc.as_mut() else { return };
+        doc.toggle_task_checked();
+        cx.notify();
+    }
+    fn toggle_task_item(&mut self, _: &ToggleTaskItem, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(doc) = self.doc.as_mut() else { return };
+        doc.toggle_task_item();
+        cx.notify();
+    }
     fn toggle_bullet_list(&mut self, _: &ToggleBulletList, _: &mut Window, cx: &mut Context<Self>) {
         let Some(doc) = self.doc.as_mut() else { return };
         doc.toggle_list(false);
@@ -1478,6 +1506,20 @@ impl Editor {
         if self.context_menu.take().is_some() {
             cx.notify();
             return;
+        }
+        // A plain click on a rendered checkbox ticks it and nothing else: the
+        // caret stays put, so ticking something off doesn't interrupt what's
+        // being typed elsewhere. Shift and the multi-click gestures fall through
+        // — those are selection verbs, and a box is not a selection.
+        if ev.click_count == 1 && !ev.modifiers.shift {
+            if let Some(off) = self.task_box_for_position(ev.position) {
+                self.is_selecting = false;
+                if let Some(doc) = self.doc.as_mut() {
+                    doc.toggle_task_at(off);
+                }
+                cx.notify();
+                return;
+            }
         }
         self.is_selecting = true;
         let off = self.offset_for_position(ev.position);
@@ -1811,6 +1853,24 @@ impl Editor {
     /// map that character back to the source byte it came from. Because each
     /// `RowLayout` carries per-character source offsets, this is identical for a
     /// source line and a hidden-delimiter WYSIWYG row.
+    /// The source offset of the task checkbox under `pos`, or `None` when the
+    /// click landed anywhere else. The row/glyph resolution is
+    /// [`Self::offset_for_position`]'s, so a box is hit-tested against exactly
+    /// the coordinates its glyphs were painted in.
+    fn task_box_for_position(&self, pos: Point<Pixels>) -> Option<usize> {
+        let doc = self.doc.as_ref()?;
+        let bounds = self.last_bounds?;
+        if self.last_rows.is_empty() {
+            return None;
+        }
+        let rel_y = (pos.y - bounds.top()).max(px(0.0));
+        let r = row_at_y(&self.last_row_tops, rel_y).min(self.last_rows.len() - 1);
+        let row = &self.last_rows[r];
+        let dx = self.last_row_x.get(r).copied().unwrap_or(px(0.0));
+        let gi = row.index_for_x(pos.x - bounds.left() - dx);
+        doc.vmap.task_box_at_glyph(r, gi)
+    }
+
     fn offset_for_position(&self, pos: Point<Pixels>) -> usize {
         let caret = self.doc.as_ref().map(|d| d.caret).unwrap_or(0);
         let Some(bounds) = self.last_bounds else {
@@ -4178,6 +4238,8 @@ impl Render for Editor {
                     .on_action(cx.listener(Self::heading5))
                     .on_action(cx.listener(Self::heading6))
                     .on_action(cx.listener(Self::toggle_blockquote))
+                    .on_action(cx.listener(Self::toggle_task_checked))
+                    .on_action(cx.listener(Self::toggle_task_item))
                     .on_action(cx.listener(Self::toggle_bullet_list))
                     .on_action(cx.listener(Self::toggle_ordered_list))
                     .on_action(cx.listener(Self::insert_link))

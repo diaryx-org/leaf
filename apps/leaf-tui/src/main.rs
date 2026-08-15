@@ -119,6 +119,10 @@ pub enum MenuAction {
     BulletList,
     NumberedList,
     Quote,
+    /// Give the list item at the caret a checkbox, or take it away.
+    TaskItem,
+    /// Tick or untick the box on the task item at the caret.
+    TaskChecked,
     Inline(InlineKind),
 }
 
@@ -134,6 +138,8 @@ impl MenuAction {
             MenuAction::BulletList => doc.toggle_list(false),
             MenuAction::NumberedList => doc.toggle_list(true),
             MenuAction::Quote => doc.toggle_blockquote(),
+            MenuAction::TaskItem => doc.toggle_task_item(),
+            MenuAction::TaskChecked => doc.toggle_task_checked(),
             MenuAction::Inline(k) => doc.toggle(k),
         }
     }
@@ -173,6 +179,8 @@ pub const FORMAT_MENU: &[MenuEntry] = &[
     MenuEntry::Action("Bulleted List", MenuAction::BulletList),
     MenuEntry::Action("Numbered List", MenuAction::NumberedList),
     MenuEntry::Action("Quote", MenuAction::Quote),
+    MenuEntry::Action("Checklist Item", MenuAction::TaskItem),
+    MenuEntry::Action("Tick Checkbox", MenuAction::TaskChecked),
     MenuEntry::Header("Inline"),
     MenuEntry::Action("Bold", MenuAction::Inline(InlineKind::Strong)),
     MenuEntry::Action("Italic", MenuAction::Inline(InlineKind::Emph)),
@@ -878,6 +886,25 @@ mod tests {
 
     fn keyp(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn clicking_a_checkbox_ticks_it_and_leaves_the_caret_alone() {
+        // Body origin is (0, 1), so screen row 1 is the first document row and
+        // column 0 is the box glyph itself.
+        let mut doc = doc_with("task_click", "- [ ] one\n- [ ] two\n");
+        let mut app = App::default();
+        doc.caret = doc.source.find("two").unwrap();
+        let before = doc.caret;
+
+        handle_mouse(&mut doc, left_down(1, 0), &mut app);
+        assert_eq!(doc.source, "- [x] one\n- [ ] two\n");
+        assert_eq!(doc.caret, before, "ticking a box elsewhere must not move the caret");
+
+        // Clicking the item's *text* is an ordinary caret placement, not a tick.
+        handle_mouse(&mut doc, left_down(1, 4), &mut app);
+        assert_eq!(doc.source, "- [x] one\n- [ ] two\n", "the text is not a box");
+        assert_ne!(doc.caret, before, "the caret moved to the click");
     }
 
     #[test]
@@ -1695,10 +1722,10 @@ mod tests {
         let mut doc = doc_with("submenu_headers", "hello\n");
         let mut app = App::default();
         open_format(&mut doc, &mut app);
-        // Up from Paragraph (1) wraps past the "Inline" header (8) to the last
-        // row, Underline (14) — never landing on a header.
+        // Up from Paragraph (1) wraps past the "Inline" header (10) to the last
+        // row, Underline (16) — never landing on a header.
         handle_key(&mut doc, keyp(KeyCode::Up), &mut app);
-        assert_eq!(app.context_menu.as_ref().unwrap().levels[1].selected, 14);
+        assert_eq!(app.context_menu.as_ref().unwrap().levels[1].selected, 16);
         // Down from there wraps past the "Block" header (0) to Paragraph (1).
         handle_key(&mut doc, keyp(KeyCode::Down), &mut app);
         assert_eq!(app.context_menu.as_ref().unwrap().levels[1].selected, 1);
@@ -1711,9 +1738,9 @@ mod tests {
         doc.caret = 5; // "hello" selected
         let mut app = App::default();
         open_format(&mut doc, &mut app);
-        // Paragraph(1) → Quote(7) is six Downs; a seventh skips the "Inline"
-        // header to Bold(9), then Enter applies it.
-        for _ in 0..7 {
+        // Paragraph(1) → Tick Checkbox(9) is eight Downs; a ninth skips the
+        // "Inline" header to Bold(11), then Enter applies it.
+        for _ in 0..9 {
             handle_key(&mut doc, keyp(KeyCode::Down), &mut app);
         }
         handle_key(&mut doc, keyp(KeyCode::Enter), &mut app);

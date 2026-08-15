@@ -129,6 +129,11 @@ pub fn handle_key(doc: &mut Doc, key: KeyEvent, _state: &mut EditorState) -> Out
             KeyCode::Char('7') => toggle_list(doc, true),
             KeyCode::Char('8') => toggle_list(doc, false),
             KeyCode::Char('9') => doc.toggle_blockquote(),
+            // The task pair, beside the list family they belong to: ⌥x ticks the
+            // box at the caret (x for the mark it writes), ⌥t gives a plain item
+            // a box or takes one away.
+            KeyCode::Char('x') => doc.toggle_task_checked(),
+            KeyCode::Char('t') => doc.toggle_task_item(),
             KeyCode::Char('v') => return Outcome::PastePlain,
             KeyCode::Char('k') => return Outcome::LinkPrompt,
             KeyCode::Char('l') => return Outcome::LanguagePrompt,
@@ -209,6 +214,18 @@ pub fn handle_mouse(doc: &mut Doc, m: MouseEvent, state: &mut EditorState) -> Mo
             let col = col_at(doc, state, row, m.column);
             let count = click_count(state, m.row, m.column);
             let shift = m.modifiers.contains(KeyModifiers::SHIFT);
+
+            // A plain click on a rendered checkbox ticks it and does nothing
+            // else — the caret stays where it was, so ticking something off a
+            // list doesn't interrupt what's being typed elsewhere. Shift and the
+            // multi-click gestures fall through: those are selection verbs, and
+            // a box is not a selection.
+            if !shift && count == 1 {
+                if let Some(off) = doc.vmap.task_box_at(row, col) {
+                    doc.toggle_task_at(off);
+                    return MouseOutcome::Continue;
+                }
+            }
 
             // Single click places the caret (extending on shift); double selects
             // the word under it; triple selects the block it's in. All three start

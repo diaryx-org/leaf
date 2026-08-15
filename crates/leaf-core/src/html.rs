@@ -20,12 +20,16 @@
 //!     tags themselves, dropping markup into a prose document.
 //!
 //! So the paste direction is three steps, not one: [`sanitize`] rewrites the
-//! clipboard's dialect into the subset twig reads faithfully, twig converts, and
-//! [`unfaithful`] reads the result back to catch what step one didn't anticipate.
-//! A failure at any step is `None`, which the caller answers by pasting the plain
-//! flavor instead — the whole point of carrying two.
+//! clipboard's dialect into the subset twig reads faithfully, twig's
+//! `diagnostics` says whether converting what's left would lose anything, and
+//! twig converts. A failure at any step is `None`, which the caller answers by
+//! pasting the plain flavor instead — the whole point of carrying two.
+//!
+//! Leaf used to answer the middle step itself, with three separate heuristics
+//! over the input nodes and the output text. twig 3.0 exposes the library's own
+//! measured answer, so all three are gone; see [`parse_fragment`].
 
-use twig::{Document, Format};
+use twig::{Document, Format, Kind, Target};
 
 /// Render a `format` source fragment to HTML, for the clipboard's `text/html`.
 ///
@@ -40,33 +44,44 @@ pub(crate) fn render_fragment(source: &str, format: Format) -> Option<String> {
 }
 
 /// Convert clipboard `html` to `format`'s source syntax, or `None` when it does
-/// not survive the trip well enough to paste (see [`unfaithful`]).
+/// not survive the trip well enough to paste — see the diagnostics gate below.
 pub(crate) fn parse_fragment(html: &str, format: Format) -> Option<String> {
     let cleaned = sanitize(html);
     let mut doc = Document::parse_str(&cleaned, Format::Html).ok()?;
 
-    // An element twig has no semantic node for lands as a generic `container`,
-    // and since 2.8 that is the same kind a directive uses — so Markdown, which
-    // has no way to spell an element, spells it as a directive instead:
-    // `<my-widget></my-widget>` serializes to the literal text `:my-widget`.
-    // That is markup the author never wrote, in a syntax leaf's own parser reads
-    // back as a directive, so the paste is worse than the plain flavor.
+    // Would this conversion lose anything? twig 3.0 answers that directly, and
+    // it is the whole of the faithfulness test: a paste that degrades is worse
+    // than the plain flavor, because what it degrades *into* is visible markup
+    // in a prose document.
     //
-    // Asked here, of the *HTML* parse, rather than of the converted source:
-    // twig reads a bare `:word` back as a directive too, so looking for one in
-    // the output would decline `see :below` and every other prose colon on the
-    // clipboard. The input is HTML and the author wrote no directives in it —
-    // so a container here is the cause, and there is nothing to second-guess.
-    // ([`sanitize`] has already rewritten `<div>` and dropped the namespaced
-    // Office tags, which is why the shapes that reach this are the genuinely
-    // unknown ones.)
-    let invented = doc.nodes().is_ok_and(|ns| {
-        ns.iter().any(|n| {
-            n.kind == "container"
-                && !n.name.as_deref().is_some_and(|t| TABLE_STRUCTURE.contains(&t))
-        })
-    });
-    if invented {
+    // This replaces three heuristics that each guessed at one corner of the same
+    // question — an "invented directive" scan of the input nodes, a `:::`/`<tag`
+    // pattern match on the output, and a reparse to see whether pipe rows still
+    // spelled a table. Every one of them was leaf re-deriving, from the outside,
+    // something twig measures against its own serializers. They also each had a
+    // blind spot: the output patterns only ever looked at *block* starts, so an
+    // inline `<my-widget>` mid-sentence — and a `<sup>` becoming literal `^x^`
+    // in Markdown, which has no superscript — sailed through all three.
+    //
+    // Asked of the HTML parse before serializing, so nothing has to be
+    // pattern-matched back out of the result. `<thead>`/`<tbody>` need no
+    // exemption here the way they needed one from the old node scan: twig folds
+    // them into the table vocabulary and reports a headed table as lossless.
+    //
+    // `Section` is the one degradation that is not leaf's business, and the
+    // reason this reads the warning's `kind` rather than just its emptiness.
+    // twig reports the loss of a sectioning wrapper — `<html>`, `<body>`,
+    // `<section>`, `<main>` — because Markdown cannot spell one, and for a
+    // *document* conversion that is a true loss. For a paste it is the goal:
+    // the serializer drops the wrapper and writes the children, so nothing
+    // reaches the document that the user did not copy. Every other degraded
+    // kind leaks a visible spelling instead — `<article>` and `<nav>` pass
+    // through as their own tags, a `<sup>` becomes literal `^x^` — which is the
+    // plain flavor's cue. Note that arboard wraps leaf's *own* copy in
+    // `<html><head>…</head><body>`, so a leaf→leaf paste is a section every
+    // time.
+    let warnings = doc.diagnostics(Target::from(format)).ok()?;
+    if warnings.iter().any(|w| w.kind != Kind::Section) {
         return None;
     }
 
@@ -78,38 +93,10 @@ pub(crate) fn parse_fragment(html: &str, format: Format) -> Option<String> {
     // its own line. Only `\n` is trimmed: a trailing *space* pair is Markdown's
     // hard line break and belongs to the text.
     let source = source.trim_matches('\n');
-    if source.is_empty() || unfaithful(source) || pipes_that_are_not_a_table(source, format) {
+    if source.is_empty() {
         return None;
     }
     Some(source.to_string())
-}
-
-/// Does this conversion spell a table that isn't one?
-///
-/// [`unfaithful`] catches markup twig left as-is; this catches markup twig
-/// *wrote*. twig 2.7 maps an HTML `<table>` onto the shared table vocabulary, so
-/// a clipboard table now converts to pipe rows instead of passing through as
-/// tags — but that is the right shape only when the HTML had a header. GFM
-/// spells a table's header with a delimiter row (`| --- |`) under the first
-/// line, and a `<table>` with no `<thead>` has no header to write one from, so
-/// `| a | b |` lands on its own and reparses as an ordinary paragraph of literal
-/// pipes. Pasting that puts visible markup into a prose document, which is the
-/// plain flavor's cue.
-///
-/// Read by parsing the output back rather than by pattern: "is this a table"
-/// is exactly the question the parser answers, and a delimiter row is not the
-/// only thing that decides it.
-fn pipes_that_are_not_a_table(source: &str, format: Format) -> bool {
-    if !source.lines().any(|l| l.trim_start().starts_with('|')) {
-        return false;
-    }
-    let Ok(mut doc) = Document::parse_str(source, format) else {
-        return true;
-    };
-    let Ok(nodes) = doc.nodes() else {
-        return true;
-    };
-    !nodes.iter().any(|n| n.kind == "table")
 }
 
 /// Strip a sole wrapping `<p>`, for a selection that lives inside one block.
@@ -132,33 +119,6 @@ pub(crate) fn strip_sole_paragraph(html: String) -> String {
         false => inner.to_string(),
     }
 }
-
-/// Does this converted source still carry markup twig didn't understand?
-///
-/// Read on the *output*, not the input, because that is where the two failures
-/// show up in the same shape however they got there — a `:::` fence marker or a
-/// block that is still a raw tag. Both mean the paste would put visible markup
-/// into a prose document, which is worse than the plain flavor by any measure.
-///
-/// Deliberately checks block starts only. Markdown that legitimately contains
-/// inline HTML is left alone, and every faithful conversion — a list, a heading,
-/// a quote, a fenced code block — begins its lines with something else.
-fn unfaithful(source: &str) -> bool {
-    source.lines().any(|line| {
-        let line = line.trim_start();
-        line.starts_with(":::")
-            || line
-                .strip_prefix('<')
-                .is_some_and(|r| r.starts_with(|c: char| c.is_ascii_alphabetic() || c == '/'))
-    })
-}
-
-/// A table's structural wrappers, which arrive as generic `container`s and are
-/// the one kind that does *not* mean an invented directive: twig folds them into
-/// the shared table vocabulary, so the rows and cells inside them come out as a
-/// real pipe table and the wrapper itself is never spelled in the output. Every
-/// other unknown element reaches the serializer intact and becomes a `:name`.
-const TABLE_STRUCTURE: [&str; 6] = ["thead", "tbody", "tfoot", "colgroup", "col", "caption"];
 
 /// Elements whose *content* is not prose and must go with them. `head` is Word's
 /// (and arboard's own wrapper's); `script`/`style` are every rich web page's.
@@ -196,8 +156,8 @@ fn namespaced(name: &str) -> bool {
 ///   - Docs' `<b style="font-weight:normal">` document wrapper goes, or the
 ///     whole paste comes out bold.
 ///
-/// Unknown elements are left for twig, and for [`unfaithful`] to catch if twig
-/// doesn't know them either.
+/// Unknown elements are left for twig, and for [`parse_fragment`]'s diagnostics
+/// gate to catch if twig doesn't know them either.
 fn sanitize(html: &str) -> String {
     let mut out = String::with_capacity(html.len());
     // The close tag owed to each open element this rewrote, innermost last —
@@ -608,14 +568,49 @@ mod tests {
     }
 
     #[test]
-    fn unfaithful_reads_the_two_failure_shapes() {
-        assert!(unfaithful("::: \n  x\n:::"));
-        assert!(unfaithful("<table><tr><td>a"));
-        assert!(unfaithful("ok\n\n<script>alert(1)"));
-        // …and leaves every faithful conversion alone.
-        for good in ["a **b** c", "- one", "# head", "> quote", "```\nx\n```", "![p](u)"] {
-            assert!(!unfaithful(good), "{good:?} should be faithful");
+    fn a_lossy_conversion_declines_and_a_lossless_one_does_not() {
+        // What twig reports as degraded, leaf declines — the paste falls back to
+        // the plain flavor rather than putting invented markup in a prose
+        // document. Asserted through `md` rather than against a helper: the
+        // policy is the behaviour, and twig owns the judgement behind it.
+        for lossy in [
+            "<my-widget>y</my-widget>",
+            "<dl><dt>t</dt><dd>d</dd></dl>",
+            // Both blind spots of the block-start pattern match this replaced: a
+            // container *inline* in a paragraph, and a `<sup>` that Markdown can
+            // only spell as the literal characters `^x^`.
+            "<p>see <my-widget>y</my-widget> here</p>",
+            "<p>x<sup>2</sup></p>",
+        ] {
+            assert_eq!(md(lossy), None, "{lossy:?} should decline");
         }
+        // …and every faithful conversion still converts.
+        for (good, want) in [
+            ("<p>a <strong>b</strong> c</p>", "a **b** c"),
+            ("<ul><li>one</li></ul>", "- one"),
+            ("<h1>head</h1>", "# head"),
+            ("<blockquote><p>quote</p></blockquote>", "> quote"),
+            ("<pre><code>x</code></pre>", "```\nx\n```"),
+            ("<p><img src=\"u\" alt=\"p\"></p>", "![p](u)"),
+        ] {
+            assert_eq!(md(good).as_deref(), Some(want), "{good:?} should convert");
+        }
+    }
+
+    #[test]
+    fn a_sectioning_wrapper_is_the_one_loss_a_paste_wants() {
+        // twig degrades both of these — neither wrapper has a Markdown spelling
+        // — but only one of them leaks. A `Section` is written by dropping the
+        // wrapper and keeping the children, so the paste is exactly what was
+        // copied; an `<article>` passes through as its own tag, which is markup
+        // the user never wrote. Splitting on the warning's kind is what lets a
+        // leaf→leaf paste work at all: arboard wraps every copy in
+        // `<html><body>`, which parses as two nested sections.
+        assert_eq!(md("<section><p>a</p></section>").as_deref(), Some("a"));
+        assert_eq!(md("<main><p>a</p></main>").as_deref(), Some("a"));
+        assert_eq!(md("<html><body><p>a</p></body></html>").as_deref(), Some("a"));
+        assert_eq!(md("<article><p>a</p></article>"), None);
+        assert_eq!(md("<nav><p>a</p></nav>"), None);
     }
 
     // ── the sanitizer itself ─────────────────────────────────────────────────

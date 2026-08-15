@@ -1170,6 +1170,36 @@ impl LeafDoc {
         g.view()
     }
 
+    /// Tick or untick the task item at the caret. See
+    /// [`leaf_core::Doc::toggle_task_checked`].
+    pub fn toggle_task_checked(&self) -> DocView {
+        let mut g = self.lock();
+        g.doc.toggle_task_checked();
+        g.view()
+    }
+
+    /// Tick or untick the task item covering `offset` — a tap on a rendered
+    /// checkbox, which must not drag the caret across the document to get there.
+    pub fn toggle_task_at(&self, offset: u64) -> DocView {
+        let mut g = self.lock();
+        g.doc.toggle_task_at(offset as usize);
+        g.view()
+    }
+
+    /// Give the list item at the caret a checkbox, or take its checkbox away.
+    pub fn toggle_task_item(&self) -> DocView {
+        let mut g = self.lock();
+        g.doc.toggle_task_item();
+        g.view()
+    }
+
+    /// Whether the item at the caret has a box and which way it faces — `None`
+    /// for a plain list item or no item at all. Drives a toolbar's checked state.
+    pub fn task_checked_at_caret(&self) -> Option<bool> {
+        let mut g = self.lock();
+        g.doc.task_checked_at_caret()
+    }
+
     // ── table editing ─────────────────────────────────────────────────────────
 
     /// Whether the caret is inside a table — for enabling the table controls.

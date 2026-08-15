@@ -61,6 +61,7 @@ mod ios {
     /// Command ids are kept in sync with `ios/main.m`:
     ///   0 bold · 1 italic · 2 code · 3 H1 · 4 H2 · 5 body (¶)
     ///   · 6 toggle source/wysiwyg · 7 undo · 8 redo
+    ///   · 9 tick checkbox · 10 checklist item
     #[unsafe(no_mangle)]
     pub extern "C" fn leaf_ios_cmd(id: u32) {
         let cmd = match id {
@@ -73,6 +74,8 @@ mod ios {
             6 => EditorCommand::ToggleView,
             7 => EditorCommand::Undo,
             8 => EditorCommand::Redo,
+            9 => EditorCommand::ToggleTaskChecked,
+            10 => EditorCommand::ToggleTaskItem,
             other => {
                 log::warn!("leaf-ios: unknown toolbar command id {other}");
                 return;

@@ -24,7 +24,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::ops::Range;
 
-use twig::{Alignment, DirectiveForm, Editor, FlatNode, QueryMatch};
+use twig::{Alignment, ContainerOrigin, DirectiveForm, Editor, FlatNode, Kind, QueryMatch};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -113,6 +113,19 @@ pub struct VRow {
     /// [`images`](VisualMap::images) side-table is derived from it once the rows
     /// are final, the same way [`code_blocks`](VisualMap::code_blocks) is.
     pub media: Option<MediaMark>,
+    /// Set on the **first** row of a task list item, carrying whether its box is
+    /// ticked; `None` on every other row, including a plain `list_item`'s. The
+    /// row's glyphs already draw the box as `☐ `/`☑ ` in the marker's place, so a
+    /// plain surface needs nothing further; a GUI reads this to paint a real
+    /// checkbox widget and to know which way it is facing.
+    ///
+    /// A `bool` rather than a source span, for the reason
+    /// [`code_lang`](Self::code_lang) is a plain string: it rides [`BlockCache`]
+    /// reuse and [`build_spliced`] untouched, needing no offset shifting. To
+    /// *toggle* the box, a frontend maps its click to a source offset the way it
+    /// maps any other — the marker's glyphs carry the item's own `src` — and
+    /// hands that to [`crate::Doc::toggle_task_at`].
+    pub task: Option<bool>,
     /// Set on the single placeholder row a **leaf** directive (`::name{…}`)
     /// renders to, carrying its name and attributes; `None` on every other row.
     /// The container form isn't this — it wraps real blocks and marks each of
@@ -199,34 +212,33 @@ pub enum BlockClass {
 }
 
 impl BlockClass {
-    /// Classify a twig node kind — the same strings [`Builder::block`] matches
-    /// on, so the two can't drift about what a block is. Both the whole-arena
-    /// walk (which has [`FlatNode`]s) and the incremental top-level walk (which
-    /// has only a query match's kind string) reach it by this one door.
-    pub fn from_node_kind(kind: &str) -> BlockClass {
+    /// Classify a twig node kind — the same vocabulary [`Builder::block`]
+    /// matches on, so the two can't drift about what a block is. Both the
+    /// whole-arena walk (which has [`FlatNode`]s) and the incremental top-level
+    /// walk (which has only a query match's kind) reach it by this one door.
+    pub fn from_node_kind(kind: &Kind) -> BlockClass {
         match kind {
-            // twig spells a paragraph `para`, not `paragraph`.
-            "para" | "paragraph" => BlockClass::Paragraph,
-            "heading" => BlockClass::Heading,
-            "bullet_list" | "ordered_list" | "task_list" => BlockClass::List,
-            "list_item" | "task_list_item" => BlockClass::ListItem,
-            "block_quote" => BlockClass::Quote,
-            "code_block" => BlockClass::Code,
-            "table" => BlockClass::Table,
-            "image" => BlockClass::Media,
+            Kind::Para => BlockClass::Paragraph,
+            Kind::Heading => BlockClass::Heading,
+            Kind::BulletList | Kind::OrderedList | Kind::TaskList => BlockClass::List,
+            Kind::ListItem | Kind::TaskListItem => BlockClass::ListItem,
+            Kind::BlockQuote => BlockClass::Quote,
+            Kind::CodeBlock => BlockClass::Code,
+            Kind::Table => BlockClass::Table,
+            Kind::Image => BlockClass::Media,
             // twig 2.8 folded `div`/`span`/`directive`/`element` into one
             // `container` kind, so a `:::note` panel and a promoted `<video>`
             // arrive here indistinguishable — telling them apart needs the
-            // node's `name` (or its opening byte), and the incremental walk has
-            // only this string. `Directive` is the right answer for the case
-            // that motivates the class (nothing else draws a tinted panel) and a
-            // harmless one for the rest: `BlockClass` is descriptive, core never
-            // branches on it, and the only frontend that reads a boundary spaces
-            // by `below == Heading` alone. Anything that must be exact reads
+            // node's `origin`, and the incremental walk has only this kind.
+            // `Directive` is the right answer for the case that motivates the
+            // class (nothing else draws a tinted panel) and a harmless one for
+            // the rest: `BlockClass` is descriptive, core never branches on it,
+            // and the only frontend that reads a boundary spaces by
+            // `below == Heading` alone. Anything that must be exact reads
             // [`container_is_directive`] off a real node.
-            "container" => BlockClass::Directive,
-            "thematic_break" => BlockClass::Rule,
-            "footnote" => BlockClass::Footnote,
+            Kind::Container => BlockClass::Directive,
+            Kind::ThematicBreak => BlockClass::Rule,
+            Kind::Footnote => BlockClass::Footnote,
             _ => BlockClass::Other,
         }
     }
@@ -499,6 +511,30 @@ impl VisualMap {
                 (r, self.row_width(r))
             }
         }
+    }
+
+    /// The source offset of the task checkbox drawn at `(row, col)`, or `None`
+    /// when that cell holds no box — the hit-test a frontend runs on a click
+    /// before treating it as a tick rather than a caret placement.
+    ///
+    /// Only the box's own cells answer. Clicking an item's *text* places the
+    /// caret like any other click, so the box is a target aimed at rather than
+    /// something tripped over while editing — which is also why this is a
+    /// separate question from [`offset_of_pos`](Self::offset_of_pos) instead of
+    /// a flag on the offset it returns.
+    pub fn task_box_at(&self, row: usize, col: usize) -> Option<usize> {
+        let r = self.rows.get(row)?;
+        self.task_box_at_glyph(row, r.glyph_at_col(col)?)
+    }
+
+    /// [`task_box_at`](Self::task_box_at) keyed by glyph index rather than
+    /// display column — for a frontend that shapes its own rows (the GUI) and so
+    /// resolves a click to a glyph before it ever has a column.
+    pub fn task_box_at_glyph(&self, row: usize, glyph: usize) -> Option<usize> {
+        let r = self.rows.get(row)?;
+        r.task?;
+        let g = r.glyphs.get(glyph)?;
+        (g.style.role == Role::ListMarker).then_some(g.src)
     }
 
     /// The source offset for a screen `(row, col)` — where a click or a
@@ -947,7 +983,7 @@ pub fn build(
     media_rows: &HashMap<String, usize>,
     reveal: Option<Range<usize>>,
 ) -> VisualMap {
-    let Some(doc) = nodes.iter().position(|n| n.kind == "doc") else {
+    let Some(doc) = nodes.iter().position(|n| n.kind == Kind::Doc) else {
         return VisualMap::default();
     };
     let top = top_level(nodes, doc);
@@ -1017,7 +1053,7 @@ pub fn build_cached(
 
     // Frontmatter (a leading `metadata` block) is document metadata, not prose:
     // hidden in the rich view exactly as [`Builder::blocks`] skips it.
-    let blocks: Vec<&QueryMatch> = top.iter().filter(|m| m.kind != "metadata").collect();
+    let blocks: Vec<&QueryMatch> = top.iter().filter(|m| m.kind != Kind::Metadata).collect();
 
     // The outer builder only accumulates rows/tables and spells block boundaries
     // — both a function of the source and `last_off`, never of a node array — so
@@ -1229,7 +1265,7 @@ pub fn build_spliced(
         return None;
     }
 
-    let blocks: Vec<&QueryMatch> = top.iter().filter(|m| m.kind != "metadata").collect();
+    let blocks: Vec<&QueryMatch> = top.iter().filter(|m| m.kind != Kind::Metadata).collect();
     if blocks.is_empty() || blocks.len() != prev_layout.blocks.len() {
         return None;
     }
@@ -1446,7 +1482,7 @@ struct Layout {
 /// vector).
 struct BlockLayout {
     span: Range<usize>,
-    kind: String,
+    kind: Kind,
     sep_rows: usize,
     content_rows: usize,
 }
@@ -1580,6 +1616,8 @@ fn shift_row(row: &VRow, delta: isize) -> VRow {
         directive: row.directive,
         directive_label: row.directive_label.clone(),
         media: row.media.clone(),
+        // A tick, not an offset — reuse carries it as-is, like `code_lang`.
+        task: row.task,
         leaf_directive: row.leaf_directive.clone(),
         heading: row.heading,
         // Structure, not offsets: a reused block's rows divide the same blocks
@@ -1636,7 +1674,7 @@ fn top_level(nodes: &[FlatNode], doc: usize) -> Vec<usize> {
     let mut child = nodes[doc].first_child;
     while let Some(cid) = child {
         let n = &nodes[cid.0 as usize];
-        if n.kind != "metadata" {
+        if n.kind != Kind::Metadata {
             out.push(cid.0 as usize);
         }
         child = n.next_sibling;
@@ -1645,7 +1683,7 @@ fn top_level(nodes: &[FlatNode], doc: usize) -> Vec<usize> {
         nodes
             .iter()
             .enumerate()
-            .filter(|(_, n)| n.kind == "footnote" && n.parent.is_none())
+            .filter(|(_, n)| n.kind == Kind::Footnote && n.parent.is_none())
             .map(|(i, _)| i),
     );
     out.sort_by_key(|&i| nodes[i].span.start);
@@ -1660,32 +1698,30 @@ fn top_level(nodes: &[FlatNode], doc: usize) -> Vec<usize> {
 /// ordinary document. A **footnote definition** is not one: twig parses `[^1]: …`
 /// as a root beside `doc` with no parent, and indexes it at no offset either —
 /// `node_at` inside its bytes answers `doc`, and a `query("footnote")` selector
-/// finds nothing — so the whole-arena `nodes()` is the only way to discover one.
-/// That marshal is precisely what the incremental path exists to avoid, hence
-/// the byte-scan gate: a document with no `[^…]:` line pays a substring search
-/// and nothing more, which is every document that had no footnotes to render in
-/// the first place.
+/// finds nothing. Leaf used to discover them by marshalling the whole arena with
+/// `nodes()` — the very cost the incremental path exists to avoid — behind a
+/// byte-scan gate that gave documents with no `[^…]:` line a substring search
+/// instead. twig 3.0's `definitions()` asks the library the question directly,
+/// so both the marshal and the gate are gone.
+///
+/// Filtered to [`Kind::Footnote`]: `definitions()` also reports the *link*
+/// reference definitions (`[foo]: /url`), which leaf has never rendered as
+/// blocks and which are not this change's business to start rendering.
 ///
 /// This is the one part of the render that needs an [`Editor`] rather than a
 /// marshalled node array. The builders themselves stay editor-free; this only
 /// prepares their input.
-pub(crate) fn top_blocks(editor: &mut Editor, source: &str) -> Vec<QueryMatch> {
+pub(crate) fn top_blocks(editor: &mut Editor) -> Vec<QueryMatch> {
     let mut top = editor.child_spans(None).unwrap_or_default();
-    if !has_footnote_definition(source) {
-        return top;
-    }
-    let notes: Vec<QueryMatch> = editor
-        .nodes()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|n| n.kind == "footnote" && n.parent.is_none())
-        .map(|n| QueryMatch {
-            node_id: n.id.0,
-            span: n.span,
-            content_span: n.content_span,
-            kind: n.kind,
-        })
-        .collect();
+    let notes: Vec<QueryMatch> = match editor.document() {
+        Ok(mut doc) => doc
+            .definitions()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|m| m.kind == Kind::Footnote)
+            .collect(),
+        Err(_) => return top,
+    };
     if notes.is_empty() {
         return top;
     }
@@ -1694,25 +1730,6 @@ pub(crate) fn top_blocks(editor: &mut Editor, source: &str) -> Vec<QueryMatch> {
     // splice path's block-for-block match) is built to assume.
     top.sort_by_key(|m| m.span.start);
     top
-}
-
-/// Does the source spell a footnote *definition* — a `[^label]:` opening a line?
-/// The gate on [`top_blocks`]'s whole-arena marshal.
-fn has_footnote_definition(source: &str) -> bool {
-    source.match_indices("[^").any(|(i, _)| {
-        // Opening its line (a leading indent is still an opening), and closed by
-        // the `]:` that makes it a definition rather than a reference.
-        let line_lead = source[..i].rsplit('\n').next().unwrap_or("");
-        if !line_lead.bytes().all(|b| b == b' ' || b == b'\t') {
-            return false;
-        }
-        // Bounded to the rest of *this line*: both because a definition's `]:`
-        // is on it, and because searching to end-of-document from every `[^`
-        // would make this quadratic on a big file full of references.
-        let rest = &source[i..];
-        let line = rest.find('\n').map_or(rest, |j| &rest[..j]);
-        line.contains("]:")
-    })
 }
 
 /// The label of the footnote definition starting at `start` — the `1` in
@@ -1903,7 +1920,7 @@ impl Builder<'_> {
         let kids: Vec<usize> = self
             .children(id)
             .into_iter()
-            .filter(|&c| self.nodes[c].kind != "metadata")
+            .filter(|&c| self.nodes[c].kind != Kind::Metadata)
             .collect();
         let mut above: Option<BlockClass> = None;
         for (i, child) in kids.into_iter().enumerate() {
@@ -2021,6 +2038,7 @@ impl Builder<'_> {
                 directive: false,
                 directive_label: None,
                 media: None,
+                task: None,
                 leaf_directive: None,
                 heading: None,
                 boundary: drawn.then_some(boundary),
@@ -2108,12 +2126,12 @@ impl Builder<'_> {
             // `leaf` one is a standalone block with no body, drawn as a
             // placeholder the way an image is.
             "container"
-                if container_is_directive(node, self.source)
+                if container_is_directive(node)
                     && node.directive_form == Some(DirectiveForm::Leaf) =>
             {
                 self.block_directive(id, pf);
             }
-            "container" if container_is_directive(node, self.source) => {
+            "container" if container_is_directive(node) => {
                 let label = directive_attr_label(&node.attrs);
                 let start_row = self.rows.len();
                 self.blocks(id, pf, pc, false);
@@ -2125,22 +2143,38 @@ impl Builder<'_> {
                 }
             }
             "bullet_list" | "ordered_list" | "task_list" => {
-                let ordered = node.kind == "ordered_list";
+                let ordered = node.kind == Kind::OrderedList;
                 let mut item_no = 0usize;
                 let kids = self.children(id);
                 for (i, child) in kids.iter().copied().enumerate() {
-                    let kind = self.nodes[child].kind.as_str();
-                    if kind == "list_item" || kind == "task_list_item" {
+                    let kind = &self.nodes[child].kind;
+                    if *kind == Kind::ListItem || *kind == Kind::TaskListItem {
                         let start = self.nodes[child].span.start;
                         item_no += 1;
-                        let marker = if ordered {
-                            format!("{item_no}. ")
-                        } else {
-                            "• ".to_string()
+                        // A task item's box replaces the bullet rather than
+                        // joining it. The `[ ] ` that spells it is markup twig
+                        // has already consumed — the item's paragraph *content*
+                        // starts past it — so without a drawn box a task item
+                        // was indistinguishable from a plain bullet, ticked or
+                        // not. `☐`/`☑` is the marker for the same reason `•` is:
+                        // it stands where the source's own marker stands. Which
+                        // way it faces is `checked`, straight off the node.
+                        let checked = self.nodes[child].checked;
+                        let marker = match (checked, ordered) {
+                            (Some(true), _) => "☑ ".to_string(),
+                            (Some(false), _) => "☐ ".to_string(),
+                            (None, true) => format!("{item_no}. "),
+                            (None, false) => "• ".to_string(),
                         };
                         let bullet = synth(&marker, Role::ListMarker, start);
                         let indent = synth(&" ".repeat(text_width(&marker)), Role::Body, start);
+                        let first_row = self.rows.len();
                         self.block(child, &concat(pc, &bullet), &concat(pc, &indent));
+                        // On the item's first row, the way `code_lang` rides the
+                        // first row of its block.
+                        if let (Some(c), Some(row)) = (checked, self.rows.get_mut(first_row)) {
+                            row.task = Some(c);
+                        }
                     } else {
                         // twig can nest a *following* top-level block as a direct
                         // child of the list rather than a sibling of it — e.g.
@@ -2280,9 +2314,9 @@ impl Builder<'_> {
             // wrapped one is: that scan looks at a wrapper's *children*, and here
             // the media element is itself the block.
             "container"
-                if matches!(element_tag(node, self.source), Some("video") | Some("audio")) =>
+                if matches!(element_tag(node), Some("video") | Some("audio")) =>
             {
-                let kind = match element_tag(node, self.source) {
+                let kind = match element_tag(node) {
                     Some("audio") => MediaKind::Audio,
                     _ => MediaKind::Video,
                 };
@@ -2302,7 +2336,7 @@ impl Builder<'_> {
                     return;
                 }
                 let inline =
-                    !kids.is_empty() && kids.iter().all(|&c| is_inline(&self.nodes[c], self.source));
+                    !kids.is_empty() && kids.iter().all(|&c| is_inline(&self.nodes[c]));
                 if inline || kids.is_empty() {
                     let glyphs = self.inline_children_with_trailing(id, Style::default());
                     if !glyphs.is_empty() {
@@ -2336,7 +2370,7 @@ impl Builder<'_> {
         let row_ids: Vec<usize> = self
             .children(id)
             .into_iter()
-            .filter(|&c| self.nodes[c].kind == "row")
+            .filter(|&c| self.nodes[c].kind == Kind::Row)
             .collect();
         if row_ids.is_empty() {
             return;
@@ -2411,7 +2445,7 @@ impl Builder<'_> {
         let cells = self
             .children(row)
             .into_iter()
-            .filter(|&c| self.nodes[c].kind == "cell")
+            .filter(|&c| self.nodes[c].kind == Kind::Cell)
             .enumerate()
             .map(|(col, c)| {
                 let n = &self.nodes[c];
@@ -2460,6 +2494,7 @@ impl Builder<'_> {
             directive: false,
             directive_label: None,
             media: None,
+                task: None,
             leaf_directive: None,
             heading: None,
             boundary: None,
@@ -2548,6 +2583,7 @@ impl Builder<'_> {
             directive: false,
             directive_label: None,
             media: None,
+                task: None,
             leaf_directive: None,
             heading: None,
             boundary: None,
@@ -2637,6 +2673,7 @@ impl Builder<'_> {
                 directive: false,
                 directive_label: None,
                 media: None,
+                task: None,
                 leaf_directive: None,
                 heading: None,
                 boundary: None,
@@ -2741,11 +2778,11 @@ impl Builder<'_> {
                 // second count nor make the block look like text.
                 "container"
                     if matches!(
-                        element_tag(node, self.source),
+                        element_tag(node),
                         Some("video") | Some("audio")
                     ) =>
                 {
-                    let kind = match element_tag(node, self.source) {
+                    let kind = match element_tag(node) {
                         Some("audio") => MediaKind::Audio,
                         _ => MediaKind::Video,
                     };
@@ -2913,9 +2950,9 @@ impl Builder<'_> {
                 // author's line break shows where it was written. Never inside a
                 // cell (`break_glyph` is `'\n'` there): a cell is one line and
                 // folds its own soft breaks regardless.
-                let ch = if node.kind == "hard_break" {
+                let ch = if node.kind == Kind::HardBreak {
                     self.break_glyph.get()
-                } else if node.kind == "soft_break" && self.preserve_soft && self.break_glyph.get() == ' ' {
+                } else if node.kind == Kind::SoftBreak && self.preserve_soft && self.break_glyph.get() == ' ' {
                     '\n'
                 } else {
                     ' '
@@ -2962,7 +2999,7 @@ impl Builder<'_> {
             // every frontend maps, and the bug this fixes is that the text was
             // invisible, not that it was unstyled.
             "container"
-                if container_is_directive(node, self.source) && !self.children(id).is_empty() =>
+                if container_is_directive(node) && !self.children(id).is_empty() =>
             {
                 self.recurse(id, base, out)
             }
@@ -2979,7 +3016,7 @@ impl Builder<'_> {
             // colon typed by accident can be seen and deleted. Hiding them behind
             // a placeholder would be the invisible-and-unreachable failure this
             // arm exists to fix, just wearing a nicer glyph.
-            "container" if container_is_directive(node, self.source) && node.attrs.is_empty() => {
+            "container" if container_is_directive(node) && node.attrs.is_empty() => {
                 let span = node.span.clone();
                 push_text(out, self.source.get(span.clone()).unwrap_or(""), span.start, base);
             }
@@ -2993,7 +3030,7 @@ impl Builder<'_> {
             // directive's start offset: the caret treats it as one atomic thing
             // rather than walking hidden markup a byte at a time, and a paragraph
             // holding nothing but a chip still has a stop to be navigated to.
-            "container" if container_is_directive(node, self.source) => {
+            "container" if container_is_directive(node) => {
                 let start = node.span.start;
                 let name = node.name.clone().unwrap_or_default();
                 let shown = match directive_attr_label(&node.attrs) {
@@ -3242,6 +3279,7 @@ impl Builder<'_> {
             directive: false,
             directive_label: None,
             media: None,
+                task: None,
             leaf_directive: None,
             heading: None,
             boundary: None,
@@ -3339,6 +3377,7 @@ impl Builder<'_> {
                 directive: false,
                 directive_label: None,
                 media: None,
+                task: None,
                 leaf_directive: None,
                 heading: None,
                 // The one drawn row here is a block boundary like any other —
@@ -4045,45 +4084,27 @@ fn heading_style(level: u32) -> Style {
 /// Is this `container` node a *directive* (`:::note{…}`, `::embed{…}`,
 /// `:vis[…]`) rather than an HTML element (`<video>`, `<picture>`, `<div>`)?
 ///
-/// twig 2.8 folded `div`/`span`/`directive`/`element` into one `container` kind
-/// — one concept in its core, a named container with attributes and children —
-/// so `kind` no longer separates them. Neither does `directive_form`, despite
-/// reading as though it would: a block-level `<div>` reports
-/// `Some(DirectiveForm::Container)` exactly as a `:::note` does. (`<video>`,
-/// `<audio>`, `<picture>` and `<source>` do report `None`, so the field is only
-/// *sometimes* wrong — which is worse than never, and why nothing here leans on
-/// it to answer this question.)
-///
-/// What does separate them is the surface spelling: a directive opens with `:`
-/// in all three of its forms, an element with `<`. So the test is which of those
-/// two bytes the span reaches first. Not simply the byte *at* `span.start` — a
-/// nested container's span opens with its block prefix, and `> ::embed{…}`
-/// starts at the `>` — and not "contains a `:`" either, since an element's
-/// attributes are full of them (`<a href="http://…">`). First one wins,
-/// and only a directive can put a `:` in front of every `<`.
-///
-/// Sniffing source is a smaller lie than trusting a field that disagrees with
-/// its own documentation, and it is what `has_footnote_definition` already scans
-/// lines for.
-pub(crate) fn container_is_directive(node: &FlatNode, source: &str) -> bool {
-    let span = source.get(node.span.clone()).unwrap_or("");
-    match span.bytes().find(|&b| b == b':' || b == b'<') {
-        Some(b) => b == b':',
-        None => false,
-    }
+/// twig 2.8 folded `div`/`span`/`directive`/`element` into one `container` kind,
+/// and left nothing that separated them: `kind`, `name` and `directive_form` all
+/// agree, field for field, on an HTML `<div>` and a Markdown `:::div`. Leaf
+/// answered it by sniffing the span for whichever of `:` or `<` came first.
+/// twig 3.0 records the answer at parse time as [`ContainerOrigin`], so this is
+/// now the parser's own knowledge rather than a guess rebuilt from the bytes it
+/// consumed.
+pub(crate) fn container_is_directive(node: &FlatNode) -> bool {
+    node.origin == Some(ContainerOrigin::Directive)
 }
 
 /// The tag a `container` node carries when it is an HTML element rather than a
 /// directive — `Some("video")` for a promoted `<video>`, `None` for a `:::note`
-/// or for any node that is not a container at all. The read that used to be
-/// `kind == "element"` plus a look at `name`.
-pub(crate) fn element_tag<'a>(node: &'a FlatNode, source: &str) -> Option<&'a str> {
-    (node.kind == "container" && !container_is_directive(node, source))
+/// or for any node that is not a container at all.
+pub(crate) fn element_tag(node: &FlatNode) -> Option<&str> {
+    (node.origin == Some(ContainerOrigin::Element))
         .then_some(node.name.as_deref())
         .flatten()
 }
 
-pub(crate) fn is_inline(node: &FlatNode, source: &str) -> bool {
+pub(crate) fn is_inline(node: &FlatNode) -> bool {
     // A directive is inline only in its `text` form (`:name[label]{…}`); the
     // `leaf` and `container` forms are blocks. All three report the same `kind`,
     // so the form is the only thing telling them apart — and getting it wrong
@@ -4094,9 +4115,8 @@ pub(crate) fn is_inline(node: &FlatNode, source: &str) -> bool {
     //
     // An HTML element shares the `container` kind but never the `text` form, so
     // it answers `false` here and is walked as the block it is.
-    if node.kind == "container" {
-        return container_is_directive(node, source)
-            && node.directive_form == Some(DirectiveForm::Text);
+    if node.kind == Kind::Container {
+        return container_is_directive(node) && node.directive_form == Some(DirectiveForm::Text);
     }
     is_inline_kind(&node.kind)
 }
@@ -4107,13 +4127,29 @@ pub(crate) fn is_inline(node: &FlatNode, source: &str) -> bool {
 /// which claims every directive, so the pair's verdict is the same one a form
 /// would have given. Anything looking at a *directive itself* wants [`is_inline`]
 /// and a real node.
-pub(crate) fn is_inline_kind(kind: &str) -> bool {
+pub(crate) fn is_inline_kind(kind: &Kind) -> bool {
     matches!(
         kind,
-        "str" | "soft_break" | "hard_break" | "non_breaking_space" | "emph" | "strong" | "mark"
-            | "insert" | "delete" | "verbatim" | "inline_math" | "display_math" | "url" | "email"
-            | "link" | "image" | "smart_punctuation" | "superscript" | "subscript"
-            | "footnote_reference"
+        Kind::Str
+            | Kind::SoftBreak
+            | Kind::HardBreak
+            | Kind::NonBreakingSpace
+            | Kind::Emph
+            | Kind::Strong
+            | Kind::Mark
+            | Kind::Insert
+            | Kind::Delete
+            | Kind::Verbatim
+            | Kind::InlineMath
+            | Kind::DisplayMath
+            | Kind::Url
+            | Kind::Email
+            | Kind::Link
+            | Kind::Image
+            | Kind::SmartPunctuation
+            | Kind::Superscript
+            | Kind::Subscript
+            | Kind::FootnoteReference
     )
 }
 
@@ -4215,7 +4251,7 @@ mod tests {
         let all = ed.nodes().unwrap();
         let media_rows = HashMap::new();
         let plain = build(&all, src, wrap, false, &media_rows, None);
-        let top = top_blocks(ed, src);
+        let top = top_blocks(ed);
         let cached = build_cached(&top, src, wrap, false, &media_rows, None, cache, |id| {
             ed.subtree(NodeId(id)).unwrap_or_default()
         });
@@ -5042,11 +5078,11 @@ mod tests {
         ed.nodes()
             .unwrap()
             .iter()
-            .filter(|n| n.kind == "container")
+            .filter(|n| n.kind == Kind::Container)
             .map(|n| {
                 (
                     n.name.clone().unwrap_or_default(),
-                    container_is_directive(n, src),
+                    container_is_directive(n),
                     n.directive_form,
                 )
             })
@@ -5156,6 +5192,38 @@ mod tests {
         for off in [3usize, 4, 9] {
             assert!(!stops.contains(&off), "delimiter byte {off} is a caret stop: {stops:?}");
         }
+    }
+
+    #[test]
+    fn a_task_item_draws_its_box_where_the_bullet_would_be() {
+        // Regression: the `[ ] ` is markup twig consumes — the item's paragraph
+        // content starts past it — so a task item used to render as `• todo`,
+        // identical to a plain bullet and with no way to see it was ticked.
+        let m = map("- [ ] todo\n- [x] done\n- plain\n");
+        assert_eq!(rendered(&m), "☐ todo\n☑ done\n• plain");
+
+        // The tick rides the item's first row, for a GUI that paints its own box.
+        let ticks: Vec<Option<bool>> = m.rows.iter().map(|r| r.task).collect();
+        assert_eq!(ticks, [Some(false), Some(true), None]);
+    }
+
+    #[test]
+    fn a_task_items_box_survives_a_wrap_and_marks_only_the_first_row() {
+        let m = map_at("- [x] a much longer task that has to wrap somewhere\n", Some(20));
+        assert!(m.rows.len() > 1, "the item should wrap: {:?}", rendered(&m));
+        assert_eq!(m.rows[0].task, Some(true));
+        assert!(m.rows[1..].iter().all(|r| r.task.is_none()), "only the first row");
+        // The continuation lines hang under the box, not under column zero.
+        assert!(rendered(&m).lines().nth(1).is_some_and(|l| l.starts_with("  ")));
+    }
+
+    #[test]
+    fn a_bracket_in_an_items_prose_is_not_a_checkbox() {
+        // `task_checked` finds the box past the list marker; a plain item whose
+        // text merely contains a bracket has none, and must keep its bullet.
+        let m = map("- see [1] below\n");
+        assert_eq!(rendered(&m), "• see [1] below");
+        assert_eq!(m.rows[0].task, None);
     }
 
     #[test]
