@@ -16,10 +16,14 @@ func mkRun(
     strike: Bool = false,
     sup: Bool = false,
     sub: Bool = false,
+    // Where the run's first glyph came from. Zero unless a test is about the
+    // mapping back to the source (a peek's followable runs), since the geometry
+    // and attribute tests this file mostly serves never look at it.
+    src: UInt32 = 0,
     sel: Bool = false
 ) -> Run {
     Run(text: text, role: role, bold: bold, italic: italic, underline: underline,
-        strike: strike, sup: sup, sub: sub, sel: sel)
+        strike: strike, sup: sup, sub: sub, src: src, sel: sel)
 }
 
 func row(

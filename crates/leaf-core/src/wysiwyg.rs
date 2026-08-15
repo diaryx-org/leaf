@@ -1782,9 +1782,9 @@ pub(crate) fn footnote_label(source: &str, start: usize) -> Option<&str> {
     Some(&rest[..end])
 }
 
-/// The body of the footnote definition spanning `span` — everything past the
-/// `[^1]:` marker, which is the part a reader actually wants when they follow a
-/// reference.
+/// Where the body of the footnote definition spanning `span` sits in `source` —
+/// everything past the `[^1]:` marker, which is the part a reader actually wants
+/// when they follow a reference.
 ///
 /// Source bytes, verbatim but for the whitespace trimmed off each end: a note
 /// that says `see *later*` answers with the asterisks in. Rendering that body is
@@ -1794,10 +1794,54 @@ pub(crate) fn footnote_label(source: &str, start: usize) -> Option<&str> {
 /// The trim is what makes the common case read right — `[^1]: text` has a space
 /// after the colon that belongs to the marker, not the note, and a definition's
 /// span runs to the newline ending it.
-pub(crate) fn footnote_body(source: &str, span: Range<usize>) -> Option<&str> {
-    let rest = source.get(span)?.strip_prefix("[^")?;
-    let end = rest.find("]:")?;
-    Some(rest[end + 2..].trim())
+///
+/// A range rather than a slice because "go to note" needs the *position* as much
+/// as the text, and it needs the position of the body specifically: a
+/// definition's `[^1]:` marker is decoration the caret can't occupy (the rich
+/// view draws it as `[1] ` and gives it no stop), so aiming a caret at the
+/// definition's first byte lands it on the nearest real stop instead — which is
+/// up in the paragraph *above* the note. The body's first byte is a stop, and is
+/// where a reader following a reference wants to arrive anyway.
+pub(crate) fn footnote_body_span(source: &str, span: Range<usize>) -> Option<Range<usize>> {
+    let rest = source.get(span.clone())?.strip_prefix("[^")?;
+    let marker = rest.find("]:")?;
+    // `span.start` + `[^` + the label + `]:`.
+    let after_marker = span.start + 2 + marker + 2;
+    let raw = source.get(after_marker..span.end)?;
+    let raw = &raw[..body_len(raw)];
+    // Written as a start plus a length so an all-whitespace body lands on an
+    // empty range at the end rather than an inverted one.
+    let start = after_marker + (raw.len() - raw.trim_start().len());
+    Some(start..start + raw.trim().len())
+}
+
+/// How much of a definition's span is actually the note, in bytes.
+///
+/// A definition's body is one paragraph plus its continuation lines: a
+/// blank-line-separated block after it is a block of its own (an indented one
+/// parses as a *code block*, not as more note), so the note ends at the first
+/// line that isn't indented under it.
+///
+/// This has to be measured rather than taken from the span because twig's span
+/// for a definition over-runs in djot — it reaches past the blank line into the
+/// first byte of whatever follows, so `[^2a]: a note.` came back as
+/// `"a note.\n\n["` and, worse, the *rows* the offsets named were the next
+/// note's as well as this one's. A frontend showing one footnote would show two.
+fn body_len(raw: &str) -> usize {
+    let mut cut = raw.len();
+    for (i, ch) in raw.char_indices() {
+        if ch != '\n' {
+            continue;
+        }
+        // Indented → the note continues onto this line. Anything else — another
+        // definition, a paragraph, a blank line — is where it stops.
+        let next = &raw[i + 1..];
+        if !next.starts_with([' ', '\t']) {
+            cut = i;
+            break;
+        }
+    }
+    cut
 }
 
 /// The label of the footnote *reference* spanning `span` — the `1` in `[^1]`.

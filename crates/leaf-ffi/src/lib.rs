@@ -84,14 +84,31 @@ pub struct Run {
     pub sup: bool,
     /// Lowered off the baseline and drawn smaller — an author's `~x~`.
     pub sub: bool,
+    /// The byte offset in the source this run's first glyph came from.
+    ///
+    /// What a run *means*, as opposed to how it looks: a `link` role says a span
+    /// is drawn as a link but not where it points, and the only way back to that
+    /// is the source. A frontend drawing part of the document somewhere the caret
+    /// isn't — a footnote's text in a popover — pairs this with
+    /// [`LeafDoc::link_destination_at`] or [`LeafDoc::footnote_at`] to make those
+    /// runs followable.
+    ///
+    /// The alternative was for a frontend to count its way along the row's text
+    /// and ask [`LeafDoc::offset_for_pos`], which means converting between three
+    /// units that only agree on ASCII: this is a byte offset, the run's text is
+    /// characters, and a row's column is a *display* cell (a wide CJK glyph is
+    /// two). Handing the offset over is exact, O(1), and needs none of that.
+    ///
+    /// `0` for the runs of the source view, whose rows are split from raw text
+    /// rather than laid out from glyphs.
+    pub src: u32,
     /// Whether this run lies inside the active selection — so the renderer can
     /// paint a selection background without re-deriving it from offsets.
     pub sel: bool,
 }
 
-/// A footnote reference and the note it names — what
-/// [`LeafDoc::footnote_at_caret`] answers with. The FFI mirror of
-/// [`leaf_core::FootnoteRef`].
+/// A footnote reference and the note it names — what [`LeafDoc::footnote_at`]
+/// answers with. The FFI mirror of [`leaf_core::FootnoteRef`].
 ///
 /// A reference whose definition the document is missing still comes back, with
 /// its `label` and no `text`: that a `[^99]` names nothing is a thing to tell
@@ -103,9 +120,15 @@ pub struct FootnoteView {
     pub label: String,
     /// The note's body as source text, or `None` when nothing defines it.
     pub text: Option<String>,
-    /// The byte offset the definition starts at, for a "go to note" that moves
+    /// The byte offset the note's body starts at, for a "go to note" that moves
     /// the caret there. `None` alongside a `None` `text`.
     pub offset: Option<u32>,
+    /// Where the body ends, exclusive. With `offset` this bounds the note, so a
+    /// frontend can map the pair through `pos_for_offset` to the *rendered rows*
+    /// it occupies and draw those — the note with its markup resolved, rather
+    /// than the asterisks and backticks `text` carries. `None` alongside a
+    /// `None` `offset`.
+    pub end: Option<u32>,
 }
 
 impl From<leaf_core::FootnoteRef> for FootnoteView {
@@ -113,6 +136,34 @@ impl From<leaf_core::FootnoteRef> for FootnoteView {
         FootnoteView {
             label: f.label,
             text: f.text,
+            offset: f.offset.map(|o| o as u32),
+            end: f.end.map(|o| o as u32),
+        }
+    }
+}
+
+/// A footnote definition and the reference that sends a reader to it — what
+/// [`LeafDoc::footnote_definition_at_caret`] answers with, and the FFI mirror of
+/// [`leaf_core::FootnoteDef`].
+///
+/// The other half of [`FootnoteView`]'s round trip: that one carries a reader
+/// down to the note, this one carries them back up. A definition nothing cites
+/// still comes back, with its `label` and no `offset`, for the reason an
+/// undefined reference does — "nothing refers to this note" is worth saying.
+#[derive(uniffi::Record)]
+pub struct FootnoteDefView {
+    /// The definition's label — the `1` of `[^1]: …`, spelled exactly as
+    /// [`FootnoteView::label`] spells the same footnote's.
+    pub label: String,
+    /// The byte offset the first reference starts at, for a "back to reference"
+    /// that moves the caret there. `None` for a note nothing refers to.
+    pub offset: Option<u32>,
+}
+
+impl From<leaf_core::FootnoteDef> for FootnoteDefView {
+    fn from(f: leaf_core::FootnoteDef) -> Self {
+        FootnoteDefView {
+            label: f.label,
             offset: f.offset.map(|o| o as u32),
         }
     }
@@ -1305,6 +1356,18 @@ impl LeafDoc {
         self.lock().doc.link_destination_at_caret()
     }
 
+    /// The destination of the link at byte offset `off` —
+    /// [`link_destination_at_caret`](Self::link_destination_at_caret) for a place
+    /// the caret isn't.
+    ///
+    /// What a frontend drawing part of the document *outside* the document asks:
+    /// a footnote's text in a popover has link runs in it, and this is how those
+    /// runs learn where they point, since a `Run` carries how a span looks and
+    /// not what it means.
+    pub fn link_destination_at(&self, off: u32) -> Option<String> {
+        self.lock().doc.link_destination_at(off as usize)
+    }
+
     /// The footnote reference under the caret, resolved to the note it names —
     /// so a frontend can show the note when a reader activates a `[1]`, instead
     /// of the nothing a reference click used to do. `None` when the caret isn't
@@ -1312,6 +1375,31 @@ impl LeafDoc {
     /// no definition.
     pub fn footnote_at_caret(&self) -> Option<FootnoteView> {
         self.lock().doc.footnote_at_caret().map(FootnoteView::from)
+    }
+
+    /// The footnote reference at byte offset `off`, resolved to the note it
+    /// names — [`footnote_at_caret`](Self::footnote_at_caret) for a place the
+    /// caret isn't.
+    ///
+    /// This is what a hover asks: a pointer resting on a `[1]` wants the note's
+    /// text in a popover, and moving the caret to find out would yank the reader
+    /// out of wherever they were typing.
+    pub fn footnote_at(&self, off: u32) -> Option<FootnoteView> {
+        self.lock().doc.footnote_at(off as usize).map(FootnoteView::from)
+    }
+
+    /// The footnote definition the caret stands in, and where the reference that
+    /// names it is — the return leg of [`footnote_at_caret`](Self::footnote_at_caret),
+    /// so following a footnote is a round trip rather than a fall.
+    ///
+    /// `None` when the caret isn't in a definition, which is also how a frontend
+    /// tells the two directions apart: the reference query answers up top, this
+    /// one answers down in the notes, and never both at once.
+    pub fn footnote_definition_at_caret(&self) -> Option<FootnoteDefView> {
+        self.lock()
+            .doc
+            .footnote_definition_at_caret()
+            .map(FootnoteDefView::from)
     }
 
     pub fn undo(&self) -> DocView {
@@ -1683,22 +1771,25 @@ fn cell_lines(
 fn runs_of(glyphs: &[leaf_core::Glyph], ss: usize, se: usize) -> Vec<Run> {
     let mut runs: Vec<Run> = Vec::new();
     let mut buf = String::new();
-    let mut cur: Option<(LStyle, bool)> = None;
+    // The style/selection key the run is accumulating, and the source offset its
+    // first glyph came from — carried alongside rather than re-derived, since a
+    // run's glyphs are contiguous but its *text* has no offsets in it.
+    let mut cur: Option<(LStyle, bool, usize)> = None;
     for g in glyphs {
         let key = (g.style, g.src >= ss && g.src < se);
         match cur {
-            Some(k) if k == key => buf.push(g.ch),
+            Some((style, sel, _)) if (style, sel) == key => buf.push(g.ch),
             _ => {
-                if let Some((style, was_sel)) = cur.take() {
-                    runs.push(make_run(std::mem::take(&mut buf), style, was_sel));
+                if let Some((style, was_sel, src)) = cur.take() {
+                    runs.push(make_run(std::mem::take(&mut buf), style, was_sel, src));
                 }
-                cur = Some(key);
+                cur = Some((key.0, key.1, g.src));
                 buf.push(g.ch);
             }
         }
     }
-    if let Some((style, was_sel)) = cur {
-        runs.push(make_run(buf, style, was_sel));
+    if let Some((style, was_sel, src)) = cur {
+        runs.push(make_run(buf, style, was_sel, src));
     }
     runs
 }
@@ -1817,17 +1908,19 @@ fn source_rows(source: &str, ss: usize, se: usize) -> Vec<Row> {
         let a = ss.clamp(start, end) - start;
         let b = se.clamp(start, end) - start;
 
+        // The source view's rows are split from raw text, so a run's offset is
+        // simply where its slice starts — no glyphs to read one off.
         let mut runs = Vec::new();
         if a < b {
             if a > 0 {
-                runs.push(make_run(raw[..a].to_string(), body, false));
+                runs.push(make_run(raw[..a].to_string(), body, false, start));
             }
-            runs.push(make_run(raw[a..b].to_string(), body, true));
+            runs.push(make_run(raw[a..b].to_string(), body, true, start + a));
             if b < raw.len() {
-                runs.push(make_run(raw[b..].to_string(), body, false));
+                runs.push(make_run(raw[b..].to_string(), body, false, start + b));
             }
         } else if !raw.is_empty() {
-            runs.push(make_run(raw.to_string(), body, false));
+            runs.push(make_run(raw.to_string(), body, false, start));
         }
 
         rows.push(Row {
@@ -1847,7 +1940,7 @@ fn source_rows(source: &str, ss: usize, se: usize) -> Vec<Row> {
 
 /// Build a [`Run`] from an accumulated string and the core style it was drawn
 /// with — the one place role and emphasis flags cross into the view shape.
-fn make_run(text: String, style: LStyle, sel: bool) -> Run {
+fn make_run(text: String, style: LStyle, sel: bool, src: usize) -> Run {
     Run {
         text,
         role: role_name(style.role),
@@ -1857,6 +1950,7 @@ fn make_run(text: String, style: LStyle, sel: bool) -> Run {
         strike: style.strikethrough,
         sup: style.baseline == Baseline::Super,
         sub: style.baseline == Baseline::Sub,
+        src: src as u32,
         sel,
     }
 }
@@ -2197,10 +2291,148 @@ mod tests {
         let f = d.footnote_at_caret().expect("the caret stands in a reference");
         assert_eq!(f.label, "1");
         assert_eq!(f.text.as_deref(), Some("the note"));
-        assert_eq!(f.offset, Some(23));
+        // The note's first word — a byte the caret can actually rest on. The
+        // definition's `[^1]:` marker is decoration with no stop of its own.
+        assert_eq!(f.offset, Some(29));
+        assert_eq!(f.end, Some(37));
 
         d.set_selection_offsets(0, 0); // caret on plain text
         assert!(d.footnote_at_caret().is_none());
+    }
+
+    #[test]
+    fn footnote_at_crosses_for_an_offset_without_moving_the_caret() {
+        // What a hover needs: the note under the pointer, and the caret left
+        // exactly where the reader put it.
+        let d = doc("A claim[^1] and more.\n\n[^1]: the note\n");
+        d.set_selection_offsets(0, 0);
+        let f = d.footnote_at(9).expect("offset 9 stands in the reference");
+        assert_eq!(f.label, "1");
+        assert_eq!(f.text.as_deref(), Some("the note"));
+        assert_eq!(d.caret_offset(), 0, "asking must not move the caret");
+        assert!(d.footnote_at(2).is_none(), "offset 2 is prose");
+    }
+
+    #[test]
+    fn footnote_definition_at_caret_crosses_with_the_way_back() {
+        let d = doc("A claim[^1] and more.\n\n[^1]: the note\n");
+        d.set_selection_offsets(30, 30); // caret inside the note's body
+        let f = d
+            .footnote_definition_at_caret()
+            .expect("the caret stands in a definition");
+        assert_eq!(f.label, "1");
+        assert_eq!(f.offset, Some(9), "the reference's label");
+
+        // Disjoint from the reference query, which is what lets one gesture mean
+        // "down" up top and "back up" down here.
+        d.set_selection_offsets(9, 9);
+        assert!(d.footnote_definition_at_caret().is_none());
+        assert!(d.footnote_at_caret().is_some());
+    }
+
+    /// The contract a peek is built on: a note's offsets map to rows whose runs
+    /// are the note *rendered* — emphasis as an italic run, `` `code` `` as a
+    /// code run, a link as a link run — so a frontend draws it the way the
+    /// document draws it instead of showing the reader raw asterisks.
+    #[test]
+    fn a_notes_offsets_map_to_its_rendered_rows() {
+        let src = "Claim[^a].\n\n[^a]: see *emphasis* and `code` and [a link](https://x.dev).\n";
+        let d = doc(src);
+        let view = d.set_unwrapped();
+        d.set_selection_offsets(6, 6); // the reference's label
+
+        let f = d.footnote_at_caret().expect("a reference");
+        let start = d.pos_for_offset(f.offset.expect("a note"));
+        let end = d.pos_for_offset(f.end.expect("a note") - 1);
+        assert_eq!(start.row, end.row, "a one-paragraph note is one unwrapped row");
+
+        let row = &view.rows[start.row as usize];
+        let runs: Vec<(&str, &str, bool)> =
+            row.runs.iter().map(|r| (r.role.as_str(), r.text.as_str(), r.italic)).collect();
+        assert!(runs.contains(&("body", "emphasis", true)), "got {runs:?}");
+        assert!(runs.iter().any(|(role, text, _)| *role == "code" && *text == "code"), "got {runs:?}");
+        assert!(runs.iter().any(|(role, text, _)| *role == "link" && *text == "a link"), "got {runs:?}");
+
+        // The rendered row carries no markup characters at all — which is the
+        // whole point, and what `text` (source bytes) deliberately still does.
+        let rendered: String = row.runs.iter().map(|r| r.text.as_str()).collect();
+        assert!(!rendered.contains('*') && !rendered.contains('`'), "got {rendered:?}");
+        assert!(f.text.as_deref().unwrap().contains('*'), "the source answer keeps them");
+
+        // `ch` is where the body starts within the row — past the `[a] ` marker,
+        // so a frontend that wants the note without its label can slice there.
+        assert_eq!(row.runs[0].role, "list");
+        assert_eq!(start.ch as usize, row.runs[0].text.chars().count());
+
+        // And each run says where it came from, which is how a link run drawn in
+        // a popover learns where it points. `Run` otherwise says how a span
+        // looks, never what it means.
+        let link = row.runs.iter().find(|r| r.role == "link").expect("a link run");
+        assert_eq!(
+            d.link_destination_at(link.src).as_deref(),
+            Some("https://x.dev"),
+            "the run at {} is the link",
+            link.src
+        );
+    }
+
+    /// A run's `src` is a byte offset core handed over, not something a frontend
+    /// counted its way to — so multi-byte prose ahead of a link inside a note
+    /// can't slide it.
+    ///
+    /// The offset is a *byte* offset while the run's text is characters and the
+    /// row's columns are display cells; `src` is the only one of the three a
+    /// frontend can use without converting between the other two.
+    #[test]
+    fn a_runs_source_offset_survives_multibyte_prose_ahead_of_it() {
+        let src = "Claim[^a].\n\n[^a]: 日記 café [a link](https://x.dev).\n";
+        let d = doc(src);
+        let view = d.set_unwrapped();
+        d.set_selection_offsets(6, 6);
+
+        let f = d.footnote_at_caret().expect("a reference");
+        let start = d.pos_for_offset(f.offset.expect("a note"));
+        let row = &view.rows[start.row as usize];
+        let link = row.runs.iter().find(|r| r.role == "link").expect("a link run");
+
+        assert_eq!(d.link_destination_at(link.src).as_deref(), Some("https://x.dev"));
+        assert_eq!(
+            &src[link.src as usize..][.."a link".len()],
+            "a link",
+            "and it is a byte offset, not a character or column index"
+        );
+        // Which the character count is not: `日記 café ` is 9 characters and 13
+        // bytes, so anything derived from the run text lands in the wrong place.
+        let counted: usize = row
+            .runs
+            .iter()
+            .take_while(|r| r.role != "link")
+            .map(|r| r.text.chars().count())
+            .sum();
+        assert_ne!(counted, link.src as usize);
+    }
+
+    /// The round trip through the API a frontend actually calls — which places
+    /// carets, and so snaps them to real stops. Offsets that named the `[^`
+    /// markers passed every test that assigned the caret directly and still
+    /// dumped the reader in the paragraph above the note.
+    #[test]
+    fn following_a_footnote_and_coming_back_lands_on_real_caret_stops() {
+        let d = doc("A claim[^1] and more.\n\n[^1]: the note\n");
+        d.set_selection_offsets(9, 9);
+
+        let down = d.footnote_at_caret().expect("a reference").offset.expect("a note");
+        d.set_selection_offsets(down, down);
+        assert_eq!(d.caret_offset(), down, "the note is somewhere the caret fits");
+
+        let up = d
+            .footnote_definition_at_caret()
+            .expect("arrived inside the definition")
+            .offset
+            .expect("a reference to return to");
+        d.set_selection_offsets(up, up);
+        assert_eq!(d.caret_offset(), up, "and so is the reference");
+        assert_eq!(d.footnote_at_caret().expect("back on the reference").label, "1");
     }
 
     #[test]

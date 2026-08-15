@@ -311,7 +311,7 @@ impl CaretState {
 }
 
 /// A footnote reference and the note it names — the answer to
-/// [`Doc::footnote_at_caret`].
+/// [`Doc::footnote_at`].
 ///
 /// The two `Option`s move together: a reference whose definition is missing has
 /// neither a body to show nor a place to jump to, and one that resolved has
@@ -322,11 +322,55 @@ pub struct FootnoteRef {
     /// spells it a footnote nor the brackets around it.
     pub label: String,
     /// The note's body as source bytes (see
-    /// [`wysiwyg::footnote_body`](crate::wysiwyg)), or `None` when the document
-    /// defines no `[^label]:` to read one from.
+    /// [`wysiwyg::footnote_body_span`](crate::wysiwyg)), or `None` when the
+    /// document defines no `[^label]:` to read one from.
     pub text: Option<String>,
-    /// Where the definition starts, for a "go to note" that moves the caret
+    /// Where the note's *body* starts, for a "go to note" that moves the caret
     /// there. `None` alongside a `None` `text`.
+    ///
+    /// The body rather than the definition, because this is an offset to put a
+    /// caret on and the `[^1]:` marker is decoration the caret can't occupy —
+    /// aiming at the definition's first byte snaps to the nearest real stop,
+    /// which is up in the paragraph above the note. It is also simply where a
+    /// reader following a reference wants to land: at the note's first word,
+    /// ready to read or amend it.
+    pub offset: Option<usize>,
+    /// Where the note's body ends, exclusive — so a frontend can ask which
+    /// *rendered rows* the note occupies and draw those instead of [`text`](Self::text).
+    ///
+    /// The rows are the note with its markup resolved: `see *later*` reaches a
+    /// frontend as an italic run, not as asterisks. `text` is the source bytes
+    /// and stays the honest answer for anything that wants the note as written
+    /// (a search index, a copy); this pair of offsets is for anything that wants
+    /// it as *read*. `None` alongside a `None` `offset`.
+    pub end: Option<usize>,
+}
+
+/// A footnote definition and the reference that sends a reader to it — the
+/// answer to [`Doc::footnote_definition_at`], and the other half of the round
+/// trip [`FootnoteRef`] starts.
+///
+/// A note is a place a reader *arrives*, so the useful thing to know while
+/// standing in one is the way back. Without this the jump to a note is a
+/// one-way door: the definitions sit at the foot of the document, so returning
+/// by hand means scrolling back up and finding the sentence again.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct FootnoteDef {
+    /// The definition's label — the `1` of `[^1]: …`, marker and colon stripped,
+    /// spelled exactly as [`FootnoteRef::label`] spells the same footnote's.
+    pub label: String,
+    /// Where the reference's *label* is, for a "back to reference" that moves
+    /// the caret there. `None` for a note nothing refers to — an orphan, which
+    /// is worth being able to say rather than silently doing nothing.
+    ///
+    /// The label rather than the reference's first byte, for
+    /// [`FootnoteRef::offset`]'s reason: a reference's brackets are decoration
+    /// and its label is the only part of it the caret can rest on.
+    ///
+    /// The *first* reference, when a label is cited more than once: a repeated
+    /// citation has no one true home, and the first is both the one a reader
+    /// most likely came from and the only choice that doesn't depend on how
+    /// they got here.
     pub offset: Option<usize>,
 }
 
@@ -3516,7 +3560,19 @@ impl Doc {
     /// An autolink carries no separate destination: its text *is* the URL, so
     /// that's what comes back for one.
     pub fn link_destination_at_caret(&mut self) -> Option<String> {
-        let off = self.caret;
+        self.link_destination_at(self.caret)
+    }
+
+    /// The destination of the link at `off`.
+    /// [`link_destination_at_caret`](Self::link_destination_at_caret) for a place
+    /// the caret isn't.
+    ///
+    /// The offset form exists for the same reason
+    /// [`footnote_at`](Self::footnote_at)'s does: a frontend drawing a *piece* of
+    /// the document somewhere else — a footnote's text in a popover, say — has
+    /// rows and runs but no caret in them, and still needs to know which of those
+    /// runs a reader can follow.
+    pub fn link_destination_at(&mut self, off: usize) -> Option<String> {
         self.nodes()
             .into_iter()
             .filter(|n| matches!(n.kind.as_str(), "link" | "url" | "email"))
@@ -3525,8 +3581,14 @@ impl Doc {
             .and_then(|n| n.destination.or(n.text))
     }
 
-    /// The footnote reference under the caret, resolved to the note it names —
-    /// what a frontend shows when a reader activates a `[^1]`.
+    /// The footnote reference under the caret, resolved to the note it names.
+    /// [`footnote_at`](Self::footnote_at) at the caret's offset.
+    pub fn footnote_at_caret(&mut self) -> Option<FootnoteRef> {
+        self.footnote_at(self.caret)
+    }
+
+    /// The footnote reference at `off`, resolved to the note it names — what a
+    /// frontend shows when a reader activates a `[^1]`.
     ///
     /// A reference is not a link node, so
     /// [`link_destination_at_caret`](Self::link_destination_at_caret) does not
@@ -3535,12 +3597,17 @@ impl Doc {
     /// is a move within the page, which is why this hands back an `offset`
     /// rather than something to open.
     ///
-    /// `None` when the caret stands in no reference. A reference whose note the
+    /// Offset-based rather than caret-only because the gesture that wants this
+    /// most is the one that must not move the caret: a pointer hovering a `[1]`
+    /// asks what note it names without disturbing where the reader was typing.
+    /// The caret is just the offset a click already placed —
+    /// [`footnote_at_caret`](Self::footnote_at_caret) passes it.
+    ///
+    /// `None` when `off` stands in no reference. A reference whose note the
     /// document never defines is *not* `None` — it answers with the label it
     /// looked for and no text, which is what lets a frontend say so instead of
     /// silently doing nothing.
-    pub fn footnote_at_caret(&mut self) -> Option<FootnoteRef> {
-        let off = self.caret;
+    pub fn footnote_at(&mut self, off: usize) -> Option<FootnoteRef> {
         // Innermost-wins by latest start, the rule its link sibling uses.
         let span = self
             .nodes()
@@ -3558,13 +3625,64 @@ impl Doc {
             .into_iter()
             .find(|m| wysiwyg::footnote_label(&self.source, m.span.start) == Some(&label));
         let Some(note) = note else {
-            return Some(FootnoteRef { label, text: None, offset: None });
+            return Some(FootnoteRef { label, text: None, offset: None, end: None });
         };
+        let body = wysiwyg::footnote_body_span(&self.source, note.span.clone());
         Some(FootnoteRef {
             label,
-            text: wysiwyg::footnote_body(&self.source, note.span.clone()).map(str::to_string),
-            offset: Some(note.span.start),
+            text: body.clone().and_then(|b| self.source.get(b)).map(str::to_string),
+            // The body's start, not the definition's — see `FootnoteRef::offset`.
+            offset: body.clone().map(|b| b.start),
+            end: body.map(|b| b.end),
         })
+    }
+
+    /// The footnote *definition* the caret stands in, and where the reference
+    /// that names it is. [`footnote_definition_at`](Self::footnote_definition_at)
+    /// at the caret's offset.
+    pub fn footnote_definition_at_caret(&mut self) -> Option<FootnoteDef> {
+        self.footnote_definition_at(self.caret)
+    }
+
+    /// The footnote definition spanning `off`, and where the reference that
+    /// names it is — the return leg of [`footnote_at`](Self::footnote_at).
+    ///
+    /// The mirror image, deliberately: the same gesture that takes a reader from
+    /// `[1]` down to the note takes them from the note back up to `[1]`, so
+    /// following a footnote is a round trip rather than a fall. It needs no
+    /// memory of how the reader arrived — the document says where the reference
+    /// is — which is what makes it work for a reader who scrolled to the notes
+    /// themselves, and what keeps it right after an edit moves either end.
+    ///
+    /// `None` when `off` stands in no definition. A definition nothing cites is
+    /// *not* `None`, for [`FootnoteRef`]'s reason in reverse: it answers with
+    /// its label and no offset, so a frontend can say "nothing refers to this"
+    /// rather than offer a jump that goes nowhere.
+    pub fn footnote_definition_at(&mut self, off: usize) -> Option<FootnoteDef> {
+        // Definitions are roots beside `doc`, so `nodes()` — which walks the
+        // document body — never reports one. They're asked for directly, the way
+        // `footnote_at` asks for the note it resolves to.
+        let note = wysiwyg::footnote_definitions(&mut self.editor)
+            .into_iter()
+            .filter(|m| m.span.start <= off && off < m.span.end)
+            .max_by_key(|m| m.span.start)?;
+        let label = wysiwyg::footnote_label(&self.source, note.span.start)?.to_string();
+
+        // The earliest reference carrying this label. `min` rather than a `find`,
+        // because `nodes()` reports a flattened walk whose order is twig's
+        // business, not document order. Bound first: the walk needs `&mut self`
+        // and reading the labels back out needs `&self.source`.
+        let nodes = self.nodes();
+        let offset = nodes
+            .into_iter()
+            .filter(|n| n.kind == Kind::FootnoteReference)
+            .filter(|n| {
+                wysiwyg::footnote_reference_label(&self.source, n.span.clone()) == Some(&*label)
+            })
+            // Past the `[^`, onto the label — see `FootnoteDef::offset`.
+            .map(|n| n.span.start + 2)
+            .min();
+        Some(FootnoteDef { label, offset })
     }
 
     /// The destination of the image under the caret — what an image prompt shows
@@ -7228,10 +7346,52 @@ mod tests {
         let f = d.footnote_at_caret().expect("the caret stands in a reference");
         assert_eq!(f.label, "1");
         assert_eq!(f.text.as_deref(), Some("the note"));
-        // The offset points at the definition's `[`, so a "go to note" lands on
-        // the block rather than inside it.
-        assert_eq!(f.offset, Some(23));
-        assert_eq!(&d.source[23..25], "[^");
+        // The offset points at the note's first word, not at the definition's
+        // `[` — the marker is decoration with no caret stop on it.
+        assert_eq!(f.offset, Some(29));
+        assert_eq!(&d.source[29..37], "the note");
+        // …and `end` closes the range, so a frontend can ask which rendered rows
+        // the note occupies rather than re-deriving them from the text.
+        assert_eq!(f.end, Some(37));
+        assert_eq!(&d.source[f.offset.unwrap()..f.end.unwrap()], "the note");
+    }
+
+    /// Two definitions in a row: each is its own note, and neither reaches into
+    /// the other.
+    ///
+    /// twig's span for a djot definition over-runs past the blank line into the
+    /// first byte of whatever follows, so this used to answer `"a note.\n\n["` —
+    /// and the offsets named the *next* note's rows too, which showed a reader
+    /// two footnotes when they had asked about one. The body is bounded by where
+    /// the note's own lines stop, not by the span.
+    #[test]
+    fn footnote_at_stops_a_note_at_the_definition_after_it() {
+        let src = "Claim[^2a] and [^2b].\n\n[^2a]: first note.\n\n[^2b]: second note.\n";
+        for format in [Format::Markdown, Format::Djot] {
+            let mut d = Doc::from_source(src.to_string(), format).unwrap();
+            d.caret = 7;
+            let f = d.footnote_at_caret().expect("a reference");
+            assert_eq!(f.text.as_deref(), Some("first note."), "in {format:?}");
+            assert_eq!(
+                &src[f.offset.unwrap()..f.end.unwrap()],
+                "first note.",
+                "in {format:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn footnote_at_bounds_a_note_whose_body_is_empty() {
+        // `[^1]:` with nothing after it. The range is empty rather than
+        // inverted, and still points inside the definition — which is what keeps
+        // a frontend's row lookup from walking off into the block above.
+        let src = "A claim[^1].\n\n[^1]:\n";
+        let mut d = doc_with("fn_empty_body", src);
+        d.caret = 9;
+        let f = d.footnote_at_caret().expect("a reference");
+        assert_eq!(f.text.as_deref(), Some(""));
+        assert_eq!(f.offset, f.end, "an empty note is an empty range");
+        assert!(f.offset.unwrap() >= src.find("[^1]:").unwrap());
     }
 
     #[test]
@@ -7281,6 +7441,118 @@ mod tests {
         let f = d.footnote_at_caret().expect("the caret stands in a reference");
         assert_eq!(f.label, "note");
         assert_eq!(f.text.as_deref(), Some("first line\n    second line"));
+    }
+
+    #[test]
+    fn footnote_at_answers_for_an_offset_the_caret_is_nowhere_near() {
+        // The point of the offset form: a pointer hovering a reference asks what
+        // note it names, and must not drag the caret along to ask.
+        let mut d = doc_with("fn_at_off", "A claim[^1] and more.\n\n[^1]: the note\n");
+        d.caret = 0;
+        let f = d.footnote_at(9).expect("offset 9 stands in the reference");
+        assert_eq!(f.label, "1");
+        assert_eq!(f.text.as_deref(), Some("the note"));
+        assert_eq!(d.caret, 0, "asking must not move the caret");
+        assert_eq!(d.footnote_at(2), None, "offset 2 is prose");
+    }
+
+    #[test]
+    fn footnote_definition_at_caret_points_back_at_the_reference() {
+        // The return leg. `[^1]` spans 7..11, so its label — the only byte of it
+        // the caret can rest on — is at 9.
+        let mut d = doc_with("fn_def", "A claim[^1] and more.\n\n[^1]: the note\n");
+        d.caret = 30; // inside the note's body
+        let f = d
+            .footnote_definition_at_caret()
+            .expect("the caret stands in a definition");
+        assert_eq!(f.label, "1");
+        assert_eq!(f.offset, Some(9));
+        assert_eq!(&d.source[7..11], "[^1]");
+    }
+
+    #[test]
+    fn footnote_definition_at_covers_where_a_go_to_note_actually_lands() {
+        // The two legs have to meet: wherever `footnote_at` sends the caret, the
+        // definition query must answer for — otherwise arriving at a note leaves
+        // the reader somewhere the way back isn't offered.
+        let src = "A claim[^1] and more.\n\n[^1]: the note\n";
+        let mut d = doc_with("fn_def_marker", src);
+        let landed = d.footnote_at(9).unwrap().offset.unwrap();
+        assert_eq!(
+            d.footnote_definition_at(landed).and_then(|f| f.offset),
+            Some(9),
+            "the note a reference sends you to offers the way back"
+        );
+    }
+
+    #[test]
+    fn footnote_definition_at_caret_ignores_prose_and_the_reference_itself() {
+        // The two queries answer for disjoint places, which is what lets one
+        // gesture mean "down to the note" in one and "back up" in the other
+        // without either having to remember which way the reader is going.
+        let mut d = doc_with("fn_def_none", "A claim[^1] and more.\n\n[^1]: the note\n");
+        d.caret = 2; // prose
+        assert_eq!(d.footnote_definition_at_caret(), None);
+        d.caret = 9; // the reference
+        assert_eq!(d.footnote_definition_at_caret(), None);
+        assert!(d.footnote_at_caret().is_some(), "which is the reference's own query");
+    }
+
+    #[test]
+    fn footnote_definition_at_caret_reports_an_orphan_note_rather_than_nothing() {
+        // Nothing cites `[^2]`. Answering `None` would say "you are not in a
+        // note", which is false and leaves a frontend unable to explain why the
+        // way back is missing.
+        let src = "A claim[^1].\n\n[^1]: cited\n\n[^2]: orphan\n";
+        let mut d = doc_with("fn_def_orphan", src);
+        d.caret = src.find("orphan").unwrap();
+        let f = d
+            .footnote_definition_at_caret()
+            .expect("an orphan is still a definition");
+        assert_eq!(f.label, "2");
+        assert_eq!(f.offset, None);
+    }
+
+    #[test]
+    fn footnote_definition_at_caret_returns_to_the_first_of_repeated_references() {
+        // One label, cited twice. The first is where the reader most likely came
+        // from, and the only answer that doesn't depend on how they got here.
+        let src = "One[^a] and two[^a].\n\n[^a]: the note\n";
+        let mut d = doc_with("fn_def_repeat", src);
+        d.caret = src.find("the note").unwrap();
+        let f = d.footnote_definition_at_caret().expect("a definition");
+        assert_eq!(f.offset, Some(5), "the first `[^a]`'s label, not the second's");
+        assert_eq!(&src[3..7], "[^a]");
+    }
+
+    #[test]
+    fn footnote_navigation_is_a_round_trip_through_placed_carets() {
+        // Down and back up, each leg found from the document rather than from a
+        // memory of the other — so it still works for a reader who scrolled to
+        // the notes instead of jumping there.
+        //
+        // `place_caret` rather than assigning `caret`, because that is what a
+        // frontend calls: it snaps to a real caret stop, and a jump that lands
+        // on a byte the caret can't rest on would arrive somewhere the return
+        // leg no longer answers for. `build_map` first, since snapping is a
+        // no-op until the map exists — which is exactly how this went unnoticed
+        // when the offsets pointed at the `[^` markers.
+        let mut d = doc_with("fn_round", "A claim[^1] and more.\n\n[^1]: the note\n");
+        d.build_map(None);
+        d.place_caret(9, false);
+        let down = d.footnote_at_caret().expect("a reference").offset.expect("a note");
+        d.place_caret(down, false);
+        let up = d
+            .footnote_definition_at_caret()
+            .expect("a definition")
+            .offset
+            .expect("a reference");
+        d.place_caret(up, false);
+        assert_eq!(d.caret, up, "the way back is a stop the caret can occupy");
+        assert_eq!(
+            d.footnote_at_caret().expect("back on the reference").label,
+            "1"
+        );
     }
 
     #[test]
