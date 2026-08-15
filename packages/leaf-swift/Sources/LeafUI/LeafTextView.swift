@@ -108,6 +108,10 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// `NSWorkspace` is at best wrong and at worst opens the raw markdown in
     /// another app. Nil (or a `false` return) keeps the system behaviour.
     public var onOpenLink: ((String) -> Bool)?
+
+    /// Asked to edit the destination of the link under the caret, with its
+    /// current destination to seed a field with. See `LeafEditorModel.onEditLink`.
+    public var onEditLink: ((String) -> Void)?
     /// Whether a bare `[[…]]` counts as a link to follow. Off by default: it is
     /// not Markdown, not Djot, and not something twig parses, so the editor
     /// makes no claim about it unless a host whose documents use the convention
@@ -194,12 +198,6 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// so passive reflows (width/theme relayout, state refreshes) leave the reader's
     /// scroll position alone instead of yanking it back to the caret.
     private var lastCaretOffset: UInt32?
-    /// Set on a plain single click that landed inside a link, and consumed by the
-    /// matching `mouseUp`. Following on *up* rather than *down* is what keeps a
-    /// drag that starts inside link text selectable: `mouseDragged` clears this,
-    /// so a press-and-drag selects as it always did and only a clean click
-    /// navigates.
-    private var pendingLinkClick = false
 
     public init(doc: LeafDoc, theme: EditorTheme = .default) {
         self.doc = doc
@@ -680,28 +678,23 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             return
         }
         let extend = event.modifierFlags.contains(.shift)
+        // A plain click places the caret; a double-click selects a word — inside
+        // link text exactly as anywhere else. This is a text editor first: the
+        // common thing to do to a link you can see is edit its label, and a click
+        // that navigated instead made that the one span of text you couldn't put
+        // a caret in without leaving the document. Following is ⌘-click (above),
+        // the native convention, and the context menu's "Open Link".
         switch event.clickCount {
         case 2:  render(doc.selectWordCh(row: UInt32(row), ch: UInt32(ch)))
         case 3:  render(doc.selectBlockCh(row: UInt32(row), ch: UInt32(ch)))
         default: render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: extend))
         }
-        // Arm the follow-on-up for a plain single click that landed in a link.
-        // The caret is already there, so this reads the link the click chose.
-        pendingLinkClick = event.clickCount == 1 && !extend
-            && event.modifierFlags.isDisjoint(with: [.command, .option, .control])
-            && targetAtCaret() != nil
-    }
-
-    public override func mouseUp(with event: NSEvent) {
-        guard pendingLinkClick else { return }
-        pendingLinkClick = false
-        openLinkAtCaret()
     }
 
     /// Open the link under the caret, if there is one. The host gets first
     /// refusal (`onOpenLink`); otherwise it goes to the default app, which needs
-    /// the destination to parse as a URL. Used by click, ⌘-click and the "Open
-    /// Link" menu item.
+    /// the destination to parse as a URL. Used by ⌘-click and the "Open Link"
+    /// menu item — the two gestures that ask to *leave*, rather than to edit.
     @discardableResult
     private func openLinkAtCaret() -> Bool {
         guard let dest = targetAtCaret() else { return false }
@@ -718,6 +711,14 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     @objc private func openLink(_ sender: Any?) { openLinkAtCaret() }
 
+    @objc private func editLink(_ sender: Any?) {
+        // The parsed destination, not `targetAtCaret()`: a wikilink can be
+        // followed but has no node to repoint, and `linkActionsAtCaret` has
+        // already kept `.edit` off the menu for one.
+        guard let dest = doc.linkDestinationAtCaret() else { return }
+        onEditLink?(dest)
+    }
+
     @objc private func copyLink(_ sender: Any?) {
         guard let dest = targetAtCaret() else { return }
         let pb = NSPasteboard.general
@@ -726,9 +727,6 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     }
 
     public override func mouseDragged(with event: NSEvent) {
-        // A drag is a selection, not a click — disarm the pending link follow so
-        // selecting text that starts inside a link doesn't navigate on release.
-        pendingLinkClick = false
         let p = layoutPoint(convert(event.locationInWindow, from: nil))
         let (row, ch) = hitRowCh(p)
         render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: true))
@@ -971,9 +969,20 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
         let menu = NSMenu()
         // A link under the click (the caret was just placed there) leads the menu.
-        if targetAtCaret() != nil {
-            menu.addItem(withTitle: loc("menu.openLink", "Open Link"), action: #selector(openLink(_:)), keyEquivalent: "")
-            menu.addItem(withTitle: loc("menu.copyLink", "Copy Link"), action: #selector(copyLink(_:)), keyEquivalent: "")
+        // Since a plain click no longer follows, this — with ⌘-click — is how a
+        // reader gets to the destination at all, so it stays first.
+        let links = doc.linkActionsAtCaret(wikilinks: recognizesWikilinks, canEdit: onEditLink != nil)
+        for action in links {
+            switch action {
+            case .open:
+                menu.addItem(withTitle: loc("menu.openLink", "Open Link"), action: #selector(openLink(_:)), keyEquivalent: "")
+            case .edit:
+                menu.addItem(withTitle: loc("menu.editLink", "Edit Link…"), action: #selector(editLink(_:)), keyEquivalent: "")
+            case .copy:
+                menu.addItem(withTitle: loc("menu.copyLink", "Copy Link"), action: #selector(copyLink(_:)), keyEquivalent: "")
+            }
+        }
+        if !links.isEmpty {
             menu.addItem(.separator())
         }
         if hasSelection {

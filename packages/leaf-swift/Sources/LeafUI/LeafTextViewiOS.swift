@@ -125,6 +125,10 @@ public final class LeafTextView: UIView, UITextInput {
     /// is at best a no-op. Nil (or a `false` return) keeps the system behaviour.
     public var onOpenLink: ((String) -> Bool)?
 
+    /// Asked to edit the destination of the link under the caret, with its
+    /// current destination to seed a field with. See `LeafEditorModel.onEditLink`.
+    public var onEditLink: ((String) -> Void)?
+
     /// Whether a bare `[[…]]` counts as a link to follow. Off by default: it is
     /// not Markdown, not Djot, and not something twig parses, so the editor
     /// makes no claim about it unless a host whose documents use the convention
@@ -187,18 +191,37 @@ public final class LeafTextView: UIView, UITextInput {
     /// the answer can start playback rather than land silently.
     private var pendingMediaActivation: String?
 
-    /// Follows a link on a plain tap. A phone has no ⌘ to hold and no pointer to
-    /// hover, so the tap is the whole vocabulary. This rides *beside*
+    /// Activates a block media box on a plain tap — the box draws a play badge,
+    /// so that is what a tap on it should mean. This rides *beside*
     /// `textInteraction` rather than replacing it — it doesn't cancel touches
     /// and recognises simultaneously — so the caret still lands where it always
-    /// did, and this only adds navigation when the tap was inside a link.
-    private lazy var linkTap: UITapGestureRecognizer = {
-        let tap = UITapGestureRecognizer(target: self, action: #selector(handleLinkTap(_:)))
+    /// did, and this only adds playback when the tap was on a media box.
+    ///
+    /// It used to follow links too. It no longer does: a tap places the caret,
+    /// like a tap on any other text, and following moved to the edit menu's
+    /// "Open Link" (see `editMenuInteraction(_:menuFor:suggestedActions:)`). The
+    /// desktop rule is the same one — the editor is an editor first, and a tap
+    /// that navigated made link text the one span you couldn't get a caret into
+    /// without leaving the document.
+    private lazy var mediaTap: UITapGestureRecognizer = {
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleMediaTap(_:)))
         tap.numberOfTapsRequired = 1
         tap.cancelsTouchesInView = false
         tap.delegate = self
         return tap
     }()
+
+    /// The edit menu, so the link actions have somewhere to appear.
+    ///
+    /// Owning one is what makes custom items possible at all on iOS 16+.
+    /// `canPerformAction` alone is enough for the *system* items (Cut/Copy/Paste
+    /// know their own selectors), but a selector UIKit has never heard of has no
+    /// title and no place in the menu until a `UIMenu` names it —
+    /// `UIMenuController.menuItems`, which used to do that, is deprecated in
+    /// favour of exactly this. `UITextInteraction` presents through the
+    /// interaction installed on its view, so adding ours here puts the items in
+    /// the menu the long press already raises rather than in a second one.
+    private lazy var editMenu = UIEditMenuInteraction(delegate: self)
 
     public init(doc: LeafDoc, theme: EditorTheme = .default) {
         self.doc = doc
@@ -221,41 +244,71 @@ public final class LeafTextView: UIView, UITextInput {
         backgroundColor = .clear
         contentMode = .redraw
         addInteraction(textInteraction)
-        addGestureRecognizer(linkTap)
+        addGestureRecognizer(mediaTap)
+        addInteraction(editMenu)
         // Seed with the initial caret so the first reflow opens at the top.
         lastCaretOffset = doc.caretOffset()
         applyDynamicType()   // scale type to the current trait environment
     }
 
-    // MARK: link following
+    // MARK: media activation
 
-    /// The tap handler. A tap that landed outside any link does nothing at all —
+    /// The tap handler. A tap that landed on no media box does nothing at all —
     /// `textInteraction` has already placed the caret, which is the whole of what
-    /// a tap on ordinary prose should do.
-    @objc private func handleLinkTap(_ gesture: UITapGestureRecognizer) {
+    /// a tap on ordinary prose (link text included) should do.
+    @objc private func handleMediaTap(_ gesture: UITapGestureRecognizer) {
         // A tap that lands while text is selected is the *selection's* — the
         // system answers it by showing the edit menu over the selection or by
         // dismissing it — and this handler has no business moving the caret out
         // from under either. Which is also what keeps selection working at all:
-        // `linkTap` recognises simultaneously with `textInteraction`'s own
+        // `mediaTap` recognises simultaneously with `textInteraction`'s own
         // gestures, so the second tap of a double-tap-to-select reaches both, and
         // without this guard whichever ran last collapsed the word the other had
         // just selected. Selecting text was impossible, and the Copy/Paste menu
         // never appeared, because every tap ended as a bare caret.
         guard !docView.hasSelection else { return }
         let point = gesture.location(in: self)
-        // A tap on a video or audio box starts it — the box draws a play badge,
-        // so that is what a tap on it should mean — and a tap on an *empty*
-        // picture box asks the host for it. Checked before links because a media
-        // box occupies its whole row and holds no link text anyway.
-        if let hit = layoutEngine.mediaBox(at: point),
-           activateMedia(hit) {
-            return
+        // A tap on a video or audio box starts it, and a tap on an *empty*
+        // picture box asks the host for it.
+        if let hit = layoutEngine.mediaBox(at: point) {
+            _ = activateMedia(hit)
         }
-        guard let destination = linkDestination(at: point) else { return }
-        if onOpenLink?(destination) == true { return }
-        guard let url = URL(string: destination) else { return }
+    }
+
+    // MARK: link following
+
+    /// Open the link under the caret, if there is one. The host gets first
+    /// refusal (`onOpenLink`); otherwise it goes to the system, which needs the
+    /// destination to parse as a URL.
+    ///
+    /// Reached from the edit menu rather than from a tap: with no ⌘ to hold and
+    /// no pointer to hover, a long press is the phone's "do something else to
+    /// this" gesture, and it is the one that doesn't collide with placing a
+    /// caret.
+    @discardableResult
+    private func openLinkAtCaret() -> Bool {
+        guard let dest = targetAtCaret() else { return false }
+        if onOpenLink?(dest) == true { return true }
+        guard let url = URL(string: dest) else { return false }
         UIApplication.shared.open(url)
+        return true
+    }
+
+    /// The link the caret stands in, honouring this view's wikilink setting.
+    private func targetAtCaret() -> String? {
+        doc.activatableTargetAtCaret(wikilinks: recognizesWikilinks)
+    }
+
+    @objc func openLink(_ sender: Any?) { openLinkAtCaret() }
+
+    @objc func copyLink(_ sender: Any?) {
+        guard let dest = targetAtCaret() else { return }
+        UIPasteboard.general.string = dest
+    }
+
+    @objc func editLink(_ sender: Any?) {
+        guard let dest = doc.linkDestinationAtCaret() else { return }
+        onEditLink?(dest)
     }
 
     /// Answer a tap on a block media box, returning whether it was handled.
@@ -309,27 +362,6 @@ public final class LeafTextView: UIView, UITextInput {
             mediaPlayers.activate(info.media, at: rect, in: self, url: url)
             setNeedsDisplay()
         }
-    }
-
-    /// The destination of the link at `point`, or nil if there isn't one.
-    ///
-    /// Reading it moves the caret there, because core answers this question only
-    /// about the caret. That is not a side effect worth avoiding here: a tap
-    /// places the caret at exactly this point regardless, and `textInteraction`
-    /// is about to do the same thing with the same coordinate.
-    ///
-    /// Announced as the selection change it is, though, not as an edit:
-    /// `command`'s bracketing includes `textWillChange`/`textDidChange`, and
-    /// telling the text system the document changed under it mid-gesture is
-    /// enough for it to abandon the selection it was building. Nothing is edited
-    /// here, so only the selection pair is sent — which still leaves the system
-    /// re-reading `selectedTextRange`, and so agreeing with core about where the
-    /// caret ended up when core snapped the offset to a stop of its own.
-    private func linkDestination(at point: CGPoint) -> String? {
-        guard let position = closestPosition(to: point) as? LeafTextPosition else { return nil }
-        let offset = UInt32(position.offset)
-        notifyingSelection { render(doc.setSelectionOffsets(anchor: offset, focus: offset)) }
-        return doc.activatableTargetAtCaret(wikilinks: recognizesWikilinks)
     }
 
     @available(*, unavailable)
@@ -655,6 +687,16 @@ public final class LeafTextView: UIView, UITextInput {
         }
     }
 
+    /// A localized UI string with an English fallback, looked up in the bundle
+    /// this class ships in — the host app's, for a statically linked package. So a
+    /// host can translate the menu (drop a `Localizable.strings` with these keys)
+    /// without the library owning a resource bundle, and the English `value`
+    /// shows otherwise. The AppKit peer carries the same helper and the same keys,
+    /// so one translation covers both menus.
+    private func loc(_ key: String, _ value: String) -> String {
+        NSLocalizedString(key, tableName: nil, bundle: Bundle(for: LeafTextView.self), value: value, comment: "")
+    }
+
     public override func copy(_ sender: Any?) {
         guard let text = doc.selectedText() else { return }
         let pb = UIPasteboard.general
@@ -707,16 +749,6 @@ public final class LeafTextView: UIView, UITextInput {
         inputDelegate?.textWillChange(self)
         body()
         inputDelegate?.textDidChange(self)
-        inputDelegate?.selectionDidChange(self)
-    }
-
-    /// The same, for a change that moves the caret and leaves the text alone.
-    /// Worth keeping distinct from `notifyingDelegate`: a `textDidChange` says an
-    /// *edit* landed, and the text system acts on that — dropping the selection
-    /// it is mid-gesture on, and any marked text with it.
-    private func notifyingSelection(_ body: () -> Void) {
-        inputDelegate?.selectionWillChange(self)
-        body()
         inputDelegate?.selectionDidChange(self)
     }
 
@@ -935,14 +967,54 @@ public final class LeafTextView: UIView, UITextInput {
 // MARK: - Gesture coexistence
 
 extension LeafTextView: UIGestureRecognizerDelegate {
-    /// `linkTap` never competes with `textInteraction`'s own recognisers — the
+    /// `mediaTap` never competes with `textInteraction`'s own recognisers — the
     /// system owns caret placement, selection, the loupe and the edit menu, and
-    /// a link tap is strictly additive to whichever of those the touch was also
-    /// going to drive. Failing to say so would make the two exclusive, and the
-    /// system's would win.
+    /// activating a media box is strictly additive to whichever of those the
+    /// touch was also going to drive. Failing to say so would make the two
+    /// exclusive, and the system's would win.
     public func gestureRecognizer(
         _ gestureRecognizer: UIGestureRecognizer,
         shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
     ) -> Bool { true }
+}
+
+// MARK: - Edit menu
+
+extension LeafTextView: UIEditMenuInteractionDelegate {
+    /// Add the link actions to the menu the long press raises, ahead of the
+    /// system's Cut/Copy/Paste. They appear only when the caret stands in a
+    /// link, so an ordinary press gets exactly the menu it always did.
+    ///
+    /// This is the phone's whole vocabulary for reaching a link now that a tap
+    /// places the caret: no ⌘ to hold, no pointer to hover, and a long press is
+    /// the one gesture that means "something other than typing here".
+    public func editMenuInteraction(
+        _ interaction: UIEditMenuInteraction,
+        menuFor configuration: UIEditMenuConfiguration,
+        suggestedActions: [UIMenuElement]
+    ) -> UIMenu? {
+        let actions: [UIAction] = doc
+            .linkActionsAtCaret(wikilinks: recognizesWikilinks, canEdit: onEditLink != nil)
+            .map { action in
+                switch action {
+                case .open:
+                    return UIAction(title: loc("menu.openLink", "Open Link")) { [weak self] _ in
+                        self?.openLinkAtCaret()
+                    }
+                case .edit:
+                    return UIAction(title: loc("menu.editLink", "Edit Link…")) { [weak self] _ in
+                        self?.editLink(nil)
+                    }
+                case .copy:
+                    return UIAction(title: loc("menu.copyLink", "Copy Link")) { [weak self] _ in
+                        self?.copyLink(nil)
+                    }
+                }
+            }
+        guard !actions.isEmpty else { return nil }
+        // `.displayInline` keeps them as a group in the same menu rather than
+        // folding them behind a submenu title.
+        return UIMenu(children: [UIMenu(options: .displayInline, children: actions)] + suggestedActions)
+    }
 }
 #endif

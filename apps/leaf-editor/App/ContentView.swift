@@ -1,6 +1,12 @@
 import SwiftUI
 import LeafUI
 
+#if canImport(AppKit)
+import AppKit
+#elseif canImport(UIKit)
+import UIKit
+#endif
+
 /// A minimal cross-platform host for the `LeafUI` editor: a formatting toolbar
 /// bound to the document's live state, and the `LeafEditor` surface below it.
 /// Everything — caret math, wrapping, selection, WYSIWYG resolution — comes from
@@ -355,7 +361,47 @@ private func makeEditor() -> LeafEditorModel {
             done(Bundle.main.url(forResource: "clip", withExtension: "mp4"))
         }
     }
+    // "Edit Link…" asks the *host* for the new destination — the editor ships no
+    // prompt of its own, so a host that leaves this nil simply gets no such menu
+    // item. A plain text field is the demo's answer; a note app would offer its
+    // own document picker here instead.
+    model.onEditLink = { [weak model] current in
+        promptForLink(seed: current) { destination in
+            model?.insertLink(destination)
+        }
+    }
     return model
+}
+
+/// Ask for a link destination, seeded with the current one, and call back with
+/// it. Demo chrome — a native alert per platform, which is exactly the kind of
+/// thing `LeafUI` leaves to its host.
+private func promptForLink(seed: String, done: @escaping (String) -> Void) {
+    #if canImport(AppKit)
+    let alert = NSAlert()
+    alert.messageText = "Edit Link"
+    alert.addButton(withTitle: "OK")
+    alert.addButton(withTitle: "Cancel")
+    let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+    field.stringValue = seed
+    alert.accessoryView = field
+    if alert.runModal() == .alertFirstButtonReturn, !field.stringValue.isEmpty {
+        done(field.stringValue)
+    }
+    #elseif canImport(UIKit)
+    guard let root = UIApplication.shared.connectedScenes
+        .compactMap({ ($0 as? UIWindowScene)?.keyWindow?.rootViewController })
+        .first
+    else { return }
+    let alert = UIAlertController(title: "Edit Link", message: nil, preferredStyle: .alert)
+    alert.addTextField { $0.text = seed }
+    alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+    alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in
+        let text = alert.textFields?.first?.text ?? ""
+        if !text.isEmpty { done(text) }
+    })
+    root.present(alert, animated: true)
+    #endif
 }
 
 private let sampleMarkdown = """
@@ -369,6 +415,8 @@ caret model and AST→glyph map the terminal and desktop apps use, on macOS and 
 - WYSIWYG rendering with `inline code`
 - **Bold**, *italic*, and ==highlight==
 - Click (or tap) to place the caret, drag to select
+- A [link](https://example.invalid/docs) you edit by clicking into it — \
+⌘-click or right-click to follow it
 
 | Feature | Status |
 | --- | :---: |

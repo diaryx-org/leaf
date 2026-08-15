@@ -12,6 +12,23 @@
 import Foundation
 import LeafFFI
 
+/// One entry a link offers a menu, in the order a menu should show them.
+///
+/// Shared vocabulary rather than each platform's own, because the AppKit context
+/// menu and the UIKit edit menu answer the same question — what can I do with the
+/// link under the caret — and two copies of that answer would drift.
+enum LinkAction {
+    /// Leave for the destination. Offered for anything activatable, wikilinks
+    /// included.
+    case open
+    /// Repoint the link at a new destination. Offered only for a *parsed* link
+    /// (there is nothing to rewrite in a wikilink) and only when a host is there
+    /// to ask for the new one.
+    case edit
+    /// Put the destination on the pasteboard.
+    case copy
+}
+
 extension LeafDoc {
     /// The link target the caret stands in, or nil.
     ///
@@ -20,6 +37,19 @@ extension LeafDoc {
     func activatableTargetAtCaret(wikilinks: Bool) -> String? {
         if let destination = linkDestinationAtCaret() { return destination }
         return wikilinks ? wikilinkAtCaret() : nil
+    }
+
+    /// The link entries a menu should show for the caret's position — empty when
+    /// the caret stands in no link at all, which is what tells a caller to show
+    /// no link section rather than an empty one.
+    ///
+    /// `canEdit` is the host's answer to "can I ask for a new destination"
+    /// (`LeafEditorModel.onEditLink` being set). Without it there is no way to
+    /// carry out an edit, so no menu offers one.
+    func linkActionsAtCaret(wikilinks: Bool, canEdit: Bool) -> [LinkAction] {
+        guard activatableTargetAtCaret(wikilinks: wikilinks) != nil else { return [] }
+        guard canEdit, linkDestinationAtCaret() != nil else { return [.open, .copy] }
+        return [.open, .edit, .copy]
     }
 
     /// The whole `[[…]]` construct the caret stands inside, brackets and all

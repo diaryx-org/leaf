@@ -85,4 +85,53 @@ final class LinkTargetTests: XCTestCase {
         let d = try doc(src, caret: 3)
         XCTAssertEqual(d.activatableTargetAtCaret(wikilinks: true), "./2026-07-20.md")
     }
+
+    // MARK: menu entries
+    //
+    // What the AppKit context menu and the UIKit edit menu both build from —
+    // tested here rather than through either menu, since it is the one answer
+    // they share and neither platform's menu can be raised in a unit test.
+
+    func testNoLinkOffersNoMenuEntries() throws {
+        let src = "plain prose, no links"
+        let d = try doc(src, caret: 3)
+        XCTAssertEqual(d.linkActionsAtCaret(wikilinks: true, canEdit: true), [])
+    }
+
+    func testParsedLinkOffersOpenEditCopy() throws {
+        let src = "see [t](https://x.dev) ok"
+        let d = try doc(src, caret: 5)
+        XCTAssertEqual(d.linkActionsAtCaret(wikilinks: false, canEdit: true), [.open, .edit, .copy])
+    }
+
+    /// Without a host to ask for the new destination there is no way to carry an
+    /// edit out, so the entry must not be offered at all.
+    func testNoHostEditorHidesEditEntry() throws {
+        let src = "see [t](https://x.dev) ok"
+        let d = try doc(src, caret: 5)
+        XCTAssertEqual(d.linkActionsAtCaret(wikilinks: false, canEdit: false), [.open, .copy])
+    }
+
+    /// A wikilink can be followed and copied, but it is literal text with no node
+    /// behind it — there is nothing for `insertLink` to repoint.
+    func testWikilinkOffersNoEditEntry() throws {
+        let src = "see [[notes/a.md]] for more"
+        let d = try doc(src, caret: offset(of: "notes", in: src))
+        XCTAssertEqual(d.linkActionsAtCaret(wikilinks: true, canEdit: true), [.open, .copy])
+    }
+
+    /// …and with wikilinks off it is not a link at all, so it offers nothing.
+    func testWikilinkOffersNothingWhenTheFlagIsOff() throws {
+        let src = "see [[notes/a.md]] for more"
+        let d = try doc(src, caret: offset(of: "notes", in: src))
+        XCTAssertEqual(d.linkActionsAtCaret(wikilinks: false, canEdit: true), [])
+    }
+
+    /// An autolink has no separate destination — its text is the URL — but it is
+    /// still a parsed node, so it is still editable.
+    func testAutolinkIsEditable() throws {
+        let src = "see <https://x.dev> ok"
+        let d = try doc(src, caret: 10)
+        XCTAssertEqual(d.linkActionsAtCaret(wikilinks: false, canEdit: true), [.open, .edit, .copy])
+    }
 }

@@ -23,10 +23,15 @@ public final class LeafEditorModel: ObservableObject {
     /// Live toolbar/footer state, refreshed after every edit, motion, and click.
     @Published public private(set) var state: EditorState
 
-    /// Called when the reader activates a link — a click or tap on it, ⌘-click,
-    /// or "Open Link" — with the link's raw destination exactly as the document
-    /// spells it. Return `true` to claim it; `false` (or leaving this nil) lets
-    /// the editor open it with the system as before.
+    /// Called when the reader activates a link — ⌘-click, or "Open Link" from the
+    /// context menu (macOS) or the long-press edit menu (iOS) — with the link's
+    /// raw destination exactly as the document spells it. Return `true` to claim
+    /// it; `false` (or leaving this nil) lets the editor open it with the system
+    /// as before.
+    ///
+    /// A plain click or tap deliberately does *not* activate a link: it places
+    /// the caret, because the editor is an editor first and link text has to be
+    /// as editable as the prose around it.
     ///
     /// This exists because only the host can resolve the destinations that
     /// aren't URLs. In a note app `[Last week](./2026-07-20.md)` and
@@ -39,6 +44,22 @@ public final class LeafEditorModel: ObservableObject {
     /// Resolution that has to go to disk should return `true` and continue
     /// asynchronously — the destination is the host's now either way.
     public var onOpenLink: ((String) -> Bool)?
+
+    /// Called when the reader picks "Edit Link…", with the current destination to
+    /// seed a field with. Set the new one by calling `insertLink(_:)`, which
+    /// repoints the link the caret stands in.
+    ///
+    /// A callback rather than a prompt of the editor's own, for the reason
+    /// `onOpenLink` is one: asking a question is the host's chrome — its window,
+    /// its idiom, its localization — and a note app that resolves `id:6tzwsxg`
+    /// needs to offer its own document picker here, not a text field. Leaving
+    /// this nil hides the menu item entirely, so no menu ever offers an edit
+    /// nothing can carry out.
+    ///
+    /// Offered only for a *parsed* link (`[t](dest)`, a bare URL, an autolink).
+    /// A wikilink is literal text with no node behind it — it can be followed,
+    /// but there is nothing to repoint — so it gets no "Edit Link…".
+    public var onEditLink: ((String) -> Void)?
 
     /// Whether a bare `[[target]]` / `[[target|label]]` is a link the reader can
     /// follow. Off by default, because it is a convention rather than a syntax:
@@ -343,6 +364,12 @@ public struct LeafEditor: NSViewRepresentable {
         textView.onOpenLink = { [weak model] destination in
             model?.onOpenLink?(destination) ?? false
         }
+        // Read through as well, so the menu item appears exactly when the host
+        // has something to answer with — the views gate "Edit Link…" on this
+        // being non-nil, and a copied-across nil would hide it forever.
+        textView.onEditLink = { [weak model] destination in
+            model?.onEditLink?(destination)
+        }
         // Same read-through, same reason: an app wires its paste handler where
         // the view is composed, after the model was built.
         textView.onPaste = { [weak model] in
@@ -477,6 +504,12 @@ public struct LeafEditor: UIViewRepresentable {
         // where the view is composed) still gets its links.
         textView.onOpenLink = { [weak model] destination in
             model?.onOpenLink?(destination) ?? false
+        }
+        // Read through as well, so the menu item appears exactly when the host
+        // has something to answer with — the views gate "Edit Link…" on this
+        // being non-nil, and a copied-across nil would hide it forever.
+        textView.onEditLink = { [weak model] destination in
+            model?.onEditLink?(destination)
         }
         // Same read-through, same reason: an app wires its paste handler where
         // the view is composed, after the model was built.
