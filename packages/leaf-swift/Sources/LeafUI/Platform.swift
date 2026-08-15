@@ -72,6 +72,12 @@ public enum Palette {
     /// competing with prose for attention the way a solid tint would.
     public static var directiveBorderColor: LeafColor { separator }
     public static var markBackground: LeafColor { LeafColor.systemYellow.withAlphaComponent(0.28) }
+    /// The light a landing leaves on the block it arrived at, for the moment
+    /// before it fades. The accent colour, because this is the app telling the
+    /// reader where it took them — not a mark in their document, which is what
+    /// `markBackground`'s yellow means and must go on meaning. Faint, because it
+    /// sits *behind* prose the reader is about to read.
+    public static var landingFlash: LeafColor { accent.withAlphaComponent(0.22) }
     // Table chrome — a grid line, a header fill, and a body stripe, all derived
     // from the label colour so they track light/dark like everything else.
     public static var tableBorder: LeafColor { separator }

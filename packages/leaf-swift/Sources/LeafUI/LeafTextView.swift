@@ -350,6 +350,9 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
         // The paper first: every other thing here paints onto a sheet.
         PageChrome.draw(layoutEngine.pages, theme: theme, clip: band, in: ctx)
+        // Then the landing flash, under every other mark: it is a light behind
+        // the words, not something drawn over them.
+        drawLandingFlash(in: ctx)
         drawDirectiveBorders(in: ctx, dirtyRect: band)
         // The quote bars are one pass over the frame (a run of quoted rows merges
         // into a single bar), so they're painted before the rows, like the
@@ -644,23 +647,105 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         }
     }
 
-    /// Put the caret at `offset` and scroll it into sight — how a host lands a
-    /// reader on the place a `#v2` names.
+    /// Put the caret at `offset` and land the reader on it — how a host arrives
+    /// at the place a `#v2` names.
     ///
-    /// Unconditional, unlike the caret-following in `render`: that one scrolls
-    /// only when the caret *moved*, so that a passive reflow doesn't snap the
-    /// reader back. Following the same locator twice moves the caret nowhere,
-    /// and the second time has to work too.
-    public func reveal(offset: UInt32) {
+    /// `through` bounds the block that was named, and gets it flashed. Passing it
+    /// is what makes an arrival legible: without it the reader is somewhere new
+    /// with nothing saying which words they were sent to.
+    ///
+    /// A landing rather than the caret-following in `render`, which scrolls the
+    /// least it can and only when the caret *moved* — right for typing, wrong for
+    /// arriving. See `Landing`.
+    public func reveal(offset: UInt32, through end: UInt32? = nil) {
         command { $0.caretMoved(to: offset) }
         lastCaretOffset = offset
-        scrollCaretToVisible()
+        land()
+        guard let end, end > offset else { return }
+        flash(from: offset, to: end)
+    }
+
+    /// Scroll so the caret's block sits a fixed distance below the top of the
+    /// viewport. Falls back to the ordinary minimum scroll when there is no clip
+    /// view to measure against (a text view not in a scroll view at all).
+    private func land() {
+        guard let clip = enclosingScrollView?.contentView,
+              let rect = layoutEngine.caretRect(docView, theme: theme)
+        else { return scrollCaretToVisible() }
+        let target = viewRect(rect)
+        let y = Landing.scrollTop(for: target,
+                                  visibleHeight: clip.bounds.height,
+                                  documentHeight: bounds.height)
+        clip.scroll(to: CGPoint(x: clip.bounds.origin.x, y: y))
+        enclosingScrollView?.reflectScrolledClipView(clip)
     }
 
     private func scrollCaretToVisible() {
         if let rect = layoutEngine.caretRect(docView, theme: theme) {
             scrollToVisible(viewRect(rect.insetBy(dx: 0, dy: -theme.lineHeight)))
         }
+    }
+
+    // MARK: the flash a landing leaves
+
+    /// The byte range lit up by the landing in progress, and when it started.
+    /// Both nil between landings, which is what keeps `draw` free of the whole
+    /// question on every ordinary repaint.
+    private var flashRange: Range<UInt32>?
+    private var flashStarted: Date?
+    private var flashTimer: Timer?
+
+    /// Light up the block from `start` to `end` and fade it out.
+    ///
+    /// Redrawn on a timer rather than through Core Animation: the highlight is
+    /// painted in `draw` alongside every other band of block chrome, in layout
+    /// space, and a layer over the top would have to be re-placed on each scroll
+    /// and reflow to stay on the words it belongs to.
+    private func flash(from start: UInt32, to end: UInt32) {
+        flashTimer?.invalidate()
+        flashRange = start..<end
+        flashStarted = Date()
+        needsDisplay = true
+        flashTimer = Timer.scheduledTimer(withTimeInterval: 1 / 30, repeats: true) { [weak self] t in
+            guard let self, let started = self.flashStarted else { return t.invalidate() }
+            guard Landing.opacity(elapsed: Date().timeIntervalSince(started)) != nil else {
+                t.invalidate()
+                self.flashTimer = nil
+                self.flashRange = nil
+                self.flashStarted = nil
+                self.needsDisplay = true
+                return
+            }
+            self.needsDisplay = true
+        }
+    }
+
+    /// Paint the landing flash behind the rows its range covers.
+    ///
+    /// Behind the text and over the paper, where a code block's fill goes, and
+    /// measured off `bands` for that same reason: a row's `height` reaches across
+    /// a page break and a column gutter, and a highlight is a thing that must
+    /// never appear in either.
+    private func drawLandingFlash(in ctx: CGContext) {
+        guard let flashRange, let flashStarted,
+              let alpha = Landing.opacity(elapsed: Date().timeIntervalSince(flashStarted))
+        else { return }
+        let first = Int(doc.posForOffset(off: flashRange.lowerBound).row)
+        // The last byte *in* the block names its last row; `upperBound` is one
+        // past it and can belong to the block below.
+        let last = Int(doc.posForOffset(off: flashRange.upperBound - 1).row)
+        guard first <= last else { return }
+        ctx.saveGState()
+        ctx.setFillColor(theme.landingFlashColor.withAlphaComponent(
+            theme.landingFlashColor.alphaComponent * alpha).cgColor)
+        for rl in layoutEngine.rows[max(0, first)...min(last, layoutEngine.rows.count - 1)] {
+            for band in rl.bands where band.height > 0 {
+                let lit = band.insetBy(dx: -6, dy: 0)
+                ctx.addPath(CGPath(roundedRect: lit, cornerWidth: 4, cornerHeight: 4, transform: nil))
+            }
+        }
+        ctx.fillPath()
+        ctx.restoreGState()
     }
 
     // MARK: mouse
@@ -795,6 +880,22 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     private lazy var footnotePeek: FootnotePeekPresenter = {
         let presenter = FootnotePeekPresenter()
         presenter.delegate = self
+        return presenter
+    }()
+
+    /// The peek a *citation inside a note* raises — a second popover over the
+    /// first, and the only stacking allowed anywhere here.
+    ///
+    /// A vault of scripture puts the interesting links exactly one level down: a
+    /// verse's footnote is a list of citations, and every one is a link into
+    /// another chapter. Refusing to stack meant the reader could see which
+    /// citations there were and never what they said without clicking through and
+    /// losing the note they were reading. One level answers that; `raisesNestedPeeks`
+    /// is what stops a second.
+    private lazy var nestedPeek: FootnotePeekPresenter = {
+        let presenter = FootnotePeekPresenter()
+        presenter.delegate = self
+        presenter.raisesNestedPeeks = false
         return presenter
     }()
     private var peekAnchor: CGRect?
@@ -944,6 +1045,10 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         peekCloseTimer = nil
         pointerInPeek = false
         peekAnchor = nil
+        // The nested one first, and always: it is anchored inside the note's
+        // window, so a note taken down under it would leave a popover pointing
+        // at nothing.
+        nestedPeek.hide()
         footnotePeek.hide()
     }
 
@@ -957,12 +1062,51 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// closing outright, for the same reason arriving needed a grace period: the
     /// pointer may be crossing back to the reference.
     func footnotePeek(_ presenter: FootnotePeekPresenter, pointerIsInside inside: Bool) {
+        // The nested peek is a thing to read, not to travel into: it holds no
+        // links (a foreign document's are inert) and nothing to select that the
+        // note above it doesn't already offer. So the pointer's comings and
+        // goings in it say nothing about whether the *note* should stay up, and
+        // reading them as the note's own would take the note down the moment the
+        // second popover appeared under the pointer.
+        guard presenter !== nestedPeek else { return }
         pointerInPeek = inside
         if inside {
             peekCloseTimer?.invalidate()
             peekCloseTimer = nil
         } else {
             scheduleFootnotePeekClose()
+        }
+    }
+
+    /// A citation inside a note has been rested on: show what it points at, over
+    /// the note, without disturbing it.
+    ///
+    /// Same two sources as a hover in the document itself — a `#v2` is a place in
+    /// this document and needs no host, anything else is a file only the host can
+    /// read. Unlike that one it anchors to a rect inside the *popover's* text
+    /// view, which is a real view in a real window and can carry a popover of its
+    /// own.
+    func footnotePeek(_ presenter: FootnotePeekPresenter,
+                      wantsPeekOf destination: String?, from rect: CGRect, in view: NSView) {
+        nestedPeek.hide()
+        guard let destination else { return }
+        if destination.hasPrefix("#") {
+            let content = FootnotePeekContent(peeking: String(destination.dropFirst()),
+                                              of: doc, in: docView, theme: theme)
+            guard let content else { return }
+            nestedPeek.show(content, from: rect, in: view)
+            return
+        }
+        guard let onPeekLink else { return }
+        onPeekLink(destination) { [weak self, weak view] fetched in
+            guard let self, let view, let fetched,
+                  // The note itself may have gone while the host was reading a
+                  // file — and a second popover outliving the first would be left
+                  // pointing at a window that isn't there.
+                  self.footnotePeek.isShowing,
+                  let content = FootnotePeekContent(peeking: fetched, theme: self.theme)
+            else { return }
+            self.nestedPeek.show(content, from: rect, in: view)
         }
     }
 

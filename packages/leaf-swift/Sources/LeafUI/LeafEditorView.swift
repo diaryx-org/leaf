@@ -247,14 +247,17 @@ public final class LeafEditorModel: ObservableObject {
     @discardableResult
     public func goTo(locator: String) -> Bool {
         guard let landing = doc.locate(id: locator) else { return false }
-        reveal(offset: landing.start)
+        reveal(offset: landing.start, through: landing.end)
         return true
     }
 
-    /// Put the caret at `offset` and scroll it into sight.
-    public func reveal(offset: UInt32) {
-        guard let textView else { pendingLanding = offset; return }
-        textView.reveal(offset: offset)
+    /// Put the caret at `offset` and land the reader on it. `through` bounds the
+    /// block that was named, which gets flashed — pass it whenever the arrival is
+    /// at a *block* rather than a point, so the reader is told which words they
+    /// were sent to.
+    public func reveal(offset: UInt32, through end: UInt32? = nil) {
+        guard let textView else { pendingLanding = (offset, end); return }
+        textView.reveal(offset: offset, through: end)
     }
 
     /// An offset to land on as soon as there is a view to land in.
@@ -265,12 +268,12 @@ public final class LeafEditorModel: ObservableObject {
     /// later. Worse, dropping it silently is invisible: the reader lands at the
     /// top of the right document, which is precisely what the old behaviour
     /// looked like. `prefer` solves the same problem for rendering modes.
-    fileprivate var pendingLanding: UInt32?
+    fileprivate var pendingLanding: (offset: UInt32, end: UInt32?)?
 
     /// Take the pending landing, if there is one — called once by the view that
     /// has just been made. Taken rather than read, so a later relayout doesn't
     /// yank the reader back to a place they have since scrolled away from.
-    fileprivate func takePendingLanding() -> UInt32? {
+    fileprivate func takePendingLanding() -> (offset: UInt32, end: UInt32?)? {
         defer { pendingLanding = nil }
         return pendingLanding
     }
@@ -490,7 +493,9 @@ public struct LeafEditor: NSViewRepresentable {
         // would measure the caret against a zero-height viewport and scroll
         // nowhere.
         if let landing = model.takePendingLanding() {
-            DispatchQueue.main.async { [weak textView] in textView?.reveal(offset: landing) }
+            DispatchQueue.main.async { [weak textView] in
+                textView?.reveal(offset: landing.offset, through: landing.end)
+            }
         }
         return textView
     }
@@ -634,7 +639,9 @@ public struct LeafEditor: UIViewRepresentable {
         // A locator the host followed before there was anything to scroll — see
         // the AppKit peer for why this waits a turn.
         if let landing = model.takePendingLanding() {
-            DispatchQueue.main.async { [weak textView] in textView?.reveal(offset: landing) }
+            DispatchQueue.main.async { [weak textView] in
+                textView?.reveal(offset: landing.offset, through: landing.end)
+            }
         }
         return textView
     }

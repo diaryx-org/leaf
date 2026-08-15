@@ -34,6 +34,21 @@ protocol FootnotePeekDelegate: AnyObject {
     func footnotePeek(_ presenter: FootnotePeekPresenter, pointerIsInside: Bool)
     /// The reader clicked something in the note that leads somewhere.
     func footnotePeek(_ presenter: FootnotePeekPresenter, didFollow target: FootnotePeekTarget)
+    /// The pointer has rested on a link *inside* the note, and the reader would
+    /// like to see what it points at without leaving the note to find out.
+    ///
+    /// The commonest shape in a vault of scripture: the reference is a footnote,
+    /// the note is a list of citations, and every one of them is a link into
+    /// another chapter. Peeking the note answers "which citations", and the
+    /// question immediately after it is "what do they say" — which, before this,
+    /// could only be answered by clicking through and losing the note.
+    ///
+    /// `rect` is in `view`'s coordinates (the popover's own text view), which is
+    /// what the second popover anchors to. A nil `destination` is the pointer
+    /// having left the citation — the same call, so that raising and dropping the
+    /// second popover can't get out of step.
+    func footnotePeek(_ presenter: FootnotePeekPresenter,
+                      wantsPeekOf destination: String?, from rect: CGRect, in view: NSView)
 }
 
 /// Presents (and owns) the peek popover on macOS.
@@ -74,12 +89,6 @@ final class FootnotePeekPresenter {
     }
 
     private func controller(for content: FootnotePeekContent) -> NSViewController {
-        // Measured, not left to auto layout. Wrapping text has an intrinsic width
-        // of zero — it will shrink to whatever it is given — so a popover sized
-        // from the container's fitting size collapses to a sliver and truncates
-        // the note to its first letter.
-        let width = min(Self.maxWidth, max(Self.minWidth, ceil(Self.measure(content.body).width)))
-
         let drawn = NSMutableAttributedString(attributedString: content.body)
         // leaf's own sentence ("no note defined") has no runs behind it, so it is
         // dressed here — in the secondary colour, to say plainly that it is
@@ -99,6 +108,13 @@ final class FootnotePeekPresenter {
             drawn.addAttributes([.underlineStyle: NSUnderlineStyle.single.rawValue,
                                  .cursor: NSCursor.pointingHand], range: range)
         }
+
+        // Measured, not left to auto layout. Wrapping text has an intrinsic width
+        // of zero — it will shrink to whatever it is given — so a popover sized
+        // from the container's fitting size collapses to a sliver and truncates
+        // the note to its first letter.
+        let measured = Self.measuredSize(of: drawn)
+        let width = measured.width
 
         let body = FootnotePeekTextView()
         body.presenter = self
@@ -129,11 +145,7 @@ final class FootnotePeekPresenter {
             body.widthAnchor.constraint(equalToConstant: width),
         ])
 
-        // Capped to the same line count the container truncates at, so a long
-        // note leaves no empty band under its last visible line.
-        let measured = Self.measure(content.body, wrappingAt: width)
-        let lineHeight = max(1, Self.measure(content.body, wrappingAt: .greatestFiniteMagnitude).height)
-        let bodyHeight = min(ceil(measured.height), ceil(lineHeight) * CGFloat(Self.maxLines))
+        let bodyHeight = measured.height
 
         let vc = NSViewController()
         vc.view = container
@@ -150,22 +162,69 @@ final class FootnotePeekPresenter {
         delegate?.footnotePeek(self, didFollow: target)
     }
 
-    /// How much room `text` needs — on one line when `wrappingAt` is nil, wrapped
-    /// to that width otherwise. Measured from the attributed string itself, so
-    /// the note's own fonts (a heading-sized run, inline code) are accounted for.
-    private static func measure(_ text: NSAttributedString, wrappingAt width: CGFloat? = nil) -> CGSize {
-        text.boundingRect(
-            with: NSSize(width: width ?? .greatestFiniteMagnitude, height: .greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin, .usesFontLeading]
-        ).size
+    fileprivate func wantsPeek(of destination: String?, from rect: CGRect, in view: NSView) {
+        delegate?.footnotePeek(self, wantsPeekOf: destination, from: rect, in: view)
+    }
+
+    /// Whether this presenter's popover may raise one of its own.
+    ///
+    /// False on a peek that is already nested, which is what stops a chain: a
+    /// citation's verse may itself cite something, and a reader who can stack
+    /// popovers three deep by resting a pointer has been given a stack to unwind
+    /// rather than an answer. One level is the whole of the useful case — the
+    /// note, and what the note points at.
+    var raisesNestedPeeks = true
+
+    /// How much room `text` actually takes when the popover draws it — wrapped at
+    /// `wrappingAt`, or unwrapped (the widest line) when that is nil.
+    ///
+    /// Laid out in a container configured exactly like the text view's, `maxLines`
+    /// included, and measured with `usedRect` — so what comes back is the size of
+    /// what will be *on screen* rather than of the string.
+    ///
+    /// That distinction is the whole point. The estimate this replaces took the
+    /// height of one line to be the string's height at infinite width, and capped
+    /// the popover at `maxLines` of those. Fine for a footnote, which is a single
+    /// row: no hard newlines, so "at infinite width" really is one line. A link's
+    /// peek is several rows joined by newlines, and `boundingRect` breaks at those
+    /// whatever width it is given — so "one line" measured as tall as the whole
+    /// note, the cap came out at eight times too big to bind, and the popover was
+    /// sized for every row while the container drew eight. Hence a note with an
+    /// empty half-screen under it.
+    ///
+    /// Laying out is more work than a bounding rect, and it happens twice per
+    /// peek. Both are on the hover's 0.4s rest, over at most `maxRows` of text.
+    static func laidOut(_ text: NSAttributedString, wrappingAt width: CGFloat?) -> CGSize {
+        let storage = NSTextStorage(attributedString: text)
+        let layout = NSLayoutManager()
+        // A large finite width rather than `.greatestFiniteMagnitude`: the
+        // unwrapped question is "how wide is the widest line", and an infinite
+        // container is one that CoreText declines to lay out.
+        let container = NSTextContainer(
+            size: NSSize(width: width ?? 10_000, height: .greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        container.maximumNumberOfLines = maxLines
+        container.lineBreakMode = .byWordWrapping
+        layout.addTextContainer(container)
+        storage.addLayoutManager(layout)
+        layout.ensureLayout(for: container)
+        return layout.usedRect(for: container).size
+    }
+
+    /// The size the popover's body will be given for `text` — the pair of
+    /// `laidOut` calls `controller(for:)` makes, in one place so a test can ask
+    /// the same question the popover does.
+    static func measuredSize(of text: NSAttributedString) -> CGSize {
+        let width = min(maxWidth, max(minWidth, ceil(laidOut(text, wrappingAt: nil).width)))
+        return CGSize(width: width, height: ceil(laidOut(text, wrappingAt: width).height))
     }
 
     /// Wide enough for a sentence or two, narrow enough to read in one fixation
     /// and to sit beside the reference rather than over the whole column.
-    private static let maxWidth: CGFloat = 320
+    static let maxWidth: CGFloat = 320
     /// So a one-word note is still a popover rather than a chip.
-    private static let minWidth: CGFloat = 140
-    private static let maxLines = 8
+    static let minWidth: CGFloat = 140
+    static let maxLines = 8
     private static let insets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
 }
 
@@ -227,7 +286,79 @@ private final class FootnotePeekTextView: NSTextView {
         super.mouseDown(with: event)
     }
 
-    private func target(at point: CGPoint) -> FootnotePeekTarget? {
+    // MARK: resting on a link inside the note
+
+    /// The link the pointer is resting on, and the countdown to showing it.
+    ///
+    /// Keyed by the range the link occupies rather than by the point, so crossing
+    /// between two glyphs of the same citation doesn't re-raise the popover —
+    /// `LeafTextView`'s hover keys on its anchor rect for the same reason.
+    private var restingRange: NSRange?
+    private var restTimer: Timer?
+    private var tracking: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        // `.activeAlways`: a popover's window is never the key window, so the
+        // usual `.activeInKeyWindow` would never fire in here at all.
+        let area = NSTrackingArea(rect: .zero,
+                                  options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        tracking = area
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        guard presenter?.raisesNestedPeeks == true else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        var range = NSRange(location: NSNotFound, length: 0)
+        let destination = linkTarget(at: point, range: &range)
+        guard range != restingRange else { return }
+        restingRange = range
+        restTimer?.invalidate()
+        restTimer = nil
+        // Off the citation: whatever was shown for it is about somewhere the
+        // reader has left.
+        presenter?.wantsPeek(of: nil, from: .zero, in: self)
+        guard let destination, let layoutManager, let textContainer else { return }
+        let rect = layoutManager.boundingRect(forGlyphRange: range, in: textContainer)
+        // The same rest a tooltip waits for, and the reason the outer peek waits
+        // one: a popover that appeared the instant the pointer touched a citation
+        // would strobe along a line of them.
+        restTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            self.restTimer = nil
+            self.presenter?.wantsPeek(of: destination, from: rect, in: self)
+        }
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        restingRange = nil
+        restTimer?.invalidate()
+        restTimer = nil
+        presenter?.wantsPeek(of: nil, from: .zero, in: self)
+    }
+
+    /// The link destination under `point`, with the range it occupies written
+    /// back — nil over prose, and over a nested footnote reference, which names a
+    /// place in the document rather than a document to show.
+    private func linkTarget(at point: CGPoint, range: inout NSRange) -> String? {
+        guard let (target, occupied) = hit(at: point),
+              case .link(let destination) = target.kind
+        else { return nil }
+        range = occupied
+        return destination
+    }
+
+    private func target(at point: CGPoint) -> FootnotePeekTarget? { hit(at: point)?.target }
+
+    /// What the point lands on, and the whole run it belongs to.
+    ///
+    /// The range comes back because a hover needs it and a click doesn't: to
+    /// anchor a popover under a citation, and to know that the pointer crossing
+    /// between two of its glyphs is still resting on the same one.
+    private func hit(at point: CGPoint) -> (target: FootnotePeekTarget, range: NSRange)? {
         guard let layoutManager, let textContainer, let storage = textStorage, storage.length > 0
         else { return nil }
         // Fraction-checked, because `characterIndex(for:)` answers with the
@@ -241,7 +372,11 @@ private final class FootnotePeekTextView: NSTextView {
         let rect = layoutManager.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1),
                                               in: textContainer)
         guard rect.contains(point) else { return nil }
-        return storage.attribute(.footnoteTarget, at: index, effectiveRange: nil) as? FootnotePeekTarget
+        var range = NSRange(location: NSNotFound, length: 0)
+        guard let target = storage.attribute(.footnoteTarget, at: index, effectiveRange: &range)
+                as? FootnotePeekTarget
+        else { return nil }
+        return (target, range)
     }
 }
 #endif

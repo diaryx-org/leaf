@@ -106,6 +106,39 @@ final class LinkPeekTests: XCTestCase {
         XCTAssertFalse(peek.body.string.contains("intro"))
     }
 
+    // ── how big the popover has to be ─────────────────────────────────────────
+
+    #if canImport(AppKit)
+    /// The popover is sized to what it *draws*, and it draws at most `maxLines`.
+    ///
+    /// The bug: the height was estimated as "one line's height" × maxLines, with
+    /// one line measured as the whole string at infinite width. A footnote is a
+    /// single row, so that really was one line and the cap bound. A link's peek is
+    /// several rows joined by newlines, which `boundingRect` breaks at whatever
+    /// width it is given — so the "one line" measure came back as tall as the
+    /// entire note, the cap came out eight times too big to bind, and the popover
+    /// was sized for every row while drawing eight. A verse got half a screen of
+    /// white space under it.
+    func testALongPeekIsSizedToTheLinesItActuallyDraws() throws {
+        let short = try XCTUnwrap(FootnotePeekContent(
+            peeking: LinkPeekSource(source: "One short line.\n", format: "markdown"),
+            theme: .default))
+        // Far more rows than the popover will ever draw.
+        let long = try XCTUnwrap(FootnotePeekContent(
+            peeking: LinkPeekSource(
+                source: (1...40).map { "Paragraph number \($0), with enough words in it to wrap." }
+                    .joined(separator: "\n\n"),
+                format: "markdown"),
+            theme: .default))
+
+        let oneLine = FootnotePeekPresenter.measuredSize(of: short.body).height
+        let many = FootnotePeekPresenter.measuredSize(of: long.body).height
+        XCTAssertGreaterThan(many, oneLine, "a long note is taller than a one-liner")
+        XCTAssertLessThanOrEqual(many, oneLine * CGFloat(FootnotePeekPresenter.maxLines) + 1,
+                                 "…and never taller than the lines it draws")
+    }
+    #endif
+
     // ── what a menu offers ────────────────────────────────────────────────────
 
     func testAPreviewIsOfferedForAFragmentEvenWithNoHostToAsk() throws {

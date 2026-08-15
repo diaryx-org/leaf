@@ -571,13 +571,82 @@ public final class LeafTextView: UIView, UITextInput {
         onStateChange?(EditorState(view))
     }
 
-    /// Put the caret at `offset` and scroll it into sight — how a host lands a
-    /// reader on the place a `#v2` names. The AppKit peer's twin; see it for why
-    /// this scrolls unconditionally where `render` scrolls only on a move.
-    public func reveal(offset: UInt32) {
+    /// Put the caret at `offset` and land the reader on it — how a host arrives
+    /// at the place a `#v2` names, with `through` bounding the block to flash.
+    /// The AppKit peer's twin; see it and `Landing` for why an arrival is its own
+    /// move rather than the least scroll that works.
+    public func reveal(offset: UInt32, through end: UInt32? = nil) {
         command { $0.caretMoved(to: offset) }
         lastCaretOffset = offset
-        scrollCaretToVisible()
+        land()
+        guard let end, end > offset else { return }
+        flash(from: offset, to: end)
+    }
+
+    /// Scroll so the caret's block sits a fixed distance below the top of the
+    /// viewport, rather than the least distance that brings it into view.
+    private func land() {
+        guard let scroll = enclosingScrollView(),
+              let rect = layoutEngine.caretRect(docView, theme: renderTheme)
+        else { return scrollCaretToVisible() }
+        let target = convert(rect, to: scroll)
+        let visible = scroll.bounds.height - scroll.adjustedContentInset.top
+            - scroll.adjustedContentInset.bottom
+        let y = Landing.scrollTop(for: target,
+                                  visibleHeight: visible,
+                                  documentHeight: scroll.contentSize.height)
+        scroll.setContentOffset(
+            CGPoint(x: scroll.contentOffset.x, y: y - scroll.adjustedContentInset.top),
+            animated: false)
+    }
+
+    // MARK: the flash a landing leaves
+
+    /// The byte range lit up by the landing in progress, and when it started —
+    /// the AppKit peer's pair, drawn the same way and for the same reason.
+    private var flashRange: Range<UInt32>?
+    private var flashStarted: Date?
+    private var flashTimer: Timer?
+
+    private func flash(from start: UInt32, to end: UInt32) {
+        flashTimer?.invalidate()
+        flashRange = start..<end
+        flashStarted = Date()
+        setNeedsDisplay()
+        flashTimer = Timer.scheduledTimer(withTimeInterval: 1 / 30, repeats: true) { [weak self] t in
+            guard let self, let started = self.flashStarted else { return t.invalidate() }
+            guard Landing.opacity(elapsed: Date().timeIntervalSince(started)) != nil else {
+                t.invalidate()
+                self.flashTimer = nil
+                self.flashRange = nil
+                self.flashStarted = nil
+                self.setNeedsDisplay()
+                return
+            }
+            self.setNeedsDisplay()
+        }
+    }
+
+    /// Paint the landing flash behind the rows its range covers — measured off
+    /// `bands`, where a block's own background belongs.
+    private func drawLandingFlash(in ctx: CGContext) {
+        guard let flashRange, let flashStarted,
+              let alpha = Landing.opacity(elapsed: Date().timeIntervalSince(flashStarted))
+        else { return }
+        let first = Int(doc.posForOffset(off: flashRange.lowerBound).row)
+        let last = Int(doc.posForOffset(off: flashRange.upperBound - 1).row)
+        guard first <= last, !layoutEngine.rows.isEmpty else { return }
+        ctx.saveGState()
+        ctx.setFillColor(renderTheme.landingFlashColor.withAlphaComponent(
+            renderTheme.landingFlashColor.cgColor.alpha * alpha).cgColor)
+        for rl in layoutEngine.rows[max(0, first)...min(last, layoutEngine.rows.count - 1)] {
+            for band in rl.bands where band.height > 0 {
+                ctx.addPath(CGPath(roundedRect: band.insetBy(dx: -6, dy: 0),
+                                   cornerWidth: 4, cornerHeight: 4, transform: nil))
+            }
+        }
+        ctx.fillPath()
+        ctx.restoreGState()
     }
 
     private func scrollCaretToVisible() {
@@ -599,6 +668,8 @@ public final class LeafTextView: UIView, UITextInput {
         let padX = layoutEngine.originX
         let fullWidth = layoutEngine.columnWidth
 
+        // Under every other mark: a light behind the words, not over them.
+        drawLandingFlash(in: ctx)
         drawDirectiveBorders(in: ctx, dirtyRect: rect)
         // One pass for the quote bars (a run of quoted rows merges into a single
         // bar), before the rows, exactly as the AppKit surface orders it.

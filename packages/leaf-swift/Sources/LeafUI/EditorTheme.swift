@@ -112,6 +112,9 @@ public struct EditorTheme {
     public var caretColor: LeafColor
     /// The drag-handle knobs on iOS selection (the loupe-free native peers).
     public var handleColor: LeafColor
+    /// The light left on a block a `reveal` landed on, faded out over the moment
+    /// after. See `Landing` for why an arrival needs one at all.
+    public var landingFlashColor: LeafColor
     /// The paginated view's chrome: the paper, the surface behind the stack, and
     /// the hairline round each sheet. Inert while no `PageSetup` is set — the
     /// continuous flow draws no paper — and pure colour either way, so changing
@@ -153,6 +156,7 @@ public struct EditorTheme {
         inactiveSelectionColor: LeafColor = Palette.inactiveSelection,
         caretColor: LeafColor = Palette.label,
         handleColor: LeafColor = Palette.accent,
+        landingFlashColor: LeafColor = Palette.landingFlash,
         pageColor: LeafColor = Palette.page,
         pageBackdropColor: LeafColor = Palette.pageBackdrop,
         pageBorderColor: LeafColor = Palette.separator
@@ -189,6 +193,7 @@ public struct EditorTheme {
         self.inactiveSelectionColor = inactiveSelectionColor
         self.caretColor = caretColor
         self.handleColor = handleColor
+        self.landingFlashColor = landingFlashColor
         self.pageColor = pageColor
         self.pageBackdropColor = pageBackdropColor
         self.pageBorderColor = pageBorderColor
