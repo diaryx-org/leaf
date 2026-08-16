@@ -215,6 +215,27 @@ public final class LeafTextView: UIView, UITextInput {
         return tap
     }()
 
+    /// The long press that actually gets the link menu on screen.
+    ///
+    /// The menu items were there and unreachable. `UITextInteraction` owns the
+    /// long press, and what it does with one is raise the loupe and steer the
+    /// caret — it does not then present the edit menu, so holding a link moved
+    /// the cursor and nothing else, which is exactly what it looked like. The
+    /// menu was being *built* correctly and never asked for.
+    ///
+    /// So this asks for it. It runs beside the system's press rather than instead
+    /// of it (`shouldRecognizeSimultaneouslyWith`), which is what keeps the loupe:
+    /// a link's tap target is a few characters wide on a phone, and the loupe is
+    /// how a reader lands on the right one. Then, on lift, the menu.
+    private lazy var linkPress: UILongPressGestureRecognizer = {
+        let press = UILongPressGestureRecognizer(target: self, action: #selector(handleLinkPress(_:)))
+        // The system's own press drives the caret; this one only watches for the
+        // lift, so it must not swallow the touches that press needs.
+        press.cancelsTouchesInView = false
+        press.delegate = self
+        return press
+    }()
+
     /// The edit menu, so the link actions have somewhere to appear.
     ///
     /// Owning one is what makes custom items possible at all on iOS 16+.
@@ -249,10 +270,53 @@ public final class LeafTextView: UIView, UITextInput {
         contentMode = .redraw
         addInteraction(textInteraction)
         addGestureRecognizer(mediaTap)
+        addGestureRecognizer(linkPress)
         addInteraction(editMenu)
         // Seed with the initial caret so the first reflow opens at the top.
         lastCaretOffset = doc.caretOffset()
         applyDynamicType()   // scale type to the current trait environment
+    }
+
+    // MARK: reaching a link
+
+    /// Raise the edit menu when a long press ends on something the menu has an
+    /// answer for — a link, a footnote reference, a note.
+    ///
+    /// On the lift rather than at `.began`, for two reasons. The loupe spends the
+    /// whole press steering the caret, so where the reader's finger *started* is
+    /// not what they chose — the final caret is, and asking any earlier would
+    /// offer the menu for whatever character the press happened to begin over.
+    /// And a menu raised under a finger that is still down is one the same touch
+    /// then dismisses.
+    ///
+    /// Silent when the caret ends up on ordinary prose: an ordinary long press
+    /// keeps doing exactly what it did, which is to place a caret.
+    @objc private func handleLinkPress(_ gesture: UILongPressGestureRecognizer) {
+        guard gesture.state == .ended else { return }
+        // A press that made a selection is the selection's, and the system shows
+        // its own menu over one. Presenting a second here would be two menus for
+        // one gesture.
+        guard !docView.hasSelection, caretHasMenuActions else { return }
+        let rc = doc.posForOffset(off: doc.caretOffset())
+        // Anchored on the caret rather than on the finger, so the menu points at
+        // the link the reader landed on rather than at where they let go.
+        let source = layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch))?.origin
+            ?? gesture.location(in: self)
+        editMenu.presentEditMenu(
+            with: UIEditMenuConfiguration(identifier: nil, sourcePoint: source))
+    }
+
+    /// Whether the caret stands on anything the edit menu would add an entry for.
+    ///
+    /// Asked of the same two builders the menu itself uses, rather than of the
+    /// queries under them: the point is that the press raises a menu exactly when
+    /// there will be something in it, and two ways of deciding that would drift
+    /// into a press that opens an empty menu or one that opens none at all.
+    private var caretHasMenuActions: Bool {
+        !footnoteMenuActions().isEmpty
+            || !doc.linkActionsAtCaret(wikilinks: recognizesWikilinks,
+                                       canEdit: onEditLink != nil,
+                                       canPeek: onPeekLink != nil).isEmpty
     }
 
     // MARK: media activation
