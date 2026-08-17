@@ -140,6 +140,72 @@ pub struct MediaView {
     sources: Vec<MediaSourceView>,
 }
 
+/// Which formatting controls this document's format can spell — the toolbar's
+/// enabled state, one flag per button, from [`LeafDoc::capabilities`]. Mirrors
+/// [`leaf_core::Capabilities`], where the reasoning lives.
+///
+/// `into_wasm_abi` so the generated `.d.ts` types the getter as this record
+/// rather than `any`: the renderer destructures it once per document and keys
+/// each button's `disabled` off a field.
+#[derive(Serialize, Tsify)]
+#[tsify(into_wasm_abi)]
+pub struct CapabilitiesView {
+    bold: bool,
+    italic: bool,
+    code: bool,
+    mark: bool,
+    underline: bool,
+    strike: bool,
+    superscript: bool,
+    subscript: bool,
+    /// Both the heading levels and "make this a paragraph" — one gesture in
+    /// core, so one flag here.
+    heading: bool,
+    blockquote: bool,
+    bullet_list: bool,
+    ordered_list: bool,
+    /// Giving an item a checkbox and ticking one, including a *click* on a
+    /// rendered box.
+    task: bool,
+    link: bool,
+    /// Covers `insertMedia` too.
+    image: bool,
+    thematic_break: bool,
+    code_language: bool,
+    /// The grid controls. Gate them on this *and* `caretInTable`: this asks
+    /// whether the format's tables are editable, that whether the caret is in
+    /// one — an HTML `<table>` answers yes to the second and no to the first.
+    table: bool,
+    /// Shift+Return inside a cell.
+    cell_line_break: bool,
+}
+
+impl From<leaf_core::Capabilities> for CapabilitiesView {
+    fn from(c: leaf_core::Capabilities) -> Self {
+        Self {
+            bold: c.bold,
+            italic: c.italic,
+            code: c.code,
+            mark: c.mark,
+            underline: c.underline,
+            strike: c.strike,
+            superscript: c.superscript,
+            subscript: c.subscript,
+            heading: c.heading,
+            blockquote: c.blockquote,
+            bullet_list: c.bullet_list,
+            ordered_list: c.ordered_list,
+            task: c.task,
+            link: c.link,
+            image: c.image,
+            thematic_break: c.thematic_break,
+            code_language: c.code_language,
+            table: c.table,
+            cell_line_break: c.cell_line_break,
+        }
+    }
+}
+
 /// A per-destination measured height, the way JS reports one back — the input
 /// half of the height loop [`LeafDoc::set_media_rows`] closes.
 #[derive(Deserialize, Tsify)]
@@ -468,6 +534,29 @@ impl LeafDoc {
     /// The selected text, if any — for a clipboard copy/cut.
     pub fn selected_text(&self) -> Option<String> {
         self.doc.selected_text().map(str::to_string)
+    }
+
+    /// Which formatting controls this document's format can actually spell —
+    /// one flag per toolbar button.
+    ///
+    /// Read once when a document opens: the answer depends only on the format,
+    /// so no edit can change it. Every gesture refuses on its own regardless, so
+    /// ignoring this stays correct and merely offers buttons that do nothing but
+    /// set a status message.
+    ///
+    /// Don't collapse it to one flag. An HTML document takes ⌘B, ⌘I and inline
+    /// code — its marks are a tag pair — while refusing every heading, list,
+    /// quote and link, and Markdown refuses the highlight djot spells.
+    pub fn capabilities(&self) -> CapabilitiesView {
+        self.doc.capabilities().into()
+    }
+
+    /// Whether this document's format offers *any* door in — `false` only for a
+    /// wholly parse-only one (XML), where the formatting section can be hidden
+    /// outright. For anything finer, including whether to dim an individual
+    /// button, use [`LeafDoc::capabilities`].
+    pub fn authorable(&self) -> bool {
+        self.doc.authorable()
     }
 
     /// Mark the buffer saved after the host persisted [`LeafDoc::source`] its own

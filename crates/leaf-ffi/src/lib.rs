@@ -44,8 +44,9 @@ use std::sync::{Arc, Mutex};
 use leaf_core::style::{Baseline, Role, Style as LStyle};
 use leaf_core::wysiwyg::text_width;
 use leaf_core::{
-    Alignment, BlockKind, ColorScheme, Doc, Format, InlineKind, LineFlow as CoreLineFlow,
-    MarkupMode as CoreMarkupMode, MediaKind as CoreMediaKind, View, VisualMap,
+    Alignment, BlockKind, Capabilities as CoreCapabilities, ColorScheme, Doc, Format, InlineKind,
+    LineFlow as CoreLineFlow, MarkupMode as CoreMarkupMode, MediaKind as CoreMediaKind, View,
+    VisualMap,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -492,6 +493,76 @@ pub struct DocView {
 pub struct RowCol {
     pub row: u32,
     pub ch: u32,
+}
+
+/// Which formatting controls this document's format can spell — the toolbar's
+/// enabled state, one flag per button, from [`LeafDoc::capabilities`]. Mirrors
+/// [`leaf_core::Capabilities`], where the reasoning lives.
+///
+/// Its shape is a flat record of `Bool`s rather than a query taking a gesture
+/// because the Swift side wants exactly one crossing and a value it can hold in
+/// an `@Observable`: `let caps = doc.capabilities()`, then
+/// `.disabled(!caps.bold)` on each control.
+#[derive(uniffi::Record)]
+pub struct Capabilities {
+    pub bold: bool,
+    pub italic: bool,
+    pub code: bool,
+    pub mark: bool,
+    pub underline: bool,
+    pub strike: bool,
+    pub superscript: bool,
+    pub subscript: bool,
+    /// Both [`LeafDoc::set_heading`] and [`LeafDoc::set_paragraph`] — they are
+    /// the same gesture in core and stand or fall together.
+    pub heading: bool,
+    pub blockquote: bool,
+    pub bullet_list: bool,
+    pub ordered_list: bool,
+    /// [`LeafDoc::toggle_task_item`], [`LeafDoc::toggle_task_checked`] and
+    /// [`LeafDoc::toggle_task_at`] — including a *tap* on a rendered checkbox,
+    /// which should not be live where the box cannot be spelled.
+    pub task: bool,
+    pub link: bool,
+    /// [`LeafDoc::insert_image`] and [`LeafDoc::insert_media`] both.
+    pub image: bool,
+    pub thematic_break: bool,
+    pub code_language: bool,
+    /// The grid controls. Gate them on this *and* [`LeafDoc::caret_in_table`]:
+    /// this asks whether the format's tables are editable, that whether the
+    /// caret is in one.
+    pub table: bool,
+    /// Shift+Return inside a cell — [`LeafDoc::cell_line_break`].
+    pub cell_line_break: bool,
+}
+
+impl From<CoreCapabilities> for Capabilities {
+    fn from(c: CoreCapabilities) -> Self {
+        Self {
+            bold: c.bold,
+            italic: c.italic,
+            code: c.code,
+            mark: c.mark,
+            underline: c.underline,
+            strike: c.strike,
+            superscript: c.superscript,
+            // `subscript` is a Swift keyword; uniffi escapes it in the generated
+            // binding (`caps.`subscript``), so the field keeps its real name
+            // here rather than wearing a suffix on both sides of the boundary.
+            subscript: c.subscript,
+            heading: c.heading,
+            blockquote: c.blockquote,
+            bullet_list: c.bullet_list,
+            ordered_list: c.ordered_list,
+            task: c.task,
+            link: c.link,
+            image: c.image,
+            thematic_break: c.thematic_break,
+            code_language: c.code_language,
+            table: c.table,
+            cell_line_break: c.cell_line_break,
+        }
+    }
 }
 
 /// A table column's text alignment — the argument to
@@ -1309,9 +1380,36 @@ impl LeafDoc {
         g.doc.task_checked_at_caret()
     }
 
+    /// Which of the formatting commands above this document's format can
+    /// actually spell — one flag per control, for building the toolbar.
+    ///
+    /// Read once when a document opens: the answer depends only on the format,
+    /// so it cannot change under an edit. Every command refuses on its own
+    /// regardless — the model is the authority, not the toolbar — so a frontend
+    /// that ignores this stays correct, it just offers buttons whose only effect
+    /// is a line in the status bar.
+    ///
+    /// Don't collapse it to one flag. An HTML document takes ⌘B, ⌘I and inline
+    /// code (its marks are a tag pair) while refusing every heading, list, quote
+    /// and link, and Markdown refuses the highlight djot spells — so a toolbar
+    /// driven by [`Self::authorable`] alone would be wrong in both directions.
+    pub fn capabilities(&self) -> Capabilities {
+        self.lock().doc.capabilities().into()
+    }
+
+    /// Whether this document's format offers *any* door in — `false` only for a
+    /// wholly parse-only one (XML), where an app may as well open the file
+    /// read-only and hide the formatting section outright. For anything finer,
+    /// including whether to dim an individual button, use [`Self::capabilities`].
+    pub fn authorable(&self) -> bool {
+        self.lock().doc.authorable()
+    }
+
     // ── table editing ─────────────────────────────────────────────────────────
 
     /// Whether the caret is inside a table — for enabling the table controls.
+    /// Pair it with [`Capabilities::table`]: the caret is genuinely inside an
+    /// HTML `<table>`, and the grid controls still cannot edit one.
     pub fn caret_in_table(&self) -> bool {
         self.lock().doc.caret_in_table()
     }

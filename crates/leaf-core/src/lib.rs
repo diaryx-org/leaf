@@ -19,7 +19,8 @@ pub mod style;
 pub mod wysiwyg;
 
 pub use doc::{
-    DiskState, Doc, FootnoteDef, FootnoteRef, InlineMarks, Landing, LineFlow, MarkupMode, View,
+    Capabilities, DiskState, Doc, FootnoteDef, FootnoteRef, InlineMarks, Landing, LineFlow,
+    MarkupMode, View,
 };
 pub use style::{Baseline, Role, Style};
 pub use wysiwyg::{
@@ -33,4 +34,7 @@ pub use wysiwyg::{
 // `Format` too: a filesystem-free host (wasm/FFI) picks the document's format
 // itself when it calls `Doc::from_source`, since there's no file extension to
 // sniff it from the way `Doc::open` does.
-pub use twig::{Alignment, BlockKind, Format, InlineKind};
+// `Gesture` names one authoring capability for `Doc::supports`, the finer-grained
+// half of `Capabilities` — a frontend wanting a mark leaf's own toolbar doesn't
+// offer asks with one of these.
+pub use twig::{Alignment, BlockContainerKind, BlockKind, Format, Gesture, InlineKind};

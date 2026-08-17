@@ -19,7 +19,7 @@ edition = "2024"
 
 [workspace.dependencies]
 # The document AST + offset-addressed span-splice editor.
-twig-doc = "3"
+twig-doc = "3.1"
 anyhow = "1"
 # Frontend-neutral core: the caret/selection model + AST→glyph map, styled with
 # a toolkit-agnostic Style. Each frontend crate maps that to its own styling.

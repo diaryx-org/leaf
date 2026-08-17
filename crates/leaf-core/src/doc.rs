@@ -26,8 +26,8 @@ use anyhow::{Result, anyhow};
 #[cfg(feature = "fs")]
 use anyhow::Context;
 use twig::{
-    Alignment, BlockContainerKind, BlockKind, Change, Editor, FlatNode, Format, InlineKind, Kind,
-    MarkdownExtensions, NodeId, QueryMatch,
+    Alignment, BlockContainerKind, BlockKind, Change, Editor, FlatNode, Format, Gesture, InlineKind,
+    Kind, MarkdownExtensions, NodeId, QueryMatch,
 };
 use unicode_segmentation::GraphemeCursor;
 
@@ -528,6 +528,121 @@ fn new_editor(bytes: &[u8], format: Format) -> Result<Editor> {
     Editor::new_ext(bytes, format, parse_extensions()).map_err(|e| anyhow!("twig parse: {e}"))
 }
 
+/// Does `format` spell a table as a **pipe table** — the one grid twig's table
+/// editor knows how to emit?
+///
+/// This is the single capability leaf still has to answer for itself, and the
+/// only hand-maintained format list left in this file. Every other gesture is
+/// [`Format::supports`], which is twig's own answer read across the C ABI — but
+/// twig deliberately leaves the table ops out of that query, because they read
+/// no `Syntax` table at all. They rewrite a grid that is already in the source
+/// and refuse on *position*, never on format. Handed a caret inside an HTML
+/// `<table>`, `table_insert_row` therefore re-emits the whole element as
+/// `| a | b |` and reports success — a real splice, a clean reparse, an honest
+/// `dirty` flag, and nothing downstream able to tell it from a good edit.
+///
+/// So the list is narrow on purpose. `Format` is `#[non_exhaustive]`, and the
+/// wildcard answers "no" for a format leaf has never heard of: a new twig
+/// language that *does* spell pipe tables loses its grid controls until this
+/// line is updated, which shows up as a missing button. The other default hands
+/// it to [`Doc::table_op`], which rewrites documents it cannot spell.
+fn spells_pipe_tables(format: Format) -> bool {
+    matches!(format, Format::Markdown | Format::Djot)
+}
+
+/// Which of leaf's authoring controls this document's format can actually
+/// spell — one flag per toolbar button, resolved once so a frontend can build
+/// its chrome instead of discovering each refusal on a click.
+///
+/// Every field but [`table`](Self::table) is `Format::supports` on the gesture
+/// the matching [`Doc`] method calls, so this record cannot drift from what the
+/// ops do; `table` is [`spells_pipe_tables`], the one answer twig doesn't
+/// export.
+///
+/// **The formats are ragged, and that is the point.** A single per-document
+/// boolean was enough while the two authorable formats were Markdown and djot
+/// and everything else spelled nothing. HTML is neither: it writes seven of the
+/// eight inline marks as a tag pair, plus `<code>`, `<hr>` and an in-cell
+/// `<br>`, and spells no heading marker, no line prefix, no fence, no task box,
+/// no link — because its versions of those have a different *shape*, not a
+/// different alphabet. So ⌘B works in an HTML document and ⌘1 does not, and no
+/// one flag can say that. Markdown and djot differ from each other too:
+/// `==mark==` is djot-only, and an in-cell `<br>` is Markdown-only.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Capabilities {
+    /// ⌘B — `InlineKind::Strong`.
+    pub bold: bool,
+    /// ⌘I — `InlineKind::Emph`.
+    pub italic: bool,
+    /// Inline code — `InlineKind::Verbatim`.
+    pub code: bool,
+    /// Highlight — `InlineKind::Mark`. Djot spells it; Markdown does not.
+    pub mark: bool,
+    /// ⌘U — `InlineKind::Insert`, which every format that marks at all spells.
+    pub underline: bool,
+    /// Strikethrough — `InlineKind::Delete`.
+    pub strike: bool,
+    pub superscript: bool,
+    pub subscript: bool,
+    /// Heading levels and "make this a paragraph" — [`Doc::set_block`].
+    pub heading: bool,
+    pub blockquote: bool,
+    pub bullet_list: bool,
+    pub ordered_list: bool,
+    /// The checkbox controls: giving an item a box, and ticking one.
+    pub task: bool,
+    pub link: bool,
+    /// Covers [`Doc::insert_media`] too — see the note there on why the three
+    /// media kinds stand or fall together.
+    pub image: bool,
+    /// The horizontal-rule button. HTML spells this one (`<hr>`).
+    pub thematic_break: bool,
+    /// Setting a fenced block's language — a control only ever offered with the
+    /// caret already in a fence.
+    pub code_language: bool,
+    /// The grid controls: insert/delete/move a row or column, set a column's
+    /// alignment. Pair with [`Doc::caret_in_table`], which asks the other
+    /// question — an HTML `<table>` holds the caret and still can't be edited.
+    pub table: bool,
+    /// Shift+Return inside a cell. Markdown and HTML spell it; djot has no
+    /// idiomatic in-cell break.
+    pub cell_line_break: bool,
+}
+
+impl Capabilities {
+    /// Resolve every flag for `format`. Pure and cheap — twig computes each from
+    /// a static table — but a frontend that wants to hold them can.
+    pub fn of(format: Format) -> Self {
+        let inline = |k| format.supports(Gesture::ToggleInline(k));
+        let container = |k| format.supports(Gesture::ToggleBlockContainer(k));
+        Self {
+            bold: inline(InlineKind::Strong),
+            italic: inline(InlineKind::Emph),
+            code: inline(InlineKind::Verbatim),
+            mark: inline(InlineKind::Mark),
+            underline: inline(InlineKind::Insert),
+            strike: inline(InlineKind::Delete),
+            superscript: inline(InlineKind::Superscript),
+            subscript: inline(InlineKind::Subscript),
+            heading: format.supports(Gesture::SetBlock),
+            blockquote: container(BlockContainerKind::BlockQuote),
+            bullet_list: container(BlockContainerKind::BulletList),
+            ordered_list: container(BlockContainerKind::OrderedList),
+            // Both halves of the checkbox story, and leaf offers no control that
+            // needs only one: the item gesture mints the box, the checked one
+            // ticks it, and a format spelling a `task_marker` spells both.
+            task: format.supports(Gesture::ToggleTaskItem)
+                && format.supports(Gesture::ToggleTaskChecked),
+            link: format.supports(Gesture::InsertLink),
+            image: format.supports(Gesture::InsertImage),
+            thematic_break: format.supports(Gesture::InsertThematicBreak),
+            code_language: format.supports(Gesture::SetCodeLanguage),
+            table: spells_pipe_tables(format),
+            cell_line_break: format.supports(Gesture::InsertLineBreak),
+        }
+    }
+}
+
 impl Doc {
     #[cfg(feature = "fs")]
     pub fn open(path: PathBuf) -> Result<Self> {
@@ -864,6 +979,67 @@ impl Doc {
         }
     }
 
+    /// Whether this document's format offers *any* door in — `false` only for a
+    /// wholly parse-only format (XML, AsciiDoc), where every gesture refuses and
+    /// a frontend may as well open the file read-only.
+    ///
+    /// This is a much weaker claim than the name suggests, and driving per-button
+    /// state from it is exactly the mistake to avoid: HTML answers `true` because
+    /// it spells the inline marks with a tag pair (`<strong>`, `<em>`, `<code>`)
+    /// while a heading, a quote, a list, a task box, a link and a code fence all
+    /// remain unspellable there. Ask [`capabilities`](Self::capabilities) — or
+    /// [`supports`](Self::supports) — per control.
+    pub fn authorable(&self) -> bool {
+        self.format.is_authorable()
+    }
+
+    /// Whether this document's format can spell `gesture`, which is twig's own
+    /// answer rather than a copy of it: `Format::supports` reads the same
+    /// `Syntax` table the `Editor` method consults before refusing.
+    ///
+    /// It is a fact about the *format*, not about the caret. `true` does not
+    /// promise the gesture succeeds where it is standing — a link over a table
+    /// border still fails — only that it will not fail with
+    /// `UnsupportedFormat`. Gray out on `false`; don't read `true` as "this
+    /// will work here".
+    pub fn supports(&self, gesture: Gesture) -> bool {
+        self.format.supports(gesture)
+    }
+
+    /// Every control's enabled state in one read — what a toolbar builds itself
+    /// from when a document opens or its format changes. See [`Capabilities`].
+    pub fn capabilities(&self) -> Capabilities {
+        Capabilities::of(self.format)
+    }
+
+    /// Refuse a gesture this document's format cannot spell, saying so in the
+    /// status line. `true` means the caller must return without calling twig.
+    ///
+    /// Most of these refusals duplicate one twig would make anyway, and they are
+    /// made here regardless because a message naming the *document's* format
+    /// reads better than one naming twig's internals. Two of them are not
+    /// duplicates and are the reason this is a guard rather than an error
+    /// translation:
+    ///
+    /// - The table family (see [`table_op`](Self::table_op)) consults no
+    ///   `Syntax` table, so twig does not refuse it at all.
+    /// - [`toggle`](Self::toggle) at a collapsed caret never reaches twig — it
+    ///   arms a sticky mark for text not yet typed, which is a promise `insert`
+    ///   could not keep.
+    fn refuse_unsupported(&mut self, what: &str, gesture: Gesture) -> bool {
+        self.refuse_unless(what, self.supports(gesture))
+    }
+
+    /// [`refuse_unsupported`](Self::refuse_unsupported) against a capability leaf
+    /// answers itself — today only [`spells_pipe_tables`].
+    fn refuse_unless(&mut self, what: &str, supported: bool) -> bool {
+        if supported {
+            return false;
+        }
+        self.status = Some(format!("{what}: not supported in {}", self.format_name()));
+        true
+    }
+
     /// The name to show for this document. An untitled one has no file to name
     /// it, and both frontends put this straight on screen — an empty path
     /// renders as an empty header, so it says so instead.
@@ -942,15 +1118,18 @@ impl Doc {
         // formatting by keyboard (it comes from commands instead). The other two
         // rungs of the ladder author markup from what you type, which is the
         // whole difference between them and this one. Only in the rendered view
-        // (source view is for typing raw markup) and only for the authorable
-        // lightweight formats (a parse-only format has no literal spelling).
-        // Marks (⌘b) still format — that path returned above; and leaf's own
-        // structural inserts go through `insert_raw`, never here, so a list
-        // marker or quote gutter is written as the markup it is.
+        // (source view is for typing raw markup) and only where the format has a
+        // literal spelling at all: escaping is a backslash before a byte from the
+        // format's own alphabet, and a format with no such alphabet (HTML escapes
+        // with entities, XML spells nothing) would have `\&` written into it,
+        // which is two literal characters and not an escape. Marks (⌘b) still
+        // format — that path returned above; and leaf's own structural inserts go
+        // through `insert_raw`, never here, so a list marker or quote gutter is
+        // written as the markup it is.
         if !self.markup_mode.authors()
             && self.view == View::Wysiwyg
             && !text.is_empty()
-            && matches!(self.format, Format::Markdown | Format::Djot)
+            && self.supports(Gesture::InsertLiteral)
         {
             self.insert_literal_typed(text);
             return;
@@ -2903,6 +3082,13 @@ impl Doc {
     /// Toggle an inline mark over the selection (Bold / Italic / Code / …). Keeps
     /// the toggled region selected so a second press cleanly reverses it.
     pub fn toggle(&mut self, kind: InlineKind) {
+        // Ahead of the no-selection branch below: arming a mark for text not yet
+        // typed is a promise `insert` cannot keep in a format with no delimiters
+        // to spell it with. Per *kind*, not per format — Markdown spells three
+        // of the eight marks, djot all eight, HTML seven.
+        if self.refuse_unsupported(&format!("{kind:?}"), Gesture::ToggleInline(kind)) {
+            return;
+        }
         let Some((s, e)) = self.selection() else {
             // No selection: arm the mark for the next text typed here, the way a
             // word processor does. `⌘b`, type, `⌘b` again toggles bold on and off
@@ -2949,6 +3135,9 @@ impl Doc {
 
     /// Convert the block at the caret to a heading level or paragraph.
     pub fn set_block(&mut self, kind: BlockKind) {
+        if self.refuse_unsupported(&format!("{kind:?}"), Gesture::SetBlock) {
+            return;
+        }
         self.record_caret();
         // A blank line has no node to convert, and twig opens a block there
         // rather than declining — so the caret's own offset is the right thing
@@ -3146,6 +3335,9 @@ impl Doc {
     /// its own offset and must not first move the caret there: ticking a box
     /// three paragraphs away should not take the cursor with it.
     pub fn toggle_task_at(&mut self, offset: usize) {
+        if self.refuse_unsupported("task", Gesture::ToggleTaskChecked) {
+            return;
+        }
         let offset = offset.min(self.source.len());
         self.record_caret();
         match self.editor.toggle_task_checked(offset) {
@@ -3158,6 +3350,9 @@ impl Doc {
     /// the gesture that converts between a plain bullet and a task. A new box
     /// arrives unticked.
     pub fn toggle_task_item(&mut self) {
+        if self.refuse_unsupported("task", Gesture::ToggleTaskItem) {
+            return;
+        }
         let caret = self.caret.min(self.source.len());
         self.record_caret();
         match self.editor.toggle_task_item(caret) {
@@ -3189,6 +3384,11 @@ impl Doc {
 
     /// Whether the caret is inside a table — what a frontend asks to enable or
     /// disable its table controls.
+    ///
+    /// An HTML `<table>` still answers `true`: the caret really is in a table,
+    /// and the reason the grid controls stay dark there is
+    /// [`Capabilities::table`], which is a fact about the document's format
+    /// rather than about the caret. A frontend needs both.
     pub fn caret_in_table(&mut self) -> bool {
         let caret = self.caret.min(self.source.len());
         self.editor
@@ -3197,53 +3397,66 @@ impl Doc {
             .unwrap_or(false)
     }
 
+    /// One grid op, guarded and settled — the shared body of the seven below.
+    ///
+    /// The guard is why this exists rather than seven copies of the same three
+    /// lines, and it is the one guard leaf cannot delegate to twig. The table
+    /// editor is the gesture family that consults no `Syntax` table (it spells a
+    /// grid, not a delimiter) and therefore the one twig's `Format::supports`
+    /// deliberately has no variant for: handed an HTML `<table>` it rebuilds the
+    /// grid as a *pipe table* and reports success, swapping the element out for
+    /// `| a | b |` and taking the rest of the document's markup with it. Nothing
+    /// downstream could tell that from a successful edit — the splice is real,
+    /// the reparse succeeds, `dirty` is honest — which is what makes it worth
+    /// stopping at the door rather than detecting after the fact. See
+    /// [`spells_pipe_tables`].
+    fn table_op(
+        &mut self,
+        what: &str,
+        op: impl FnOnce(&mut Editor, usize) -> Result<(), twig::Error>,
+    ) {
+        if self.refuse_unless(what, spells_pipe_tables(self.format)) {
+            return;
+        }
+        self.record_caret();
+        let at = self.caret;
+        let r = op(&mut self.editor, at);
+        self.apply_table(r, what);
+    }
+
     /// Insert an empty row below (`below`) or above the caret's row.
     pub fn table_insert_row(&mut self, below: bool) {
-        self.record_caret();
-        let r = self.editor.table_insert_row(self.caret, below);
-        self.apply_table(r, "table row");
+        self.table_op("table row", |e, at| e.table_insert_row(at, below));
     }
 
     /// Delete the caret's row (not the header, not the last body row).
     pub fn table_delete_row(&mut self) {
-        self.record_caret();
-        let r = self.editor.table_delete_row(self.caret);
-        self.apply_table(r, "table row");
+        self.table_op("table row", |e, at| e.table_delete_row(at));
     }
 
     /// Insert an empty column right (`right`) or left of the caret's column.
     pub fn table_insert_column(&mut self, right: bool) {
-        self.record_caret();
-        let r = self.editor.table_insert_column(self.caret, right);
-        self.apply_table(r, "table column");
+        self.table_op("table column", |e, at| e.table_insert_column(at, right));
     }
 
     /// Delete the caret's column (unless it is the only one).
     pub fn table_delete_column(&mut self) {
-        self.record_caret();
-        let r = self.editor.table_delete_column(self.caret);
-        self.apply_table(r, "table column");
+        self.table_op("table column", |e, at| e.table_delete_column(at));
     }
 
     /// Set the caret's column to `alignment`.
     pub fn table_set_alignment(&mut self, alignment: Alignment) {
-        self.record_caret();
-        let r = self.editor.table_set_alignment(self.caret, alignment);
-        self.apply_table(r, "table alignment");
+        self.table_op("table alignment", |e, at| e.table_set_alignment(at, alignment));
     }
 
     /// Move the caret's row one place down (`down`) or up, within the body rows.
     pub fn table_move_row(&mut self, down: bool) {
-        self.record_caret();
-        let r = self.editor.table_move_row(self.caret, down);
-        self.apply_table(r, "table row");
+        self.table_op("table row", |e, at| e.table_move_row(at, down));
     }
 
     /// Move the caret's column one place right (`right`) or left.
     pub fn table_move_column(&mut self, right: bool) {
-        self.record_caret();
-        let r = self.editor.table_move_column(self.caret, right);
-        self.apply_table(r, "table column");
+        self.table_op("table column", |e, at| e.table_move_column(at, right));
     }
 
     /// Settle the caret and document flags after a table op (or report its
@@ -3273,6 +3486,9 @@ impl Doc {
     /// container only comes off when the range covers every block it holds is
     /// what the re-anchoring below is built around.
     fn toggle_container(&mut self, kind: BlockContainerKind) {
+        if self.refuse_unsupported(&format!("{kind:?}"), Gesture::ToggleBlockContainer(kind)) {
+            return;
+        }
         let selected = self.selection();
         // Without a selection the target is the caret's own block, resolved the
         // way `set_block` resolves it — a caret at a line end sits at the doc
@@ -3373,6 +3589,9 @@ impl Doc {
     /// it. A destination twig can't carry at all (one with a newline) comes back
     /// as an error rather than a quietly rewritten URL.
     pub fn insert_link(&mut self, destination: &str) {
+        if self.refuse_unsupported("link", Gesture::InsertLink) {
+            return;
+        }
         let (start, end) = self.selection().unwrap_or((self.caret, self.caret));
         self.record_caret();
         match self.editor.insert_link(start, end, destination) {
@@ -3417,6 +3636,9 @@ impl Doc {
     /// not an image at all — and the fix is per-format, since moving into the
     /// `<…>` form is exactly wrong for Djot, where `<…>` becomes the URL itself.
     pub fn insert_image(&mut self, destination: &str, alt: &str) {
+        if self.refuse_unsupported("image", Gesture::InsertImage) {
+            return;
+        }
         let (start, end) = self.selection().unwrap_or((self.caret, self.caret));
         self.record_caret();
         // With no selection and an explicit `alt`, the alt text has to exist in the
@@ -3485,6 +3707,15 @@ impl Doc {
         if kind == MediaKind::Image {
             return self.insert_image(destination, alt);
         }
+        // Gated on the *image* gesture, not on one of its own — there isn't one,
+        // since the bytes below are spelled here rather than by twig, and an HTML
+        // document would in fact parse them. The button is one control with three
+        // kinds behind it, and two of them working in a format where the third
+        // cannot is a worse surface than three that agree — especially as
+        // `insert_image` is the kind anyone reaches for first.
+        if self.refuse_unsupported("media", Gesture::InsertImage) {
+            return;
+        }
         let (start, end) = self.selection().unwrap_or((self.caret, self.caret));
         let alt_text = self
             .selected_text()
@@ -3518,6 +3749,9 @@ impl Doc {
     /// heading refuse the split outright, so they take the same path by
     /// themselves.
     pub fn insert_thematic_break(&mut self) {
+        if self.refuse_unsupported("thematic break", Gesture::InsertThematicBreak) {
+            return;
+        }
         self.caret = self.skip_trailing_close_delims(self.caret);
         // A selection is replaced by the rule, so collapse it first and let the
         // split-and-rule below run from the caret it leaves behind.
@@ -3836,6 +4070,9 @@ impl Doc {
     /// itself and `trim()` the input, which handled the one bad case it had
     /// thought of.
     pub fn set_code_language(&mut self, lang: &str) {
+        if self.refuse_unsupported("code language", Gesture::SetCodeLanguage) {
+            return;
+        }
         if self.code_block_start_at_caret().is_none() {
             return;
         }
@@ -4810,6 +5047,11 @@ impl Doc {
     /// there — returning `false` would let the frontend insert a real newline,
     /// which splits the one-line row — it just leaves the cell unchanged and says
     /// so on the status line. A rollback (`EditConflict`) is swallowed the same.
+    ///
+    /// Which formats refuse is [`Capabilities::cell_line_break`], and the two
+    /// have to be read together: djot is not the only `false`, and naming it in
+    /// the message was already a guess that HTML — which spells the break as its
+    /// own `<br>` — would have made wrong.
     pub fn cell_line_break(&mut self) -> bool {
         if !self.caret_in_table() {
             return false;
@@ -4828,7 +5070,10 @@ impl Doc {
                 self.record_caret();
             }
             Err(twig::Error::UnsupportedFormat) => {
-                self.status = Some("in-cell line breaks aren't supported in djot".into());
+                self.status = Some(format!(
+                    "in-cell line breaks aren't supported in {}",
+                    self.format_name()
+                ));
             }
             Err(_) => {}
         }
@@ -7574,11 +7819,11 @@ mod tests {
     /// Two definitions in a row: each is its own note, and neither reaches into
     /// the other.
     ///
-    /// twig's span for a djot definition over-runs past the blank line into the
-    /// first byte of whatever follows, so this used to answer `"a note.\n\n["` —
-    /// and the offsets named the *next* note's rows too, which showed a reader
-    /// two footnotes when they had asked about one. The body is bounded by where
-    /// the note's own lines stop, not by the span.
+    /// A djot definition's span used to run past the blank line into the first
+    /// byte of whatever followed, so this answered `"first note.\n\n["` — and the
+    /// offsets named the *next* note's rows too, showing a reader two footnotes
+    /// when they had asked about one. twig 3.1 ends the span after the block's
+    /// own last line; the test outlives the workaround leaf carried for it.
     #[test]
     fn footnote_at_stops_a_note_at_the_definition_after_it() {
         let src = "Claim[^2a] and [^2b].\n\n[^2a]: first note.\n\n[^2b]: second note.\n";
@@ -7593,6 +7838,25 @@ mod tests {
                 "in {format:?}"
             );
         }
+    }
+
+    /// The other side of that boundary: a blank line *inside* a definition is
+    /// interior to it, and the note keeps its second paragraph.
+    ///
+    /// This is what the old body scan cost. It stopped at the first line not
+    /// indented under the note — a blank line is not — so a two-paragraph note
+    /// came back as its first paragraph, and "go to note" framed half of it.
+    /// Reading the span twig gives is both simpler and right.
+    #[test]
+    fn footnote_at_keeps_a_notes_second_paragraph() {
+        let src = "Claim[^1].\n\n[^1]: first para.\n\n    second para.\n\nAfter.\n";
+        let mut d = Doc::from_source(src.to_string(), Format::Djot).unwrap();
+        d.caret = 7;
+        let f = d.footnote_at_caret().expect("a reference");
+        assert_eq!(f.text.as_deref(), Some("first para.\n\n    second para."));
+        // And it stops there — `After.` is the next block, not more note.
+        assert_eq!(&src[f.offset.unwrap()..f.end.unwrap()], f.text.as_deref().unwrap());
+        assert!(!f.text.as_deref().unwrap().contains("After"));
     }
 
     #[test]
@@ -9306,6 +9570,195 @@ mod tests {
         d.caret = d.source.find('b').unwrap(); // now the third column
         d.table_delete_column();
         assert_eq!(d.source, "| a |  |\n| --- | --- |\n| 1 |  |\n");
+    }
+
+    // ── ragged formats ───────────────────────────────────────────────────────
+    // No format spells every gesture. HTML writes the inline marks as a tag pair
+    // and no heading, list, quote or link; Markdown spells three of the eight
+    // marks; djot spells all eight and no in-cell break. leaf asks twig per
+    // gesture (`Doc::supports`) and refuses at the door, rather than letting each
+    // op discover the fact on its own — one of them didn't.
+
+    /// An HTML document in the rich view, ready for a gesture.
+    fn html_doc(body: &str) -> Doc {
+        let mut d = Doc::from_source(body.to_string(), Format::Html).unwrap();
+        d.view = View::Wysiwyg;
+        d.build_visual(80);
+        d
+    }
+
+    #[test]
+    fn a_table_gesture_leaves_an_html_table_alone() {
+        // The regression this guard exists for. twig's table editor consults no
+        // `Syntax` table — it spells a grid, not a delimiter — so it rebuilt an
+        // HTML `<table>` as a *pipe table* and reported success: the whole
+        // element replaced by `| a | b |`, silently, on one press of a toolbar
+        // button. Every grid op went the same way.
+        let src = "<table><tr><td>a</td><td>b</td></tr><tr><td>c</td><td>d</td></tr></table>\n";
+        let ops: [(&str, &dyn Fn(&mut Doc)); 7] = [
+            ("insert row", &|d: &mut Doc| d.table_insert_row(true)),
+            ("delete row", &|d: &mut Doc| d.table_delete_row()),
+            ("insert column", &|d: &mut Doc| d.table_insert_column(true)),
+            ("delete column", &|d: &mut Doc| d.table_delete_column()),
+            ("align", &|d: &mut Doc| d.table_set_alignment(Alignment::Right)),
+            ("move row", &|d: &mut Doc| d.table_move_row(true)),
+            ("move column", &|d: &mut Doc| d.table_move_column(true)),
+        ];
+        for (name, op) in ops {
+            let mut d = html_doc(src);
+            d.caret = d.source.find('a').unwrap();
+            assert!(d.caret_in_table(), "{name}: the caret really is in a table");
+            op(&mut d);
+            assert_eq!(d.source, src, "{name} rewrote an HTML table");
+            assert!(!d.dirty, "{name} marked the document dirty without editing it");
+            assert!(d.status.is_some(), "{name} refused without saying why");
+        }
+    }
+
+    #[test]
+    fn the_block_gestures_html_cannot_spell_are_refused_with_a_reason() {
+        // A heading is a wrapping tag pair carrying its level in both ends, a
+        // quote wraps a range rather than prefixing each line, a link's
+        // destination lives in an attribute — different *shapes*, not a
+        // different alphabet, so twig spells none of them and neither does leaf.
+        let src = "<h1>Title</h1>\n<p>Hello world</p>\n<ul><li>one</li></ul>\n";
+        let ops: [(&str, &dyn Fn(&mut Doc)); 9] = [
+            ("heading", &|d: &mut Doc| d.toggle_heading(2)),
+            ("paragraph", &|d: &mut Doc| d.set_block(BlockKind::Paragraph)),
+            ("quote", &|d: &mut Doc| d.toggle_blockquote()),
+            ("list", &|d: &mut Doc| d.toggle_list(false)),
+            ("task item", &|d: &mut Doc| d.toggle_task_item()),
+            ("task tick", &|d: &mut Doc| d.toggle_task_checked()),
+            ("link", &|d: &mut Doc| d.insert_link("https://example.dev")),
+            ("image", &|d: &mut Doc| d.insert_image("pic.png", "alt")),
+            ("video", &|d: &mut Doc| d.insert_media(MediaKind::Video, "clip.mp4", "")),
+        ];
+        for (name, op) in ops {
+            let mut d = html_doc(src);
+            let at = d.source.find("Hello").unwrap();
+            d.caret = at;
+            d.anchor = Some(at + 5); // a selection, for the ops that want one
+            op(&mut d);
+            assert_eq!(d.source, src, "{name} edited an HTML document");
+            assert!(!d.dirty, "{name} marked the document dirty without editing it");
+            let status = d.status.as_deref().unwrap_or("");
+            assert!(
+                status.contains("html"),
+                "{name}: the refusal should name the format, got {status:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn html_spells_the_inline_marks_and_the_rule() {
+        // The other half, and why one per-document flag stopped being enough:
+        // ⌘B in an HTML document writes `<strong>` — the tag the serializer
+        // already emits and the parser reads straight back as the same mark —
+        // and the rule button writes an `<hr>`. Refusing these on the old
+        // "HTML is parse-only" reading would now be leaf's own limitation.
+        let mut d = html_doc("<p>Hello world</p>\n");
+        let at = d.source.find("world").unwrap();
+        d.caret = at;
+        d.anchor = Some(at + 5);
+        d.toggle(InlineKind::Strong);
+        assert_eq!(d.source, "<p>Hello <strong>world</strong></p>\n");
+        assert!(d.dirty);
+        assert_eq!(d.status, None, "a supported gesture reports nothing");
+
+        // And off again — the toggle reverses, which is the property that makes
+        // authoring in HTML worth offering rather than a one-way trip.
+        d.toggle(InlineKind::Strong);
+        assert_eq!(d.source, "<p>Hello world</p>\n");
+
+        let mut d = html_doc("<p>Hello world</p>\n");
+        d.caret = d.source.find("world").unwrap();
+        d.insert_thematic_break();
+        assert!(d.source.contains("<hr>"), "got {:?}", d.source);
+    }
+
+    #[test]
+    fn a_mark_the_format_cannot_spell_arms_nothing() {
+        // `toggle` with a collapsed caret doesn't reach twig at all — it arms a
+        // sticky mark for the next text typed. Guarding only the twig call
+        // leaves that path live, promising a highlight Markdown will never spell
+        // and then swallowing the error inside `insert`. Markdown carries the
+        // case now that HTML spells `<mark>`: `==mark==` is djot's alone.
+        let mut d = doc_with("mark", "Hello world\n");
+        d.view = View::Wysiwyg;
+        d.build_visual(80);
+        d.caret = d.source.find("world").unwrap();
+        d.toggle(InlineKind::Mark);
+        assert!(d.pending_marks.is_empty(), "no mark should be armed");
+        assert!(d.status.as_deref().unwrap_or("").contains("markdown"));
+        d.insert("X");
+        assert_eq!(d.source, "Hello Xworld\n");
+    }
+
+    #[test]
+    fn html_documents_still_take_typed_text() {
+        // The guard covers *markup* gestures and must not touch plain editing:
+        // twig's splicer is language-neutral, and typing into an HTML document
+        // is the thing that does work today.
+        let mut d = html_doc("<p>Hello world</p>\n");
+        d.caret = d.source.find("world").unwrap();
+        d.insert("big ");
+        assert_eq!(d.source, "<p>Hello big world</p>\n");
+        assert!(d.dirty);
+        d.backspace();
+        assert_eq!(d.source, "<p>Hello bigworld</p>\n");
+        d.undo();
+        d.undo();
+        assert_eq!(d.source, "<p>Hello world</p>\n");
+    }
+
+    #[test]
+    fn authorable_is_the_coarse_question_and_capabilities_the_useful_one() {
+        // `authorable` only separates "there is a door in" from "there is not",
+        // and HTML is on the near side of that line — which is exactly why a
+        // toolbar must not be built from it.
+        let html = Doc::from_source("<p>x</p>\n".into(), Format::Html).unwrap();
+        assert!(html.authorable());
+        assert!(!Doc::from_source("<r>x</r>".into(), Format::Xml).unwrap().authorable());
+
+        let caps = html.capabilities();
+        assert!(caps.bold && caps.italic && caps.code && caps.mark);
+        assert!(caps.thematic_break && caps.cell_line_break);
+        assert!(!caps.heading && !caps.blockquote && !caps.bullet_list);
+        assert!(!caps.task && !caps.link && !caps.image && !caps.code_language);
+        // The one flag that isn't twig's answer: an HTML `<table>` is a grid
+        // twig's table editor would happily re-emit as `| a | b |`.
+        assert!(!caps.table);
+
+        // The two lightweight formats spell everything leaf offers — and still
+        // differ from each other, which is the other half of why one boolean
+        // can't serve.
+        for fmt in [Format::Markdown, Format::Djot] {
+            let caps = Capabilities::of(fmt);
+            assert!(caps.heading && caps.blockquote && caps.ordered_list, "{fmt:?}");
+            assert!(caps.task && caps.link && caps.image && caps.table, "{fmt:?}");
+        }
+        assert!(Capabilities::of(Format::Djot).mark);
+        assert!(!Capabilities::of(Format::Markdown).mark);
+        assert!(Capabilities::of(Format::Markdown).cell_line_break);
+        assert!(!Capabilities::of(Format::Djot).cell_line_break);
+
+        // A parse-only format answers no to every one of them, so the coarse
+        // predicate and the record agree there.
+        let caps = Capabilities::of(Format::Xml);
+        assert!(!caps.bold && !caps.heading && !caps.table && !caps.thematic_break);
+    }
+
+    #[test]
+    fn a_refused_gesture_says_so_where_twig_would_have_said_it() {
+        // The guard exists to name the *document's* format rather than twig's
+        // internals, so the message has to survive being one leaf writes itself.
+        // Checked against the gesture twig also refuses, since that is the pair
+        // most at risk of drifting apart.
+        let mut d = html_doc("<p>Hello</p>\n");
+        d.caret = d.source.find("Hello").unwrap();
+        d.set_code_language("zig");
+        assert_eq!(d.status.as_deref(), Some("code language: not supported in html"));
+        assert!(!d.dirty);
     }
 
     #[test]
