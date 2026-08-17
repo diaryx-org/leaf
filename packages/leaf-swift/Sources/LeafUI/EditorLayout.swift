@@ -20,14 +20,26 @@ public struct EditorState: Equatable {
     public var dirty: Bool
     public var heading: UInt32?      // heading level at the caret, or nil
     public var active: [String]      // inline marks active at the caret
+    /// The destination of the link the caret stands in, or nil — what lights the
+    /// toolbar's Link button and seeds an edit of that link.
+    ///
+    /// A chrome fact rather than a question a toolbar asks for itself, and for a
+    /// reason `Equatable` below makes plain: the state is only republished when
+    /// it *changes*, so a Link button reading the doc directly would never be
+    /// told the caret had stepped out of a link — no mark, heading, or dirty flag
+    /// moves with it. Nil for a wikilink, which has no node to repoint.
+    public var link: String?
 
-    public init(view: String, dirty: Bool, heading: UInt32?, active: [String]) {
-        self.view = view; self.dirty = dirty; self.heading = heading; self.active = active
+    /// `link` defaults so a host that built a state by hand before there was one
+    /// still compiles; the frame-projecting initializer below is the real path.
+    public init(view: String, dirty: Bool, heading: UInt32?, active: [String], link: String? = nil) {
+        self.view = view; self.dirty = dirty; self.heading = heading
+        self.active = active; self.link = link
     }
 
     /// Project a full `DocView` down to the chrome-facing state.
     public init(_ v: DocView) {
-        self.init(view: v.view, dirty: v.dirty, heading: v.heading, active: v.active)
+        self.init(view: v.view, dirty: v.dirty, heading: v.heading, active: v.active, link: v.link)
     }
 }
 

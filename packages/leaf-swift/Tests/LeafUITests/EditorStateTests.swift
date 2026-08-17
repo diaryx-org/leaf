@@ -10,12 +10,14 @@ import LeafFFI
 
 final class EditorStateTests: XCTestCase {
     func testProjectsDocViewChrome() {
-        let dv = docView([row([mkRun("x")])], dirty: true, view: "source", heading: 2, active: ["bold", "italic"])
+        let dv = docView([row([mkRun("x")])], dirty: true, view: "source", heading: 2,
+                         active: ["bold", "italic"], link: "https://x.dev")
         let s = EditorState(dv)
         XCTAssertEqual(s.view, "source")
         XCTAssertTrue(s.dirty)
         XCTAssertEqual(s.heading, 2)
         XCTAssertEqual(s.active, ["bold", "italic"])
+        XCTAssertEqual(s.link, "https://x.dev")
     }
 
     func testEquatable() {
@@ -26,5 +28,25 @@ final class EditorStateTests: XCTestCase {
         XCTAssertEqual(a, b)
         XCTAssertNotEqual(a, dirtyChanged)
         XCTAssertNotEqual(a, marksChanged)
+    }
+
+    /// The whole reason the destination rides the state: stepping in and out of a
+    /// link is a change the toolbar has to be *told about*. `EditorState` is only
+    /// republished when it differs, and nothing else on it moves with the caret
+    /// here — so if `link` weren't part of the comparison, the Link button's pill
+    /// would still be lit on plain text.
+    func testSteppingOutOfALinkIsAChangedState() {
+        let inALink = EditorState(view: "wysiwyg", dirty: false, heading: nil, active: [], link: "https://x.dev")
+        let outside = EditorState(view: "wysiwyg", dirty: false, heading: nil, active: [], link: nil)
+        XCTAssertNotEqual(inALink, outside)
+        // And one link to another — re-pointing has to relight the seed too.
+        let elsewhere = EditorState(view: "wysiwyg", dirty: false, heading: nil, active: [], link: "https://y.dev")
+        XCTAssertNotEqual(inALink, elsewhere)
+    }
+
+    /// The memberwise initializer keeps compiling for a host that wrote one out
+    /// before there was a destination on it.
+    func testLinkDefaultsToNone() {
+        XCTAssertNil(EditorState(view: "wysiwyg", dirty: false, heading: nil, active: []).link)
     }
 }

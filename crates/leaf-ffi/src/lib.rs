@@ -483,6 +483,19 @@ pub struct DocView {
     /// The inline marks active at the caret (`bold`, `italic`, `code`, …) — the
     /// toolbar lights the matching buttons.
     pub active: Vec<String>,
+    /// The destination of the link the caret stands in, or `None` — the toolbar
+    /// lights its Link button from it and seeds an edit of that link with it.
+    ///
+    /// It rides the frame rather than being a query a toolbar makes for itself
+    /// because a toolbar only redraws when the *state* changes: walking the caret
+    /// out of a link changes no mark, no heading, and no dirty flag, so a Link
+    /// button reading this by a call of its own would keep a stale light on. Same
+    /// reason `heading` is here and not asked for.
+    ///
+    /// Only a *parsed* link answers ([`LeafDoc::link_destination_at_caret`]);
+    /// a wikilink is literal text with no node behind it, and has nothing to
+    /// repoint — see `LinkTarget.swift`.
+    pub link: Option<String>,
 }
 
 /// A visual position: a row index plus a UTF-16 offset within that row's text —
@@ -930,6 +943,7 @@ impl Inner {
             .iter()
             .map(|k| mark_id(k).to_string())
             .collect();
+        let link = self.doc.link_destination_at_caret();
 
         DocView {
             rows,
@@ -947,6 +961,7 @@ impl Inner {
             view: self.doc.view_name().to_string(),
             heading,
             active,
+            link,
         }
     }
 }
@@ -2485,6 +2500,26 @@ mod tests {
         assert_eq!(d.link_destination_at_caret().as_deref(), Some("https://x.dev"));
         d.set_selection_offsets(0, 0); // caret on plain text
         assert_eq!(d.link_destination_at_caret(), None);
+    }
+
+    #[test]
+    fn the_frame_carries_the_caret_link_so_a_toolbar_can_light_and_seed_from_it() {
+        // The reason it rides `DocView` rather than being asked for: stepping the
+        // caret out of the link changes no other chrome fact on the frame, so a
+        // toolbar that only redraws on a *changed* state would keep a stale light.
+        let d = doc("see [t](https://x.dev) ok\n");
+        d.set_selection_offsets(5, 5);
+        let inside = d.view();
+        assert_eq!(inside.link.as_deref(), Some("https://x.dev"));
+        assert_eq!(inside.heading, None);
+        assert!(inside.active.is_empty());
+
+        d.set_selection_offsets(0, 0);
+        let outside = d.view();
+        assert_eq!(outside.link, None);
+        // Nothing else the frame reports moved with it.
+        assert_eq!(outside.heading, inside.heading);
+        assert_eq!(outside.active, inside.active);
     }
 
     #[test]

@@ -340,7 +340,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             lastCaretOffset = caret
             scrollCaretToVisible()
         }
-        onStateChange?(EditorState(view: view.view, dirty: view.dirty, heading: view.heading, active: view.active))
+        onStateChange?(EditorState(view))
     }
 
     // MARK: drawing

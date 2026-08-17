@@ -45,20 +45,29 @@ public final class LeafEditorModel: ObservableObject {
     /// asynchronously — the destination is the host's now either way.
     public var onOpenLink: ((String) -> Bool)?
 
-    /// Called when the reader picks "Edit Link…", with the current destination to
-    /// seed a field with. Set the new one by calling `insertLink(_:)`, which
-    /// repoints the link the caret stands in.
+    /// Asked for a link destination, seeded with the current one. Set it by
+    /// calling `insertLink(_:)`, which repoints the link the caret stands in —
+    /// or, from an empty seed, writes a new one over the selection.
+    ///
+    /// Two places ask: the context menu's "Edit Link…", which always arrives with
+    /// a destination to change, and `LeafFormattingToolbar`'s Link button, which
+    /// arrives with `""` when the caret is in no link and is therefore *making*
+    /// one. A host offering a field should title it for both — "Link" reads right
+    /// either way, where "Edit Link" doesn't.
     ///
     /// A callback rather than a prompt of the editor's own, for the reason
     /// `onOpenLink` is one: asking a question is the host's chrome — its window,
     /// its idiom, its localization — and a note app that resolves `id:6tzwsxg`
     /// needs to offer its own document picker here, not a text field. Leaving
     /// this nil hides the menu item entirely, so no menu ever offers an edit
-    /// nothing can carry out.
+    /// nothing can carry out; the toolbar button stays (a ready-made bar with a
+    /// dead button is worse than one with a plain field) and falls back to a
+    /// field of its own.
     ///
-    /// Offered only for a *parsed* link (`[t](dest)`, a bare URL, an autolink).
-    /// A wikilink is literal text with no node behind it — it can be followed,
-    /// but there is nothing to repoint — so it gets no "Edit Link…".
+    /// The *menu* item is offered only for a *parsed* link (`[t](dest)`, a bare
+    /// URL, an autolink). A wikilink is literal text with no node behind it — it
+    /// can be followed, but there is nothing to repoint — so it gets no
+    /// "Edit Link…".
     public var onEditLink: ((String) -> Void)? {
         didSet { textView?.onEditLink = editBridge }
     }

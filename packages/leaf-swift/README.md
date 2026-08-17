@@ -97,10 +97,21 @@ editor on macOS, a 44pt keyboard accessory on iOS:
 LeafEditor(model: editor) { LeafFormattingToolbar(editor: editor) }
 ```
 
+**Authoring a link.** Link is among the inline marks, and it's the one tool that
+has to ask a question: the selection says what to link, never where to. It reads
+`state.link` — the destination of the link the caret stands in — so the button
+lights inside a link and pressing it there *re-points* that link instead of
+nesting a second one in its text. The destination itself comes from
+`onEditLink`, the same host hook the context menu's "Edit Link…" uses, so an app
+whose destinations are `id:6tzwsxg` offers its own document picker from the
+toolbar too; with no host listening the bar falls back to a plain field of its
+own. Seed empty means "make one", seed non-empty means "re-point this one" —
+title the prompt for both.
+
 `LeafEditorModel` exposes every formatting command (`toggleBold`, `setHeading`,
 `toggleList`, `insertLink`, `undo`, …), `source()` / `markSaved()` for
-persistence, and a `@Published state` (active marks, heading, dirty, view) for
-toolbar binding. Keyboard (typing, arrows/word/line/doc motion with shift-select,
+persistence, and a `@Published state` (active marks, heading, dirty, view, and
+the caret link's destination) for toolbar binding. Keyboard (typing, arrows/word/line/doc motion with shift-select,
 delete/word-delete, ⌘B/I/U/E, ⌘Z/⇧⌘Z, ⌘C/X/V/A, ⇧⌘V), mouse (click, shift-click,
 double/triple-click select), and the rich HTML clipboard all work out of the box.
 Customize fonts, colours, and page layout via `EditorTheme`.
@@ -257,6 +268,7 @@ Core hands you *what* to draw; you own *how*. The map to build on the Swift side
 | `caretRow` / `caretCh` | caret position (`caretCh` is UTF-16) |
 | `hasSelection` / `anchorRow` / `anchorCh` | selection range + direction |
 | `dirty`, `view`, `heading`, `active` | chrome: modified dot, view toggle, toolbar |
+| `link` | the caret link's destination: lights a Link button, seeds its prompt |
 
 Feed input back through the command methods (`insert`, `newline`, `backspace`,
 `move*`, `toggle*`, `clickCh`, `setSelection`, …). `packages/leaf-web/src/editor.js`

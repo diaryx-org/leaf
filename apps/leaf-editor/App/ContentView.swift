@@ -90,6 +90,13 @@ struct ContentView: View {
                 btn("bold", "bold", active: editor.isActive("bold")) { editor.toggleBold() }
                 btn("italic", "italic", active: editor.isActive("italic")) { editor.toggleItalic() }
                 btn("code", "chevron.left.forwardslash.chevron.right", active: editor.isActive("code")) { editor.toggleCode() }
+                // Lit while the caret stands in a link, and pressing it there
+                // re-points that link rather than nesting a new one. The
+                // destination comes from the same host prompt "Edit Link…" uses
+                // — see `onEditLink` in `makeEditor`.
+                btn("link", "link", active: editor.state.link != nil) {
+                    editor.onEditLink?(editor.state.link ?? "")
+                }
                 Divider().frame(height: 22)
                 btn("h1", "1.square", active: editor.state.heading == 1) { editor.setHeading(1) }
                 btn("h2", "2.square", active: editor.state.heading == 2) { editor.setHeading(2) }
@@ -362,10 +369,12 @@ private func makeEditor() -> LeafEditorModel {
             done(Bundle.main.url(forResource: "clip", withExtension: "mp4"))
         }
     }
-    // "Edit Link…" asks the *host* for the new destination — the editor ships no
-    // prompt of its own, so a host that leaves this nil simply gets no such menu
-    // item. A plain text field is the demo's answer; a note app would offer its
-    // own document picker here instead.
+    // Both the toolbar's Link button and the context menu's "Edit Link…" ask the
+    // *host* for the destination — the editor ships no prompt of its own, so a
+    // host that leaves this nil gets no such menu item (the toolbar button falls
+    // back to a field of its own). A plain text field is the demo's answer; a note
+    // app would offer its own document picker here instead. `current` is empty
+    // when the caret is in no link, which is the "make one" case.
     model.onEditLink = { [weak model] current in
         promptForLink(seed: current) { destination in
             model?.insertLink(destination)
@@ -377,10 +386,13 @@ private func makeEditor() -> LeafEditorModel {
 /// Ask for a link destination, seeded with the current one, and call back with
 /// it. Demo chrome — a native alert per platform, which is exactly the kind of
 /// thing `LeafUI` leaves to its host.
+///
+/// Titled "Link" rather than "Edit Link": the same prompt makes one over the
+/// selection when the seed is empty.
 private func promptForLink(seed: String, done: @escaping (String) -> Void) {
     #if canImport(AppKit)
     let alert = NSAlert()
-    alert.messageText = "Edit Link"
+    alert.messageText = "Link"
     alert.addButton(withTitle: "OK")
     alert.addButton(withTitle: "Cancel")
     let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
@@ -394,7 +406,7 @@ private func promptForLink(seed: String, done: @escaping (String) -> Void) {
         .compactMap({ ($0 as? UIWindowScene)?.keyWindow?.rootViewController })
         .first
     else { return }
-    let alert = UIAlertController(title: "Edit Link", message: nil, preferredStyle: .alert)
+    let alert = UIAlertController(title: "Link", message: nil, preferredStyle: .alert)
     alert.addTextField { $0.text = seed }
     alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
     alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in

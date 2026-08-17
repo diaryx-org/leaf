@@ -112,7 +112,8 @@ func docView(
     dirty: Bool = false,
     view: String = "wysiwyg",
     heading: UInt32? = nil,
-    active: [String] = []
+    active: [String] = [],
+    link: String? = nil
 ) -> DocView {
     DocView(
         rows: rows,
@@ -129,6 +130,7 @@ func docView(
         dirty: dirty,
         view: view,
         heading: heading,
-        active: active
+        active: active,
+        link: link
     )
 }

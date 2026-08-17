@@ -27,6 +27,15 @@
 //  chrome stacked on chrome. It also gives the active state somewhere to go — an
 //  accent-tinted pill behind the glyph, which a bordered button's tint could
 //  barely express.
+//
+//  Link is the one tool that can't be a bare command: every other button here
+//  knows everything it needs from the selection, and a link needs a destination
+//  from outside it. `LeafEditorModel.onEditLink` is where a host answers that
+//  question for the context menu's "Edit Link…", and this asks through the same
+//  hook so an app resolving `id:6tzwsxg` gets its own document picker from the
+//  toolbar too — with a plain field of the bar's own as the fallback, because a
+//  ready-made toolbar whose Link button does nothing until you wire a callback
+//  isn't ready-made.
 
 import SwiftUI
 
@@ -56,6 +65,13 @@ public struct LeafFormattingToolbar: View {
 
     @ObservedObject private var editor: LeafEditorModel
     private let style: Style
+
+    /// The fallback destination field: shown only when no host has claimed the
+    /// question (see `askForDestination`), seeded with the caret link's current
+    /// destination so the button re-points a link as readily as it makes one.
+    @State private var askingForDestination = false
+    @State private var typedDestination = ""
+    @FocusState private var destinationFocused: Bool
 
     public init(editor: LeafEditorModel, style: Style = .automatic) {
         self.editor = editor
@@ -88,7 +104,21 @@ public struct LeafFormattingToolbar: View {
             tool("underline", "Underline", active: editor.isActive("underline")) { editor.toggleUnderline() }
             tool("strikethrough", "Strikethrough", active: editor.isActive("strike")) { editor.toggleStrike() }
             tool("chevron.left.forwardslash.chevron.right", "Code", active: editor.isActive("code")) { editor.toggleCode() }
+            linkTool
         }
+    }
+
+    /// Link, among the inline marks rather than beside the rule and the footnote:
+    /// it is applied *over the selection* the way bold is, and it is the only
+    /// other tool here with something to light up — the caret standing in a link.
+    ///
+    /// The pill reads `state.link`, which rides the frame precisely so this can:
+    /// walking the caret out of a link changes no mark and no heading, so a
+    /// button that asked core directly would keep a stale light (see
+    /// `EditorState.link`).
+    private var linkTool: some View {
+        tool("link", "Link", active: editor.state.link != nil) { beginLink() }
+            .popover(isPresented: $askingForDestination) { destinationField }
     }
 
     private var blockStyles: some View {
@@ -123,6 +153,60 @@ public struct LeafFormattingToolbar: View {
             tool("arrow.uturn.backward", "Undo") { editor.undo() }
             tool("arrow.uturn.forward", "Redo") { editor.redo() }
         }
+    }
+
+    // MARK: the link destination
+
+    /// Ask for a destination and link with it. The host's `onEditLink` gets first
+    /// refusal — it is already the answer to this question everywhere else in the
+    /// package, and only a host can offer a picker for the destinations that
+    /// aren't URLs — and the bar's own field stands in when there is no host
+    /// listening.
+    ///
+    /// Seeded from the caret's link either way, so pressing this inside one
+    /// re-points it rather than nesting a second link in its text; empty
+    /// elsewhere, which is `insertLink`'s "make one" case.
+    private func beginLink() {
+        let current = editor.state.link ?? ""
+        if let ask = editor.onEditLink {
+            ask(current)
+            return
+        }
+        typedDestination = current
+        askingForDestination = true
+        // Raised on the next runloop: the field doesn't exist to focus until the
+        // popover has been presented.
+        DispatchQueue.main.async { destinationFocused = true }
+    }
+
+    /// Commit what was typed. An empty destination cancels rather than writing
+    /// `[text]()` — core would take it, and a link that points nowhere is never
+    /// what the empty field meant.
+    private func commitLink() {
+        askingForDestination = false
+        let destination = typedDestination.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !destination.isEmpty else { return }
+        editor.insertLink(destination)
+    }
+
+    private var destinationField: some View {
+        HStack(spacing: 8) {
+            TextField("https://\u{2026}", text: $typedDestination)
+                .textFieldStyle(.roundedBorder)
+                .focused($destinationFocused)
+                .frame(width: 260)
+                .onSubmit(commitLink)
+                .autocorrectionDisabled()
+                #if canImport(UIKit)
+                // A destination is not prose: iOS capitalizing the first letter
+                // of a URL is a wrong answer every time.
+                .textInputAutocapitalization(.never)
+                .keyboardType(.URL)
+                #endif
+            Button("Link", action: commitLink)
+                .keyboardShortcut(.defaultAction)
+        }
+        .padding(12)
     }
 
     // MARK: metrics
