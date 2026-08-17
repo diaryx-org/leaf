@@ -398,17 +398,23 @@ import AppKit
 public struct LeafEditor: NSViewRepresentable {
     @ObservedObject private var model: LeafEditorModel
     private let theme: EditorTheme
+    private let placeholder: String?
     private let page: PageSetup?
     private let zoom: CGFloat
 
+    /// `placeholder` is the cue shown while the document is empty, drawn where
+    /// its first character will go — see `LeafTextView.placeholder` for why the
+    /// editor draws it rather than the host stacking a label over the view.
     /// `page` puts the document on paper — a stack of sheets broken at the page
     /// boundaries, wrapping to the sheet's margins rather than the theme's
     /// `measure`. `nil` (the default) is the continuous scrolling flow.
     /// `zoom` scales the surface on screen without re-laying it out; it applies to
     /// both flows, though a zoom control is really a paginated idiom.
     public init(model: LeafEditorModel, theme: EditorTheme = .default,
+                placeholder: String? = nil,
                 page: PageSetup? = nil, zoom: CGFloat = 1) {
-        self.model = model; self.theme = theme; self.page = page; self.zoom = zoom
+        self.model = model; self.theme = theme; self.placeholder = placeholder
+        self.page = page; self.zoom = zoom
     }
 
     public func makeNSView(context: Context) -> NSScrollView {
@@ -457,6 +463,7 @@ public struct LeafEditor: NSViewRepresentable {
         // comparison rather than a relayout.
         hosted.pageSetup = page
         hosted.zoom = zoom
+        hosted.placeholder = placeholder
         // Re-read rather than trusting the copy `makeTextView` took: a host that
         // flips this on the model after the view exists (or per document, for a
         // vault where only some files use the convention) gets it honoured.
@@ -472,6 +479,7 @@ public struct LeafEditor: NSViewRepresentable {
         let textView = LeafTextView(doc: model.doc, theme: theme)
         textView.pageSetup = page
         textView.zoom = zoom
+        textView.placeholder = placeholder
         // Defer the publish: `render()` can fire during a SwiftUI layout pass, and
         // mutating an `@Published` mid-update loops the view system.
         textView.onStateChange = { [weak model] s in
@@ -524,13 +532,18 @@ import UIKit
 public struct LeafEditor: UIViewRepresentable {
     @ObservedObject private var model: LeafEditorModel
     private let theme: EditorTheme
+    private let placeholder: String?
     /// Type-erased so `LeafEditor` itself stays a concrete, non-generic type —
     /// existing call sites that don't need an accessory (macOS's peer, every
     /// call before this existed) keep compiling untouched.
     private let accessory: AnyView?
 
-    public init(model: LeafEditorModel, theme: EditorTheme = .default) {
-        self.model = model; self.theme = theme; self.accessory = nil
+    /// `placeholder` is the cue shown while the document is empty, drawn where
+    /// its first character will go — see `LeafTextView.placeholder`.
+    public init(model: LeafEditorModel, theme: EditorTheme = .default,
+                placeholder: String? = nil) {
+        self.model = model; self.theme = theme; self.placeholder = placeholder
+        self.accessory = nil
     }
 
     /// With a custom view shown above the system keyboard while this editor is
@@ -539,9 +552,11 @@ public struct LeafEditor: UIViewRepresentable {
     /// explicitly rather than SwiftUI's own `.toolbar(placement: .keyboard)`.
     public init<Accessory: View>(
         model: LeafEditorModel, theme: EditorTheme = .default,
+        placeholder: String? = nil,
         @ViewBuilder accessory: () -> Accessory
     ) {
-        self.model = model; self.theme = theme; self.accessory = AnyView(accessory())
+        self.model = model; self.theme = theme; self.placeholder = placeholder
+        self.accessory = AnyView(accessory())
     }
 
     public func makeCoordinator() -> Coordinator { Coordinator() }
@@ -588,6 +603,7 @@ public struct LeafEditor: UIViewRepresentable {
             return
         }
         hosted.theme = theme
+        hosted.placeholder = placeholder
         // Re-read rather than trusting the copy `makeTextView` took: a host that
         // flips this on the model after the view exists (or per document, for a
         // vault where only some files use the convention) gets it honoured.
@@ -620,6 +636,7 @@ public struct LeafEditor: UIViewRepresentable {
     /// stale-binding rebuild in `updateUIView` both need it.
     private func makeTextView() -> LeafTextView {
         let textView = LeafTextView(doc: model.doc, theme: theme)
+        textView.placeholder = placeholder
         // Defer the publish: `render()` can fire during a SwiftUI layout pass, and
         // mutating an `@Published` mid-update loops the view system.
         textView.onStateChange = { [weak model] s in

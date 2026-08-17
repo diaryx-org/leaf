@@ -159,6 +159,19 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         render(docView)
     }
 
+    /// A cue shown while the document is empty — "Start writing…" — drawn where
+    /// its first character will go. Nil (the default) draws nothing.
+    ///
+    /// The editor's own, rather than a label a host stacks over the view,
+    /// because only the layout knows where the prose starts: the text column is
+    /// centred when the theme sets a `measure`, and sits at the sheet's margin
+    /// when a `pageSetup` is set — neither of which is `theme.padding`. Drawn
+    /// under the caret, so a reader sees the caret standing at the cue's first
+    /// letter rather than hidden behind it.
+    public var placeholder: String? {
+        didSet { if placeholder != oldValue { needsDisplay = true } }
+    }
+
     /// What activating a block video or audio does. `.inline` (the default)
     /// installs a real AVKit player over the box; `.host` draws the still and
     /// hands the source to `onOpenMedia` instead. See `MediaPlaybackMode`.
@@ -418,6 +431,13 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         }
 
         if markedByteRange != nil { drawMarkedUnderline(in: ctx) }
+
+        // Before the caret, never after: the caret stands at the cue's first
+        // letter, and painted over it the reader sees no caret at all until
+        // typing pushes the cue away.
+        if let placeholder, let box = layoutEngine.placeholderBox {
+            BlockChrome.drawPlaceholder(placeholder, in: box, theme: theme, in: ctx)
+        }
 
         if active, caretVisible, let rect = layoutEngine.caretRect(docView, theme: theme) {
             ctx.setFillColor(theme.caretColor.cgColor)

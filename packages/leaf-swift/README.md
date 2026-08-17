@@ -122,6 +122,19 @@ theme.measure = 52          // a narrower column; nil fills the view
 LeafEditor(model: editor, theme: theme)
 ```
 
+**A placeholder.** `placeholder:` is the cue drawn on an empty document, in the
+theme's body font, in the line box the first typed character will take:
+
+```swift
+LeafEditor(model: editor, theme: theme, placeholder: "Start writing…")
+```
+
+The editor draws it rather than the host stacking a `Text` over the view,
+because only the layout knows where the prose starts — `measure` centres the text
+column and a `PageSetup` moves it to the sheet's margin, neither of which is
+`theme.padding`. It sits under the caret, so a reader sees the caret standing at
+its first letter, and it goes the moment there is anything to read.
+
 **A paginated view** (macOS). Pass a `PageSetup` and the document is laid onto a
 stack of sheets instead of one scrolling column — the word-processor view, with a
 zoom that scales the surface without re-laying it out:

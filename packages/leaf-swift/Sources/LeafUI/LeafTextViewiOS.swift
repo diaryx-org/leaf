@@ -174,6 +174,19 @@ public final class LeafTextView: UIView, UITextInput {
         render(docView)
     }
 
+    /// A cue shown while the document is empty — "Start writing…" — drawn where
+    /// its first character will go. Nil (the default) draws nothing.
+    ///
+    /// The editor's own, rather than a label a host stacks over the view,
+    /// because only the layout knows where the prose starts: the text column is
+    /// centred when the theme sets a `measure`, which `theme.padding` is only
+    /// the floor for. The system draws the caret on this surface, over
+    /// everything painted here, so the caret stands at the cue's first letter
+    /// without this having to order the two.
+    public var placeholder: String? {
+        didSet { if placeholder != oldValue { setNeedsDisplay() } }
+    }
+
     /// What activating a block video or audio does. `.inline` (the default)
     /// installs a real AVKit player over the box; `.host` draws the still and
     /// hands the source to `onOpenMedia` instead. See `MediaPlaybackMode`.
@@ -785,6 +798,10 @@ public final class LeafTextView: UIView, UITextInput {
                                                 width: fullWidth - wl.indent, height: rl.lineHeight),
                                    options: [.usesLineFragmentOrigin], context: nil)
             }
+        }
+
+        if let placeholder, let box = layoutEngine.placeholderBox {
+            BlockChrome.drawPlaceholder(placeholder, in: box, theme: renderTheme, in: ctx)
         }
     }
 

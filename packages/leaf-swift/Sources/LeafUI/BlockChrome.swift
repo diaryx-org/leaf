@@ -160,6 +160,31 @@ enum BlockChrome {
         ctx.fillPath()
     }
 
+    /// Paint the placeholder cue in `box` — the line box `EditorLayout` says the
+    /// first typed character will take.
+    ///
+    /// Set in the theme's *body* font at the body size, because that is what the
+    /// cue is standing in for: a system-font cue in the same box sits on a
+    /// different baseline from the prose that replaces it, and the swap at the
+    /// first keystroke shows as a jump. Drawn `.usesLineFragmentOrigin` in a box
+    /// one line box tall, the same way `AttributedRow`'s real lines are, so the
+    /// two agree about where the top of a line is.
+    ///
+    /// Clipped to its box rather than wrapped: a cue is one line by construction,
+    /// and a long one running down the page would be a second paragraph the
+    /// reader never wrote.
+    static func drawPlaceholder(_ text: String, in box: CGRect, theme: EditorTheme,
+                                in ctx: CGContext) {
+        guard !text.isEmpty, box.width > 0 else { return }
+        ctx.saveGState()
+        ctx.clip(to: box)
+        NSAttributedString(string: text, attributes: [
+            .font: theme.proportionalFont(size: theme.fontSize, bold: false, italic: false),
+            .foregroundColor: theme.placeholderColor,
+        ]).draw(with: box, options: [.usesLineFragmentOrigin], context: nil)
+        ctx.restoreGState()
+    }
+
     /// The quote bars of a whole frame, merged down the page: consecutive rows
     /// quoted at the same level yield ONE rect, so a multi-row quote reads as a
     /// single unbroken bar with rounded caps rather than a stack of segments.

@@ -103,6 +103,11 @@ public struct EditorTheme {
     public var tableBorderColor: LeafColor
     public var tableHeaderColor: LeafColor
     public var tableStripeColor: LeafColor
+    /// The cue drawn on an empty document's first line — see `placeholder` on
+    /// the text views. Tertiary rather than secondary: it stands where the
+    /// reader's own words will, and has to read as an absence rather than as
+    /// something already written there.
+    public var placeholderColor: LeafColor
     public var selectionColor: LeafColor
     /// The selection fill when the view isn't the focus — window not key, or the
     /// view not first responder. Matches native text: emphasized blue when active,
@@ -152,6 +157,7 @@ public struct EditorTheme {
         tableBorderColor: LeafColor = Palette.tableBorder,
         tableHeaderColor: LeafColor = Palette.tableHeader,
         tableStripeColor: LeafColor = Palette.tableStripe,
+        placeholderColor: LeafColor = Palette.tertiary,
         selectionColor: LeafColor = Palette.selection,
         inactiveSelectionColor: LeafColor = Palette.inactiveSelection,
         caretColor: LeafColor = Palette.label,
@@ -189,6 +195,7 @@ public struct EditorTheme {
         self.tableBorderColor = tableBorderColor
         self.tableHeaderColor = tableHeaderColor
         self.tableStripeColor = tableStripeColor
+        self.placeholderColor = placeholderColor
         self.selectionColor = selectionColor
         self.inactiveSelectionColor = inactiveSelectionColor
         self.caretColor = caretColor

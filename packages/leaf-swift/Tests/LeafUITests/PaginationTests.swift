@@ -55,6 +55,20 @@ final class PaginationTests: XCTestCase {
         XCTAssertEqual(layout.originX, page.sheetX(in: viewWidth) + page.margins.left)
     }
 
+    func testThePlaceholderCueLandsInsideTheSheetsTextBox() throws {
+        // A blank paginated document opens at the first sheet's top margin, and
+        // the cue has to open there with it — the case that shows most plainly
+        // why the layout has to answer this rather than a host reading the
+        // theme's padding, which a page has nothing to do with.
+        let layout = laid([])
+        let box = try XCTUnwrap(layout.placeholderBox)
+        let caret = try XCTUnwrap(layout.rect(row: 0, ch: 0))
+        XCTAssertEqual(box.minX, caret.minX, accuracy: 0.5)
+        XCTAssertEqual(box.minY, caret.minY, accuracy: 0.5)
+        XCTAssertEqual(box.minX, page.sheetX(in: viewWidth) + page.margins.left, accuracy: 0.5)
+        XCTAssertEqual(box.minY, page.contentTop(0), accuracy: 0.5)
+    }
+
     func testTheStackIsWholeSheetsHoweverLittleIsOnTheLast() {
         // One word of text still gets a whole page of paper under it — that is what
         // makes the view read as a document rather than as a scrolling column.

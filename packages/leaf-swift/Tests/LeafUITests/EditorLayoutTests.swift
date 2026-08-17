@@ -256,6 +256,54 @@ final class EditorLayoutTests: XCTestCase {
         XCTAssertEqual(ch, 0)
     }
 
+    // MARK: the placeholder cue
+
+    func testPlaceholderBoxStartsWhereTheFirstTypedCharacterWill() throws {
+        // The whole point of the box: a host can't work this out from the theme,
+        // because `measure` centres the column in a wide view and `padding.left`
+        // is only the floor it can't cross. Regression: a cue placed at the
+        // padding sat a long way left of the prose that replaced it.
+        let layout = EditorLayout(docView([]), theme: theme, viewWidth: 1200)
+        let box = try XCTUnwrap(layout.placeholderBox)
+        let caret = try XCTUnwrap(layout.rect(row: 0, ch: 0))
+        XCTAssertEqual(box.minX, caret.minX, accuracy: 0.5, "the cue's first letter is where the caret stands")
+        XCTAssertEqual(box.minY, caret.minY, accuracy: 0.5)
+        XCTAssertEqual(box.height, caret.height, accuracy: 0.5, "one line box, so the baselines agree")
+        XCTAssertGreaterThan(box.minX, theme.padding.left + 1,
+                             "a measure centres the column, so the padding is not the answer")
+    }
+
+    func testPlaceholderBoxFollowsTheColumnWhenTheresNoMeasure() throws {
+        // Without a measure the column fills what the padding leaves, and the cue
+        // is back at the left inset — the case a host's guess got right, kept so
+        // the fix doesn't quietly move it in the other direction.
+        var wide = theme
+        wide.measure = nil
+        let layout = EditorLayout(docView([]), theme: wide, viewWidth: 1200)
+        let box = try XCTUnwrap(layout.placeholderBox)
+        XCTAssertEqual(box.minX, wide.padding.left, accuracy: 0.5)
+        XCTAssertEqual(box.minY, wide.padding.top, accuracy: 0.5)
+    }
+
+    func testPlaceholderBoxIsNilOnceThereIsAnythingToRead() {
+        XCTAssertNil(EditorLayout(docView([row([mkRun("a")])]), theme: theme, viewWidth: 1200).placeholderBox)
+        // A block the reader typed but whose glyphs a surface redraws as graphics
+        // is still something they wrote: a thematic break's `───`, a table's box
+        // picture. The runs carry them, so one rule covers every kind.
+        let rule = row([mkRun("───", role: "rule")], decoration: true)
+        XCTAssertNil(EditorLayout(docView([rule]), theme: theme, viewWidth: 1200).placeholderBox)
+    }
+
+    func testAnEmptyParagraphRowStillCountsAsAnEmptyDocument() throws {
+        // Core publishes no rows for an empty document, but a document that is one
+        // empty paragraph — the shape a new note takes the moment anything asks it
+        // for a block — publishes a row with no glyphs. Both are blank pages, and
+        // the cue belongs on both.
+        let layout = EditorLayout(docView([row([])]), theme: theme, viewWidth: 1200)
+        let box = try XCTUnwrap(layout.placeholderBox)
+        XCTAssertEqual(box.minY, theme.padding.top, accuracy: 0.5)
+    }
+
     func testRectIsNilForRowOutOfRange() {
         let layout = EditorLayout(docView([row([mkRun("x")])]), theme: theme)
         XCTAssertNil(layout.rect(row: 5, ch: 0))

@@ -378,6 +378,11 @@ struct EditorLayout {
     /// Every sheet's frame, top to bottom, in layout coordinates — what the view
     /// paints the paper and its shadow onto. Empty in the continuous flow.
     let pages: [CGRect]
+    /// Whether the document holds no glyphs at all — the state a placeholder cue
+    /// stands in for. Read off the frame core published rather than off the
+    /// source, so it costs a walk over rows already in hand instead of
+    /// serializing the document to ask whether it is empty.
+    let isEmpty: Bool
 
     /// Lay out `docView` in a view `viewWidth` points wide, wrapping each row to
     /// the text column `theme` puts inside it (see `EditorTheme.column(in:)`).
@@ -421,6 +426,11 @@ struct EditorLayout {
         self.columnWidth = max(0, columnWidth)
         self.setup = page
         self.sheetX = sheetX
+        // Every glyph the reader can see is a run's text, including the ones a
+        // surface redraws as graphics — a table's box picture, a media row's
+        // `🖼 alt`, a break's `───`. So one pass over the runs answers this for
+        // every kind of block, with no list of exceptions to keep in step.
+        self.isEmpty = docView.rows.allSatisfy { row in row.runs.allSatisfy { $0.text.isEmpty } }
         var layouts: [RowLayout] = []
         layouts.reserveCapacity(docView.rows.count)
         var next = Dictionary<Row, ShapedRow>(minimumCapacity: docView.rows.count)
@@ -831,6 +841,23 @@ struct EditorLayout {
                                   caretSrc: Int(docView.caretSrc), theme: theme)
         }
         return rect(row: cr, ch: Int(docView.caretCh))
+    }
+
+    /// The line box a placeholder cue draws in — exactly the box the document's
+    /// first typed character will take, so the cue and the prose that replaces it
+    /// begin at the same point.
+    ///
+    /// Not `theme.padding`, which is only the floor: a `measure` centres the text
+    /// column in the room the padding leaves (`EditorTheme.column(in:)`), and a
+    /// page moves it to the sheet's own margin. Both answers live in the layout
+    /// and nowhere else, which is why a cue drawn from outside it can only guess.
+    ///
+    /// Nil once the document holds anything: a cue under prose is a cue over
+    /// something the reader wrote.
+    var placeholderBox: CGRect? {
+        guard isEmpty, let first = rows.first else { return nil }
+        let o = first.lineOrigin(0)
+        return CGRect(x: o.x, y: o.y, width: columnWidth, height: first.lineHeight)
     }
 
     /// The caret's frame inside a table: the cell *line* its source offset falls
