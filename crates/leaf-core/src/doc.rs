@@ -597,6 +597,10 @@ pub struct Capabilities {
     pub image: bool,
     /// The horizontal-rule button. HTML spells this one (`<hr>`).
     pub thematic_break: bool,
+    /// The footnote button — [`Doc::insert_footnote`]. Markdown and djot spell
+    /// the pair; HTML has no footnote of its own, so the button goes away rather
+    /// than writing brackets that would render as brackets.
+    pub footnote: bool,
     /// Setting a fenced block's language — a control only ever offered with the
     /// caret already in a fence.
     pub code_language: bool,
@@ -636,6 +640,7 @@ impl Capabilities {
             link: format.supports(Gesture::InsertLink),
             image: format.supports(Gesture::InsertImage),
             thematic_break: format.supports(Gesture::InsertThematicBreak),
+            footnote: format.supports(Gesture::InsertFootnote),
             code_language: format.supports(Gesture::SetCodeLanguage),
             table: spells_pipe_tables(format),
             cell_line_break: format.supports(Gesture::InsertLineBreak),
@@ -3920,6 +3925,95 @@ impl Doc {
         Some(Landing { start: heading.span.start, end })
     }
 
+    /// Write a footnote at the caret — the toolbar's Footnote button, and the
+    /// one gesture in the footnote story that *authors* rather than follows.
+    ///
+    /// Both halves go in as one twig edit: the `[^1]` where the caret is, and
+    /// the `[^1]:` definition at the end of the document. Half a footnote is not
+    /// a footnote — a bare reference with nothing defining it renders as literal
+    /// brackets — so a single button that wrote only the reference would leave
+    /// the author to hand-spell the other half in a document that had just
+    /// stopped showing them what the first half meant. One edit also means one
+    /// undo takes both back.
+    ///
+    /// The definition's body is left empty and **the caret lands in it**, which
+    /// is the whole point of pressing the button: nobody wants a reference to a
+    /// note they have not written yet. Getting back to where they were writing
+    /// is [`footnote_definition_at_caret`](Self::footnote_definition_at_caret) —
+    /// the same return leg a reader following a reference already uses, so the
+    /// author is left standing on the near end of a round trip that works.
+    ///
+    /// A selection collapses to its *end* rather than being replaced: a
+    /// reference annotates the words before it, so "select the claim, add a
+    /// footnote" should mark that claim, not consume it.
+    pub fn insert_footnote(&mut self) {
+        if self.refuse_unsupported("footnote", Gesture::InsertFootnote) {
+            return;
+        }
+        let at = self.selection().map_or(self.caret, |(_, end)| end);
+        self.anchor = None;
+        self.caret = at;
+        self.record_caret();
+        let label = self.next_footnote_label();
+        match self.editor.insert_footnote(at, &label) {
+            Ok(change) => {
+                self.last_edit_kind = None;
+                self.refresh();
+                self.anchor = None;
+                // `change.new` runs from the reference to the end of the
+                // document, so its start is the `[^1]` just written and
+                // `footnote_at` resolves it to the note the same way a reader's
+                // tap does — and to the note's *body*, which is already a caret
+                // stop even when it is empty (the `[^1]:` marker draws as `[1] `
+                // and has none), so this needs no snap on top. The fallback is
+                // the reference's own offset: a format that spelled the pair some
+                // way leaf can't read back should still leave the caret on the
+                // edit rather than at the far end of a document it just grew.
+                self.caret = self
+                    .footnote_at(change.new.start)
+                    .and_then(|note| note.offset)
+                    .unwrap_or(change.new.start);
+                self.dirty = self.source != self.clean_source;
+                self.status = None;
+                self.clamp_caret();
+                self.record_caret();
+            }
+            Err(e) => self.status = Some(format!("footnote: {e}")),
+        }
+    }
+
+    /// The label to give a footnote the author has not named: the lowest counting
+    /// number no footnote in the document is already wearing.
+    ///
+    /// twig takes the label rather than minting one, because it holds no opinion
+    /// about what a document's footnotes should be called — and it is right not
+    /// to. Numbering them is what every author of a numbered note expects, and
+    /// re-using a taken number would silently point the new reference at somebody
+    /// else's note (twig reuses an existing definition rather than appending a
+    /// second one, which is the right rule for citing a note twice on purpose and
+    /// exactly the wrong accident to have by default).
+    ///
+    /// *References* are counted alongside definitions, not just definitions: a
+    /// document carrying a dangling `[^2]` has a 2 that means something to
+    /// whoever wrote it, and minting a definition for it here would answer a
+    /// question nobody asked. Non-numeric labels (`[^why]`) are left out of the
+    /// count entirely — they take no number, so they block none.
+    fn next_footnote_label(&mut self) -> String {
+        let mut taken: Vec<u32> = wysiwyg::footnote_definitions(&mut self.editor)
+            .into_iter()
+            .filter_map(|note| wysiwyg::footnote_label(&self.source, note.span.start))
+            .filter_map(|label| label.parse().ok())
+            .collect();
+        taken.extend(
+            self.nodes()
+                .into_iter()
+                .filter(|n| n.kind == Kind::FootnoteReference)
+                .filter_map(|n| wysiwyg::footnote_reference_label(&self.source, n.span))
+                .filter_map(|label| label.parse::<u32>().ok()),
+        );
+        (1..).find(|n| !taken.contains(n)).unwrap_or(1).to_string()
+    }
+
     /// The footnote reference under the caret, resolved to the note it names.
     /// [`footnote_at`](Self::footnote_at) at the caret's offset.
     pub fn footnote_at_caret(&mut self) -> Option<FootnoteRef> {
@@ -4001,9 +4095,19 @@ impl Doc {
         // Definitions are roots beside `doc`, so `nodes()` — which walks the
         // document body — never reports one. They're asked for directly, the way
         // `footnote_at` asks for the note it resolves to.
+        //
+        // Closed at the end, unlike the half-open test its neighbours use. A
+        // definition's span stops at its last content byte — the newline ending
+        // the line is outside it — so `span.end` is the caret stop at the end of
+        // the note's own row, not the first byte of anything after. Excluding it
+        // meant the one caret an author is guaranteed to have, the one left
+        // sitting at the end of the note they just typed, was in no definition at
+        // all: writing a note and then asking to go back to its reference
+        // answered nothing. Two definitions in a row still can't both match —
+        // there is a blank line between them — and `max_by_key` decides anyway.
         let note = wysiwyg::footnote_definitions(&mut self.editor)
             .into_iter()
-            .filter(|m| m.span.start <= off && off < m.span.end)
+            .filter(|m| m.span.start <= off && off <= m.span.end)
             .max_by_key(|m| m.span.start)?;
         let label = wysiwyg::footnote_label(&self.source, note.span.start)?.to_string();
 
@@ -7795,6 +7899,130 @@ mod tests {
         let mut d = Doc::from_source(src.to_string(), Format::Djot).unwrap();
         let hit = d.locate("dup").expect("the first `{#dup}`");
         assert_eq!(d.source[hit.start..hit.end].trim_end(), "first.");
+    }
+
+    #[test]
+    fn insert_footnote_writes_both_halves_and_lands_the_caret_in_the_note() {
+        // The button's whole job: a reference where the caret was, a definition
+        // to give it meaning, and the caret waiting in the empty note so the
+        // next keystroke is the note's first word.
+        let mut d = doc_with("fn_insert", "A claim and more.\n");
+        d.caret = 7; // just past "A claim"
+        d.insert_footnote();
+        assert!(d.source.starts_with("A claim[^1] and more."), "{:?}", d.source);
+        assert!(d.source.contains("[^1]:"), "the definition too: {:?}", d.source);
+        assert_eq!(d.status, None);
+
+        let reference = d.source.find("[^1]").unwrap();
+        let note = d.footnote_at(reference + 2).expect("the reference just written");
+        assert_eq!(note.label, "1");
+        assert_eq!(note.text.as_deref(), Some(""), "the note starts empty");
+        assert_eq!(Some(d.caret), note.offset, "the caret waits in the note");
+        // …and typing there is typing into the note, not near it.
+        d.insert("the note");
+        assert_eq!(
+            d.footnote_at(reference + 2).and_then(|f| f.text),
+            Some("the note".to_string())
+        );
+    }
+
+    #[test]
+    fn insert_footnote_numbers_past_the_notes_already_written() {
+        // A second press must not hand back a label somebody else is using: twig
+        // reuses a defined label rather than appending a rival definition, so a
+        // repeat of `1` would quietly point the new reference at the old note.
+        let mut d = doc_with("fn_insert_number", "One[^1] two.\n\n[^1]: first\n");
+        d.caret = 7; // past `[^1]`, before " two."
+        d.insert_footnote();
+        assert!(d.source.starts_with("One[^1][^2] two."), "{:?}", d.source);
+        assert_eq!(d.source.matches("[^2]:").count(), 1);
+    }
+
+    #[test]
+    fn insert_footnote_counts_a_dangling_reference_and_ignores_a_named_one() {
+        // `[^2]` with no definition is still a 2 that means something to whoever
+        // wrote it — stepping over it would mint a note for their reference. A
+        // word label takes no number, so it blocks none.
+        let mut d = doc_with("fn_insert_dangling", "a[^2] b[^why] c\n\n[^why]: named\n");
+        d.caret = d.source.find(" c").unwrap();
+        d.insert_footnote();
+        assert!(d.source.contains("[^1]:"), "1 is free: {:?}", d.source);
+        assert!(d.source.starts_with("a[^2] b[^why][^1] c"), "{:?}", d.source);
+    }
+
+    #[test]
+    fn insert_footnote_marks_the_selection_rather_than_replacing_it() {
+        // A reference annotates the words before it. Consuming the selection —
+        // which is what an insert normally does — would delete the very claim
+        // the author selected in order to footnote.
+        let mut d = doc_with("fn_insert_sel", "A claim and more.\n");
+        d.anchor = Some(2);
+        d.caret = 7; // "claim" selected
+        d.insert_footnote();
+        assert!(d.source.starts_with("A claim[^1] and more."), "{:?}", d.source);
+    }
+
+    #[test]
+    fn a_note_just_written_still_knows_where_its_reference_is() {
+        // The authoring loop in one test: press the button, type the note, ask to
+        // go back. The caret ends at the note's last byte — which is the *end* of
+        // the definition's span, the one offset the query used to exclude — so
+        // this is where the round trip either works or doesn't.
+        let mut d = doc_with("fn_insert_return", "A claim and more.\n");
+        d.caret = 7;
+        d.insert_footnote();
+        d.insert("the note");
+        assert_eq!(d.source, "A claim[^1] and more.\n\n[^1]: the note\n");
+        let back = d.footnote_definition_at_caret().expect("still in the note we just typed");
+        assert_eq!(back.label, "1");
+        // …and following it lands on the reference's label, where a reader's
+        // return leg lands.
+        assert_eq!(back.offset, Some(9));
+        assert_eq!(&d.source[9..10], "1");
+    }
+
+    #[test]
+    fn insert_footnote_takes_one_undo_for_both_halves() {
+        // twig writes the pair as a single edit; the point of that is here.
+        let before = "A claim and more.\n";
+        let mut d = doc_with("fn_insert_undo", before);
+        d.caret = 7;
+        d.insert_footnote();
+        assert_ne!(d.source, before);
+        d.undo();
+        assert_eq!(d.source, before, "one undo takes back both halves");
+    }
+
+    #[test]
+    fn insert_footnote_refuses_a_format_that_cannot_spell_one() {
+        // HTML is authorable — it spells the inline marks — and has no footnote.
+        // The refusal says so rather than writing brackets that would render as
+        // brackets.
+        let src = "<p>A claim.</p>\n";
+        let mut d = Doc::from_source(src.to_string(), Format::Html).unwrap();
+        assert!(!Capabilities::of(Format::Html).footnote);
+        d.caret = 5;
+        d.insert_footnote();
+        assert_eq!(d.source, src, "nothing written");
+        assert!(d.status.is_some_and(|s| s.starts_with("footnote:")));
+    }
+
+    #[test]
+    fn insert_footnote_leaves_the_caret_on_a_real_stop_in_the_rich_view() {
+        // The empty body is the one place this could go wrong: the definition
+        // renders as a `[1] ` marker the caret cannot occupy, so a caret aimed a
+        // byte early would draw up in the paragraph above the note it belongs to.
+        let mut d = doc_in(View::Wysiwyg, "fn_insert_stop", "A claim and more.\n");
+        d.place_caret(7, false);
+        d.insert_footnote();
+        d.build_visual(80); // the frame a frontend draws after the edit
+        assert_eq!(d.vmap.snap_to_stop(d.caret), d.caret, "the caret sits on a stop");
+        let (row, _) = d.caret_pos();
+        assert!(
+            drawn_rows(&d)[row].contains("[1]"),
+            "the caret is on the note's row, not above it: {:?}",
+            drawn_rows(&d)
+        );
     }
 
     #[test]

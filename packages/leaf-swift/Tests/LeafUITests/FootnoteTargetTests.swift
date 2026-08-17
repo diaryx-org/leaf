@@ -72,6 +72,27 @@ final class FootnoteTargetTests: XCTestCase {
                        "back on the reference we started from")
     }
 
+    /// The authoring gesture lands the author on the *near end of a working
+    /// round trip*: press Footnote, and the caret is in the new note with the way
+    /// back already on offer. Both halves have to exist for that — a reference
+    /// with no definition offers no jump at all (see below) — so this is the one
+    /// test that says the button wrote a whole footnote rather than half of one.
+    func testInsertingAFootnoteLeavesTheCaretInTheNoteWithAWayBack() throws {
+        let src = "A claim and more.\n"
+        let d = try doc(src, caret: offset(of: " and", in: src))
+        _ = d.insertFootnote()
+        XCTAssertTrue(d.source().hasPrefix("A claim[^1] and more."), d.source())
+
+        let back = try XCTUnwrap(d.footnoteJumpAtCaret(), "the caret is in the note it just made")
+        XCTAssertEqual(back.action, .backToReference)
+        XCTAssertEqual(back.label, "1")
+        XCTAssertEqual(back.offset, offset(of: "^1]", in: d.source()) + 1)
+
+        // …and typing there types into the note, not near it.
+        _ = d.insert(text: "the note")
+        XCTAssertEqual(d.footnoteAt(off: offset(of: "^1]", in: d.source()))?.text, "the note")
+    }
+
     func testProseOffersNothing() throws {
         let d = try doc(cited, caret: 2)
         XCTAssertNil(d.footnoteJumpAtCaret())

@@ -100,6 +100,14 @@ public struct LeafFormattingToolbar: View {
             tool("list.bullet", "Bulleted list") { editor.toggleList(ordered: false) }
             tool("list.number", "Numbered list") { editor.toggleList(ordered: true) }
             tool("rectangle.compress.vertical", "Horizontal Rule") { editor.insertThematicBreak() }
+            // Beside the rule rather than among the inline marks: a footnote is
+            // not a mark over the selection, it's a thing written into the
+            // document — and like the rule it acts once rather than toggling, so
+            // it has no active state to show. The glyph is the raised character
+            // because that is what the gesture puts on screen; if the eight
+            // inline marks ever grow a Superscript button of their own, that one
+            // takes this symbol and this takes `asterisk`.
+            tool("textformat.superscript", "Footnote") { editor.insertFootnote() }
         }
     }
 

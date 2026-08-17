@@ -527,6 +527,9 @@ pub struct Capabilities {
     /// [`LeafDoc::insert_image`] and [`LeafDoc::insert_media`] both.
     pub image: bool,
     pub thematic_break: bool,
+    /// [`LeafDoc::insert_footnote`]. Markdown and djot spell the pair; HTML does
+    /// not, so the button goes rather than dims into a refusal.
+    pub footnote: bool,
     pub code_language: bool,
     /// The grid controls. Gate them on this *and* [`LeafDoc::caret_in_table`]:
     /// this asks whether the format's tables are editable, that whether the
@@ -558,6 +561,7 @@ impl From<CoreCapabilities> for Capabilities {
             link: c.link,
             image: c.image,
             thematic_break: c.thematic_break,
+            footnote: c.footnote,
             code_language: c.code_language,
             table: c.table,
             cell_line_break: c.cell_line_break,
@@ -1504,6 +1508,17 @@ impl LeafDoc {
         self.lock().doc.locate(&id).map(LandingView::from)
     }
 
+    /// Write a footnote at the caret — the toolbar's Footnote button. Both the
+    /// `[^1]` and the definition it needs go in as one edit (one undo takes both
+    /// back), the label is the lowest number the document has free, and the caret
+    /// is left **in the empty note** ready to type it. Gate the button on
+    /// [`Capabilities::footnote`]; see [`leaf_core::Doc::insert_footnote`].
+    pub fn insert_footnote(&self) -> DocView {
+        let mut g = self.lock();
+        g.doc.insert_footnote();
+        g.view()
+    }
+
     /// The footnote reference under the caret, resolved to the note it names —
     /// so a frontend can show the note when a reader activates a `[1]`, instead
     /// of the nothing a reference click used to do. `None` when the caret isn't
@@ -2418,6 +2433,30 @@ mod tests {
         assert_eq!(d.link_destination_at_caret().as_deref(), Some("https://x.dev"));
         d.set_selection_offsets(0, 0); // caret on plain text
         assert_eq!(d.link_destination_at_caret(), None);
+    }
+
+    #[test]
+    fn insert_footnote_crosses_and_leaves_the_caret_in_the_new_note() {
+        // The button's round trip through the boundary: both halves written, and
+        // a caret offset a host can type into without asking anything else.
+        let d = doc("A claim and more.\n");
+        d.set_selection_offsets(7, 7); // just past "A claim"
+        d.insert_footnote();
+        assert!(d.source().starts_with("A claim[^1] and more."), "{:?}", d.source());
+        assert!(d.source().contains("[^1]:"), "{:?}", d.source());
+
+        let note = d.footnote_at(9).expect("the reference just written");
+        assert_eq!(note.label, "1");
+        assert_eq!(d.caret_offset(), note.offset.expect("an empty note is still a place"));
+        // …and the way back out is the same one a reader uses.
+        assert_eq!(d.footnote_definition_at_caret().expect("in the note").label, "1");
+    }
+
+    #[test]
+    fn capabilities_answer_for_footnotes_the_way_the_format_does() {
+        assert!(doc("x\n").capabilities().footnote, "markdown spells the pair");
+        let html = LeafDoc::new("<p>x</p>\n".to_string(), "html".to_string()).unwrap();
+        assert!(!html.capabilities().footnote, "html has no footnote of its own");
     }
 
     #[test]

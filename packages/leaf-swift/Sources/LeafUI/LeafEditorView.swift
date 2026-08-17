@@ -311,6 +311,21 @@ public final class LeafEditorModel: ObservableObject {
     /// `leaf_core::Doc::insert_thematic_break` for the full behavior.
     public func insertThematicBreak() { run { $0.insertThematicBreak() } }
 
+    /// Write a footnote at the caret — the toolbar's Footnote button.
+    ///
+    /// Both halves go in as one edit: the `[^1]` where the caret is and the
+    /// definition that gives it meaning at the end of the document, so one undo
+    /// takes back both and the author never sees a reference rendering as literal
+    /// brackets. The label is the lowest number the document has free, and the
+    /// caret is left **in the empty note**, ready for the note's first word.
+    ///
+    /// A selection is marked rather than replaced: the reference lands after it,
+    /// so "select the claim, add a footnote" footnotes that claim.
+    ///
+    /// Formats that can't spell a footnote (HTML) refuse it — see
+    /// `leaf_core::Doc::insert_footnote`.
+    public func insertFootnote() { run { $0.insertFootnote() } }
+
     // ── table editing ─────────────────────────────────────────────────────────
 
     public var caretInTable: Bool { doc.caretInTable() }

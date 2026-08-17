@@ -171,6 +171,8 @@ pub struct CapabilitiesView {
     /// Covers `insertMedia` too.
     image: bool,
     thematic_break: bool,
+    /// The footnote button — writes the `[^1]` and the definition it needs.
+    footnote: bool,
     code_language: bool,
     /// The grid controls. Gate them on this *and* `caretInTable`: this asks
     /// whether the format's tables are editable, that whether the caret is in
@@ -199,6 +201,7 @@ impl From<leaf_core::Capabilities> for CapabilitiesView {
             link: c.link,
             image: c.image,
             thematic_break: c.thematic_break,
+            footnote: c.footnote,
             code_language: c.code_language,
             table: c.table,
             cell_line_break: c.cell_line_break,

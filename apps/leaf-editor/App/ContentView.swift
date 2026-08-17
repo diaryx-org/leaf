@@ -96,6 +96,7 @@ struct ContentView: View {
                 btn("list", "list.bullet", active: false) { editor.toggleList(ordered: false) }
                 btn("quote", "text.quote", active: false) { editor.toggleBlockquote() }
                 btn("hr", "rectangle.compress.vertical", active: false) { editor.insertThematicBreak() }
+                btn("footnote", "textformat.superscript", active: false) { editor.insertFootnote() }
                 Divider().frame(height: 22)
                 tableMenu
                 Divider().frame(height: 22)
