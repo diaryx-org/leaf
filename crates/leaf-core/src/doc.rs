@@ -240,15 +240,6 @@ enum EditKind {
     Other,
 }
 
-/// The one-character paragraph [`Doc::toggle_container`] opens on a blank line so
-/// twig's `toggle_block_container` — which declines a range covering no block —
-/// has something to wrap, and which is removed again the moment it has. Never
-/// seen: it exists between two edits of one undo step, and is what keeps the
-/// marker twig's spelling rather than a `> ` leaf writes itself. A plain letter,
-/// because it must parse as ordinary text in every format twig will wrap (`*` or
-/// `#` would open markup of its own, and an escape would change its length).
-const SCRATCH_BLOCK: &str = "x";
-
 /// Which side of the caret a delete looks for an in-cell `<br>` break to swallow
 /// whole — see [`Doc::cell_break_at`]. `Backward` is Backspace (a break ending at
 /// the caret), `Forward` is Delete (one starting at it).
@@ -3504,15 +3495,15 @@ impl Doc {
             return;
         }
         let selected = self.selection();
-        // A blank line holds no block, and `toggle_block_container` answers
-        // `NotFound` for a range that covers none — so Quote and the two list
-        // buttons did nothing on the very line the H1 button works on, which is
-        // the one place a writer most expects to open an empty one. Lend twig a
-        // block to wrap: a scratch paragraph, taken back out below.
-        let scratch = selected.is_none() && self.block_offset_for_caret().is_none();
-        if scratch && !self.open_scratch_block() {
-            return;
-        }
+        // A blank line holds no block, and twig opens an *empty* container on one
+        // — since 3.2.0; it used to decline the range with `NotFound`, which is
+        // why this used to lend it a scratch paragraph to wrap. Worth knowing
+        // here because the line-for-line caret mapping below cannot describe it:
+        // opening one under a paragraph writes the blank line the format needs
+        // above the marker too, so the rewritten region has a line the old one
+        // didn't, and "the same line, the same distance from its end" lands on
+        // that new blank instead of in the container.
+        let opened_empty = selected.is_none() && self.block_offset_for_caret().is_none();
         // Without a selection the target is the caret's own block, resolved the
         // way `set_block` resolves it — a caret at a line end sits at the doc
         // level and has to be nudged back onto the block it looks like it's in.
@@ -3529,21 +3520,26 @@ impl Doc {
             Ok(change) => {
                 // Read the caret's place out of the *pre-edit* source, before
                 // `refresh` swaps that source out from under it.
-                let place = selected.is_none().then(|| self.caret_line_tail(&change.old));
+                let place = (selected.is_none() && !opened_empty)
+                    .then(|| self.caret_line_tail(&change.old));
                 self.last_edit_kind = None; // structural edit is its own undo step
-                if scratch {
-                    let _ = self.editor.coalesce_last_undo();
-                }
                 self.refresh();
                 match place {
-                    // Select what the container now holds, the way `toggle`
-                    // keeps its marked region selected — and for a stronger
-                    // reason than symmetry: a container comes *off* only a range
-                    // covering every block it holds, so a selection left on its
-                    // old bytes (now short by a prefix per line) would nest on
-                    // the second press instead of reversing the first.
+                    // Both land the caret at the far end of what twig wrote, and
+                    // differ only in what they leave selected.
+                    //
+                    // From a selection: select what the container now holds, the
+                    // way `toggle` keeps its marked region selected — and for a
+                    // stronger reason than symmetry: a container comes *off* only
+                    // a range covering every block it holds, so a selection left
+                    // on its old bytes (now short by a prefix per line) would nest
+                    // on the second press instead of reversing the first.
+                    //
+                    // From a blank line: nothing to select, and the end of the
+                    // region is exactly past the bare `> ` / `- ` twig wrote —
+                    // the caret standing inside the container that was asked for.
                     None => {
-                        self.anchor = Some(change.new.start);
+                        self.anchor = (!opened_empty).then_some(change.new.start);
                         self.caret = change.new.end;
                     }
                     Some(place) => {
@@ -3555,82 +3551,8 @@ impl Doc {
                 self.status = None;
                 self.clamp_caret();
                 self.record_caret();
-                // The scratch character has ridden the wrap to wherever the
-                // caret now is (`caret_line_tail` preserved its place, and it
-                // was the caret's own). Take it away and the line is the empty
-                // quote or bullet that was asked for, with the caret standing in
-                // it — the state `> ` / `- ` on a blank line renders as.
-                if scratch {
-                    self.drop_scratch_block();
-                }
             }
-            Err(e) => {
-                // Nothing was wrapped, so nothing may be left behind: undo the
-                // scratch insert rather than leaving a character the writer
-                // never typed on a line they only pressed a toolbar button on.
-                // Its own status goes last, over the undo's — the writer asked
-                // for a quote, not for an undo they never pressed.
-                if scratch {
-                    self.undo();
-                }
-                self.status = Some(format!("{kind:?}: {e}"));
-            }
-        }
-    }
-
-    /// Open the scratch paragraph [`toggle_container`](Self::toggle_container)
-    /// lends twig on a blank line, leaving the caret in front of it. Returns
-    /// whether it landed.
-    ///
-    /// One character and the newline that ends its line, written at column 0.
-    /// The newline is not tidiness: without it the line below is one soft break
-    /// away and Markdown reads the two as a single paragraph, so the wrap would
-    /// swallow a block the writer never selected. The same hazard from *above*
-    /// is why a non-blank line overhead earns a blank one — and for a list that
-    /// blank line is the format's price rather than a flourish, since an empty
-    /// item cannot interrupt a paragraph at all.
-    fn open_scratch_block(&mut self) -> bool {
-        // Column 0: a container's prefix goes there, so the scratch block it
-        // wraps has to start there too.
-        let at = self.source[..self.caret.min(self.source.len())]
-            .rfind('\n')
-            .map_or(0, |i| i + 1);
-        let above = self.source[..at].strip_suffix('\n').unwrap_or("");
-        let above = above.rsplit_once('\n').map_or(above, |(_, line)| line);
-        let lead = if above.trim().is_empty() { "" } else { "\n" };
-        let text = format!("{lead}{SCRATCH_BLOCK}\n");
-        if !self.splice_exact(at, at, &text, EditKind::Other) {
-            return false;
-        }
-        // `splice_exact` leaves the caret past what it wrote; put it in front of
-        // the scratch character instead, so the place `caret_line_tail` carries
-        // across the wrap is that character's own — which is where the caret
-        // belongs once it has been taken away again.
-        self.caret = at + lead.len();
-        true
-    }
-
-    /// Take the scratch paragraph back out. It sits at the caret, the wrap
-    /// having carried the caret along with it, and goes with the newline ending
-    /// its line — the pair `open_scratch_block` put in. What is left is the bare
-    /// `> ` / `- ` / `1. ` marker on the line, which is what an empty container
-    /// is spelled as and what [`crate::wysiwyg`] draws a gutter or a bullet for.
-    ///
-    /// Folded into the wrap so the whole gesture is one undo step. A no-op if
-    /// the scratch isn't where it is expected — better a stray character than a
-    /// deleted keystroke.
-    fn drop_scratch_block(&mut self) {
-        let at = self.caret;
-        let scratch = format!("{SCRATCH_BLOCK}\n");
-        if !self.source[at.min(self.source.len())..].starts_with(&scratch) {
-            return;
-        }
-        if self.splice_exact(at, at + scratch.len(), "", EditKind::Other) {
-            let _ = self.editor.coalesce_last_undo();
-            self.last_edit_kind = None; // structural edit is still its own step
-            self.caret = at;
-            self.clamp_caret();
-            self.record_caret();
+            Err(e) => self.status = Some(format!("{kind:?}: {e}")),
         }
     }
 
@@ -7020,11 +6942,12 @@ mod tests {
 
     #[test]
     fn a_container_toggle_opens_an_empty_one_on_a_blank_line() {
-        // A blank line is no block for twig to wrap — `toggle_block_container`
-        // answers `NotFound` — so Quote and the list buttons used to do nothing
-        // on the very line the H1 button works on. leaf lends twig a scratch
-        // paragraph and takes it back out, leaving the empty container the
-        // writer asked for with the caret standing in it.
+        // A blank line used to be no block for twig to wrap —
+        // `toggle_block_container` answered `NotFound` — so Quote and the list
+        // buttons did nothing on the very line the H1 button works on, and leaf
+        // lent twig a scratch paragraph to wrap and took it back out again.
+        // twig 3.2.0 opens an empty container there itself, so what is left here
+        // is where the caret lands: inside the marker that was just written.
         let mut d = doc_with("quote_blank", "\nabc\n");
         d.caret = 0;
         d.toggle_blockquote();
@@ -7033,8 +6956,8 @@ mod tests {
         assert!(d.status.is_none(), "{:?}", d.status);
         assert!(d.dirty);
 
-        // And the paragraph below is still its own block: the scratch mustn't be
-        // one soft break from `abc`, or the wrap takes that paragraph with it.
+        // And the paragraph below is still its own block: an empty container one
+        // soft break from `abc` would take that paragraph into the quote with it.
         let mut d = wysiwyg_doc("quote_blank_rows", "\nabc\n");
         d.caret = 0;
         d.toggle_blockquote();
@@ -7052,10 +6975,27 @@ mod tests {
     }
 
     #[test]
+    fn enter_at_the_end_of_a_quote_stays_in_the_quote() {
+        // The gesture the rendering fix is for. `newline` inside a quote already
+        // wrote the right source — `> a\n` becomes `> a\n>\n> \n`, twig's own
+        // spelling — but the two marker lines it adds belonged to no node until
+        // twig 3.2.0, so the gutter stopped at `a` and the line the writer had
+        // just made drew as plain prose under the quote.
+        let mut d = wysiwyg_doc("quote_enter", "> a\n");
+        d.caret = 3; // past `a`, at the end of the quoted line
+        d.newline();
+        assert_eq!(d.source, "> a\n>\n> \n");
+        d.build_visual(80);
+        assert_eq!(drawn_rows(&d), ["│ a", "│ ", "│ "]);
+        // And the caret is on the new line, not stranded on the old one.
+        assert_eq!(d.caret, 8);
+    }
+
+    #[test]
     fn opening_a_container_on_a_blank_line_is_one_undo_step() {
-        // Three edits go in — scratch, wrap, unscratch — and one ⌘z has to put
-        // the blank line back, or the writer undoes into a document that never
-        // existed (`a\n\n> x\n\nb\n`).
+        // It was three edits — scratch, wrap, unscratch — coalesced into one, and
+        // now it is twig's single edit. Either way one ⌘z has to put the blank
+        // line back rather than undoing into a half-built document.
         for open in [
             &(|d: &mut Doc| d.toggle_blockquote()) as &dyn Fn(&mut Doc),
             &|d: &mut Doc| d.toggle_list(false),

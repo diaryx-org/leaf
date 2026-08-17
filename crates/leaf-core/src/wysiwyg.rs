@@ -2253,6 +2253,7 @@ impl Builder<'_> {
                     self.push_row_at(f, end.min(self.source.len()));
                 } else {
                     self.blocks(id, &f, &c, false);
+                    self.emit_quote_trailing_lines(&c, end);
                 }
             }
             // A generic `:::name{.class}` fenced-div container (twig's
@@ -3451,6 +3452,47 @@ impl Builder<'_> {
             heading: None,
             boundary: None,
         });
+    }
+
+    /// The quote's own trailing marker lines: the `>` / `> ` lines that lie past
+    /// its last child but inside its span, one gutter row each.
+    ///
+    /// Pressing Enter at the end of `> a` writes `> a\n>\n> \n` — twig's
+    /// spelling, and the right one. Those last two lines hold no block (a
+    /// `block_quote`'s `content_span` still stops at its last child) so the
+    /// children walk never reaches them, and they used to fall all the way to
+    /// the document-level [`Builder::emit_trailing_blank_lines`], which knows no
+    /// prefix: the gutter simply stopped, and a writer adding a line to a quote
+    /// watched it draw as plain prose.
+    ///
+    /// This is only answerable since twig 3.2.0, where a Markdown `block_quote`'s
+    /// span covers its own trailing marker lines (it reported `0..3` for that
+    /// source and now reports `0..8`). Before that the lines belonged to no node
+    /// at any level, and the only way to draw them was to sniff `>` off the raw
+    /// source and re-derive the nesting depth by counting markers — format
+    /// inference this crate exists to keep out of the render path.
+    ///
+    /// Each row is a real caret home rather than a decoration gap: the writer
+    /// spelled every one of these lines with a marker of its own, so each is a
+    /// line of the quote to stand on, not the spacing between two blocks (which
+    /// is [`Builder::emit_separators_before`]'s, and falls *between* children
+    /// where this never looks).
+    fn emit_quote_trailing_lines(&mut self, pc: &[Glyph], end: usize) {
+        let end = end.min(self.source.len());
+        let mut at = self.rows.last().map_or(0, |r| r.end_src);
+        // Walk line by line from the last child's end to the quote's, taking each
+        // line's *end* as the row's offset — the caret home at the end of a line
+        // is where one on an empty quoted line belongs, and it keeps every row's
+        // offset distinct from its neighbours'.
+        while at < end {
+            let Some(k) = self.source[at..end].find('\n') else { break };
+            let line_start = at + k + 1;
+            let line_end = self.source[line_start..end]
+                .find('\n')
+                .map_or(end, |i| line_start + i);
+            self.push_row_at(pc.to_vec(), line_end);
+            at = line_end;
+        }
     }
 
     /// The source offset the caret rests at on the blank line separating a block
@@ -6112,6 +6154,55 @@ mod tests {
         let m = map("> \n");
         assert_eq!(m.num_rows(), 1);
         assert_eq!(m.rows[0].glyphs.iter().map(|g| g.ch).collect::<String>(), "│ ");
+    }
+
+    #[test]
+    fn a_quotes_own_trailing_marker_lines_stay_inside_the_quote() {
+        // Enter at the end of `> a` writes `> a\n>\n> \n`. Those last two lines
+        // hold no block — a quote's `content_span` stops at its last child — so
+        // the children walk never reaches them, and they used to fall through to
+        // the document-level trailing pass, which knows no prefix: the gutter
+        // stopped and the writer's new line drew as plain prose. Fixable only
+        // since twig 3.2.0, where the quote's *span* covers its own marker lines
+        // (`0..3` before, `0..8` now) and there is finally a node saying they
+        // are the quote's.
+        let m = map("> a\n>\n> \n");
+        assert_eq!(m.num_rows(), 3, "one row per line the quote spells");
+        for (i, row) in m.rows.iter().enumerate() {
+            let text = row.glyphs.iter().map(|g| g.ch).collect::<String>();
+            assert!(text.starts_with("│ "), "row {i} lost the gutter: {text:?}");
+            assert!(!row.decoration, "row {i} is a line to type on, not a drawn gap");
+            assert!(m.is_stop(row.end_src), "row {i} has no caret home");
+        }
+        assert_eq!(m.rows[0].glyphs.iter().map(|g| g.ch).collect::<String>(), "│ a");
+        // Distinct offsets, so ↑/↓ between them moves the caret rather than
+        // landing twice on the same byte.
+        assert!(m.rows[0].end_src < m.rows[1].end_src);
+        assert!(m.rows[1].end_src < m.rows[2].end_src);
+
+        // A blank line *after* the quote is not the quote's: it is spelled with
+        // no marker, so it stays an ordinary boundary and the gutter ends.
+        let m = map("> a\n\nb\n");
+        assert_eq!(m.num_rows(), 3);
+        assert_eq!(m.rows[2].glyphs.iter().map(|g| g.ch).collect::<String>(), "b");
+        assert!(!m.rows[1].glyphs.iter().any(|g| g.style.role == Role::QuoteGutter));
+
+        // Nesting is the case this could get wrong, and the depth has to come
+        // from which quote's span the line falls in rather than from the row
+        // above it. A trailing `>` under `> > a` matches only the OUTER quote,
+        // so it wears one gutter; spell it `> >` and it wears two.
+        let m = map("> > a\n>\n");
+        assert_eq!(m.rows[0].glyphs.iter().map(|g| g.ch).collect::<String>(), "│ │ a");
+        assert_eq!(m.rows[1].glyphs.iter().map(|g| g.ch).collect::<String>(), "│ ");
+        let m = map("> > a\n> >\n");
+        assert_eq!(m.rows[1].glyphs.iter().map(|g| g.ch).collect::<String>(), "│ │ ");
+
+        // And a marker line BETWEEN two quoted paragraphs is untouched: that is
+        // the boundary `emit_separators_before` spells, and it stays a drawn gap
+        // rather than becoming a line to type on.
+        let m = map("> a\n>\n> b\n");
+        assert_eq!(m.num_rows(), 3);
+        assert!(m.rows[1].decoration, "the gap between two quoted blocks is still a gap");
     }
 
     #[test]
