@@ -2,8 +2,10 @@
 name = "leaf-ffi"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
 description = "C-ABI / Swift frontend binding for leaf: wraps the filesystem-free leaf-core Doc behind UniFFI so an AppKit/SwiftUI app can drive the byte-offset caret model and render the VisualMap as style runs — the native-Apple peer of leaf-wasm."
-publish = false
 
 # staticlib -> the .a linked into the xcframework for device/simulator.
 # cdylib    -> a .dylib for a host-side macOS build and for `uniffi-bindgen
@@ -26,7 +28,7 @@ path = "uniffi-bindgen.rs"
 # sandboxed embed has no path to read and persists bytes its own way, so `fs` is
 # off and the host drives `Doc::from_source` + the public `source` field +
 # `mark_saved`.
-leaf-core = { path = "../leaf-core", default-features = false }
+leaf-core = { path = "../leaf-core", version = "0.1.0", default-features = false }
 
 # The FFI machinery: `proc-macro` mode (no .udl file) — the view structs derive
 # `Record`, the handle derives `Object`, and `setup_scaffolding!()` emits the C
