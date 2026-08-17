@@ -2189,10 +2189,23 @@ impl Builder<'_> {
                 }
             }
             "block_quote" => {
-                let gutter = synth("│ ", Role::QuoteGutter, node.span.start);
+                let (start, end) = (node.span.start, node.span.end);
+                let gutter = synth("│ ", Role::QuoteGutter, start);
                 let f = concat(pf, &gutter);
                 let c = concat(pc, &gutter);
-                self.blocks(id, &f, &c, false);
+                // A childless quote — a bare `> ` on an otherwise blank line,
+                // which is what the toolbar's Quote button leaves there — has no
+                // inner block to carry the gutter or a caret home, so `blocks`
+                // emitted *nothing at all*: the quote didn't merely draw
+                // unstyled, it disappeared, and a document that was only `> `
+                // rendered zero rows with the caret nowhere to stand. Emit the
+                // gutter row itself, ending just past the marker, exactly as an
+                // empty `list_item` emits its bare bullet.
+                if self.children(id).is_empty() {
+                    self.push_row_at(f, end.min(self.source.len()));
+                } else {
+                    self.blocks(id, &f, &c, false);
+                }
             }
             // A generic `:::name{.class}` fenced-div container (twig's
             // `directive`, container form). Core is agnostic of `name` — it's
@@ -5979,6 +5992,32 @@ mod tests {
         // Its end is the caret home (past the `- ` marker), and it's a real stop.
         assert!(m.is_stop(m.rows[1].end_src), "the empty item's caret home is not a stop");
         assert_eq!(m.pos_of_offset(m.rows[1].end_src), (1, 2), "caret sits after '• '");
+    }
+
+    #[test]
+    fn an_empty_block_quote_still_gets_a_gutter_row_with_a_caret_home() {
+        // The peer of the empty list item, and the case that made an empty line
+        // in a quote draw as plain body text: a childless `block_quote` — a bare
+        // `> `, which is what the toolbar's Quote button leaves on a blank line —
+        // has no inner block to carry the gutter, so the whole quote used to
+        // render as *nothing*. It didn't merely lose its bar; the row went away
+        // and the caret had no home on it.
+        let m = map("a\n\n> \n\nb\n");
+        assert_eq!(
+            m.rows[2].glyphs.iter().map(|g| g.ch).collect::<String>(),
+            "│ ",
+            "the empty quote draws just its gutter",
+        );
+        assert!(m.rows[2].glyphs.iter().all(|g| g.style.role == Role::QuoteGutter));
+        assert!(!m.rows[2].decoration, "it is a line text can go on, not a drawn gap");
+        assert!(m.is_stop(m.rows[2].end_src), "the empty quote's caret home is not a stop");
+        assert_eq!(m.pos_of_offset(m.rows[2].end_src), (2, 2), "caret sits after '│ '");
+
+        // And a document that is *only* an empty quote still renders a row — it
+        // used to render none at all, leaving the caret nowhere to stand.
+        let m = map("> \n");
+        assert_eq!(m.num_rows(), 1);
+        assert_eq!(m.rows[0].glyphs.iter().map(|g| g.ch).collect::<String>(), "│ ");
     }
 
     #[test]

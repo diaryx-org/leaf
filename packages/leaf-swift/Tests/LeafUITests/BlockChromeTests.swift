@@ -116,6 +116,23 @@ final class BlockChromeTests: XCTestCase {
         XCTAssertEqual(runs[0].width, theme.quoteBarWidth)
     }
 
+    func testAnEmptyQuotedLineStillCarriesItsBar() {
+        // The row shape core emits for a bare `> ` — a gutter and nothing else,
+        // which is an empty line inside a quote. It has no text to hang a bar
+        // beside, but the bar is the block's, not the text's: a writer who opens
+        // a quote and hasn't typed into it yet still has to see the quote.
+        let dv = docView([
+            row([gutter(1), mkRun("first")]),
+            row([gutter(1)]),
+            row([gutter(1), mkRun("third")]),
+        ])
+        let layout = EditorLayout(dv, theme: theme, wrapWidth: 400)
+        XCTAssertEqual(layout.rows[1].quoteBars(theme: theme).count, 1,
+                       "the empty line is quoted too")
+        XCTAssertEqual(BlockChrome.quoteBarRuns(layout.rows, theme: theme).count, 1,
+                       "and the bar runs unbroken through it, not in two pieces")
+    }
+
     func testProseBetweenQuotesBreaksTheBarInTwo() {
         let dv = docView([
             row([gutter(1), mkRun("first quote")]),
