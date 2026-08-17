@@ -234,19 +234,24 @@ extension LeafDoc {
     /// A note is one row today: the rows are the unwrapped map's (one per
     /// block), and a definition is one block — a continuation line folds into
     /// it, and an indented paragraph after a blank line is not part of it at all
-    /// but an indented *code block* beside it. Written as a range anyway, since
-    /// the cost is a second `posForOffset` and the alternative is a silent
-    /// half-note the day a note can hold two blocks.
+    /// but an indented *code block* beside it. Asked as a range anyway, so the
+    /// day a note can hold two blocks doesn't cost a silent half-note.
     ///
     /// Slicing rather than re-rendering is what keeps the popover and the page
     /// from ever disagreeing about the same note.
+    ///
+    /// Core answers the row span, rather than this mapping `start` and `end - 1`
+    /// through `posForOffset` itself. That pair read correctly and was wrong: a
+    /// note ending *in* a link — which is what a citation is — has its last byte
+    /// inside the hidden destination, and `posForOffset` snaps a hidden offset
+    /// forward to the next visible glyph, which for a trailing one is on the
+    /// next note's row. Hovering `[^2]` peeked notes 2 and 3.
     private func noteRows(_ note: FootnoteView, in view: DocView) -> [Row] {
         guard let start = note.offset, let end = note.end else { return [] }
-        // `end` is exclusive, so the last byte *in* the note is what identifies
-        // the last row. An empty body has no last byte and no rows to find.
+        // An empty body covers nothing and has no rows to find.
         guard end > start else { return [] }
-        let first = Int(posForOffset(off: start).row)
-        let last = Int(posForOffset(off: end - 1).row)
+        let span = rowRangeFor(start: start, end: end)
+        let first = Int(span.first), last = Int(span.last)
         guard first <= last, view.rows.indices.contains(first), view.rows.indices.contains(last)
         else { return [] }
         return Array(view.rows[first...last])

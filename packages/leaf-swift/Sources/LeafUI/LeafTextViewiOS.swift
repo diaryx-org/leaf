@@ -697,8 +697,11 @@ public final class LeafTextView: UIView, UITextInput {
         guard let flashRange, let flashStarted,
               let alpha = Landing.opacity(elapsed: Date().timeIntervalSince(flashStarted))
         else { return }
-        let first = Int(doc.posForOffset(off: flashRange.lowerBound).row)
-        let last = Int(doc.posForOffset(off: flashRange.upperBound - 1).row)
+        // Core says which rows the range covers, as on the AppKit side: a block
+        // ending in a link ends inside the hidden destination, and the caret
+        // snap `posForOffset` applies carries that byte onto the row below.
+        let span = doc.rowRangeFor(start: flashRange.lowerBound, end: flashRange.upperBound)
+        let first = Int(span.first), last = Int(span.last)
         guard first <= last, !layoutEngine.rows.isEmpty else { return }
         ctx.saveGState()
         ctx.setFillColor(renderTheme.landingFlashColor.withAlphaComponent(

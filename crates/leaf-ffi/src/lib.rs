@@ -495,6 +495,22 @@ pub struct RowCol {
     pub ch: u32,
 }
 
+/// The rows a source range covers, both ends **inclusive** — what a frontend
+/// slices out of a frame to draw a block somewhere other than where it sits: a
+/// footnote peek, a link peek, a landing flash. Returned by
+/// [`LeafDoc::row_range_for`].
+///
+/// Inclusive rather than half-open because the answer is "these rows", not "up
+/// to here": every caller wants `rows[first...last]`, and a `last` one past the
+/// end would be a second thing to get wrong at each of them. `last >= first`
+/// always, so the pair is never empty — a range with no visible byte still
+/// covers the row it opened on.
+#[derive(uniffi::Record)]
+pub struct RowRange {
+    pub first: u32,
+    pub last: u32,
+}
+
 /// Which formatting controls this document's format can spell — the toolbar's
 /// enabled state, one flag per button, from [`LeafDoc::capabilities`]. Mirrors
 /// [`leaf_core::Capabilities`], where the reasoning lives.
@@ -734,6 +750,24 @@ impl Inner {
                 let row = s[..off].bytes().filter(|&b| b == b'\n').count();
                 let line_start = s[..off].rfind('\n').map_or(0, |i| i + 1);
                 (row, text_width(&s[line_start..off]))
+            }
+        }
+    }
+
+    /// The inclusive row span a source range occupies in the active view.
+    ///
+    /// The rich view defers to [`leaf_core::wysiwyg::VisualMap::row_range_for`],
+    /// where the reasoning lives. The source view has no hidden bytes at all —
+    /// every byte is drawn on the line it is written on — so counting newlines
+    /// is the whole answer, and the last row is the one holding the range's last
+    /// byte rather than the one past it.
+    fn row_range_for(&self, start: usize, end: usize) -> (usize, usize) {
+        match self.doc.view {
+            View::Wysiwyg => self.doc.vmap.row_range_for(start..end),
+            View::Source => {
+                let first = self.pos_of_offset(start).0;
+                let last = self.pos_of_offset(end.max(start.saturating_add(1)) - 1).0;
+                (first, last.max(first))
             }
         }
     }
@@ -1644,6 +1678,24 @@ impl LeafDoc {
         RowCol { row: row as u32, ch: ch as u32 }
     }
 
+    /// The rows a source range covers, inclusive — for drawing a block away
+    /// from where it sits (a footnote peek, a link peek, a landing flash).
+    ///
+    /// Ask this rather than mapping `start` and `end - 1` through
+    /// [`Self::pos_for_offset`]. That pair reads correctly and is wrong: a
+    /// block's last byte is often *hidden* — a note or a paragraph ending in a
+    /// link ends inside the link's destination — and `pos_for_offset` snaps a
+    /// hidden offset forward to the next visible glyph, which for a trailing
+    /// one is on the next block's row. A peek slicing that span drew the block
+    /// after it too. `pos_for_offset`'s snap is right for a caret and wrong for
+    /// a span; this is the question spans should be asking.
+    pub fn row_range_for(&self, start: u32, end: u32) -> RowRange {
+        let mut g = self.lock();
+        g.sync();
+        let (first, last) = g.row_range_for(start as usize, end as usize);
+        RowRange { first: first as u32, last: last as u32 }
+    }
+
     /// The source offset at visual `(row, ch)` — the inverse of
     /// [`Self::pos_for_offset`], for hit-testing a point to a position.
     pub fn offset_for_pos(&self, row: u32, ch: u32) -> u32 {
@@ -2549,6 +2601,57 @@ mod tests {
             "the run at {} is the link",
             link.src
         );
+    }
+
+    /// The peek bug, in the shape it was actually found in: three notes, each
+    /// ending in a link, which is what a real citation block looks like.
+    ///
+    /// `a_notes_offsets_map_to_its_rendered_rows` above uses a note ending in a
+    /// visible `.`, so its last byte has a row of its own and `end - 1` reads
+    /// right. Take the full stop away — end the note *with* the link, as a
+    /// citation does — and the last byte falls inside the hidden destination,
+    /// where `pos_for_offset` snaps forward onto the next note's row. Hovering
+    /// `[^2]` peeked notes 2 *and* 3.
+    #[test]
+    fn a_note_ending_in_a_link_covers_its_own_row_and_no_other() {
+        let src = "A[^1] B[^2] C[^3].\n\n\
+                   [^1]: https://en.wikipedia.org/wiki/Moravec%27s_paradox\n\n\
+                   [^2]: [\"How to Get Startup Ideas,\" Nov 2012](https://www.paulgraham.com/startupideas.html)\n\n\
+                   [^3]: [Alma 37:46](https://www.churchofjesuschrist.org/study/scriptures/bofm/alma/37?lang=eng&id=p46#p46)\n";
+        let d = doc(src);
+        let view = d.set_unwrapped();
+
+        // The caret in the [^2] reference, exactly as a hover resolves it.
+        let off2 = src.find("[^2] C").unwrap() as u32 + 2;
+        d.set_selection_offsets(off2, off2);
+        let f = d.footnote_at_caret().expect("a reference");
+        let (start, end) = (f.offset.expect("a note"), f.end.expect("a note"));
+
+        let span = d.row_range_for(start, end);
+        assert_eq!(span.first, span.last, "one note is one unwrapped row");
+
+        // And what it draws is note 2 alone — the assertion the popover failed.
+        let drawn: String =
+            view.rows[span.first as usize].runs.iter().map(|r| r.text.as_str()).collect();
+        assert!(drawn.contains("How to Get Startup Ideas"), "got {drawn:?}");
+        assert!(!drawn.contains("Alma"), "note 3 leaked into the peek: {drawn:?}");
+
+        // The old arithmetic, pinned as still wrong so nobody quietly restores
+        // it: this is the failure `row_range_for` exists instead of.
+        assert_ne!(
+            d.pos_for_offset(end - 1).row,
+            span.last,
+            "the forward snap still leaves the note's row — that is the point",
+        );
+
+        // Note 1 is a bare autolink, whose visible text *is* its URL, so it was
+        // never affected and must not change.
+        let off1 = src.find("[^1] B").unwrap() as u32 + 2;
+        d.set_selection_offsets(off1, off1);
+        let f1 = d.footnote_at_caret().expect("a reference");
+        let one = d.row_range_for(f1.offset.unwrap(), f1.end.unwrap());
+        assert_eq!(one.first, one.last);
+        assert_ne!(one.first, span.first, "and it is a different note");
     }
 
     /// A run's `src` is a byte offset core handed over, not something a frontend

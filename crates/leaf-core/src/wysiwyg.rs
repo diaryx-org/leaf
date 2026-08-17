@@ -513,6 +513,54 @@ impl VisualMap {
         }
     }
 
+    /// The rows a source range occupies, inclusive: `(first, last)`.
+    ///
+    /// A *different question* from [`pos_of_offset`](Self::pos_of_offset), which
+    /// is why it can't be spelled with two calls to it. That one answers "where
+    /// does the caret go", and for a caret its forward snap is right — an offset
+    /// inside a hidden delimiter has no column of its own, so the caret belongs
+    /// at the next visible glyph, wherever that turns out to be. This one asks
+    /// "which rows does this block cover", and there the snap is a trap: a
+    /// footnote whose body *ends* in a link (`[^2]: [title](url)`) has a last
+    /// byte inside the hidden destination, so `pos_of_offset(end - 1)` walked
+    /// clean off the note's row and landed on the next note's — and a peek
+    /// slicing `first..=last` out of the frame drew two notes where the reader
+    /// asked for one. Every block ending in a link, an image, or any trailing
+    /// hidden markup had the same fault; only a block ending in visible text
+    /// (which is what the tests happened to use) did not.
+    ///
+    /// `row.end_src` is no help either: it is where the *rendered* text of a row
+    /// ends, not how far into the source the block reaches, and redefining it
+    /// would move every end-of-line caret.
+    ///
+    /// So the last row is found by asking which rows *open* before the range
+    /// does, rather than by mapping its last byte: a row belongs to the range
+    /// when its first caret stop lies before `range.end`. Decoration is skipped
+    /// (a drawn gap between blocks is not part of either), and the answer is
+    /// never shorter than one row — a range whose every byte is hidden still
+    /// covers the row it started on.
+    pub fn row_range_for(&self, range: Range<usize>) -> (usize, usize) {
+        if self.rows.is_empty() {
+            return (0, 0);
+        }
+        let first = self.pos_of_offset(range.start).0;
+        let mut last = first;
+        for (r, row) in self.rows.iter().enumerate().skip(first) {
+            if row.decoration {
+                continue;
+            }
+            let open = row.glyphs.iter().find(|g| g.stop).map_or(row.end_src, |g| g.src);
+            if open >= range.end {
+                // A row's first stop never decreases from one row to the next —
+                // the invariant `pos_of_offset` breaks on, true even across a
+                // table's wrapped cells — so nothing below can be in range.
+                break;
+            }
+            last = r;
+        }
+        (first, last)
+    }
+
     /// The source offset of the task checkbox drawn at `(row, col)`, or `None`
     /// when that cell holds no box — the hit-test a frontend runs on a click
     /// before treating it as a tick rather than a caret placement.
@@ -5992,6 +6040,52 @@ mod tests {
         // Its end is the caret home (past the `- ` marker), and it's a real stop.
         assert!(m.is_stop(m.rows[1].end_src), "the empty item's caret home is not a stop");
         assert_eq!(m.pos_of_offset(m.rows[1].end_src), (1, 2), "caret sits after '• '");
+    }
+
+    #[test]
+    fn a_notes_row_range_stops_at_the_note_even_when_it_ends_in_a_link() {
+        // The peek bug: a note whose body ends in a link has its last byte
+        // inside the hidden destination, so mapping `end - 1` through
+        // `pos_of_offset` snapped *forward* — past its own row, past the drawn
+        // gap, and onto the next note's row. The popover then drew both notes.
+        let src = "A[^1] B[^2].\n\n[^1]: bare text\n\n[^2]: [title](https://example.com/x)\n\n[^3]: last\n";
+        let m = map(src);
+        let body = src.find("[title]").unwrap();
+        let end = src.find("\n\n[^3]").unwrap();
+
+        let (first, last) = m.row_range_for(body..end);
+        assert_eq!(first, last, "a one-block note is one row, not a span onto the next");
+
+        // The old arithmetic, kept here as the thing that must stay wrong: it
+        // is what this method exists instead of.
+        assert_ne!(
+            m.pos_of_offset(end - 1).0,
+            last,
+            "the forward snap still leaves the note's row — that is the whole point",
+        );
+
+        // A note ending in *visible* text was never broken, and still isn't:
+        // both readings agree there, which is why the original test missed it.
+        let plain = src.find("bare text").unwrap();
+        let plain_end = src.find("\n\n[^2]").unwrap();
+        let (pf, pl) = m.row_range_for(plain..plain_end);
+        assert_eq!(pf, pl);
+        assert_eq!(m.pos_of_offset(plain_end - 1).0, pl);
+    }
+
+    #[test]
+    fn a_row_range_covers_every_row_of_a_block_that_spans_several() {
+        // The range is a span, not a point: a quote of two paragraphs covers its
+        // gap row and both of its text rows, so a peek draws the whole thing.
+        let src = "> one\n>\n> two\n\nafter\n";
+        let m = map(src);
+        let (first, last) = m.row_range_for(0..src.find("\n\nafter").unwrap());
+        assert_eq!((first, last), (0, 2));
+
+        // And a range with no visible byte at all still covers the row it opened
+        // on, rather than collapsing to nothing.
+        let (f, l) = m.row_range_for(0..1);
+        assert_eq!((f, l), (0, 0));
     }
 
     #[test]

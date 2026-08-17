@@ -237,6 +237,46 @@ final class FootnoteTargetTests: XCTestCase {
         XCTAssertEqual(content.body.attributedSubstring(from: range).string, "the site")
     }
 
+    /// The reported symptom: hovering `[^2]` opened a popover showing notes 2
+    /// *and* 3.
+    ///
+    /// Every note here ends in a link, which is what a real citation block looks
+    /// like — and a note ending in a link has its last byte inside the hidden
+    /// destination. `noteRows` used to map that byte through `posForOffset`,
+    /// whose forward snap to the next visible glyph carried it off the note's
+    /// own row and onto the next note's, so the slice took both. Notes ending in
+    /// visible punctuation, which is what every other test here uses, were never
+    /// affected — which is exactly why this survived so long.
+    func testANoteEndingInALinkPeeksOnlyItself() throws {
+        let src = """
+            A[^1] B[^2] C[^3].
+
+            [^1]: https://en.wikipedia.org/wiki/Moravec%27s_paradox
+
+            [^2]: ["How to Get Startup Ideas," Nov 2012](https://www.paulgraham.com/startupideas.html)
+
+            [^3]: [Alma 37:46](https://www.churchofjesuschrist.org/study/scriptures/bofm/alma/37?lang=eng&id=p46#p46)
+
+            """
+        let at = offset(of: "^2] C", in: src)
+        let d = try doc(src, caret: at)
+        let view = d.setUnwrapped()
+        let content = try XCTUnwrap(d.footnotePeekContent(at: at, in: view, theme: .default))
+
+        XCTAssertTrue(content.isDefined)
+        XCTAssertTrue(content.body.string.contains("How to Get Startup Ideas"),
+                      "got \(content.body.string)")
+        XCTAssertFalse(content.body.string.contains("Alma"),
+                       "note 3 leaked into note 2's peek: \(content.body.string)")
+
+        // And note 3, the last in the file, still peeks itself rather than
+        // running off the end.
+        let at3 = offset(of: "^3].", in: src)
+        let third = try XCTUnwrap(d.footnotePeekContent(at: at3, in: view, theme: .default))
+        XCTAssertTrue(third.body.string.contains("Alma"), "got \(third.body.string)")
+        XCTAssertFalse(third.body.string.contains("Startup"), "got \(third.body.string)")
+    }
+
     /// A reference inside a note is a footnote, not a link — even though it is
     /// drawn with the link role, which is how it gets its colour. Answering it
     /// as a link would send the reader out of the document.

@@ -122,10 +122,12 @@ extension FootnotePeekContent {
         guard let landing = doc.landing(for: locator), landing.end > landing.start else {
             return []
         }
-        // `end` is exclusive, so the last byte *in* the block identifies its last
-        // row — `FootnotePeekContent`'s arithmetic, for its reason.
-        let first = Int(doc.posForOffset(off: landing.start).row)
-        let last = Int(doc.posForOffset(off: landing.end - 1).row)
+        // Core says which rows the block covers — `FootnotePeekContent`'s
+        // question, for its reason: a block ending in a link ends inside the
+        // link's hidden destination, and mapping that last byte through
+        // `posForOffset` snaps forward onto the block below.
+        let span = doc.rowRangeFor(start: landing.start, end: landing.end)
+        let first = Int(span.first), last = Int(span.last)
         guard first <= last, view.rows.indices.contains(first), view.rows.indices.contains(last)
         else { return [] }
         return Array(view.rows[first...min(last, first + maxRows - 1)])

@@ -730,10 +730,12 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         guard let flashRange, let flashStarted,
               let alpha = Landing.opacity(elapsed: Date().timeIntervalSince(flashStarted))
         else { return }
-        let first = Int(doc.posForOffset(off: flashRange.lowerBound).row)
-        // The last byte *in* the block names its last row; `upperBound` is one
-        // past it and can belong to the block below.
-        let last = Int(doc.posForOffset(off: flashRange.upperBound - 1).row)
+        // Core says which rows the range covers. Mapping `upperBound - 1`
+        // through `posForOffset` looked equivalent and wasn't: a block ending in
+        // a link ends inside the hidden destination, and the caret snap carries
+        // that offset onto the row below — the flash lit the next block too.
+        let span = doc.rowRangeFor(start: flashRange.lowerBound, end: flashRange.upperBound)
+        let first = Int(span.first), last = Int(span.last)
         guard first <= last else { return }
         ctx.saveGState()
         ctx.setFillColor(theme.landingFlashColor.withAlphaComponent(
