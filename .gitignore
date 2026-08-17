@@ -15,3 +15,4 @@ packages/leaf-swift/.build/
 # left behind when apps/leaf-editor is built against it as a local package.
 packages/leaf-swift/build/
 packages/leaf-swift/.swiftpm/xcode/xcuserdata/adamharris.xcuserdatad/xcschemes/
+.env
