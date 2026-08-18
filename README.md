@@ -45,6 +45,22 @@ cargo run -- path/to/document.md            # the TUI (workspace default)
 cargo run -p leaf -- path/to/document.md     # the GUI
 ```
 
+The other two frontends aren't a `cargo run` away — the Apple app is a Rust
+staticlib behind a UniFFI binding behind an Xcode project, and the web demo is a
+wasm build behind a static server. Both are one word through the task runner in
+[`xtask/`](xtask):
+
+```sh
+cargo xtask swift        # build + launch apps/leaf-editor on macOS
+cargo xtask swift --ios  # …in the iOS Simulator instead (--device to pick one)
+cargo xtask web          # build the wasm, serve apps/leaf-web-demo, open it
+```
+
+`cargo xtask swift` regenerates the UniFFI binding and the Xcode project when
+they're missing, so a fresh checkout needs no separate bootstrap step; pass
+`--regen` to force it after changing the Rust *API* surface. `cargo xtask --help`
+lists every task and flag.
+
 `leaf` and `leaf-gpui` pin gpui to a specific Zed commit (gpui isn't published to
 crates.io); the first build fetches and compiles the gpui tree, so it is slow.
 It has **both views**, toggled with `⌘e`, just like the TUI's `⌥w`:

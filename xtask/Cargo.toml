@@ -1,0 +1,13 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+description = "The workspace's task runner: `cargo xtask <task>` — the one place the multi-toolchain builds (Rust → UniFFI → Xcode, Rust → wasm → browser) are written down."
+# A development harness, never a published artifact.
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+# Already in the lockfile via uniffi's `cli` feature, so the CLI surface costs
+# this crate nothing extra to build.
+clap = { version = "4", features = ["derive"] }

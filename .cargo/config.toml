@@ -6,3 +6,9 @@
 # / twig's build.zig.zon: Zig 0.16+).
 [env]
 TWIG_SYS_FORCE_SOURCE = "1"
+
+# `cargo xtask <task>` — the workspace task runner (xtask/). It builds and runs
+# the frontends whose build leaves Rust: the Apple app over packages/leaf-swift
+# and the wasm web demo. `cargo xtask --help` lists them.
+[alias]
+xtask = "run --quiet --package xtask --"
