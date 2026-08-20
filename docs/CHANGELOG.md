@@ -33,6 +33,7 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 ### Added
 
 - **xtask** — xtask layer for running web, mac, ios ([`5425eae`](https://github.com/diaryx-org/leaf/commit/5425eae56d0e29eb513505bf533d5dd2fe71bc6e))
+- **xtask** — a release is a command, not a checklist ([`5c4a664`](https://github.com/diaryx-org/leaf/commit/5c4a6640aeea9ef75d8129f9cc65126ab3cc69bf))
 
 ### Fixed
 
