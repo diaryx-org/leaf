@@ -8,7 +8,8 @@
 TWIG_SYS_FORCE_SOURCE = "1"
 
 # `cargo xtask <task>` — the workspace task runner (xtask/). It builds and runs
-# the frontends whose build leaves Rust: the Apple app over packages/leaf-swift
-# and the wasm web demo. `cargo xtask --help` lists them.
+# the frontends whose build leaves Rust (the Apple app over packages/leaf-swift,
+# the wasm web demo), runs the checks a release has to pass (`ci`), and cuts a
+# release (`release`, `publish`). `cargo xtask --help` lists them.
 [alias]
 xtask = "run --quiet --package xtask --"
