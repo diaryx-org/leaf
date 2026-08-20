@@ -576,6 +576,46 @@ public struct LeafEditor: UIViewRepresentable {
     /// than being torn down and rebuilt each time.
     public final class Coordinator {
         var hosting: UIHostingController<AnyView>?
+        /// The view the accessory hangs off, so a resize can ask *it* to re-read
+        /// its input views — `reloadInputViews()` is the first responder's call,
+        /// and the hosting controller isn't one.
+        weak var textView: LeafTextView?
+        private var sizeObserver: NSObjectProtocol?
+
+        /// Re-measure the accessory whenever the reader changes their text size.
+        ///
+        /// The notification rather than `updateUIView`, because SwiftUI never
+        /// promises to call that here: the accessory is an `AnyView` built once
+        /// in `LeafEditor.init`, so a content-size change re-runs the *toolbar's*
+        /// body inside its own hosting environment without re-running the body
+        /// that built this representable. The SwiftUI content would resize itself
+        /// inside a frame that stayed 44pt tall, and the bottom of the bar would
+        /// simply be cut off.
+        func observeContentSizeChanges() {
+            guard sizeObserver == nil else { return }
+            sizeObserver = NotificationCenter.default.addObserver(
+                forName: UIContentSizeCategory.didChangeNotification,
+                object: nil, queue: .main
+            ) { [weak self] _ in self?.resizeAccessory() }
+        }
+
+        /// Fit the hosting view's frame to the height its SwiftUI content wants,
+        /// and re-present the keyboard's accessory if that moved. Guarded on an
+        /// actual change: `reloadInputViews()` on an unchanged bar flickers the
+        /// keyboard for nothing.
+        func resizeAccessory() {
+            guard let hosting, let textView else { return }
+            let width = hosting.view.bounds.width > 0 ? hosting.view.bounds.width : 320
+            let wanted = hosting.sizeThatFits(
+                in: CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)).height
+            guard wanted > 0, abs(hosting.view.frame.height - wanted) > 0.5 else { return }
+            hosting.view.frame.size.height = wanted
+            textView.reloadInputViews()
+        }
+
+        deinit {
+            if let sizeObserver { NotificationCenter.default.removeObserver(sizeObserver) }
+        }
     }
 
     public func makeUIView(context: Context) -> UIScrollView {
@@ -624,20 +664,35 @@ public struct LeafEditor: UIViewRepresentable {
         // persists in the coordinator across updates, so this is a live
         // content swap, not a rebuild (which would drop first-responder focus
         // on whatever's inside the accessory, e.g. a text field mid-edit).
-        if let accessory { context.coordinator.hosting?.rootView = accessory }
+        if let accessory {
+            context.coordinator.hosting?.rootView = accessory
+            // A content swap can change the bar's height as readily as a text-size
+            // change can — a host that shows a taller set of tools for a table, say.
+            context.coordinator.resizeAccessory()
+        }
     }
 
     /// Wire the accessory (if any) into `textView.accessoryView` as a
-    /// `UIHostingController`'s view, sized to a fixed height and left to
-    /// stretch to the keyboard's width via `.flexibleWidth` — the standard
-    /// shape for a custom `inputAccessoryView`.
+    /// `UIHostingController`'s view, left to stretch to the keyboard's width via
+    /// `.flexibleWidth` — the standard shape for a custom `inputAccessoryView`.
+    ///
+    /// The height is measured off the content rather than fixed at the 44pt a
+    /// keyboard accessory usually is, because a bar that respects Dynamic Type
+    /// isn't one height: `LeafFormattingToolbar` grows its targets with the
+    /// reader's text size (up to its own cap), and a frame nailed to 44 would
+    /// crop exactly the readers who asked for something bigger. 44 stays as the
+    /// floor for a host whose accessory reports no size at all.
     private func attachAccessory(to textView: LeafTextView, context: Context) {
         guard let accessory else { return }
         let hosting = UIHostingController(rootView: accessory)
         hosting.view.backgroundColor = .clear
         hosting.view.autoresizingMask = [.flexibleWidth]
-        hosting.view.frame = CGRect(x: 0, y: 0, width: 320, height: 44)
+        let fitted = hosting.sizeThatFits(
+            in: CGSize(width: 320, height: CGFloat.greatestFiniteMagnitude)).height
+        hosting.view.frame = CGRect(x: 0, y: 0, width: 320, height: max(fitted, 44))
         context.coordinator.hosting = hosting
+        context.coordinator.textView = textView
+        context.coordinator.observeContentSizeChanges()
         textView.accessoryView = hosting.view
     }
 

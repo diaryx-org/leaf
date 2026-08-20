@@ -234,6 +234,29 @@ public struct EditorTheme {
             || quoteIndent != other.quoteIndent
     }
 
+    /// This theme with its *typographic* lengths multiplied by `factor` — how a
+    /// Dynamic Type content size is applied on iOS (see
+    /// `LeafTextView.applyDynamicType`), and a plain multiplier anywhere else.
+    ///
+    /// What scales is what belongs to the type: the body size, its line box, and
+    /// the quote gutter — which is spelled in points but *means* "the indent one
+    /// level of quoting costs", so it has to grow with the text it indents, or a
+    /// bar at AX5 ends up sitting almost against the glyphs it separates.
+    ///
+    /// What doesn't scale is what belongs to the *view*: `padding` is a minimum
+    /// inset from the window's edge rather than a piece of typography, and the
+    /// hairlines (`quoteBarWidth`, `ruleThickness`) are rules, which stay a
+    /// rule's thickness at any text size. `measure` needs nothing done to it — it
+    /// is already counted in characters, so it tracks the type for free.
+    func scaled(by factor: CGFloat) -> EditorTheme {
+        guard factor != 1 else { return self }
+        var t = self
+        t.fontSize = fontSize * factor
+        t.lineHeight = lineHeight * factor
+        t.quoteIndent = quoteIndent * factor
+        return t
+    }
+
     // ── derived metrics ──────────────────────────────────────────────────────
 
     /// The ratio the line box grows relative to the font — the body's leading.

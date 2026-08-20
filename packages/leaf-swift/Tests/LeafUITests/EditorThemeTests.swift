@@ -110,4 +110,67 @@ final class EditorThemeTests: XCTestCase {
         XCTAssertGreaterThan(t.averageCharWidth, t.fontSize * 0.33)
         XCTAssertLessThan(t.averageCharWidth, t.fontSize * 0.75)
     }
+
+    // MARK: Dynamic Type
+
+    // `scaled(by:)` is how the iOS view turns a content-size category into a
+    // theme (`LeafTextView.applyDynamicType`). What it must and must not touch is
+    // the whole of the contract, so it's pinned here rather than left to the one
+    // caller — the view can't be exercised in these tests, which build fixtures
+    // in pure Swift and never stand a UIKit view up in a window.
+
+    func testScalingGrowsTheTypeAndTheQuoteGutter() {
+        let base = EditorTheme.default
+        let big = base.scaled(by: 2)
+        XCTAssertEqual(big.fontSize, base.fontSize * 2, accuracy: 0.001)
+        XCTAssertEqual(big.lineHeight, base.lineHeight * 2, accuracy: 0.001)
+        // The gutter is points that mean an indent: a bar that stayed 22pt out
+        // from the edge while the text doubled would sit against its own quote.
+        XCTAssertEqual(big.quoteIndent, base.quoteIndent * 2, accuracy: 0.001)
+    }
+
+    func testScalingLeavesTheViewsOwnLengthsAlone() {
+        let base = EditorTheme.default
+        let big = base.scaled(by: 3)
+        // A minimum inset from the window's edge, not a piece of typography.
+        XCTAssertEqual(big.padding, base.padding)
+        // Rules stay a rule's thickness at any text size.
+        XCTAssertEqual(big.quoteBarWidth, base.quoteBarWidth)
+        XCTAssertEqual(big.ruleThickness, base.ruleThickness)
+        // Already counted in characters — scaling it would apply the factor twice.
+        XCTAssertEqual(big.measure, base.measure)
+    }
+
+    func testScalingKeepsLeadingProportional() {
+        let base = EditorTheme.default
+        let big = base.scaled(by: 1.75)
+        XCTAssertEqual(big.lineRatio, base.lineRatio, accuracy: 0.001)
+        XCTAssertEqual(big.headingSize(1), base.headingSize(1) * 1.75, accuracy: 0.001)
+        XCTAssertEqual(big.rowHeight(heading: 1), base.rowHeight(heading: 1) * 1.75, accuracy: 0.001)
+        XCTAssertEqual(big.blockGap, base.blockGap * 1.75, accuracy: 0.001)
+    }
+
+    func testScalingByOneChangesNothingAndForcesNoRelayout() {
+        // The loop-breaking invariant: `applyDynamicType` runs on every theme
+        // assignment, and SwiftUI re-assigns the theme on every state change. At
+        // the default content size that must come out metrically identical, or
+        // each relayout publishes state, which re-assigns the theme, forever.
+        let base = EditorTheme.default
+        XCTAssertFalse(base.metricsDiffer(from: base.scaled(by: 1)))
+    }
+
+    func testAScaledThemeForcesARelayout() {
+        let base = EditorTheme.default
+        XCTAssertTrue(base.metricsDiffer(from: base.scaled(by: 1.3)))
+    }
+
+    func testTheColumnWidensWithTheTextSize() {
+        // The measure is in characters, so a reader at a larger content size gets
+        // the same 68-character line — wider in points, and therefore wrapping in
+        // a different place. That reflow is why a content-size change has to go
+        // through `relayoutForWidth(force:)` rather than a repaint.
+        let base = EditorTheme.default
+        XCTAssertGreaterThan(base.scaled(by: 2).column(in: 4000).width,
+                             base.column(in: 4000).width)
+    }
 }

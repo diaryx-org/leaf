@@ -73,13 +73,14 @@ public final class LeafTextView: UIView, UITextInput {
     /// Scale `hostTheme`'s type to the current Dynamic Type content size and relayout
     /// if the geometry changed. The `metricsDiffer` guard keeps a re-applied theme (or
     /// an unchanged content size) from relayouting — the loop-breaking invariant.
+    ///
+    /// Which lengths the factor reaches is `EditorTheme.scaled(by:)`'s answer, not
+    /// this method's: the same question comes up wherever a theme is resized, and
+    /// only the theme knows which of its numbers are typography.
     private func applyDynamicType() {
         let old = renderTheme
-        var t = hostTheme
         let factor = UIFontMetrics.default.scaledValue(for: 100, compatibleWith: traitCollection) / 100
-        t.fontSize = hostTheme.fontSize * factor
-        t.lineHeight = hostTheme.lineHeight * factor
-        renderTheme = t
+        renderTheme = hostTheme.scaled(by: factor)
         guard renderTheme.metricsDiffer(from: old) else { setNeedsDisplay(); return }
         shapeCache.removeAll(keepingCapacity: true)
         relayoutForWidth(force: true)

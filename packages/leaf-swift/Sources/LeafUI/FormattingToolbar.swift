@@ -66,6 +66,17 @@ public struct LeafFormattingToolbar: View {
     @ObservedObject private var editor: LeafEditorModel
     private let style: Style
 
+    /// The reader's Dynamic Type setting, read as a bare multiplier: SwiftUI
+    /// resizes this 1 the way it would resize a body-styled length, so dividing
+    /// out the seed leaves the factor the whole bar is measured by. Inert on
+    /// macOS, which has no Dynamic Type and reports `.large` forever.
+    ///
+    /// A probe rather than `.font(.body)` on the glyphs because the bar is a row
+    /// of *targets*, not text: the tap area, the pill behind it, and the row's
+    /// own height all have to move together with the glyph, and only a number
+    /// can be handed to `frame(width:height:)`.
+    @ScaledMetric(relativeTo: .body) private var typeScale: CGFloat = 1
+
     /// The fallback destination field: shown only when no host has claimed the
     /// question (see `askForDestination`), seeded with the caret link's current
     /// destination so the button re-points a link as readily as it makes one.
@@ -241,9 +252,45 @@ public struct LeafFormattingToolbar: View {
             glyphSize: 13, labelSize: 12, cornerRadius: 5,
             spacing: 1, edgePadding: 8, separatorHeight: 16
         )
+
+        /// How far Dynamic Type is allowed to take the bar. The tools scale like
+        /// everything else up to here and then stop, because this row is chrome
+        /// that has to *share* the screen with the keyboard below it and the
+        /// document above: taken to AX5's ~3.1× a 44pt accessory becomes a 137pt
+        /// slab, which buys a reader nothing they couldn't already get by
+        /// scrolling the row sideways, and costs them the four lines of their own
+        /// text that used to be visible while they typed.
+        ///
+        /// 1.6 lands the accessory near 70pt — a comfortably oversized target,
+        /// still a bar. Note the *document* is deliberately not capped this way:
+        /// prose is the content, and content scales as far as the reader asks.
+        static let maxTypeScale: CGFloat = 1.6
+
+        /// Every length here multiplied by `factor` — one scale for the whole bar,
+        /// so the glyph, the target it sits in, and the row's height stay in the
+        /// proportion they were drawn in.
+        func scaled(by factor: CGFloat) -> Metrics {
+            guard factor != 1 else { return self }
+            var m = self
+            m.barHeight *= factor
+            m.buttonWidth *= factor
+            m.buttonHeight *= factor
+            m.glyphSize *= factor
+            m.labelSize *= factor
+            m.cornerRadius *= factor
+            m.spacing *= factor
+            m.edgePadding *= factor
+            m.separatorHeight *= factor
+            return m
+        }
     }
 
     private var metrics: Metrics {
+        base.scaled(by: min(typeScale, Metrics.maxTypeScale))
+    }
+
+    /// The style's own sizes, before Dynamic Type is applied.
+    private var base: Metrics {
         switch style {
         case .accessory: return .accessory
         case .bar: return .bar
