@@ -78,7 +78,11 @@ fn render_choice_overlay(f: &mut Frame, message: &str, items: &[&str], selected:
         if i > 0 {
             choices.push(Span::styled("   ", base));
         }
-        let style = if i == selected { key.add_modifier(Modifier::REVERSED) } else { key };
+        let style = if i == selected {
+            key.add_modifier(Modifier::REVERSED)
+        } else {
+            key
+        };
         let mnemonic = label.chars().next().unwrap_or(' ').to_ascii_lowercase();
         choices.push(Span::styled(format!(" {label} ({mnemonic}) "), style));
     }
@@ -89,7 +93,9 @@ fn render_choice_overlay(f: &mut Frame, message: &str, items: &[&str], selected:
 
     let screen = f.area();
     let choices_w: usize = items.iter().map(|l| l.chars().count() + 7).sum::<usize>() + 2;
-    let width = (message.chars().count() + 2).max(choices_w).min(screen.width.max(1) as usize) as u16;
+    let width = (message.chars().count() + 2)
+        .max(choices_w)
+        .min(screen.width.max(1) as usize) as u16;
     let height = 2u16.min(screen.height.max(1));
     let rect = centered(screen, width, height);
     f.render_widget(Clear, rect);
@@ -114,7 +120,10 @@ fn render_status_toast(f: &mut Frame, msg: &str) {
     };
     let style = Style::default().bg(Color::DarkGray).fg(Color::Yellow);
     f.render_widget(Clear, rect);
-    f.render_widget(Paragraph::new(Line::from(Span::styled(text, style))).style(style), rect);
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(text, style))).style(style),
+        rect,
+    );
 }
 
 /// Center a `width`×`height` rect within `screen`.
@@ -169,7 +178,12 @@ fn render_context_menu(f: &mut Frame, screen: Rect, menu: &mut ContextMenu, doc:
                 (x, y)
             }
         };
-        let rect = Rect { x, y, width, height };
+        let rect = Rect {
+            x,
+            y,
+            width,
+            height,
+        };
         menu.levels[i].rect = Some(rect);
 
         let lines: Vec<Line<'static>> = items
@@ -190,7 +204,11 @@ fn render_context_menu(f: &mut Frame, screen: Rect, menu: &mut ContextMenu, doc:
 /// each with its own padding — so every row aligns whether or not it's checked
 /// or a submenu.
 fn menu_level_width(items: &[MenuEntry]) -> u16 {
-    let label = items.iter().map(|e| e.label().chars().count()).max().unwrap_or(0);
+    let label = items
+        .iter()
+        .map(|e| e.label().chars().count())
+        .max()
+        .unwrap_or(0);
     // " ✓ " (3) + label + " ▸ " (3)
     (label + 6) as u16
 }
@@ -212,7 +230,10 @@ fn menu_row(
             // Non-selectable: dim and never reversed, so it reads as a divider
             // rather than a choice.
             let style = base.fg(Color::Gray).add_modifier(Modifier::DIM);
-            Line::from(Span::styled(format!(" {label:<w$} ", w = width as usize - 2), style))
+            Line::from(Span::styled(
+                format!(" {label:<w$} ", w = width as usize - 2),
+                style,
+            ))
         }
         MenuEntry::Action(label, act) => {
             let active = act.active(marks, heading);
@@ -226,7 +247,10 @@ fn menu_row(
             } else {
                 base
             };
-            Line::from(Span::styled(format!(" {check} {label:<label_w$}   "), style))
+            Line::from(Span::styled(
+                format!(" {check} {label:<label_w$}   "),
+                style,
+            ))
         }
         MenuEntry::Submenu(label, _) => {
             let style = if selected {
@@ -247,10 +271,14 @@ fn menu_row(
 /// positions it into the source — one visible caret, one mechanism.
 fn render_text_prompt(f: &mut Frame, screen: Rect, prompt: &TextPrompt) {
     let hint = " enter confirm  esc cancel ";
-    let content = [prompt.label.chars().count(), prompt.value.chars().count(), hint.chars().count()]
-        .into_iter()
-        .max()
-        .unwrap_or(0) as u16
+    let content = [
+        prompt.label.chars().count(),
+        prompt.value.chars().count(),
+        hint.chars().count(),
+    ]
+    .into_iter()
+    .max()
+    .unwrap_or(0) as u16
         + 2;
     let width = content.max(24).min(screen.width.max(1));
     let height = 3u16.min(screen.height.max(1));

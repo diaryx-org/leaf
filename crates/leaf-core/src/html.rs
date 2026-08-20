@@ -109,7 +109,10 @@ pub(crate) fn parse_fragment(html: &str, format: Format) -> Option<String> {
 /// is anything but one paragraph, so a multi-block selection keeps its structure.
 pub(crate) fn strip_sole_paragraph(html: String) -> String {
     let trimmed = html.trim();
-    let Some(inner) = trimmed.strip_prefix("<p>").and_then(|h| h.strip_suffix("</p>")) else {
+    let Some(inner) = trimmed
+        .strip_prefix("<p>")
+        .and_then(|h| h.strip_suffix("</p>"))
+    else {
         return html;
     };
     // A second `<p>` means the render is more than the one paragraph this is
@@ -262,7 +265,9 @@ fn sanitize(html: &str) -> String {
 }
 
 /// HTML's void elements — no content, no close tag, so nothing to owe.
-const VOID: [&str; 9] = ["br", "img", "hr", "input", "col", "area", "source", "wbr", "embed"];
+const VOID: [&str; 9] = [
+    "br", "img", "hr", "input", "col", "area", "source", "wbr", "embed",
+];
 
 struct Tag {
     name: String,
@@ -403,8 +408,14 @@ mod tests {
 
     #[test]
     fn renders_inline_and_block_markdown() {
-        assert_eq!(html("a **b** c").as_deref(), Some("<p>a <strong>b</strong> c</p>"));
-        assert_eq!(html("- one\n- two").as_deref(), Some("<ul>\n<li>one</li>\n<li>two</li>\n</ul>"));
+        assert_eq!(
+            html("a **b** c").as_deref(),
+            Some("<p>a <strong>b</strong> c</p>")
+        );
+        assert_eq!(
+            html("- one\n- two").as_deref(),
+            Some("<ul>\n<li>one</li>\n<li>two</li>\n</ul>")
+        );
         assert_eq!(html("# head").as_deref(), Some("<h1>head</h1>"));
     }
 
@@ -415,7 +426,10 @@ mod tests {
 
     #[test]
     fn strip_sole_paragraph_unwraps_only_a_lone_paragraph() {
-        assert_eq!(strip_sole_paragraph("<p><strong>b</strong></p>".into()), "<strong>b</strong>");
+        assert_eq!(
+            strip_sole_paragraph("<p><strong>b</strong></p>".into()),
+            "<strong>b</strong>"
+        );
         // Two blocks: the wrapper is structure the user selected, not an artifact.
         let two = "<p>a</p>\n<p>b</p>".to_string();
         assert_eq!(strip_sole_paragraph(two.clone()), two);
@@ -428,7 +442,10 @@ mod tests {
     #[test]
     fn converts_clean_fragments() {
         assert_eq!(md("<ul><li>one</li></ul>").as_deref(), Some("- one"));
-        assert_eq!(md("<p>a <strong>b</strong> c</p>").as_deref(), Some("a **b** c"));
+        assert_eq!(
+            md("<p>a <strong>b</strong> c</p>").as_deref(),
+            Some("a **b** c")
+        );
         assert_eq!(md("<strong>bold</strong>").as_deref(), Some("**bold**"));
         assert_eq!(md("<h1>head</h1>").as_deref(), Some("# head"));
         assert_eq!(
@@ -439,7 +456,12 @@ mod tests {
 
     #[test]
     fn round_trips_through_html() {
-        for src in ["a **b** and [l](https://x.dev)", "- one\n- two", "# head", "> quote"] {
+        for src in [
+            "a **b** and [l](https://x.dev)",
+            "- one\n- two",
+            "# head",
+            "> quote",
+        ] {
             let rendered = html(src).expect("render");
             assert_eq!(md(&rendered).as_deref(), Some(src), "round trip of {src:?}");
         }
@@ -457,9 +479,11 @@ mod tests {
     fn google_docs_paste_keeps_its_emphasis_and_drops_the_wrapper() {
         // The real shape: a `<meta>`, a `font-weight:normal` `<b>` around the
         // whole document, and emphasis spelled only in CSS on `<span>`s.
-        let clip = r#"<meta charset='utf-8'><b style="font-weight:normal;" id="docs-internal-guid-9c1">"#.to_string()
-            + r#"<p dir="ltr" style="line-height:1.38;margin-top:0pt;"><span style="font-size:11pt;font-family:Arial;font-weight:400;">Hello </span>"#
-            + r#"<span style="font-size:11pt;font-weight:700;">bold</span><span style="font-size:11pt;"> world</span></p></b>"#;
+        let clip =
+            r#"<meta charset='utf-8'><b style="font-weight:normal;" id="docs-internal-guid-9c1">"#
+                .to_string()
+                + r#"<p dir="ltr" style="line-height:1.38;margin-top:0pt;"><span style="font-size:11pt;font-family:Arial;font-weight:400;">Hello </span>"#
+                + r#"<span style="font-size:11pt;font-weight:700;">bold</span><span style="font-size:11pt;"> world</span></p></b>"#;
         assert_eq!(md(&clip).as_deref(), Some("Hello **bold** world"));
     }
 
@@ -502,24 +526,42 @@ mod tests {
 
     #[test]
     fn fragment_comments_are_dropped() {
-        assert_eq!(md("<!--StartFragment--><p>frag</p><!--EndFragment-->").as_deref(), Some("frag"));
+        assert_eq!(
+            md("<!--StartFragment--><p>frag</p><!--EndFragment-->").as_deref(),
+            Some("frag")
+        );
     }
 
     #[test]
     fn plain_text_and_entities_convert() {
-        assert_eq!(md("just some plain text").as_deref(), Some("just some plain text"));
-        assert_eq!(md("<p>a &amp; b &lt;c&gt;</p>").as_deref(), Some("a & b <c>"));
+        assert_eq!(
+            md("just some plain text").as_deref(),
+            Some("just some plain text")
+        );
+        assert_eq!(
+            md("<p>a &amp; b &lt;c&gt;</p>").as_deref(),
+            Some("a & b <c>")
+        );
     }
 
     #[test]
     fn unclosed_tags_are_tolerated() {
-        assert_eq!(md("<p>unclosed <strong>bold").as_deref(), Some("unclosed **bold**"));
+        assert_eq!(
+            md("<p>unclosed <strong>bold").as_deref(),
+            Some("unclosed **bold**")
+        );
     }
 
     #[test]
     fn code_and_hard_breaks_survive() {
-        assert_eq!(md("<pre><code>fn x() {}</code></pre>").as_deref(), Some("```\nfn x() {}\n```"));
-        assert_eq!(md("<p>line1<br>line2</p>").as_deref(), Some("line1  \nline2"));
+        assert_eq!(
+            md("<pre><code>fn x() {}</code></pre>").as_deref(),
+            Some("```\nfn x() {}\n```")
+        );
+        assert_eq!(
+            md("<p>line1<br>line2</p>").as_deref(),
+            Some("line1  \nline2")
+        );
     }
 
     // ── the bad cases fall back ──────────────────────────────────────────────
@@ -539,7 +581,10 @@ mod tests {
         // table at all — it reparses as a paragraph of literal pipes — so this
         // declines and the caller pastes the plain flavor.
         assert_eq!(md("<table><tr><td>a</td><td>b</td></tr></table>"), None);
-        assert_eq!(md("<table><tr><td>a</td></tr><tr><td>b</td></tr></table>"), None);
+        assert_eq!(
+            md("<table><tr><td>a</td></tr><tr><td>b</td></tr></table>"),
+            None
+        );
     }
 
     #[test]
@@ -556,8 +601,14 @@ mod tests {
         // twig reads `:below` and `:bar` back as directives too, so declining on
         // the reparse alone would throw away half the prose on the clipboard.
         // The tag has to actually be in the input to have been invented from.
-        assert_eq!(md("<p>see :below for the ratio</p>").as_deref(), Some("see :below for the ratio"));
-        assert_eq!(md("<p>the key is foo:bar here</p>").as_deref(), Some("the key is foo:bar here"));
+        assert_eq!(
+            md("<p>see :below for the ratio</p>").as_deref(),
+            Some("see :below for the ratio")
+        );
+        assert_eq!(
+            md("<p>the key is foo:bar here</p>").as_deref(),
+            Some("the key is foo:bar here")
+        );
     }
 
     #[test]
@@ -608,7 +659,10 @@ mod tests {
         // `<html><body>`, which parses as two nested sections.
         assert_eq!(md("<section><p>a</p></section>").as_deref(), Some("a"));
         assert_eq!(md("<main><p>a</p></main>").as_deref(), Some("a"));
-        assert_eq!(md("<html><body><p>a</p></body></html>").as_deref(), Some("a"));
+        assert_eq!(
+            md("<html><body><p>a</p></body></html>").as_deref(),
+            Some("a")
+        );
         assert_eq!(md("<article><p>a</p></article>"), None);
         assert_eq!(md("<nav><p>a</p></nav>"), None);
     }
@@ -632,8 +686,14 @@ mod tests {
             sanitize(r#"<span style="font-weight:700">b</span>"#),
             "<strong>b</strong>"
         );
-        assert_eq!(sanitize(r#"<span style="font-weight:bold">b</span>"#), "<strong>b</strong>");
-        assert_eq!(sanitize(r#"<span style="font-style:italic">i</span>"#), "<em>i</em>");
+        assert_eq!(
+            sanitize(r#"<span style="font-weight:bold">b</span>"#),
+            "<strong>b</strong>"
+        );
+        assert_eq!(
+            sanitize(r#"<span style="font-style:italic">i</span>"#),
+            "<em>i</em>"
+        );
         // No emphasis: a styling hook with nothing for twig in it.
         assert_eq!(sanitize(r#"<span style="color:red">x</span>"#), "x");
         assert_eq!(sanitize("<span>x</span>"), "x");

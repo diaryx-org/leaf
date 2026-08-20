@@ -7,8 +7,8 @@
 //! the geometry it reads (glyphs, source offsets) stays in leaf-core so a GUI
 //! frontend reuses it unchanged.
 
-use leaf_core::style::{Role, Style as LStyle};
 use leaf_core::VisualMap;
+use leaf_core::style::{Role, Style as LStyle};
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},

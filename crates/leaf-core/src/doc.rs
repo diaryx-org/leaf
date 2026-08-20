@@ -16,18 +16,25 @@
 
 // `PathBuf` names the `path` field and the untitled marker on every build;
 // `Path` is only touched by the filesystem I/O gated behind the `fs` feature.
+// The docs in this file lay their `- key → meaning` lists out in aligned
+// columns, which puts a continuation line further right than clippy's
+// list-indent rule likes. A lazy continuation renders as the same paragraph
+// either way, and the alignment is what makes those tables readable, so the
+// layout wins over the lint.
+#![allow(clippy::doc_overindented_list_items)]
+
 use std::collections::HashMap;
 use std::ops::Range;
-use std::path::PathBuf;
 #[cfg(feature = "fs")]
 use std::path::Path;
+use std::path::PathBuf;
 
-use anyhow::{Result, anyhow};
 #[cfg(feature = "fs")]
 use anyhow::Context;
+use anyhow::{Result, anyhow};
 use twig::{
-    Alignment, BlockContainerKind, BlockKind, Change, Editor, FlatNode, Format, Gesture, InlineKind,
-    Kind, MarkdownExtensions, NodeId, QueryMatch,
+    Alignment, BlockContainerKind, BlockKind, Change, Editor, FlatNode, Format, Gesture,
+    InlineKind, Kind, MarkdownExtensions, NodeId, QueryMatch,
 };
 use unicode_segmentation::GraphemeCursor;
 
@@ -304,8 +311,7 @@ impl CaretState {
     fn from_blob(b: &[u8]) -> Option<Self> {
         let b: &[u8; 17] = b.try_into().ok()?;
         let caret = u64::from_le_bytes(b[..8].try_into().unwrap()) as usize;
-        let anchor =
-            (b[8] != 0).then(|| u64::from_le_bytes(b[9..].try_into().unwrap()) as usize);
+        let anchor = (b[8] != 0).then(|| u64::from_le_bytes(b[9..].try_into().unwrap()) as usize);
         Some(CaretState { caret, anchor })
     }
 }
@@ -519,7 +525,11 @@ pub struct Doc {
 /// just `open`) keeps `from_source`, `blank`, and `reload` parsing the same
 /// document the same way — twig reparses with these same flags after each edit.
 fn parse_extensions() -> MarkdownExtensions {
-    MarkdownExtensions { html_elements: true, directives: true, ..Default::default() }
+    MarkdownExtensions {
+        html_elements: true,
+        directives: true,
+        ..Default::default()
+    }
 }
 
 /// Build an editor over `bytes` in `format` with leaf's [`parse_extensions`],
@@ -678,7 +688,13 @@ impl Doc {
     /// true) exactly like a [`Doc::blank`] that has been given content.
     pub fn from_source(source: String, format: Format) -> Result<Self> {
         let editor = new_editor(source.as_bytes(), format)?;
-        Ok(Doc::from_parts(editor, format, PathBuf::new(), source, None))
+        Ok(Doc::from_parts(
+            editor,
+            format,
+            PathBuf::new(),
+            source,
+            None,
+        ))
     }
 
     /// An untitled, empty document — the `+` button and a `leaf` launched with
@@ -698,7 +714,13 @@ impl Doc {
         // field two frontends already read; making it an `Option` to say this
         // would break both). `is_untitled` is the question to ask, not the
         // representation to copy.
-        Ok(Doc::from_parts(editor, format, PathBuf::new(), String::new(), None))
+        Ok(Doc::from_parts(
+            editor,
+            format,
+            PathBuf::new(),
+            String::new(),
+            None,
+        ))
     }
 
     /// The fields every constructor agrees on, so `open` and `blank` can't drift
@@ -939,9 +961,18 @@ impl Doc {
                     let cache = &mut self.block_cache;
                     let media_rows = &self.media_rows;
                     let editor = &mut self.editor;
-                    wysiwyg::build_spliced(prev, source, wrap, preserve_soft, &top, dirty, media_rows, reveal.clone(), cache, |id| {
-                        editor.subtree(NodeId(id)).unwrap_or_default()
-                    })
+                    wysiwyg::build_spliced(
+                        prev,
+                        source,
+                        wrap,
+                        preserve_soft,
+                        &top,
+                        dirty,
+                        media_rows,
+                        reveal.clone(),
+                        cache,
+                        |id| editor.subtree(NodeId(id)).unwrap_or_default(),
+                    )
                 }
                 None => None,
             };
@@ -950,9 +981,16 @@ impl Doc {
                 let cache = &mut self.block_cache;
                 let media_rows = &self.media_rows;
                 let editor = &mut self.editor;
-                wysiwyg::build_cached(&top, source, wrap, preserve_soft, media_rows, reveal, cache, |id| {
-                    editor.subtree(NodeId(id)).unwrap_or_default()
-                })
+                wysiwyg::build_cached(
+                    &top,
+                    source,
+                    wrap,
+                    preserve_soft,
+                    media_rows,
+                    reveal,
+                    cache,
+                    |id| editor.subtree(NodeId(id)).unwrap_or_default(),
+                )
             });
             // Acknowledge the dirty range so the next edit's range starts fresh.
             self.editor.clear_dirty();
@@ -1388,22 +1426,19 @@ impl Doc {
         if text.is_empty() || text.trim() != text {
             return false;
         }
-        let gap_at = self.source[..at].trim_end_matches(|c: char| c == ' ' || c == '\t').len();
+        let gap_at = self.source[..at].trim_end_matches([' ', '\t']).len();
         // Walk in through the delimiters stacked at that point, innermost last:
         // `***both*** ` closes two runs with one `***`, and rejoining means
         // getting behind all of them.
         let (mut cut, mut kinds) = (gap_at, InlineMarks::empty());
-        loop {
-            let Some((kind, content_end)) = self
-                .editor
-                .ancestors_at(prev_boundary(&self.source, cut))
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|m| m.span.end == cut)
-                .find_map(|m| Some((inline_kind(&m.kind)?, m.content_span.clone()?.end)))
-            else {
-                break;
-            };
+        while let Some((kind, content_end)) = self
+            .editor
+            .ancestors_at(prev_boundary(&self.source, cut))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|m| m.span.end == cut)
+            .find_map(|m| Some((inline_kind(&m.kind)?, m.content_span.clone()?.end)))
+        {
             if content_end >= cut {
                 break; // a mark with no closing delimiter to step behind
             }
@@ -1416,7 +1451,11 @@ impl Doc {
         // Re-spell the tail: the gap, then the new text, then the delimiters that
         // used to close in front of them — read out of the document rather than
         // written from a table, so whatever twig spells them with is what moves.
-        let tail = format!("{}{text}{}", &self.source[gap_at..at], &self.source[cut..gap_at]);
+        let tail = format!(
+            "{}{text}{}",
+            &self.source[gap_at..at],
+            &self.source[cut..gap_at]
+        );
         if !self.splice_exact(cut, at, &tail, EditKind::Other) {
             return false;
         }
@@ -1440,7 +1479,11 @@ impl Doc {
         let base = self.mark_spans_at(at);
         // What the *next* character carries: the armed delta resolved against the
         // marks in force here, which the space must not quietly drop.
-        let want = base.iter().map(|(k, _)| *k).collect::<InlineMarks>().xor(marks);
+        let want = base
+            .iter()
+            .map(|(k, _)| *k)
+            .collect::<InlineMarks>()
+            .xor(marks);
         let mut ins_at = at;
         for (kind, span) in &base {
             if marks.contains(*kind) {
@@ -1518,7 +1561,9 @@ impl Doc {
             .unwrap_or_default()
             .into_iter()
             .filter(|m| inline_kind(&m.kind).is_some())
-            .filter(|m| m.span.start < off && m.content_span.as_ref().is_some_and(|c| c.start == off))
+            .filter(|m| {
+                m.span.start < off && m.content_span.as_ref().is_some_and(|c| c.start == off)
+            })
             .map(|m| m.span.start)
             .min()
             .unwrap_or(off)
@@ -1704,7 +1749,8 @@ impl Doc {
         let Some((off, _)) = self.source[start..end].char_indices().next_back() else {
             return false;
         };
-        let (Some(head), Some(tail)) = (self.top_block_span(start), self.top_block_span(start + off))
+        let (Some(head), Some(tail)) =
+            (self.top_block_span(start), self.top_block_span(start + off))
         else {
             return false;
         };
@@ -1985,8 +2031,7 @@ impl Doc {
         //
         // Only in running prose. A list or a quote has a continuation of its own
         // to write, and a `\n` there is not a soft line but a lost container.
-        let in_container =
-            has(Kind::ListItem) || has(Kind::TaskListItem) || has(Kind::BlockQuote);
+        let in_container = has(Kind::ListItem) || has(Kind::TaskListItem) || has(Kind::BlockQuote);
         if self.line_flow == LineFlow::Preserve && !in_container {
             self.insert_raw("\n");
             return;
@@ -2338,7 +2383,8 @@ impl Doc {
                 self.caret
             } else {
                 let inside = self.step_inside_close_delims(self.caret);
-                self.skip_leading_open_delims(inside).max(self.caret_floor())
+                self.skip_leading_open_delims(inside)
+                    .max(self.caret_floor())
             };
             // Never delete back across the floor — that would eat hidden
             // frontmatter the WYSIWYG caret can't even see.
@@ -2850,7 +2896,11 @@ impl Doc {
         let respelt = if core.is_empty() {
             body.clone()
         } else {
-            format!("{}{open}{core}{close}{}", &body[..lead], &body[body.len() - trail..])
+            format!(
+                "{}{open}{core}{close}{}",
+                &body[..lead],
+                &body[body.len() - trail..]
+            )
         };
         // The caret sits just past the inserted text within the new content —
         // which, when that lands in the whitespace, is now outside the delimiters.
@@ -2919,7 +2969,11 @@ impl Doc {
     /// exactly those marks, but still remembers the spot, so a further ⌘b starts
     /// a clean delta here (see [`toggle`](Self::toggle)).
     fn rearm(&mut self, want: InlineMarks) {
-        let here: InlineMarks = self.marks_at(self.caret).into_iter().map(|(k, _)| k).collect();
+        let here: InlineMarks = self
+            .marks_at(self.caret)
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
         self.pending_marks = want.xor(here);
         self.pending_at = Some(self.caret);
     }
@@ -2931,11 +2985,18 @@ impl Doc {
     /// the same caret re-anchor, coalescing, and rollback contract. `at` must be
     /// a collapsed point — a selection is deleted by the caller first, since
     /// `insert_literal` inserts rather than replaces.
-    fn insert_literal_at(&mut self, at: usize, text: &str, kind: EditKind, force_coalesce: bool) -> bool {
+    fn insert_literal_at(
+        &mut self,
+        at: usize,
+        text: &str,
+        kind: EditKind,
+        force_coalesce: bool,
+    ) -> bool {
         // `force_coalesce` folds this into the immediately preceding edit (the
         // selection-delete of an overwrite) so the pair is one undo step; else it
         // coalesces only when it continues a run of the same-kind typing.
-        let coalesce = force_coalesce || (kind != EditKind::Other && self.last_edit_kind == Some(kind));
+        let coalesce =
+            force_coalesce || (kind != EditKind::Other && self.last_edit_kind == Some(kind));
         // The mark-edge rule holds for typed text however it is spelled — see
         // `splice`. Only an insert twig passed through unchanged can use it,
         // since a fix is measured in the bytes that actually land, and an escape
@@ -3185,10 +3246,11 @@ impl Doc {
         }
         // Nudge to the previous character — but never across a newline: that would
         // target the previous block, and a blank line genuinely has no block.
-        if let Some((i, ch)) = self.source[..caret].char_indices().next_back() {
-            if ch != '\n' && self.has_block_at(i) {
-                return Some(i);
-            }
+        if let Some((i, ch)) = self.source[..caret].char_indices().next_back()
+            && ch != '\n'
+            && self.has_block_at(i)
+        {
+            return Some(i);
         }
         None
     }
@@ -3235,7 +3297,11 @@ impl Doc {
             // The marks actually in force at the caret, flipped by any armed
             // sticky delta — so `⌘b` at a bare caret lights the Bold button
             // immediately, before a single character is typed.
-            let base: InlineMarks = self.marks_at(self.caret).into_iter().map(|(k, _)| k).collect();
+            let base: InlineMarks = self
+                .marks_at(self.caret)
+                .into_iter()
+                .map(|(k, _)| k)
+                .collect();
             return base.xor(self.pending_here());
         };
         // The selection's *last character*, not its exclusive end: `end` is the
@@ -3451,7 +3517,9 @@ impl Doc {
 
     /// Set the caret's column to `alignment`.
     pub fn table_set_alignment(&mut self, alignment: Alignment) {
-        self.table_op("table alignment", |e, at| e.table_set_alignment(at, alignment));
+        self.table_op("table alignment", |e, at| {
+            e.table_set_alignment(at, alignment)
+        });
     }
 
     /// Move the caret's row one place down (`down`) or up, within the body rows.
@@ -3582,7 +3650,11 @@ impl Doc {
     /// the items back apart with blank lines between them — and a caret landing
     /// on the nearest line of the right item beats one landing out of the region
     /// entirely.
-    fn line_tail_offset(&self, new: &std::ops::Range<usize>, (line, tail): (usize, usize)) -> usize {
+    fn line_tail_offset(
+        &self,
+        new: &std::ops::Range<usize>,
+        (line, tail): (usize, usize),
+    ) -> usize {
         let region = &self.source[new.start.min(self.source.len())..new.end.min(self.source.len())];
         let mut start = 0;
         for _ in 0..line {
@@ -3591,7 +3663,9 @@ impl Doc {
                 None => break,
             }
         }
-        let end = region[start..].find('\n').map_or(region.len(), |i| start + i);
+        let end = region[start..]
+            .find('\n')
+            .map_or(region.len(), |i| start + i);
         new.start + end.saturating_sub(tail).max(start)
     }
 
@@ -3648,7 +3722,6 @@ impl Doc {
     /// it); with no selection, `alt` is used — empty for none. The caret lands
     /// just past the inserted image.
     ///
-
     /// Both halves go through twig (`insert_literal` for the alt text,
     /// `insert_image` for the image), so neither is spelled here. That used to be a
     /// `format!`, and it was wrong the first time an app inserted a real filename:
@@ -3808,7 +3881,9 @@ impl Doc {
     /// container is left to take the rule after itself.
     fn caret_in_bare_paragraph(&mut self) -> bool {
         let caret = self.caret.min(self.source.len());
-        let Ok(chain) = self.editor.ancestors_at(caret) else { return false };
+        let Ok(chain) = self.editor.ancestors_at(caret) else {
+            return false;
+        };
         let mut in_para = false;
         for m in chain {
             match m.kind {
@@ -3896,7 +3971,10 @@ impl Doc {
         let pick = |matches: &mut dyn Iterator<Item = &FlatNode>| {
             matches
                 .min_by_key(|n| (n.span.start, std::cmp::Reverse(n.span.end)))
-                .map(|n| Landing { start: n.span.start, end: n.span.end })
+                .map(|n| Landing {
+                    start: n.span.start,
+                    end: n.span.end,
+                })
         };
 
         if let Some(landing) = pick(&mut nodes.iter().filter(|n| declared_id(n) == Some(id))) {
@@ -3906,9 +3984,11 @@ impl Doc {
         if want.is_empty() {
             return None;
         }
-        if let Some(landing) =
-            pick(&mut nodes.iter().filter(|n| declared_id(n).map(slug).as_deref() == Some(&*want)))
-        {
+        if let Some(landing) = pick(
+            &mut nodes
+                .iter()
+                .filter(|n| declared_id(n).map(slug).as_deref() == Some(&*want)),
+        ) {
             return Some(landing);
         }
 
@@ -3937,7 +4017,10 @@ impl Doc {
             .map(|n| n.span.start)
             .min()
             .unwrap_or(self.source.len());
-        Some(Landing { start: heading.span.start, end })
+        Some(Landing {
+            start: heading.span.start,
+            end,
+        })
     }
 
     /// Write a footnote at the caret — the toolbar's Footnote button, and the
@@ -4073,12 +4156,20 @@ impl Doc {
             .into_iter()
             .find(|m| wysiwyg::footnote_label(&self.source, m.span.start) == Some(&label));
         let Some(note) = note else {
-            return Some(FootnoteRef { label, text: None, offset: None, end: None });
+            return Some(FootnoteRef {
+                label,
+                text: None,
+                offset: None,
+                end: None,
+            });
         };
         let body = wysiwyg::footnote_body_span(&self.source, note.span.clone());
         Some(FootnoteRef {
             label,
-            text: body.clone().and_then(|b| self.source.get(b)).map(str::to_string),
+            text: body
+                .clone()
+                .and_then(|b| self.source.get(b))
+                .map(str::to_string),
             // The body's start, not the definition's — see `FootnoteRef::offset`.
             offset: body.clone().map(|b| b.start),
             end: body.map(|b| b.end),
@@ -4278,7 +4369,12 @@ impl Doc {
     /// anywhere but under the caret are two different places.
     fn after_history(&mut self, change: Change) {
         self.refresh();
-        match self.editor.caret_blob().ok().and_then(|b| CaretState::from_blob(&b)) {
+        match self
+            .editor
+            .caret_blob()
+            .ok()
+            .and_then(|b| CaretState::from_blob(&b))
+        {
             Some(state) => {
                 self.caret = state.caret.min(self.source.len());
                 self.anchor = state.anchor.map(|a| a.min(self.source.len()));
@@ -4617,11 +4713,9 @@ impl Doc {
 
     pub fn move_left(&mut self, extend: bool) {
         self.goal_col = None;
-        if !extend {
-            if let Some((s, _e)) = self.selection() {
-                self.move_to(s, false);
-                return;
-            }
+        if !extend && let Some((s, _e)) = self.selection() {
+            self.move_to(s, false);
+            return;
         }
         let target = match self.view {
             View::Source => {
@@ -4643,11 +4737,9 @@ impl Doc {
 
     pub fn move_right(&mut self, extend: bool) {
         self.goal_col = None;
-        if !extend {
-            if let Some((_s, e)) = self.selection() {
-                self.move_to(e, false);
-                return;
-            }
+        if !extend && let Some((_s, e)) = self.selection() {
+            self.move_to(e, false);
+            return;
         }
         let target = match self.view {
             View::Source => {
@@ -4877,7 +4969,10 @@ impl Doc {
     fn reachable_end(&self) -> usize {
         match self.view {
             View::Source => self.source.len(),
-            View::Wysiwyg => self.vmap.stop_at_or_before(self.source.len()).unwrap_or(self.caret),
+            View::Wysiwyg => self
+                .vmap
+                .stop_at_or_before(self.source.len())
+                .unwrap_or(self.caret),
         }
     }
 
@@ -5009,7 +5104,11 @@ impl Doc {
         // Flatten to document (row-major) order and step one cell either way.
         let i: usize = grid[..r].iter().map(Vec::len).sum::<usize>() + c;
         let flat: Vec<(usize, usize)> = grid.into_iter().flatten().collect();
-        let next = if forward { i.checked_add(1) } else { i.checked_sub(1) };
+        let next = if forward {
+            i.checked_add(1)
+        } else {
+            i.checked_sub(1)
+        };
         let Some(&(start, end)) = next.and_then(|j| flat.get(j)) else {
             return false; // at the table's edge; leave Tab to the frontend
         };
@@ -5049,6 +5148,9 @@ impl Doc {
     /// isn't in a table. Read straight off the visual map's laid-out grid, so
     /// every cell (an empty one included, whose derived home twig gives no
     /// `content_span` for) is present and in the order Tab walks them.
+    // Grid, row, column — three returns that only ever travel together, and a
+    // named type for the pair of them would be read at one call site.
+    #[allow(clippy::type_complexity)]
     fn table_grid_at(&self, off: usize) -> Option<(Vec<Vec<(usize, usize)>>, usize, usize)> {
         for t in &self.vmap.tables {
             let mut pos = None;
@@ -5281,10 +5383,10 @@ impl Doc {
         if self.caret < floor {
             self.caret = floor;
         }
-        if let Some(a) = self.anchor {
-            if a < floor {
-                self.anchor = Some(floor);
-            }
+        if let Some(a) = self.anchor
+            && a < floor
+        {
+            self.anchor = Some(floor);
         }
         while self.caret > 0 && !self.source.is_char_boundary(self.caret) {
             self.caret -= 1;
@@ -5435,12 +5537,8 @@ fn outdent_width(line: &str, unit: usize) -> usize {
     if line.starts_with('\t') {
         return 1;
     }
-    line.bytes()
-        .take(unit)
-        .take_while(|b| *b == b' ')
-        .count()
+    line.bytes().take(unit).take_while(|b| *b == b' ').count()
 }
-
 
 /// A list marker found at the head of a line, together with everything before it
 /// that a sibling line has to repeat.
@@ -5466,8 +5564,6 @@ impl ListMarker {
         self.line_start + self.text.len()
     }
 }
-
-
 
 fn classify(c: char) -> Class {
     if c == '_' || c.is_alphanumeric() {
@@ -5614,6 +5710,57 @@ fn line_end_from(s: &str, start: usize) -> usize {
     s[start..].find('\n').map(|p| start + p).unwrap_or(s.len())
 }
 
+/// twig's node-kind name for an inline mark, back to the [`InlineKind`] a
+/// frontend names when it calls [`Doc::toggle`] — the inverse of the mapping
+/// twig applies writing the mark out, so the toolbar can light the same button
+/// that made the node.
+///
+/// `None` for every other kind, including the inline nodes that aren't marks at
+/// all (`str`, `link`, `image`, the math and break kinds): they're things a
+/// caret stands in, not formatting a button toggles.
+fn inline_kind(kind: &Kind) -> Option<InlineKind> {
+    Some(match kind {
+        Kind::Strong => InlineKind::Strong,
+        Kind::Emph => InlineKind::Emph,
+        Kind::Verbatim => InlineKind::Verbatim,
+        Kind::Mark => InlineKind::Mark,
+        Kind::Superscript => InlineKind::Superscript,
+        Kind::Subscript => InlineKind::Subscript,
+        Kind::Insert => InlineKind::Insert,
+        Kind::Delete => InlineKind::Delete,
+        _ => return None,
+    })
+}
+
+/// A watermark for a file's contents (see `Doc::disk_hash`).
+///
+/// `DefaultHasher` is not stable across Rust releases, which doesn't matter: a
+/// watermark is compared only against one taken by the same process moments
+/// earlier, and never outlives it. 64 bits leaves a collision — an external edit
+/// that hashes to exactly what leaf wrote — at odds no filesystem race gets near.
+fn hash_bytes(bytes: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut h);
+    h.finish()
+}
+
+#[cfg(feature = "fs")]
+fn detect_format(path: &Path) -> Result<Format> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    Ok(match ext.as_str() {
+        "dj" | "djot" => Format::Djot,
+        "md" | "markdown" => Format::Markdown,
+        "xml" => Format::Xml,
+        "html" | "htm" => Format::Html,
+        other => return Err(anyhow!("unknown document extension: .{other}")),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5730,7 +5877,11 @@ mod tests {
     fn a_width_change_rebuilds_the_map() {
         // The map is a function of the wrap width too, so a resize is a miss
         // even though the text is untouched.
-        let mut d = doc_in(View::Wysiwyg, "cache_width", "one two three four five six\n");
+        let mut d = doc_in(
+            View::Wysiwyg,
+            "cache_width",
+            "one two three four five six\n",
+        );
         d.build_visual(80);
         d.vmap.rows.clear();
         d.build_visual(12);
@@ -5755,7 +5906,10 @@ mod tests {
         assert_eq!(d.revision(), rev, "a motion must not move the revision");
         d.vmap.rows.clear();
         d.build_visual(80);
-        assert!(d.vmap.rows.is_empty(), "a motion should not rebuild the map");
+        assert!(
+            d.vmap.rows.is_empty(),
+            "a motion should not rebuild the map"
+        );
     }
 
     #[test]
@@ -5842,10 +5996,22 @@ mod tests {
     #[test]
     fn word_motion_walks_word_by_word() {
         let g = |m, f: fn(&mut Doc)| golden("word_motion", m, f);
-        assert_eq!(g("hello wor|ld", |d| d.move_word_left(false)), "hello |world");
-        assert_eq!(g("hello| world", |d| d.move_word_left(false)), "|hello world");
-        assert_eq!(g("hel|lo world", |d| d.move_word_right(false)), "hello| world");
-        assert_eq!(g("hello| world", |d| d.move_word_right(false)), "hello world|");
+        assert_eq!(
+            g("hello wor|ld", |d| d.move_word_left(false)),
+            "hello |world"
+        );
+        assert_eq!(
+            g("hello| world", |d| d.move_word_left(false)),
+            "|hello world"
+        );
+        assert_eq!(
+            g("hel|lo world", |d| d.move_word_right(false)),
+            "hello| world"
+        );
+        assert_eq!(
+            g("hello| world", |d| d.move_word_right(false)),
+            "hello world|"
+        );
         // Punctuation is its own class, so motion stops at the boundary.
         assert_eq!(g("|foo.bar", |d| d.move_word_right(false)), "foo|.bar");
     }
@@ -5886,9 +6052,16 @@ mod tests {
         let indent = d.source.find("    indented").unwrap();
         d.caret = indent + 6; // inside "indented"
         d.move_home(false);
-        assert_eq!(d.caret, indent + 4, "wysiwyg: Home aims at the code line's text");
+        assert_eq!(
+            d.caret,
+            indent + 4,
+            "wysiwyg: Home aims at the code line's text"
+        );
         d.move_home(false);
-        assert_eq!(d.caret, indent, "wysiwyg: the second press takes the indent");
+        assert_eq!(
+            d.caret, indent,
+            "wysiwyg: the second press takes the indent"
+        );
         d.move_home(false);
         assert_eq!(d.caret, indent + 4, "wysiwyg: the toggle swaps back");
     }
@@ -5906,7 +6079,10 @@ mod tests {
         let mut d = wysiwyg_doc("end_wys", "one two\nthree\n");
         d.caret = 1;
         d.move_end(false);
-        assert_eq!(d.caret, 13, "wysiwyg: the end of the row, soft break and all");
+        assert_eq!(
+            d.caret, 13,
+            "wysiwyg: the end of the row, soft break and all"
+        );
     }
 
     #[test]
@@ -5931,16 +6107,32 @@ mod tests {
             // The gap that reads as a paragraph break in each view: the source
             // view's lines are the renderer's rows only where the source says so.
             let gap = if view == View::Source { "\n" } else { "\n\n" };
-            let mut d = doc_in(view, &format!("kill_end_{tag}"), &format!("one two{gap}three\n"));
+            let mut d = doc_in(
+                view,
+                &format!("kill_end_{tag}"),
+                &format!("one two{gap}three\n"),
+            );
             d.caret = 3;
             d.delete_to_line_end();
-            assert_eq!(d.source, format!("one{gap}three\n"), "{tag}: ^K to the line's end");
+            assert_eq!(
+                d.source,
+                format!("one{gap}three\n"),
+                "{tag}: ^K to the line's end"
+            );
             assert_eq!(d.caret, 3, "{tag}: the caret stays where it kills from");
 
-            let mut d = doc_in(view, &format!("kill_start_{tag}"), &format!("one two{gap}three\n"));
+            let mut d = doc_in(
+                view,
+                &format!("kill_start_{tag}"),
+                &format!("one two{gap}three\n"),
+            );
             d.caret = 7; // the end of the first line
             d.delete_to_line_start();
-            assert_eq!(d.source, format!("{gap}three\n"), "{tag}: ⌘⌫ to the line's start");
+            assert_eq!(
+                d.source,
+                format!("{gap}three\n"),
+                "{tag}: ⌘⌫ to the line's start"
+            );
             assert_eq!(d.caret, 0, "{tag}");
         }
     }
@@ -5959,12 +6151,18 @@ mod tests {
             let mut d = doc_in(view, &format!("kill_edge_end_{tag}"), &src);
             d.caret = 3; // the end of "one"
             d.delete_to_line_end();
-            assert_eq!(d.source, src, "{tag}: ^K at the line's end joined it to the next");
+            assert_eq!(
+                d.source, src,
+                "{tag}: ^K at the line's end joined it to the next"
+            );
 
             let mut d = doc_in(view, &format!("kill_edge_start_{tag}"), &src);
             d.caret = 3 + gap.len(); // the start of "three"
             d.delete_to_line_start();
-            assert_eq!(d.source, src, "{tag}: ⌘⌫ at the line's start joined it to the last");
+            assert_eq!(
+                d.source, src,
+                "{tag}: ⌘⌫ at the line's start joined it to the last"
+            );
         }
     }
 
@@ -5973,14 +6171,20 @@ mod tests {
         // What every other delete here does with one, so these two as well.
         for (view, tag) in VIEWS {
             for (name, kill) in [
-                ("end", (|d: &mut Doc| d.delete_to_line_end()) as fn(&mut Doc)),
+                (
+                    "end",
+                    (|d: &mut Doc| d.delete_to_line_end()) as fn(&mut Doc),
+                ),
                 ("start", |d: &mut Doc| d.delete_to_line_start()),
             ] {
                 let mut d = doc_in(view, &format!("kill_sel_{name}_{tag}"), "one two three\n");
                 d.anchor = Some(4);
                 d.caret = 7; // "two"
                 kill(&mut d);
-                assert_eq!(d.source, "one  three\n", "{tag}: {name} ignored the selection");
+                assert_eq!(
+                    d.source, "one  three\n",
+                    "{tag}: {name} ignored the selection"
+                );
                 assert_eq!(d.selection(), None, "{tag}: {name}");
             }
         }
@@ -6026,7 +6230,11 @@ mod tests {
             d.caret = 0;
             d.anchor = None;
             d.select_block_at(off);
-            assert_eq!(d.selection(), Some(para), "offset {off} should select the paragraph");
+            assert_eq!(
+                d.selection(),
+                Some(para),
+                "offset {off} should select the paragraph"
+            );
         }
     }
 
@@ -6060,7 +6268,10 @@ mod tests {
     #[test]
     fn word_helpers_respect_utf8_boundaries() {
         // "café" is 5 bytes ('é' is two); motion must land on char boundaries.
-        assert_eq!(golden("utf8", "|café ok", |d| d.move_word_right(false)), "café| ok");
+        assert_eq!(
+            golden("utf8", "|café ok", |d| d.move_word_right(false)),
+            "café| ok"
+        );
         assert_eq!(golden("utf8b", "café |ok", |d| d.delete_word_back()), "|ok");
     }
 
@@ -6210,7 +6421,10 @@ mod tests {
         }
         assert_eq!(d.source, "a **bold**\n");
         d.insert(" ");
-        assert_eq!(d.source, "a **bold** \n", "the space belongs outside the run");
+        assert_eq!(
+            d.source, "a **bold** \n",
+            "the space belongs outside the run"
+        );
         assert!(
             d.active_inline_marks().contains(InlineKind::Strong),
             "bold is still what's being typed, so the button stays lit"
@@ -6222,7 +6436,10 @@ mod tests {
         for c in "hey".chars() {
             d.insert(&c.to_string());
         }
-        assert_eq!(d.source, "a **bold hey**\n", "one bold phrase, not two runs");
+        assert_eq!(
+            d.source, "a **bold hey**\n",
+            "one bold phrase, not two runs"
+        );
     }
 
     #[test]
@@ -6262,7 +6479,10 @@ mod tests {
         let mut d = wysiwyg_doc("edge_tail", "x **bold**\n");
         d.caret = 8; // the caret's home at the end of the run's text
         d.insert(" ");
-        assert_eq!(d.source, "x **bold** \n", "the space lands past the delimiters");
+        assert_eq!(
+            d.source, "x **bold** \n",
+            "the space lands past the delimiters"
+        );
         assert_eq!(d.caret, 11, "and the caret stands past it, outside the run");
 
         let mut d = wysiwyg_doc("edge_head", "x **bold** y\n");
@@ -6330,7 +6550,10 @@ mod tests {
         d.move_left(false);
         assert_eq!(d.caret, 8, "← rests past the delimiters, not inside them");
         d.backspace();
-        assert_eq!(d.source, "**bol** x\n", "a letter of the phrase, not its `*`");
+        assert_eq!(
+            d.source, "**bol** x\n",
+            "a letter of the phrase, not its `*`"
+        );
         assert_eq!(d.caret, 5);
 
         // And the mirror in front of the opening delimiter, where Delete's
@@ -6400,14 +6623,20 @@ mod tests {
         d.insert(" ");
         assert_eq!(d.source, "**bold** \n");
         d.backspace();
-        assert_eq!(d.source, "**bold**\n", "the space goes, the delimiters stay");
+        assert_eq!(
+            d.source, "**bold**\n",
+            "the space goes, the delimiters stay"
+        );
         assert_eq!(d.caret, 6, "and the caret comes back inside the run");
         assert!(
             d.active_inline_marks().contains(InlineKind::Strong),
             "so the button is still lit"
         );
         d.insert("x");
-        assert_eq!(d.source, "**boldx**\n", "and the next character is still bold");
+        assert_eq!(
+            d.source, "**boldx**\n",
+            "and the next character is still bold"
+        );
     }
 
     #[test]
@@ -6568,10 +6797,20 @@ mod tests {
         d.newline();
         d.build_visual_unwrapped();
         assert_eq!(d.source, "line one:\n\nsecond line\n");
-        assert_eq!(d.caret, 10, "caret sits on the new blank line, not the next line");
+        assert_eq!(
+            d.caret, 10,
+            "caret sits on the new blank line, not the next line"
+        );
         // The blank line is row 1, and the caret resolves onto it — not row 2.
-        assert_eq!(d.vmap.pos_of_offset(10), (1, 0), "caret renders on the blank row");
-        assert!(!d.vmap.rows[1].decoration, "the blank line is navigable in Preserve");
+        assert_eq!(
+            d.vmap.pos_of_offset(10),
+            (1, 0),
+            "caret renders on the blank row"
+        );
+        assert!(
+            !d.vmap.rows[1].decoration,
+            "the blank line is navigable in Preserve"
+        );
         // Typing there makes a soft break: one paragraph, three lines.
         d.insert("new clause,");
         assert_eq!(d.source, "line one:\nnew clause,\nsecond line\n");
@@ -6594,7 +6833,10 @@ mod tests {
         d.caret = 3;
         d.newline();
         d.insert("def");
-        assert_eq!(d.source, "abc\ndef\n", "end-of-line Enter + typing is a soft break");
+        assert_eq!(
+            d.source, "abc\ndef\n",
+            "end-of-line Enter + typing is a soft break"
+        );
     }
 
     #[test]
@@ -6607,7 +6849,10 @@ mod tests {
         d.newline();
         d.newline();
         d.insert("def");
-        assert_eq!(d.source, "abc\n\ndef\n", "double Enter is a paragraph break");
+        assert_eq!(
+            d.source, "abc\n\ndef\n",
+            "double Enter is a paragraph break"
+        );
     }
 
     #[test]
@@ -6619,7 +6864,10 @@ mod tests {
         d.build_visual(80);
         d.caret = 4; // start of "def", just past the soft break
         d.backspace();
-        assert_eq!(d.source, "abcdef\n", "Backspace joins across the soft break");
+        assert_eq!(
+            d.source, "abcdef\n",
+            "Backspace joins across the soft break"
+        );
         assert_eq!(d.caret, 3, "caret lands where the lines meet");
     }
 
@@ -6630,7 +6878,10 @@ mod tests {
         let mut d = wysiwyg_doc("fold_enter", "abcdef\n");
         d.caret = 3;
         d.newline();
-        assert_eq!(d.source, "abc\n\ndef\n", "Fold mid-line Enter is a paragraph break");
+        assert_eq!(
+            d.source, "abc\n\ndef\n",
+            "Fold mid-line Enter is a paragraph break"
+        );
     }
 
     #[test]
@@ -6657,7 +6908,10 @@ mod tests {
         // a fresh empty paragraph after it.
         let mut d = wysiwyg_doc("bold_eol_enter", "**bold**\n");
         d.move_end(false); // the WYSIWYG End key, from caret 0
-        assert_eq!(d.caret, 6, "caret rests right after \"bold\", before the hidden \"**\"");
+        assert_eq!(
+            d.caret, 6,
+            "caret rests right after \"bold\", before the hidden \"**\""
+        );
         d.newline();
         assert!(
             d.source.starts_with("**bold**"),
@@ -6715,7 +6969,11 @@ mod tests {
             d.build_visual_unwrapped(); // as a frontend does, one frame per key
         }
         assert_eq!(d.source, "one\n\ntwo\n\n# title\n\n");
-        assert_eq!(d.caret_pos(), (4, 5), "the caret draws at the end of the heading");
+        assert_eq!(
+            d.caret_pos(),
+            (4, 5),
+            "the caret draws at the end of the heading"
+        );
     }
 
     #[test]
@@ -6773,10 +7031,19 @@ mod tests {
         d.build_visual(80);
         d.newline(); // leave the list onto a fresh empty paragraph
         d.build_visual(80);
-        assert_eq!(d.source, "- item\n\n\n\nnext\n", "double-Enter opens the empty paragraph");
+        assert_eq!(
+            d.source, "- item\n\n\n\nnext\n",
+            "double-Enter opens the empty paragraph"
+        );
         d.backspace();
-        assert_eq!(d.source, "- item\n\nnext\n", "one Backspace collapses the whole gap");
-        assert_eq!(d.caret, 6, "and lands the caret back at the end of the list item");
+        assert_eq!(
+            d.source, "- item\n\nnext\n",
+            "one Backspace collapses the whole gap"
+        );
+        assert_eq!(
+            d.caret, 6,
+            "and lands the caret back at the end of the list item"
+        );
     }
 
     #[test]
@@ -6790,9 +7057,15 @@ mod tests {
         d.build_visual(80);
         d.newline();
         d.build_visual(80);
-        assert_eq!(d.source, "abc\n\n\n\n", "Enter on the blank line adds one newline");
+        assert_eq!(
+            d.source, "abc\n\n\n\n",
+            "Enter on the blank line adds one newline"
+        );
         d.backspace();
-        assert_eq!(d.source, "abc\n\n\n", "Backspace takes back exactly that one newline");
+        assert_eq!(
+            d.source, "abc\n\n\n",
+            "Backspace takes back exactly that one newline"
+        );
     }
 
     #[test]
@@ -6891,8 +7164,14 @@ mod tests {
     #[test]
     fn toggle_blockquote_works_in_wysiwyg_view() {
         let g = |n, m, f: fn(&mut Doc)| golden_in(View::Wysiwyg, n, m, f);
-        assert_eq!(g("q_wys", "hel|lo\n", |d| d.toggle_blockquote()), "> hel|lo\n");
-        assert_eq!(g("q_wys2", "> hel|lo\n", |d| d.toggle_blockquote()), "hel|lo\n");
+        assert_eq!(
+            g("q_wys", "hel|lo\n", |d| d.toggle_blockquote()),
+            "> hel|lo\n"
+        );
+        assert_eq!(
+            g("q_wys2", "> hel|lo\n", |d| d.toggle_blockquote()),
+            "hel|lo\n"
+        );
     }
 
     #[test]
@@ -6911,9 +7190,18 @@ mod tests {
     #[test]
     fn toggle_list_works_in_wysiwyg_view() {
         let g = |n, m, f: fn(&mut Doc)| golden_in(View::Wysiwyg, n, m, f);
-        assert_eq!(g("l_wys", "hel|lo\n", |d| d.toggle_list(true)), "1. hel|lo\n");
-        assert_eq!(g("l_wys2", "1. hel|lo\n", |d| d.toggle_list(false)), "- hel|lo\n");
-        assert_eq!(g("l_wys3", "- hel|lo\n", |d| d.toggle_list(false)), "hel|lo\n");
+        assert_eq!(
+            g("l_wys", "hel|lo\n", |d| d.toggle_list(true)),
+            "1. hel|lo\n"
+        );
+        assert_eq!(
+            g("l_wys2", "1. hel|lo\n", |d| d.toggle_list(false)),
+            "- hel|lo\n"
+        );
+        assert_eq!(
+            g("l_wys3", "- hel|lo\n", |d| d.toggle_list(false)),
+            "hel|lo\n"
+        );
     }
 
     #[test]
@@ -6952,7 +7240,10 @@ mod tests {
         d.caret = 0;
         d.toggle_blockquote();
         assert_eq!(d.source, "> \nabc\n");
-        assert_eq!(d.caret, 2, "the caret belongs inside the quote it just opened");
+        assert_eq!(
+            d.caret, 2,
+            "the caret belongs inside the quote it just opened"
+        );
         assert!(d.status.is_none(), "{:?}", d.status);
         assert!(d.dirty);
 
@@ -7108,7 +7399,10 @@ mod tests {
         let mut d = doc_with("vid_rt", "\n");
         d.caret = 0;
         d.insert_media(MediaKind::Video, "clip.mp4", "a clip");
-        assert_eq!(d.source, "<video src=\"clip.mp4\" controls>a clip</video>\n");
+        assert_eq!(
+            d.source,
+            "<video src=\"clip.mp4\" controls>a clip</video>\n"
+        );
 
         d.build_visual(80);
         assert_eq!(d.vmap.media.len(), 1, "reads back as one block media");
@@ -7135,7 +7429,10 @@ mod tests {
         d.anchor = Some(0);
         d.caret = 8; // "the talk"
         d.insert_media(MediaKind::Video, "talk.mp4", "ignored fallback");
-        assert_eq!(d.source, "<video src=\"talk.mp4\" controls>the talk</video> here\n");
+        assert_eq!(
+            d.source,
+            "<video src=\"talk.mp4\" controls>the talk</video> here\n"
+        );
     }
 
     #[test]
@@ -7195,7 +7492,11 @@ mod tests {
         assert_eq!(d.task_checked_at_caret(), None);
         d.toggle_task_item();
         assert_eq!(d.source, "- [ ] plain\n");
-        assert_eq!(d.task_checked_at_caret(), Some(false), "a new box arrives unticked");
+        assert_eq!(
+            d.task_checked_at_caret(),
+            Some(false),
+            "a new box arrives unticked"
+        );
         d.toggle_task_item();
         assert_eq!(d.source, "- plain\n");
     }
@@ -7208,7 +7509,10 @@ mod tests {
         d.caret = 4;
         d.toggle_task_checked();
         assert_eq!(d.source, "- plain\n", "nothing written");
-        assert!(d.status.is_some(), "the refusal should reach the status line");
+        assert!(
+            d.status.is_some(),
+            "the refusal should reach the status line"
+        );
     }
 
     #[test]
@@ -7232,7 +7536,10 @@ mod tests {
         d.insert_thematic_break();
         assert_eq!(d.source, "before \n\n---\n\nafter\n");
         assert_eq!(d.selection(), None);
-        assert_eq!(kind_at(&mut d, "before \n\n".len()), Some(Kind::ThematicBreak));
+        assert_eq!(
+            kind_at(&mut d, "before \n\n".len()),
+            Some(Kind::ThematicBreak)
+        );
     }
 
     #[test]
@@ -7483,7 +7790,12 @@ mod tests {
         // the list either way — so both keep the whole block intact and take the
         // rule after it. A caret in a quote is likewise left alone.
         for (name, body, caret, want) in [
-            ("code", "```\nfn x() {}\n```\n", 8, "```\nfn x() {}\n```\n\n---\n"),
+            (
+                "code",
+                "```\nfn x() {}\n```\n",
+                8,
+                "```\nfn x() {}\n```\n\n---\n",
+            ),
             ("list", "- one two\n", 6, "- one two\n\n---\n"),
             ("quote", "> one two\n", 6, "> one two\n>\n> ---\n"),
         ] {
@@ -7674,7 +7986,10 @@ mod tests {
         assert_eq!(d.source, "hi\n");
         assert_eq!(media_count(&mut d), 0, "the picture went, in one piece");
         d.undo();
-        assert_eq!(d.source, "hi\n\n![](p.png)\n", "and comes back in one piece");
+        assert_eq!(
+            d.source, "hi\n\n![](p.png)\n",
+            "and comes back in one piece"
+        );
     }
 
     #[test]
@@ -7702,10 +8017,18 @@ mod tests {
 
     #[test]
     fn forward_delete_past_a_block_picture_steps_over_the_boundary() {
-        let mut d = doc_at_picture("pic_del_after", "hi\n\n![](p.png)\n\nbye\n", MediaStop::After);
+        let mut d = doc_at_picture(
+            "pic_del_after",
+            "hi\n\n![](p.png)\n\nbye\n",
+            MediaStop::After,
+        );
         d.delete_forward();
         assert_eq!(d.source, "hi\n\n![](p.png)\n\nbye\n", "nothing deleted");
-        assert_eq!(d.caret, d.source.find("bye").unwrap(), "the caret stepped down to `bye`");
+        assert_eq!(
+            d.caret,
+            d.source.find("bye").unwrap(),
+            "the caret stepped down to `bye`"
+        );
     }
 
     #[test]
@@ -7730,7 +8053,10 @@ mod tests {
         d.delete_word_back();
         assert_eq!(d.source, "hi there\n\n![](p.png)\n");
         d.delete_word_back();
-        assert_eq!(d.source, "hi \n\n![](p.png)\n", "the word above went, the picture stayed");
+        assert_eq!(
+            d.source, "hi \n\n![](p.png)\n",
+            "the word above went, the picture stayed"
+        );
         assert_eq!(media_count(&mut d), 1);
     }
 
@@ -7760,7 +8086,11 @@ mod tests {
         let mut d = wysiwyg_doc("img_rows", "intro\n\n![a cat](cat.png)\n\nend\n");
         assert_eq!(d.vmap.media.len(), 1);
         let img_row = d.vmap.media[0].rows_span.start;
-        assert_eq!(d.vmap.media[0].rows_span, img_row..img_row + 1, "default is one row");
+        assert_eq!(
+            d.vmap.media[0].rows_span,
+            img_row..img_row + 1,
+            "default is one row"
+        );
 
         d.set_media_rows(HashMap::from([("cat.png".to_string(), 4)]));
         d.build_visual(80);
@@ -7769,11 +8099,17 @@ mod tests {
         assert_eq!(span.end - span.start, 4, "reserves the four rows asked for");
         // The label row carries the mark and its glyphs; the three below are blank
         // decoration — drawn, but no caret and no text.
-        assert!(d.vmap.rows[span.start].media.is_some(), "mark rides the first row");
+        assert!(
+            d.vmap.rows[span.start].media.is_some(),
+            "mark rides the first row"
+        );
         for r in (span.start + 1)..span.end {
             assert!(d.vmap.rows[r].decoration, "filler row {r} is decoration");
             assert!(d.vmap.rows[r].glyphs.is_empty(), "filler row {r} is blank");
-            assert!(d.vmap.rows[r].media.is_none(), "only the first row is marked");
+            assert!(
+                d.vmap.rows[r].media.is_none(),
+                "only the first row is marked"
+            );
         }
     }
 
@@ -7800,7 +8136,11 @@ mod tests {
             }
             seen
         };
-        assert_eq!(stops_at(1), stops_at(5), "reserving rows must not add stops");
+        assert_eq!(
+            stops_at(1),
+            stops_at(5),
+            "reserving rows must not add stops"
+        );
     }
 
     #[test]
@@ -7857,7 +8197,11 @@ mod tests {
         assert!(d.caret_in_fenced_code());
 
         d.set_code_language("python");
-        assert!(d.source.starts_with("```python\n"), "source: {:?}", d.source);
+        assert!(
+            d.source.starts_with("```python\n"),
+            "source: {:?}",
+            d.source
+        );
         assert_eq!(d.code_language_at_caret().as_deref(), Some("python"));
 
         // Clearing it leaves a bare fence and no label.
@@ -7890,14 +8234,20 @@ mod tests {
     fn link_destination_at_caret_reads_both_spellings() {
         let mut d = doc_with("link_dest", "see [t](https://x.dev) ok\n");
         d.caret = 5;
-        assert_eq!(d.link_destination_at_caret().as_deref(), Some("https://x.dev"));
+        assert_eq!(
+            d.link_destination_at_caret().as_deref(),
+            Some("https://x.dev")
+        );
         d.caret = 0;
         assert_eq!(d.link_destination_at_caret(), None);
 
         // An autolink has no `destination`; its text is the URL.
         let mut a = doc_with("link_dest_auto", "see <https://x.dev> ok\n");
         a.caret = 10;
-        assert_eq!(a.link_destination_at_caret().as_deref(), Some("https://x.dev"));
+        assert_eq!(
+            a.link_destination_at_caret().as_deref(),
+            Some("https://x.dev")
+        );
         a.caret = 21;
         assert_eq!(a.link_destination_at_caret(), None);
     }
@@ -7933,7 +8283,10 @@ mod tests {
         assert!(d.source[hit.start..].starts_with("## The Second Part"));
         // Bounded by the next heading that isn't under it, so a peek shows the
         // section rather than only its title.
-        assert_eq!(&d.source[hit.start..hit.end], "## The Second Part\n\nbody\n\n");
+        assert_eq!(
+            &d.source[hit.start..hit.end],
+            "## The Second Part\n\nbody\n\n"
+        );
 
         // A subsection does not end its parent: `# Title` runs to `## Third`'s
         // sibling only because there is no other `#`, so it covers the lot.
@@ -7984,12 +8337,22 @@ mod tests {
         let mut d = doc_with("fn_insert", "A claim and more.\n");
         d.caret = 7; // just past "A claim"
         d.insert_footnote();
-        assert!(d.source.starts_with("A claim[^1] and more."), "{:?}", d.source);
-        assert!(d.source.contains("[^1]:"), "the definition too: {:?}", d.source);
+        assert!(
+            d.source.starts_with("A claim[^1] and more."),
+            "{:?}",
+            d.source
+        );
+        assert!(
+            d.source.contains("[^1]:"),
+            "the definition too: {:?}",
+            d.source
+        );
         assert_eq!(d.status, None);
 
         let reference = d.source.find("[^1]").unwrap();
-        let note = d.footnote_at(reference + 2).expect("the reference just written");
+        let note = d
+            .footnote_at(reference + 2)
+            .expect("the reference just written");
         assert_eq!(note.label, "1");
         assert_eq!(note.text.as_deref(), Some(""), "the note starts empty");
         assert_eq!(Some(d.caret), note.offset, "the caret waits in the note");
@@ -8022,7 +8385,11 @@ mod tests {
         d.caret = d.source.find(" c").unwrap();
         d.insert_footnote();
         assert!(d.source.contains("[^1]:"), "1 is free: {:?}", d.source);
-        assert!(d.source.starts_with("a[^2] b[^why][^1] c"), "{:?}", d.source);
+        assert!(
+            d.source.starts_with("a[^2] b[^why][^1] c"),
+            "{:?}",
+            d.source
+        );
     }
 
     #[test]
@@ -8034,7 +8401,11 @@ mod tests {
         d.anchor = Some(2);
         d.caret = 7; // "claim" selected
         d.insert_footnote();
-        assert!(d.source.starts_with("A claim[^1] and more."), "{:?}", d.source);
+        assert!(
+            d.source.starts_with("A claim[^1] and more."),
+            "{:?}",
+            d.source
+        );
     }
 
     #[test]
@@ -8048,7 +8419,9 @@ mod tests {
         d.insert_footnote();
         d.insert("the note");
         assert_eq!(d.source, "A claim[^1] and more.\n\n[^1]: the note\n");
-        let back = d.footnote_definition_at_caret().expect("still in the note we just typed");
+        let back = d
+            .footnote_definition_at_caret()
+            .expect("still in the note we just typed");
         assert_eq!(back.label, "1");
         // …and following it lands on the reference's label, where a reader's
         // return leg lands.
@@ -8091,7 +8464,11 @@ mod tests {
         d.place_caret(7, false);
         d.insert_footnote();
         d.build_visual(80); // the frame a frontend draws after the edit
-        assert_eq!(d.vmap.snap_to_stop(d.caret), d.caret, "the caret sits on a stop");
+        assert_eq!(
+            d.vmap.snap_to_stop(d.caret),
+            d.caret,
+            "the caret sits on a stop"
+        );
         let (row, _) = d.caret_pos();
         assert!(
             drawn_rows(&d)[row].contains("[1]"),
@@ -8106,7 +8483,9 @@ mod tests {
         // blank line, as one has to.
         let mut d = doc_with("fn_at_caret", "A claim[^1] and more.\n\n[^1]: the note\n");
         d.caret = 9;
-        let f = d.footnote_at_caret().expect("the caret stands in a reference");
+        let f = d
+            .footnote_at_caret()
+            .expect("the caret stands in a reference");
         assert_eq!(f.label, "1");
         assert_eq!(f.text.as_deref(), Some("the note"));
         // The offset points at the note's first word, not at the definition's
@@ -8158,7 +8537,10 @@ mod tests {
         let f = d.footnote_at_caret().expect("a reference");
         assert_eq!(f.text.as_deref(), Some("first para.\n\n    second para."));
         // And it stops there — `After.` is the next block, not more note.
-        assert_eq!(&src[f.offset.unwrap()..f.end.unwrap()], f.text.as_deref().unwrap());
+        assert_eq!(
+            &src[f.offset.unwrap()..f.end.unwrap()],
+            f.text.as_deref().unwrap()
+        );
         assert!(!f.text.as_deref().unwrap().contains("After"));
     }
 
@@ -8178,7 +8560,10 @@ mod tests {
 
     #[test]
     fn footnote_at_caret_ignores_a_caret_that_stands_in_no_reference() {
-        let mut d = doc_with("fn_at_caret_none", "A claim[^1] and more.\n\n[^1]: the note\n");
+        let mut d = doc_with(
+            "fn_at_caret_none",
+            "A claim[^1] and more.\n\n[^1]: the note\n",
+        );
         d.caret = 2; // in the prose
         assert_eq!(d.footnote_at_caret(), None);
     }
@@ -8191,11 +8576,18 @@ mod tests {
         let mut d = doc_with("fn_vs_link", "a[^1] b [t](https://x.dev)\n\n[^1]: note\n");
         d.caret = 3; // the `1` of `[^1]`
         assert!(d.footnote_at_caret().is_some());
-        assert_eq!(d.link_destination_at_caret(), None, "a reference is not a link");
+        assert_eq!(
+            d.link_destination_at_caret(),
+            None,
+            "a reference is not a link"
+        );
 
         d.caret = 10; // inside the link's label
         assert_eq!(d.footnote_at_caret(), None, "a link is not a reference");
-        assert_eq!(d.link_destination_at_caret().as_deref(), Some("https://x.dev"));
+        assert_eq!(
+            d.link_destination_at_caret().as_deref(),
+            Some("https://x.dev")
+        );
     }
 
     #[test]
@@ -8206,7 +8598,9 @@ mod tests {
         // reference", which is the wrong thing to tell a reader.
         let mut d = doc_with("fn_undefined", "A claim[^99] and more.\n");
         d.caret = 9;
-        let f = d.footnote_at_caret().expect("the reference is still a reference");
+        let f = d
+            .footnote_at_caret()
+            .expect("the reference is still a reference");
         assert_eq!(f.label, "99");
         assert_eq!(f.text, None);
         assert_eq!(f.offset, None);
@@ -8220,7 +8614,9 @@ mod tests {
         let src = "see[^note] here\n\n[^note]: first line\n    second line\n";
         let mut d = doc_with("fn_word_label", src);
         d.caret = 6;
-        let f = d.footnote_at_caret().expect("the caret stands in a reference");
+        let f = d
+            .footnote_at_caret()
+            .expect("the caret stands in a reference");
         assert_eq!(f.label, "note");
         assert_eq!(f.text.as_deref(), Some("first line\n    second line"));
     }
@@ -8277,7 +8673,10 @@ mod tests {
         assert_eq!(d.footnote_definition_at_caret(), None);
         d.caret = 9; // the reference
         assert_eq!(d.footnote_definition_at_caret(), None);
-        assert!(d.footnote_at_caret().is_some(), "which is the reference's own query");
+        assert!(
+            d.footnote_at_caret().is_some(),
+            "which is the reference's own query"
+        );
     }
 
     #[test]
@@ -8303,7 +8702,11 @@ mod tests {
         let mut d = doc_with("fn_def_repeat", src);
         d.caret = src.find("the note").unwrap();
         let f = d.footnote_definition_at_caret().expect("a definition");
-        assert_eq!(f.offset, Some(5), "the first `[^a]`'s label, not the second's");
+        assert_eq!(
+            f.offset,
+            Some(5),
+            "the first `[^a]`'s label, not the second's"
+        );
         assert_eq!(&src[3..7], "[^a]");
     }
 
@@ -8322,7 +8725,11 @@ mod tests {
         let mut d = doc_with("fn_round", "A claim[^1] and more.\n\n[^1]: the note\n");
         d.build_map(None);
         d.place_caret(9, false);
-        let down = d.footnote_at_caret().expect("a reference").offset.expect("a note");
+        let down = d
+            .footnote_at_caret()
+            .expect("a reference")
+            .offset
+            .expect("a note");
         d.place_caret(down, false);
         let up = d
             .footnote_definition_at_caret()
@@ -8356,7 +8763,10 @@ mod tests {
         d.caret = 4;
         d.insert_link("a\nb");
         assert_eq!(d.source, "word\n"); // untouched, not quietly rewritten
-        assert!(d.status.is_some(), "InvalidArgument should reach the status line");
+        assert!(
+            d.status.is_some(),
+            "InvalidArgument should reach the status line"
+        );
         assert!(!d.dirty);
     }
 
@@ -8404,7 +8814,10 @@ mod tests {
         d.place_caret(2, true); // drag into the gap
         assert!(d.vmap.is_stop(d.caret), "caret {} is not a stop", d.caret);
         let (s, e) = d.selection().expect("a selection");
-        assert!(d.vmap.is_stop(s) && d.vmap.is_stop(e), "selection {s}..{e} off a stop");
+        assert!(
+            d.vmap.is_stop(s) && d.vmap.is_stop(e),
+            "selection {s}..{e} off a stop"
+        );
     }
 
     #[test]
@@ -8460,7 +8873,14 @@ mod tests {
         let mut ed =
             twig::Editor::new_ext(source.as_bytes(), Format::Markdown, parse_extensions()).unwrap();
         let nodes = ed.nodes().unwrap();
-        crate::wysiwyg::build(&nodes, source, None, false, &std::collections::HashMap::new(), reveal)
+        crate::wysiwyg::build(
+            &nodes,
+            source,
+            None,
+            false,
+            &std::collections::HashMap::new(),
+            reveal,
+        )
     }
 
     fn maps_differ(a: &crate::wysiwyg::VisualMap, b: &crate::wysiwyg::VisualMap) -> bool {
@@ -8513,7 +8933,9 @@ mod tests {
                 let pre = d.source.clone();
                 let action;
                 if step % 3 == 0 && pos < len {
-                    let end = (pos + 1..=len).find(|&i| d.source.is_char_boundary(i)).unwrap();
+                    let end = (pos + 1..=len)
+                        .find(|&i| d.source.is_char_boundary(i))
+                        .unwrap();
                     action = format!("delete [{pos},{end})");
                     d.edit(pos, end, "");
                 } else {
@@ -8560,7 +8982,9 @@ mod tests {
                 let pre = d.source.clone();
                 let action;
                 if step % 3 == 0 && pos < len {
-                    let end = (pos + 1..=len).find(|&i| d.source.is_char_boundary(i)).unwrap();
+                    let end = (pos + 1..=len)
+                        .find(|&i| d.source.is_char_boundary(i))
+                        .unwrap();
                     action = format!("delete [{pos},{end})");
                     d.edit(pos, end, "");
                 } else {
@@ -8613,7 +9037,10 @@ mod tests {
         caret_at(&mut hidden, "one");
         let key = hidden.vmap_key.clone();
         caret_at(&mut hidden, "two");
-        assert_eq!(hidden.vmap_key, key, "a hidden mode rebuilds nothing on motion");
+        assert_eq!(
+            hidden.vmap_key, key,
+            "a hidden mode rebuilds nothing on motion"
+        );
     }
 
     #[test]
@@ -8669,8 +9096,14 @@ mod tests {
         assert_eq!(d.source, "abc\n\n\n");
         d.build_visual(80);
         let (row, _) = d.caret_pos();
-        assert!(row >= 2, "caret should have moved down to the new line, got row {row}");
-        assert!(d.vmap.num_rows() >= 3, "the blank lines should render as rows");
+        assert!(
+            row >= 2,
+            "caret should have moved down to the new line, got row {row}"
+        );
+        assert!(
+            d.vmap.num_rows() >= 3,
+            "the blank lines should render as rows"
+        );
     }
 
     #[test]
@@ -8686,10 +9119,21 @@ mod tests {
         d.build_visual(80);
         let (row, col) = d.caret_pos();
         assert_eq!(col, 0, "caret should start an empty line, not sit in text");
-        assert_eq!(d.vmap.row_width(row), 0, "caret's row must be empty, not 'World'");
-        assert!(row >= 2, "a blank spacer row should sit above the caret, got row {row}");
+        assert_eq!(
+            d.vmap.row_width(row),
+            0,
+            "caret's row must be empty, not 'World'"
+        );
+        assert!(
+            row >= 2,
+            "a blank spacer row should sit above the caret, got row {row}"
+        );
         // The row above the caret is a real (empty) gap, and "Hello" stays put.
-        assert_eq!(d.vmap.row_width(row - 1), 0, "the row above the caret is a gap");
+        assert_eq!(
+            d.vmap.row_width(row - 1),
+            0,
+            "the row above the caret is a gap"
+        );
         let row0: String = d.vmap.rows[0].glyphs.iter().map(|g| g.ch).collect();
         assert_eq!(row0, "Hello", "the paragraph above the caret must not move");
     }
@@ -8705,8 +9149,15 @@ mod tests {
         d.build_visual(80);
         let (row, col) = d.caret_pos();
         assert_eq!(col, 0);
-        assert!(row >= 2, "caret should sit below a blank spacer, got row {row}");
-        assert_eq!(d.vmap.row_width(row - 1), 0, "the row above the caret is a gap");
+        assert!(
+            row >= 2,
+            "caret should sit below a blank spacer, got row {row}"
+        );
+        assert_eq!(
+            d.vmap.row_width(row - 1),
+            0,
+            "the row above the caret is a gap"
+        );
     }
 
     #[test]
@@ -8734,7 +9185,11 @@ mod tests {
         let body = format!("{fm}# leaf\n\nbody\n");
         let mut d = wysiwyg_doc("wys_fm", &body);
         // Opening lifts the caret out of the now-hidden frontmatter.
-        assert_eq!(d.caret, fm.len(), "caret should start at the first real block");
+        assert_eq!(
+            d.caret,
+            fm.len(),
+            "caret should start at the first real block"
+        );
         // Left at the content start can't step back into frontmatter.
         d.move_left(false);
         assert_eq!(d.caret, fm.len(), "left must not enter frontmatter");
@@ -8745,7 +9200,10 @@ mod tests {
         d.select_all();
         let sel = d.selected_text().unwrap().to_string();
         assert!(!sel.contains("title"), "copy leaked frontmatter: {sel:?}");
-        assert!(sel.starts_with("# leaf"), "selection should begin at content: {sel:?}");
+        assert!(
+            sel.starts_with("# leaf"),
+            "selection should begin at content: {sel:?}"
+        );
     }
 
     #[test]
@@ -8760,7 +9218,10 @@ mod tests {
         d.backspace();
         assert_eq!(d.source, body, "backspace must not touch frontmatter");
         d.delete_word_back();
-        assert_eq!(d.source, body, "word-delete must not touch frontmatter either");
+        assert_eq!(
+            d.source, body,
+            "word-delete must not touch frontmatter either"
+        );
     }
 
     #[test]
@@ -8777,11 +9238,13 @@ mod tests {
         d.caret = body.find("hello").unwrap() + "hello".len();
         d.insert("!");
         assert_eq!(
-            d.source,
-            ":::vis{.public .family}\nhello!\n:::\nafter\n",
+            d.source, ":::vis{.public .family}\nhello!\n:::\nafter\n",
             "typing inside the block edits its content in place"
         );
-        assert!(d.source.contains(":::vis{.public .family}"), "opening fence survives");
+        assert!(
+            d.source.contains(":::vis{.public .family}"),
+            "opening fence survives"
+        );
         assert!(d.source.contains(":::\nafter"), "closing fence survives");
     }
 
@@ -8794,7 +9257,10 @@ mod tests {
         let mut d = doc_with("src_fm", &body);
         d.select_all();
         let sel = d.selected_text().unwrap();
-        assert!(sel.contains("title"), "source view should select everything");
+        assert!(
+            sel.contains("title"),
+            "source view should select everything"
+        );
         d.move_doc_start(false);
         assert_eq!(d.caret, 0, "source view can reach offset 0");
     }
@@ -8809,7 +9275,11 @@ mod tests {
         let mut d = wysiwyg_doc("tbl_right", TABLE);
         d.caret = TABLE.find("Name").unwrap() + 4; // just after "Name"
         d.move_right(false);
-        assert_eq!(d.caret, TABLE.find("Qty").unwrap(), "should land in the next cell");
+        assert_eq!(
+            d.caret,
+            TABLE.find("Qty").unwrap(),
+            "should land in the next cell"
+        );
         let (r, c) = d.caret_pos();
         assert_eq!(d.vmap.rows[r].glyphs[c].ch, 'Q');
     }
@@ -8819,7 +9289,11 @@ mod tests {
         let mut d = wysiwyg_doc("tbl_left", TABLE);
         d.caret = TABLE.find("Qty").unwrap();
         d.move_left(false);
-        assert_eq!(d.caret, TABLE.find("Name").unwrap() + 4, "end of the previous cell");
+        assert_eq!(
+            d.caret,
+            TABLE.find("Name").unwrap() + 4,
+            "end of the previous cell"
+        );
     }
 
     #[test]
@@ -8829,7 +9303,11 @@ mod tests {
         let mut d = wysiwyg_doc("tbl_down", TABLE);
         d.caret = TABLE.find("Name").unwrap();
         d.move_down(false);
-        assert_eq!(d.caret, TABLE.find("Pear").unwrap(), "one Down reaches the body row");
+        assert_eq!(
+            d.caret,
+            TABLE.find("Pear").unwrap(),
+            "one Down reaches the body row"
+        );
         d.move_down(false);
         assert_eq!(d.caret, TABLE.find("Fig").unwrap());
     }
@@ -8841,7 +9319,11 @@ mod tests {
         // A hop lands with the destination cell's whole content selected, the
         // caret at its end — so typing replaces the cell like a form field.
         assert!(d.cell_hop(true));
-        assert_eq!(d.selected_text(), Some("Qty"), "the target cell comes up selected");
+        assert_eq!(
+            d.selected_text(),
+            Some("Qty"),
+            "the target cell comes up selected"
+        );
         assert_eq!(d.caret, TABLE.find("Qty").unwrap() + "Qty".len());
         assert!(d.cell_hop(true), "Tab wraps onto the next row's first cell");
         assert_eq!(d.selected_text(), Some("Pear"));
@@ -8907,7 +9389,11 @@ mod tests {
         let mut d = wysiwyg_doc("tbl_ret", TABLE);
         d.caret = TABLE.find("Name").unwrap();
         assert!(d.cell_return(), "acts as a table key");
-        assert_eq!(d.selected_text(), Some("Pear"), "Return drops one cell, selecting it");
+        assert_eq!(
+            d.selected_text(),
+            Some("Pear"),
+            "Return drops one cell, selecting it"
+        );
         // From the last row, Return appends a row and enters it.
         d.caret = TABLE.rfind("Fig").unwrap();
         let rows_before = d.source.matches('\n').count();
@@ -8922,7 +9408,10 @@ mod tests {
         d.caret = 4;
         assert!(!d.cell_return(), "no table: the frontend inserts a newline");
         assert!(!d.cell_tab(true), "no table: the frontend indents");
-        assert!(!d.cell_line_break(), "no table: the frontend breaks the line");
+        assert!(
+            !d.cell_line_break(),
+            "no table: the frontend breaks the line"
+        );
     }
 
     #[test]
@@ -8930,7 +9419,11 @@ mod tests {
         let mut d = wysiwyg_doc("tbl_break", TABLE);
         d.caret = TABLE.find("Pear").unwrap() + 4; // just after "Pear"
         assert!(d.cell_line_break(), "acts as a table key");
-        assert!(d.source.contains("Pear<br>"), "spelled as an inline <br>: {}", d.source);
+        assert!(
+            d.source.contains("Pear<br>"),
+            "spelled as an inline <br>: {}",
+            d.source
+        );
         assert!(d.caret_in_table(), "still in the cell, past the break");
         // The break renders as a real line: the "Pear" cell now draws two lines,
         // so the table's picture is one row taller than a single-line table.
@@ -8951,9 +9444,18 @@ mod tests {
         let mut d = wysiwyg_doc("tbl_break_semantic", TABLE);
         d.caret = TABLE.find("Pear").unwrap() + 4;
         assert!(d.cell_line_break());
-        let kinds: Vec<Kind> = d.editor.nodes().unwrap().iter().map(|n| n.kind.clone()).collect();
+        let kinds: Vec<Kind> = d
+            .editor
+            .nodes()
+            .unwrap()
+            .iter()
+            .map(|n| n.kind.clone())
+            .collect();
         assert!(kinds.contains(&Kind::HardBreak), "got {kinds:?}");
-        assert!(!kinds.contains(&Kind::RawInline), "still raw HTML: {kinds:?}");
+        assert!(
+            !kinds.contains(&Kind::RawInline),
+            "still raw HTML: {kinds:?}"
+        );
     }
 
     #[test]
@@ -8966,8 +9468,16 @@ mod tests {
         assert!(d.cell_line_break());
         assert!(d.source.contains("Pear<br>"), "precondition: {}", d.source);
         d.backspace(); // caret sits just past the break
-        assert!(!d.source.contains("<br"), "no half-deleted <br left: {}", d.source);
-        assert!(d.source.contains("| Pear |"), "the cell is back to one line: {}", d.source);
+        assert!(
+            !d.source.contains("<br"),
+            "no half-deleted <br left: {}",
+            d.source
+        );
+        assert!(
+            d.source.contains("| Pear |"),
+            "the cell is back to one line: {}",
+            d.source
+        );
     }
 
     #[test]
@@ -8977,8 +9487,16 @@ mod tests {
         assert!(d.cell_line_break());
         d.caret = TABLE.find("Pear").unwrap() + 4; // back onto the break's start
         d.delete_forward();
-        assert!(!d.source.contains("<br"), "no half-deleted <br: {}", d.source);
-        assert!(d.source.contains("| Pear |"), "cell back to one line: {}", d.source);
+        assert!(
+            !d.source.contains("<br"),
+            "no half-deleted <br: {}",
+            d.source
+        );
+        assert!(
+            d.source.contains("| Pear |"),
+            "cell back to one line: {}",
+            d.source
+        );
     }
 
     #[test]
@@ -8990,10 +9508,19 @@ mod tests {
         let mut d = Doc::from_source(src.to_string(), Format::Djot).unwrap();
         d.caret = src.find("Pear").unwrap() + 4;
         assert!(d.caret_in_table(), "caret should be inside the djot table");
-        assert!(d.cell_line_break(), "the key is consumed, not passed to the frontend");
+        assert!(
+            d.cell_line_break(),
+            "the key is consumed, not passed to the frontend"
+        );
         assert_eq!(d.source, src, "the djot cell is left untouched");
-        assert!(!d.source.contains("<br>"), "no non-idiomatic <br> spliced into djot");
-        assert!(d.status.is_some(), "the refusal is surfaced on the status line");
+        assert!(
+            !d.source.contains("<br>"),
+            "no non-idiomatic <br> spliced into djot"
+        );
+        assert!(
+            d.status.is_some(),
+            "the refusal is surfaced on the status line"
+        );
     }
 
     #[test]
@@ -9015,7 +9542,11 @@ mod tests {
         let mut d = doc_with("emoji", &format!("a{family}b\n"));
         d.caret = 1; // just after 'a', before the emoji
         d.move_right(false);
-        assert_eq!(d.caret, 1 + family.len(), "one step clears the whole cluster");
+        assert_eq!(
+            d.caret,
+            1 + family.len(),
+            "one step clears the whole cluster"
+        );
         assert_eq!(&d.source[d.caret..d.caret + 1], "b");
 
         d.backspace(); // delete the emoji as a unit
@@ -9029,7 +9560,11 @@ mod tests {
         let mut d = doc_with("combining", "e\u{0301}x\n");
         d.caret = 0;
         d.move_right(false);
-        assert_eq!(d.caret, "e\u{0301}".len(), "steps past base + combining mark");
+        assert_eq!(
+            d.caret,
+            "e\u{0301}".len(),
+            "steps past base + combining mark"
+        );
     }
 
     #[test]
@@ -9223,7 +9758,10 @@ mod tests {
         d.insert("X"); // "aXb\n"
         assert_eq!(d.source, "aXb\n");
         d.undo();
-        assert_eq!(d.source, "ab\n", "first undo removes only the post-move insert");
+        assert_eq!(
+            d.source, "ab\n",
+            "first undo removes only the post-move insert"
+        );
         d.undo();
         assert_eq!(d.source, "\n", "second undo removes the earlier run");
     }
@@ -9247,7 +9785,10 @@ mod tests {
         d.insert("!");
         assert!(d.dirty);
         d.undo();
-        assert!(!d.dirty, "undoing to the saved source is not a modification");
+        assert!(
+            !d.dirty,
+            "undoing to the saved source is not a modification"
+        );
     }
 
     #[test]
@@ -9375,7 +9916,11 @@ mod tests {
             assert_eq!(d.source, "a **word** b\n");
             d.undo();
             assert_eq!(d.source, "a word b\n");
-            assert_eq!(d.selection(), Some((2, 6)), "the toggled selection comes back");
+            assert_eq!(
+                d.selection(),
+                Some((2, 6)),
+                "the toggled selection comes back"
+            );
         }
     }
 
@@ -9399,7 +9944,10 @@ mod tests {
             assert_eq!(d.status.as_deref(), Some("nothing to redo"));
             d.undo();
             assert_eq!(d.source, "hello world\n");
-            assert_eq!(d.caret, 0, "the surviving step's caret, not the dropped one");
+            assert_eq!(
+                d.caret, 0,
+                "the surviving step's caret, not the dropped one"
+            );
         }
     }
 
@@ -9457,7 +10005,11 @@ mod tests {
             d.caret = 6; // on the second item
             d.indent();
             assert_eq!(d.source, "- a\n  - b\n");
-            let lists = d.nodes().iter().filter(|n| n.kind == Kind::BulletList).count();
+            let lists = d
+                .nodes()
+                .iter()
+                .filter(|n| n.kind == Kind::BulletList)
+                .count();
             assert_eq!(lists, 2, "the indented item is a nested list");
         }
     }
@@ -9473,7 +10025,11 @@ mod tests {
             d.caret = d.source.find('b').unwrap();
             d.indent();
             assert_eq!(d.source, "1. a\n   1. b\n2. c\n");
-            let lists = d.nodes().iter().filter(|n| n.kind == Kind::OrderedList).count();
+            let lists = d
+                .nodes()
+                .iter()
+                .filter(|n| n.kind == Kind::OrderedList)
+                .count();
             assert_eq!(lists, 2, "the indented item is a nested ordered list");
         }
     }
@@ -9503,7 +10059,11 @@ mod tests {
         let mut d = doc_in(View::Wysiwyg, "hidden_literal", "");
         d.insert("*hi*");
         assert_eq!(d.source, "\\*hi\\*");
-        assert!(d.nodes().iter().all(|n| n.kind != Kind::Emph && n.kind != Kind::Strong));
+        assert!(
+            d.nodes()
+                .iter()
+                .all(|n| n.kind != Kind::Emph && n.kind != Kind::Strong)
+        );
     }
 
     #[test]
@@ -9593,20 +10153,36 @@ mod tests {
         // The mode's whole claim: the caret's line shows its raw delimiters and
         // every other line stays resolved. Two paragraphs with identical markup
         // so the only difference between the rows is where the caret is.
-        let mut d = doc_in(View::Wysiwyg, "reveal_caret_line", "*one* here\n\n*two* there\n");
+        let mut d = doc_in(
+            View::Wysiwyg,
+            "reveal_caret_line",
+            "*one* here\n\n*two* there\n",
+        );
         d.set_markup_mode(MarkupMode::Full);
 
         caret_at(&mut d, "one");
         let rows = drawn_rows(&d);
-        assert!(rows.iter().any(|r| r == "*one* here"), "caret's line raw: {rows:?}");
-        assert!(rows.iter().any(|r| r == "two there"), "other line resolved: {rows:?}");
+        assert!(
+            rows.iter().any(|r| r == "*one* here"),
+            "caret's line raw: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|r| r == "two there"),
+            "other line resolved: {rows:?}"
+        );
 
         // Move to the other paragraph: the reveal follows, and the line just
         // left goes back to being resolved.
         caret_at(&mut d, "two");
         let rows = drawn_rows(&d);
-        assert!(rows.iter().any(|r| r == "*two* there"), "caret's line raw: {rows:?}");
-        assert!(rows.iter().any(|r| r == "one here"), "left line resolved: {rows:?}");
+        assert!(
+            rows.iter().any(|r| r == "*two* there"),
+            "caret's line raw: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|r| r == "one here"),
+            "left line resolved: {rows:?}"
+        );
     }
 
     #[test]
@@ -9619,8 +10195,14 @@ mod tests {
             d.set_markup_mode(mode);
             caret_at(&mut d, "one");
             let rows = drawn_rows(&d);
-            assert!(rows.iter().any(|r| r == "one here"), "{mode:?} hides: {rows:?}");
-            assert!(!rows.iter().any(|r| r.contains('*')), "{mode:?} shows no `*`: {rows:?}");
+            assert!(
+                rows.iter().any(|r| r == "one here"),
+                "{mode:?} hides: {rows:?}"
+            );
+            assert!(
+                !rows.iter().any(|r| r.contains('*')),
+                "{mode:?} shows no `*`: {rows:?}"
+            );
         }
     }
 
@@ -9648,11 +10230,18 @@ mod tests {
         d.set_markup_mode(MarkupMode::Full);
 
         caret_at(&mut d, "Title");
-        assert!(drawn_rows(&d).iter().any(|r| r == "# Title"), "{:?}", drawn_rows(&d));
+        assert!(
+            drawn_rows(&d).iter().any(|r| r == "# Title"),
+            "{:?}",
+            drawn_rows(&d)
+        );
 
         caret_at(&mut d, "body");
         let rows = drawn_rows(&d);
-        assert!(rows.iter().any(|r| r == "Title"), "hashes hidden again: {rows:?}");
+        assert!(
+            rows.iter().any(|r| r == "Title"),
+            "hashes hidden again: {rows:?}"
+        );
     }
 
     #[test]
@@ -9665,7 +10254,10 @@ mod tests {
         caret_at(&mut d, "em");
         let opener = d.source.find('*').unwrap();
         assert!(d.vmap.is_stop(opener), "the opening `*` is a caret stop");
-        assert!(d.vmap.is_stop(opener + 3), "the closing `*` is a caret stop");
+        assert!(
+            d.vmap.is_stop(opener + 3),
+            "the closing `*` is a caret stop"
+        );
     }
 
     #[test]
@@ -9677,8 +10269,14 @@ mod tests {
         d.set_markup_mode(MarkupMode::Full);
         caret_at(&mut d, "Title");
         let rows = drawn_rows(&d);
-        assert!(rows.iter().any(|r| r == "Title"), "title renders alone: {rows:?}");
-        assert!(!rows.iter().any(|r| r.contains('=')), "no underline leaks in: {rows:?}");
+        assert!(
+            rows.iter().any(|r| r == "Title"),
+            "title renders alone: {rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|r| r.contains('=')),
+            "no underline leaks in: {rows:?}"
+        );
     }
 
     #[test]
@@ -9706,9 +10304,18 @@ mod tests {
             d.caret = d.source.find("- \n").unwrap() + 2; // after the empty marker
             d.indent();
             assert_eq!(d.source, "- hello\n  * \n");
-            assert!(d.nodes().iter().all(|n| n.kind != Kind::Heading), "no heading");
+            assert!(
+                d.nodes().iter().all(|n| n.kind != Kind::Heading),
+                "no heading"
+            );
             // And it's genuinely a nested list, not a flat one.
-            assert_eq!(d.nodes().iter().filter(|n| n.kind == Kind::BulletList).count(), 2);
+            assert_eq!(
+                d.nodes()
+                    .iter()
+                    .filter(|n| n.kind == Kind::BulletList)
+                    .count(),
+                2
+            );
         }
     }
 
@@ -9790,7 +10397,10 @@ mod tests {
         d.caret = d.source.find('T').unwrap(); // right after `## `
         d.backspace();
         assert_eq!(d.source, "Title\n");
-        assert_eq!(d.caret, 0, "the caret stays with the text it was in front of");
+        assert_eq!(
+            d.caret, 0,
+            "the caret stays with the text it was in front of"
+        );
     }
 
     #[test]
@@ -9846,7 +10456,11 @@ mod tests {
         d.caret = d.source.find('b').unwrap();
         d.outdent();
         assert_eq!(d.source, "1. a\n2. b\n3. c\n");
-        let lists = d.nodes().iter().filter(|n| n.kind == Kind::OrderedList).count();
+        let lists = d
+            .nodes()
+            .iter()
+            .filter(|n| n.kind == Kind::OrderedList)
+            .count();
         assert_eq!(lists, 1, "back to one flat list");
     }
 
@@ -9855,10 +10469,7 @@ mod tests {
         let mut d = doc_with("tbl_ins_row", "| a | b |\n| --- | --- |\n| 1 | 2 |\n");
         d.caret = d.source.find('1').unwrap(); // in the body row
         d.table_insert_row(true);
-        assert_eq!(
-            d.source,
-            "| a | b |\n| --- | --- |\n| 1 | 2 |\n|  |  |\n"
-        );
+        assert_eq!(d.source, "| a | b |\n| --- | --- |\n| 1 | 2 |\n|  |  |\n");
     }
 
     #[test]
@@ -9898,12 +10509,16 @@ mod tests {
         // element replaced by `| a | b |`, silently, on one press of a toolbar
         // button. Every grid op went the same way.
         let src = "<table><tr><td>a</td><td>b</td></tr><tr><td>c</td><td>d</td></tr></table>\n";
+        // A table of named operations, which is what it looks like.
+        #[allow(clippy::type_complexity)]
         let ops: [(&str, &dyn Fn(&mut Doc)); 7] = [
             ("insert row", &|d: &mut Doc| d.table_insert_row(true)),
             ("delete row", &|d: &mut Doc| d.table_delete_row()),
             ("insert column", &|d: &mut Doc| d.table_insert_column(true)),
             ("delete column", &|d: &mut Doc| d.table_delete_column()),
-            ("align", &|d: &mut Doc| d.table_set_alignment(Alignment::Right)),
+            ("align", &|d: &mut Doc| {
+                d.table_set_alignment(Alignment::Right)
+            }),
             ("move row", &|d: &mut Doc| d.table_move_row(true)),
             ("move column", &|d: &mut Doc| d.table_move_column(true)),
         ];
@@ -9913,7 +10528,10 @@ mod tests {
             assert!(d.caret_in_table(), "{name}: the caret really is in a table");
             op(&mut d);
             assert_eq!(d.source, src, "{name} rewrote an HTML table");
-            assert!(!d.dirty, "{name} marked the document dirty without editing it");
+            assert!(
+                !d.dirty,
+                "{name} marked the document dirty without editing it"
+            );
             assert!(d.status.is_some(), "{name} refused without saying why");
         }
     }
@@ -9925,16 +10543,22 @@ mod tests {
         // destination lives in an attribute — different *shapes*, not a
         // different alphabet, so twig spells none of them and neither does leaf.
         let src = "<h1>Title</h1>\n<p>Hello world</p>\n<ul><li>one</li></ul>\n";
+        // A table of named operations, which is what it looks like.
+        #[allow(clippy::type_complexity)]
         let ops: [(&str, &dyn Fn(&mut Doc)); 9] = [
             ("heading", &|d: &mut Doc| d.toggle_heading(2)),
-            ("paragraph", &|d: &mut Doc| d.set_block(BlockKind::Paragraph)),
+            ("paragraph", &|d: &mut Doc| {
+                d.set_block(BlockKind::Paragraph)
+            }),
             ("quote", &|d: &mut Doc| d.toggle_blockquote()),
             ("list", &|d: &mut Doc| d.toggle_list(false)),
             ("task item", &|d: &mut Doc| d.toggle_task_item()),
             ("task tick", &|d: &mut Doc| d.toggle_task_checked()),
             ("link", &|d: &mut Doc| d.insert_link("https://example.dev")),
             ("image", &|d: &mut Doc| d.insert_image("pic.png", "alt")),
-            ("video", &|d: &mut Doc| d.insert_media(MediaKind::Video, "clip.mp4", "")),
+            ("video", &|d: &mut Doc| {
+                d.insert_media(MediaKind::Video, "clip.mp4", "")
+            }),
         ];
         for (name, op) in ops {
             let mut d = html_doc(src);
@@ -9943,7 +10567,10 @@ mod tests {
             d.anchor = Some(at + 5); // a selection, for the ops that want one
             op(&mut d);
             assert_eq!(d.source, src, "{name} edited an HTML document");
-            assert!(!d.dirty, "{name} marked the document dirty without editing it");
+            assert!(
+                !d.dirty,
+                "{name} marked the document dirty without editing it"
+            );
             let status = d.status.as_deref().unwrap_or("");
             assert!(
                 status.contains("html"),
@@ -10021,7 +10648,11 @@ mod tests {
         // toolbar must not be built from it.
         let html = Doc::from_source("<p>x</p>\n".into(), Format::Html).unwrap();
         assert!(html.authorable());
-        assert!(!Doc::from_source("<r>x</r>".into(), Format::Xml).unwrap().authorable());
+        assert!(
+            !Doc::from_source("<r>x</r>".into(), Format::Xml)
+                .unwrap()
+                .authorable()
+        );
 
         let caps = html.capabilities();
         assert!(caps.bold && caps.italic && caps.code && caps.mark);
@@ -10037,8 +10668,14 @@ mod tests {
         // can't serve.
         for fmt in [Format::Markdown, Format::Djot] {
             let caps = Capabilities::of(fmt);
-            assert!(caps.heading && caps.blockquote && caps.ordered_list, "{fmt:?}");
-            assert!(caps.task && caps.link && caps.image && caps.table, "{fmt:?}");
+            assert!(
+                caps.heading && caps.blockquote && caps.ordered_list,
+                "{fmt:?}"
+            );
+            assert!(
+                caps.task && caps.link && caps.image && caps.table,
+                "{fmt:?}"
+            );
         }
         assert!(Capabilities::of(Format::Djot).mark);
         assert!(!Capabilities::of(Format::Markdown).mark);
@@ -10060,7 +10697,10 @@ mod tests {
         let mut d = html_doc("<p>Hello</p>\n");
         d.caret = d.source.find("Hello").unwrap();
         d.set_code_language("zig");
-        assert_eq!(d.status.as_deref(), Some("code language: not supported in html"));
+        assert_eq!(
+            d.status.as_deref(),
+            Some("code language: not supported in html")
+        );
         assert!(!d.dirty);
     }
 
@@ -10084,10 +10724,16 @@ mod tests {
             let cells = &d.vmap.tables[0].grid[1].cells;
             (cells[0].start, cells[1].start)
         };
-        assert!(c0 < c1, "the two empty cells have distinct homes: {c0} < {c1}");
+        assert!(
+            c0 < c1,
+            "the two empty cells have distinct homes: {c0} < {c1}"
+        );
         d.caret = c0;
         d.insert("x");
-        assert_eq!(d.source, "| a | b |\n| --- | --- |\n| x |  |\n", "typed inside the cell");
+        assert_eq!(
+            d.source, "| a | b |\n| --- | --- |\n| x |  |\n",
+            "typed inside the cell"
+        );
     }
 
     #[test]
@@ -10103,8 +10749,14 @@ mod tests {
             d.move_right(false);
             seen.insert(d.caret);
         }
-        assert!(seen.contains(&c0), "right arrow reaches the first empty cell");
-        assert!(seen.contains(&c1), "right arrow reaches the second empty cell");
+        assert!(
+            seen.contains(&c0),
+            "right arrow reaches the first empty cell"
+        );
+        assert!(
+            seen.contains(&c1),
+            "right arrow reaches the second empty cell"
+        );
     }
 
     #[test]
@@ -10137,7 +10789,11 @@ mod tests {
             assert_eq!(d.source, "hello\n");
             assert!(!d.dirty, "a no-op is not a modification");
             d.undo();
-            assert_eq!(d.status.as_deref(), Some("nothing to undo"), "spends no undo step");
+            assert_eq!(
+                d.status.as_deref(),
+                Some("nothing to undo"),
+                "spends no undo step"
+            );
             assert_eq!(d.source, "hello\n");
         }
     }
@@ -10182,7 +10838,11 @@ mod tests {
             assert_eq!(d.source, "  one\n\n  two\n");
             d.undo();
             assert_eq!(d.source, "one\n\ntwo\n", "one step, not one per line");
-            assert_eq!(d.selection(), Some((0, 7)), "with the selection it was aimed at");
+            assert_eq!(
+                d.selection(),
+                Some((0, 7)),
+                "with the selection it was aimed at"
+            );
             d.redo();
             assert_eq!(d.source, "  one\n\n  two\n");
             assert_eq!(
@@ -10288,9 +10948,17 @@ mod tests {
             d.move_down(false);
             assert_eq!(d.caret_pos().1, 2, "{tag}: Down keeps the column");
             d.move_down(false);
-            assert_eq!(d.caret, src.len(), "{tag}: Down off the bottom reaches the end");
+            assert_eq!(
+                d.caret,
+                src.len(),
+                "{tag}: Down off the bottom reaches the end"
+            );
             d.move_up(false);
-            assert_eq!(d.caret_pos().1, 2, "{tag}: Up returns to the column Down left");
+            assert_eq!(
+                d.caret_pos().1,
+                2,
+                "{tag}: Up returns to the column Down left"
+            );
         }
     }
 
@@ -10309,7 +10977,10 @@ mod tests {
             d.caret = d.source.len();
             d.move_down(false);
             assert_eq!(d.caret, d.source.len(), "{tag}: already at the end");
-            assert_eq!(d.goal_col, None, "{tag}: a no-op Down latched a goal column");
+            assert_eq!(
+                d.goal_col, None,
+                "{tag}: a no-op Down latched a goal column"
+            );
         }
     }
 
@@ -10335,7 +11006,11 @@ mod tests {
         // caret had left.
         let mut d = wrapped_doc("wrap_home_end");
         d.caret = 19;
-        assert_eq!(d.caret_pos(), (2, 0), "the wrap boundary opens the third row");
+        assert_eq!(
+            d.caret_pos(),
+            (2, 0),
+            "the wrap boundary opens the third row"
+        );
         d.move_end(false);
         assert_eq!(d.caret, 27, "End stalled at the wrap boundary");
         d.move_home(false);
@@ -10351,7 +11026,10 @@ mod tests {
         let mut d = wrapped_doc("wrap_end_twice");
         d.caret = 12; // inside "three", on the second row
         d.move_end(false);
-        assert_eq!(d.caret, 18, "the end of `three four`, before the space the wrap ate");
+        assert_eq!(
+            d.caret, 18,
+            "the end of `three four`, before the space the wrap ate"
+        );
         assert_eq!(d.caret_pos(), (1, 10), "drawn on the row it is the end of");
         d.move_end(false);
         assert_eq!(d.caret, 18, "a second End moved the caret");
@@ -10411,8 +11089,14 @@ mod tests {
     #[test]
     fn move_doc_start_and_end_jump_to_the_edges() {
         let g = |m, f: fn(&mut Doc)| golden("doc_edges", m, f);
-        assert_eq!(g("hello\nwor|ld\n", |d| d.move_doc_start(false)), "|hello\nworld\n");
-        assert_eq!(g("hel|lo\nworld\n", |d| d.move_doc_end(false)), "hello\nworld\n|");
+        assert_eq!(
+            g("hello\nwor|ld\n", |d| d.move_doc_start(false)),
+            "|hello\nworld\n"
+        );
+        assert_eq!(
+            g("hel|lo\nworld\n", |d| d.move_doc_end(false)),
+            "hello\nworld\n|"
+        );
         // Already at the edge: a no-op.
         assert_eq!(g("|hello\n", |d| d.move_doc_start(false)), "|hello\n");
         assert_eq!(g("hello|\n", |d| d.move_doc_end(false)), "hello\n|");
@@ -10421,11 +11105,13 @@ mod tests {
     #[test]
     fn move_doc_start_and_end_extend_the_selection() {
         assert_eq!(
-            golden("doc_edges_ext_end", "hello wor|ld\n", |d| d.move_doc_end(true)),
+            golden("doc_edges_ext_end", "hello wor|ld\n", |d| d
+                .move_doc_end(true)),
             "hello wor[ld\n|]"
         );
         assert_eq!(
-            golden("doc_edges_ext_start", "hello wor|ld\n", |d| d.move_doc_start(true)),
+            golden("doc_edges_ext_start", "hello wor|ld\n", |d| d
+                .move_doc_start(true)),
             "[|hello wor]ld\n"
         );
     }
@@ -10597,8 +11283,14 @@ mod tests {
         let mut d = wysiwyg_doc("tight_heading_walk", "# H\ntext\n");
         d.caret = 2; // the "H"
         let seen = walk_right(&mut d);
-        assert!(seen.len() > 2, "Right stalled at the heading's end: {seen:?}");
-        assert!(seen.contains(&8), "never reached the end of \"text\": {seen:?}");
+        assert!(
+            seen.len() > 2,
+            "Right stalled at the heading's end: {seen:?}"
+        );
+        assert!(
+            seen.contains(&8),
+            "never reached the end of \"text\": {seen:?}"
+        );
     }
 
     #[test]
@@ -10629,7 +11321,11 @@ mod tests {
         // It has to resolve to somewhere the caret can be.
         let mut d = wysiwyg_doc("gap_click", "A\n\nB\n");
         d.click(1, 0, false); // the gap row
-        assert!(d.caret == 1 || d.caret == 3, "click left the caret in the gap at {}", d.caret);
+        assert!(
+            d.caret == 1 || d.caret == 3,
+            "click left the caret in the gap at {}",
+            d.caret
+        );
         d.insert("x");
         // Either edge of the boundary is a fair place to land; inside it isn't.
         assert!(
@@ -10651,9 +11347,15 @@ mod tests {
         assert_eq!(d.source, "A\n\n\n\nB\n");
         d.build_visual(80);
         let (row, _) = d.caret_pos();
-        assert!(d.vmap.row_is_navigable(row), "the caret landed on a gap row");
+        assert!(
+            d.vmap.row_is_navigable(row),
+            "the caret landed on a gap row"
+        );
         d.insert("x");
-        assert_eq!(d.source, "A\n\nx\n\nB\n", "the new paragraph merged into a neighbour");
+        assert_eq!(
+            d.source, "A\n\nx\n\nB\n",
+            "the new paragraph merged into a neighbour"
+        );
     }
 
     #[test]
@@ -10663,7 +11365,10 @@ mod tests {
         d.newline();
         d.build_visual(80);
         let (row, _) = d.caret_pos();
-        assert!(d.vmap.row_is_navigable(row), "the caret landed on a gap row");
+        assert!(
+            d.vmap.row_is_navigable(row),
+            "the caret landed on a gap row"
+        );
         d.insert("x");
         assert!(
             d.source.starts_with("A\n\n") && d.source.contains('x'),
@@ -10680,7 +11385,11 @@ mod tests {
         let src = "one two\nthree four\n\nnext\n";
         let mut d = wysiwyg_doc("triple_para", src);
         d.select_block_at(2);
-        assert_eq!(d.selected_text(), Some("one two\nthree four"), "stopped at the soft break");
+        assert_eq!(
+            d.selected_text(),
+            Some("one two\nthree four"),
+            "stopped at the soft break"
+        );
     }
 
     #[test]
@@ -10694,7 +11403,10 @@ mod tests {
         d.follow_caret(0, 3, 9); // first frame: the caret is at the top
         d.scroll = 4; // the wheel
         d.follow_caret(0, 3, 9);
-        assert_eq!(d.scroll, 4, "the wheel was overruled by a caret that never moved");
+        assert_eq!(
+            d.scroll, 4,
+            "the wheel was overruled by a caret that never moved"
+        );
     }
 
     #[test]
@@ -10706,7 +11418,11 @@ mod tests {
         d.move_right(false); // ...and now the caret moves
         let (row, _) = d.caret_pos();
         d.follow_caret(row, 3, 9);
-        assert!(d.scroll <= row && row < d.scroll + 3, "caret row {row} off screen at scroll {}", d.scroll);
+        assert!(
+            d.scroll <= row && row < d.scroll + 3,
+            "caret row {row} off screen at scroll {}",
+            d.scroll
+        );
     }
 
     #[test]
@@ -10766,11 +11482,26 @@ mod tests {
     #[test]
     fn word_motion_agrees_across_the_views_on_plain_prose() {
         let g = both_views;
-        assert_eq!(g("par_wl", "hello wor|ld", |d| d.move_word_left(false)), "hello |world");
-        assert_eq!(g("par_wl2", "hello| world", |d| d.move_word_left(false)), "|hello world");
-        assert_eq!(g("par_wr", "hel|lo world", |d| d.move_word_right(false)), "hello| world");
-        assert_eq!(g("par_wr2", "hello| world", |d| d.move_word_right(false)), "hello world|");
-        assert_eq!(g("par_punct", "|foo.bar", |d| d.move_word_right(false)), "foo|.bar");
+        assert_eq!(
+            g("par_wl", "hello wor|ld", |d| d.move_word_left(false)),
+            "hello |world"
+        );
+        assert_eq!(
+            g("par_wl2", "hello| world", |d| d.move_word_left(false)),
+            "|hello world"
+        );
+        assert_eq!(
+            g("par_wr", "hel|lo world", |d| d.move_word_right(false)),
+            "hello| world"
+        );
+        assert_eq!(
+            g("par_wr2", "hello| world", |d| d.move_word_right(false)),
+            "hello world|"
+        );
+        assert_eq!(
+            g("par_punct", "|foo.bar", |d| d.move_word_right(false)),
+            "foo|.bar"
+        );
         assert_eq!(
             g("par_ext", "hello |world", |d| d.move_word_right(true)),
             "hello [world|]"
@@ -10780,9 +11511,18 @@ mod tests {
     #[test]
     fn word_deletion_agrees_across_the_views_on_plain_prose() {
         let g = both_views;
-        assert_eq!(g("par_db", "hello world|", |d| d.delete_word_back()), "hello |");
-        assert_eq!(g("par_df", "hello |world", |d| d.delete_word_forward()), "hello |");
-        assert_eq!(g("par_db2", "foo |bar baz", |d| d.delete_word_back()), "|bar baz");
+        assert_eq!(
+            g("par_db", "hello world|", |d| d.delete_word_back()),
+            "hello |"
+        );
+        assert_eq!(
+            g("par_df", "hello |world", |d| d.delete_word_forward()),
+            "hello |"
+        );
+        assert_eq!(
+            g("par_db2", "foo |bar baz", |d| d.delete_word_back()),
+            "|bar baz"
+        );
         assert_eq!(g("par_utf8", "café |ok", |d| d.delete_word_back()), "|ok");
     }
 
@@ -10821,7 +11561,11 @@ mod tests {
             let mut d = doc_in(view, &format!("combining_{tag}"), "e\u{0301}x\n");
             d.caret = 0;
             d.move_right(false);
-            assert_eq!(d.caret, "e\u{0301}".len(), "{tag} stopped on the combining mark");
+            assert_eq!(
+                d.caret,
+                "e\u{0301}".len(),
+                "{tag} stopped on the combining mark"
+            );
         }
     }
 
@@ -10857,7 +11601,11 @@ mod tests {
         let mut d = wysiwyg_doc("wys_word_delim", "a **bold** c\n");
         d.caret = 2;
         d.move_word_right(false);
-        assert!(d.vmap.is_stop(d.caret), "landed at {}, not a caret stop", d.caret);
+        assert!(
+            d.vmap.is_stop(d.caret),
+            "landed at {}, not a caret stop",
+            d.caret
+        );
         assert_eq!(d.caret, 10, "should land on the space after \"bold\"");
         // The rendered row is "a bold c": column 6 is the space just past "bold",
         // and now the caret is really there rather than only drawn there.
@@ -10894,7 +11642,10 @@ mod tests {
         let mut d = wysiwyg_doc("wys_word_del_nest", src);
         d.caret = src.find(" c").unwrap();
         d.delete_word_back();
-        assert_eq!(d.source, "a  c\n", "the emph inside the strong empties it too");
+        assert_eq!(
+            d.source, "a  c\n",
+            "the emph inside the strong empties it too"
+        );
 
         let src = "a `code` c\n";
         let mut d = wysiwyg_doc("wys_word_del_code", src);
@@ -10925,7 +11676,8 @@ mod tests {
         // WYSIWYG hides them, so only WYSIWYG steps over them.
         let g = |n, m, f: fn(&mut Doc)| golden(n, m, f);
         assert_eq!(
-            g("src_word_motion", "a |**bold** c\n", |d| d.move_word_right(false)),
+            g("src_word_motion", "a |**bold** c\n", |d| d
+                .move_word_right(false)),
             "a **bold|** c\n"
         );
         // The same caret as the WYSIWYG reproduction, and the opposite outcome:
@@ -10949,6 +11701,8 @@ mod tests {
         // one Down reached.
         let src = "# Title\n\na **bold** e\u{0301}mo👨‍👩‍👧ji `x` c\n\n\
                    - item one\n\n| A | B |\n|---|---|\n| x | y |\n";
+        // A table of named operations, which is what it looks like.
+        #[allow(clippy::type_complexity)]
         let motions: [(&str, fn(&mut Doc)); 8] = [
             ("right", |d| d.move_right(false)),
             ("left", |d| d.move_left(false)),
@@ -10995,7 +11749,11 @@ mod tests {
             let (first, last) = (stops[0], stops[stops.len() - 1]);
             for &start in &stops {
                 for (name, motion, want) in [
-                    ("down", (|d: &mut Doc| d.move_down(false)) as fn(&mut Doc), last),
+                    (
+                        "down",
+                        (|d: &mut Doc| d.move_down(false)) as fn(&mut Doc),
+                        last,
+                    ),
                     ("up", |d: &mut Doc| d.move_up(false), first),
                 ] {
                     d.caret = start;
@@ -11044,7 +11802,11 @@ mod tests {
             let src = format!("a{family}b\n");
             let mut d = doc_in(view, &format!("wide_cluster_{tag}"), &src);
             d.caret = 1 + family.len();
-            assert_eq!(d.caret_pos(), (0, 3), "{tag}: 'a' is one cell, the family two");
+            assert_eq!(
+                d.caret_pos(),
+                (0, 3),
+                "{tag}: 'a' is one cell, the family two"
+            );
         }
     }
 
@@ -11080,7 +11842,10 @@ mod tests {
         let mut d = doc_in(View::Source, "roundtrip_source", src);
         // Every offset the source view's caret can occupy: it steps by grapheme
         // cluster, so those are its boundaries.
-        for (off, _) in src.grapheme_indices(true).chain(std::iter::once((src.len(), ""))) {
+        for (off, _) in src
+            .grapheme_indices(true)
+            .chain(std::iter::once((src.len(), "")))
+        {
             d.caret = off;
             let (row, col) = d.caret_pos();
             d.click(row, col, false);
@@ -11096,7 +11861,11 @@ mod tests {
             d.caret = off;
             let (row, col) = d.caret_pos();
             d.click(row, col, false);
-            assert_eq!(d.caret, off, "wysiwyg: {off} → ({row}, {col}) → {}", d.caret);
+            assert_eq!(
+                d.caret, off,
+                "wysiwyg: {off} → ({row}, {col}) → {}",
+                d.caret
+            );
         }
     }
 
@@ -11117,7 +11886,10 @@ mod tests {
             assert_eq!(d.caret_pos().1, 4, "{tag}: `世` is drawn at column 4");
             d.move_down(false);
             assert_eq!(d.caret_pos().1, 4, "{tag}: goal column lost");
-            assert!(d.source[d.caret..].starts_with('e'), "{tag}: landed on the wrong glyph");
+            assert!(
+                d.source[d.caret..].starts_with('e'),
+                "{tag}: landed on the wrong glyph"
+            );
         }
     }
 
@@ -11152,7 +11924,11 @@ mod tests {
         // cells further along.
         assert_eq!(col, 2, "the cell's first character");
         d.move_right(false);
-        assert_eq!(d.caret_pos(), (row, 4), "`好` is drawn past `你`'s two cells");
+        assert_eq!(
+            d.caret_pos(),
+            (row, 4),
+            "`好` is drawn past `你`'s two cells"
+        );
         assert_eq!(d.caret, at + "你".len());
     }
 
@@ -11193,7 +11969,11 @@ mod tests {
         // the ancestor chain is a chain, and every mark on it is in force.
         for (view, tag) in VIEWS {
             assert_eq!(
-                marks(view, &format!("marks_nested_{tag}"), "**bold and *bo|th*** end"),
+                marks(
+                    view,
+                    &format!("marks_nested_{tag}"),
+                    "**bold and *bo|th*** end"
+                ),
                 [InlineKind::Strong, InlineKind::Emph],
                 "{tag}"
             );
@@ -11239,8 +12019,16 @@ mod tests {
         // way. A blank document typed into is exactly this shape.
         for (view, tag) in VIEWS {
             let m = |name: String, marked| marks(view, &name, marked);
-            assert_eq!(m(format!("marks_eob_{tag}"), "**bold**|"), [], "{tag}: no trailing newline");
-            assert_eq!(m(format!("marks_eol_{tag}"), "**bold**|\n"), [], "{tag}: with one");
+            assert_eq!(
+                m(format!("marks_eob_{tag}"), "**bold**|"),
+                [],
+                "{tag}: no trailing newline"
+            );
+            assert_eq!(
+                m(format!("marks_eol_{tag}"), "**bold**|\n"),
+                [],
+                "{tag}: with one"
+            );
             // And the last offset that *is* in the mark still is.
             assert_eq!(
                 m(format!("marks_eob_in_{tag}"), "**bold*|*"),
@@ -11262,7 +12050,11 @@ mod tests {
             // Ending exactly at the closing delimiter's start is still all-bold:
             // an exclusive end sits *past* the last selected character, so the
             // question is asked of the character, not the boundary.
-            assert_eq!(m(b, d_ + 2), [InlineKind::Strong], "{tag}: through the close");
+            assert_eq!(
+                m(b, d_ + 2),
+                [InlineKind::Strong],
+                "{tag}: through the close"
+            );
             // Half in, half out: Bold lit here would claim a press turns it off.
             assert_eq!(m(0, d_), [], "{tag}: leading plain text");
             assert_eq!(m(b, src.len()), [], "{tag}: trailing plain text");
@@ -11302,7 +12094,11 @@ mod tests {
         // `link`/`str` are inline nodes, but nothing on the inline toolbar
         // toggles them — a set with a "link mark" in it would have no button.
         for (view, tag) in VIEWS {
-            assert_eq!(marks(view, &format!("marks_link_{tag}"), "a [te|xt](u) b"), [], "{tag}");
+            assert_eq!(
+                marks(view, &format!("marks_link_{tag}"), "a [te|xt](u) b"),
+                [],
+                "{tag}"
+            );
         }
     }
 
@@ -11313,7 +12109,11 @@ mod tests {
         let mut d = Doc::blank().unwrap();
         assert!(d.is_untitled());
         assert_eq!(d.path, PathBuf::new());
-        assert_eq!(d.file_name(), "untitled", "the header has to show something");
+        assert_eq!(
+            d.file_name(),
+            "untitled",
+            "the header has to show something"
+        );
         assert_eq!(d.format_name(), "markdown");
         assert_eq!(d.source, "");
         assert!(!d.dirty, "nothing typed yet is nothing to lose");
@@ -11347,7 +12147,11 @@ mod tests {
         assert!(!d.is_untitled());
         assert!(!d.dirty);
         assert_eq!(d.file_name(), p.file_name().unwrap().to_string_lossy());
-        assert_eq!(d.disk_state(), DiskState::Unchanged, "the watermark is stamped");
+        assert_eq!(
+            d.disk_state(),
+            DiskState::Unchanged,
+            "the watermark is stamped"
+        );
         // And ⌘S is a plain save from here on.
         d.insert("!");
         d.save();
@@ -11383,13 +12187,19 @@ mod tests {
         );
         assert_eq!(d.path, new, "the document moved");
         assert!(!d.dirty);
-        assert_eq!(d.status.as_deref(), Some(&*format!("saved {}", d.file_name())));
+        assert_eq!(
+            d.status.as_deref(),
+            Some(&*format!("saved {}", d.file_name()))
+        );
 
         // Every later save follows it, which is the whole difference from a copy.
         d.caret = 0;
         d.insert("re-");
         d.save();
-        assert_eq!(std::fs::read_to_string(&new).unwrap(), "re-edited: original\n");
+        assert_eq!(
+            std::fs::read_to_string(&new).unwrap(),
+            "re-edited: original\n"
+        );
         assert_eq!(std::fs::read_to_string(&old).unwrap(), "original\n");
         let _ = std::fs::remove_file(&new);
     }
@@ -11415,7 +12225,10 @@ mod tests {
         let bad = std::env::temp_dir().join("leaf_test_no_such_dir_9f2/doc.md");
         d.save_as(bad);
 
-        assert_eq!(d.path, old, "the document must not move to a file that isn't there");
+        assert_eq!(
+            d.path, old,
+            "the document must not move to a file that isn't there"
+        );
         assert!(d.dirty, "and must not believe it saved");
         assert!(
             d.status.as_deref().unwrap().starts_with("save failed:"),
@@ -11503,7 +12316,10 @@ mod tests {
             assert_eq!(d.source, "one\n\ntwo\n\nthree\n", "{tag}");
             assert!(!d.dirty, "{tag}: the file is what we have");
             assert_eq!(d.disk_state(), DiskState::Unchanged, "{tag}");
-            assert_eq!(d.status.as_deref(), Some(&*format!("reloaded {}", d.file_name())));
+            assert_eq!(
+                d.status.as_deref(),
+                Some(&*format!("reloaded {}", d.file_name()))
+            );
             // The reloaded tree is live, not the old parse.
             d.caret = d.source.find("three").unwrap();
             assert_eq!(d.breadcrumb(), "doc › para › str", "{tag}");
@@ -11518,7 +12334,10 @@ mod tests {
         std::fs::write(&d.path, "short\n").unwrap();
         d.reload();
         assert_eq!(d.caret, d.source.len(), "clamped into the shorter file");
-        assert_eq!(d.anchor, None, "a selection over bytes that changed is a lie");
+        assert_eq!(
+            d.anchor, None,
+            "a selection over bytes that changed is a lie"
+        );
         assert!(d.selection().is_none());
 
         // A caret the file still has room for stays put.
@@ -11538,7 +12357,10 @@ mod tests {
         std::fs::write(&d.path, "replaced\n").unwrap();
         d.reload();
         d.undo();
-        assert_eq!(d.source, "replaced\n", "an undo must not resurrect the old buffer");
+        assert_eq!(
+            d.source, "replaced\n",
+            "an undo must not resurrect the old buffer"
+        );
         assert_eq!(d.status.as_deref(), Some("nothing to undo"));
     }
 
@@ -11550,7 +12372,11 @@ mod tests {
         d.reload();
         assert_eq!(d.source, "xbody\n", "the unsaved work is still here");
         assert!(d.dirty);
-        assert!(d.status.as_deref().unwrap().starts_with("reload failed:"), "{:?}", d.status);
+        assert!(
+            d.status.as_deref().unwrap().starts_with("reload failed:"),
+            "{:?}",
+            d.status
+        );
 
         // And an untitled document has nothing to reload from.
         let mut d = Doc::blank().unwrap();
@@ -11559,55 +12385,4 @@ mod tests {
         assert_eq!(d.source, "typed");
         assert_eq!(d.status.as_deref(), Some("no file to reload"));
     }
-}
-
-/// twig's node-kind name for an inline mark, back to the [`InlineKind`] a
-/// frontend names when it calls [`Doc::toggle`] — the inverse of the mapping
-/// twig applies writing the mark out, so the toolbar can light the same button
-/// that made the node.
-///
-/// `None` for every other kind, including the inline nodes that aren't marks at
-/// all (`str`, `link`, `image`, the math and break kinds): they're things a
-/// caret stands in, not formatting a button toggles.
-fn inline_kind(kind: &Kind) -> Option<InlineKind> {
-    Some(match kind {
-        Kind::Strong => InlineKind::Strong,
-        Kind::Emph => InlineKind::Emph,
-        Kind::Verbatim => InlineKind::Verbatim,
-        Kind::Mark => InlineKind::Mark,
-        Kind::Superscript => InlineKind::Superscript,
-        Kind::Subscript => InlineKind::Subscript,
-        Kind::Insert => InlineKind::Insert,
-        Kind::Delete => InlineKind::Delete,
-        _ => return None,
-    })
-}
-
-/// A watermark for a file's contents (see `Doc::disk_hash`).
-///
-/// `DefaultHasher` is not stable across Rust releases, which doesn't matter: a
-/// watermark is compared only against one taken by the same process moments
-/// earlier, and never outlives it. 64 bits leaves a collision — an external edit
-/// that hashes to exactly what leaf wrote — at odds no filesystem race gets near.
-fn hash_bytes(bytes: &[u8]) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    bytes.hash(&mut h);
-    h.finish()
-}
-
-#[cfg(feature = "fs")]
-fn detect_format(path: &Path) -> Result<Format> {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    Ok(match ext.as_str() {
-        "dj" | "djot" => Format::Djot,
-        "md" | "markdown" => Format::Markdown,
-        "xml" => Format::Xml,
-        "html" | "htm" => Format::Html,
-        other => return Err(anyhow!("unknown document extension: .{other}")),
-    })
 }

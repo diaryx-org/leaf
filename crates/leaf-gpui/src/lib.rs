@@ -29,21 +29,20 @@ mod style;
 
 use std::collections::HashMap;
 use std::ops::Range;
-use std::rc::Rc;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::Duration;
 
 use std::sync::Arc;
 
 use gpui::{
     App, BorderStyle, Bounds, ContentMask, Context, Corners, CursorStyle, DevicePixels, Element,
-    ElementId,
-    ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable, Font,
-    GlobalElementId, Hsla, InspectorElementId, IntoElement, KeyBinding, KeyDownEvent, LayoutId,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render,
-    RenderImage, ScrollHandle, SharedString, ShapedLine, Size, Style, Task, TextAlign,
-    UTF16Selection, UnderlineStyle, Window, actions, anchored, deferred, div, fill, point,
-    prelude::*, px, quad, relative, rgb, rgba, size,
+    ElementId, ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle,
+    Focusable, Font, GlobalElementId, Hsla, InspectorElementId, IntoElement, KeyBinding,
+    KeyDownEvent, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad,
+    Pixels, Point, Render, RenderImage, ScrollHandle, ShapedLine, SharedString, Size, Style, Task,
+    TextAlign, UTF16Selection, UnderlineStyle, Window, actions, anchored, deferred, div, fill,
+    point, prelude::*, px, quad, relative, rgb, rgba, size,
 };
 use leaf_core::style::{Role, Style as CoreStyle};
 use prompt::{PromptAction, TextPrompt};
@@ -168,7 +167,7 @@ impl Default for EditorStyle {
     }
 }
 use leaf_core::{
-    Alignment, BlockKind, ColorScheme, DiskState, Doc, Glyph, MediaInfo, InlineKind, InlineMarks,
+    Alignment, BlockKind, ColorScheme, DiskState, Doc, Glyph, InlineKind, InlineMarks, MediaInfo,
     TableInfo, View,
 };
 
@@ -224,40 +223,87 @@ enum Dialog {
 actions!(
     leaf,
     [
-        Backspace, Delete, Left, Right, Up, Down, SelectLeft, SelectRight, SelectUp, SelectDown,
-        Home, End, SelectHome, SelectEnd, Newline, Indent, Save, ToggleBold, ToggleItalic,
+        Backspace,
+        Delete,
+        Left,
+        Right,
+        Up,
+        Down,
+        SelectLeft,
+        SelectRight,
+        SelectUp,
+        SelectDown,
+        Home,
+        End,
+        SelectHome,
+        SelectEnd,
+        Newline,
+        Indent,
+        Save,
+        ToggleBold,
+        ToggleItalic,
         ToggleView,
         // Word motion / deletion (⌥←/→, ⌥⌫/⌦) and select-all (⌘A) — the same
         // leaf-core word-boundary ops the TUI already binds.
-        MoveWordLeft, MoveWordRight, SelectWordLeft, SelectWordRight, DeleteWordBack,
-        DeleteWordForward, SelectAll,
+        MoveWordLeft,
+        MoveWordRight,
+        SelectWordLeft,
+        SelectWordRight,
+        DeleteWordBack,
+        DeleteWordForward,
+        SelectAll,
         // Format parity with the TUI's ⌥ toolbar (⌥c/⌥m/⌥0-6): code, mark, and
         // block kind. The GUI keeps ⌥ for word motion, so these ride ⌘⇧ / ⌃.
-        ToggleCode, ToggleMark, Paragraph, Heading1, Heading2, Heading3, Heading4, Heading5,
+        ToggleCode,
+        ToggleMark,
+        Paragraph,
+        Heading1,
+        Heading2,
+        Heading3,
+        Heading4,
+        Heading5,
         Heading6,
         // Clipboard (⌘C/⌘X/⌘V), plus ⌘⇧V for the plain flavor. Backed by arboard
         // on the desktop, not by gpui's clipboard — see `set_clipboard`.
-        Copy, Cut, Paste, PasteAsPlainText,
+        Copy,
+        Cut,
+        Paste,
+        PasteAsPlainText,
         // History (⌘Z / ⇧⌘Z).
-        Undo, Redo,
+        Undo,
+        Redo,
         // Document start/end (⌘↑ / ⌘↓) and page motion, with ⇧ selecting.
-        DocStart, DocEnd, SelectDocStart, SelectDocEnd,
-        PageUp, PageDown, SelectPageUp, SelectPageDown,
+        DocStart,
+        DocEnd,
+        SelectDocStart,
+        SelectDocEnd,
+        PageUp,
+        PageDown,
+        SelectPageUp,
+        SelectPageDown,
         // Blockquote / list containers (⌘⇧9/8/7) and the link prompt (⌘K) —
         // the toolbar's remaining format commands, mirroring the TUI's set.
-        ToggleBlockquote, ToggleBulletList, ToggleOrderedList, InsertLink,
+        ToggleBlockquote,
+        ToggleBulletList,
+        ToggleOrderedList,
+        InsertLink,
         // Set the language of the fenced code block at the caret (⌘⇧L).
         SetLanguage,
         // Indentation (⇥/⇧⇥) and the line kills (⌘⌫/⌃K).
-        Outdent, DeleteToLineStart, DeleteToLineEnd,
+        Outdent,
+        DeleteToLineStart,
+        DeleteToLineEnd,
         // Strikethrough / underline — twig's Delete / Insert inline kinds.
-        ToggleStrikethrough, ToggleUnderline,
+        ToggleStrikethrough,
+        ToggleUnderline,
         // Task list items (⌘⇧X ticks the box, ⌘⇧T mints or removes one). A
         // rendered box is also clickable — see `task_box_at`.
-        ToggleTaskChecked, ToggleTaskItem,
+        ToggleTaskChecked,
+        ToggleTaskItem,
         // Document lifecycle the widget owns: Save As (⌘⇧S) and a new blank
         // document (⌘N). Plain quit/open stay the host's.
-        SaveAs, NewDocument,
+        SaveAs,
+        NewDocument,
     ]
 );
 
@@ -537,7 +583,9 @@ impl Editor {
     /// Debug snapshot of caret state: `(caret, selection anchor, source len)`.
     /// Used by the iOS toolbar logging to diagnose command behaviour.
     pub fn caret_debug(&self) -> Option<(usize, Option<usize>, usize)> {
-        self.doc.as_ref().map(|d| (d.caret, d.anchor, d.source.len()))
+        self.doc
+            .as_ref()
+            .map(|d| (d.caret, d.anchor, d.source.len()))
     }
 
     /// Verbose diagnostic string (view, caret, selection, the block the caret is
@@ -618,7 +666,9 @@ impl Editor {
         if !self.is_dirty() {
             return true;
         }
-        self.dialog = Some(Dialog::Discard { then: Pending::Quit });
+        self.dialog = Some(Dialog::Discard {
+            then: Pending::Quit,
+        });
         cx.notify();
         false
     }
@@ -776,7 +826,13 @@ impl Editor {
         // The prompt takes the dialog's place: it's the same question, one step
         // on, and two modals at once would be answering neither.
         self.dialog = None;
-        self.open_prompt("Save as", initial, PromptAction::SaveAs { then }, window, cx);
+        self.open_prompt(
+            "Save as",
+            initial,
+            PromptAction::SaveAs { then },
+            window,
+            cx,
+        );
     }
 
     /// A confirmed Save As: write to the typed path, and go on to whatever the
@@ -1032,7 +1088,12 @@ impl Editor {
         self.scroll_caret_into_view();
         cx.notify();
     }
-    fn delete_to_line_start(&mut self, _: &DeleteToLineStart, _: &mut Window, cx: &mut Context<Self>) {
+    fn delete_to_line_start(
+        &mut self,
+        _: &DeleteToLineStart,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(doc) = self.doc.as_mut() else { return };
         doc.delete_to_line_start();
         self.scroll_caret_into_view();
@@ -1066,7 +1127,9 @@ impl Editor {
     /// through the same guard as a quit rather than dropping the work quietly.
     fn new_document(&mut self, _: &NewDocument, _: &mut Window, cx: &mut Context<Self>) {
         if self.is_dirty() {
-            self.dialog = Some(Dialog::Discard { then: Pending::NewDoc });
+            self.dialog = Some(Dialog::Discard {
+                then: Pending::NewDoc,
+            });
             cx.notify();
             return;
         }
@@ -1115,7 +1178,9 @@ impl Editor {
         }
         let rows = self.page_rows();
         for _ in 0..rows {
-            let Some((off, goal)) = self.vertical_target(dir) else { break };
+            let Some((off, goal)) = self.vertical_target(dir) else {
+                break;
+            };
             self.goal_x = Some(goal);
             self.goal_caret = off;
             self.doc.as_mut().unwrap().place_caret(off, extend);
@@ -1204,7 +1269,12 @@ impl Editor {
     }
     /// ⌘⇧X. twig models strikethrough as a `Delete` inline — text marked as
     /// struck *out*, in the edit-tracking sense the name comes from.
-    fn toggle_strikethrough(&mut self, _: &ToggleStrikethrough, _: &mut Window, cx: &mut Context<Self>) {
+    fn toggle_strikethrough(
+        &mut self,
+        _: &ToggleStrikethrough,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(doc) = self.doc.as_mut() else { return };
         doc.toggle(InlineKind::Delete);
         cx.notify();
@@ -1302,20 +1372,30 @@ impl Editor {
             return;
         }
         let initial = doc.code_language_at_caret().unwrap_or_default();
-        self.open_prompt("Code language", initial, PromptAction::SetLanguage, window, cx);
+        self.open_prompt(
+            "Code language",
+            initial,
+            PromptAction::SetLanguage,
+            window,
+            cx,
+        );
     }
     // ── clipboard (arboard, not gpui's — see `set_clipboard`) ───────────────
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
         let Some(doc) = self.doc.as_mut() else { return };
-        let Some(text) = doc.selected_text().map(str::to_string) else { return };
+        let Some(text) = doc.selected_text().map(str::to_string) else {
+            return;
+        };
         let html = doc.selection_html();
         set_clipboard(text, html, cx);
     }
 
     fn cut(&mut self, _: &Cut, _: &mut Window, cx: &mut Context<Self>) {
         let Some(doc) = self.doc.as_mut() else { return };
-        let Some(text) = doc.selected_text().map(str::to_string) else { return };
+        let Some(text) = doc.selected_text().map(str::to_string) else {
+            return;
+        };
         let html = doc.selection_html();
         set_clipboard(text, html, cx);
         self.doc.as_mut().unwrap().backspace();
@@ -1340,8 +1420,15 @@ impl Editor {
 
     /// ⌘⇧V: the plain flavor, whatever else the pasteboard carries — the escape
     /// hatch for pasting the *source* of something rich.
-    fn paste_as_plain_text(&mut self, _: &PasteAsPlainText, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(text) = get_clipboard_text(cx) else { return };
+    fn paste_as_plain_text(
+        &mut self,
+        _: &PasteAsPlainText,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(text) = get_clipboard_text(cx) else {
+            return;
+        };
         let Some(doc) = self.doc.as_mut() else { return };
         doc.paste(&text);
         self.scroll_caret_into_view();
@@ -1375,7 +1462,9 @@ impl Editor {
     /// Enter: hand the prompt's collected text to whatever it was opened for,
     /// then return focus (and the keyboard) to the document.
     fn confirm_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(prompt) = self.prompt.take() else { return };
+        let Some(prompt) = self.prompt.take() else {
+            return;
+        };
         self.focus_handle.focus(window, cx);
         match prompt.action {
             PromptAction::Link => {
@@ -1437,7 +1526,12 @@ impl Editor {
                 // `key_char` is `None` for bare navigation/function keys and
                 // for anything chorded with ⌘/⌃, so this naturally ignores
                 // everything but genuine typed text.
-                if let Some(ch) = event.keystroke.key_char.as_deref().filter(|c| !c.is_empty()) {
+                if let Some(ch) = event
+                    .keystroke
+                    .key_char
+                    .as_deref()
+                    .filter(|c| !c.is_empty())
+                {
                     self.prompt.as_mut().unwrap().insert(ch);
                     cx.notify();
                 }
@@ -1511,15 +1605,16 @@ impl Editor {
         // caret stays put, so ticking something off doesn't interrupt what's
         // being typed elsewhere. Shift and the multi-click gestures fall through
         // — those are selection verbs, and a box is not a selection.
-        if ev.click_count == 1 && !ev.modifiers.shift {
-            if let Some(off) = self.task_box_for_position(ev.position) {
-                self.is_selecting = false;
-                if let Some(doc) = self.doc.as_mut() {
-                    doc.toggle_task_at(off);
-                }
-                cx.notify();
-                return;
+        if ev.click_count == 1
+            && !ev.modifiers.shift
+            && let Some(off) = self.task_box_for_position(ev.position)
+        {
+            self.is_selecting = false;
+            if let Some(doc) = self.doc.as_mut() {
+                doc.toggle_task_at(off);
             }
+            cx.notify();
+            return;
         }
         self.is_selecting = true;
         let off = self.offset_for_position(ev.position);
@@ -1638,34 +1733,37 @@ impl Editor {
         let before = prompt.value[..prompt.caret].to_string();
         let after = prompt.value[prompt.caret..].to_string();
         deferred(
-            anchored().position(point(px(24.0), px(24.0))).snap_to_window().child(
-                div()
-                    .id("text-prompt")
-                    .track_focus(&prompt.focus_handle)
-                    .on_key_down(cx.listener(Self::prompt_key_down))
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .min_w(px(320.0))
-                    .px_3()
-                    .py_2()
-                    .bg(gpui::white())
-                    .rounded_md()
-                    .shadow_lg()
-                    .border_1()
-                    .border_color(gpui::rgb(0xd0d0d0))
-                    .text_color(gpui::rgb(0x1e1e1e))
-                    .child(prompt.label.clone())
-                    .child(
-                        div()
-                            .flex()
-                            .flex_1()
-                            .items_center()
-                            .child(before)
-                            .child(div().w(px(2.0)).h(px(16.0)).bg(gpui::blue()))
-                            .child(after),
-                    ),
-            ),
+            anchored()
+                .position(point(px(24.0), px(24.0)))
+                .snap_to_window()
+                .child(
+                    div()
+                        .id("text-prompt")
+                        .track_focus(&prompt.focus_handle)
+                        .on_key_down(cx.listener(Self::prompt_key_down))
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .min_w(px(320.0))
+                        .px_3()
+                        .py_2()
+                        .bg(gpui::white())
+                        .rounded_md()
+                        .shadow_lg()
+                        .border_1()
+                        .border_color(gpui::rgb(0xd0d0d0))
+                        .text_color(gpui::rgb(0x1e1e1e))
+                        .child(prompt.label.clone())
+                        .child(
+                            div()
+                                .flex()
+                                .flex_1()
+                                .items_center()
+                                .child(before)
+                                .child(div().w(px(2.0)).h(px(16.0)).bg(gpui::blue()))
+                                .child(after),
+                        ),
+                ),
         )
         .with_priority(1)
     }
@@ -1793,7 +1891,9 @@ impl Editor {
                 )
             }
             Dialog::Overwrite { then } => (
-                format!("{name} has changed on disk since you opened it. Saving overwrites those changes."),
+                format!(
+                    "{name} has changed on disk since you opened it. Saving overwrites those changes."
+                ),
                 vec![
                     Self::dialog_button("Overwrite", cx, move |e, _, cx| e.commit_save(then, cx))
                         .into_any_element(),
@@ -1812,7 +1912,9 @@ impl Editor {
             ),
             Dialog::DiskChanged => (
                 if dirty {
-                    format!("{name} has changed on disk, and you have unsaved changes of your own. Reloading discards yours.")
+                    format!(
+                        "{name} has changed on disk, and you have unsaved changes of your own. Reloading discards yours."
+                    )
                 } else {
                     format!("{name} has changed on disk.")
                 },
@@ -1827,23 +1929,26 @@ impl Editor {
             ),
         };
         deferred(
-            anchored().position(point(px(24.0), px(24.0))).snap_to_window().child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    .max_w(px(440.0))
-                    .px_4()
-                    .py_3()
-                    .bg(gpui::white())
-                    .rounded_md()
-                    .shadow_lg()
-                    .border_1()
-                    .border_color(gpui::rgb(0xd0d0d0))
-                    .text_color(gpui::rgb(0x1e1e1e))
-                    .child(question)
-                    .child(div().flex().gap_2().children(buttons)),
-            ),
+            anchored()
+                .position(point(px(24.0), px(24.0)))
+                .snap_to_window()
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_3()
+                        .max_w(px(440.0))
+                        .px_4()
+                        .py_3()
+                        .bg(gpui::white())
+                        .rounded_md()
+                        .shadow_lg()
+                        .border_1()
+                        .border_color(gpui::rgb(0xd0d0d0))
+                        .text_color(gpui::rgb(0x1e1e1e))
+                        .child(question)
+                        .child(div().flex().gap_2().children(buttons)),
+                ),
         )
         .with_priority(2)
     }
@@ -2046,7 +2151,8 @@ impl EntityInputHandler for Editor {
 
         // An empty composition is the IME withdrawing it (⎋ out of a candidate
         // window): the text is gone, so there's nothing left to mark.
-        self.marked_range = (!new_text.is_empty()).then(|| range.start..range.start + new_text.len());
+        self.marked_range =
+            (!new_text.is_empty()).then(|| range.start..range.start + new_text.len());
         if self.marked_range.is_none() {
             // Withdrawn, so the run is over — and it is still one undo step,
             // which now undoes back to before the composition started.
@@ -2278,9 +2384,8 @@ fn shape_key(glyphs: &[Glyph], marked: Option<&Range<usize>>) -> u64 {
     let mut h: u64 = glyphs.len() as u64;
     for g in glyphs {
         let preedit = marked.is_some_and(|m| m.contains(&g.src));
-        let packed = (g.ch as u64)
-            | ((style_bits(g.style) as u64) << 32)
-            | ((preedit as u64) << 48);
+        let packed =
+            (g.ch as u64) | ((style_bits(g.style) as u64) << 32) | ((preedit as u64) << 48);
         h = (h.rotate_left(5) ^ packed).wrapping_mul(K);
     }
     h
@@ -2366,7 +2471,13 @@ impl RowLayout {
     ) -> Self {
         let field = (px(0.0), shaped.width);
         RowLayout {
-            segments: vec![RowSegment { x: px(0.0), shaped, char_byte, first: 0, field }],
+            segments: vec![RowSegment {
+                x: px(0.0),
+                shaped,
+                char_byte,
+                first: 0,
+                field,
+            }],
             char_srcs,
             end_src,
             height,
@@ -2572,7 +2683,11 @@ enum Logical {
     /// the reserved row still carries the image's caret stops (a home in front of
     /// it and one just past it); `info` carries the destination to load and the
     /// alt text to fall back to.
-    Image { info: MediaInfo, glyphs: Vec<Glyph>, end_src: usize },
+    Image {
+        info: MediaInfo,
+        glyphs: Vec<Glyph>,
+        end_src: usize,
+    },
 }
 
 /// Gather the document into the units prepaint lays out: one line per source line
@@ -2678,7 +2793,11 @@ fn gather_logical(doc: &Doc) -> Vec<Logical> {
 /// *source* byte falls inside it — so it segments runs alongside the style, and
 /// rides the glyphs' `src` exactly like everything else here (a preedit in
 /// WYSIWYG is underlined across the visible text, hidden delimiters and all).
-fn build_runs(glyphs: &[Glyph], styler: &RunStyle, marked: Option<&Range<usize>>) -> Vec<gpui::TextRun> {
+fn build_runs(
+    glyphs: &[Glyph],
+    styler: &RunStyle,
+    marked: Option<&Range<usize>>,
+) -> Vec<gpui::TextRun> {
     let mut segs: Vec<(usize, CoreStyle, bool)> = Vec::new();
     for g in glyphs {
         let bytes = g.ch.len_utf8();
@@ -2731,7 +2850,13 @@ fn wrap_logical(
     let height = height_override.unwrap_or_else(|| shaper.row_height(glyphs));
     if glyphs.is_empty() {
         let shaped = shaper.empty();
-        out.push(RowLayout::prose(shaped, Vec::new(), vec![0], logical_end_src, height));
+        out.push(RowLayout::prose(
+            shaped,
+            Vec::new(),
+            vec![0],
+            logical_end_src,
+            height,
+        ));
         return;
     }
 
@@ -3018,11 +3143,7 @@ fn fit_widths_px(widths: &mut [f32], avail: f32) {
 /// glyph that opens one), since the caller anchors each line's end stop just past
 /// its last glyph — a line cut mid-cluster would put a caret stop inside a
 /// character, and the next Backspace would take it apart from the middle.
-fn wrap_glyphs_px(
-    shaper: &mut Shaper,
-    glyphs: &[Glyph],
-    width: f32,
-) -> Vec<Vec<Glyph>> {
+fn wrap_glyphs_px(shaper: &mut Shaper, glyphs: &[Glyph], width: f32) -> Vec<Vec<Glyph>> {
     if glyphs.is_empty() {
         return vec![Vec::new()];
     }
@@ -3140,9 +3261,7 @@ fn layout_table(
                 Some(cell) if measured[ri][c] <= widths[c] => vec![cell.glyphs.clone()],
                 // The wrap width leaves room for the gutter space appended
                 // below, or the line plus its space would overrun the column.
-                Some(cell) => {
-                    wrap_glyphs_px(shaper, &cell.glyphs, (widths[c] - space).max(1.0))
-                }
+                Some(cell) => wrap_glyphs_px(shaper, &cell.glyphs, (widths[c] - space).max(1.0)),
                 None => vec![Vec::new()],
             })
             .collect();
@@ -3209,7 +3328,12 @@ fn layout_table(
             }
             // The row ends where its last cell's end stop does.
             let end_src = char_srcs.last().copied().unwrap_or(info.end_src);
-            out.push(RowLayout { segments, char_srcs, end_src, height: row_h });
+            out.push(RowLayout {
+                segments,
+                char_srcs,
+                end_src,
+                height: row_h,
+            });
         }
         bands.push((band_start..out.len(), row.head));
     }
@@ -3254,7 +3378,7 @@ fn table_chrome(
                 body += 1;
                 // The first body row stays clear, so the header is the only
                 // filled row at the top rather than one of two.
-                (body % 2 == 0).then_some(style.table_stripe)
+                body.is_multiple_of(2).then_some(style.table_stripe)
             }
         };
         if let Some(bg) = bg {
@@ -3369,7 +3493,9 @@ fn utf8_to_utf16(source: &str, target: usize) -> usize {
 
 #[cfg(feature = "desktop")]
 fn set_clipboard(plain: String, html: Option<String>, _cx: &mut App) {
-    let Ok(mut clipboard) = arboard::Clipboard::new() else { return };
+    let Ok(mut clipboard) = arboard::Clipboard::new() else {
+        return;
+    };
     // One clear-and-set writes both flavors, so a copy can't leave a stale HTML
     // flavor from an earlier one behind for a paste to find and prefer.
     let _ = match html {
@@ -3575,7 +3701,13 @@ impl Element for TextElement {
                     .text_system()
                     .shape_line("".into(), font_size, &[], None),
             );
-            let rows = Rc::new(vec![RowLayout::prose(shaped, Vec::new(), vec![0], 0, line_height)]);
+            let rows = Rc::new(vec![RowLayout::prose(
+                shaped,
+                Vec::new(),
+                vec![0],
+                0,
+                line_height,
+            )]);
             let tops = Rc::new(row_tops(&rows));
             let row_x = Rc::new(vec![px(0.0); rows.len()]);
             return Prepaint {
@@ -3627,7 +3759,11 @@ impl Element for TextElement {
             // The document's directory — what a relative image path resolves
             // against. Empty for an untitled buffer, where a relative path can't
             // resolve and falls back to the text placeholder.
-            let doc_dir = doc.path.parent().map(|p| p.to_path_buf()).filter(|p| !p.as_os_str().is_empty());
+            let doc_dir = doc
+                .path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .filter(|p| !p.as_os_str().is_empty());
             (
                 key,
                 doc.selection(),
@@ -3657,8 +3793,12 @@ impl Element for TextElement {
                     // The language label of each code block, in the same order
                     // `gather_logical` numbers them, so a `CodeGeom` can carry its
                     // own once built.
-                    let langs: Vec<Option<String>> =
-                        doc.vmap.code_blocks.iter().map(|c| c.lang.clone()).collect();
+                    let langs: Vec<Option<String>> = doc
+                        .vmap
+                        .code_blocks
+                        .iter()
+                        .map(|c| c.lang.clone())
+                        .collect();
                     (gather_logical(doc), langs)
                 };
                 // Decode every block image up front, before the shaper borrows
@@ -3677,7 +3817,9 @@ impl Element for TextElement {
                 let loaded: HashMap<String, Option<Arc<RenderImage>>> = {
                     let mut loaded = HashMap::new();
                     for logical in &logical_lines {
-                        let Logical::Image { info, .. } = logical else { continue };
+                        let Logical::Image { info, .. } = logical else {
+                            continue;
+                        };
                         if loaded.contains_key(&info.destination) {
                             continue;
                         }
@@ -3743,12 +3885,22 @@ impl Element for TextElement {
                 let mut image_geoms: Vec<ImageGeom> = Vec::new();
                 for logical in &logical_lines {
                     match logical {
-                        Logical::Line { glyphs, end_src, code, decoration, heading } => {
+                        Logical::Line {
+                            glyphs,
+                            end_src,
+                            code,
+                            decoration,
+                            heading,
+                        } => {
                             let before = rows.len();
                             // A code line never wraps — it scrolls inside its box —
                             // so it's laid out at an unbounded width and stays one
                             // row. Prose wraps at the element width as before.
-                            let w = if code.is_some() { f32::INFINITY } else { wrap_px };
+                            let w = if code.is_some() {
+                                f32::INFINITY
+                            } else {
+                                wrap_px
+                            };
                             // A block-gap separator is drawn short — paragraph
                             // spacing, not a full blank line.
                             let gap = decoration
@@ -3761,14 +3913,24 @@ impl Element for TextElement {
                             let head = (glyphs.is_empty() && gap.is_none())
                                 .then(|| heading.map(|l| shaper.heading_row_height(l)))
                                 .flatten();
-                            wrap_logical(&mut shaper, glyphs, *end_src, w, marked.as_ref(),
-                                         gap.or(head), &mut rows);
+                            wrap_logical(
+                                &mut shaper,
+                                glyphs,
+                                *end_src,
+                                w,
+                                marked.as_ref(),
+                                gap.or(head),
+                                &mut rows,
+                            );
                             if let Some(id) = code {
                                 // Lines of one block are consecutive, so the first
                                 // opens its span and the rest extend it.
                                 if *id == code_geoms.len() {
                                     let lang = code_langs.get(*id).cloned().flatten();
-                                    code_geoms.push(CodeGeom { rows: before..rows.len(), lang });
+                                    code_geoms.push(CodeGeom {
+                                        rows: before..rows.len(),
+                                        lang,
+                                    });
                                 } else {
                                     code_geoms[*id].rows.end = rows.len();
                                 }
@@ -3781,7 +3943,11 @@ impl Element for TextElement {
                                 geoms.push(g);
                             }
                         }
-                        Logical::Image { info, glyphs, end_src } => {
+                        Logical::Image {
+                            info,
+                            glyphs,
+                            end_src,
+                        } => {
                             match loaded.get(&info.destination).cloned().flatten() {
                                 Some(image) => {
                                     // A loaded raster: reserve one row as tall as
@@ -3881,7 +4047,16 @@ impl Element for TextElement {
         let block_content_w = |g: &CodeGeom| -> f32 {
             g.rows
                 .clone()
-                .map(|r| f32::from(rows[r].segments.iter().map(|s| s.x + s.shaped.width).max().unwrap_or(px(0.0))))
+                .map(|r| {
+                    f32::from(
+                        rows[r]
+                            .segments
+                            .iter()
+                            .map(|s| s.x + s.shaped.width)
+                            .max()
+                            .unwrap_or(px(0.0)),
+                    )
+                })
                 .fold(0.0f32, f32::max)
         };
         // Shape each block's language label once, so its width feeds the box
@@ -3900,15 +4075,23 @@ impl Element for TextElement {
                     underline: None,
                     strikethrough: None,
                 };
-                Rc::new(window.text_system().shape_line(text, label_size, &[run], None))
+                Rc::new(
+                    window
+                        .text_system()
+                        .shape_line(text, label_size, &[run], None),
+                )
             });
             code_labels.push(shaped);
         }
         // Each block's box width: its content (or its label, whichever is wider)
         // plus the padding either side, capped at the editor width.
         let box_w = |bi: usize, g: &CodeGeom| -> f32 {
-            let label_w = code_labels[bi].as_ref().map_or(0.0, |s| f32::from(s.width) + CODE_PAD_X);
-            (block_content_w(g).max(label_w) + 2.0 * CODE_PAD_X).min(avail).max(2.0 * CODE_PAD_X)
+            let label_w = code_labels[bi]
+                .as_ref()
+                .map_or(0.0, |s| f32::from(s.width) + CODE_PAD_X);
+            (block_content_w(g).max(label_w) + 2.0 * CODE_PAD_X)
+                .min(avail)
+                .max(2.0 * CODE_PAD_X)
         };
 
         let caret_block = code_geoms.iter().position(|g| g.rows.contains(&cr));
@@ -3921,7 +4104,11 @@ impl Element for TextElement {
         let mut code_labels_out: Vec<(Rc<ShapedLine>, Point<Pixels>, Bounds<Pixels>)> = Vec::new();
         let label_h = label_size * 1.3;
         for (bi, g) in code_geoms.iter().enumerate() {
-            let off = if Some(bi) == caret_block { caret_off } else { 0.0 };
+            let off = if Some(bi) == caret_block {
+                caret_off
+            } else {
+                0.0
+            };
             for r in g.rows.clone() {
                 row_x[r] = px(CODE_PAD_X - off);
             }
@@ -4072,7 +4259,9 @@ impl Element for TextElement {
         let code_bg = self.editor.read(cx).style.code_background;
         for (shaped, origin, chip) in prepaint.code_labels.drain(..) {
             window.paint_quad(fill(chip, code_bg));
-            shaped.paint(origin, code_label_h, TextAlign::Left, None, window, cx).ok();
+            shaped
+                .paint(origin, code_label_h, TextAlign::Left, None, window, cx)
+                .ok();
         }
         for quad in prepaint.table_fills.drain(..) {
             window.paint_quad(quad);
@@ -4108,14 +4297,20 @@ impl Element for TextElement {
             let paint_row = |window: &mut Window, cx: &mut App| {
                 for seg in &row.segments {
                     seg.shaped
-                        .paint(point(left + seg.x + dx, y), row.height, TextAlign::Left, None, window, cx)
+                        .paint(
+                            point(left + seg.x + dx, y),
+                            row.height,
+                            TextAlign::Left,
+                            None,
+                            window,
+                            cx,
+                        )
                         .ok();
                 }
             };
             match clip_of(r) {
-                Some(rect) => window.with_content_mask(Some(ContentMask { bounds: rect }), |w| {
-                    paint_row(w, cx)
-                }),
+                Some(rect) => window
+                    .with_content_mask(Some(ContentMask { bounds: rect }), |w| paint_row(w, cx)),
                 None => paint_row(window, cx),
             }
         }
@@ -4304,8 +4499,8 @@ fn test_run_style(body: Font) -> RunStyle {
 #[cfg(test)]
 mod tests {
     use super::{
-        Glyph, build_runs, locate_caret_core, marked_replace_range, test_run_style, utf16_to_utf8,
-        utf8_to_utf16,
+        Glyph, build_runs, locate_caret_core, marked_replace_range, test_run_style, utf8_to_utf16,
+        utf16_to_utf8,
     };
     use leaf_core::style::Style as CoreStyle;
 
@@ -4446,10 +4641,7 @@ mod tests {
 
     #[test]
     fn no_replacement_range_with_a_composition_up_replaces_all_of_it() {
-        assert_eq!(
-            marked_replace_range("a€xyz", None, Some(4..7), 0..0),
-            4..7
-        );
+        assert_eq!(marked_replace_range("a€xyz", None, Some(4..7), 0..0), 4..7);
     }
 
     // ── preedit underline ───────────────────────────────────────────────────
@@ -4711,9 +4903,7 @@ mod table_layout_tests {
     }
 
     #[gpui::test]
-    fn down_from_a_cell_lands_in_the_cell_below_not_the_column_beside(
-        cx: &mut TestAppContext,
-    ) {
+    fn down_from_a_cell_lands_in_the_cell_below_not_the_column_beside(cx: &mut TestAppContext) {
         // Vertical motion is index arithmetic over rows, and a table row is one
         // row however many cells it has — so Down from "Pear" must reach "Fig",
         // keeping its column. This is what the segment model buys: were each cell
@@ -4751,7 +4941,9 @@ mod table_layout_tests {
         vcx.draw(
             gpui::point(px(0.0), px(0.0)),
             gpui::size(px(240.0), px(400.0)),
-            |_, _| TextElement { editor: editor.clone() },
+            |_, _| TextElement {
+                editor: editor.clone(),
+            },
         );
     }
 
@@ -4763,7 +4955,8 @@ mod table_layout_tests {
         let mut path = std::env::temp_dir();
         path.push(format!("leaf_gpui_test_img_{name}_{seq}.png"));
         let img = image::RgbaImage::from_pixel(w, h, image::Rgba([200, 40, 40, 255]));
-        img.save_with_format(&path, image::ImageFormat::Png).unwrap();
+        img.save_with_format(&path, image::ImageFormat::Png)
+            .unwrap();
         path
     }
 
@@ -4775,7 +4968,11 @@ mod table_layout_tests {
         let path = write_test_png("decode", 6, 4);
         let img = load_image_file(&path).expect("the PNG should decode");
         let size = img.size(0);
-        assert_eq!((size.width.0, size.height.0), (6, 4), "intrinsic size survives");
+        assert_eq!(
+            (size.width.0, size.height.0),
+            (6, 4),
+            "intrinsic size survives"
+        );
         // A bogus path fails cleanly rather than panicking.
         assert!(load_image_file(Path::new("/no/such/file.png")).is_none());
     }
@@ -4799,7 +4996,9 @@ mod table_layout_tests {
         vcx.draw(
             gpui::point(px(0.0), px(0.0)),
             gpui::size(px(240.0), px(600.0)),
-            |_, _| TextElement { editor: editor.clone() },
+            |_, _| TextElement {
+                editor: editor.clone(),
+            },
         );
     }
 
@@ -4813,15 +5012,21 @@ mod table_layout_tests {
         let code_lines: Vec<String> = logical
             .iter()
             .filter_map(|l| match l {
-                Logical::Line { glyphs, code: Some(_), .. } => {
-                    Some(glyphs.iter().map(|g| g.ch).collect())
-                }
+                Logical::Line {
+                    glyphs,
+                    code: Some(_),
+                    ..
+                } => Some(glyphs.iter().map(|g| g.ch).collect()),
                 _ => None,
             })
             .collect();
         assert_eq!(code_lines, vec!["let x = 1;".to_string()]);
         // Prose lines carry no code tag.
-        assert!(logical.iter().any(|l| matches!(l, Logical::Line { code: None, .. })));
+        assert!(
+            logical
+                .iter()
+                .any(|l| matches!(l, Logical::Line { code: None, .. }))
+        );
         assert_eq!(doc.vmap.code_blocks[0].lang.as_deref(), Some("rust"));
     }
 
@@ -4852,12 +5057,18 @@ mod table_layout_tests {
         let prose: Vec<String> = logical
             .iter()
             .filter_map(|l| match l {
-                Logical::Line { glyphs, .. } => Some(glyphs.iter().map(|x| x.ch).collect::<String>()),
+                Logical::Line { glyphs, .. } => {
+                    Some(glyphs.iter().map(|x| x.ch).collect::<String>())
+                }
                 _ => None,
             })
             .filter(|s| !s.is_empty())
             .collect();
-        assert_eq!(prose, ["intro", "outro"], "the prose around the table was lost");
+        assert_eq!(
+            prose,
+            ["intro", "outro"],
+            "the prose around the table was lost"
+        );
     }
 
     #[test]
@@ -4881,7 +5092,9 @@ mod table_layout_tests {
         let prose: Vec<String> = logical
             .iter()
             .filter_map(|l| match l {
-                Logical::Line { glyphs, .. } => Some(glyphs.iter().map(|x| x.ch).collect::<String>()),
+                Logical::Line { glyphs, .. } => {
+                    Some(glyphs.iter().map(|x| x.ch).collect::<String>())
+                }
                 _ => None,
             })
             .filter(|s| !s.is_empty())
@@ -4905,13 +5118,19 @@ mod table_layout_tests {
         // Remote and data URIs, and a relative path with no doc dir, are not
         // synchronously loadable — they fall back to the text placeholder.
         assert_eq!(resolve_image_path("https://x.dev/a.png", Some(dir)), None);
-        assert_eq!(resolve_image_path("data:image/png;base64,AAAA", Some(dir)), None);
+        assert_eq!(
+            resolve_image_path("data:image/png;base64,AAAA", Some(dir)),
+            None
+        );
         assert_eq!(resolve_image_path("cat.png", None), None);
     }
 
     #[test]
     fn image_box_size_fits_width_and_caps_height_without_upscaling() {
-        let dp = |w: i32, h: i32| Size { width: DevicePixels(w), height: DevicePixels(h) };
+        let dp = |w: i32, h: i32| Size {
+            width: DevicePixels(w),
+            height: DevicePixels(h),
+        };
         // Wider than the editor: scaled down to the width, aspect preserved.
         let s = image_box_size(dp(800, 400), 400.0);
         assert_eq!((f32::from(s.width), f32::from(s.height)), (400.0, 200.0));
@@ -4951,7 +5170,12 @@ mod table_layout_tests {
 
     fn glyphs_of(text: &str, start: usize, style: CoreStyle) -> Vec<Glyph> {
         text.char_indices()
-            .map(|(i, ch)| Glyph { ch, style, src: start + i, stop: true })
+            .map(|(i, ch)| Glyph {
+                ch,
+                style,
+                src: start + i,
+                stop: true,
+            })
             .collect()
     }
 
@@ -5100,8 +5324,10 @@ mod table_layout_tests {
             });
         });
         editor.update(cx, |e, cx| {
-            let mut s = EditorStyle::default();
-            s.font_family = "Courier".into();
+            let s = EditorStyle {
+                font_family: "Courier".into(),
+                ..Default::default()
+            };
             e.set_style(s, cx);
         });
         editor.read_with(cx, |e, _| {
@@ -5144,7 +5370,10 @@ mod table_layout_tests {
         // out of the quote it is plainly inside.
         let body = "> | a | b |\n> |---|---|\n> | c | d |\n";
         let (rows, geom, info) = lay_out(cx, "bq", body, 800.0);
-        assert!(!info.prefix.is_empty(), "the quote's prefix should be carried");
+        assert!(
+            !info.prefix.is_empty(),
+            "the quote's prefix should be carried"
+        );
         assert!(
             geom.bounds[0] > 0.0,
             "the grid should start past the gutter, not at {}",
@@ -5172,7 +5401,8 @@ mod table_layout_tests {
         // the end stop. Wrapping to the full column width would let that space
         // push the line past it — a glyph landing on the border or in the next
         // cell, which is exactly what a column is supposed to prevent.
-        let body = "| K | Notes |\n|---|-------|\n| a | a rather long note that has to wrap somewhere |\n";
+        let body =
+            "| K | Notes |\n|---|-------|\n| a | a rather long note that has to wrap somewhere |\n";
         let (rows, geom, _) = lay_out(cx, "wrapfit", body, 240.0);
         assert!(
             geom.bands[1].0.len() > 1,
@@ -5230,7 +5460,8 @@ mod table_layout_tests {
         // Sized to content the grid would run past the surface, where no amount
         // of caret motion reaches it. It has to come back inside — and the text
         // has to still be there, wrapped, not clipped.
-        let body = "| Name | Notes |\n|------|-------|\n| Pear | a rather long note that will not fit |\n";
+        let body =
+            "| Name | Notes |\n|------|-------|\n| Pear | a rather long note that will not fit |\n";
         let (rows, geom, _) = lay_out(cx, "overwide", body, 260.0);
         assert!(
             *geom.bounds.last().unwrap() <= 260.0,
@@ -5247,7 +5478,10 @@ mod table_layout_tests {
             .flat_map(|r| r.segments.iter().map(|s| s.shaped.text.to_string()))
             .collect();
         for word in ["rather", "long", "note", "not", "fit"] {
-            assert!(text.contains(word), "{word:?} was lost in the wrap: {text:?}");
+            assert!(
+                text.contains(word),
+                "{word:?} was lost in the wrap: {text:?}"
+            );
         }
     }
 
@@ -5268,7 +5502,10 @@ mod table_layout_tests {
                 _ => None,
             })
             .collect();
-        assert!(heads.contains(&Some(1)), "the empty heading's row lost its level: {heads:?}");
+        assert!(
+            heads.contains(&Some(1)),
+            "the empty heading's row lost its level: {heads:?}"
+        );
 
         with_shaper(cx, |sh| {
             assert!(
@@ -5288,7 +5525,11 @@ mod table_layout_tests {
             let body = glyphs_of("Title", 0, CoreStyle::default());
             let h1 = glyphs_of("Title", 0, CoreStyle::default().role(Role::Heading(1)));
             let h6 = glyphs_of("Title", 0, CoreStyle::default().role(Role::Heading(6)));
-            assert_eq!(sh.row_height(&body), px(24.0), "a body row is the line height");
+            assert_eq!(
+                sh.row_height(&body),
+                px(24.0),
+                "a body row is the line height"
+            );
             assert!(
                 sh.row_height(&h1) > sh.row_height(&body),
                 "an h1 row must be taller than a body row: {:?} vs {:?}",
@@ -5310,28 +5551,59 @@ mod table_layout_tests {
         // from their role), and the mark background.
         let theme = EditorStyle::default();
         let styler = test_run_style(gpui::font("Helvetica"));
-        let run = |role| build_runs(&glyphs_of("x", 0, CoreStyle::default().role(role)), &styler, None)[0].clone();
+        let run = |role| {
+            build_runs(
+                &glyphs_of("x", 0, CoreStyle::default().role(role)),
+                &styler,
+                None,
+            )[0]
+            .clone()
+        };
 
         // Code shapes in the mono family, in the default text color — mono is the
         // distinguisher, so it no longer needs the terminal's green.
         let code = run(Role::Code);
-        assert_eq!(code.font.family, "Menlo", "code should shape in the mono family");
-        assert_eq!(code.color, theme.text, "code reads in the default text color, not green");
+        assert_eq!(
+            code.font.family, "Menlo",
+            "code should shape in the mono family"
+        );
+        assert_eq!(
+            code.color, theme.text,
+            "code reads in the default text color, not green"
+        );
 
         // A heading stays in the body family but is bold from its role and in the
         // default text color — size and weight distinguish it, not a hue.
         let heading = run(Role::Heading(1));
-        assert_eq!(heading.font.family, "Helvetica", "a heading stays in the body family");
-        assert_eq!(heading.font.weight, gpui::FontWeight::BOLD, "a heading is bold from its role");
-        assert_eq!(heading.color, theme.text, "a heading renders in the default text color");
+        assert_eq!(
+            heading.font.family, "Helvetica",
+            "a heading stays in the body family"
+        );
+        assert_eq!(
+            heading.font.weight,
+            gpui::FontWeight::BOLD,
+            "a heading is bold from its role"
+        );
+        assert_eq!(
+            heading.color, theme.text,
+            "a heading renders in the default text color"
+        );
 
         // A link takes the link color and is underlined; a mark carries the
         // highlight background; decoration is muted.
         let link = run(Role::Link);
         assert_eq!(link.color, theme.link, "a link takes the link color");
         assert!(link.underline.is_some(), "a link is underlined");
-        assert_eq!(run(Role::Mark).background_color, Some(theme.mark_background), "mark is highlighted");
-        assert_eq!(run(Role::QuoteGutter).color, theme.muted, "decoration is muted");
+        assert_eq!(
+            run(Role::Mark).background_color,
+            Some(theme.mark_background),
+            "mark is highlighted"
+        );
+        assert_eq!(
+            run(Role::QuoteGutter).color,
+            theme.muted,
+            "decoration is muted"
+        );
     }
 
     #[test]
@@ -5357,4 +5629,3 @@ mod table_layout_tests {
         assert_eq!(row_at_y(&tops, px(999.0)), 2);
     }
 }
-

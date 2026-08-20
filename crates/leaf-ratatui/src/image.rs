@@ -16,16 +16,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use ratatui::{
-    Frame,
-    layout::Rect,
-    widgets::Clear,
-};
-use ratatui_image::{
-    FontSize, Resize, StatefulImage,
-    picker::Picker,
-    protocol::StatefulProtocol,
-};
+use ratatui::{Frame, layout::Rect, widgets::Clear};
+use ratatui_image::{FontSize, Resize, StatefulImage, picker::Picker, protocol::StatefulProtocol};
 
 use leaf_core::{ColorScheme, MediaInfo};
 
@@ -125,11 +117,15 @@ impl Images {
         for info in images {
             // No still to draw (audio, or a video with no poster): leave core's
             // labelled placeholder row and reserve nothing extra for it.
-            let Some(still) = info.still(self.scheme) else { continue };
+            let Some(still) = info.still(self.scheme) else {
+                continue;
+            };
             let Some(path) = resolve_image_path(still, doc_dir) else {
                 continue;
             };
-            let Some(entry) = self.entry(&path) else { continue };
+            let Some(entry) = self.entry(&path) else {
+                continue;
+            };
             let cells = box_cells(entry.intrinsic, inner_cols, inner_rows, font);
             entry.box_cells = cells;
             heights.insert(info.destination.clone(), cells.1 as usize);
@@ -142,7 +138,10 @@ impl Images {
     /// that isn't a loadable local file (so `ui` frames it as a bare placeholder).
     pub fn picture_cells(&self, info: &MediaInfo, doc_dir: Option<&Path>) -> Option<(u16, u16)> {
         let path = resolve_image_path(info.still(self.scheme)?, doc_dir)?;
-        self.cache.get(&path).and_then(|e| e.as_ref()).map(|e| e.box_cells)
+        self.cache
+            .get(&path)
+            .and_then(|e| e.as_ref())
+            .map(|e| e.box_cells)
     }
 
     /// Paint an image's raster into `rect`, the interior of its border box. The
@@ -159,7 +158,9 @@ impl Images {
         doc_dir: Option<&Path>,
         rect: Rect,
     ) -> bool {
-        let Some(still) = info.still(self.scheme) else { return false };
+        let Some(still) = info.still(self.scheme) else {
+            return false;
+        };
         let Some(path) = resolve_image_path(still, doc_dir) else {
             return false;
         };
@@ -235,7 +236,11 @@ fn detect_color_scheme() -> ColorScheme {
 /// `None` when there's no parseable trailing index.
 fn scheme_from_colorfgbg(value: &str) -> Option<ColorScheme> {
     let bg: u8 = value.rsplit(';').next()?.trim().parse().ok()?;
-    Some(if bg <= 6 || bg == 8 { ColorScheme::Dark } else { ColorScheme::Light })
+    Some(if bg <= 6 || bg == 8 {
+        ColorScheme::Dark
+    } else {
+        ColorScheme::Light
+    })
 }
 
 /// Resolve an image destination to a readable local path, or `None` when it's
@@ -269,7 +274,10 @@ fn resolve_image_path(dest: &str, doc_dir: Option<&Path>) -> Option<PathBuf> {
 /// unreadable, or a format no decoder covers). SVG is rasterized with resvg
 /// ([`load_svg`]); every raster format goes through the `image` codec crate.
 fn load_image(path: &Path) -> Option<image::DynamicImage> {
-    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("svg")) {
+    if path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("svg"))
+    {
         return load_svg(&std::fs::read(path).ok()?);
     }
     image::ImageReader::open(path)
@@ -311,7 +319,11 @@ fn load_svg(data: &[u8]) -> Option<image::DynamicImage> {
     let h = (size.height() * scale).ceil().max(1.0) as u32;
 
     let mut pixmap = tiny_skia::Pixmap::new(w, h)?;
-    resvg::render(&tree, tiny_skia::Transform::from_scale(scale, scale), &mut pixmap.as_mut());
+    resvg::render(
+        &tree,
+        tiny_skia::Transform::from_scale(scale, scale),
+        &mut pixmap.as_mut(),
+    );
 
     // tiny-skia stores premultiplied alpha; `image` expects straight alpha, so
     // demultiply each pixel on the way into the RGBA buffer.
@@ -320,7 +332,9 @@ fn load_svg(data: &[u8]) -> Option<image::DynamicImage> {
         let c = px.demultiply();
         rgba.extend_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
     }
-    Some(image::DynamicImage::ImageRgba8(image::RgbaImage::from_raw(w, h, rgba)?))
+    Some(image::DynamicImage::ImageRgba8(image::RgbaImage::from_raw(
+        w, h, rgba,
+    )?))
 }
 
 #[cfg(test)]
@@ -336,14 +350,20 @@ mod tests {
         // A 200×100px image (2:1) into a 40-col space with 10×20px cells: 40 cols
         // is 400px, wider than the image, so it isn't upscaled — it stays 200px =
         // 20 cols wide, 100px = 5 rows tall.
-        assert_eq!(box_cells((200, 100), 40, MAX_IMAGE_ROWS as u16, font()), (20, 5));
+        assert_eq!(
+            box_cells((200, 100), 40, MAX_IMAGE_ROWS as u16, font()),
+            (20, 5)
+        );
     }
 
     #[test]
     fn box_cells_scales_down_to_the_available_width() {
         // An 800×400px image into the same 40-col (400px) space: scaled to 400px
         // wide (40 cols), 200px tall (10 rows).
-        assert_eq!(box_cells((800, 400), 40, MAX_IMAGE_ROWS as u16, font()), (40, 10));
+        assert_eq!(
+            box_cells((800, 400), 40, MAX_IMAGE_ROWS as u16, font()),
+            (40, 10)
+        );
     }
 
     #[test]
@@ -352,7 +372,10 @@ mod tests {
         // and shrinks the width to keep the aspect ratio.
         let (cols, rows) = box_cells((100, 4000), 40, 8, font());
         assert_eq!(rows, 8, "height is held to the cap");
-        assert!(cols >= 1 && cols < 40, "width shrinks with the capped height: {cols}");
+        assert!(
+            (1..40).contains(&cols),
+            "width shrinks with the capped height: {cols}"
+        );
     }
 
     #[test]
@@ -363,7 +386,12 @@ mod tests {
         let img = load_svg(svg).expect("valid SVG should rasterize");
         // Rendered at the target resolution, so upscaled from its 20×10 viewport
         // while keeping the 2:1 aspect.
-        assert!(img.width() >= 20 && img.height() >= 10, "got {}×{}", img.width(), img.height());
+        assert!(
+            img.width() >= 20 && img.height() >= 10,
+            "got {}×{}",
+            img.width(),
+            img.height()
+        );
         assert_eq!(img.width(), img.height() * 2, "aspect ratio preserved");
         // The fill lands as opaque, straight-alpha red — not premultiplied mush.
         let rgba = img.to_rgba8();
@@ -381,7 +409,10 @@ mod tests {
         // "light text on dark bg" (bg 0) → dark; "dark on light" (bg 15) → light.
         assert_eq!(scheme_from_colorfgbg("15;0"), Some(ColorScheme::Dark));
         assert_eq!(scheme_from_colorfgbg("0;15"), Some(ColorScheme::Light));
-        assert_eq!(scheme_from_colorfgbg("15;default;0"), Some(ColorScheme::Dark));
+        assert_eq!(
+            scheme_from_colorfgbg("15;default;0"),
+            Some(ColorScheme::Dark)
+        );
         assert_eq!(scheme_from_colorfgbg("7"), Some(ColorScheme::Light));
         assert_eq!(scheme_from_colorfgbg(""), None);
         assert_eq!(scheme_from_colorfgbg("nonsense"), None);
@@ -390,10 +421,19 @@ mod tests {
     #[test]
     fn resolve_rejects_remote_and_anchors_relative() {
         let dir = Path::new("/docs");
-        assert_eq!(resolve_image_path("pics/cat.png", Some(dir)), Some(PathBuf::from("/docs/pics/cat.png")));
-        assert_eq!(resolve_image_path("/abs/cat.png", Some(dir)), Some(PathBuf::from("/abs/cat.png")));
+        assert_eq!(
+            resolve_image_path("pics/cat.png", Some(dir)),
+            Some(PathBuf::from("/docs/pics/cat.png"))
+        );
+        assert_eq!(
+            resolve_image_path("/abs/cat.png", Some(dir)),
+            Some(PathBuf::from("/abs/cat.png"))
+        );
         assert_eq!(resolve_image_path("https://x.dev/a.png", Some(dir)), None);
-        assert_eq!(resolve_image_path("data:image/png;base64,AAAA", Some(dir)), None);
+        assert_eq!(
+            resolve_image_path("data:image/png;base64,AAAA", Some(dir)),
+            None
+        );
         // A relative path with no document directory can't be anchored.
         assert_eq!(resolve_image_path("cat.png", None), None);
     }

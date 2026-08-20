@@ -48,7 +48,10 @@ impl LeafApp {
     /// document answers `false` and puts Save / Discard / Cancel on screen; the
     /// quit then arrives (or doesn't) as an `EditorEvent::CloseConfirmed`.
     fn quit(&mut self, _: &Quit, _: &mut Window, cx: &mut Context<Self>) {
-        if self.editor.update(cx, |editor, cx| editor.confirm_close(cx)) {
+        if self
+            .editor
+            .update(cx, |editor, cx| editor.confirm_close(cx))
+        {
             cx.quit();
         }
     }
@@ -126,7 +129,8 @@ impl Render for LeafApp {
                  ⌥←/→ word · ⌘z/⇧⌘z undo · ⌘n new · ⌘s save · ⌘⇧s save as"
             )
         } else {
-            "leaf — no file open   (⌘O or click + to open a markdown, djot, or HTML file)".to_string()
+            "leaf — no file open   (⌘O or click + to open a markdown, djot, or HTML file)"
+                .to_string()
         };
 
         div()
@@ -275,7 +279,8 @@ fn main() {
                     cx.new(|cx| {
                         // Re-render the header when the editor changes (dirty ●,
                         // the caret's active marks).
-                        cx.observe(&editor, |_: &mut LeafApp, _, cx| cx.notify()).detach();
+                        cx.observe(&editor, |_: &mut LeafApp, _, cx| cx.notify())
+                            .detach();
 
                         // The widget owns the close question but can't act on the
                         // answer — quitting is the app's. Two of the three answers

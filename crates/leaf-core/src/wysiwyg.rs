@@ -498,10 +498,10 @@ impl VisualMap {
             // true even across a table's wrapped cells, since a cell's lines run
             // downward. So once a row opens past the best found so far, no later
             // row can beat it and the scan stays proportional to `off`.
-            if let (Some(b), Some(first)) = (best, row.glyphs.iter().find(|g| g.stop)) {
-                if first.src > b.0 {
-                    break;
-                }
+            if let (Some(b), Some(first)) = (best, row.glyphs.iter().find(|g| g.stop))
+                && first.src > b.0
+            {
+                break;
             }
         }
         match best {
@@ -549,7 +549,11 @@ impl VisualMap {
             if row.decoration {
                 continue;
             }
-            let open = row.glyphs.iter().find(|g| g.stop).map_or(row.end_src, |g| g.src);
+            let open = row
+                .glyphs
+                .iter()
+                .find(|g| g.stop)
+                .map_or(row.end_src, |g| g.src);
             if open >= range.end {
                 // A row's first stop never decreases from one row to the next —
                 // the invariant `pos_of_offset` breaks on, true even across a
@@ -646,7 +650,9 @@ impl VisualMap {
     /// [`Doc::backspace`]: crate::Doc::backspace
     pub fn block_media_stop(&self, off: usize) -> Option<(MediaStop, Range<usize>)> {
         for m in &self.media {
-            let Some(row) = self.rows.get(m.rows_span.start) else { continue };
+            let Some(row) = self.rows.get(m.rows_span.start) else {
+                continue;
+            };
             // Every glyph of the `🖼 alt` label maps to the media's start offset;
             // the row's end is past its markup. Read the start off the label
             // rather than the first glyph, which on a quoted or listed picture is
@@ -715,7 +721,12 @@ impl VisualMap {
     /// wrong for Home, whose whole question is where *this* row starts.
     pub fn row_start(&self, row: usize) -> Option<usize> {
         let r = self.rows.get(row).filter(|r| !r.decoration)?;
-        Some(r.glyphs.iter().find(|g| g.stop).map_or(r.end_src, |g| g.src))
+        Some(
+            r.glyphs
+                .iter()
+                .find(|g| g.stop)
+                .map_or(r.end_src, |g| g.src),
+        )
     }
 
     /// The last row the caret can rest on — the fallback when an offset is past
@@ -729,7 +740,9 @@ impl VisualMap {
 
     /// The nearest row above `row` the caret can occupy, skipping decoration.
     pub fn navigable_above(&self, row: usize) -> Option<usize> {
-        (0..row.min(self.rows.len())).rev().find(|&r| self.row_is_navigable(r))
+        (0..row.min(self.rows.len()))
+            .rev()
+            .find(|&r| self.row_is_navigable(r))
     }
 
     /// The nearest row below `row` the caret can occupy, skipping decoration.
@@ -873,7 +886,10 @@ impl VisualMap {
         // A boundary can't share an offset with a glyph (it's the undrawn gap
         // between two blocks' real content), so tie-breaking never arises.
         items.sort_by_key(|&(src, _)| src);
-        items.into_iter().map(|(_, ch)| ch.unwrap_or('\n')).collect()
+        items
+            .into_iter()
+            .map(|(_, ch)| ch.unwrap_or('\n'))
+            .collect()
     }
 }
 
@@ -913,14 +929,20 @@ fn code_block_spans(rows: &[VRow]) -> Vec<CodeBlockInfo> {
         match (row.code, start) {
             (true, None) => start = Some(i),
             (false, Some(s)) => {
-                blocks.push(CodeBlockInfo { rows_span: s..i, lang: rows[s].code_lang.clone() });
+                blocks.push(CodeBlockInfo {
+                    rows_span: s..i,
+                    lang: rows[s].code_lang.clone(),
+                });
                 start = None;
             }
             _ => {}
         }
     }
     if let Some(s) = start {
-        blocks.push(CodeBlockInfo { rows_span: s..rows.len(), lang: rows[s].code_lang.clone() });
+        blocks.push(CodeBlockInfo {
+            rows_span: s..rows.len(),
+            lang: rows[s].code_lang.clone(),
+        });
     }
     blocks
 }
@@ -938,7 +960,10 @@ fn code_block_spans(rows: &[VRow]) -> Vec<CodeBlockInfo> {
 /// absent here — a caller wanting presence-not-value tests the list directly.
 /// Shared by the media element and `<source>` readers.
 fn attr_of(node: &FlatNode, key: &str) -> Option<String> {
-    node.attrs.iter().find(|(k, _)| k == key).and_then(|(_, v)| v.clone())
+    node.attrs
+        .iter()
+        .find(|(k, _)| k == key)
+        .and_then(|(_, v)| v.clone())
 }
 
 fn media_spans(rows: &[VRow]) -> Vec<MediaInfo> {
@@ -1048,9 +1073,9 @@ pub fn build(
         reveal: reveal.clone(),
     };
     b.top_blocks(&top);
-    b.emit_trailing_blank_lines(
-        top.last().map_or(BlockClass::Paragraph, |&i| BlockClass::from_node_kind(&nodes[i].kind)),
-    );
+    b.emit_trailing_blank_lines(top.last().map_or(BlockClass::Paragraph, |&i| {
+        BlockClass::from_node_kind(&nodes[i].kind)
+    }));
     let content_start = top.first().map_or(0, |&i| nodes[i].span.start);
     let stops = collect_stops(&b.rows);
     let code_blocks = code_block_spans(&b.rows);
@@ -1079,6 +1104,10 @@ pub fn build(
 /// byte-for-byte identical to [`build`] on the same document (the
 /// `build_cached_matches_build` test pins this); [`build`] stays the cache-free,
 /// whole-arena reference. This is the entry point [`crate::Doc`] uses.
+// One builder, and every one of these is a distinct input to the same layout
+// pass — a struct of them would be built at the one call site and unpacked
+// here, which is the same arguments with an extra name in the way.
+#[allow(clippy::too_many_arguments)]
 pub fn build_cached(
     top: &[QueryMatch],
     source: &str,
@@ -1213,9 +1242,9 @@ pub fn build_cached(
     }
 
     let before_trailing = b.rows.len();
-    b.emit_trailing_blank_lines(
-        blocks.last().map_or(BlockClass::Paragraph, |m| BlockClass::from_node_kind(&m.kind)),
-    );
+    b.emit_trailing_blank_lines(blocks.last().map_or(BlockClass::Paragraph, |m| {
+        BlockClass::from_node_kind(&m.kind)
+    }));
     let trailing_rows = b.rows.len() - before_trailing;
 
     // Evict every entry no block reused this build, so the cache tracks the
@@ -1278,6 +1307,10 @@ pub fn build_cached(
 /// touched. The hash-keyed entry cache is left alone — a later [`build_cached`]
 /// will miss on the changed block, re-render it, and evict the stale entry, so
 /// chained splices neither corrupt nor grow it.
+// One builder, and every one of these is a distinct input to the same layout
+// pass — a struct of them would be built at the one call site and unpacked
+// here, which is the same arguments with an extra name in the way.
+#[allow(clippy::too_many_arguments)]
 pub fn build_spliced(
     prev: VisualMap,
     source: &str,
@@ -1351,8 +1384,7 @@ pub fn build_spliced(
     let pk_end = prev_layout.blocks[k].span.end;
     let pk_sep = prev_layout.blocks[k].sep_rows;
     let pk_content = prev_layout.blocks[k].content_rows;
-    if blocks[k].span.start != pk_start
-        || blocks[k].span.end != (pk_end as isize + delta) as usize
+    if blocks[k].span.start != pk_start || blocks[k].span.end != (pk_end as isize + delta) as usize
     {
         return None;
     }
@@ -1587,10 +1619,17 @@ impl BlockCache {
     /// stamp it used this build and hand back a borrow to shift-and-clone from.
     /// `None` on a miss (unknown hash, a collision whose bytes differ, or the
     /// same bytes built under a different reveal).
-    fn reuse(&mut self, hash: u64, bytes: &[u8], reveal: &Option<Range<usize>>) -> Option<&CachedBlock> {
+    fn reuse(
+        &mut self,
+        hash: u64,
+        bytes: &[u8],
+        reveal: &Option<Range<usize>>,
+    ) -> Option<&CachedBlock> {
         let g = self.generation;
         let bucket = self.entries.get_mut(&hash)?;
-        let e = bucket.iter_mut().find(|e| &*e.bytes == bytes && &e.reveal == reveal)?;
+        let e = bucket
+            .iter_mut()
+            .find(|e| &*e.bytes == bytes && &e.reveal == reveal)?;
         e.generation = g;
         Some(&*e)
     }
@@ -1609,7 +1648,10 @@ impl BlockCache {
     ) {
         let g = self.generation;
         let bucket = self.entries.entry(hash).or_default();
-        if let Some(e) = bucket.iter_mut().find(|e| &*e.bytes == bytes && e.reveal == reveal) {
+        if let Some(e) = bucket
+            .iter_mut()
+            .find(|e| &*e.bytes == bytes && e.reveal == reveal)
+        {
             e.built_start = built_start;
             e.rows = rows;
             e.last_off = last_off;
@@ -1722,7 +1764,9 @@ fn rows_within(rows: &[VRow], span: &Range<usize>) -> bool {
     rows.iter().all(|r| {
         r.end_src >= span.start
             && r.end_src <= span.end
-            && r.glyphs.iter().all(|g| g.src >= span.start && g.src <= span.end)
+            && r.glyphs
+                .iter()
+                .all(|g| g.src >= span.start && g.src <= span.end)
     })
 }
 
@@ -1893,7 +1937,9 @@ pub(crate) fn footnote_reference_label(source: &str, span: Range<usize>) -> Opti
 /// heading can't scan into the text under it.
 fn heading_content_start(source: &str, span: &Range<usize>) -> usize {
     let end = span.end.min(source.len());
-    let Some(line) = source.get(span.start..end) else { return span.start };
+    let Some(line) = source.get(span.start..end) else {
+        return span.start;
+    };
     let line = line.split('\n').next().unwrap_or("");
     let hashes = line.len() - line.trim_start_matches('#').len();
     if hashes == 0 {
@@ -1997,7 +2043,8 @@ impl Builder<'_> {
         // heading's `\n=====` underline is the case that arises in practice. It
         // would also inject a `'\n'` glyph, which `emit_wrapped` reads as a hard
         // row break, so the row would split where the author wrote no break.
-        let multiline = |r: &Range<usize>| self.source.get(r.clone()).is_some_and(|s| s.contains('\n'));
+        let multiline =
+            |r: &Range<usize>| self.source.get(r.clone()).is_some_and(|s| s.contains('\n'));
         if multiline(&open) || multiline(&close) {
             return None;
         }
@@ -2029,7 +2076,10 @@ impl Builder<'_> {
     /// live-preview behaviour. Showing the markup is not the same as turning the
     /// rendering off — that is what [`crate::View::Source`] is for.
     fn inline_delimited(&self, id: usize, style: Style, out: &mut Vec<Glyph>) {
-        let show = self.revealed(&self.nodes[id].span).then(|| self.delims(id)).flatten();
+        let show = self
+            .revealed(&self.nodes[id].span)
+            .then(|| self.delims(id))
+            .flatten();
         if let Some((open, _)) = &show {
             self.push_delim(out, open, style);
         }
@@ -2208,7 +2258,9 @@ impl Builder<'_> {
                 // closing `#`-run (`## title ##`) is covered by the same
                 // `delims` pair, and a setext underline is excluded there for
                 // being on another line entirely.
-                if let Some((open, close)) = self.revealed(&node.span).then(|| self.delims(id)).flatten() {
+                if let Some((open, close)) =
+                    self.revealed(&node.span).then(|| self.delims(id)).flatten()
+                {
                     self.push_delim(&mut glyphs, &open, style);
                     glyphs.extend(self.inline_children_with_trailing(id, style));
                     self.push_delim(&mut glyphs, &close, style);
@@ -2343,7 +2395,9 @@ impl Builder<'_> {
                                 pc,
                                 true,
                                 Boundary {
-                                    above: BlockClass::from_node_kind(&self.nodes[kids[i - 1]].kind),
+                                    above: BlockClass::from_node_kind(
+                                        &self.nodes[kids[i - 1]].kind,
+                                    ),
                                     below: BlockClass::from_node_kind(&self.nodes[child].kind),
                                 },
                             );
@@ -2468,9 +2522,7 @@ impl Builder<'_> {
             // own. It can't be found by the `media_only` scan below the way a
             // wrapped one is: that scan looks at a wrapper's *children*, and here
             // the media element is itself the block.
-            "container"
-                if matches!(element_tag(node), Some("video") | Some("audio")) =>
-            {
+            "container" if matches!(element_tag(node), Some("video") | Some("audio")) => {
                 let kind = match element_tag(node) {
                     Some("audio") => MediaKind::Audio,
                     _ => MediaKind::Video,
@@ -2490,8 +2542,7 @@ impl Builder<'_> {
                     self.block_media(m, kind, id, pf);
                     return;
                 }
-                let inline =
-                    !kids.is_empty() && kids.iter().all(|&c| is_inline(&self.nodes[c]));
+                let inline = !kids.is_empty() && kids.iter().all(|&c| is_inline(&self.nodes[c]));
                 if inline || kids.is_empty() {
                     let glyphs = self.inline_children_with_trailing(id, Style::default());
                     if !glyphs.is_empty() {
@@ -2619,7 +2670,8 @@ impl Builder<'_> {
                 // empty cell has a distinct, editable caret home.
                 let span = n.content_span.clone().unwrap_or_else(|| {
                     let off = empty_cell_offset(
-                        &self.source[n.span.start.min(self.source.len())..n.span.end.min(self.source.len())],
+                        &self.source[n.span.start.min(self.source.len())
+                            ..n.span.end.min(self.source.len())],
                         n.span.start,
                         col,
                     );
@@ -2649,7 +2701,7 @@ impl Builder<'_> {
             directive: false,
             directive_label: None,
             media: None,
-                task: None,
+            task: None,
             leaf_directive: None,
             heading: None,
             boundary: None,
@@ -2709,7 +2761,12 @@ impl Builder<'_> {
                         };
                         glyphs.extend(synth(&" ".repeat(lead + 1), Role::Body, at));
                         glyphs.extend(line.iter().cloned());
-                        glyphs.push(Glyph { ch: ' ', style: Style::default(), src: end, stop: true });
+                        glyphs.push(Glyph {
+                            ch: ' ',
+                            style: Style::default(),
+                            src: end,
+                            stop: true,
+                        });
                         glyphs.extend(synth(&" ".repeat(trail), Role::Body, end));
                     }
                     // A ragged row, or a column whose cell ended higher up: pad
@@ -2730,19 +2787,19 @@ impl Builder<'_> {
                 .find(|g| g.stop)
                 .map_or(fallback, |g| g.src);
             self.rows.push(VRow {
-            glyphs,
-            end_src,
-            decoration: false,
-            code: false,
-            code_lang: None,
-            directive: false,
-            directive_label: None,
-            media: None,
+                glyphs,
+                end_src,
+                decoration: false,
+                code: false,
+                code_lang: None,
+                directive: false,
+                directive_label: None,
+                media: None,
                 task: None,
-            leaf_directive: None,
-            heading: None,
-            boundary: None,
-        });
+                leaf_directive: None,
+                heading: None,
+                boundary: None,
+            });
         }
     }
 
@@ -2785,7 +2842,10 @@ impl Builder<'_> {
             // alt has only its `<source>`s to be named by, so fall back to the
             // first candidate rather than labelling the row a bare sigil.
             let named = if destination.is_empty() {
-                sources.first().map(|s| s.srcset.as_str()).unwrap_or_default()
+                sources
+                    .first()
+                    .map(|s| s.srcset.as_str())
+                    .unwrap_or_default()
             } else {
                 &destination
             };
@@ -2796,19 +2856,36 @@ impl Builder<'_> {
         let style = Style::default().role(Role::Image);
         let mut glyphs = pf.to_vec();
         for ch in label.chars() {
-            glyphs.push(Glyph { ch, style, src: start, stop: true });
+            glyphs.push(Glyph {
+                ch,
+                style,
+                src: start,
+                stop: true,
+            });
         }
         // How many rows the frontend wants for this picture: the label row plus
         // the blank fillers below it. Absent (a GUI that lays images out in
         // pixels, an image that didn't resolve, or a plain surface) means the
         // bare one-row placeholder.
-        let rows = self.media_rows.get(&destination).copied().unwrap_or(1).max(1);
+        let rows = self
+            .media_rows
+            .get(&destination)
+            .copied()
+            .unwrap_or(1)
+            .max(1);
         // End past the image so the caret has a stop after it: the last glyph's
         // offset is the image *start*, not its extent, so `push_row`'s
         // last-glyph rule would strand the end stop inside the markup.
         self.push_row_at(glyphs, end);
         if let Some(row) = self.rows.last_mut() {
-            row.media = Some(MediaMark { kind, destination, sources, alt, poster, rows });
+            row.media = Some(MediaMark {
+                kind,
+                destination,
+                sources,
+                alt,
+                poster,
+                rows,
+            });
         }
         // Reserve the picture's remaining height as blank `decoration` rows: drawn
         // (so the frontend has the vertical room to paint the raster over them),
@@ -2931,12 +3008,7 @@ impl Builder<'_> {
                 // *not* descended into, so its `<source>` children and its
                 // "your browser does not support…" fallback text neither add a
                 // second count nor make the block look like text.
-                "container"
-                    if matches!(
-                        element_tag(node),
-                        Some("video") | Some("audio")
-                    ) =>
-                {
+                "container" if matches!(element_tag(node), Some("video") | Some("audio")) => {
                     let kind = match element_tag(node) {
                         Some("audio") => MediaKind::Audio,
                         _ => MediaKind::Video,
@@ -2985,14 +3057,24 @@ impl Builder<'_> {
         let style = Style::default().role(Role::Image);
         let mut glyphs = pf.to_vec();
         for ch in format!("⧉ {shown}").chars() {
-            glyphs.push(Glyph { ch, style, src: start, stop: true });
+            glyphs.push(Glyph {
+                ch,
+                style,
+                src: start,
+                stop: true,
+            });
         }
         // End past the directive so the caret has a stop after it — the same
         // reason `block_media` anchors its row at the image's end.
         self.push_row_at(glyphs, end);
         if let Some(row) = self.rows.last_mut() {
             row.directive = true;
-            row.leaf_directive = Some(DirectiveMark { name, attrs, label, rows: 1 });
+            row.leaf_directive = Some(DirectiveMark {
+                name,
+                attrs,
+                label,
+                rows: 1,
+            });
         }
         self.last_off = end;
     }
@@ -3072,7 +3154,12 @@ impl Builder<'_> {
         slice
             .bytes()
             .enumerate()
-            .map(|(i, _)| Glyph { ch: ' ', style, src: from + i, stop: true })
+            .map(|(i, _)| Glyph {
+                ch: ' ',
+                style,
+                src: from + i,
+                stop: true,
+            })
             .collect()
     }
 
@@ -3083,7 +3170,7 @@ impl Builder<'_> {
                 out,
                 node.text.as_deref().unwrap_or(""),
                 node.span.clone(),
-                &self.source,
+                self.source,
                 base,
             ),
             "soft_break" | "hard_break" | "non_breaking_space" => {
@@ -3107,19 +3194,32 @@ impl Builder<'_> {
                 // folds its own soft breaks regardless.
                 let ch = if node.kind == Kind::HardBreak {
                     self.break_glyph.get()
-                } else if node.kind == Kind::SoftBreak && self.preserve_soft && self.break_glyph.get() == ' ' {
+                } else if node.kind == Kind::SoftBreak
+                    && self.preserve_soft
+                    && self.break_glyph.get() == ' '
+                {
                     '\n'
                 } else {
                     ' '
                 };
-                out.push(Glyph { ch, style: base, src, stop: true });
+                out.push(Glyph {
+                    ch,
+                    style: base,
+                    src,
+                    stop: true,
+                });
             }
             // A cell's only spelling for an in-line break is a raw `<br>`; read it
             // back as one (outside a cell it stays the literal text it falls to
             // below). The tag's bytes carry no stop of their own — the line it
             // ends stops just before it, the next just after.
             "raw_inline" if self.break_glyph.get() == '\n' && is_br(node.text.as_deref()) => {
-                out.push(Glyph { ch: '\n', style: base, src: node.span.start, stop: true });
+                out.push(Glyph {
+                    ch: '\n',
+                    style: base,
+                    src: node.span.start,
+                    stop: true,
+                });
             }
             "emph" => self.inline_delimited(id, base.italic(), out),
             "strong" => self.inline_delimited(id, base.bold(), out),
@@ -3136,7 +3236,10 @@ impl Builder<'_> {
                 // The interior begins at `content_span.start` — past however many
                 // backticks the fence used, which `span.start + 1` only guessed
                 // right for a single one. Fall back to that guess if it's absent.
-                let at = node.content_span.as_ref().map_or(node.span.start + 1, |c| c.start);
+                let at = node
+                    .content_span
+                    .as_ref()
+                    .map_or(node.span.start + 1, |c| c.start);
                 let style = base.role(Role::Code);
                 // Not `inline_delimited`: verbatim has no child nodes to recurse
                 // into — its content is its own `text` — so the fences bracket a
@@ -3158,9 +3261,7 @@ impl Builder<'_> {
             // Drawn in the surrounding style: a role of its own would need one
             // every frontend maps, and the bug this fixes is that the text was
             // invisible, not that it was unstyled.
-            "container"
-                if container_is_directive(node) && !self.children(id).is_empty() =>
-            {
+            "container" if container_is_directive(node) && !self.children(id).is_empty() => {
                 self.recurse(id, base, out)
             }
             // No `[label]`, so there are no children to render and recursing
@@ -3178,7 +3279,12 @@ impl Builder<'_> {
             // arm exists to fix, just wearing a nicer glyph.
             "container" if container_is_directive(node) && node.attrs.is_empty() => {
                 let span = node.span.clone();
-                push_text(out, self.source.get(span.clone()).unwrap_or(""), span.start, base);
+                push_text(
+                    out,
+                    self.source.get(span.clone()).unwrap_or(""),
+                    span.start,
+                    base,
+                );
             }
             // `{…}` attributes, though, are unmistakably deliberate — nobody
             // types `:vis{.family}` by accident, and diaryx writes exactly that
@@ -3200,7 +3306,12 @@ impl Builder<'_> {
                 };
                 let style = base.role(Role::Image);
                 for (i, ch) in shown.chars().enumerate() {
-                    out.push(Glyph { ch, style, src: start, stop: i == 0 });
+                    out.push(Glyph {
+                        ch,
+                        style,
+                        src: start,
+                        stop: i == 0,
+                    });
                 }
             }
             // A footnote reference (`[^1]`). The label bracketed is what a reader
@@ -3239,7 +3350,12 @@ impl Builder<'_> {
                     Some(c) => (self.source.get(c.clone()).unwrap_or(""), c.start),
                     None => (node.text.as_deref().unwrap_or(""), node.span.start + 2),
                 };
-                out.push(Glyph { ch: '[', style, src: node.span.start, stop: false });
+                out.push(Glyph {
+                    ch: '[',
+                    style,
+                    src: node.span.start,
+                    stop: false,
+                });
                 push_text(out, label, at, style);
                 out.push(Glyph {
                     ch: ']',
@@ -3254,7 +3370,15 @@ impl Builder<'_> {
                     // A bare autolink (`<a@b.c>`, a naked URL): the destination
                     // *is* the visible text, so there is nothing elided to
                     // reveal and both modes draw the same thing.
-                    push_text(out, node.destination.as_deref().or(node.text.as_deref()).unwrap_or("link"), node.span.start, style);
+                    push_text(
+                        out,
+                        node.destination
+                            .as_deref()
+                            .or(node.text.as_deref())
+                            .unwrap_or("link"),
+                        node.span.start,
+                        style,
+                    );
                 } else {
                     // An inline link reveals asymmetrically — `[` before the
                     // label, `](dest)` after it — which the generic
@@ -3324,7 +3448,14 @@ impl Builder<'_> {
     /// the line's final row — the offset of the break that terminated it, which
     /// the caller has already stripped from `glyphs`; when `None` the row ends
     /// just past its last glyph, as an unbroken block's does.
-    fn emit_line(&mut self, glyphs: Vec<Glyph>, block_start: usize, pf: &[Glyph], pc: &[Glyph], end: Option<usize>) {
+    fn emit_line(
+        &mut self,
+        glyphs: Vec<Glyph>,
+        block_start: usize,
+        pf: &[Glyph],
+        pc: &[Glyph],
+        end: Option<usize>,
+    ) {
         // The line's final row ends at `end` when a break gave one, else just
         // past its last glyph (`push_row`'s default).
         let push_last = |b: &mut Self, row: Vec<Glyph>| match end {
@@ -3335,7 +3466,11 @@ impl Builder<'_> {
         // No column budget: emit the whole line as one row and let the frontend
         // wrap it at its own (pixel) width.
         let Some(width) = self.wrap else {
-            let row = if glyphs.is_empty() { pf.to_vec() } else { concat(pf, &glyphs) };
+            let row = if glyphs.is_empty() {
+                pf.to_vec()
+            } else {
+                concat(pf, &glyphs)
+            };
             push_last(self, row);
             return;
         };
@@ -3447,7 +3582,7 @@ impl Builder<'_> {
             directive: false,
             directive_label: None,
             media: None,
-                task: None,
+            task: None,
             leaf_directive: None,
             heading: None,
             boundary: None,
@@ -3485,7 +3620,9 @@ impl Builder<'_> {
         // is where one on an empty quoted line belongs, and it keeps every row's
         // offset distinct from its neighbours'.
         while at < end {
-            let Some(k) = self.source[at..end].find('\n') else { break };
+            let Some(k) = self.source[at..end].find('\n') else {
+                break;
+            };
             let line_start = at + k + 1;
             let line_end = self.source[line_start..end]
                 .find('\n')
@@ -3528,9 +3665,7 @@ impl Builder<'_> {
         };
         // The line holding `next_start` belongs to the next block; blank rows
         // stop before it.
-        let next_line_start = self.source[..next_start]
-            .rfind('\n')
-            .map_or(0, |p| p + 1);
+        let next_line_start = self.source[..next_start].rfind('\n').map_or(0, |p| p + 1);
         let mut offs = Vec::new();
         let mut start = prev_end + nl + 1;
         while start < next_line_start {
@@ -3745,7 +3880,11 @@ fn empty_cell_offset(row_src: &str, row_start: usize, col: usize) -> usize {
         (Some(open), Some(close)) => {
             let lo = open + 1; // just inside the opening pipe
             let hi = close.saturating_sub(1); // just inside the closing pipe
-            let inside = if hi < lo { lo } else { (open + 2).clamp(lo, hi) };
+            let inside = if hi < lo {
+                lo
+            } else {
+                (open + 2).clamp(lo, hi)
+            };
             row_start + inside
         }
         (Some(open), None) => row_start + open + 1,
@@ -3936,10 +4075,13 @@ impl MediaInfo {
         // frontend nothing to load, so take the first candidate URL instead and
         // let the frontend reject it if it can't decode it. An `<img>` never
         // reaches this: its `src` is the picture.
-        if self.destination.is_empty() {
-            if let Some(url) = self.sources.iter().find_map(|s| first_srcset_url(&s.srcset)) {
-                return url;
-            }
+        if self.destination.is_empty()
+            && let Some(url) = self
+                .sources
+                .iter()
+                .find_map(|s| first_srcset_url(&s.srcset))
+        {
+            return url;
         }
         &self.destination
     }
@@ -3989,7 +4131,10 @@ fn media_matches(media: &str, scheme: ColorScheme) -> bool {
         return true;
     }
     let lower = media.to_ascii_lowercase();
-    let Some(after) = lower.split_once("prefers-color-scheme").map(|(_, rest)| rest) else {
+    let Some(after) = lower
+        .split_once("prefers-color-scheme")
+        .map(|(_, rest)| rest)
+    else {
         return false;
     };
     // Skip the `:` and any spaces to reach the value word.
@@ -4168,7 +4313,12 @@ fn rule_text(widths: &[usize], left: char, mid: char, right: char) -> String {
 fn push_text(out: &mut Vec<Glyph>, text: &str, base_src: usize, style: Style) {
     for (gi, cluster) in text.grapheme_indices(true) {
         for (ci, ch) in cluster.char_indices() {
-            out.push(Glyph { ch, style, src: base_src + gi + ci, stop: ci == 0 });
+            out.push(Glyph {
+                ch,
+                style,
+                src: base_src + gi + ci,
+                stop: ci == 0,
+            });
         }
     }
 }
@@ -4180,7 +4330,13 @@ fn push_text(out: &mut Vec<Glyph>, text: &str, base_src: usize, style: Style) {
 /// click past an escaped `*` would land on the wrong character; walking the text
 /// against its source keeps them aligned, and the hidden escape backslash gets no
 /// glyph of its own (it is a spelling artefact, not something the caret lands on).
-fn push_escaped_text(out: &mut Vec<Glyph>, text: &str, span: Range<usize>, source: &str, style: Style) {
+fn push_escaped_text(
+    out: &mut Vec<Glyph>,
+    text: &str,
+    span: Range<usize>,
+    source: &str,
+    style: Style,
+) {
     let end = span.end.min(source.len());
     let src = source.get(span.start..end).unwrap_or("");
     // Fast path — no dropped bytes, so text and source align 1:1 (the common
@@ -4205,11 +4361,19 @@ fn push_escaped_text(out: &mut Vec<Glyph>, text: &str, span: Range<usize>, sourc
             // by the *text* character's length assumed escapes were the only
             // divergence, so one dropped multi-byte character desynchronized
             // every glyph after it — placing `]` inside the `…` before it.
-            while si < sb.len() && src[si..].chars().next() != Some(ch) {
+            while si < sb.len() && !src[si..].starts_with(ch) {
                 si += src[si..].chars().next().map_or(1, char::len_utf8);
             }
-            out.push(Glyph { ch, style, src: span.start + si.min(src.len()), stop: ci == 0 });
-            si += src[si..].chars().next().map_or(ch.len_utf8(), char::len_utf8);
+            out.push(Glyph {
+                ch,
+                style,
+                src: span.start + si.min(src.len()),
+                stop: ci == 0,
+            });
+            si += src[si..]
+                .chars()
+                .next()
+                .map_or(ch.len_utf8(), char::len_utf8);
         }
     }
 }
@@ -4221,7 +4385,12 @@ fn push_escaped_text(out: &mut Vec<Glyph>, text: &str, span: Range<usize>, sourc
 fn synth(text: &str, role: Role, src: usize) -> Vec<Glyph> {
     let style = Style::default().role(role);
     text.chars()
-        .map(|ch| Glyph { ch, style, src, stop: false })
+        .map(|ch| Glyph {
+            ch,
+            style,
+            src,
+            stop: false,
+        })
         .collect()
 }
 
@@ -4250,8 +4419,16 @@ fn media_label(dest: &str) -> String {
     }
     // Trim a query/fragment so a URL's `?v=2#frag` doesn't ride along.
     let clean = dest.split(['?', '#']).next().unwrap_or(dest);
-    let tail = clean.trim_end_matches('/').rsplit(['/', '\\']).next().unwrap_or(clean);
-    if tail.is_empty() { dest.to_string() } else { tail.to_string() }
+    let tail = clean
+        .trim_end_matches('/')
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(clean);
+    if tail.is_empty() {
+        dest.to_string()
+    } else {
+        tail.to_string()
+    }
 }
 
 /// A directive's attributes read as a human label — what a frontend puts on a
@@ -4270,10 +4447,10 @@ fn directive_attr_label(attrs: &[(String, Option<String>)]) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
     for (k, v) in attrs {
         if k == "class" {
-            if let Some(v) = v {
-                if !v.is_empty() {
-                    parts.push(v.clone());
-                }
+            if let Some(v) = v
+                && !v.is_empty()
+            {
+                parts.push(v.clone());
             }
         } else if v.as_deref().unwrap_or("").is_empty() {
             parts.push(k.clone());
@@ -4378,7 +4555,11 @@ pub(crate) fn assert_maps_eq(a: &VisualMap, b: &VisualMap, ctx: &str) {
         assert_eq!(ra.boundary, rb.boundary, "row {i} boundary ({ctx})");
         assert_eq!(ra.code, rb.code, "row {i} code ({ctx})");
         assert_eq!(ra.code_lang, rb.code_lang, "row {i} code_lang ({ctx})");
-        assert_eq!(ra.glyphs.len(), rb.glyphs.len(), "row {i} glyph count ({ctx})");
+        assert_eq!(
+            ra.glyphs.len(),
+            rb.glyphs.len(),
+            "row {i} glyph count ({ctx})"
+        );
         for (j, (ga, gb)) in ra.glyphs.iter().zip(&rb.glyphs).enumerate() {
             assert_eq!(
                 (ga.ch, ga.src, ga.stop, ga.style),
@@ -4440,7 +4621,10 @@ mod tests {
         let mut ed = Editor::new_ext(
             src.as_bytes(),
             Format::Markdown,
-            twig::MarkdownExtensions { directives: true, ..Default::default() },
+            twig::MarkdownExtensions {
+                directives: true,
+                ..Default::default()
+            },
         )
         .unwrap();
         build_t(&ed.nodes().unwrap(), src, Some(80))
@@ -4522,7 +4706,11 @@ mod tests {
             }
         }
         // The elision survives, and its bracket sits on the real `]`.
-        let text: String = vmap.rows.iter().flat_map(|r| r.glyphs.iter().map(|g| g.ch)).collect();
+        let text: String = vmap
+            .rows
+            .iter()
+            .flat_map(|r| r.glyphs.iter().map(|g| g.ch))
+            .collect();
         assert!(text.contains("[…]"), "the elision should render: {text:?}");
         let close = vmap
             .rows
@@ -4659,12 +4847,12 @@ mod tests {
         for row in &m.rows {
             for g in &row.glyphs {
                 // A real (non-synthetic) glyph's source byte is the glyph's char.
-                if g.src < src.len() && src.is_char_boundary(g.src) {
-                    if let Some(sc) = src[g.src..].chars().next() {
-                        if sc == g.ch {
-                            continue;
-                        }
-                    }
+                if g.src < src.len()
+                    && src.is_char_boundary(g.src)
+                    && let Some(sc) = src[g.src..].chars().next()
+                    && sc == g.ch
+                {
+                    continue;
                 }
                 // Synthetic prefixes (none here) would be the only exceptions.
                 panic!("glyph {:?} at src {} doesn't match source", g.ch, g.src);
@@ -4701,7 +4889,12 @@ mod tests {
                 // Trim the trailing whitespace a row may carry — the zero-width
                 // '\n' that closes a preserved line, and any space glyph left at
                 // a wrap boundary (both real caret stops, neither visible text).
-                r.glyphs.iter().map(|g| g.ch).collect::<String>().trim_end().to_string()
+                r.glyphs
+                    .iter()
+                    .map(|g| g.ch)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
             })
             .collect()
     }
@@ -4714,11 +4907,19 @@ mod tests {
         let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
         let folded = build_t(&ed.nodes().unwrap(), src, None);
         assert_eq!(folded.num_rows(), 1, "fold: one reflowed row");
-        assert_eq!(line_texts(&folded), vec!["one two three four"], "break folded to a space");
+        assert_eq!(
+            line_texts(&folded),
+            vec!["one two three four"],
+            "break folded to a space"
+        );
 
         // ...and under Preserve it renders where it was written, a row per line.
         let kept = map_preserve(src, None);
-        assert_eq!(line_texts(&kept), vec!["one two", "three four"], "preserve: a row per line");
+        assert_eq!(
+            line_texts(&kept),
+            vec!["one two", "three four"],
+            "preserve: a row per line"
+        );
     }
 
     #[test]
@@ -4729,12 +4930,21 @@ mod tests {
         // row's end stop instead — the same offset the folded space would carry.
         let src = "one two\nthree four\n";
         let m = map_preserve(src, None);
-        assert!(!m.rows[0].glyphs.iter().any(|g| g.ch == '\n'), "the break glyph is dropped");
-        assert_eq!(m.rows[0].end_src, 7, "the first row ends at the newline byte");
+        assert!(
+            !m.rows[0].glyphs.iter().any(|g| g.ch == '\n'),
+            "the break glyph is dropped"
+        );
+        assert_eq!(
+            m.rows[0].end_src, 7,
+            "the first row ends at the newline byte"
+        );
         assert!(m.is_stop(7), "the newline offset is a caret stop");
         // Row end offsets stay strictly ascending — no two rows pin one offset.
         let offs: Vec<usize> = m.rows.iter().map(|r| r.end_src).collect();
-        assert!(offs.windows(2).all(|w| w[0] < w[1]), "offsets not unique: {offs:?}");
+        assert!(
+            offs.windows(2).all(|w| w[0] < w[1]),
+            "offsets not unique: {offs:?}"
+        );
     }
 
     #[test]
@@ -4766,7 +4976,10 @@ mod tests {
         assert_eq!(text, vec!["A", "", "", "", "B"], "got {text:?}");
         let offs: Vec<usize> = m.rows.iter().map(|r| r.end_src).collect();
         // Strictly ascending — no two rows share an offset (else the caret pins).
-        assert!(offs.windows(2).all(|w| w[0] < w[1]), "offsets not unique: {offs:?}");
+        assert!(
+            offs.windows(2).all(|w| w[0] < w[1]),
+            "offsets not unique: {offs:?}"
+        );
     }
 
     #[test]
@@ -4800,7 +5013,10 @@ mod tests {
         let m = map("\\# hi\n");
         let text: String = m.rows[0].glyphs.iter().map(|g| g.ch).collect();
         assert_eq!(text, "# hi");
-        assert_eq!(m.rows[0].glyphs[0].src, 1, "the # is at source byte 1, past the \\");
+        assert_eq!(
+            m.rows[0].glyphs[0].src, 1,
+            "the # is at source byte 1, past the \\"
+        );
     }
 
     #[test]
@@ -4830,10 +5046,20 @@ mod tests {
         let src = format!("{fm}# leaf\n\nA line.\n");
         let m = map(&src);
         let text = rendered(&m);
-        assert!(!text.contains("config"), "frontmatter body leaked: {text:?}");
+        assert!(
+            !text.contains("config"),
+            "frontmatter body leaked: {text:?}"
+        );
         assert!(!text.contains("prov"), "frontmatter body leaked: {text:?}");
-        assert_eq!(m.rows[0].glyphs.iter().map(|g| g.ch).collect::<String>(), "leaf");
-        assert_eq!(m.content_start, fm.len(), "floor should be the first real block");
+        assert_eq!(
+            m.rows[0].glyphs.iter().map(|g| g.ch).collect::<String>(),
+            "leaf"
+        );
+        assert_eq!(
+            m.content_start,
+            fm.len(),
+            "floor should be the first real block"
+        );
     }
 
     #[test]
@@ -4851,14 +5077,23 @@ mod tests {
         // interior node. The builder recovers it from the block's span/content_span
         // gap and emits it as a real, caret-stoppable glyph.
         let m = map("hello \n");
-        assert_eq!(m.rows[0].glyphs.iter().map(|g| g.ch).collect::<String>(), "hello ");
-        assert_eq!(m.rows[0].end_src, 6, "the row now ends past the trailing space");
+        assert_eq!(
+            m.rows[0].glyphs.iter().map(|g| g.ch).collect::<String>(),
+            "hello "
+        );
+        assert_eq!(
+            m.rows[0].end_src, 6,
+            "the row now ends past the trailing space"
+        );
         // The caret can rest both on and past the space.
         assert_eq!(m.pos_of_offset(5), (0, 5), "between 'o' and the space");
         assert_eq!(m.pos_of_offset(6), (0, 6), "past the space");
         // Two trailing spaces, both stops.
         let m = map("hello  \n");
-        assert_eq!(m.rows[0].glyphs.iter().map(|g| g.ch).collect::<String>(), "hello  ");
+        assert_eq!(
+            m.rows[0].glyphs.iter().map(|g| g.ch).collect::<String>(),
+            "hello  "
+        );
         assert_eq!(m.pos_of_offset(7), (0, 7));
     }
 
@@ -4867,7 +5102,10 @@ mod tests {
         // The hidden `# ` marker means `# hi ` renders as `hi ` in three columns;
         // the caret past the trailing space lands on the third.
         let m = map("# hi \n");
-        assert_eq!(m.rows[0].glyphs.iter().map(|g| g.ch).collect::<String>(), "hi ");
+        assert_eq!(
+            m.rows[0].glyphs.iter().map(|g| g.ch).collect::<String>(),
+            "hi "
+        );
         assert_eq!(m.pos_of_offset(5), (0, 3));
     }
 
@@ -4878,7 +5116,10 @@ mod tests {
         // and neighbours between the cell text and the row's end. The grid stays
         // exactly as before.
         let text = rendered(&map(TABLE));
-        assert!(text.contains("│ Pear │   3 │"), "cell padding disturbed:\n{text}");
+        assert!(
+            text.contains("│ Pear │   3 │"),
+            "cell padding disturbed:\n{text}"
+        );
     }
 
     #[test]
@@ -4892,9 +5133,19 @@ mod tests {
         let m = map(&format!("{fm}# Hi\n\nbody\n"));
         let below = m.num_rows() + 5;
         let off = m.offset_of_pos(below, 0);
-        assert!(m.is_stop(off), "offset {off} from a below-content click is not a stop");
-        assert_eq!(off, m.stops.last().copied().unwrap(), "should be the document's last stop");
-        assert!(off > fm.len(), "must not fall onto the hidden frontmatter floor");
+        assert!(
+            m.is_stop(off),
+            "offset {off} from a below-content click is not a stop"
+        );
+        assert_eq!(
+            off,
+            m.stops.last().copied().unwrap(),
+            "should be the document's last stop"
+        );
+        assert!(
+            off > fm.len(),
+            "must not fall onto the hidden frontmatter floor"
+        );
     }
 
     #[test]
@@ -4910,7 +5161,10 @@ mod tests {
             for row in 0..m.num_rows() + 3 {
                 for col in 0..30 {
                     let off = m.offset_of_pos(row, col);
-                    assert!(m.is_stop(off), "row {row} col {col} → {off} is not a stop in {src:?}");
+                    assert!(
+                        m.is_stop(off),
+                        "row {row} col {col} → {off} is not a stop in {src:?}"
+                    );
                 }
             }
         }
@@ -4948,7 +5202,10 @@ mod tests {
         // The rules are whole decoration rows.
         for r in [0, 2, 5] {
             assert!(m.rows[r].decoration, "row {r} should be a decoration rule");
-            assert!(!m.rows[r].glyphs.iter().any(|g| g.stop), "row {r} has a stop");
+            assert!(
+                !m.rows[r].glyphs.iter().any(|g| g.stop),
+                "row {r} has a stop"
+            );
         }
         // A content row's `│` and padding are decoration; only the cell text
         // and each cell's one end-stop are stops.
@@ -4959,7 +5216,12 @@ mod tests {
                 assert!(!g.stop, "a border is not a caret stop");
             }
         }
-        let stops: String = header.glyphs.iter().filter(|g| g.stop).map(|g| g.ch).collect();
+        let stops: String = header
+            .glyphs
+            .iter()
+            .filter(|g| g.stop)
+            .map(|g| g.ch)
+            .collect();
         assert_eq!(stops, "Name Qty ", "cell text plus one end-stop space each");
     }
 
@@ -4996,7 +5258,11 @@ mod tests {
             "got:\n{text}"
         );
         for (r, row) in m.rows.iter().enumerate() {
-            assert!(row.glyphs.len() <= 30, "row {r} overflows: {}", row.glyphs.len());
+            assert!(
+                row.glyphs.len() <= 30,
+                "row {r} overflows: {}",
+                row.glyphs.len()
+            );
         }
     }
 
@@ -5008,7 +5274,11 @@ mod tests {
         let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
         let m = build_t(&ed.nodes().unwrap(), src, Some(20));
         for (r, row) in m.rows.iter().enumerate() {
-            assert!(row.glyphs.len() <= 20, "row {r} overflows: {}", row.glyphs.len());
+            assert!(
+                row.glyphs.len() <= 20,
+                "row {r} overflows: {}",
+                row.glyphs.len()
+            );
         }
         // Broken across lines, but whole: every letter is still drawn, at its
         // own source byte, where the caret can reach it.
@@ -5020,7 +5290,8 @@ mod tests {
                     .iter()
                     .flat_map(|r| r.glyphs.iter())
                     .any(|g| g.stop && g.src == at + i && g.ch == ch),
-                "{ch:?} at {} was lost to the break", at + i
+                "{ch:?} at {} was lost to the break",
+                at + i
             );
         }
     }
@@ -5055,8 +5326,15 @@ mod tests {
             .iter()
             .flat_map(|r| r.glyphs.iter().filter(|g| g.stop).map(|g| (g.ch, g.src)))
             .collect();
-        assert_eq!(stops[0], ('i', 4), "first line should start past the indent");
-        assert!(stops.contains(&('c', 17)), "second line misplaced: {stops:?}");
+        assert_eq!(
+            stops[0],
+            ('i', 4),
+            "first line should start past the indent"
+        );
+        assert!(
+            stops.contains(&('c', 17)),
+            "second line misplaced: {stops:?}"
+        );
     }
 
     #[test]
@@ -5097,9 +5375,7 @@ mod tests {
         let src = ":::vis{.public .family}\nhello\n\nworld\n:::\nafter\n";
         let m = map_directives(src);
 
-        let content_rows: Vec<usize> = (0..m.rows.len())
-            .filter(|&i| m.rows[i].directive)
-            .collect();
+        let content_rows: Vec<usize> = (0..m.rows.len()).filter(|&i| m.rows[i].directive).collect();
         assert!(!content_rows.is_empty(), "some row is flagged directive");
 
         let after_rows: Vec<usize> = (0..m.rows.len())
@@ -5114,10 +5390,17 @@ mod tests {
             .iter()
             .filter_map(|&i| m.rows[i].directive_label.as_deref())
             .collect();
-        assert_eq!(labels, vec!["public family"], "only the first row carries the label");
+        assert_eq!(
+            labels,
+            vec!["public family"],
+            "only the first row carries the label"
+        );
 
         assert_eq!(
-            rendered(&m).lines().filter(|l| !l.is_empty()).collect::<Vec<_>>(),
+            rendered(&m)
+                .lines()
+                .filter(|l| !l.is_empty())
+                .collect::<Vec<_>>(),
             vec!["hello", "world", "after"],
             "fence markers don't leak into the rendered text"
         );
@@ -5148,7 +5431,11 @@ mod tests {
         assert_eq!(rendered(&m).trim_end(), "Text with HTML inline.");
         // Every character of the line is a caret home, markup excluded — the
         // label reads as ordinary text, the way a link's does.
-        let stops: usize = m.rows.iter().map(|r| r.glyphs.iter().filter(|g| g.stop).count()).sum();
+        let stops: usize = m
+            .rows
+            .iter()
+            .map(|r| r.glyphs.iter().filter(|g| g.stop).count())
+            .sum();
         assert_eq!(stops, "Text with HTML inline.".chars().count());
         // It is inline, so it is not the container form's tinted panel.
         assert!(m.rows.iter().all(|r| !r.directive));
@@ -5180,7 +5467,16 @@ mod tests {
         // the caret steps over, so the line's stops run 0, 1, 8..12, then 24.
         assert_eq!(
             stops,
-            [('x', 0), (' ', 1), ('H', 8), ('T', 9), ('M', 10), ('L', 11), (' ', 24), ('z', 25)]
+            [
+                ('x', 0),
+                (' ', 1),
+                ('H', 8),
+                ('T', 9),
+                ('M', 10),
+                ('L', 11),
+                (' ', 24),
+                ('z', 25)
+            ]
         );
     }
 
@@ -5194,7 +5490,13 @@ mod tests {
         let m = map_directives(src);
         for g in m.rows.iter().flat_map(|r| &r.glyphs).filter(|g| g.stop) {
             let at = src[g.src..].chars().next();
-            assert_eq!(at, Some(g.ch), "glyph {:?} claims byte {}, which is {at:?}", g.ch, g.src);
+            assert_eq!(
+                at,
+                Some(g.ch),
+                "glyph {:?} claims byte {}, which is {at:?}",
+                g.ch,
+                g.src
+            );
         }
         assert_eq!(rendered(&m).trim_end(), "x a b c y and family only z");
     }
@@ -5222,7 +5524,11 @@ mod tests {
         // no caret stop left behind, so it could not even be deleted.
         for src in ["a :word b\n", "note :see below\n", ":smile: hi\n"] {
             let m = map_directives(src);
-            assert_eq!(rendered(&m).trim_end(), src.trim_end(), "prose was eaten: {src:?}");
+            assert_eq!(
+                rendered(&m).trim_end(),
+                src.trim_end(),
+                "prose was eaten: {src:?}"
+            );
         }
     }
 
@@ -5239,7 +5545,14 @@ mod tests {
             .filter(|g| g.stop)
             .map(|g| (g.ch, g.src))
             .collect();
-        assert_eq!(stops, "a :word b".chars().enumerate().map(|(i, c)| (c, i)).collect::<Vec<_>>());
+        assert_eq!(
+            stops,
+            "a :word b"
+                .chars()
+                .enumerate()
+                .map(|(i, c)| (c, i))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -5262,8 +5575,13 @@ mod tests {
     fn a_directive_chip_is_one_atomic_caret_stop_at_its_own_offset() {
         let src = "a :vis{.family} b\n";
         let m = map_directives(src);
-        let stops: Vec<usize> =
-            m.rows.iter().flat_map(|r| &r.glyphs).filter(|g| g.stop).map(|g| g.src).collect();
+        let stops: Vec<usize> = m
+            .rows
+            .iter()
+            .flat_map(|r| &r.glyphs)
+            .filter(|g| g.stop)
+            .map(|g| g.src)
+            .collect();
         // The chip contributes exactly one stop, at the directive's start (2),
         // so the caret steps over it whole instead of walking hidden markup a
         // byte at a time. `{.family}`'s bytes (3..15) are never stood on.
@@ -5275,8 +5593,15 @@ mod tests {
         // With no stop of its own the row would be unreachable — the caret
         // could never be put on the line to edit or delete the directive.
         let m = map_directives(":vis{.family}\n");
-        assert!(m.row_is_navigable(0), "a chip-only paragraph has no caret home");
-        assert_eq!(m.offset_of_pos(0, 0), 0, "its caret home isn't the directive's start");
+        assert!(
+            m.row_is_navigable(0),
+            "a chip-only paragraph has no caret home"
+        );
+        assert_eq!(
+            m.offset_of_pos(0, 0),
+            0,
+            "its caret home isn't the directive's start"
+        );
     }
 
     #[test]
@@ -5284,7 +5609,10 @@ mod tests {
         // twig requires a letter after the colon, so these stay prose — the
         // verbatim arm must not be reached for them at all.
         let src = "ratio 3:4 and 10:30\n";
-        assert_eq!(rendered(&map_directives(src)).trim_end(), "ratio 3:4 and 10:30");
+        assert_eq!(
+            rendered(&map_directives(src)).trim_end(),
+            "ratio 3:4 and 10:30"
+        );
     }
 
     #[test]
@@ -5297,10 +5625,23 @@ mod tests {
         let src = "before\n\n::embed{src=\"demo.html\" height=\"400\"}\n\nafter\n";
         let m = map_directives(src);
 
-        let row = m.rows.iter().position(|r| r.leaf_directive.is_some()).expect("a placeholder row");
-        assert_eq!(m.rows[row].glyphs.iter().map(|g| g.ch).collect::<String>(), "⧉ embed");
-        assert!(m.rows[row].glyphs.iter().any(|g| g.stop), "the caret can land on it");
-        assert!(m.rows[row].directive, "a frontend frames it like the container form");
+        let row = m
+            .rows
+            .iter()
+            .position(|r| r.leaf_directive.is_some())
+            .expect("a placeholder row");
+        assert_eq!(
+            m.rows[row].glyphs.iter().map(|g| g.ch).collect::<String>(),
+            "⧉ embed"
+        );
+        assert!(
+            m.rows[row].glyphs.iter().any(|g| g.stop),
+            "the caret can land on it"
+        );
+        assert!(
+            m.rows[row].directive,
+            "a frontend frames it like the container form"
+        );
 
         assert_eq!(m.directives.len(), 1);
         let info = &m.directives[0];
@@ -5332,10 +5673,17 @@ mod tests {
         // The three forms must not bleed into each other: only the leaf form is
         // a placeholder, and only the container form tints the blocks it wraps.
         let m = map_directives(":::note{.warning}\nBody\n:::\n");
-        assert!(m.directives.is_empty(), "a container publishes no placeholder");
+        assert!(
+            m.directives.is_empty(),
+            "a container publishes no placeholder"
+        );
         assert!(m.rows.iter().all(|r| r.leaf_directive.is_none()));
         assert_eq!(rendered(&m).trim_end(), "Body");
-        assert!(m.rows.iter().any(|r| r.directive && r.directive_label.as_deref() == Some("warning")));
+        assert!(
+            m.rows
+                .iter()
+                .any(|r| r.directive && r.directive_label.as_deref() == Some("warning"))
+        );
     }
 
     /// A production-path build with both extensions on — the only way to put a
@@ -5392,8 +5740,16 @@ mod tests {
             ("<figure>\n\nhi\n\n</figure>\n", "figure", false),
             // The `:` in an attribute must not read as a directive opener: the
             // `<` of the tag comes first, and first one wins.
-            ("<video src=\"http://x.test/v.mp4\" controls></video>\n", "video", false),
-            ("<source media=\"(prefers-color-scheme: dark)\" srcset=\"d.svg\">\n", "source", false),
+            (
+                "<video src=\"http://x.test/v.mp4\" controls></video>\n",
+                "video",
+                false,
+            ),
+            (
+                "<source media=\"(prefers-color-scheme: dark)\" srcset=\"d.svg\">\n",
+                "source",
+                false,
+            ),
         ] {
             let found = containers(src);
             let hit = found.iter().find(|(n, ..)| n == name);
@@ -5436,7 +5792,10 @@ mod tests {
         // must reach `block_media` rather than the directive arms.
         let doc = doc_built("<video src=\"clip.mp4\" controls></video>\n");
         assert_eq!(doc.vmap.media.len(), 1, "the video is block media");
-        assert!(doc.vmap.rows.iter().all(|r| !r.directive), "the video drew directive chrome");
+        assert!(
+            doc.vmap.rows.iter().all(|r| !r.directive),
+            "the video drew directive chrome"
+        );
     }
 
     #[test]
@@ -5479,7 +5838,12 @@ mod tests {
         // The raised baseline is added to the role, not swapped for it: every
         // frontend already paints `Role::Link`, and a reference is one.
         let m = map("A claim[^1].\n");
-        let label = m.rows.iter().flat_map(|r| &r.glyphs).find(|g| g.ch == '1').unwrap();
+        let label = m
+            .rows
+            .iter()
+            .flat_map(|r| &r.glyphs)
+            .find(|g| g.ch == '1')
+            .unwrap();
         assert_eq!(label.style.role, Role::Link);
         assert_eq!(label.style.baseline, Baseline::Super);
     }
@@ -5499,7 +5863,12 @@ mod tests {
         // Why this is a `Baseline` and not a `Role`: raising a glyph says where
         // it sits, and must not cost it what it already was.
         let m = map_djot("# Heading x^2^\n");
-        let two = m.rows.iter().flat_map(|r| &r.glyphs).find(|g| g.ch == '2').unwrap();
+        let two = m
+            .rows
+            .iter()
+            .flat_map(|r| &r.glyphs)
+            .find(|g| g.ch == '2')
+            .unwrap();
         assert_eq!(two.style.baseline, Baseline::Super);
         assert_eq!(two.style.role, Role::Heading(1), "still heading text");
     }
@@ -5511,13 +5880,24 @@ mod tests {
         // `[^note]` spans 3..10, its label `note` 5..9. The caret walks the
         // label; the brackets are drawn but never stood on, as a table's are,
         // and the `[^`/`]` bytes are stepped over like any hidden delimiter.
-        let stops: Vec<usize> =
-            m.rows.iter().flat_map(|r| &r.glyphs).filter(|g| g.stop).map(|g| g.src).collect();
+        let stops: Vec<usize> = m
+            .rows
+            .iter()
+            .flat_map(|r| &r.glyphs)
+            .filter(|g| g.stop)
+            .map(|g| g.src)
+            .collect();
         for off in 5..9 {
-            assert!(stops.contains(&off), "label byte {off} isn't a caret stop: {stops:?}");
+            assert!(
+                stops.contains(&off),
+                "label byte {off} isn't a caret stop: {stops:?}"
+            );
         }
         for off in [3usize, 4, 9] {
-            assert!(!stops.contains(&off), "delimiter byte {off} is a caret stop: {stops:?}");
+            assert!(
+                !stops.contains(&off),
+                "delimiter byte {off} is a caret stop: {stops:?}"
+            );
         }
     }
 
@@ -5536,12 +5916,23 @@ mod tests {
 
     #[test]
     fn a_task_items_box_survives_a_wrap_and_marks_only_the_first_row() {
-        let m = map_at("- [x] a much longer task that has to wrap somewhere\n", Some(20));
+        let m = map_at(
+            "- [x] a much longer task that has to wrap somewhere\n",
+            Some(20),
+        );
         assert!(m.rows.len() > 1, "the item should wrap: {:?}", rendered(&m));
         assert_eq!(m.rows[0].task, Some(true));
-        assert!(m.rows[1..].iter().all(|r| r.task.is_none()), "only the first row");
+        assert!(
+            m.rows[1..].iter().all(|r| r.task.is_none()),
+            "only the first row"
+        );
         // The continuation lines hang under the box, not under column zero.
-        assert!(rendered(&m).lines().nth(1).is_some_and(|l| l.starts_with("  ")));
+        assert!(
+            rendered(&m)
+                .lines()
+                .nth(1)
+                .is_some_and(|l| l.starts_with("  "))
+        );
     }
 
     #[test]
@@ -5561,7 +5952,10 @@ mod tests {
         let src = "A claim[^1].\n\n[^1]: The note body.\n\nAfter.\n";
         let m = map(src);
         let text = rendered(&m);
-        assert!(text.contains("The note body."), "the note body is invisible: {text:?}");
+        assert!(
+            text.contains("The note body."),
+            "the note body is invisible: {text:?}"
+        );
         // In source order — between the paragraph that cites it and the one
         // after — not hoisted to the end, and marked to match its reference.
         let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
@@ -5591,7 +5985,11 @@ mod tests {
         // wouldn't appear at all until something was typed into it.
         let src = "x[^1]\n\n[^1]:\n";
         let m = map(src);
-        assert!(rendered(&m).contains("[1] "), "no marker row: {:?}", rendered(&m));
+        assert!(
+            rendered(&m).contains("[1] "),
+            "no marker row: {:?}",
+            rendered(&m)
+        );
     }
 
     #[test]
@@ -5603,7 +6001,11 @@ mod tests {
         // Continuation lines hang under the marker, as a list item's do — the
         // indent is the marker's own width, not a fixed one.
         assert_eq!(lines[1].trim_end(), "[src] one two three four");
-        assert!(lines[2].starts_with("      "), "body doesn't hang: {:?}", lines[2]);
+        assert!(
+            lines[2].starts_with("      "),
+            "body doesn't hang: {:?}",
+            lines[2]
+        );
         assert_eq!(lines[2].trim(), "five six seven");
     }
 
@@ -5620,7 +6022,11 @@ mod tests {
             .iter()
             .position(|r| r.glyphs.iter().map(|g| g.ch).collect::<String>() == "after")
             .unwrap();
-        assert_eq!(after - code_end, 1, "exactly one row between code and 'after'");
+        assert_eq!(
+            after - code_end,
+            1,
+            "exactly one row between code and 'after'"
+        );
     }
 
     #[test]
@@ -5628,7 +6034,9 @@ mod tests {
         // The info string becomes the block's label; a bare fence and an indented
         // block carry none.
         assert_eq!(
-            map("```rust\nlet x = 1;\n```\n").code_blocks[0].lang.as_deref(),
+            map("```rust\nlet x = 1;\n```\n").code_blocks[0]
+                .lang
+                .as_deref(),
             Some("rust")
         );
         assert_eq!(map("```\nplain\n```\n").code_blocks[0].lang, None);
@@ -5641,7 +6049,10 @@ mod tests {
         // normal paragraph row, so it names no `code_blocks` entry.
         let m = map("a `snippet` b\n");
         assert!(m.code_blocks.is_empty(), "inline code wrongly boxed");
-        assert!(m.rows.iter().all(|r| !r.code), "inline code flagged a code row");
+        assert!(
+            m.rows.iter().all(|r| !r.code),
+            "inline code flagged a code row"
+        );
     }
 
     #[test]
@@ -5686,10 +6097,12 @@ mod tests {
         assert_eq!(img.alt, "a cat");
         // The placeholder row named by `rows_span` carries the label a plain
         // surface paints and a capable frontend replaces.
-        let row_text = |r: usize| -> String {
-            m.rows[r].glyphs.iter().map(|g| g.ch).collect()
-        };
-        assert_eq!(img.rows_span.end - img.rows_span.start, 1, "one placeholder row");
+        let row_text = |r: usize| -> String { m.rows[r].glyphs.iter().map(|g| g.ch).collect() };
+        assert_eq!(
+            img.rows_span.end - img.rows_span.start,
+            1,
+            "one placeholder row"
+        );
         assert_eq!(row_text(img.rows_span.start), "🖼 a cat");
         // The row carries the mark `media_spans` derives the side-table from.
         assert!(m.rows[img.rows_span.start].media.is_some());
@@ -5699,7 +6112,10 @@ mod tests {
     fn an_image_without_alt_labels_itself_with_its_filename() {
         let m = map("![](photos/beach.jpg)\n");
         let row = &m.rows[m.media[0].rows_span.start];
-        assert_eq!(row.glyphs.iter().map(|g| g.ch).collect::<String>(), "🖼 beach.jpg");
+        assert_eq!(
+            row.glyphs.iter().map(|g| g.ch).collect::<String>(),
+            "🖼 beach.jpg"
+        );
         assert_eq!(m.media[0].alt, "");
     }
 
@@ -5728,7 +6144,10 @@ mod tests {
         // inline path (rendered as its alt text), and publishes no MediaInfo.
         let m = map("see ![a cat](cat.png) here\n");
         assert!(m.media.is_empty(), "not a block image");
-        assert!(rendered(&m).contains("a cat"), "alt text still renders inline");
+        assert!(
+            rendered(&m).contains("a cat"),
+            "alt text still renders inline"
+        );
     }
 
     /// The block images `Doc` publishes for `src`, driven through the real
@@ -5805,7 +6224,10 @@ mod tests {
                    </video>\n";
         let m = doc_media(src);
         assert_eq!(m.len(), 1);
-        assert!(m[0].destination.is_empty(), "no src attribute on the element");
+        assert!(
+            m[0].destination.is_empty(),
+            "no src attribute on the element"
+        );
         assert_eq!(m[0].sources.len(), 2);
         assert_eq!(m[0].sources[0].srcset, "a.webm");
         assert_eq!(m[0].sources[0].mime, "video/webm");
@@ -5825,7 +6247,10 @@ mod tests {
         doc.build_visual(80);
         let row = &doc.vmap.rows[doc.vmap.media[0].rows_span.start];
         let text: String = row.glyphs.iter().map(|g| g.ch).collect();
-        assert!(text.starts_with('🎬'), "video sigil, not the image one: {text:?}");
+        assert!(
+            text.starts_with('🎬'),
+            "video sigil, not the image one: {text:?}"
+        );
         assert!(row.media.is_some(), "the mark rides the placeholder row");
     }
 
@@ -5866,7 +6291,10 @@ mod tests {
         // A bare Markdown image carries an empty `sources` — nothing to pick from.
         let images = doc_media("![alt](p.png)\n");
         assert_eq!(images.len(), 1);
-        assert!(images[0].sources.is_empty(), "no <picture>, no alternatives");
+        assert!(
+            images[0].sources.is_empty(),
+            "no <picture>, no alternatives"
+        );
     }
 
     #[test]
@@ -5887,9 +6315,15 @@ mod tests {
 
         // A <source> with an unrecognized media query is skipped; a light source
         // is taken under a light theme.
-        let m = doc_media("<picture><source media=\"print\" srcset=\"p.svg\"><source media=\"(prefers-color-scheme: light)\" srcset=\"l.svg\"><img src=\"f.svg\" alt=\"x\"></picture>\n");
+        let m = doc_media(
+            "<picture><source media=\"print\" srcset=\"p.svg\"><source media=\"(prefers-color-scheme: light)\" srcset=\"l.svg\"><img src=\"f.svg\" alt=\"x\"></picture>\n",
+        );
         assert_eq!(m[0].resolve(ColorScheme::Light), "l.svg");
-        assert_eq!(m[0].resolve(ColorScheme::Dark), "f.svg", "no dark source → <img>");
+        assert_eq!(
+            m[0].resolve(ColorScheme::Dark),
+            "f.svg",
+            "no dark source → <img>"
+        );
     }
 
     #[test]
@@ -5900,8 +6334,14 @@ mod tests {
         assert_eq!(first_srcset_url(""), None);
         // An empty (unconditional) media always matches.
         assert!(media_matches("", ColorScheme::Light));
-        assert!(media_matches("(prefers-color-scheme:dark)", ColorScheme::Dark));
-        assert!(!media_matches("(prefers-color-scheme: dark)", ColorScheme::Light));
+        assert!(media_matches(
+            "(prefers-color-scheme:dark)",
+            ColorScheme::Dark
+        ));
+        assert!(!media_matches(
+            "(prefers-color-scheme: dark)",
+            ColorScheme::Light
+        ));
     }
 
     #[test]
@@ -5911,7 +6351,10 @@ mod tests {
         let m = map("- ![alt](p.png)\n");
         let row = &m.rows[m.media[0].rows_span.start];
         let text: String = row.glyphs.iter().map(|g| g.ch).collect();
-        assert!(text.starts_with("• "), "the list marker prefixes the image row: {text:?}");
+        assert!(
+            text.starts_with("• "),
+            "the list marker prefixes the image row: {text:?}"
+        );
         assert!(text.contains("🖼 alt"));
     }
 
@@ -5924,7 +6367,10 @@ mod tests {
         let m = map(&format!("before\n\n{TABLE}\nafter\n"));
         let t = &m.tables[0];
         let row_text = |r: usize| -> String { m.rows[r].glyphs.iter().map(|g| g.ch).collect() };
-        assert!(row_text(t.rows_span.start).starts_with('┌'), "opens on the top border");
+        assert!(
+            row_text(t.rows_span.start).starts_with('┌'),
+            "opens on the top border"
+        );
         assert!(
             row_text(t.rows_span.end - 1).starts_with('└'),
             "closes on the bottom border"
@@ -5933,7 +6379,11 @@ mod tests {
             !row_text(t.rows_span.start - 1).contains('┌'),
             "the row before the span is not the table's"
         );
-        assert_eq!(row_text(t.rows_span.end), "", "the span ends before the gap row");
+        assert_eq!(
+            row_text(t.rows_span.end),
+            "",
+            "the span ends before the gap row"
+        );
     }
 
     #[test]
@@ -5947,8 +6397,15 @@ mod tests {
         let prefix: String = t.prefix.iter().map(|g| g.ch).collect();
         assert_eq!(prefix, "│ ", "the quote's gutter should ride the structure");
         // And it matches what the picture actually drew.
-        let drawn: String = m.rows[t.rows_span.start].glyphs.iter().map(|g| g.ch).collect();
-        assert!(drawn.starts_with(&prefix), "picture and structure disagree: {drawn:?}");
+        let drawn: String = m.rows[t.rows_span.start]
+            .glyphs
+            .iter()
+            .map(|g| g.ch)
+            .collect();
+        assert!(
+            drawn.starts_with(&prefix),
+            "picture and structure disagree: {drawn:?}"
+        );
     }
 
     #[test]
@@ -5970,7 +6427,10 @@ mod tests {
             .iter()
             .map(|g| g.ch)
             .collect();
-        assert_eq!(cell, "alpha beta gamma", "structure must not carry the wrap");
+        assert_eq!(
+            cell, "alpha beta gamma",
+            "structure must not carry the wrap"
+        );
         assert!(
             drawn.lines().count() > 5,
             "the picture should have wrapped, else this proves nothing:\n{drawn}"
@@ -6080,8 +6540,15 @@ mod tests {
             "the empty item draws just its bullet",
         );
         // Its end is the caret home (past the `- ` marker), and it's a real stop.
-        assert!(m.is_stop(m.rows[1].end_src), "the empty item's caret home is not a stop");
-        assert_eq!(m.pos_of_offset(m.rows[1].end_src), (1, 2), "caret sits after '• '");
+        assert!(
+            m.is_stop(m.rows[1].end_src),
+            "the empty item's caret home is not a stop"
+        );
+        assert_eq!(
+            m.pos_of_offset(m.rows[1].end_src),
+            (1, 2),
+            "caret sits after '• '"
+        );
     }
 
     #[test]
@@ -6096,7 +6563,10 @@ mod tests {
         let end = src.find("\n\n[^3]").unwrap();
 
         let (first, last) = m.row_range_for(body..end);
-        assert_eq!(first, last, "a one-block note is one row, not a span onto the next");
+        assert_eq!(
+            first, last,
+            "a one-block note is one row, not a span onto the next"
+        );
 
         // The old arithmetic, kept here as the thing that must stay wrong: it
         // is what this method exists instead of.
@@ -6144,16 +6614,34 @@ mod tests {
             "│ ",
             "the empty quote draws just its gutter",
         );
-        assert!(m.rows[2].glyphs.iter().all(|g| g.style.role == Role::QuoteGutter));
-        assert!(!m.rows[2].decoration, "it is a line text can go on, not a drawn gap");
-        assert!(m.is_stop(m.rows[2].end_src), "the empty quote's caret home is not a stop");
-        assert_eq!(m.pos_of_offset(m.rows[2].end_src), (2, 2), "caret sits after '│ '");
+        assert!(
+            m.rows[2]
+                .glyphs
+                .iter()
+                .all(|g| g.style.role == Role::QuoteGutter)
+        );
+        assert!(
+            !m.rows[2].decoration,
+            "it is a line text can go on, not a drawn gap"
+        );
+        assert!(
+            m.is_stop(m.rows[2].end_src),
+            "the empty quote's caret home is not a stop"
+        );
+        assert_eq!(
+            m.pos_of_offset(m.rows[2].end_src),
+            (2, 2),
+            "caret sits after '│ '"
+        );
 
         // And a document that is *only* an empty quote still renders a row — it
         // used to render none at all, leaving the caret nowhere to stand.
         let m = map("> \n");
         assert_eq!(m.num_rows(), 1);
-        assert_eq!(m.rows[0].glyphs.iter().map(|g| g.ch).collect::<String>(), "│ ");
+        assert_eq!(
+            m.rows[0].glyphs.iter().map(|g| g.ch).collect::<String>(),
+            "│ "
+        );
     }
 
     #[test]
@@ -6171,10 +6659,16 @@ mod tests {
         for (i, row) in m.rows.iter().enumerate() {
             let text = row.glyphs.iter().map(|g| g.ch).collect::<String>();
             assert!(text.starts_with("│ "), "row {i} lost the gutter: {text:?}");
-            assert!(!row.decoration, "row {i} is a line to type on, not a drawn gap");
+            assert!(
+                !row.decoration,
+                "row {i} is a line to type on, not a drawn gap"
+            );
             assert!(m.is_stop(row.end_src), "row {i} has no caret home");
         }
-        assert_eq!(m.rows[0].glyphs.iter().map(|g| g.ch).collect::<String>(), "│ a");
+        assert_eq!(
+            m.rows[0].glyphs.iter().map(|g| g.ch).collect::<String>(),
+            "│ a"
+        );
         // Distinct offsets, so ↑/↓ between them moves the caret rather than
         // landing twice on the same byte.
         assert!(m.rows[0].end_src < m.rows[1].end_src);
@@ -6184,34 +6678,61 @@ mod tests {
         // no marker, so it stays an ordinary boundary and the gutter ends.
         let m = map("> a\n\nb\n");
         assert_eq!(m.num_rows(), 3);
-        assert_eq!(m.rows[2].glyphs.iter().map(|g| g.ch).collect::<String>(), "b");
-        assert!(!m.rows[1].glyphs.iter().any(|g| g.style.role == Role::QuoteGutter));
+        assert_eq!(
+            m.rows[2].glyphs.iter().map(|g| g.ch).collect::<String>(),
+            "b"
+        );
+        assert!(
+            !m.rows[1]
+                .glyphs
+                .iter()
+                .any(|g| g.style.role == Role::QuoteGutter)
+        );
 
         // Nesting is the case this could get wrong, and the depth has to come
         // from which quote's span the line falls in rather than from the row
         // above it. A trailing `>` under `> > a` matches only the OUTER quote,
         // so it wears one gutter; spell it `> >` and it wears two.
         let m = map("> > a\n>\n");
-        assert_eq!(m.rows[0].glyphs.iter().map(|g| g.ch).collect::<String>(), "│ │ a");
-        assert_eq!(m.rows[1].glyphs.iter().map(|g| g.ch).collect::<String>(), "│ ");
+        assert_eq!(
+            m.rows[0].glyphs.iter().map(|g| g.ch).collect::<String>(),
+            "│ │ a"
+        );
+        assert_eq!(
+            m.rows[1].glyphs.iter().map(|g| g.ch).collect::<String>(),
+            "│ "
+        );
         let m = map("> > a\n> >\n");
-        assert_eq!(m.rows[1].glyphs.iter().map(|g| g.ch).collect::<String>(), "│ │ ");
+        assert_eq!(
+            m.rows[1].glyphs.iter().map(|g| g.ch).collect::<String>(),
+            "│ │ "
+        );
 
         // And a marker line BETWEEN two quoted paragraphs is untouched: that is
         // the boundary `emit_separators_before` spells, and it stays a drawn gap
         // rather than becoming a line to type on.
         let m = map("> a\n>\n> b\n");
         assert_eq!(m.num_rows(), 3);
-        assert!(m.rows[1].decoration, "the gap between two quoted blocks is still a gap");
+        assert!(
+            m.rows[1].decoration,
+            "the gap between two quoted blocks is still a gap"
+        );
     }
 
     #[test]
     fn an_empty_ordered_item_gets_its_number_and_a_caret_home() {
         let m = map("1. item\n2. \n");
         assert_eq!(m.num_rows(), 2);
-        assert_eq!(m.rows[1].glyphs.iter().map(|g| g.ch).collect::<String>(), "2. ");
+        assert_eq!(
+            m.rows[1].glyphs.iter().map(|g| g.ch).collect::<String>(),
+            "2. "
+        );
         assert!(m.is_stop(m.rows[1].end_src));
-        assert_eq!(m.pos_of_offset(m.rows[1].end_src), (1, 3), "caret sits after '2. '");
+        assert_eq!(
+            m.pos_of_offset(m.rows[1].end_src),
+            (1, 3),
+            "caret sits after '2. '"
+        );
     }
 
     #[test]
@@ -6236,12 +6757,22 @@ mod tests {
         // scanning glyphs drew `# ` (and its caret) at body height until the
         // first character landed.
         let m = map("# \n");
-        assert_eq!(m.rows[0].heading, Some(1), "the empty heading knows its level");
+        assert_eq!(
+            m.rows[0].heading,
+            Some(1),
+            "the empty heading knows its level"
+        );
 
         // Every row of one that wraps, not just the first — and nothing else.
-        let m = map_at("## a heading long enough to wrap over two rows\n\nbody\n", Some(20));
+        let m = map_at(
+            "## a heading long enough to wrap over two rows\n\nbody\n",
+            Some(20),
+        );
         let heads: Vec<Option<u8>> = m.rows.iter().map(|r| r.heading).collect();
-        assert!(heads.iter().filter(|h| **h == Some(2)).count() >= 2, "got {heads:?}");
+        assert!(
+            heads.iter().filter(|h| **h == Some(2)).count() >= 2,
+            "got {heads:?}"
+        );
         assert_eq!(
             m.rows.last().and_then(|r| r.heading),
             None,
@@ -6265,7 +6796,10 @@ mod tests {
         // The heading's caret home is its own row's, not one shared with a row
         // below — the tie that drew the caret two rows down.
         assert_eq!(m.pos_of_offset(8), (2, 0), "the empty heading's own row");
-        assert!(m.rows[3..].iter().all(|r| r.end_src > 8), "rows below own later offsets");
+        assert!(
+            m.rows[3..].iter().all(|r| r.end_src > 8),
+            "rows below own later offsets"
+        );
     }
 
     // ── block boundaries ─────────────────────────────────────────────────────
@@ -6306,7 +6840,10 @@ mod tests {
         // empty paragraph. Only the gap is labelled, so a frontend that shrinks
         // boundaries shrinks the spacer and leaves the row being typed on alone.
         let m = map("# Head\n\n\n");
-        assert_eq!(boundaries(&m), vec![(BlockClass::Heading, BlockClass::Paragraph)]);
+        assert_eq!(
+            boundaries(&m),
+            vec![(BlockClass::Heading, BlockClass::Paragraph)]
+        );
     }
 
     #[test]
@@ -6339,12 +6876,18 @@ mod tests {
         // and spacing one is spacing something that isn't there.
         for src in ["- one\n- two\n", "- one\n\n- two\n"] {
             let m = map(src);
-            assert!(boundaries(&m).is_empty(), "no gap row inside the list of {src:?}");
+            assert!(
+                boundaries(&m).is_empty(),
+                "no gap row inside the list of {src:?}"
+            );
         }
         // Leaving the list is an ordinary boundary, and the list is named as
         // what sits above it.
         let m = map("- one\n- two\n\npara\n");
-        assert_eq!(boundaries(&m), vec![(BlockClass::List, BlockClass::Paragraph)]);
+        assert_eq!(
+            boundaries(&m),
+            vec![(BlockClass::List, BlockClass::Paragraph)]
+        );
     }
 
     #[test]
@@ -6353,7 +6896,10 @@ mod tests {
         // boundary — the quote is the container they're both in, not what the gap
         // separates.
         let m = map("> one\n>\n> two\n");
-        assert_eq!(boundaries(&m), vec![(BlockClass::Paragraph, BlockClass::Paragraph)]);
+        assert_eq!(
+            boundaries(&m),
+            vec![(BlockClass::Paragraph, BlockClass::Paragraph)]
+        );
     }
 
     #[test]
@@ -6367,7 +6913,10 @@ mod tests {
         let mut cache = BlockCache::default();
         let (full, cached) = render_both(&mut ed, src, Some(80), &mut cache);
         assert_maps_eq(&full, &cached, "boundary labelling");
-        assert!(!boundaries(&full).is_empty(), "the fixture has boundaries to compare");
+        assert!(
+            !boundaries(&full).is_empty(),
+            "the fixture has boundaries to compare"
+        );
     }
 
     #[test]

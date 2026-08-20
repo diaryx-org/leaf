@@ -46,7 +46,11 @@ fn main() {
             ed.edit_range(src.len() / 2, src.len() / 2, "x").is_ok()
         });
         time("twig nodes() FFI marshal", 5, || ed.nodes().unwrap().len());
-        time("wysiwyg::build", 5, || wysiwyg::build(&nodes, &src, None, false, &HashMap::new(), None).rows.len());
+        time("wysiwyg::build", 5, || {
+            wysiwyg::build(&nodes, &src, None, false, &HashMap::new(), None)
+                .rows
+                .len()
+        });
         {
             // The incremental path with a warm cache and nothing changed: the
             // floor cost the block cache adds even on a pure repaint — hash every
@@ -56,27 +60,47 @@ fn main() {
             // block and reuses the rest.
             let mut cache = wysiwyg::BlockCache::default();
             let top = ed.child_spans(None).unwrap();
-            let _ = wysiwyg::build_cached(&top, &src, None, false, &HashMap::new(), None, &mut cache, |id| {
-                ed.subtree(twig::NodeId(id)).unwrap_or_default()
-            });
+            let _ = wysiwyg::build_cached(
+                &top,
+                &src,
+                None,
+                false,
+                &HashMap::new(),
+                None,
+                &mut cache,
+                |id| ed.subtree(twig::NodeId(id)).unwrap_or_default(),
+            );
             time("wysiwyg::build_cached (all reused)", 5, || {
                 let top = ed.child_spans(None).unwrap();
-                wysiwyg::build_cached(&top, &src, None, false, &HashMap::new(), None, &mut cache, |id| {
-                    ed.subtree(twig::NodeId(id)).unwrap_or_default()
-                })
+                wysiwyg::build_cached(
+                    &top,
+                    &src,
+                    None,
+                    false,
+                    &HashMap::new(),
+                    None,
+                    &mut cache,
+                    |id| ed.subtree(twig::NodeId(id)).unwrap_or_default(),
+                )
                 .rows
                 .len()
             });
         }
 
         println!("  -- claimed hot, actually noise --");
-        time("twig source_str() (full copy)", 5, || ed.source_str().unwrap().len());
+        time("twig source_str() (full copy)", 5, || {
+            ed.source_str().unwrap().len()
+        });
         let clean = src.clone();
         time("dirty compare (full cmp)", 5, || src == clean);
 
         println!("  -- what the GUI adds on a cache miss --");
         time("clone every row's glyphs", 5, || {
-            map.rows.iter().map(|r| r.glyphs.clone()).collect::<Vec<_>>().len()
+            map.rows
+                .iter()
+                .map(|r| r.glyphs.clone())
+                .collect::<Vec<_>>()
+                .len()
         });
         time("hash every glyph (cache key?)", 5, || {
             let mut n = 0u64;
@@ -98,7 +122,9 @@ fn main() {
         d.view = View::Wysiwyg;
         d.place_caret(src.len() / 2, false);
         d.build_visual_unwrapped();
-        time("build_visual (cached: a repaint)", 200, || d.build_visual_unwrapped());
+        time("build_visual (cached: a repaint)", 200, || {
+            d.build_visual_unwrapped()
+        });
         time("Doc::insert + rebuild (a keystroke)", 5, || {
             d.insert("x");
             d.build_visual_unwrapped();

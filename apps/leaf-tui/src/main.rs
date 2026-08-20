@@ -12,18 +12,18 @@ use std::io::stdout;
 use std::path::PathBuf;
 
 use anyhow::{Result, anyhow};
+use leaf_core::{BlockKind, DiskState, Doc, InlineKind, InlineMarks};
+use leaf_ratatui::{MouseOutcome, Outcome};
 use ratatui::{
     crossterm::{
         event::{
-            self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent,
-            KeyEventKind, MouseEvent, MouseEventKind,
+            self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+            MouseEvent, MouseEventKind,
         },
         execute,
     },
     layout::Rect,
 };
-use leaf_core::{BlockKind, DiskState, Doc, InlineKind, InlineMarks};
-use leaf_ratatui::{MouseOutcome, Outcome};
 
 fn main() -> Result<()> {
     let arg = std::env::args_os()
@@ -216,7 +216,11 @@ pub struct MenuLevel {
 impl MenuLevel {
     fn new(items: &'static [MenuEntry]) -> Self {
         let selected = items.iter().position(|e| e.selectable()).unwrap_or(0);
-        MenuLevel { items, selected, rect: None }
+        MenuLevel {
+            items,
+            selected,
+            rect: None,
+        }
     }
 
     /// Move the highlight `delta` rows, skipping headers and wrapping at the
@@ -240,7 +244,10 @@ impl MenuLevel {
 
 impl ContextMenu {
     fn new(anchor: (u16, u16)) -> Self {
-        ContextMenu { anchor, levels: vec![MenuLevel::new(ROOT_MENU)] }
+        ContextMenu {
+            anchor,
+            levels: vec![MenuLevel::new(ROOT_MENU)],
+        }
     }
 
     /// The frontmost (deepest) level — the one the keyboard drives.
@@ -253,7 +260,11 @@ impl ContextMenu {
     /// no-op if this exact submenu is already open, so hovering its parent row
     /// doesn't keep resetting the child's own highlight.
     fn open_submenu(&mut self, parent: usize, items: &'static [MenuEntry]) {
-        if self.levels.get(parent + 1).is_some_and(|l| l.items.as_ptr() == items.as_ptr()) {
+        if self
+            .levels
+            .get(parent + 1)
+            .is_some_and(|l| l.items.as_ptr() == items.as_ptr())
+        {
             return;
         }
         self.levels.truncate(parent + 1);
@@ -264,12 +275,15 @@ impl ContextMenu {
     /// wins over the parent it flies out over.
     fn hit(&self, row: u16, col: u16) -> Option<(usize, usize)> {
         for (i, level) in self.levels.iter().enumerate().rev() {
-            if let Some(rect) = level.rect {
-                if row >= rect.y && row < rect.y + rect.height && col >= rect.x && col < rect.x + rect.width {
-                    let idx = (row - rect.y) as usize;
-                    if idx < level.items.len() {
-                        return Some((i, idx));
-                    }
+            if let Some(rect) = level.rect
+                && row >= rect.y
+                && row < rect.y + rect.height
+                && col >= rect.x
+                && col < rect.x + rect.width
+            {
+                let idx = (row - rect.y) as usize;
+                if idx < level.items.len() {
+                    return Some((i, idx));
                 }
             }
         }
@@ -291,10 +305,19 @@ struct TextPrompt {
 }
 
 impl TextPrompt {
-    fn new(label: &'static str, initial: impl Into<String>, on_confirm: fn(&mut Doc, &str)) -> Self {
+    fn new(
+        label: &'static str,
+        initial: impl Into<String>,
+        on_confirm: fn(&mut Doc, &str),
+    ) -> Self {
         let value = initial.into();
         let cursor = value.len();
-        TextPrompt { label, value, cursor, on_confirm }
+        TextPrompt {
+            label,
+            value,
+            cursor,
+            on_confirm,
+        }
     }
 }
 
@@ -340,10 +363,11 @@ fn run(terminal: &mut ratatui::DefaultTerminal, doc: &mut Doc) -> Result<()> {
         terminal.draw(|f| ui::render(f, doc, &mut app))?;
 
         match event::read()? {
-            Event::Key(key) if key.kind == KeyEventKind::Press => {
-                if handle_key(doc, key, &mut app) == Flow::Quit {
-                    return Ok(());
-                }
+            Event::Key(key)
+                if key.kind == KeyEventKind::Press
+                    && handle_key(doc, key, &mut app) == Flow::Quit =>
+            {
+                return Ok(());
             }
             // Mouse motion (with no button down) drives the context menu's hover
             // highlight; `EnableMouseCapture` already turns on any-motion
@@ -499,7 +523,10 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
         // Cancel prompt the way it always did.
         Outcome::Quit => {
             if doc.dirty {
-                app.dirty_prompt = Some(DirtyPrompt { action: DirtyAction::Quit, selected: 0 });
+                app.dirty_prompt = Some(DirtyPrompt {
+                    action: DirtyAction::Quit,
+                    selected: 0,
+                });
                 Flow::Continue
             } else {
                 Flow::Quit
@@ -518,7 +545,10 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
         // ⌥N: swap in a blank document, guarding unsaved changes first.
         Outcome::New => {
             if doc.dirty {
-                app.dirty_prompt = Some(DirtyPrompt { action: DirtyAction::New, selected: 0 });
+                app.dirty_prompt = Some(DirtyPrompt {
+                    action: DirtyAction::New,
+                    selected: 0,
+                });
             } else {
                 replace_with_blank(doc);
             }
@@ -563,15 +593,15 @@ fn handle_mouse(doc: &mut Doc, m: MouseEvent, app: &mut App) {
     if let Some(menu) = &mut app.context_menu {
         match m.kind {
             MouseEventKind::Moved | MouseEventKind::Drag(_) => {
-                if let Some((lvl, idx)) = menu.hit(m.row, m.column) {
-                    if menu.levels[lvl].items[idx].selectable() {
-                        // Close any deeper flyout first, then highlight the row —
-                        // and reopen its submenu if that's what it is.
-                        menu.levels.truncate(lvl + 1);
-                        menu.levels[lvl].selected = idx;
-                        if let MenuEntry::Submenu(_, items) = menu.levels[lvl].items[idx] {
-                            menu.open_submenu(lvl, items);
-                        }
+                if let Some((lvl, idx)) = menu.hit(m.row, m.column)
+                    && menu.levels[lvl].items[idx].selectable()
+                {
+                    // Close any deeper flyout first, then highlight the row —
+                    // and reopen its submenu if that's what it is.
+                    menu.levels.truncate(lvl + 1);
+                    menu.levels[lvl].selected = idx;
+                    if let MenuEntry::Submenu(_, items) = menu.levels[lvl].items[idx] {
+                        menu.open_submenu(lvl, items);
                     }
                 }
             }
@@ -781,11 +811,11 @@ fn clipboard_cut(doc: &mut Doc) {
 /// HTML that [`Doc::paste_html`] won't convert (see `leaf_core::html`) — because
 /// the two flavors describe the same content and the plain one always exists.
 fn clipboard_paste(doc: &mut Doc) {
-    if let Ok(html) = get_clipboard_html() {
-        if doc.paste_html(&html) {
-            doc.status = Some("pasted".into());
-            return;
-        }
+    if let Ok(html) = get_clipboard_html()
+        && doc.paste_html(&html)
+    {
+        doc.status = Some("pasted".into());
+        return;
     }
     clipboard_paste_plain(doc);
 }
@@ -899,11 +929,17 @@ mod tests {
 
         handle_mouse(&mut doc, left_down(1, 0), &mut app);
         assert_eq!(doc.source, "- [x] one\n- [ ] two\n");
-        assert_eq!(doc.caret, before, "ticking a box elsewhere must not move the caret");
+        assert_eq!(
+            doc.caret, before,
+            "ticking a box elsewhere must not move the caret"
+        );
 
         // Clicking the item's *text* is an ordinary caret placement, not a tick.
         handle_mouse(&mut doc, left_down(1, 4), &mut app);
-        assert_eq!(doc.source, "- [x] one\n- [ ] two\n", "the text is not a box");
+        assert_eq!(
+            doc.source, "- [x] one\n- [ ] two\n",
+            "the text is not a box"
+        );
         assert_ne!(doc.caret, before, "the caret moved to the click");
     }
 
@@ -970,7 +1006,11 @@ mod tests {
         let mut app = App::default();
         handle_mouse(&mut doc, right_down(1, 4), &mut app);
         assert!(app.context_menu.is_some());
-        handle_key(&mut doc, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut app);
+        handle_key(
+            &mut doc,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &mut app,
+        );
         assert!(app.context_menu.is_none());
         assert_eq!(doc.selection(), None);
     }
@@ -982,9 +1022,17 @@ mod tests {
         handle_mouse(&mut doc, right_down(1, 4), &mut app);
         // Cut, Copy, Paste, Select All: three Downs from Cut lands on Select All.
         for _ in 0..3 {
-            handle_key(&mut doc, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &mut app);
+            handle_key(
+                &mut doc,
+                KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+                &mut app,
+            );
         }
-        handle_key(&mut doc, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &mut app);
+        handle_key(
+            &mut doc,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut app,
+        );
         assert!(app.context_menu.is_none());
         assert_eq!(doc.selected_text(), Some("one two three\n"));
     }
@@ -1009,10 +1057,17 @@ mod tests {
         let alt_1 = KeyEvent::new(KeyCode::Char('1'), KeyModifiers::ALT);
 
         handle_key(&mut doc, alt_1, &mut app);
-        assert_eq!(&doc.source[..7], "Title\n\n", "first ⌥1 should strip the heading marker");
+        assert_eq!(
+            &doc.source[..7],
+            "Title\n\n",
+            "first ⌥1 should strip the heading marker"
+        );
 
         handle_key(&mut doc, alt_1, &mut app);
-        assert!(doc.source.starts_with("# Title"), "second ⌥1 should re-apply H1");
+        assert!(
+            doc.source.starts_with("# Title"),
+            "second ⌥1 should re-apply H1"
+        );
     }
 
     fn alt(c: char) -> KeyEvent {
@@ -1081,7 +1136,11 @@ mod tests {
         for c in "https://example.com".chars() {
             handle_key(&mut doc, plain(c), &mut app);
         }
-        handle_key(&mut doc, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &mut app);
+        handle_key(
+            &mut doc,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut app,
+        );
         assert!(app.text_prompt.is_none(), "Enter should close the prompt");
         assert_eq!(doc.source, "[hello](https://example.com)\n");
     }
@@ -1096,7 +1155,11 @@ mod tests {
         for c in "http://x".chars() {
             handle_key(&mut doc, plain(c), &mut app);
         }
-        handle_key(&mut doc, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut app);
+        handle_key(
+            &mut doc,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &mut app,
+        );
         assert!(app.text_prompt.is_none());
         assert_eq!(doc.source, "hello\n");
     }
@@ -1109,7 +1172,11 @@ mod tests {
         for c in "abc".chars() {
             handle_key(&mut doc, plain(c), &mut app);
         }
-        handle_key(&mut doc, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE), &mut app);
+        handle_key(
+            &mut doc,
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+            &mut app,
+        );
         assert_eq!(app.text_prompt.as_ref().unwrap().value, "ab");
     }
 
@@ -1123,10 +1190,17 @@ mod tests {
         let mut doc = doc_with("prompt_isolation", "hello\n");
         let mut app = App::default();
         handle_key(&mut doc, alt('k'), &mut app);
-        handle_key(&mut doc, KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL), &mut app);
+        handle_key(
+            &mut doc,
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+            &mut app,
+        );
         assert_eq!(doc.selection(), None, "^A must not have reached select_all");
         handle_key(&mut doc, alt('b'), &mut app);
-        assert_eq!(doc.source, "hello\n", "⌥b must not have reached the document");
+        assert_eq!(
+            doc.source, "hello\n",
+            "⌥b must not have reached the document"
+        );
         assert!(app.text_prompt.is_some(), "the prompt should still be open");
         assert_eq!(app.text_prompt.unwrap().value, "ab");
     }
@@ -1180,7 +1254,11 @@ mod tests {
         let mut app = App::default();
         doc.caret = doc.source.find('b').unwrap();
         handle_key(&mut doc, alt('8'), &mut app);
-        assert!(doc.source.contains("- - b"), "the second item should have nested: {:?}", doc.source);
+        assert!(
+            doc.source.contains("- - b"),
+            "the second item should have nested: {:?}",
+            doc.source
+        );
         assert!(
             doc.status.as_deref().unwrap_or("").contains("nested"),
             "status should explain the nest: {:?}",
@@ -1208,7 +1286,10 @@ mod tests {
         doc.insert(" world");
         let mut app = App::default();
         assert!(handle_key(&mut doc, ctrl('q'), &mut app) == Flow::Continue);
-        let prompt = app.dirty_prompt.as_ref().expect("a dirty ^Q should open the prompt");
+        let prompt = app
+            .dirty_prompt
+            .as_ref()
+            .expect("a dirty ^Q should open the prompt");
         assert!(prompt.action == DirtyAction::Quit);
         assert_eq!(prompt.selected, 0);
     }
@@ -1254,7 +1335,10 @@ mod tests {
         doc.insert("hello");
         let mut app = App::default();
         handle_key(&mut doc, ctrl('s'), &mut app);
-        let prompt = app.text_prompt.as_ref().expect("^S on an untitled doc should open Save As");
+        let prompt = app
+            .text_prompt
+            .as_ref()
+            .expect("^S on an untitled doc should open Save As");
         assert_eq!(prompt.label, "Save as");
         assert_eq!(prompt.value, "");
         assert!(doc.is_untitled(), "no path should have been invented");
@@ -1273,7 +1357,11 @@ mod tests {
         for c in p.to_string_lossy().chars() {
             handle_key(&mut doc, plain(c), &mut app);
         }
-        handle_key(&mut doc, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &mut app);
+        handle_key(
+            &mut doc,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut app,
+        );
 
         assert!(app.text_prompt.is_none());
         assert!(!doc.is_untitled());
@@ -1291,7 +1379,10 @@ mod tests {
         let mut app = App::default();
         handle_key(&mut doc, ctrl('q'), &mut app);
         assert!(handle_key(&mut doc, plain('s'), &mut app) == Flow::Continue);
-        assert!(app.text_prompt.is_some(), "Save should have detoured to Save As");
+        assert!(
+            app.text_prompt.is_some(),
+            "Save should have detoured to Save As"
+        );
         assert!(app.dirty_prompt.is_none());
 
         let mut p = std::env::temp_dir();
@@ -1300,8 +1391,15 @@ mod tests {
         for c in p.to_string_lossy().chars() {
             handle_key(&mut doc, plain(c), &mut app);
         }
-        let flow = handle_key(&mut doc, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &mut app);
-        assert!(flow == Flow::Quit, "the pending quit should fire once the save-as lands");
+        let flow = handle_key(
+            &mut doc,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut app,
+        );
+        assert!(
+            flow == Flow::Quit,
+            "the pending quit should fire once the save-as lands"
+        );
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "hello");
     }
 
@@ -1313,9 +1411,18 @@ mod tests {
         handle_key(&mut doc, ctrl('q'), &mut app);
         handle_key(&mut doc, plain('s'), &mut app);
         assert!(app.text_prompt.is_some());
-        assert!(handle_key(&mut doc, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &mut app) == Flow::Continue);
+        assert!(
+            handle_key(
+                &mut doc,
+                KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+                &mut app
+            ) == Flow::Continue
+        );
         assert!(app.text_prompt.is_none());
-        assert!(app.dirty_prompt.is_none(), "canceling the destination shouldn't resurrect the quit prompt");
+        assert!(
+            app.dirty_prompt.is_none(),
+            "canceling the destination shouldn't resurrect the quit prompt"
+        );
         assert!(doc.dirty);
     }
 
@@ -1337,9 +1444,15 @@ mod tests {
         doc.insert(" world");
         let mut app = App::default();
         handle_key(&mut doc, alt('n'), &mut app);
-        let prompt = app.dirty_prompt.as_ref().expect("⌥n on a dirty doc should ask first");
+        let prompt = app
+            .dirty_prompt
+            .as_ref()
+            .expect("⌥n on a dirty doc should ask first");
         assert!(prompt.action == DirtyAction::New);
-        assert_eq!(doc.source, "hello world\n", "nothing should change before the choice is made");
+        assert_eq!(
+            doc.source, "hello world\n",
+            "nothing should change before the choice is made"
+        );
     }
 
     #[test]
@@ -1364,9 +1477,18 @@ mod tests {
         std::fs::write(&doc.path, "someone else's edit\n").unwrap(); // external write
         let mut app = App::default();
         handle_key(&mut doc, ctrl('s'), &mut app);
-        let prompt = app.conflict.as_ref().expect("a changed file should stop the save");
-        assert_eq!(prompt.selected, 2, "the safe default is Cancel, not Overwrite");
-        assert_eq!(std::fs::read_to_string(&doc.path).unwrap(), "someone else's edit\n");
+        let prompt = app
+            .conflict
+            .as_ref()
+            .expect("a changed file should stop the save");
+        assert_eq!(
+            prompt.selected, 2,
+            "the safe default is Cancel, not Overwrite"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&doc.path).unwrap(),
+            "someone else's edit\n"
+        );
     }
 
     #[test]
@@ -1402,7 +1524,11 @@ mod tests {
         let mut doc = doc_with("indent", "line one\n");
         let mut app = App::default();
         doc.caret = 0;
-        handle_key(&mut doc, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &mut app);
+        handle_key(
+            &mut doc,
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+            &mut app,
+        );
         assert_eq!(doc.source, "  line one\n");
     }
 
@@ -1411,7 +1537,11 @@ mod tests {
         let mut doc = doc_with("outdent", "    line one\n");
         let mut app = App::default();
         doc.caret = 0;
-        handle_key(&mut doc, KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE), &mut app);
+        handle_key(
+            &mut doc,
+            KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE),
+            &mut app,
+        );
         assert_eq!(doc.source, "  line one\n");
     }
 
@@ -1423,11 +1553,22 @@ mod tests {
         let mut doc = doc_with("table_tab", "| a | b |\n| - | - |\n| c | d |\n");
         let mut app = App::default();
         doc.caret = doc.source.find('a').unwrap();
-        handle_key(&mut doc, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &mut app);
-        assert_eq!(doc.source, "| a | b |\n| - | - |\n| c | d |\n", "a table hop must not indent");
+        handle_key(
+            &mut doc,
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+            &mut app,
+        );
+        assert_eq!(
+            doc.source, "| a | b |\n| - | - |\n| c | d |\n",
+            "a table hop must not indent"
+        );
         // A hop lands with the destination cell selected (caret at its end), so
         // typing replaces the cell — the same field-select Tab gives everywhere.
-        assert_eq!(doc.selected_text(), Some("b"), "the hopped-to cell comes up selected");
+        assert_eq!(
+            doc.selected_text(),
+            Some("b"),
+            "the hopped-to cell comes up selected"
+        );
         assert_eq!(doc.caret, doc.source.find('b').unwrap() + 1);
     }
 
@@ -1439,9 +1580,16 @@ mod tests {
         let mut doc = doc_with("table_break", "| a | b |\n| - | - |\n| c | d |\n");
         let mut app = App::default();
         doc.caret = doc.source.find('a').unwrap() + 1; // just after "a"
-        handle_key(&mut doc, KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT), &mut app);
+        handle_key(
+            &mut doc,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT),
+            &mut app,
+        );
         assert_eq!(doc.source, "| a<br> | b |\n| - | - |\n| c | d |\n");
-        assert!(doc.caret_in_table(), "still editing the cell, past the break");
+        assert!(
+            doc.caret_in_table(),
+            "still editing the cell, past the break"
+        );
     }
 
     #[test]
@@ -1450,11 +1598,18 @@ mod tests {
         let mut app = App::default();
         doc.caret = 5; // after "hello"
         let breaks = doc.source.matches('\n').count();
-        handle_key(&mut doc, KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT), &mut app);
+        handle_key(
+            &mut doc,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT),
+            &mut app,
+        );
         // Off a table `cell_line_break` declines and we fall through to the
         // ordinary newline (which opens a paragraph), so the line count grows and
         // no `<br>` is spliced.
-        assert!(doc.source.matches('\n').count() > breaks, "a newline off a table");
+        assert!(
+            doc.source.matches('\n').count() > breaks,
+            "a newline off a table"
+        );
         assert!(!doc.source.contains("<br>"), "no in-cell break off a table");
     }
 
@@ -1485,7 +1640,11 @@ mod tests {
         doc.anchor = Some(0);
         doc.caret = 5; // "hello" selected
         handle_key(&mut doc, alt('d'), &mut app);
-        assert!(doc.active_inline_marks().contains(InlineKind::Delete), "status: {:?}", doc.status);
+        assert!(
+            doc.active_inline_marks().contains(InlineKind::Delete),
+            "status: {:?}",
+            doc.status
+        );
     }
 
     #[test]
@@ -1495,7 +1654,11 @@ mod tests {
         doc.anchor = Some(0);
         doc.caret = 5; // "hello" selected
         handle_key(&mut doc, alt('u'), &mut app);
-        assert!(doc.active_inline_marks().contains(InlineKind::Insert), "status: {:?}", doc.status);
+        assert!(
+            doc.active_inline_marks().contains(InlineKind::Insert),
+            "status: {:?}",
+            doc.status
+        );
     }
 
     // ── paste ────────────────────────────────────────────────────────────────
@@ -1595,7 +1758,11 @@ mod tests {
         if doc.status.as_deref() == Some("clipboard unavailable") {
             return;
         }
-        assert_eq!(get_clipboard_text().ok().as_deref(), Some("**bold**"), "the source");
+        assert_eq!(
+            get_clipboard_text().ok().as_deref(),
+            Some("**bold**"),
+            "the source"
+        );
         let html = get_clipboard_html().expect("html flavor");
         assert!(html.contains("<strong>bold</strong>"), "{html:?}");
     }
@@ -1614,8 +1781,14 @@ mod tests {
         handle_mouse(&mut doc, left_down(1, 0), &mut app); // caret at the top row
         let before = doc.scroll;
         handle_mouse(&mut doc, drag(11, 0), &mut app); // one row past body_height (10)
-        assert!(doc.scroll > before, "dragging past the bottom edge should scroll down");
-        assert!(doc.selection().is_some(), "the drag should still be extending a selection");
+        assert!(
+            doc.scroll > before,
+            "dragging past the bottom edge should scroll down"
+        );
+        assert!(
+            doc.selection().is_some(),
+            "the drag should still be extending a selection"
+        );
     }
 
     #[test]
@@ -1640,7 +1813,11 @@ mod tests {
         term.draw(|f| ui::render(f, doc, app)).unwrap();
         let buf = term.backend().buffer().clone();
         (0..buf.area.height)
-            .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
             .collect()
     }
 
@@ -1651,21 +1828,39 @@ mod tests {
         let mut doc = doc_with("no_header", "hello world\n");
         let mut app = App::default();
         let lines = frame(&mut doc, &mut app, 40, 6);
-        assert!(lines[0].starts_with("hello world"), "body not on row 0:\n{}", lines.join("\n"));
+        assert!(
+            lines[0].starts_with("hello world"),
+            "body not on row 0:\n{}",
+            lines.join("\n")
+        );
     }
 
     #[test]
     fn a_dirty_prompt_floats_as_a_centered_overlay() {
         let mut doc = doc_with("prompt_overlay", "hello\n");
-        let mut app = App::default();
-        app.dirty_prompt = Some(DirtyPrompt { action: DirtyAction::Quit, selected: 0 });
+        let mut app = App {
+            dirty_prompt: Some(DirtyPrompt {
+                action: DirtyAction::Quit,
+                selected: 0,
+            }),
+            ..Default::default()
+        };
         let lines = frame(&mut doc, &mut app, 50, 10);
         let joined = lines.join("\n");
         assert!(joined.contains("Unsaved changes"), "no dialog:\n{joined}");
-        assert!(joined.contains("Save") && joined.contains("Discard"), "no choices:\n{joined}");
+        assert!(
+            joined.contains("Save") && joined.contains("Discard"),
+            "no choices:\n{joined}"
+        );
         // Centered, not pinned to the bottom rows the old footer used.
-        let row = lines.iter().position(|l| l.contains("Unsaved changes")).unwrap();
-        assert!(row > 0 && row < 9, "dialog should be centered, got row {row}");
+        let row = lines
+            .iter()
+            .position(|l| l.contains("Unsaved changes"))
+            .unwrap();
+        assert!(
+            row > 0 && row < 9,
+            "dialog should be centered, got row {row}"
+        );
     }
 
     #[test]
@@ -1675,11 +1870,21 @@ mod tests {
         let mut app = App::default();
         let lines = frame(&mut doc, &mut app, 40, 6);
         let bottom = lines.last().unwrap();
-        assert!(bottom.contains("copied"), "toast missing from bottom row:\n{}", lines.join("\n"));
+        assert!(
+            bottom.contains("copied"),
+            "toast missing from bottom row:\n{}",
+            lines.join("\n")
+        );
         // The toast is drawn flush against the right edge (its text is padded
         // with a single trailing space), and the space to its left is empty body.
-        assert!(bottom.ends_with("copied "), "toast should hug the right edge: {bottom:?}");
-        assert!(bottom.starts_with("     "), "toast should not stretch across the row: {bottom:?}");
+        assert!(
+            bottom.ends_with("copied "),
+            "toast should hug the right edge: {bottom:?}"
+        );
+        assert!(
+            bottom.starts_with("     "),
+            "toast should not stretch across the row: {bottom:?}"
+        );
     }
 
     #[test]
@@ -1688,10 +1893,19 @@ mod tests {
         // dialog is up, the toast stays hidden.
         let mut doc = doc_with("no_toast_with_prompt", "hello\n");
         doc.status = Some("copied".into());
-        let mut app = App::default();
-        app.dirty_prompt = Some(DirtyPrompt { action: DirtyAction::Quit, selected: 0 });
+        let mut app = App {
+            dirty_prompt: Some(DirtyPrompt {
+                action: DirtyAction::Quit,
+                selected: 0,
+            }),
+            ..Default::default()
+        };
         let lines = frame(&mut doc, &mut app, 40, 6);
-        assert!(!lines.join("\n").contains("copied"), "toast should be suppressed:\n{}", lines.join("\n"));
+        assert!(
+            !lines.join("\n").contains("copied"),
+            "toast should be suppressed:\n{}",
+            lines.join("\n")
+        );
     }
 
     // ── context menu: Format submenu, hover, active state ────────────────────
@@ -1744,7 +1958,10 @@ mod tests {
             handle_key(&mut doc, keyp(KeyCode::Down), &mut app);
         }
         handle_key(&mut doc, keyp(KeyCode::Enter), &mut app);
-        assert!(app.context_menu.is_none(), "running an action closes the menu");
+        assert!(
+            app.context_menu.is_none(),
+            "running an action closes the menu"
+        );
         assert_eq!(doc.source, "**hello** world\n");
     }
 
@@ -1766,7 +1983,10 @@ mod tests {
         open_format(&mut doc, &mut app);
         assert_eq!(app.context_menu.as_ref().unwrap().levels.len(), 2);
         handle_key(&mut doc, keyp(KeyCode::Left), &mut app);
-        let menu = app.context_menu.as_ref().expect("Left in a submenu backs out, not closes");
+        let menu = app
+            .context_menu
+            .as_ref()
+            .expect("Left in a submenu backs out, not closes");
         assert_eq!(menu.levels.len(), 1);
         // A second Left, now at the root, closes it.
         handle_key(&mut doc, keyp(KeyCode::Left), &mut app);
@@ -1788,11 +2008,19 @@ mod tests {
 
         // Hover Format (root row 4): its submenu flies out on hover alone.
         handle_mouse(&mut doc, moved(root.y + 4, root.x + 1), &mut app);
-        assert_eq!(app.context_menu.as_ref().unwrap().levels.len(), 2, "hover opens the submenu");
+        assert_eq!(
+            app.context_menu.as_ref().unwrap().levels.len(),
+            2,
+            "hover opens the submenu"
+        );
 
         // Hover back onto Cut (root row 0): the submenu closes again.
         handle_mouse(&mut doc, moved(root.y, root.x + 1), &mut app);
-        assert_eq!(app.context_menu.as_ref().unwrap().levels.len(), 1, "hovering off Format closes it");
+        assert_eq!(
+            app.context_menu.as_ref().unwrap().levels.len(),
+            1,
+            "hovering off Format closes it"
+        );
         assert_eq!(app.context_menu.as_ref().unwrap().levels[0].selected, 0);
     }
 
@@ -1803,10 +2031,22 @@ mod tests {
         open_format(&mut doc, &mut app);
         let lines = frame(&mut doc, &mut app, 60, 20);
         let joined = lines.join("\n");
-        assert!(joined.contains("Format"), "the root stays visible beside the flyout:\n{joined}");
-        assert!(joined.contains('▸'), "the submenu arrow is drawn:\n{joined}");
-        assert!(joined.contains("Block") && joined.contains("Inline"), "section headers:\n{joined}");
-        assert!(joined.contains("Bold") && joined.contains("Strikethrough"), "inline options listed:\n{joined}");
+        assert!(
+            joined.contains("Format"),
+            "the root stays visible beside the flyout:\n{joined}"
+        );
+        assert!(
+            joined.contains('▸'),
+            "the submenu arrow is drawn:\n{joined}"
+        );
+        assert!(
+            joined.contains("Block") && joined.contains("Inline"),
+            "section headers:\n{joined}"
+        );
+        assert!(
+            joined.contains("Bold") && joined.contains("Strikethrough"),
+            "inline options listed:\n{joined}"
+        );
     }
 
     #[test]
@@ -1818,7 +2058,13 @@ mod tests {
         let mut app = App::default();
         open_format(&mut doc, &mut app);
         let joined = frame(&mut doc, &mut app, 60, 20).join("\n");
-        assert!(joined.contains("✓ Bold"), "active Bold should be checked:\n{joined}");
-        assert!(joined.contains("  Italic"), "inactive Italic should not:\n{joined}");
+        assert!(
+            joined.contains("✓ Bold"),
+            "active Bold should be checked:\n{joined}"
+        );
+        assert!(
+            joined.contains("  Italic"),
+            "inactive Italic should not:\n{joined}"
+        );
     }
 }

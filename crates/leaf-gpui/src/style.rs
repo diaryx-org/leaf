@@ -88,8 +88,11 @@ pub fn text_run(len: usize, s: LStyle, rs: &RunStyle) -> TextRun {
     };
     // Links are underlined; so is anything the author marked as an insertion
     // (`{+ins+}` sets the underline flag). `color: None` follows the run's color.
-    let underline = (matches!(s.role, Role::Link) || s.underline)
-        .then(|| UnderlineStyle { thickness: px(1.0), color: None, wavy: false });
+    let underline = (matches!(s.role, Role::Link) || s.underline).then(|| UnderlineStyle {
+        thickness: px(1.0),
+        color: None,
+        wavy: false,
+    });
     TextRun {
         len,
         font,

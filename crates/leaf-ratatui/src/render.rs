@@ -17,9 +17,9 @@ use ratatui::widgets::Clear;
 use leaf_core::{Doc, View};
 
 use crate::EditorState;
-use crate::style::{CODE_BG, CODE_BORDER, CODE_INSET, wysiwyg_lines};
 #[cfg(feature = "images")]
 use crate::style::IMAGE_BORDER;
+use crate::style::{CODE_BG, CODE_BORDER, CODE_INSET, wysiwyg_lines};
 
 /// Render the editing surface into `area`: the document body, its code-block
 /// boxes and framed images, the scrollbar, and the terminal caret. Updates
@@ -78,7 +78,12 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
     // first column; only this one scrolls. Stashed on `state` so `handle_mouse`
     // can undo the shift on a click.
     let caret_cb = (doc.view == View::Wysiwyg)
-        .then(|| doc.vmap.code_blocks.iter().find(|c| c.rows_span.contains(&caret_row)))
+        .then(|| {
+            doc.vmap
+                .code_blocks
+                .iter()
+                .find(|c| c.rows_span.contains(&caret_row))
+        })
         .flatten();
     let caret_span = caret_cb.map(|c| c.rows_span.clone());
     let code_inner_w = caret_cb
@@ -97,13 +102,17 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
         View::Source => build_lines(&doc.source, sel),
         View::Wysiwyg => {
             let code_shift = |r: usize| -> Option<usize> {
-                doc.vmap.code_blocks.iter().find(|c| c.rows_span.contains(&r)).map(|c| {
-                    if caret_span.as_ref().is_some_and(|s| *s == c.rows_span) {
-                        code_scroll
-                    } else {
-                        0
-                    }
-                })
+                doc.vmap
+                    .code_blocks
+                    .iter()
+                    .find(|c| c.rows_span.contains(&r))
+                    .map(|c| {
+                        if caret_span.as_ref().is_some_and(|s| *s == c.rows_span) {
+                            code_scroll
+                        } else {
+                            0
+                        }
+                    })
             };
             wysiwyg_lines(&doc.vmap, sel, code_shift)
         }
@@ -137,22 +146,26 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
     if doc.view == View::Wysiwyg {
         for cb in &doc.vmap.code_blocks {
             let box_w = code_box_width(doc, &cb.rows_span, width);
-            if let Some((rect, borders)) =
-                code_box(&cb.rows_span, doc.vmap.rows.len(), content_area, doc.scroll, box_w)
-            {
+            if let Some((rect, borders)) = code_box(
+                &cb.rows_span,
+                doc.vmap.rows.len(),
+                content_area,
+                doc.scroll,
+                box_w,
+            ) {
                 let mut block = Block::default()
                     .borders(borders)
                     .border_style(Style::default().fg(CODE_BORDER).bg(CODE_BG))
                     .style(Style::default().bg(CODE_BG));
                 // The language rides the top border as a small label, the way a
                 // titled panel names itself — shown only when that border is.
-                if let Some(lang) = &cb.lang {
-                    if borders.contains(Borders::TOP) {
-                        block = block.title(Line::from(Span::styled(
-                            format!(" {lang} "),
-                            Style::default().fg(Color::Gray).bg(CODE_BG),
-                        )));
-                    }
+                if let Some(lang) = &cb.lang
+                    && borders.contains(Borders::TOP)
+                {
+                    block = block.title(Line::from(Span::styled(
+                        format!(" {lang} "),
+                        Style::default().fg(Color::Gray).bg(CODE_BG),
+                    )));
                 }
                 f.render_widget(block, rect);
             }
@@ -212,17 +225,17 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
             // the box's side borders, at the box's own vertical position; anything
             // less leaves the empty framed box as the placeholder.
             let fully_visible = span.start >= doc.scroll && span.end <= doc.scroll + height;
-            if fully_visible {
-                if let Some((cols, rows)) = picture {
-                    let interior = Rect {
-                        x: rect.x + 1,
-                        y: content_area.y + (span.start - doc.scroll) as u16,
-                        width: cols.min(rect.width.saturating_sub(2)),
-                        height: rows.min(rect.height),
-                    };
-                    if interior.width > 0 && interior.height > 0 {
-                        state.images.paint_raster(f, info, doc_dir.as_deref(), interior);
-                    }
+            if fully_visible && let Some((cols, rows)) = picture {
+                let interior = Rect {
+                    x: rect.x + 1,
+                    y: content_area.y + (span.start - doc.scroll) as u16,
+                    width: cols.min(rect.width.saturating_sub(2)),
+                    height: rows.min(rect.height),
+                };
+                if interior.width > 0 && interior.height > 0 {
+                    state
+                        .images
+                        .paint_raster(f, info, doc_dir.as_deref(), interior);
                 }
             }
         }
@@ -252,11 +265,12 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
         let col_visible = caret_col >= scroll_x && (width == 0 || caret_col < scroll_x + width);
         col_visible.then(|| content_area.x + (caret_col - scroll_x) as u16)
     };
-    if let Some(x) = caret_x {
-        if caret_row >= doc.scroll && (height == 0 || caret_row < doc.scroll + height) {
-            let y = content_area.y + (caret_row - doc.scroll) as u16;
-            f.set_cursor_position(Position::new(x, y));
-        }
+    if let Some(x) = caret_x
+        && caret_row >= doc.scroll
+        && (height == 0 || caret_row < doc.scroll + height)
+    {
+        let y = content_area.y + (caret_row - doc.scroll) as u16;
+        f.set_cursor_position(Position::new(x, y));
     }
 }
 
@@ -266,7 +280,11 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
 /// bar across the whole editor. A block wider than the surface is capped and
 /// scrolls (see the caret follow above).
 fn code_box_width(doc: &Doc, span: &std::ops::Range<usize>, avail: usize) -> usize {
-    let content = span.clone().map(|r| doc.vmap.row_width(r)).max().unwrap_or(0);
+    let content = span
+        .clone()
+        .map(|r| doc.vmap.row_width(r))
+        .max()
+        .unwrap_or(0);
     (content + CODE_INSET + 1).min(avail).max(CODE_INSET + 1)
 }
 
@@ -288,7 +306,11 @@ fn code_box(
     let has_bottom = span.end < row_count;
     // Box rows, inclusive, in map-row coordinates.
     let top_vr = if has_top { span.start - 1 } else { span.start };
-    let bottom_vr = if has_bottom { span.end } else { span.end.saturating_sub(1) };
+    let bottom_vr = if has_bottom {
+        span.end
+    } else {
+        span.end.saturating_sub(1)
+    };
 
     // Map-row → screen-y (relative to the content top), as signed so a box above
     // the viewport is caught rather than wrapping around.
@@ -416,10 +438,15 @@ mod code_render_tests {
         let mut doc = Doc::open(p).unwrap();
         let mut state = EditorState::new();
         let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-        term.draw(|f| render(f, f.area(), &mut doc, &mut state)).unwrap();
+        term.draw(|f| render(f, f.area(), &mut doc, &mut state))
+            .unwrap();
         let buf = term.backend().buffer().clone();
         (0..buf.area.height)
-            .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
             .collect()
     }
 
@@ -430,15 +457,30 @@ mod code_render_tests {
         let joined = lines.join("\n");
         // The box is bordered and carries the language on its top edge.
         assert!(joined.contains("rust"), "language label missing:\n{joined}");
-        assert!(lines.iter().any(|l| l.contains('┌') && l.contains('┐')), "no top border:\n{joined}");
-        assert!(lines.iter().any(|l| l.contains('└') && l.contains('┘')), "no bottom border:\n{joined}");
+        assert!(
+            lines.iter().any(|l| l.contains('┌') && l.contains('┐')),
+            "no top border:\n{joined}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains('└') && l.contains('┘')),
+            "no bottom border:\n{joined}"
+        );
         // Content width, not full width: the `let x = 1;` box is far short of 40.
         let top = lines.iter().find(|l| l.contains('┌')).unwrap();
-        let border_cols = top.chars().filter(|&c| c == '─' || c == '┌' || c == '┐').count();
-        assert!(border_cols < 30, "box should hug its content, got {border_cols} border cols:\n{joined}");
+        let border_cols = top
+            .chars()
+            .filter(|&c| c == '─' || c == '┌' || c == '┐')
+            .count();
+        assert!(
+            border_cols < 30,
+            "box should hug its content, got {border_cols} border cols:\n{joined}"
+        );
         // No leftover code gutter, and the code itself is inside the box.
         assert!(!joined.contains('▏'), "old gutter still drawn:\n{joined}");
-        assert!(joined.contains("let x = 1;"), "code text missing:\n{joined}");
+        assert!(
+            joined.contains("let x = 1;"),
+            "code text missing:\n{joined}"
+        );
     }
 
     #[test]

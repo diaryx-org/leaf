@@ -57,7 +57,13 @@ impl TextPrompt {
         focus_handle: FocusHandle,
     ) -> Self {
         let caret = value.len();
-        TextPrompt { label: label.into(), value, caret, focus_handle, action }
+        TextPrompt {
+            label: label.into(),
+            value,
+            caret,
+            focus_handle,
+            action,
+        }
     }
 
     /// Insert `text` (one keystroke's `key_char`) at the caret.

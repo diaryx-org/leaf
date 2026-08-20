@@ -126,7 +126,10 @@ pub struct LandingView {
 
 impl From<leaf_core::Landing> for LandingView {
     fn from(l: leaf_core::Landing) -> Self {
-        LandingView { start: l.start as u32, end: l.end as u32 }
+        LandingView {
+            start: l.start as u32,
+            end: l.end as u32,
+        }
     }
 }
 
@@ -609,7 +612,7 @@ pub enum TableAlignment {
 }
 
 impl TableAlignment {
-    fn to_core(self) -> Alignment {
+    fn into_core(self) -> Alignment {
         match self {
             TableAlignment::Default => Alignment::Default,
             TableAlignment::Left => Alignment::Left,
@@ -636,7 +639,7 @@ pub enum MarkupMode {
 }
 
 impl MarkupMode {
-    fn to_core(self) -> CoreMarkupMode {
+    fn into_core(self) -> CoreMarkupMode {
         match self {
             MarkupMode::None => CoreMarkupMode::None,
             MarkupMode::Shortcuts => CoreMarkupMode::Shortcuts,
@@ -663,7 +666,7 @@ pub enum LineFlow {
 }
 
 impl LineFlow {
-    fn to_core(self) -> CoreLineFlow {
+    fn into_core(self) -> CoreLineFlow {
         match self {
             LineFlow::Fold => CoreLineFlow::Fold,
             LineFlow::Preserve => CoreLineFlow::Preserve,
@@ -740,7 +743,13 @@ impl Inner {
                 .get(row)
                 .map(|r| r.glyphs.iter().map(|g| g.ch).collect())
                 .unwrap_or_default(),
-            View::Source => self.doc.source.split('\n').nth(row).unwrap_or("").to_string(),
+            View::Source => self
+                .doc
+                .source
+                .split('\n')
+                .nth(row)
+                .unwrap_or("")
+                .to_string(),
         }
     }
 
@@ -819,7 +828,12 @@ impl Inner {
 
     /// The byte offset where visual `row` begins in the source view.
     fn source_line_start(&self, row: usize) -> usize {
-        self.doc.source.split('\n').take(row).map(|l| l.len() + 1).sum()
+        self.doc
+            .source
+            .split('\n')
+            .take(row)
+            .map(|l| l.len() + 1)
+            .sum()
     }
 
     /// The next caret stop after `off`, or `None` at the end.
@@ -831,7 +845,12 @@ impl Inner {
                 if off >= s.len() {
                     None
                 } else {
-                    Some(s[off..].grapheme_indices(true).nth(1).map_or(s.len(), |(i, _)| off + i))
+                    Some(
+                        s[off..]
+                            .grapheme_indices(true)
+                            .nth(1)
+                            .map_or(s.len(), |(i, _)| off + i),
+                    )
                 }
             }
         }
@@ -977,12 +996,21 @@ impl LeafDoc {
             "djot" | "dj" => Format::Djot,
             "html" | "htm" => Format::Html,
             "xml" => Format::Xml,
-            other => return Err(LeafError::UnknownFormat { name: other.to_string() }),
+            other => {
+                return Err(LeafError::UnknownFormat {
+                    name: other.to_string(),
+                });
+            }
         };
-        let doc = Doc::from_source(source, format)
-            .map_err(|e| LeafError::Parse { message: e.to_string() })?;
+        let doc = Doc::from_source(source, format).map_err(|e| LeafError::Parse {
+            message: e.to_string(),
+        })?;
         Ok(Arc::new(LeafDoc {
-            inner: Mutex::new(Inner { doc, width: Some(80), scheme: ColorScheme::Light }),
+            inner: Mutex::new(Inner {
+                doc,
+                width: Some(80),
+                scheme: ColorScheme::Light,
+            }),
         }))
     }
 
@@ -1019,7 +1047,11 @@ impl LeafDoc {
     /// URLs, and a renderer keying its views by `src` tears nothing down.
     pub fn set_dark_appearance(&self, dark: bool) -> DocView {
         let mut g = self.lock();
-        g.scheme = if dark { ColorScheme::Dark } else { ColorScheme::Light };
+        g.scheme = if dark {
+            ColorScheme::Dark
+        } else {
+            ColorScheme::Light
+        };
         g.view()
     }
 
@@ -1038,7 +1070,10 @@ impl LeafDoc {
     pub fn set_media_rows(&self, heights: Vec<MediaHeight>) -> DocView {
         let mut g = self.lock();
         g.doc.set_media_rows(
-            heights.into_iter().map(|h| (h.destination, h.rows.max(1) as usize)).collect(),
+            heights
+                .into_iter()
+                .map(|h| (h.destination, h.rows.max(1) as usize))
+                .collect(),
         );
         g.view()
     }
@@ -1498,7 +1533,7 @@ impl LeafDoc {
     /// Set the caret's column to `alignment`.
     pub fn table_set_alignment(&self, alignment: TableAlignment) -> DocView {
         let mut g = self.lock();
-        g.doc.table_set_alignment(alignment.to_core());
+        g.doc.table_set_alignment(alignment.into_core());
         g.view()
     }
 
@@ -1585,7 +1620,10 @@ impl LeafDoc {
     /// text in a popover, and moving the caret to find out would yank the reader
     /// out of wherever they were typing.
     pub fn footnote_at(&self, off: u32) -> Option<FootnoteView> {
-        self.lock().doc.footnote_at(off as usize).map(FootnoteView::from)
+        self.lock()
+            .doc
+            .footnote_at(off as usize)
+            .map(FootnoteView::from)
     }
 
     /// The footnote definition the caret stands in, and where the reference that
@@ -1632,7 +1670,7 @@ impl LeafDoc {
     /// default.
     pub fn set_markup_mode(&self, mode: MarkupMode) -> DocView {
         let mut g = self.lock();
-        g.doc.set_markup_mode(mode.to_core());
+        g.doc.set_markup_mode(mode.into_core());
         g.view()
     }
 
@@ -1646,7 +1684,7 @@ impl LeafDoc {
     /// immediately, laying preserved soft breaks out as their own rows.
     pub fn set_line_flow(&self, mode: LineFlow) -> DocView {
         let mut g = self.lock();
-        g.doc.set_line_flow(mode.to_core());
+        g.doc.set_line_flow(mode.into_core());
         g.view()
     }
 }
@@ -1690,7 +1728,10 @@ impl LeafDoc {
         g.sync();
         let (row, col) = g.pos_of_offset(off as usize);
         let ch = col_to_utf16(&g.row_text(row), col);
-        RowCol { row: row as u32, ch: ch as u32 }
+        RowCol {
+            row: row as u32,
+            ch: ch as u32,
+        }
     }
 
     /// The rows a source range covers, inclusive — for drawing a block away
@@ -1708,7 +1749,10 @@ impl LeafDoc {
         let mut g = self.lock();
         g.sync();
         let (first, last) = g.row_range_for(start as usize, end as usize);
-        RowRange { first: first as u32, last: last as u32 }
+        RowRange {
+            first: first as u32,
+            last: last as u32,
+        }
     }
 
     /// The source offset at visual `(row, ch)` — the inverse of
@@ -1748,7 +1792,11 @@ impl LeafDoc {
         let mut g = self.lock();
         g.sync();
         let (from, to) = (from as usize, to as usize);
-        let (mut a, b, sign) = if from <= to { (from, to, 1i32) } else { (to, from, -1i32) };
+        let (mut a, b, sign) = if from <= to {
+            (from, to, 1i32)
+        } else {
+            (to, from, -1i32)
+        };
         a = g.snap_stop(a);
         let mut n = 0i32;
         while a < b {
@@ -1769,7 +1817,11 @@ impl LeafDoc {
         let mut g = self.lock();
         g.sync();
         let (row, col) = g.pos_of_offset(off as usize);
-        let target = if down { g.nav_below(row) } else { g.nav_above(row) };
+        let target = if down {
+            g.nav_below(row)
+        } else {
+            g.nav_above(row)
+        };
         target.map(|r| g.offset_of_col(r, col) as u32)
     }
 
@@ -2148,7 +2200,7 @@ fn source_rows(source: &str, ss: usize, se: usize) -> Vec<Row> {
             code_lang: None,
             directive: false,
             directive_label: None,
-            heading: None, // source view is raw text — no resolved heading rows
+            heading: None,  // source view is raw text — no resolved heading rows
             boundary: None, // …and no resolved block structure to divide
         });
         byte = end + 1; // skip the '\n' that `split` consumed
@@ -2202,7 +2254,9 @@ mod tests {
             "the last definition should render itself: {text:?}"
         );
         assert_eq!(
-            text.iter().filter(|t| t.contains("A heading with a reference")).count(),
+            text.iter()
+                .filter(|t| t.contains("A heading with a reference"))
+                .count(),
             1,
             "the heading should render exactly once: {text:?}"
         );
@@ -2218,9 +2272,15 @@ mod tests {
         let d = doc("body\n\n# \n");
         let v = d.view();
         let head = v.rows.last().expect("the heading's row");
-        assert!(head.runs.iter().all(|r| r.text.is_empty()), "the `# ` marker is hidden");
+        assert!(
+            head.runs.iter().all(|r| r.text.is_empty()),
+            "the `# ` marker is hidden"
+        );
         assert_eq!(head.heading, Some(1));
-        assert_eq!(v.rows[0].heading, None, "the paragraph above is not a heading");
+        assert_eq!(
+            v.rows[0].heading, None,
+            "the paragraph above is not a heading"
+        );
     }
 
     #[test]
@@ -2236,7 +2296,11 @@ mod tests {
             v = d.insert(c.to_string());
         }
         assert_eq!(d.source(), "one\n\ntwo\n\n# title\n\n");
-        assert_eq!((v.caret_row, v.caret_ch), (4, 5), "the caret is on the heading's row");
+        assert_eq!(
+            (v.caret_row, v.caret_ch),
+            (4, 5),
+            "the caret is on the heading's row"
+        );
         assert_eq!(v.rows[4].heading, Some(1));
     }
 
@@ -2252,7 +2316,10 @@ mod tests {
         assert!(matches!(m.kind, MediaKind::Video));
         assert_eq!(m.src, "clip.mp4");
         assert_eq!(m.poster, "still.png");
-        assert!(m.end_row > m.start_row, "the span must cover at least its label row");
+        assert!(
+            m.end_row > m.start_row,
+            "the span must cover at least its label row"
+        );
     }
 
     #[test]
@@ -2288,7 +2355,11 @@ mod tests {
             .sum();
 
         let off = d.offset_for_pos(row, label);
-        assert_eq!(off, "hi\n\n![](p.png)".len() as u32, "the stop past the picture");
+        assert_eq!(
+            off,
+            "hi\n\n![](p.png)".len() as u32,
+            "the stop past the picture"
+        );
 
         d.set_selection_offsets(off, off);
         let after = d.insert("x".to_string());
@@ -2311,7 +2382,11 @@ mod tests {
         assert_eq!(after.media.len(), 0, "gone as a picture, not as bytes");
         let undone = d.undo();
         assert_eq!(d.source(), "hi\n\n![](p.png)\n");
-        assert_eq!(undone.media.len(), 1, "and one undo brings the picture back");
+        assert_eq!(
+            undone.media.len(),
+            1,
+            "and one undo brings the picture back"
+        );
     }
 
     #[test]
@@ -2320,14 +2395,22 @@ mod tests {
         // real view and reports back, because core does no I/O and cannot know.
         let d = doc("![a cat](cat.png)\n");
         let before = &d.view().media[0];
-        assert_eq!(before.end_row - before.start_row, 1, "one row until measured");
+        assert_eq!(
+            before.end_row - before.start_row,
+            1,
+            "one row until measured"
+        );
 
         let after = d.set_media_rows(vec![MediaHeight {
             destination: "cat.png".to_string(),
             rows: 6,
         }]);
         let m = &after.media[0];
-        assert_eq!(m.end_row - m.start_row, 6, "the span grew to what was measured");
+        assert_eq!(
+            m.end_row - m.start_row,
+            6,
+            "the span grew to what was measured"
+        );
     }
 
     #[test]
@@ -2335,7 +2418,11 @@ mod tests {
         // Round trip across the boundary, the pair that matters: what Swift asks
         // to insert, Swift sees on the very next frame.
         let d = doc("\n");
-        let v = d.insert_media(MediaKind::Audio, "take.mp3".to_string(), "a take".to_string());
+        let v = d.insert_media(
+            MediaKind::Audio,
+            "take.mp3".to_string(),
+            "a take".to_string(),
+        );
         assert_eq!(v.media.len(), 1);
         assert!(matches!(v.media[0].kind, MediaKind::Audio));
         assert_eq!(v.media[0].src, "take.mp3");
@@ -2348,7 +2435,10 @@ mod tests {
         // is editing — laying a player over it would cover what's being typed.
         let d = doc("<video src=\"clip.mp4\" controls></video>\n");
         assert_eq!(d.view().media.len(), 1);
-        assert!(d.toggle_view().media.is_empty(), "no placeholders in the source view");
+        assert!(
+            d.toggle_view().media.is_empty(),
+            "no placeholders in the source view"
+        );
     }
 
     /// **A foreign caller's offset must never panic.** Every offset entering
@@ -2361,12 +2451,17 @@ mod tests {
     /// inside '…'`.
     #[test]
     fn an_offset_inside_a_multibyte_char_does_not_panic() {
-        let d = doc("# April 02, 2026\n\nAn interesting thing AI said to me:\n\n> a person… who journals\n");
+        let d = doc(
+            "# April 02, 2026\n\nAn interesting thing AI said to me:\n\n> a person… who journals\n",
+        );
         d.toggle_view(); // to the raw source view, where offsets index bytes directly
         let src = d.source();
         // The interior byte of the `…` — exactly the shape of the crash.
         let mid = src.find('…').expect("the ellipsis is in the fixture") + 1;
-        assert!(!src.is_char_boundary(mid), "the fixture must be mid-character");
+        assert!(
+            !src.is_char_boundary(mid),
+            "the fixture must be mid-character"
+        );
 
         // Every entry point that takes a raw source offset.
         let _ = d.pos_for_offset(mid as u32);
@@ -2390,14 +2485,28 @@ mod tests {
     #[test]
     fn cell_lines_split_on_the_break_glyph_carrying_each_lines_source_range() {
         use leaf_core::Glyph;
-        let g = |ch, src| Glyph { ch, style: LStyle::default(), src, stop: true };
+        let g = |ch, src| Glyph {
+            ch,
+            style: LStyle::default(),
+            src,
+            stop: true,
+        };
         // "a" at 10, a `<br>` at 11..15 (the break glyph), "b" at 15; cell 10..16.
         let glyphs = [g('a', 10), g('\n', 11), g('b', 15)];
         let lines = cell_lines(&glyphs, 10, 16, 0, 0);
         assert_eq!(lines.len(), 2, "one break makes two lines");
-        assert_eq!((lines[0].start, lines[0].end), (10, 11), "line 1 ends at the break");
-        assert_eq!((lines[1].start, lines[1].end), (15, 16), "line 2 begins past it");
-        let text = |l: &TableCellLineView| l.runs.iter().map(|r| r.text.clone()).collect::<String>();
+        assert_eq!(
+            (lines[0].start, lines[0].end),
+            (10, 11),
+            "line 1 ends at the break"
+        );
+        assert_eq!(
+            (lines[1].start, lines[1].end),
+            (15, 16),
+            "line 2 begins past it"
+        );
+        let text =
+            |l: &TableCellLineView| l.runs.iter().map(|r| r.text.clone()).collect::<String>();
         assert_eq!(text(&lines[0]), "a");
         assert_eq!(text(&lines[1]), "b");
 
@@ -2490,14 +2599,21 @@ mod tests {
         d.set_selection_offsets(5, 5);
         let before = d.source().len();
         d.newline();
-        assert_eq!(d.source().len(), before + 2, "a paragraph break is still \\n\\n");
+        assert_eq!(
+            d.source().len(),
+            before + 2,
+            "a paragraph break is still \\n\\n"
+        );
     }
 
     #[test]
     fn link_destination_at_caret_reads_the_caret_link() {
         let d = doc("see [t](https://x.dev) ok\n");
         d.set_selection_offsets(5, 5); // caret on the link text "t"
-        assert_eq!(d.link_destination_at_caret().as_deref(), Some("https://x.dev"));
+        assert_eq!(
+            d.link_destination_at_caret().as_deref(),
+            Some("https://x.dev")
+        );
         d.set_selection_offsets(0, 0); // caret on plain text
         assert_eq!(d.link_destination_at_caret(), None);
     }
@@ -2529,28 +2645,46 @@ mod tests {
         let d = doc("A claim and more.\n");
         d.set_selection_offsets(7, 7); // just past "A claim"
         d.insert_footnote();
-        assert!(d.source().starts_with("A claim[^1] and more."), "{:?}", d.source());
+        assert!(
+            d.source().starts_with("A claim[^1] and more."),
+            "{:?}",
+            d.source()
+        );
         assert!(d.source().contains("[^1]:"), "{:?}", d.source());
 
         let note = d.footnote_at(9).expect("the reference just written");
         assert_eq!(note.label, "1");
-        assert_eq!(d.caret_offset(), note.offset.expect("an empty note is still a place"));
+        assert_eq!(
+            d.caret_offset(),
+            note.offset.expect("an empty note is still a place")
+        );
         // …and the way back out is the same one a reader uses.
-        assert_eq!(d.footnote_definition_at_caret().expect("in the note").label, "1");
+        assert_eq!(
+            d.footnote_definition_at_caret().expect("in the note").label,
+            "1"
+        );
     }
 
     #[test]
     fn capabilities_answer_for_footnotes_the_way_the_format_does() {
-        assert!(doc("x\n").capabilities().footnote, "markdown spells the pair");
+        assert!(
+            doc("x\n").capabilities().footnote,
+            "markdown spells the pair"
+        );
         let html = LeafDoc::new("<p>x</p>\n".to_string(), "html".to_string()).unwrap();
-        assert!(!html.capabilities().footnote, "html has no footnote of its own");
+        assert!(
+            !html.capabilities().footnote,
+            "html has no footnote of its own"
+        );
     }
 
     #[test]
     fn footnote_at_caret_crosses_with_its_note_and_its_offset() {
         let d = doc("A claim[^1] and more.\n\n[^1]: the note\n");
         d.set_selection_offsets(9, 9); // caret on the reference's label
-        let f = d.footnote_at_caret().expect("the caret stands in a reference");
+        let f = d
+            .footnote_at_caret()
+            .expect("the caret stands in a reference");
         assert_eq!(f.label, "1");
         assert_eq!(f.text.as_deref(), Some("the note"));
         // The note's first word — a byte the caret can actually rest on. The
@@ -2606,20 +2740,40 @@ mod tests {
         let f = d.footnote_at_caret().expect("a reference");
         let start = d.pos_for_offset(f.offset.expect("a note"));
         let end = d.pos_for_offset(f.end.expect("a note") - 1);
-        assert_eq!(start.row, end.row, "a one-paragraph note is one unwrapped row");
+        assert_eq!(
+            start.row, end.row,
+            "a one-paragraph note is one unwrapped row"
+        );
 
         let row = &view.rows[start.row as usize];
-        let runs: Vec<(&str, &str, bool)> =
-            row.runs.iter().map(|r| (r.role.as_str(), r.text.as_str(), r.italic)).collect();
+        let runs: Vec<(&str, &str, bool)> = row
+            .runs
+            .iter()
+            .map(|r| (r.role.as_str(), r.text.as_str(), r.italic))
+            .collect();
         assert!(runs.contains(&("body", "emphasis", true)), "got {runs:?}");
-        assert!(runs.iter().any(|(role, text, _)| *role == "code" && *text == "code"), "got {runs:?}");
-        assert!(runs.iter().any(|(role, text, _)| *role == "link" && *text == "a link"), "got {runs:?}");
+        assert!(
+            runs.iter()
+                .any(|(role, text, _)| *role == "code" && *text == "code"),
+            "got {runs:?}"
+        );
+        assert!(
+            runs.iter()
+                .any(|(role, text, _)| *role == "link" && *text == "a link"),
+            "got {runs:?}"
+        );
 
         // The rendered row carries no markup characters at all — which is the
         // whole point, and what `text` (source bytes) deliberately still does.
         let rendered: String = row.runs.iter().map(|r| r.text.as_str()).collect();
-        assert!(!rendered.contains('*') && !rendered.contains('`'), "got {rendered:?}");
-        assert!(f.text.as_deref().unwrap().contains('*'), "the source answer keeps them");
+        assert!(
+            !rendered.contains('*') && !rendered.contains('`'),
+            "got {rendered:?}"
+        );
+        assert!(
+            f.text.as_deref().unwrap().contains('*'),
+            "the source answer keeps them"
+        );
 
         // `ch` is where the body starts within the row — past the `[a] ` marker,
         // so a frontend that wants the note without its label can slice there.
@@ -2629,7 +2783,11 @@ mod tests {
         // And each run says where it came from, which is how a link run drawn in
         // a popover learns where it points. `Run` otherwise says how a span
         // looks, never what it means.
-        let link = row.runs.iter().find(|r| r.role == "link").expect("a link run");
+        let link = row
+            .runs
+            .iter()
+            .find(|r| r.role == "link")
+            .expect("a link run");
         assert_eq!(
             d.link_destination_at(link.src).as_deref(),
             Some("https://x.dev"),
@@ -2666,10 +2824,16 @@ mod tests {
         assert_eq!(span.first, span.last, "one note is one unwrapped row");
 
         // And what it draws is note 2 alone — the assertion the popover failed.
-        let drawn: String =
-            view.rows[span.first as usize].runs.iter().map(|r| r.text.as_str()).collect();
+        let drawn: String = view.rows[span.first as usize]
+            .runs
+            .iter()
+            .map(|r| r.text.as_str())
+            .collect();
         assert!(drawn.contains("How to Get Startup Ideas"), "got {drawn:?}");
-        assert!(!drawn.contains("Alma"), "note 3 leaked into the peek: {drawn:?}");
+        assert!(
+            !drawn.contains("Alma"),
+            "note 3 leaked into the peek: {drawn:?}"
+        );
 
         // The old arithmetic, pinned as still wrong so nobody quietly restores
         // it: this is the failure `row_range_for` exists instead of.
@@ -2706,9 +2870,16 @@ mod tests {
         let f = d.footnote_at_caret().expect("a reference");
         let start = d.pos_for_offset(f.offset.expect("a note"));
         let row = &view.rows[start.row as usize];
-        let link = row.runs.iter().find(|r| r.role == "link").expect("a link run");
+        let link = row
+            .runs
+            .iter()
+            .find(|r| r.role == "link")
+            .expect("a link run");
 
-        assert_eq!(d.link_destination_at(link.src).as_deref(), Some("https://x.dev"));
+        assert_eq!(
+            d.link_destination_at(link.src).as_deref(),
+            Some("https://x.dev")
+        );
         assert_eq!(
             &src[link.src as usize..][.."a link".len()],
             "a link",
@@ -2734,9 +2905,17 @@ mod tests {
         let d = doc("A claim[^1] and more.\n\n[^1]: the note\n");
         d.set_selection_offsets(9, 9);
 
-        let down = d.footnote_at_caret().expect("a reference").offset.expect("a note");
+        let down = d
+            .footnote_at_caret()
+            .expect("a reference")
+            .offset
+            .expect("a note");
         d.set_selection_offsets(down, down);
-        assert_eq!(d.caret_offset(), down, "the note is somewhere the caret fits");
+        assert_eq!(
+            d.caret_offset(),
+            down,
+            "the note is somewhere the caret fits"
+        );
 
         let up = d
             .footnote_definition_at_caret()
@@ -2745,7 +2924,10 @@ mod tests {
             .expect("a reference to return to");
         d.set_selection_offsets(up, up);
         assert_eq!(d.caret_offset(), up, "and so is the reference");
-        assert_eq!(d.footnote_at_caret().expect("back on the reference").label, "1");
+        assert_eq!(
+            d.footnote_at_caret().expect("back on the reference").label,
+            "1"
+        );
     }
 
     #[test]
@@ -2756,13 +2938,22 @@ mod tests {
         let d = doc("A claim[^1] and more.\n");
         let view = d.view();
         let runs: Vec<&Run> = view.rows.iter().flat_map(|r| &r.runs).collect();
-        let chip = runs.iter().find(|r| r.text.contains('1')).expect("the reference's chip");
+        let chip = runs
+            .iter()
+            .find(|r| r.text.contains('1'))
+            .expect("the reference's chip");
         assert!(chip.sup, "the reference should cross raised");
         assert!(!chip.sub);
-        assert_eq!(chip.role, "link", "and still carrying the role every frontend paints");
+        assert_eq!(
+            chip.role, "link",
+            "and still carrying the role every frontend paints"
+        );
         // The prose it interrupts is a run of its own, on the normal baseline —
         // which is what proves the flag splits runs rather than bleeding.
-        let prose = runs.iter().find(|r| r.text.contains("claim")).expect("the prose");
+        let prose = runs
+            .iter()
+            .find(|r| r.text.contains("claim"))
+            .expect("the prose");
         assert!(!prose.sup && !prose.sub);
     }
 
@@ -2839,18 +3030,28 @@ mod tests {
         // selected the whole run as a single word.
         let d = doc("hello\n\nhello\n\nhello\n");
         let src = d.source();
-        assert_eq!(src.find("hello").unwrap(), 0, "paragraph 1 at the very start");
+        assert_eq!(
+            src.find("hello").unwrap(),
+            0,
+            "paragraph 1 at the very start"
+        );
         let p2 = src[5..].find("hello").unwrap() + 5; // 7: paragraph 2's "hello"
 
         // A window straddling the tail of paragraph 1 ("lo") and the head of
         // paragraph 2 ("he").
         let text = d.text_in_range(3, p2 as u32 + 2);
-        assert_ne!(text, "lohe", "the two paragraphs' words must not read as merged");
+        assert_ne!(
+            text, "lohe",
+            "the two paragraphs' words must not read as merged"
+        );
         assert!(
             text.chars().any(|c| !c.is_alphanumeric()),
             "a non-letter must separate the two paragraphs' words: got {text:?}"
         );
-        assert_eq!(text, "lo\nhe", "exactly one separator opens the second paragraph's head");
+        assert_eq!(
+            text, "lo\nhe",
+            "exactly one separator opens the second paragraph's head"
+        );
 
         // A window that is nothing but the bare gap itself (no glyph on the
         // left, since it starts exactly at the end of paragraph 1's own last
@@ -2883,6 +3084,10 @@ mod tests {
         // of paragraph 1's row, a paragraph gap still costs exactly one
         // Right press to reach the start of paragraph 2 — matching
         // leaf-core's `the_caret_skips_the_gap_between_two_paragraphs`.
-        assert_eq!(d.distance_offset(5, p2 as u32), 1, "one Right crosses the whole gap");
+        assert_eq!(
+            d.distance_offset(5, p2 as u32),
+            1,
+            "one Right crosses the whole gap"
+        );
     }
 }

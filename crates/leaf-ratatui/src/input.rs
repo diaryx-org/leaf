@@ -105,10 +105,8 @@ pub fn handle_key(doc: &mut Doc, key: KeyEvent, _state: &mut EditorState) -> Out
             // but a terminal can't tell that from a bare Enter (same byte), so the
             // TUI spells the gesture Alt+Enter, which every terminal reports. Off a
             // table `cell_line_break` declines and we insert an ordinary newline.
-            KeyCode::Enter => {
-                if !doc.cell_line_break() {
-                    doc.newline();
-                }
+            KeyCode::Enter if !doc.cell_line_break() => {
+                doc.newline();
             }
             KeyCode::Char('w') => doc.toggle_view(),
             KeyCode::Char('b') => doc.toggle(InlineKind::Strong),
@@ -182,9 +180,8 @@ pub fn handle_key(doc: &mut Doc, key: KeyEvent, _state: &mut EditorState) -> Out
 /// is capturing the mouse (the host dismisses its own menu first).
 pub fn handle_mouse(doc: &mut Doc, m: MouseEvent, state: &mut EditorState) -> MouseOutcome {
     let (bx, by) = doc.body_origin;
-    let within = m.row >= by
-        && (m.row as usize) < by as usize + doc.body_height as usize
-        && m.column >= bx;
+    let within =
+        m.row >= by && (m.row as usize) < by as usize + doc.body_height as usize && m.column >= bx;
 
     // A code row is drawn inset for its box and — if it's the caret's block —
     // scrolled sideways, so a raw screen column has to be shifted back into the
@@ -195,7 +192,12 @@ pub fn handle_mouse(doc: &mut Doc, m: MouseEvent, state: &mut EditorState) -> Mo
         if doc.view != View::Wysiwyg {
             return raw;
         }
-        match doc.vmap.code_blocks.iter().find(|c| c.rows_span.contains(&row)) {
+        match doc
+            .vmap
+            .code_blocks
+            .iter()
+            .find(|c| c.rows_span.contains(&row))
+        {
             Some(cb) => {
                 let scroll = if state.code_caret_span.as_ref() == Some(&cb.rows_span) {
                     state.code_scroll_x
@@ -220,11 +222,12 @@ pub fn handle_mouse(doc: &mut Doc, m: MouseEvent, state: &mut EditorState) -> Mo
             // list doesn't interrupt what's being typed elsewhere. Shift and the
             // multi-click gestures fall through: those are selection verbs, and
             // a box is not a selection.
-            if !shift && count == 1 {
-                if let Some(off) = doc.vmap.task_box_at(row, col) {
-                    doc.toggle_task_at(off);
-                    return MouseOutcome::Continue;
-                }
+            if !shift
+                && count == 1
+                && let Some(off) = doc.vmap.task_box_at(row, col)
+            {
+                doc.toggle_task_at(off);
+                return MouseOutcome::Continue;
             }
 
             // Single click places the caret (extending on shift); double selects
@@ -270,7 +273,10 @@ pub fn handle_mouse(doc: &mut Doc, m: MouseEvent, state: &mut EditorState) -> Mo
                 let col = col_at(doc, state, row, m.column);
                 doc.click(row, col, false);
             }
-            return MouseOutcome::ContextMenu { x: m.column, y: m.row };
+            return MouseOutcome::ContextMenu {
+                x: m.column,
+                y: m.row,
+            };
         }
         MouseEventKind::ScrollDown => doc.scroll = doc.scroll.saturating_add(1),
         MouseEventKind::ScrollUp => doc.scroll = doc.scroll.saturating_sub(1),
@@ -292,7 +298,11 @@ fn page_rows(doc: &Doc) -> usize {
 /// as "nothing happened": the breadcrumb's count of `kind` ancestors goes up,
 /// exactly when that's what occurred, so that's the signal the status hangs off.
 fn toggle_list(doc: &mut Doc, ordered: bool) {
-    let kind = if ordered { "ordered_list" } else { "bullet_list" };
+    let kind = if ordered {
+        "ordered_list"
+    } else {
+        "bullet_list"
+    };
     let no_selection = doc.selection().is_none();
     let before = list_depth(doc, kind);
     doc.toggle_list(ordered);
@@ -313,12 +323,19 @@ fn list_depth(doc: &mut Doc, kind: &str) -> usize {
 fn click_count(state: &mut EditorState, row: u16, col: u16) -> u8 {
     let now = Instant::now();
     let count = match &state.last_click {
-        Some(c) if c.row == row && c.col == col && now.duration_since(c.at) < MULTI_CLICK_WINDOW => {
+        Some(c)
+            if c.row == row && c.col == col && now.duration_since(c.at) < MULTI_CLICK_WINDOW =>
+        {
             (c.count % 3) + 1
         }
         _ => 1,
     };
-    state.last_click = Some(ClickState { at: now, row, col, count });
+    state.last_click = Some(ClickState {
+        at: now,
+        row,
+        col,
+        count,
+    });
     count
 }
 

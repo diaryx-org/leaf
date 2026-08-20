@@ -46,8 +46,8 @@
 use leaf_core::style::{Role, Style as LStyle};
 use leaf_core::wysiwyg::text_width;
 use leaf_core::{
-    BlockKind, ColorScheme, Doc, Format, InlineKind, LineFlow as CoreLineFlow, MediaKind,
-    MarkupMode as CoreMarkupMode, View, VisualMap,
+    BlockKind, ColorScheme, Doc, Format, InlineKind, LineFlow as CoreLineFlow,
+    MarkupMode as CoreMarkupMode, MediaKind, View, VisualMap,
 };
 use serde::{Deserialize, Serialize};
 use tsify_next::Tsify;
@@ -368,7 +368,11 @@ impl LeafDoc {
         };
         let doc = Doc::from_source(source.to_string(), format)
             .map_err(|e| JsValue::from_str(&format!("{e}")))?;
-        Ok(LeafDoc { doc, width: 80, scheme: ColorScheme::Light })
+        Ok(LeafDoc {
+            doc,
+            width: 80,
+            scheme: ColorScheme::Light,
+        })
     }
 
     /// Rebuild the visual map at the current width. Cheap (cached) when nothing
@@ -392,7 +396,13 @@ impl LeafDoc {
                 .get(row)
                 .map(|r| r.glyphs.iter().map(|g| g.ch).collect())
                 .unwrap_or_default(),
-            View::Source => self.doc.source.split('\n').nth(row).unwrap_or("").to_string(),
+            View::Source => self
+                .doc
+                .source
+                .split('\n')
+                .nth(row)
+                .unwrap_or("")
+                .to_string(),
         }
     }
 
@@ -498,8 +508,12 @@ impl LeafDoc {
     /// again is a no-op, so a renderer can just report its current state each
     /// frame without checking whether anything moved.
     pub fn set_media_rows(&mut self, heights: Vec<MediaHeight>) -> Result<DocView, JsValue> {
-        self.doc
-            .set_media_rows(heights.into_iter().map(|h| (h.destination, h.rows)).collect());
+        self.doc.set_media_rows(
+            heights
+                .into_iter()
+                .map(|h| (h.destination, h.rows))
+                .collect(),
+        );
         self.view()
     }
 
