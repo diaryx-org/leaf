@@ -30,16 +30,36 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
+_No commits since the last tag._
+
+<!-- git-cliff:end -->
+
+## v0.1.1 — 2026-08-19
+
 ### Added
 
 - **xtask** — xtask layer for running web, mac, ios ([`5425eae`](https://github.com/diaryx-org/leaf/commit/5425eae56d0e29eb513505bf533d5dd2fe71bc6e))
 - **xtask** — a release is a command, not a checklist ([`5c4a664`](https://github.com/diaryx-org/leaf/commit/5c4a6640aeea9ef75d8129f9cc65126ab3cc69bf))
+- **leaf-swift** — the reader's text size reaches the chrome, not only the prose ([`a589c07`](https://github.com/diaryx-org/leaf/commit/a589c07aeec8e71b2a4df50f2e0d66e54e68ee35))
 
 ### Fixed
 
 - **web** — comment bug ([`148f758`](https://github.com/diaryx-org/leaf/commit/148f7584df657d12c14540edf0a211f4ea517f60))
 
-<!-- git-cliff:end -->
+### Behavioural changes
+
+- On iOS, a blockquote's gutter now widens with the reader's
+Dynamic Type setting instead of staying at `EditorTheme.quoteIndent`, so quoted
+text wraps in a different place at any non-default content size.
+
+- `LeafFormattingToolbar` now scales its glyphs, targets, and
+height with Dynamic Type (capped at 1.6x). A host that laid the `.bar` style
+out inside a fixed-height container should give it room to grow.
+
+- The `LeafEditor(model:accessory:)` keyboard accessory is
+sized to its content rather than to a fixed 44pt, with 44 as the floor. An
+accessory that relied on being cropped to 44 will now be shown in full.
+
 
 ## v0.1.0 — 2026-08-17
 
