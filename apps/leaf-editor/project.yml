@@ -12,13 +12,15 @@ options:
 #
 # The editor is consumed as a local Swift package: `LeafUI` (the renderer) →
 # `LeafFFI` (the generated binding, built from source) → the C module in
-# `generated/headers`. The Rust staticlib is force-loaded (below) and rebuilt by
-# the pre-build script every Xcode build, so Rust changes always take effect
+# `packages/leaf-swift/uniffi-generated/headers`. The package manifest lives at
+# the repo root (SwiftPM's requirement for by-version consumption), so the local
+# path is the repo itself. The Rust staticlib is force-loaded (below) and rebuilt
+# by the pre-build script every Xcode build, so Rust changes always take effect
 # without re-running `bootstrap.sh` (needed only on first setup or when the Rust
 # *API* changes and the binding must be regenerated).
 packages:
   LeafFFI:
-    path: ../../packages/leaf-swift
+    path: ../..
 
 targets:
   LeafEditorApp:

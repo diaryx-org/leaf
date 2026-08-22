@@ -27,7 +27,7 @@ clipboard, and file I/O.
 
 | package | what it is |
 |---------|------------|
-| [`leaf-swift`](packages/leaf-swift) | the Swift Package (`Package.swift`) — `LeafUI`, the AppKit/UIKit editor view, over the UniFFI `leaf-ffi` binding. The Apple peer of `leaf-ratatui`/`leaf-gpui`. |
+| [`leaf-swift`](packages/leaf-swift) | the Swift Package (manifest at the repo root, so SwiftPM can resolve it by version) — `LeafUI`, the AppKit/UIKit editor view, over the committed UniFFI `leaf-ffi` binding. The Apple peer of `leaf-ratatui`/`leaf-gpui`. |
 | [`leaf-web`](packages/leaf-web) | the npm package — `LeafEditor`, a framework-agnostic web editor, over the `leaf-wasm` binding. |
 
 ### `apps/` — runnable frontends

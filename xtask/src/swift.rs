@@ -54,11 +54,12 @@ pub fn run_task(args: Args) -> Result<()> {
     let root = crate::util::root();
     let app_dir = root.join("apps/leaf-editor");
     let project = app_dir.join(format!("{SCHEME}.xcodeproj"));
-    let binding = root.join("packages/leaf-swift/generated/Sources/LeafFFI/leaf_ffi.swift");
+    let binding = root.join("packages/leaf-swift/uniffi-generated/Sources/LeafFFI/leaf_ffi.swift");
 
-    // Both artifacts are git-ignored and regenerable, so a fresh checkout lands
-    // here on the first run rather than in an xcodebuild error about a missing
-    // package.
+    // The project is git-ignored and regenerable (the binding is committed, but
+    // guard its absence too — e.g. a checkout mid-rebase), so a fresh checkout
+    // lands here on the first run rather than in an xcodebuild error about a
+    // missing package.
     if args.regen || !project.exists() || !binding.exists() {
         run(cmd("bash").arg(app_dir.join("bootstrap.sh")))?;
     }

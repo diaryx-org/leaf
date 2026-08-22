@@ -1,0 +1,4 @@
+module leaf_ffiFFI {
+    header "leaf_ffiFFI.h"
+    export *
+}

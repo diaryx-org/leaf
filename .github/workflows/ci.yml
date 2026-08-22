@@ -1,0 +1,33 @@
+name: CI
+# One job so far: the committed UniFFI binding under
+# packages/leaf-swift/uniffi-generated/ must be exactly what crates/leaf-ffi
+# produces. The Swift package is consumed by version from a bare git checkout
+# (SwiftPM runs no generators), so a stale committed binding is what a consumer
+# would build — this is the check that makes committing generated code safe.
+#
+# The binding is arch-neutral source generated from the crate's embedded UniFFI
+# metadata, so a Linux runner can regenerate and diff it; the Swift never
+# compiles here. `scripts/check-swift.sh` and `scripts/test-swift.sh` still run
+# by hand on a Mac.
+on:
+  push: { branches: [main] }
+  pull_request: null
+  workflow_dispatch: null
+
+# Cancel superseded runs on the same ref — a new push makes the old one moot.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  bindings:
+    name: Swift bindings
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: Swatinem/rust-cache@v2
+    - run: bash scripts/gen-bindings.sh --check

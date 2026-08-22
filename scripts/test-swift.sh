@@ -20,5 +20,6 @@ STATIC="$ROOT/target/debug/libleaf_ffi.a"
 [ -f "$STATIC" ] || { echo "missing $STATIC"; exit 1; }
 
 echo "▸ swift test (LeafUI)…"
-swift test --package-path "$ROOT/packages/leaf-swift" \
+# The package manifest lives at the repo root (see Package.swift).
+swift test --package-path "$ROOT" \
   -Xlinker -force_load -Xlinker "$STATIC" "$@"
