@@ -34,6 +34,21 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.1.2 — 2026-08-22
+
+### Breaking
+
+- **swift** — move the package manifest to the repo root and commit the UniFFI binding ([`2c2c717`](https://github.com/diaryx-org/leaf/commit/2c2c71777b300ce97beef75678a6c9a212f9ed5d))
+
+### Behavioural changes
+
+- the Swift package manifest moved from packages/leaf-swift/
+  to the repository root and the binding directory from the git-ignored
+  generated/ to the committed uniffi-generated/. A consumer adding the package
+  by path must point at the leaf checkout root, not packages/leaf-swift/;
+  swift build/test now run from the repo root too.
+
+
 ## v0.1.1 — 2026-08-19
 
 ### Added

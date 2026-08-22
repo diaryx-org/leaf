@@ -15,7 +15,7 @@ anyhow.workspace = true
 # The embeddable editor widget: rendering + input for the editing surface. This
 # thin host wires a terminal, clipboard, and dialogs around it (and is its
 # reference example). Image rasterization now lives inside the widget.
-leaf-ratatui = { path = "../../crates/leaf-ratatui", version = "0.1.1" }
+leaf-ratatui = { path = "../../crates/leaf-ratatui", version = "0.1.2" }
 # TUI framework; we use its re-exported crossterm so backend versions can't skew.
 ratatui = "0.29"
 # System clipboard for Ctrl+C/X/V. Opened fresh per operation (cheap, and
