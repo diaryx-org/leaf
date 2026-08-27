@@ -1,0 +1,14 @@
+# What the shared release tooling needs to know about leaf. Everything not
+# stated here is a default in lib/repo.nu — the manifest, the changelog path,
+# the cliff config, and that this is a Cargo workspace.
+name = "leaf"
+url = "https://github.com/diaryx-org/leaf"
+release_branch = "main"
+
+# What to run before cutting. Each repo owns its own CI; this names it.
+verify = "cargo xtask ci"
+
+# No `tag_starts`: leaf has no tag workflow. Nothing publishes on the tag, and
+# every upload to crates.io is `cargo publish --workspace`, run deliberately —
+# so the warning before the push says exactly that, rather than naming workflows
+# that do not exist.

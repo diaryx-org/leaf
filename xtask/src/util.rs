@@ -51,35 +51,13 @@ pub fn run_ignoring_failure(cmd: &mut Command) {
     let _ = cmd.status();
 }
 
-/// Run a command and hand back its stdout, for the answers a task acts on rather
-/// than shows — an HTTP status, a branch name, a tag list. Deliberately not
-/// echoed: these are questions, and a log of them reads as noise between the
-/// commands that actually did something.
-pub fn capture(cmd: &mut Command) -> Result<String> {
-    let output = cmd
-        .output()
-        .with_context(|| format!("could not spawn `{}`", name(cmd)))?;
-    if !output.status.success() {
-        bail!(
-            "`{}` failed ({})\n{}",
-            render(cmd),
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
-/// Read a repo file, named by its path from the root.
+/// Read a repo file, named by its path from the root. Test-only since releasing
+/// moved out: the isolation test reads the workspace manifest, and nothing the
+/// binary does touches a file directly.
+#[cfg(test)]
 pub fn read(path: impl AsRef<Path>) -> Result<String> {
     let path = root().join(path);
     std::fs::read_to_string(&path).with_context(|| format!("could not read {}", path.display()))
-}
-
-/// Write a repo file, named by its path from the root.
-pub fn write(path: impl AsRef<Path>, contents: &str) -> Result<()> {
-    let path = root().join(path);
-    std::fs::write(&path, contents).with_context(|| format!("could not write {}", path.display()))
 }
 
 /// Assert an external tool is on `PATH`, naming how to get it when it isn't.

@@ -61,16 +61,22 @@ they're missing, so a fresh checkout needs no separate bootstrap step; pass
 `--regen` to force it after changing the Rust *API* surface. `cargo xtask --help`
 lists every task and flag.
 
-The same runner holds the checks and the release. `cargo xtask ci` runs
+The runner holds the checks; releasing is its own tool. `cargo xtask ci` runs
 everything a release has to pass — rustfmt, clippy with warnings denied, the
 workspace tests, and a `cargo check` of each crate alone in each feature shape a
-host actually builds. `cargo xtask release <patch|minor|major|X.Y.Z>` runs those
+host actually builds. `release release <patch|minor|major|X.Y.Z>` runs those
 checks, moves the version through every manifest and the lockfile, cuts the
 generated region of [`docs/CHANGELOG.md`](docs/CHANGELOG.md) into a released
 section, and commits and tags — locally. Pushing takes `--push`, and even a
-pushed tag publishes nothing: `cargo xtask publish` is a separate, deliberate
-command, and `cargo xtask publish --list` shows what it would upload, in
-dependency order, along with every crate it holds back and why.
+pushed tag publishes nothing: `cargo publish --workspace` is a separate,
+deliberate command, and `--dry-run` shows what it would upload, in dependency
+order, along with every crate it holds back.
+
+`release` is the shared tooling in [diaryx-org/devtools][devtools], which leaf,
+prov, twig, flower, and the historica repos all cut releases with; what makes
+leaf leaf is [`.config/release.toml`](.config/release.toml) and nothing else.
+
+[devtools]: https://github.com/diaryx-org/devtools
 
 `leaf` and `leaf-gpui` pin gpui to a specific Zed commit (gpui isn't published to
 crates.io); the first build fetches and compiles the gpui tree, so it is slow.

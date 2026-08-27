@@ -1,7 +1,8 @@
 //! `cargo xtask ci` — the checks a release has to pass, as one program.
 //!
 //! leaf has no CI workflow: the checks live here, and a release runs them
-//! ([`crate::release::release`] calls [`run_all`] before it writes anything). So
+//! (the shared `release release` runs `cargo xtask ci` before it writes
+//! anything, as `.config/release.toml` names it). So
 //! this table is not a mirror of a YAML file that could drift from it — it is
 //! the only statement of what "green" means, and `cargo xtask ci` is the only
 //! way to ask.
@@ -10,6 +11,10 @@
 //! rather than after gpui compiles.
 
 use crate::util::{cargo, run};
+#[cfg(test)]
+use crate::util::{read, root};
+#[cfg(test)]
+use anyhow::Context;
 use anyhow::{Result, bail};
 
 /// One check: what to call it, and the work itself.
@@ -149,6 +154,80 @@ pub fn run_all() -> Result<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// The workspace
+// ---------------------------------------------------------------------------
+//
+// This came across from `release.rs` when releasing moved to the shared tooling
+// (diaryx-org/devtools). Only the isolation test below still asks the question,
+// and it is a CI question: a crate added to the workspace and left out of
+// `ISOLATED` is checked by `--workspace` and by nothing alone.
+//
+// It asks for names rather than directories, which the release code needed and
+// this does not — `apps/leaf-tui` is the crate `leaf-tui` and `apps/leaf` is the
+// crate `leaf`, so the two are not interchangeable and only one is what `-p`
+// takes.
+
+/// Every workspace member's package name, with `crates/*` expanded.
+///
+/// `exclude`d members are deliberately not here: `apps/leaf-ios` is a standalone
+/// workspace with its own lockfile and its own `[patch]` table, and it is not
+/// part of this workspace's `--workspace`.
+#[cfg(test)]
+fn member_names() -> Result<Vec<String>> {
+    let manifest = read("Cargo.toml")?;
+    let line = manifest
+        .lines()
+        .find(|line| line.trim_start().starts_with("members"))
+        .context("no `members` in [workspace]")?;
+
+    let mut dirs = Vec::new();
+    for entry in line.split('"').skip(1).step_by(2) {
+        match entry.strip_suffix("/*") {
+            None => dirs.push(entry.to_string()),
+            Some(parent) => {
+                let mut expanded = Vec::new();
+                let listing = std::fs::read_dir(root().join(parent))
+                    .with_context(|| format!("could not list workspace glob `{entry}`"))?;
+                for child in listing {
+                    let child = child?.file_name().to_string_lossy().into_owned();
+                    let dir = format!("{parent}/{child}");
+                    if root().join(&dir).join("Cargo.toml").is_file() {
+                        expanded.push(dir);
+                    }
+                }
+                expanded.sort();
+                dirs.extend(expanded);
+            }
+        }
+    }
+
+    dirs.iter().map(|dir| package_name(dir)).collect()
+}
+
+/// `[package] name` — read from that table specifically, because a manifest with
+/// a `[[bin]]` section has a second `name = "…"` in it, and `apps/leaf-tui`'s
+/// says `leaf`.
+#[cfg(test)]
+fn package_name(dir: &str) -> Result<String> {
+    let manifest = read(format!("{dir}/Cargo.toml"))?;
+    let mut in_package = false;
+    for line in manifest.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_package = line == "[package]";
+            continue;
+        }
+        if in_package
+            && let Some(rest) = line.strip_prefix("name")
+            && let Some(name) = rest.split('"').nth(1)
+        {
+            return Ok(name.to_string());
+        }
+    }
+    bail!("no `[package] name` in {dir}/Cargo.toml")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,12 +247,11 @@ mod tests {
     /// `--workspace` would go on passing.
     #[test]
     fn package_isolation_covers_every_member() {
-        for member in crate::release::members().unwrap() {
+        for name in member_names().unwrap() {
             assert!(
-                ISOLATED.iter().any(|spec| spec == &["-p", &member.name]),
-                "workspace member `{}` is not checked in isolation by \
+                ISOLATED.iter().any(|spec| spec == &["-p", &name]),
+                "workspace member `{name}` is not checked in isolation by \
                  `cargo xtask ci package-isolation`",
-                member.name,
             );
         }
     }
