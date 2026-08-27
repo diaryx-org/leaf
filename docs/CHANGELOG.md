@@ -30,7 +30,16 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
-_No commits since the last tag._
+### Changed
+
+- **xtask** — cut releases with the shared tooling, not a fifth copy ([`ee0ca08`](https://github.com/diaryx-org/leaf/commit/ee0ca0801b46310f20116382f3343ea195250c71))
+
+### Behavioural changes
+
+- `cargo xtask version`, `bump`, `changelog`, `publish`,
+  `release`, and `release-notes` no longer exist — they are `release <command>`
+  from diaryx-org/devtools, which must be on PATH. `cargo xtask ci`, `swift`,
+  and `web` are unchanged.
 
 <!-- git-cliff:end -->
 
