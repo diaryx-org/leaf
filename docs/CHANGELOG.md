@@ -33,6 +33,7 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 ### Changed
 
 - **xtask** — cut releases with the shared tooling, not a fifth copy ([`ee0ca08`](https://github.com/diaryx-org/leaf/commit/ee0ca0801b46310f20116382f3343ea195250c71))
+- **release** — read the shared cliff config, not a local copy ([`999ebec`](https://github.com/diaryx-org/leaf/commit/999ebec3c908d4121e2bfae6bb6406631ed71fae))
 
 ### Behavioural changes
 
@@ -40,6 +41,10 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
   `release`, and `release-notes` no longer exist — they are `release <command>`
   from diaryx-org/devtools, which must be on PATH. `cargo xtask ci`, `swift`,
   and `web` are unchanged.
+
+- releasing this repository needs diaryx-org/devtools on PATH
+  for its git-cliff config as well as for `release` itself. Nothing in the tree
+  configures git-cliff any more.
 
 <!-- git-cliff:end -->
 
