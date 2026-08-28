@@ -13,7 +13,7 @@ and forwards input — exactly as the TUI and native GUI do.
 | Layer | File | What it is |
 |-------|------|------------|
 | Model | `crates/leaf-wasm/src/lib.rs` → `pkg/leaf_wasm.js` | `LeafDoc`: parse/edit/caret + a typed `DocView` frame of style runs. wasm-bindgen glue; view types generated from Rust by [tsify](https://github.com/madonoharu/tsify). This crate. |
-| Editor | [`packages/leaf-web`](../../packages/leaf-web) `src/editor.js` (+ `.d.ts`) | `LeafEditor`: a **framework-agnostic** class that renders those runs to the DOM, places the caret, and routes keys/clicks. The reusable, importable npm package. |
+| Editor | [`packages/leaf-web`](../../packages/leaf-web) `src/editor.js` (+ `.d.ts`) | `LeafEditor`: a **framework-agnostic** class that renders those runs to the DOM, places the caret, and routes keys/clicks. The reusable, importable npm-shaped package (not yet published). |
 | Demo | [`apps/leaf-web-demo`](../../apps/leaf-web-demo) `index.html` | A thin host: chrome (toolbar/footer) around a `LeafEditor`. |
 
 This crate is only the **Model** layer — the Rust→wasm binding. The importable
@@ -88,7 +88,7 @@ the heading ramp) — see `DEFAULT_THEME` in `packages/leaf-web/src/editor.d.ts`
 
 ## Packaged
 
-`LeafEditor` now ships as the `packages/leaf-web` npm package — framework-agnostic,
+`LeafEditor` lives in the `packages/leaf-web` npm-shaped package — framework-agnostic,
 typed, with a `package.json` `exports` map over `--target web` wasm. The `pkg/`
 wasm output builds into that package (see **Build** above). A chosen wasm-init
 strategy beyond `--target web` (bundler vs inlined base64) and semver are still
