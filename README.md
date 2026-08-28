@@ -28,7 +28,7 @@ clipboard, and file I/O.
 | package | what it is |
 |---------|------------|
 | [`leaf-swift`](packages/leaf-swift) | the Swift Package (manifest at the repo root, so SwiftPM can resolve it by version) — `LeafUI`, the AppKit/UIKit editor view, over the committed UniFFI `leaf-ffi` binding. The Apple peer of `leaf-ratatui`/`leaf-gpui`. |
-| [`leaf-web`](packages/leaf-web) | the npm package — `LeafEditor`, a framework-agnostic web editor, over the `leaf-wasm` binding. |
+| [`leaf-web`](packages/leaf-web) | the npm package — `LeafEditor`, a framework-agnostic web editor, over the `leaf-wasm` binding. Tables draw as a real grid from core's structural `TableView`, not as the box-glyph picture; links and task boxes are clickable; the toolbar dims what the format cannot spell. |
 
 ### `apps/` — runnable frontends
 
@@ -54,6 +54,7 @@ wasm build behind a static server. Both are one word through the task runner in
 cargo xtask swift        # build + launch apps/leaf-editor on macOS
 cargo xtask swift --ios  # …in the iOS Simulator instead (--device to pick one)
 cargo xtask web          # build the wasm, serve apps/leaf-web-demo, open it
+cargo xtask web --test   # …serve the leaf-web editor tests instead
 ```
 
 `cargo xtask swift` regenerates the UniFFI binding and the Xcode project when
@@ -71,6 +72,21 @@ section, and commits and tags — locally. Pushing takes `--push`, and even a
 pushed tag publishes nothing: `cargo publish --workspace` is a separate,
 deliberate command, and `--dry-run` shows what it would upload, in dependency
 order, along with every crate it holds back.
+
+`leaf-wasm` and `leaf-ffi` are two projections of the same `leaf_core::Doc`, and
+`cargo xtask ci` holds them level: a method exported by one binding and not the
+other fails the `the_two_bindings_export_the_same_methods` test, which exists
+because that is exactly how the browser ended up a year behind the Apple app.
+Genuinely host-specific spellings are listed, with reasons, in
+`BINDING_DIVERGENCE` in [`xtask/src/ci.rs`](xtask/src/ci.rs).
+
+The web editor's own tests live in a browser, not in `cargo test`
+([`packages/leaf-web/test`](packages/leaf-web/test)): what they cover is a
+`TreeWalker`, a `Range`, a native selection, and text laid out in a proportional
+font, and a stub DOM would mostly be testing the stub. `cargo xtask web --test`
+serves them; the page reports into `document.title` and `window.__results` as
+well as on screen. There is no browser in `cargo xtask ci`, so this is a task a
+person runs.
 
 `release` is the shared tooling in [diaryx-org/devtools][devtools], which leaf,
 prov, twig, flower, and the historica repos all cut releases with; what makes
