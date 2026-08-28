@@ -13,9 +13,12 @@ trailers on the commits themselves; write one on any commit an embedder would
 notice after upgrading without editing a line of their own code.
 
 Not every crate in the workspace reaches crates.io, and
-`cargo publish --workspace --dry-run` says which on every run. `leaf-gpui` and the `leaf` app pin gpui to a Zed
-commit, and crates.io accepts no upload carrying a git dependency; `leaf-wasm` is
-built by wasm-pack into an npm package rather than published as a crate; the name
+`cargo publish --workspace --dry-run` says which on every run. `leaf-gpui` and
+the `leaf` app pin gpui to a Zed commit, and crates.io accepts no upload carrying
+a git dependency; `leaf-wasm` is built by wasm-pack into `packages/leaf-web`, the
+npm-shaped package, which bundles that wasm rather than depending on it, so the
+crate is a build input and never an artifact of its own — and nothing is on npm
+yet either, the package staying `private` until there is a consumer; the name
 `leaf` on crates.io has belonged to an unrelated 2016 machine-learning framework
 since long before this one. So a release publishes `leaf-core`, `leaf-ffi`,
 `leaf-ratatui`, and `leaf-tui`, and tags the rest.
