@@ -6,14 +6,61 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The repo root. xtask lives at `<root>/xtask`, so the root is fixed at compile
-/// time — every path a task builds is anchored here rather than at the caller's
-/// cwd, which is why `cargo xtask` behaves the same from any subdirectory.
+/// The repo root. xtask lives at `<root>/xtask`, so every path a task builds is
+/// anchored here rather than at the caller's cwd — which is why `cargo xtask`
+/// behaves the same from any subdirectory.
+///
+/// Asked at *runtime*, not baked in with `env!`. The compile-time answer is a
+/// string literal in the binary, and cargo does not rebuild on a path change
+/// alone: moving the checkout (`~/Code/leaf` → `~/diaryx/leaf`) carries `target/`
+/// along with it, the stale `xtask` is reused, and every task then reads and
+/// writes a directory that no longer exists. `cargo xtask web` failed that way
+/// with `could not read /Users/adamharris/Code/leaf/packages/leaf-web/src` —
+/// naming a path nothing in the checkout mentions, from a tree that was moved
+/// weeks earlier.
+///
+/// Cargo sets `CARGO_MANIFEST_DIR` in the environment of what it runs, so the
+/// alias in `.cargo/config.toml` hands us the truth for free. The walk up from
+/// the executable covers a binary invoked directly out of `target/`, and the
+/// compile-time value is the last resort — right whenever the tree hasn't moved,
+/// which is the ordinary case.
 pub fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("xtask/ always has a parent")
-        .to_path_buf()
+    from_manifest_dir(std::env::var_os("CARGO_MANIFEST_DIR").map(PathBuf::from))
+        .or_else(|| {
+            std::env::current_exe()
+                .ok()
+                .and_then(|exe| ancestor_root(&exe))
+        })
+        .or_else(|| from_manifest_dir(Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")))))
+        .unwrap_or_else(|| {
+            panic!(
+                "could not locate the repo root: no CARGO_MANIFEST_DIR, nothing \
+                 named xtask/Cargo.toml above the executable, and the compile-time \
+                 root ({}) is gone — run this through `cargo xtask`",
+                env!("CARGO_MANIFEST_DIR")
+            )
+        })
+}
+
+/// `<dir>/..`, if `dir` really is this repo's `xtask/`.
+fn from_manifest_dir(dir: Option<PathBuf>) -> Option<PathBuf> {
+    let root = dir?.parent()?.to_path_buf();
+    is_root(&root).then_some(root)
+}
+
+/// The nearest ancestor of `from` that looks like the repo root — for a binary
+/// run straight out of `target/debug/`, where the manifest dir isn't in the
+/// environment but the checkout is still overhead.
+fn ancestor_root(from: &Path) -> Option<PathBuf> {
+    from.ancestors()
+        .find(|dir| is_root(dir))
+        .map(Path::to_path_buf)
+}
+
+/// Whether `dir` is a checkout of this repo, asked by the one file that is
+/// always there and is what `root()` is *for*: the task runner's own manifest.
+fn is_root(dir: &Path) -> bool {
+    dir.join("xtask/Cargo.toml").is_file()
 }
 
 /// A command whose working directory is the repo root.
@@ -109,4 +156,21 @@ fn render(cmd: &Command) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The root is the checkout the test binary was built from — and, crucially,
+    /// a directory that exists. A stale compile-time answer passes the first
+    /// assertion and fails the second, which is the bug this function was
+    /// rewritten to stop.
+    #[test]
+    fn root_is_a_real_checkout() {
+        let root = root();
+        assert!(root.is_dir(), "{} is not a directory", root.display());
+        assert!(root.join("xtask/Cargo.toml").is_file());
+        assert!(root.join("crates/leaf-core/Cargo.toml").is_file());
+    }
 }
