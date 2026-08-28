@@ -1,5 +1,6 @@
 //! `cargo xtask web` — build the wasm binding and serve the demo page in
-//! `apps/leaf-web-demo`.
+//! `apps/leaf-web-demo`, or (with `--test`) the editor test page in
+//! `packages/leaf-web/test`.
 //!
 //! The page imports `packages/leaf-web/src/index.js`, which imports the
 //! wasm-pack output in `packages/leaf-web/pkg/` — both by relative path, and
@@ -37,6 +38,18 @@ pub struct Args {
     /// Don't open a browser.
     #[arg(long)]
     no_open: bool,
+
+    /// Serve the editor test page instead of the demo.
+    ///
+    /// The tests live in a browser rather than in `cargo test` because what they
+    /// cover is the half of leaf-web that Rust cannot reach: a `TreeWalker`, a
+    /// `Range`, a native selection, and text laid out in a proportional font.
+    /// A stub DOM would mostly be testing the stub. So this is a task a person
+    /// runs, not a job `cargo xtask ci` can — the page reports into
+    /// `document.title` (`PASS n` / `FAIL n/m`) and `window.__results` as well
+    /// as on screen, so a driver that does have a browser can read the outcome.
+    #[arg(long)]
+    test: bool,
 }
 
 pub fn run_task(args: Args) -> Result<()> {
@@ -74,7 +87,12 @@ pub fn run_task(args: Args) -> Result<()> {
     }
 
     require_tool("python3", "install Python 3.7+ (xtask/serve.py runs on it)")?;
-    let url = format!("http://127.0.0.1:{}/apps/leaf-web-demo/", args.port);
+    let page = if args.test {
+        "packages/leaf-web/test/editor.test.html"
+    } else {
+        "apps/leaf-web-demo/"
+    };
+    let url = format!("http://127.0.0.1:{}/{page}", args.port);
 
     // xtask/serve.py rather than `python3 -m http.server`: the same handler, with
     // caching turned off. See the docstring there — everything under this root is

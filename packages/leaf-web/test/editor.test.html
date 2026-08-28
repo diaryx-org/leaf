@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>leaf-web · tests</title>
+<style>
+  body { font: 13px/1.5 ui-monospace, Menlo, monospace; margin: 0; padding: 16px 20px;
+    background: #14161b; color: #d7dce5; }
+  h1 { font-size: 15px; margin: 0 0 12px; }
+  #summary { padding: 6px 10px; border-radius: 6px; margin-bottom: 12px; font-weight: 700; }
+  #summary.pass { background: #1d3f34; color: #7fd1c1; }
+  #summary.fail { background: #45222a; color: #ff9d9d; }
+  li { list-style: none; }
+  li.pass::before { content: "ok   "; color: #7fd1c1; }
+  li.fail::before { content: "FAIL "; color: #ff8888; }
+  li.fail { color: #ff9d9d; }
+  .why { color: #8b93a3; padding-left: 5ch; }
+  /* The editor mounts here. Given a real size, because the wrap-fitting tests
+     measure it — a zero-width box would make every one of them vacuous. */
+  #mount { width: 700px; height: 320px; margin-top: 16px; outline: 1px dashed #333; }
+</style>
+</head>
+<body>
+<h1>leaf-web · editor tests</h1>
+<div id="summary">running…</div>
+<ul id="results"></ul>
+<div id="mount"></div>
+
+<script type="module">
+// Tests for the half of leaf-web that Rust cannot reach: the DOM projection and
+// the input plumbing. They run in a real browser against the real wasm, because
+// that is the only place a `TreeWalker`, a `Range`, a native selection, and a
+// laid-out proportional font all behave the way the editor depends on. A stub
+// DOM would mostly be testing the stub.
+//
+// Run with `cargo xtask web --test`, which serves this page and opens it. The
+// page reports into `document.title` and `window.__results` as well as on
+// screen, so an automated driver can read the outcome without scraping.
+import { LeafEditor } from "../src/index.js";
+
+const results = [];
+const list = document.getElementById("results");
+
+function record(name, error) {
+  results.push({ name, ok: !error, error: error ? String(error.message || error) : null });
+  const li = document.createElement("li");
+  li.className = error ? "fail" : "pass";
+  li.textContent = name;
+  list.appendChild(li);
+  if (error) {
+    const why = document.createElement("div");
+    why.className = "why";
+    why.textContent = String(error.message || error);
+    list.appendChild(why);
+  }
+}
+
+async function test(name, fn) {
+  let ed = null;
+  try {
+    ed = await fn();
+    record(name, null);
+  } catch (e) {
+    record(name, e);
+  } finally {
+    try { ed?.destroy?.(); } catch { /* a test that failed mid-construction */ }
+  }
+}
+
+function assert(cond, msg) {
+  if (!cond) throw new Error(msg || "assertion failed");
+}
+function eq(actual, expected, msg) {
+  const a = JSON.stringify(actual), b = JSON.stringify(expected);
+  if (a !== b) throw new Error((msg ? msg + ": " : "") + `expected ${b}, got ${a}`);
+}
+
+/** A fresh editor on the shared mount, so each test starts from a clean surface. */
+function editor(source, opts = {}) {
+  const mount = document.getElementById("mount");
+  mount.innerHTML = "";
+  return new LeafEditor(mount, { source, format: "markdown", ...opts });
+}
+
+/** Put the browser's selection at a DOM point, as a click would. */
+function place(node, offset) {
+  const r = document.createRange();
+  r.setStart(node, offset);
+  r.collapse(true);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(r);
+}
+
+/** The first text node inside a run of `el`. */
+function firstText(el) {
+  const t = el.querySelector("[data-src]");
+  assert(t, "no run inside the element");
+  return t.firstChild;
+}
+
+/** Dispatch a real editing intent, the way a keystroke does. */
+function input(ed, inputType, data) {
+  return ed.contentEl.dispatchEvent(
+    new InputEvent("beforeinput", { inputType, data, bubbles: true, cancelable: true })
+  );
+}
+
+const TABLE_DOC = [
+  "# Grid",
+  "",
+  "| Frontend | Draws | Align |",
+  "|---|---|:-:|",
+  "| leaf-tui | picture | a |",
+  "| leaf-web | its own | b |",
+  "",
+  "After the table.",
+  "",
+].join("\n");
+
+await LeafEditor.init();
+
+// ── the projection ────────────────────────────────────────────────────────
+
+await test("a table renders as a grid, not as box glyphs", () => {
+  const ed = editor(TABLE_DOC);
+  const table = ed.contentEl.querySelector("table.leaf-table");
+  assert(table, "no <table> was built");
+  eq(table.rows.length, 3, "header plus two body rows");
+  eq([...table.rows[0].cells].map((c) => c.tagName), ["TH", "TH", "TH"]);
+  eq([...table.rows[1].cells].map((c) => c.textContent), ["leaf-tui", "picture", "a"]);
+  assert(
+    !/[┌│├└┬┴┼─]/.test(ed.contentEl.textContent),
+    "the monospace picture is still being painted alongside the grid"
+  );
+  return ed;
+});
+
+await test("a column's alignment reaches the cell", () => {
+  const ed = editor(TABLE_DOC);
+  const head = ed.contentEl.querySelector("table.leaf-table").rows[0];
+  eq([...head.cells].map((c) => c.style.textAlign || "-"), ["-", "-", "center"]);
+  return ed;
+});
+
+await test("a repaint replaces the grid rather than stacking another under it", () => {
+  const ed = editor(TABLE_DOC);
+  eq(ed.contentEl.querySelectorAll("table").length, 1, "after the first paint");
+  ed.render(ed.doc.view());
+  ed.render(ed.doc.view());
+  eq(ed.contentEl.querySelectorAll("table").length, 1, "after three paints");
+  return ed;
+});
+
+// ── the caret, in and out of a grid ───────────────────────────────────────
+
+await test("a point in a cell maps to the source byte under it", () => {
+  const ed = editor(TABLE_DOC);
+  const line = ed.cellLines.find((l) => l.el.textContent.includes("leaf-web"));
+  assert(line, "no cell line for the second body row");
+  place(firstText(line.el), 4);
+  assert(ed._syncFromDom(), "the selection did not map into core");
+  const src = ed._lastView.caret_src;
+  eq(ed.source().slice(src - 4, src), "leaf", "the caret is not after 'leaf'");
+  return ed;
+});
+
+await test("typing in a cell edits that cell and leaves the caret in it", () => {
+  const ed = editor(TABLE_DOC);
+  const line = ed.cellLines.find((l) => l.el.textContent.includes("leaf-web"));
+  place(firstText(line.el), 4);
+  ed._syncFromDom();
+  input(ed, "insertText", "X");
+
+  assert(ed.source().includes("| leafX-web |"), "the edit did not land in the cell");
+  const cells = [...ed.contentEl.querySelector("table.leaf-table").rows[2].cells];
+  eq(cells.map((c) => c.textContent), ["leafX-web", "its own", "b"]);
+
+  const sel = window.getSelection();
+  assert(
+    sel.focusNode?.parentElement?.closest(".leaf-cell-line"),
+    "the caret was not restored inside the cell"
+  );
+  return ed;
+});
+
+await test("a caret placed by core round-trips back out of the DOM", () => {
+  const ed = editor(TABLE_DOC);
+  const line = ed.cellLines.find((l) => l.el.textContent.includes("picture"));
+  place(firstText(line.el), 3);
+  ed._syncFromDom();
+  const src = ed._lastView.caret_src;
+  // Repaint from the model, then read the browser's selection back: the two
+  // descriptions of a table have to agree about where the caret is.
+  ed.render(ed.doc.view());
+  assert(ed._syncFromDom(), "the restored selection did not map back");
+  eq(ed._lastView.caret_src, src, "the caret moved across a repaint");
+  return ed;
+});
+
+await test("Tab in a grid walks the cells; outside it indents", () => {
+  const ed = editor(TABLE_DOC);
+  const line = ed.cellLines.find((l) => l.el.textContent.includes("leaf-tui"));
+  place(firstText(line.el), 2);
+  ed._syncFromDom();
+  const before = ed._lastView.caret_src;
+  ed.render(ed.doc.cell_tab(true) ?? ed.doc.indent());
+  const after = ed._lastView.caret_src;
+  assert(after !== before, "Tab did not move the caret out of the cell");
+  assert(ed.doc.caret_in_table(), "Tab left the table entirely");
+  // Outside a table there is no cell to step to, so core declines and the
+  // ordinary meaning is what is left.
+  const plain = editor("- an item\n");
+  eq(plain.doc.cell_tab(true), undefined, "cell_tab answered outside a table");
+  plain.destroy();
+  return ed;
+});
+
+// ── media rows ────────────────────────────────────────────────────────────
+
+await test("a media row has a caret stop on each side of the picture", () => {
+  const ed = editor("before\n\n![a leaf](leaf.svg)\n\nafter\n");
+  const media = (ed._lastView.media || [])[0];
+  assert(media, "core reserved no media row");
+  const rowEl = ed.rowEls[media.row];
+  const zwsps = [...rowEl.childNodes].filter((n) => n.nodeType === 3);
+  eq(zwsps.length, 2, "the caret homes either side of the element");
+
+  // Core's two columns are the row's two ends, and each maps to a distinct
+  // place in the DOM — the failure this replaced put both at the same one.
+  const coreLen = Number(rowEl.dataset.mediaCoreLen);
+  assert(coreLen > 0, "the row's core length was not recorded");
+  const near = ed._domPoint(zwsps[0], 0);
+  const far = ed._domPoint(zwsps[1], 1);
+  eq(near.ch, 0, "the near stop");
+  eq(far.ch, coreLen, "the far stop");
+  assert(near.ch !== far.ch, "both stops collapsed onto one position");
+  return ed;
+});
+
+// ── the wrap budget ───────────────────────────────────────────────────────
+
+await test("ordinary prose does not overflow the measure", () => {
+  // Capitals and inline code are what the average-glyph estimate gets wrong.
+  const ed = editor(
+    "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG and `some_inline_code_here` " +
+      "and more WORDS IN CAPITALS to push the line past the measure it was given.\n"
+  );
+  const avail = ed._availWidth();
+  const widest = Math.max(
+    ...ed.rowEls.filter((r) => r.isConnected).map((r) => r.scrollWidth)
+  );
+  assert(widest <= avail + 1, `a row is ${widest}px in a ${avail}px measure`);
+  assert(!ed._acceptedOverflow, "the fit gave up on wrappable prose");
+  return ed;
+});
+
+await test("one unwrappable word scrolls without narrowing the document", () => {
+  const long = "W".repeat(120);
+  const ed = editor(`some ordinary prose to set the measure by, and then ${long} after it.\n`);
+  // It cannot be made to fit — but the budget must not be dragged down chasing
+  // it, so the rest of the document keeps a measure close to the full width.
+  const avail = ed._availWidth();
+  const rows = ed.rowEls.filter((r) => r.isConnected && r.scrollWidth <= avail + 1);
+  const widestFitting = Math.max(0, ...rows.map((r) => r.scrollWidth));
+  assert(
+    widestFitting > avail * 0.5,
+    `the measure collapsed to ${widestFitting}px of ${avail}px`
+  );
+  return ed;
+});
+
+// ── clickable things ──────────────────────────────────────────────────────
+
+await test("clicking a task box ticks it", () => {
+  const ed = editor("- [ ] not yet\n- [x] already\n");
+  const box = [...ed.contentEl.querySelectorAll(".leaf-r-list")].find((e) =>
+    /^[☐☑]/.test(e.textContent)
+  );
+  assert(box, "no checkbox was drawn");
+  box.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  assert(ed.source().startsWith("- [x] not yet"), `not ticked: ${ed.source()}`);
+  return ed;
+});
+
+await test("a link follows only with the platform modifier held", () => {
+  const ed = editor("see [the docs](https://example.com/x) now\n");
+  let followed = null;
+  ed.onFollowLink((d) => { followed = d; });
+  const link = ed.contentEl.querySelector(".leaf-r-link");
+  assert(link, "no link was drawn");
+
+  link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  eq(followed, null, "a plain click navigated away instead of placing a caret");
+
+  link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, metaKey: true }));
+  eq(followed, "https://example.com/x", "the modified click did not follow");
+  return ed;
+});
+
+// ── what the format can spell ─────────────────────────────────────────────
+
+await test("capabilities answer for the format, not for the editor", () => {
+  const md = editor("hello\n");
+  const caps = md.capabilities();
+  eq(caps.bold, true, "markdown has bold");
+  eq(caps.mark, false, "markdown has no highlight syntax");
+  assert(md.isAuthorable(), "markdown is authorable");
+  md.destroy();
+
+  const dj = editor("hello\n", { format: "djot" });
+  eq(dj.capabilities().mark, true, "djot does have a highlight");
+  return dj;
+});
+
+// ── boundaries ────────────────────────────────────────────────────────────
+
+await test("a block boundary is read from core, not sniffed off the row", () => {
+  const ed = editor("a paragraph\n\n## a heading\n\nanother paragraph\n");
+  const rows = ed._lastView.rows;
+  const gaps = rows.filter((r) => r.boundary != null);
+  assert(gaps.length >= 2, "core published no boundaries");
+  assert(
+    gaps.some((r) => r.boundary.below === "heading"),
+    "no gap reported a heading below it"
+  );
+  // A boundary above a heading is drawn taller than one below it, so the
+  // heading groups with the text it introduces.
+  const above = rows.findIndex((r) => r.boundary?.below === "heading");
+  const below = rows.findIndex((r) => r.boundary?.above === "heading");
+  assert(above >= 0 && below >= 0, "expected a gap on each side of the heading");
+  const h = (i) => ed.rowEls[i].getBoundingClientRect().height;
+  assert(h(above) > h(below), `above=${h(above)}px is not taller than below=${h(below)}px`);
+  return ed;
+});
+
+// ── the module's own helpers, through the surface that uses them ──────────
+
+await test("a wide glyph keeps the caret in step across a cell", () => {
+  // A cell holding astral and CJK text: source bytes, display columns and
+  // UTF-16 units all disagree here, which is where the mapping earns its keep.
+  const ed = editor("| a | b |\n|---|---|\n| 漢字🍃x | y |\n");
+  const line = ed.cellLines.find((l) => l.el.textContent.includes("漢字"));
+  assert(line, "the wide cell did not render");
+  const node = firstText(line.el);
+  // Core's offsets are UTF-8 *byte* offsets; the DOM counts UTF-16 units. Walk
+  // every UTF-16 boundary in the cell and check each maps to a byte that really
+  // does begin a character — a continuation byte (0b10xxxxxx) would mean the
+  // mapping had landed inside one.
+  const bytes = new TextEncoder().encode(ed.source());
+  const seen = new Set();
+  for (let i = 0; i <= node.length; i++) {
+    place(node, i);
+    if (!ed._syncFromDom()) continue;
+    const src = ed._lastView.caret_src;
+    seen.add(src);
+    assert(src >= 0 && src <= bytes.length, `offset ${src} is outside the source`);
+    assert(
+      src === bytes.length || (bytes[src] & 0xc0) !== 0x80,
+      `offset ${src} landed inside a character (from UTF-16 ${i})`
+    );
+  }
+  // The cell has several distinct caret homes, so this is not vacuously true of
+  // a mapping that answers with the same offset every time.
+  assert(seen.size > 2, `only ${seen.size} distinct offsets across the cell`);
+  return ed;
+});
+
+// ── report ────────────────────────────────────────────────────────────────
+
+const failed = results.filter((r) => !r.ok);
+const summary = document.getElementById("summary");
+summary.className = failed.length ? "fail" : "pass";
+summary.textContent = failed.length
+  ? `${failed.length} of ${results.length} failed`
+  : `all ${results.length} passed`;
+document.title = failed.length ? `FAIL ${failed.length}/${results.length}` : `PASS ${results.length}`;
+window.__results = { total: results.length, failed: failed.length, results };
+</script>
+</body>
+</html>
