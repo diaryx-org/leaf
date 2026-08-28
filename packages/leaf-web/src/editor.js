@@ -90,6 +90,17 @@ const STYLE_ID = "leaf-editor-styles";
  *  lowercase-heavy so the wrap budget tracks real prose, not capitals. */
 const WIDTH_SAMPLE = "the quick brown fox jumps over the lazy dog ";
 
+/** How many times `_fitWidth` may correct the column budget against what the
+ *  browser drew before it accepts the overflow. Each pass re-wraps the whole
+ *  document, and in practice one is enough — the second exists for the case
+ *  where re-wrapping surfaces a row that was previously hidden mid-line. */
+const MAX_FIT_PASSES = 4;
+
+/** How much of the overflow a correction pass has to remove to count as
+ *  progress, as a fraction. Below this the binding constraint is a row nothing
+ *  can wrap, and the pass is rolled back — see `_fitWidth`. */
+const MIN_FIT_PROGRESS = 0.25;
+
 /**
  * Zero-width space. A media row's only editable text is one of these on each
  * side of the element, giving the caret somewhere to land in front of and past
@@ -130,6 +141,13 @@ export class LeafEditor {
     this._composing = false;
     /** Guard so our own selection restores don't echo back through selectionchange. */
     this._settingSelection = false;
+    /** Re-entrancy guards for the wrap-fitting loop, which repaints as it works. */
+    this._fitting = false;
+    this._fitQueued = false;
+    this._refitQueued = false;
+    /** Set once a row has been found that no budget can wrap narrower — see
+     *  `_fitWidth`. Cleared by `refit`, since a resize can make room again. */
+    this._acceptedOverflow = false;
 
     this.doc = new LeafDoc(opts.source ?? "", opts.format ?? "markdown");
 
@@ -139,7 +157,7 @@ export class LeafEditor {
     this._bindEvents();
 
     // First paint at the wrap width the viewport implies.
-    this.render(this.doc.set_width(this._cols()));
+    this._fitWidth();
     this.focus();
   }
 
@@ -198,7 +216,10 @@ export class LeafEditor {
    * editor programmatically.
    */
   refit() {
-    this.render(this.doc.set_width(this._cols()));
+    // A resize is the one event that can make room again, so it is also the one
+    // that retracts a previous decision to live with an overflowing row.
+    this._acceptedOverflow = false;
+    this._fitWidth();
   }
 
   // ── formatting commands (mirror leaf-gpui's EditorCommand) ────────────────
@@ -329,6 +350,7 @@ export class LeafEditor {
     this._restoreSelection(view);
     this._scrollCaretIntoView(view.caret_row);
     this._emitChange(view);
+    this._checkFit();
   }
 
   /**
@@ -559,20 +581,146 @@ export class LeafEditor {
   }
 
   // ── wrap width ────────────────────────────────────────────────────────────
+  //
+  // Core wraps to a *column* budget; the browser shapes the result in pixels.
+  // Turning one into the other is a guess, because a column has no fixed width
+  // in a proportional font — so it is made, then checked against what the
+  // browser actually drew, exactly as core's media reservation is checked
+  // against the measured height of a real `<img>`.
 
   /**
    * The column budget the viewport implies, from the body font's average glyph
    * width. Proportional text means this is a good average rather than exact —
-   * core wraps to it, and unusually wide/narrow lines vary from the edge — but
-   * ordinary prose fills the measure.
+   * a line of capitals or of inline `code` runs wider per column than the
+   * lowercase sample — so it is only the opening bid; `_fitWidth` corrects it.
    */
   _cols() {
     const avg = this.measureEl.getBoundingClientRect().width / WIDTH_SAMPLE.length;
     if (!(avg > 0)) return 80;
+    const avail = this._availWidth();
+    return avail > 0 ? Math.max(1, Math.floor(avail / avg)) : 80;
+  }
+
+  /** The pixels a row has to fit in: the viewport less the surface's padding. */
+  _availWidth() {
     const cs = getComputedStyle(this.contentEl);
     const padX = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
-    const avail = this.container.clientWidth - padX;
-    return Math.max(1, Math.floor(avail / avg));
+    return this.container.clientWidth - padX;
+  }
+
+  /** The widest row as laid out, in pixels. Forces layout, so it is only asked
+   *  when something has already been seen to overflow. */
+  _widestRow() {
+    let widest = 0;
+    for (const rowEl of this.rowEls) {
+      if (rowEl.isConnected && rowEl.scrollWidth > widest) widest = rowEl.scrollWidth;
+    }
+    return widest;
+  }
+
+  /**
+   * Paint at the estimated budget, then correct it against the pixels the
+   * browser produced, until nothing overflows.
+   *
+   * The estimate divides the measure by the body font's *average* glyph, so a
+   * row whose glyphs run wider than average — capitals, a monospace `code` run,
+   * a heading at 1.625× — exceeds the viewport even though it is within budget
+   * in columns. The symptom is text clipped at the right edge and a horizontal
+   * scrollbar under the whole document.
+   *
+   * Each pass is one Newton step from what was actually drawn: the budget that
+   * would have fitted, had a column kept the width it turned out to have. It
+   * only ever shrinks — growing back toward a budget just seen to overflow is
+   * how a fitting loop oscillates — and it stops as soon as a pass wins nothing,
+   * which is the honest answer for a row that cannot be wrapped narrower at all
+   * (one long word, a URL). That row is then left to scroll, and
+   * `_acceptedOverflow` records the surrender so `_checkFit` doesn't spend every
+   * subsequent paint rediscovering it.
+   */
+  _fitWidth() {
+    if (this._fitting) return;
+    this._fitting = true;
+    try {
+      let cols = this._cols();
+      this.render(this.doc.set_width(cols));
+      for (let pass = 0; pass < MAX_FIT_PASSES; pass++) {
+        const avail = this._availWidth();
+        if (!(avail > 0)) break;
+        const widest = this._widestRow();
+        // A pixel of slack: scrollWidth is a rounded integer, and re-wrapping
+        // the whole document to chase a rounding error helps nobody.
+        if (widest <= avail + 1) break;
+        const corrected = Math.max(1, Math.floor((cols * avail) / widest));
+        if (corrected >= cols) break;
+        this.render(this.doc.set_width(corrected));
+        // Did narrowing the budget actually narrow the document? A row that is
+        // one unbreakable token — a URL, a long identifier, a line of capitals
+        // with no space in it — is as wide as it is at every budget, and core
+        // will not split it. Chasing it drags every *other* line in the document
+        // narrower for nothing, so when a pass buys almost no ground, put the
+        // budget back and let that one row scroll.
+        if (this._widestRow() > widest - (widest - avail) * MIN_FIT_PROGRESS) {
+          this.render(this.doc.set_width(cols));
+          break;
+        }
+        cols = corrected;
+      }
+      // Out of passes, or out of progress. Whether that is a surrender depends
+      // on what the last pass drew, not on how the loop happened to leave — a
+      // correction on the final pass can fit perfectly, and calling that an
+      // accepted overflow would switch `_checkFit` off for a surface that is fine.
+      const avail = this._availWidth();
+      this._acceptedOverflow = !(avail > 0) || this._widestRow() > avail + 1;
+    } finally {
+      this._fitting = false;
+    }
+  }
+
+  /**
+   * Notice, after a paint, that an edit has produced a row wider than the
+   * measure, and re-fit on the next frame.
+   *
+   * Typing can outgrow a budget that fitted a moment ago — hold down a capital
+   * letter on a full line — so the fit cannot be a one-time measurement at
+   * startup. But it also cannot re-measure every row on every keystroke, which
+   * is a forced layout over the whole document. So the per-paint question is
+   * the cheapest one that can be asked: a single read of the surface's own
+   * `scrollWidth`. The per-row scan behind `_fitWidth` only runs once that has
+   * already said yes.
+   */
+  /**
+   * Re-fit after a viewport change, on the frame *after* the one that reported
+   * it.
+   *
+   * Re-wrapping repaints, and repainting changes the very sizes the observer is
+   * watching; doing that inside its own callback is what makes a browser log
+   * "ResizeObserver loop completed with undelivered notifications" and drop the
+   * remaining notifications for that frame. Landing on the next frame breaks
+   * the cycle, at the cost of one frame of stale wrapping during a live drag —
+   * which is what a resize looks like anyway.
+   */
+  _scheduleRefit() {
+    if (this._refitQueued || this._destroyed) return;
+    this._refitQueued = true;
+    const run = () => {
+      this._refitQueued = false;
+      if (!this._destroyed) this.refit();
+    };
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(run);
+    else run();
+  }
+
+  _checkFit() {
+    if (this._fitting || this._fitQueued || this._acceptedOverflow || this._destroyed) return;
+    const ce = this.contentEl;
+    if (ce.scrollWidth <= ce.clientWidth + 1) return;
+    this._fitQueued = true;
+    const run = () => {
+      this._fitQueued = false;
+      if (!this._destroyed) this._fitWidth();
+    };
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(run);
+    else run();
   }
 
   // ── input ─────────────────────────────────────────────────────────────────
@@ -666,10 +814,10 @@ export class LeafEditor {
 
     // Reflow on viewport change.
     if (typeof ResizeObserver !== "undefined") {
-      this._resizeObs = new ResizeObserver(() => this.refit());
+      this._resizeObs = new ResizeObserver(() => this._scheduleRefit());
       this._resizeObs.observe(this.container);
     } else {
-      on(window, "resize", () => this.refit());
+      on(window, "resize", () => this._scheduleRefit());
     }
   }
 
