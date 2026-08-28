@@ -138,6 +138,13 @@ export class LeafEditor {
     this._onChange = opts.onChange || null;
     /** @type {HTMLElement[]} the row elements, indexed 1:1 with core's rows. */
     this.rowEls = [];
+    /** @type {{start: number, end: number, el: HTMLElement}[]} every rendered
+     *  table-cell line and the source range it covers — how a caret inside a
+     *  drawn grid is placed and read back. See `_tableEl`. */
+    this.cellLines = [];
+    /** @type {[number, number][]} the `rows` spans a drawn grid stands in for,
+     *  so a caret row can be recognised as belonging to a table. */
+    this.tableSpans = [];
     this._composing = false;
     /** Guard so our own selection restores don't echo back through selectionchange. */
     this._settingSelection = false;
@@ -318,8 +325,15 @@ export class LeafEditor {
     if (!view) return; // an unhandled key returns undefined; nothing to repaint
     this._lastView = view;
 
-    for (const rEl of this.rowEls) rEl.remove();
+    // Clear the whole surface, not just the tracked rows: a drawn table is one
+    // element standing in for a span of rows and so is not in `rowEls`, and
+    // removing only the rows left every repaint appending another grid under the
+    // last one. `contentEl` holds nothing else — the width probe is a sibling,
+    // on the container.
+    this.contentEl.replaceChildren();
     this.rowEls = [];
+    this.cellLines = [];
+    this.tableSpans = [];
     // Block media by its first row, so `_rowEl` can build a real element there
     // instead of core's `🖼`/`🎬`/`🔊` placeholder glyphs, and skip the blank
     // filler rows underneath it.
@@ -328,6 +342,18 @@ export class LeafEditor {
     for (const m of view.media || []) {
       mediaAt.set(m.row, m);
       for (let r = m.row + 1; r < m.row + m.rows; r++) covered.add(r);
+    }
+    // Tables the same way, but replacing the *whole* span rather than the first
+    // row of it: core draws a table as a monospace box-glyph picture, which is
+    // exact on a fixed-cell surface and shears in a proportional font — the `│`
+    // of one row and the `│` of the next land at different x. So the picture
+    // rows are all skipped and one real grid is built from the structural
+    // `TableView` core publishes alongside them.
+    const tableAt = new Map();
+    for (const t of view.tables || []) {
+      tableAt.set(t.start_row, t);
+      this.tableSpans.push([t.start_row, t.end_row]);
+      for (let r = t.start_row + 1; r < t.end_row; r++) covered.add(r);
     }
     const frag = document.createDocumentFragment();
     for (let i = 0; i < view.rows.length; i++) {
@@ -341,6 +367,16 @@ export class LeafEditor {
         // pushing the return value here as well would double-count the fillers
         // and shift every later row's index off by one.
         this._rowEl(view.rows[i], i, view.rows, null, true);
+        continue;
+      }
+      const table = tableAt.get(i);
+      if (table) {
+        // The picture row still needs its `rowEls` entry — every caret and click
+        // path indexes that array by core's row number — but it is the grid that
+        // goes in the document. A caret inside the table is placed by source
+        // offset instead; see `_restoreSelection`.
+        this._rowEl(view.rows[i], i, view.rows, null, true);
+        frag.appendChild(this._tableEl(table));
         continue;
       }
       frag.appendChild(this._rowEl(view.rows[i], i, view.rows, mediaAt.get(i) || null));
@@ -389,8 +425,8 @@ export class LeafEditor {
     // paragraph break reads as spacing rather than a blank line.
     div.style.minHeight = (row.heading
       ? this.theme.fontSize * this.theme.headingScale[Math.min(row.heading, 6) - 1] * this._ratio
-      : isBlockGap(row)
-        ? this.theme.lineHeight * this.theme.blockGapScale
+      : gap
+        ? this.theme.lineHeight * this.theme.blockGapScale * gapScale(row)
         : this.theme.lineHeight) + "px";
 
     if (row.code) {
@@ -407,17 +443,7 @@ export class LeafEditor {
       }
     }
 
-    for (const run of row.runs) {
-      const span = document.createElement("span");
-      let cls = "leaf-r-" + run.role;
-      if (run.bold) cls += " leaf-b";
-      if (run.italic) cls += " leaf-i";
-      if (run.underline) cls += " leaf-u";
-      if (run.strike) cls += " leaf-s";
-      span.className = cls;
-      span.textContent = run.text;
-      div.appendChild(span);
-    }
+    for (const run of row.runs) div.appendChild(this._runEl(run));
 
     // A contenteditable block needs a placeholder to hold a caret when it has no
     // text of its own (an empty paragraph) — but a non-editable gap row holds no
@@ -494,15 +520,89 @@ export class LeafEditor {
     return div;
   }
 
+  /**
+   * Build a real `<table>` from core's structural [`TableView`], in place of the
+   * box-drawn rows it names.
+   *
+   * The two descriptions are alternatives, not layers: they describe the same
+   * cells at the same source offsets, so the caret lands identically whichever
+   * one a frontend paints. The terminal paints the picture; the browser is
+   * proportional and cannot, so it draws its own geometry — columns sized to
+   * content, real borders, alignment honoured — and lets the browser's own table
+   * layout do the work core did in character cells.
+   *
+   * Each cell line records the source range it covers in `cellLines`. That list
+   * is how a caret gets into and out of a cell: inside a table the editor stops
+   * addressing the document in `(row, ch)` — those coordinates belong to the
+   * picture, which isn't in the DOM — and works in source offsets, which both
+   * descriptions agree on.
+   */
+  _tableEl(t) {
+    const table = el("table", "leaf-table");
+    // No `contenteditable` of its own, in either direction. Marking the table
+    // false and its cells true reads like the right shape — chrome around
+    // editable content — but it makes each cell a *separate editing host*, and a
+    // browser will not deliver a keystroke to the focused host when the
+    // selection is inside a different one: the caret sits in the cell and typing
+    // goes nowhere. The whole surface is one host, as the rows are, and the
+    // browser is kept from restructuring the grid the same way it is kept from
+    // restructuring anything else here — every `beforeinput` is prevented and
+    // translated into a core edit.
+    const body = document.createElement("tbody");
+
+    for (const row of t.grid) {
+      const tr = document.createElement("tr");
+      if (row.head) tr.className = "leaf-thead";
+      for (const cell of row.cells) {
+        const td = document.createElement(row.head ? "th" : "td");
+        if (cell.align && cell.align !== "default") td.style.textAlign = cell.align;
+        for (const line of cell.lines) {
+          const lineEl = el("div", "leaf-cell-line");
+          for (const run of line.runs) lineEl.appendChild(this._runEl(run));
+          // An empty cell still needs somewhere for the caret to sit.
+          if (line.runs.length === 0) lineEl.appendChild(document.createElement("br"));
+          this.cellLines.push({ start: line.start, end: line.end, el: lineEl });
+          td.appendChild(lineEl);
+        }
+        tr.appendChild(td);
+      }
+      body.appendChild(tr);
+    }
+    table.appendChild(body);
+    return table;
+  }
+
+  /** One styled span for a run, carrying the source offset its first glyph came
+   *  from — what makes a rendered link or footnote marker followable, and what
+   *  the cell-offset mapping counts from. */
+  _runEl(run) {
+    const span = document.createElement("span");
+    let cls = "leaf-r-" + run.role;
+    if (run.bold) cls += " leaf-b";
+    if (run.italic) cls += " leaf-i";
+    if (run.underline) cls += " leaf-u";
+    if (run.strike) cls += " leaf-s";
+    if (run.sup) cls += " leaf-sup";
+    if (run.sub) cls += " leaf-sub";
+    span.className = cls;
+    span.dataset.src = String(run.src);
+    span.textContent = run.text;
+    return span;
+  }
+
   // ── native selection (model ⇄ browser) ────────────────────────────────────
 
   /** Paint the model's caret/selection onto the browser's native selection. */
   _restoreSelection(view) {
-    const focusEl = this.rowEls[view.caret_row];
-    const anchorEl = this.rowEls[view.anchor_row];
-    if (!focusEl || !anchorEl) return;
-    const f = rangeAtOffset(focusEl, view.caret_ch);
-    const a = view.has_selection ? rangeAtOffset(anchorEl, view.anchor_ch) : f;
+    // A caret inside a table sits on a row that isn't in the document — the
+    // box-drawn picture was replaced by a grid — so `(row, ch)` addresses
+    // nothing to put a range in. The source offset does, and both descriptions
+    // of a table agree on it.
+    const f = this._rangeForSrc(view.caret_src) || this._rangeForRow(view.caret_row, view.caret_ch);
+    const a = view.has_selection
+      ? this._rangeForSrc(this._anchorSrc(view)) || this._rangeForRow(view.anchor_row, view.anchor_ch)
+      : f;
+    if (!f || !a) return;
     const sel = window.getSelection();
     this._settingSelection = true;
     try {
@@ -514,17 +614,96 @@ export class LeafEditor {
     this._settingSelection = false;
   }
 
+  /** The frame's anchor as a source offset. The frame carries the caret's, and
+   *  the anchor only as `(row, ch)`; ask core to convert when it is needed. */
+  _anchorSrc(view) {
+    if (!view.has_selection) return view.caret_src;
+    return this.doc.offset_for_pos(view.anchor_row, view.anchor_ch);
+  }
+
+  /** A collapsed range at a row's UTF-16 offset, or null if that row is gone. */
+  _rangeForRow(row, ch) {
+    const rowEl = this.rowEls[row];
+    return rowEl && rowEl.isConnected ? rangeAtOffset(rowEl, ch) : null;
+  }
+
+  /**
+   * A collapsed range at a source offset, if it falls in a drawn table cell —
+   * and null otherwise, which is the ordinary case and means "use the row".
+   *
+   * The cell's own range is a byte span; a `Range` counts UTF-16 units. The two
+   * are bridged one run at a time, since a run's glyphs are contiguous in the
+   * source and carry the offset the first of them came from.
+   */
+  _rangeForSrc(src) {
+    if (src == null) return null;
+    for (const line of this.cellLines) {
+      if (src < line.start || src > line.end || !line.el.isConnected) continue;
+      return rangeAtOffset(line.el, utf16InLine(line.el, src, line.start));
+    }
+    return null;
+  }
+
+  /** Whether a frame row is one a drawn grid stands in for. */
+  _rowIsTable(row) {
+    return this.tableSpans.some(([a, b]) => row >= a && row < b);
+  }
+
   /** Read the browser's selection into core (no repaint). Returns whether it mapped. */
   _syncFromDom() {
     const sel = window.getSelection();
     if (!sel || sel.rangeCount === 0) return false;
     const r = sel.getRangeAt(0);
     if (!this.contentEl.contains(r.commonAncestorContainer)) return false;
+    const view = this._selectionToCore(sel);
+    if (!view) return false;
+    this._lastView = view;
+    return true;
+  }
+
+  /**
+   * Push the browser's selection into core, in whichever coordinates both ends
+   * can be spelled in.
+   *
+   * `(row, ch)` is the everyday one. But a table's rows are the box-drawn
+   * picture, which isn't in the document, so an endpoint in a cell has no row to
+   * name — and a selection can have one end in a cell and the other in the
+   * prose above it. When either end is in a grid, both are converted to source
+   * offsets, the coordinate the two descriptions of a table share.
+   */
+  _selectionToCore(sel) {
+    const ac = this._cellPoint(sel.anchorNode, sel.anchorOffset);
+    const fc = this._cellPoint(sel.focusNode, sel.focusOffset);
     const a = this._domPoint(sel.anchorNode, sel.anchorOffset);
     const f = this._domPoint(sel.focusNode, sel.focusOffset);
-    if (!a || !f) return false;
-    this._lastView = this.doc.set_selection(a.row, a.ch, f.row, f.ch);
-    return true;
+
+    if (ac != null || fc != null) {
+      const anchor = ac != null ? ac : a && this.doc.offset_for_pos(a.row, a.ch);
+      const focus = fc != null ? fc : f && this.doc.offset_for_pos(f.row, f.ch);
+      if (anchor == null || focus == null) return null;
+      return this.doc.set_selection_offsets(anchor, focus);
+    }
+    if (!a || !f) return null;
+    return this.doc.set_selection(a.row, a.ch, f.row, f.ch);
+  }
+
+  /**
+   * Map a DOM selection endpoint inside a drawn table cell to a source offset,
+   * or null if it isn't in one.
+   *
+   * Approximate then snap: the offset is counted from the enclosing run's own
+   * `src`, which is exact whenever the run's glyphs are contiguous in the source
+   * — the ordinary case, since a hidden delimiter has a different role and so
+   * forms its own run — and core's `snap_offset` cleans up the rest by pulling
+   * the answer onto a real caret stop.
+   */
+  _cellPoint(node, offset) {
+    const el = node.nodeType === 1 ? node : node.parentElement;
+    const lineEl = el && el.closest(".leaf-cell-line");
+    if (!lineEl) return null;
+    const line = this.cellLines.find((l) => l.el === lineEl);
+    if (!line) return null;
+    return this.doc.snap_offset(srcInLine(lineEl, node, offset, line.start, line.end));
   }
 
   /** Map a DOM selection endpoint to `{row, ch}`, or null if it isn't in a row. */
@@ -764,9 +943,8 @@ export class LeafEditor {
       const sel = window.getSelection();
       if (!sel || sel.rangeCount === 0) return;
       if (!this.contentEl.contains(sel.getRangeAt(0).commonAncestorContainer)) return;
-      const a = this._domPoint(sel.anchorNode, sel.anchorOffset);
-      const f = this._domPoint(sel.focusNode, sel.focusOffset);
-      if (a && f) this._emitChange((this._lastView = this.doc.set_selection(a.row, a.ch, f.row, f.ch)));
+      const view = this._selectionToCore(sel);
+      if (view) this._emitChange((this._lastView = view));
     });
 
     // Triple-click: the browser's is a *visual line*; leaf's is the *logical
@@ -964,17 +1142,34 @@ function el(tag, cls) {
 }
 
 /**
- * Whether `row` is the blank decoration row core spells a block boundary with:
- * no caret home, and — unlike a table rule or a quote gutter — no visible
- * glyphs. These are the paragraph gaps drawn short so a boundary reads as
- * spacing rather than an empty line.
+ * Whether `row` is the blank row core spells a block boundary with: no caret
+ * home, drawn short so a boundary reads as spacing rather than as an empty line
+ * the author never typed.
+ *
+ * Core says so outright. This used to sniff — decoration, not code, no visible
+ * glyphs — which is re-deriving structure core had already worked out while
+ * walking the AST to emit the row, and got a table's rule row wrong for exactly
+ * as long as the sniff described one.
  */
 function isBlockGap(row) {
-  return (
-    row.decoration &&
-    !row.code &&
-    row.runs.every((r) => r.text.trim() === "")
-  );
+  return row.boundary != null;
+}
+
+/**
+ * How tall to draw a boundary, as a multiple of the theme's gap.
+ *
+ * A boundary's height is a frontend decision, but what it separates is not, and
+ * typography spaces a gap by what is on either side of it: the margin above a
+ * heading is wider than the one between two paragraphs, so the heading groups
+ * with the text it introduces rather than floating between two blocks. Core
+ * publishes the pair; this is leaf-web's opinion about it.
+ */
+function gapScale(row) {
+  const b = row.boundary;
+  if (!b) return 1;
+  if (b.below === "heading") return 1.6;
+  if (b.above === "heading") return 0.7;
+  return 1;
 }
 
 /**
@@ -1061,6 +1256,79 @@ function offsetTo(rowEl, node, offset) {
     acc += n.length;
   }
   return acc;
+}
+
+/**
+ * The UTF-16 offset into a cell line's text at source offset `src` — the inverse
+ * of `srcInLine`, for placing a `Range` where core says the caret is.
+ *
+ * Walks run by run, because a run is the largest unit whose glyphs are known to
+ * be contiguous in the source: within one, advancing a character advances the
+ * offset by that character's UTF-8 length, and the run's own `data-src` says
+ * where it started. `lineStart` is the fallback for a line with no runs at all.
+ */
+function utf16InLine(lineEl, src, lineStart) {
+  let acc = 0;
+  for (const runEl of lineEl.querySelectorAll("[data-src]")) {
+    const base = Number(runEl.dataset.src);
+    const text = runEl.textContent;
+    const bytes = utf8Length(text);
+    if (src < base) return acc;
+    if (src <= base + bytes) {
+      let b = base;
+      let u = 0;
+      for (const ch of text) {
+        if (b >= src) break;
+        b += utf8Length(ch);
+        u += ch.length;
+      }
+      return acc + u;
+    }
+    acc += text.length;
+  }
+  return src <= lineStart ? 0 : acc;
+}
+
+/**
+ * The source offset of a DOM point inside a cell line — the inverse of
+ * `utf16InLine`. Clamped to the line's own range, since a point on the line
+ * element itself (rather than in a run) addresses one of its ends.
+ */
+function srcInLine(lineEl, node, offset, lineStart, lineEnd) {
+  const clamp = (v) => Math.min(Math.max(v, lineStart), lineEnd);
+  const runEl = (node.nodeType === 1 ? node : node.parentElement)?.closest("[data-src]");
+  if (!runEl) {
+    // An element endpoint: a child index into the line, so sum what precedes it.
+    if (node === lineEl) {
+      let acc = 0;
+      for (let i = 0; i < offset && i < node.childNodes.length; i++) {
+        acc += node.childNodes[i].textContent.length;
+      }
+      return clamp(acc === 0 ? lineStart : lineEnd);
+    }
+    return clamp(lineStart);
+  }
+  const base = Number(runEl.dataset.src);
+  const text = node.nodeType === 3 ? node.textContent : runEl.textContent;
+  let b = base;
+  let u = 0;
+  for (const ch of text) {
+    if (u >= offset) break;
+    u += ch.length;
+    b += utf8Length(ch);
+  }
+  return clamp(b);
+}
+
+/** A string's length in UTF-8 bytes — core's offsets are byte offsets, and JS
+ *  strings are counted in UTF-16 units. */
+function utf8Length(text) {
+  let n = 0;
+  for (const ch of text) {
+    const c = ch.codePointAt(0);
+    n += c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4;
+  }
+  return n;
 }
 
 /** Cross-browser `caret{Range,Position}FromPoint` → `{node, offset}` or null. */
@@ -1217,6 +1485,35 @@ img.leaf-media, video.leaf-media { max-height: 60vh; }
   outline: 1px dashed var(--leaf-muted);
   outline-offset: 2px;
 }
+
+/* A real grid in place of core's box-glyph picture. Collapsed borders so one
+   rule sits between two cells rather than two abutting; the widths are the
+   browser's to work out from the content, which is the whole reason a
+   proportional surface draws its own instead of painting fixed cells.
+   No backticks in here: this is inside EDITOR_CSS, a template literal. */
+.leaf-table {
+  border-collapse: collapse;
+  margin: 6px 0;
+  /* The grid is chrome, so it does not inherit the row's pre wrapping —
+     a cell wraps like ordinary prose. */
+  white-space: normal;
+}
+.leaf-table th,
+.leaf-table td {
+  border: 1px solid var(--leaf-code-border);
+  padding: 3px 8px;
+  vertical-align: top;
+  text-align: left;
+  outline: none;
+}
+.leaf-table th { font-weight: 700; background: var(--leaf-code-bg); }
+.leaf-cell-line { min-height: var(--leaf-line); }
+
+/* Raised and lowered text — a footnote's marker, an author's superscript.
+   Styled with vertical-align rather than real sup/sub elements, so the glyphs
+   stay in the same text node the offset mapping counts through. */
+.leaf-sup { vertical-align: super; font-size: 0.75em; }
+.leaf-sub { vertical-align: sub; font-size: 0.75em; }
 
 .leaf-measure {
   position: absolute; visibility: hidden; white-space: pre; top: -9999px; left: 0;
