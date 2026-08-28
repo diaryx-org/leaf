@@ -46,8 +46,8 @@
 use leaf_core::style::{Baseline, Role, Style as LStyle};
 use leaf_core::wysiwyg::text_width;
 use leaf_core::{
-    Alignment, BlockKind, ColorScheme, Doc, Format, Glyph, InlineKind, LineFlow as CoreLineFlow,
-    MarkupMode as CoreMarkupMode, MediaKind, View, VisualMap,
+    Alignment, BlockClass, BlockKind, ColorScheme, Doc, Format, Glyph, InlineKind,
+    LineFlow as CoreLineFlow, MarkupMode as CoreMarkupMode, MediaKind, View, VisualMap,
 };
 use serde::{Deserialize, Serialize};
 use tsify_next::Tsify;
@@ -175,6 +175,16 @@ pub struct DirectiveView {
     attrs: Vec<DirectiveAttr>,
 }
 
+/// What a drawn block boundary separates: the kinds of the blocks either side,
+/// as renderer class ids (`paragraph`, `heading`, `list`, `list-item`, `quote`,
+/// `code`, `table`, `media`, `directive`, `rule`, `footnote`, `other`). The pair
+/// a frontend multiplies by its own spacing. See [`leaf_core::Boundary`].
+#[derive(Serialize, Tsify)]
+pub struct BoundaryView {
+    above: String,
+    below: String,
+}
+
 /// One visual line: its styled runs plus the row-level flags a frontend draws
 /// chrome from.
 #[derive(Serialize, Tsify)]
@@ -188,6 +198,26 @@ pub struct Row {
     code: bool,
     /// A fenced block's language, carried on the block's first code row only.
     code_lang: Option<String>,
+    /// This row belongs to a `:::name{.class}` directive container — twig's
+    /// generic fenced-div block, whose meaning belongs to the host app. The
+    /// renderer draws a tinted panel around each maximal run of these, as it
+    /// does for a code block.
+    directive: bool,
+    /// A directive container's space-joined attrs, on the block's first row
+    /// only — the `code_lang` pattern. `null` on every other row and on a
+    /// container with no such attrs.
+    directive_label: Option<String>,
+    /// What this row divides, on the blank rows a block boundary is *drawn*
+    /// with, and `null` on every other row.
+    ///
+    /// A boundary's *height* is a frontend decision but its *kind* is not.
+    /// Typography spaces a gap by what it separates — the margin above a heading
+    /// is wider than the one between two paragraphs, so the heading groups with
+    /// the text it introduces. Core knows, having just walked the AST to emit
+    /// the row; a renderer that instead sniffs the row's glyphs for emptiness is
+    /// re-deriving structure core already published, and three frontends
+    /// sniffing separately is three chances to disagree about one document.
+    boundary: Option<BoundaryView>,
     /// The heading level (1–6) if this row belongs to a heading block, else
     /// `None`. A proportional renderer sizes the *whole* row from this — line
     /// height and all — the web analogue of gpui shaping a heading's line at one
@@ -240,6 +270,110 @@ pub struct MediaView {
     alt: String,
     /// The `<source>` alternatives, in document order; empty for a plain image.
     sources: Vec<MediaSourceView>,
+}
+
+/// A visual position: a row of [`DocView::rows`] and a UTF-16 offset into its
+/// text, the pair a DOM `Range` is built from.
+#[derive(Serialize, Tsify)]
+#[tsify(into_wasm_abi)]
+pub struct RowCol {
+    row: usize,
+    ch: usize,
+}
+
+/// The rows a source range covers, both ends **inclusive** — what a renderer
+/// slices out of a frame to draw a block somewhere other than where it sits: a
+/// footnote peek, a link preview.
+///
+/// Inclusive rather than half-open because the answer is "these rows", not "up
+/// to here": every caller wants `rows.slice(first, last + 1)`, and a `last` one
+/// past the end would be a second thing to get wrong at each of them.
+/// `last >= first` always, so the pair is never empty.
+#[derive(Serialize, Tsify)]
+#[tsify(into_wasm_abi)]
+pub struct RowRange {
+    first: usize,
+    last: usize,
+}
+
+/// Where a locator lands — what [`LeafDoc::locate`] answers with, and the mirror
+/// of [`leaf_core::Landing`].
+///
+/// A span rather than an offset because the two things a host does with a
+/// locator want different halves of it: following one puts a caret at `start`,
+/// while previewing one draws the rows between `start` and `end`. Only the first
+/// can be recovered from an offset alone.
+#[derive(Serialize, Tsify)]
+#[tsify(into_wasm_abi)]
+pub struct LandingView {
+    start: usize,
+    end: usize,
+}
+
+impl From<leaf_core::Landing> for LandingView {
+    fn from(l: leaf_core::Landing) -> Self {
+        LandingView {
+            start: l.start,
+            end: l.end,
+        }
+    }
+}
+
+/// A footnote reference and the note it names — what [`LeafDoc::footnote_at`]
+/// answers with, and the mirror of [`leaf_core::FootnoteRef`].
+///
+/// A reference whose definition the document is missing still comes back, with
+/// its `label` and no `text`: that a `[^99]` names nothing is a thing to tell
+/// the reader, and it is not the same as the caret standing on no reference at
+/// all (which is `undefined`).
+#[derive(Serialize, Tsify)]
+#[tsify(into_wasm_abi)]
+pub struct FootnoteView {
+    /// The reference's label — the `1` of `[^1]`, without the `^` or brackets.
+    label: String,
+    /// The note's body as source text, or `null` when nothing defines it.
+    text: Option<String>,
+    /// The byte offset the note's body starts at, for a "go to note" that moves
+    /// the caret there. `null` alongside a `null` `text`.
+    offset: Option<usize>,
+    /// Where the body ends, exclusive. With `offset` this bounds the note, so a
+    /// renderer can map the pair through [`LeafDoc::row_range_for`] to the
+    /// *rendered rows* it occupies and draw those — the note with its markup
+    /// resolved, rather than the asterisks and backticks `text` carries.
+    end: Option<usize>,
+}
+
+impl From<leaf_core::FootnoteRef> for FootnoteView {
+    fn from(f: leaf_core::FootnoteRef) -> Self {
+        FootnoteView {
+            label: f.label,
+            text: f.text,
+            offset: f.offset,
+            end: f.end,
+        }
+    }
+}
+
+/// A footnote definition and the reference that sends a reader to it — the other
+/// half of [`FootnoteView`]'s round trip: that one carries a reader down to the
+/// note, this one carries them back up. A definition nothing cites still comes
+/// back, with its `label` and no `offset`.
+#[derive(Serialize, Tsify)]
+#[tsify(into_wasm_abi)]
+pub struct FootnoteDefView {
+    label: String,
+    /// The byte offset the first reference starts at. `null` for a note nothing
+    /// refers to.
+    offset: Option<usize>,
+}
+
+impl From<leaf_core::FootnoteDef> for FootnoteDefView {
+    fn from(f: leaf_core::FootnoteDef) -> Self {
+        FootnoteDefView {
+            label: f.label,
+            offset: f.offset,
+        }
+    }
 }
 
 /// Which formatting controls this document's format can spell — the toolbar's
@@ -449,6 +583,28 @@ fn role_name(r: Role) -> String {
     }
 }
 
+/// The renderer class id for a block class — the vocabulary [`BoundaryView`] is
+/// spelled in. `other` is the honest answer for a kind core doesn't separate
+/// out, so a new one is additive: nothing has to change until it wants to space
+/// that kind differently.
+fn class_name(c: BlockClass) -> String {
+    match c {
+        BlockClass::Paragraph => "paragraph",
+        BlockClass::Heading => "heading",
+        BlockClass::List => "list",
+        BlockClass::ListItem => "list-item",
+        BlockClass::Quote => "quote",
+        BlockClass::Code => "code",
+        BlockClass::Table => "table",
+        BlockClass::Media => "media",
+        BlockClass::Directive => "directive",
+        BlockClass::Rule => "rule",
+        BlockClass::Footnote => "footnote",
+        BlockClass::Other => "other",
+    }
+    .to_string()
+}
+
 /// The toolbar id for an inline mark — kept in sync with the JS button ids.
 fn mark_id(kind: InlineKind) -> &'static str {
     match kind {
@@ -547,6 +703,126 @@ impl LeafDoc {
                 let row = s[..off].bytes().filter(|&b| b == b'\n').count();
                 let line_start = s[..off].rfind('\n').map_or(0, |i| i + 1);
                 (row, text_width(&s[line_start..off]))
+            }
+        }
+    }
+
+    // ── position mapping (non-mutating; the caret is untouched) ─────────────
+    //
+    // Each branches by view exactly as [`Self::pos_of_offset`] does, so the
+    // WYSIWYG map and the raw-source grid answer in their own coordinates. They
+    // back the offset-addressed methods a host needs when it is drawing part of
+    // the document somewhere the caret isn't — a footnote peek, a link preview —
+    // and must not move the caret to answer.
+
+    /// The byte offset where visual `row` begins in the source view.
+    fn source_line_start(&self, row: usize) -> usize {
+        self.doc
+            .source
+            .split('\n')
+            .take(row)
+            .map(|l| l.len() + 1)
+            .sum()
+    }
+
+    /// The source offset of display column `col` on visual `row` — the inverse
+    /// of [`Self::pos_of_offset`] in column space.
+    fn offset_of_col(&self, row: usize, col: usize) -> usize {
+        match self.doc.view {
+            View::Wysiwyg => self.doc.vmap.offset_of_pos(row, col),
+            View::Source => {
+                let line = self.row_text(row);
+                let (mut c, mut b) = (0usize, 0usize);
+                for g in line.graphemes(true) {
+                    if c >= col {
+                        break;
+                    }
+                    c += text_width(g);
+                    b += g.len();
+                }
+                self.source_line_start(row) + b
+            }
+        }
+    }
+
+    /// The next caret stop after `off`, or `None` at the end.
+    fn stop_after(&self, off: usize) -> Option<usize> {
+        match self.doc.view {
+            View::Wysiwyg => self.doc.vmap.stop_after(off),
+            View::Source => {
+                let s = &self.doc.source;
+                if off >= s.len() {
+                    None
+                } else {
+                    Some(
+                        s[off..]
+                            .grapheme_indices(true)
+                            .nth(1)
+                            .map_or(s.len(), |(i, _)| off + i),
+                    )
+                }
+            }
+        }
+    }
+
+    /// The previous caret stop before `off`, or `None` at the start.
+    fn stop_before(&self, off: usize) -> Option<usize> {
+        match self.doc.view {
+            View::Wysiwyg => self.doc.vmap.stop_before(off),
+            View::Source => {
+                let s = &self.doc.source;
+                let off = off.min(s.len());
+                if off == 0 {
+                    None
+                } else {
+                    s[..off].grapheme_indices(true).next_back().map(|(i, _)| i)
+                }
+            }
+        }
+    }
+
+    /// Snap `off` to a valid caret stop (WYSIWYG) / char boundary (source).
+    fn snap_stop(&self, off: usize) -> usize {
+        let s = &self.doc.source;
+        let mut off = off.min(s.len());
+        match self.doc.view {
+            View::Wysiwyg => self.doc.vmap.snap_to_stop(off),
+            View::Source => {
+                while off > 0 && !s.is_char_boundary(off) {
+                    off -= 1;
+                }
+                off
+            }
+        }
+    }
+
+    /// The navigable visual row above `row`, if any.
+    fn nav_above(&self, row: usize) -> Option<usize> {
+        match self.doc.view {
+            View::Wysiwyg => self.doc.vmap.navigable_above(row),
+            View::Source => (row > 0).then(|| row - 1),
+        }
+    }
+
+    /// The navigable visual row below `row`, if any.
+    fn nav_below(&self, row: usize) -> Option<usize> {
+        match self.doc.view {
+            View::Wysiwyg => self.doc.vmap.navigable_below(row),
+            View::Source => {
+                let n = self.doc.source.split('\n').count();
+                (row + 1 < n).then_some(row + 1)
+            }
+        }
+    }
+
+    /// The rows a source range covers, both ends inclusive.
+    fn row_range_span(&self, start: usize, end: usize) -> (usize, usize) {
+        match self.doc.view {
+            View::Wysiwyg => self.doc.vmap.row_range_for(start..end),
+            View::Source => {
+                let first = self.pos_of_offset(start).0;
+                let last = self.pos_of_offset(end.max(start.saturating_add(1)) - 1).0;
+                (first, last.max(first))
             }
         }
     }
@@ -1086,6 +1362,335 @@ impl LeafDoc {
         }
         self.view()
     }
+
+    // ── offsets ─────────────────────────────────────────────────────────────
+    //
+    // The frame addresses the document in `(row, ch)`, which is what a renderer
+    // paints in. These speak *source byte offsets* instead — the coordinate a
+    // table cell, a footnote, and a link destination are all keyed by, and the
+    // only one that survives a re-wrap. A host reaches for them when it is
+    // pointing at part of the document rather than editing at the caret.
+
+    /// The caret's source byte offset.
+    pub fn caret_offset(&self) -> usize {
+        self.doc.caret
+    }
+
+    /// The selection's fixed end (equals the caret when there is no selection).
+    pub fn anchor_offset(&self) -> usize {
+        self.doc.anchor.unwrap_or(self.doc.caret)
+    }
+
+    /// The last caret stop in the document.
+    pub fn doc_end_offset(&mut self) -> usize {
+        self.sync();
+        let end = self.doc.source.len();
+        self.snap_stop(end)
+    }
+
+    /// Snap an arbitrary offset to the nearest valid caret stop — a byte in the
+    /// middle of a hidden `**` has no caret home of its own.
+    pub fn snap_offset(&mut self, off: usize) -> usize {
+        self.sync();
+        self.snap_stop(off)
+    }
+
+    /// Where a source offset sits on screen: its visual `(row, ch)`, `ch` in
+    /// UTF-16 units so a DOM `Range` can be built at it directly.
+    pub fn pos_for_offset(&mut self, off: usize) -> RowCol {
+        self.sync();
+        let (row, col) = self.pos_of_offset(off);
+        RowCol {
+            row,
+            ch: col_to_utf16(&self.row_text(row), col),
+        }
+    }
+
+    /// The source offset at visual `(row, ch)` — the inverse of
+    /// [`Self::pos_for_offset`], for hit-testing a DOM point to a position
+    /// without moving the caret (which is what [`Self::click_ch`] does).
+    pub fn offset_for_pos(&mut self, row: usize, ch: usize) -> usize {
+        self.sync();
+        let col = utf16_to_col(&self.row_text(row), ch);
+        self.offset_of_col(row, col)
+    }
+
+    /// The rows a source range covers, both ends **inclusive** — for drawing a
+    /// block away from where it sits (a footnote peek, a link preview).
+    ///
+    /// Ask this rather than mapping the two ends through
+    /// [`Self::pos_for_offset`] separately: in a table the rows are not in
+    /// offset order, so `start`'s row is not always the first.
+    pub fn row_range_for(&mut self, start: usize, end: usize) -> RowRange {
+        self.sync();
+        let (first, last) = self.row_range_span(start, end);
+        RowRange { first, last }
+    }
+
+    /// Move `off` by `delta` caret stops (negative = left).
+    pub fn step_offset(&mut self, off: usize, delta: i32) -> usize {
+        self.sync();
+        let mut o = self.snap_stop(off);
+        if delta >= 0 {
+            for _ in 0..delta {
+                match self.stop_after(o) {
+                    Some(n) => o = n,
+                    None => break,
+                }
+            }
+        } else {
+            for _ in 0..(-delta) {
+                match self.stop_before(o) {
+                    Some(p) => o = p,
+                    None => break,
+                }
+            }
+        }
+        o
+    }
+
+    /// How many caret stops separate two offsets, signed by direction.
+    pub fn distance_offset(&mut self, from: usize, to: usize) -> i32 {
+        self.sync();
+        let (mut a, b, sign) = if from <= to {
+            (from, to, 1i32)
+        } else {
+            (to, from, -1i32)
+        };
+        a = self.snap_stop(a);
+        let mut n = 0i32;
+        while a < b {
+            match self.stop_after(a) {
+                Some(x) => {
+                    a = x;
+                    n += 1;
+                }
+                None => break,
+            }
+        }
+        n * sign
+    }
+
+    /// The offset one visual row above or below `off`, keeping its column, or
+    /// `undefined` at the document's edge.
+    pub fn vertical_offset(&mut self, off: usize, down: bool) -> Option<usize> {
+        self.sync();
+        let (row, col) = self.pos_of_offset(off);
+        let target = if down {
+            self.nav_below(row)
+        } else {
+            self.nav_above(row)
+        };
+        target.map(|r| self.offset_of_col(r, col))
+    }
+
+    /// The visible text between two offsets. In the WYSIWYG view this is *not*
+    /// the raw source slice: a hidden delimiter (`**`, `` ` ``, `_`) contributes
+    /// nothing, matching what the reader sees and what a copy takes.
+    pub fn text_in_range(&mut self, from: usize, to: usize) -> String {
+        self.sync();
+        let len = self.doc.source.len();
+        let (mut a, mut b) = (from.min(len), to.min(len));
+        if a > b {
+            std::mem::swap(&mut a, &mut b);
+        }
+        match self.doc.view {
+            View::Wysiwyg => self.doc.vmap.visible_text(a, b),
+            View::Source => {
+                let s = &self.doc.source;
+                while a > 0 && !s.is_char_boundary(a) {
+                    a -= 1;
+                }
+                while b < s.len() && !s.is_char_boundary(b) {
+                    b += 1;
+                }
+                s[a..b].to_string()
+            }
+        }
+    }
+
+    /// Put the selection at a source range, without a click to place it.
+    pub fn set_selection_offsets(
+        &mut self,
+        anchor: usize,
+        focus: usize,
+    ) -> Result<DocView, JsValue> {
+        self.doc.place_caret(anchor, false);
+        if focus != anchor {
+            self.doc.place_caret(focus, true);
+        }
+        self.view()
+    }
+
+    /// Replace the source range `[from, to)` with `text`.
+    pub fn replace_range(
+        &mut self,
+        from: usize,
+        to: usize,
+        text: &str,
+    ) -> Result<DocView, JsValue> {
+        self.doc.place_caret(from, false);
+        if to != from {
+            self.doc.place_caret(to, true);
+        }
+        self.doc.insert(text);
+        self.view()
+    }
+
+    /// Stop wrapping: lay every logical line out unbroken, for a surface that
+    /// scrolls horizontally instead of folding.
+    pub fn set_unwrapped(&mut self) -> Result<DocView, JsValue> {
+        // Core takes a column budget, not an option, so "unwrapped" is a budget
+        // no line can reach.
+        self.width = usize::MAX;
+        self.view()
+    }
+
+    // ── links and footnotes ─────────────────────────────────────────────────
+
+    /// The destination of the link at `off`, or `undefined` — for making a
+    /// rendered link followable from a click, which knows an offset (a run's
+    /// `src`) and not a caret.
+    ///
+    /// Only a *parsed* link answers: a bare wikilink is literal text with no
+    /// node behind it and nothing to point at.
+    pub fn link_destination_at(&mut self, off: usize) -> Option<String> {
+        self.doc.link_destination_at(off)
+    }
+
+    /// The destination of the link the caret stands in, or `undefined`. Also on
+    /// every frame as [`DocView::link`]; this is the one-off query.
+    pub fn link_destination_at_caret(&mut self) -> Option<String> {
+        self.doc.link_destination_at_caret()
+    }
+
+    /// Where a locator lands — the span of the block a fragment id names, for
+    /// following an in-document link.
+    pub fn locate(&mut self, id: &str) -> Option<LandingView> {
+        self.doc.locate(id).map(LandingView::from)
+    }
+
+    /// Write a footnote reference at the caret and the definition it needs.
+    pub fn insert_footnote(&mut self) -> Result<DocView, JsValue> {
+        self.doc.insert_footnote();
+        self.view()
+    }
+
+    /// The footnote reference at `off` and the note it names, or `undefined` if
+    /// there is no reference there.
+    ///
+    /// A reference whose definition the document is missing still answers, with
+    /// its label and no text: that a `[^99]` names nothing is worth telling the
+    /// reader, and is not the same as standing on no reference at all.
+    pub fn footnote_at(&mut self, off: usize) -> Option<FootnoteView> {
+        self.doc.footnote_at(off).map(FootnoteView::from)
+    }
+
+    /// The footnote reference the caret stands on, or `undefined`.
+    pub fn footnote_at_caret(&mut self) -> Option<FootnoteView> {
+        self.doc.footnote_at_caret().map(FootnoteView::from)
+    }
+
+    /// The footnote *definition* the caret stands in, and the first reference
+    /// that sends a reader to it — the return leg of the round trip.
+    pub fn footnote_definition_at_caret(&mut self) -> Option<FootnoteDefView> {
+        self.doc
+            .footnote_definition_at_caret()
+            .map(FootnoteDefView::from)
+    }
+
+    /// Write a thematic break (`---`) at the caret.
+    pub fn insert_thematic_break(&mut self) -> Result<DocView, JsValue> {
+        self.doc.insert_thematic_break();
+        self.view()
+    }
+
+    // ── tables ──────────────────────────────────────────────────────────────
+    //
+    // Gate these on `caret_in_table` *and* on `capabilities().table`: the first
+    // asks whether the caret is in a grid, the second whether this format's
+    // tables are editable at all. An HTML `<table>` answers yes to the first and
+    // no to the second.
+
+    /// Whether the caret is inside a table.
+    pub fn caret_in_table(&mut self) -> bool {
+        self.doc.caret_in_table()
+    }
+
+    pub fn table_insert_row(&mut self, below: bool) -> Result<DocView, JsValue> {
+        self.doc.table_insert_row(below);
+        self.view()
+    }
+
+    pub fn table_delete_row(&mut self) -> Result<DocView, JsValue> {
+        self.doc.table_delete_row();
+        self.view()
+    }
+
+    pub fn table_insert_column(&mut self, right: bool) -> Result<DocView, JsValue> {
+        self.doc.table_insert_column(right);
+        self.view()
+    }
+
+    pub fn table_delete_column(&mut self) -> Result<DocView, JsValue> {
+        self.doc.table_delete_column();
+        self.view()
+    }
+
+    pub fn table_move_row(&mut self, down: bool) -> Result<DocView, JsValue> {
+        self.doc.table_move_row(down);
+        self.view()
+    }
+
+    pub fn table_move_column(&mut self, right: bool) -> Result<DocView, JsValue> {
+        self.doc.table_move_column(right);
+        self.view()
+    }
+
+    /// Set the caret's column alignment — `"left"`, `"right"`, `"center"`, or
+    /// `"default"`. Anything else is left alone.
+    pub fn table_set_alignment(&mut self, alignment: &str) -> Result<DocView, JsValue> {
+        let a = match alignment.to_ascii_lowercase().as_str() {
+            "left" => Alignment::Left,
+            "right" => Alignment::Right,
+            "center" => Alignment::Center,
+            "default" => Alignment::Default,
+            other => return Err(JsValue::from_str(&format!("unknown alignment: {other}"))),
+        };
+        self.doc.table_set_alignment(a);
+        self.view()
+    }
+
+    /// Tab inside a table: to the next (or previous) cell, adding a row when it
+    /// steps off the end. `undefined` when the caret isn't in one, so the host
+    /// can fall through to its ordinary Tab (indent).
+    pub fn cell_tab(&mut self, forward: bool) -> Result<Option<DocView>, JsValue> {
+        if self.doc.cell_tab(forward) {
+            self.view().map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Return inside a table: to the cell below, adding a row at the last one.
+    /// `undefined` when the caret isn't in a table.
+    pub fn cell_return(&mut self) -> Result<Option<DocView>, JsValue> {
+        if self.doc.cell_return() {
+            self.view().map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Shift+Return inside a cell: a line break *within* the cell rather than a
+    /// new row. `undefined` when the caret isn't in a table.
+    pub fn cell_line_break(&mut self) -> Result<Option<DocView>, JsValue> {
+        if self.doc.cell_line_break() {
+            self.view().map(Some)
+        } else {
+            Ok(None)
+        }
+    }
 }
 
 /// The WYSIWYG rows: each visual row's glyphs coalesced into maximal runs of
@@ -1143,6 +1748,12 @@ fn wysiwyg_rows(vmap: &VisualMap, ss: usize, se: usize) -> Vec<Row> {
                 decoration: vrow.decoration,
                 code: vrow.code,
                 code_lang: vrow.code_lang.clone(),
+                directive: vrow.directive,
+                directive_label: vrow.directive_label.clone(),
+                boundary: vrow.boundary.map(|b| BoundaryView {
+                    above: class_name(b.above),
+                    below: class_name(b.below),
+                }),
                 heading,
             }
         })
@@ -1183,7 +1794,10 @@ fn source_rows(source: &str, ss: usize, se: usize) -> Vec<Row> {
             decoration: false,
             code: false,
             code_lang: None,
-            heading: None, // source view is raw text — no resolved heading rows
+            directive: false,
+            directive_label: None,
+            boundary: None,
+            heading: None, // source view is raw text — no resolved structure
         });
         byte = end + 1; // skip the '\n' that `split` consumed
     }
@@ -1493,6 +2107,127 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A live handle, at a width wide enough that nothing wraps.
+    ///
+    /// Off wasm, `JsValue` is a stub that panics when touched — so a method
+    /// *returning* one can't be called here, but the offset-addressed methods
+    /// return plain values and can. Those are exactly the ones a host uses to
+    /// point at part of the document, so they are the ones worth pinning down.
+    fn handle(source: &str) -> LeafDoc {
+        let mut d = LeafDoc::new(source, "markdown").expect("markdown parses");
+        d.width = 200;
+        d.sync();
+        d
+    }
+
+    #[test]
+    fn an_offset_and_a_position_round_trip() {
+        let mut d = handle("# heading\n\nsome **bold** words\n");
+        let off = d.doc.source.find("bold").unwrap();
+        let pos = d.pos_for_offset(off);
+        // Back the other way lands on the same byte — the two are inverses over
+        // the offsets core actually publishes a caret stop for.
+        assert_eq!(d.offset_for_pos(pos.row, pos.ch), off);
+    }
+
+    #[test]
+    fn stepping_and_measuring_agree_about_the_distance_between_two_stops() {
+        let mut d = handle("abcdef\n");
+        let start = d.snap_offset(0);
+        let three = d.step_offset(start, 3);
+        assert_eq!(d.distance_offset(start, three), 3);
+        // Signed by direction, so the reverse is the negative.
+        assert_eq!(d.distance_offset(three, start), -3);
+        // Stepping past the end stops there rather than running away.
+        let end = d.doc_end_offset();
+        assert_eq!(d.step_offset(end, 50), end);
+        assert_eq!(d.step_offset(start, -50), d.step_offset(start, -1));
+    }
+
+    /// The WYSIWYG view's text is what the reader sees, so a hidden delimiter
+    /// contributes nothing — which is also what a copy out of the surface takes.
+    #[test]
+    fn visible_text_leaves_the_hidden_delimiters_out() {
+        let mut d = handle("a **bold** b\n");
+        let all = d.text_in_range(0, d.doc.source.len());
+        assert!(all.contains("bold"));
+        assert!(
+            !all.contains("**"),
+            "delimiters leaked into visible text: {all:?}"
+        );
+        // Reversed bounds describe the same range.
+        assert_eq!(d.text_in_range(4, 2), d.text_in_range(2, 4));
+    }
+
+    #[test]
+    fn a_footnote_reference_finds_its_note_and_the_note_finds_it_back() {
+        let mut d = handle("cited[^1] here\n\n[^1]: the note itself\n");
+        let marker = d.doc.source.find("[^1]").unwrap();
+        let note = d.footnote_at(marker).expect("a reference sits there");
+        assert_eq!(note.label, "1");
+        assert!(
+            note.text
+                .as_deref()
+                .unwrap_or("")
+                .contains("the note itself")
+        );
+
+        // The pair bounds the note, so a renderer can ask which rows to draw.
+        let (start, end) = (note.offset.unwrap(), note.end.unwrap());
+        assert!(start < end && end <= d.doc.source.len());
+        let rows = d.row_range_for(start, end);
+        assert!(rows.last >= rows.first);
+    }
+
+    /// A reference nothing defines still answers — "this note is missing" is
+    /// worth saying, and is not the same as standing on no reference at all.
+    #[test]
+    fn a_reference_with_no_definition_still_answers() {
+        let mut d = handle("dangling[^99] here\n");
+        // Core may decline to parse a reference nothing defines; what must not
+        // happen is one reported *with* a note it hasn't got.
+        if let Some(n) = d.footnote_at(d.doc.source.find("[^99]").unwrap()) {
+            assert_eq!(n.label, "99");
+            assert!(n.text.is_none() && n.offset.is_none());
+        }
+        assert!(d.footnote_at(0).is_none(), "no reference at the line start");
+    }
+
+    #[test]
+    fn a_link_answers_at_its_own_offset_and_nowhere_else() {
+        let mut d = handle("see [the docs](https://example.com/x) now\n");
+        let inside = d.doc.source.find("the docs").unwrap() + 2;
+        assert_eq!(
+            d.link_destination_at(inside).as_deref(),
+            Some("https://example.com/x")
+        );
+        assert!(d.link_destination_at(0).is_none());
+    }
+
+    #[test]
+    fn the_caret_knows_whether_it_is_in_a_table() {
+        let mut d = handle("| a | b |\n|---|---|\n| 1 | 2 |\n");
+        let cell = d.doc.source.find(" 1 ").unwrap() + 1;
+        d.doc.place_caret(cell, false);
+        assert!(d.caret_in_table());
+
+        let mut plain = handle("just a paragraph\n");
+        assert!(!plain.caret_in_table());
+    }
+
+    /// Unwrapped means no line folds, however long the document's longest is.
+    #[test]
+    fn unwrapped_folds_nothing() {
+        let long = format!("{}\n", "word ".repeat(200));
+        let mut d = handle(&long);
+        d.width = 40;
+        d.sync();
+        let folded = d.doc.vmap.rows.len();
+        d.width = usize::MAX;
+        d.sync();
+        assert!(d.doc.vmap.rows.len() < folded);
     }
 
     /// A document with no table publishes no grid — so a renderer's "skip these

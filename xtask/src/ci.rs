@@ -228,6 +228,52 @@ fn package_name(dir: &str) -> Result<String> {
     bail!("no `[package] name` in {dir}/Cargo.toml")
 }
 
+/// The methods `leaf-ffi` and `leaf-wasm` are allowed to disagree about, and why.
+///
+/// Everything else has to match. The two crates are thin projections of one
+/// `leaf_core::Doc` for two hosts that want the same facts, and the way they
+/// come apart is not a decision anybody makes — it is a feature landing in the
+/// binding whose frontend is being worked on and not in the other. That is how
+/// the browser ended up without tables, footnotes, or a link it could follow,
+/// months after the Apple app had all three.
+///
+/// A name belongs here only when the *concept* is host-specific. A name that is
+/// merely not written yet does not: the point of the test is to fail then.
+#[cfg(test)]
+const BINDING_DIVERGENCE: &[(&str, &str)] = &[
+    (
+        "set_dark_appearance",
+        "leaf-wasm spells the same thing `set_color_scheme`, taking the CSS \
+         media-query name a browser already has rather than the Bool an \
+         NSAppearance hands Swift",
+    ),
+    (
+        "set_color_scheme",
+        "the browser half of the `set_dark_appearance` pair above",
+    ),
+];
+
+/// The method names a binding crate exports, read off its source: the `pub fn`s
+/// at one level of indentation, which is where an `impl` block's methods sit and
+/// where a free function does not.
+#[cfg(test)]
+fn exported_methods(path: &str) -> Result<Vec<String>> {
+    let src = read(path)?;
+    let mut names: Vec<String> = src
+        .lines()
+        .filter_map(|line| line.strip_prefix("    pub fn "))
+        .filter_map(|rest| rest.split(['(', '<', ' ']).next())
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .collect();
+    names.sort();
+    names.dedup();
+    if names.is_empty() {
+        bail!("no exported methods found in {path} — has the file moved?");
+    }
+    Ok(names)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,6 +298,60 @@ mod tests {
                 ISOLATED.iter().any(|spec| spec == &["-p", &name]),
                 "workspace member `{name}` is not checked in isolation by \
                  `cargo xtask ci package-isolation`",
+            );
+        }
+    }
+
+    /// Every method one binding exports, the other exports too.
+    ///
+    /// Read off the source rather than asked of the type system, because there
+    /// is no shared trait to ask: `leaf-ffi`'s methods hang off a
+    /// `#[uniffi::export]` impl and `leaf-wasm`'s off a `#[wasm_bindgen]` one,
+    /// and neither generator produces anything the other can be compared to. A
+    /// text scan is coarse — it counts a name, not a signature — but it catches
+    /// the failure that actually happens, which is a whole method existing on
+    /// one side and not the other.
+    #[test]
+    fn the_two_bindings_export_the_same_methods() {
+        let ffi = exported_methods("crates/leaf-ffi/src/lib.rs").unwrap();
+        let wasm = exported_methods("crates/leaf-wasm/src/lib.rs").unwrap();
+        let allowed: Vec<&str> = BINDING_DIVERGENCE.iter().map(|(name, _)| *name).collect();
+
+        let missing = |from: &[String], present_in: &[String]| -> Vec<String> {
+            from.iter()
+                .filter(|m| !present_in.contains(m) && !allowed.contains(&m.as_str()))
+                .cloned()
+                .collect()
+        };
+
+        let absent_from_wasm = missing(&ffi, &wasm);
+        let absent_from_ffi = missing(&wasm, &ffi);
+        assert!(
+            absent_from_wasm.is_empty() && absent_from_ffi.is_empty(),
+            "the two frontend bindings have drifted.\n  \
+             in leaf-ffi, missing from leaf-wasm: {absent_from_wasm:?}\n  \
+             in leaf-wasm, missing from leaf-ffi: {absent_from_ffi:?}\n\
+             Add the method to the other binding, or — if the concept really is \
+             specific to one host — name it in BINDING_DIVERGENCE with the reason.",
+        );
+    }
+
+    /// An entry that no longer describes a real divergence is worse than no
+    /// entry: it silently exempts a name the test would otherwise check.
+    #[test]
+    fn every_divergence_is_still_a_real_one() {
+        let ffi = exported_methods("crates/leaf-ffi/src/lib.rs").unwrap();
+        let wasm = exported_methods("crates/leaf-wasm/src/lib.rs").unwrap();
+        for (name, why) in BINDING_DIVERGENCE {
+            let in_ffi = ffi.iter().any(|m| m == name);
+            let in_wasm = wasm.iter().any(|m| m == name);
+            assert!(
+                in_ffi || in_wasm,
+                "`{name}` is exempted but exists in neither binding — delete the entry",
+            );
+            assert!(
+                !(in_ffi && in_wasm),
+                "`{name}` is exempted but both bindings export it — delete the entry ({why})",
             );
         }
     }
