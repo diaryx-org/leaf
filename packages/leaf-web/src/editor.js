@@ -403,7 +403,7 @@ export class LeafEditor {
       this.rowEls.push(div);
       return div;
     }
-    if (media) return this._mediaRowEl(div, media);
+    if (media) return this._mediaRowEl(div, media, row);
     // A block-boundary gap row holds no caret. Left editable, the browser's own
     // ArrowUp/ArrowDown lands in its short line box on the way between blocks, so
     // a step from a paragraph into the list or code block below it moves only
@@ -473,8 +473,17 @@ export class LeafEditor {
    * measure-and-report loop is for a fixed-cell host (the terminal), and using
    * it here would reserve blank rows the CSS has already accounted for.
    */
-  _mediaRowEl(div, media) {
+  _mediaRowEl(div, media, row) {
     div.classList.add("leaf-media-row");
+    // What core thinks this row's text is, in the units a caret column is
+    // counted in. The row *drawn* here is a picture and two zero-width spaces;
+    // the row core is addressing is the label glyphs it put there for a surface
+    // that can't paint one (`🖼 a leaf`). The two lengths have nothing to do with
+    // each other, and every offset that crosses between them goes through this
+    // number. See `mediaCoreLen`.
+    div.dataset.mediaCoreLen = String(
+      (row?.runs || []).reduce((n, r) => n + r.text.length, 0)
+    );
     div.appendChild(document.createTextNode(ZWSP));
 
     let node;
@@ -1195,8 +1204,32 @@ function rowTextLength(rowEl) {
   return acc;
 }
 
+/**
+ * How long core believes a media row is, or null for an ordinary row.
+ *
+ * A media row is the one place where the text core addresses and the text the
+ * browser renders are unrelated. Core lays out `🖼 alt` — nine columns for a
+ * picture with a short caption — and publishes two caret stops on it, one in
+ * front of the media and one past it. The renderer draws the real element
+ * instead, whose only editable text is a zero-width space on each side. Mapping
+ * a column through *that* text put both stops at the same place, so the caret
+ * could never be seen after a picture and a step down through a document needed
+ * two presses per image to get by.
+ *
+ * The row's two ends are the only positions either description agrees on, so
+ * that is what the two are mapped through.
+ */
+function mediaCoreLen(rowEl) {
+  const raw = rowEl?.dataset?.mediaCoreLen;
+  return raw == null ? null : Number(raw);
+}
+
 /** A collapsed `Range` `off` UTF-16 units into a row's editable text. */
 function rangeAtOffset(rowEl, off) {
+  const coreLen = mediaCoreLen(rowEl);
+  // Core's column, translated to the near or far side of the drawn element —
+  // the row's start, or past everything on it.
+  if (coreLen != null) off = off <= 0 ? 0 : rowTextLength(rowEl);
   const walker = textWalker(rowEl);
   let node,
     acc = 0,
@@ -1230,14 +1263,25 @@ function rangeAtOffset(rowEl, off) {
  * glyphs stay correct.
  */
 function offsetTo(rowEl, node, offset) {
+  const coreLen = mediaCoreLen(rowEl);
+  if (coreLen != null) {
+    // Anywhere but hard against the row's start counts as past the media, so a
+    // single ArrowRight steps over a picture instead of landing in the gap
+    // between it and the zero-width space in front of it.
+    return domOffsetIn(rowEl, node, offset) <= 0 ? 0 : coreLen;
+  }
+  return domOffsetIn(rowEl, node, offset);
+}
+
+/**
+ * The UTF-16 offset of a DOM point within a row's editable text, without the
+ * media translation `offsetTo` applies on top of it.
+ */
+function domOffsetIn(rowEl, node, offset) {
   if (node.nodeType !== 3) {
-    // An element endpoint (offset = child index): sum the text of the children
-    // before it.
     let acc = 0;
     for (let i = 0; i < offset && i < node.childNodes.length; i++) {
       const c = node.childNodes[i];
-      // Chrome, not document text: the code-language label and a media
-      // element's no-support fallback both sit outside the row's offsets.
       if (
         c.nodeType === 1 &&
         (c.classList.contains("leaf-code-lang") || c.classList.contains("leaf-media"))
@@ -1249,86 +1293,13 @@ function offsetTo(rowEl, node, offset) {
     return acc;
   }
   const walker = textWalker(rowEl);
-  let acc = 0,
-    n;
+  let acc = 0;
+  let n;
   while ((n = walker.nextNode())) {
     if (n === node) return acc + offset;
     acc += n.length;
   }
   return acc;
-}
-
-/**
- * The UTF-16 offset into a cell line's text at source offset `src` — the inverse
- * of `srcInLine`, for placing a `Range` where core says the caret is.
- *
- * Walks run by run, because a run is the largest unit whose glyphs are known to
- * be contiguous in the source: within one, advancing a character advances the
- * offset by that character's UTF-8 length, and the run's own `data-src` says
- * where it started. `lineStart` is the fallback for a line with no runs at all.
- */
-function utf16InLine(lineEl, src, lineStart) {
-  let acc = 0;
-  for (const runEl of lineEl.querySelectorAll("[data-src]")) {
-    const base = Number(runEl.dataset.src);
-    const text = runEl.textContent;
-    const bytes = utf8Length(text);
-    if (src < base) return acc;
-    if (src <= base + bytes) {
-      let b = base;
-      let u = 0;
-      for (const ch of text) {
-        if (b >= src) break;
-        b += utf8Length(ch);
-        u += ch.length;
-      }
-      return acc + u;
-    }
-    acc += text.length;
-  }
-  return src <= lineStart ? 0 : acc;
-}
-
-/**
- * The source offset of a DOM point inside a cell line — the inverse of
- * `utf16InLine`. Clamped to the line's own range, since a point on the line
- * element itself (rather than in a run) addresses one of its ends.
- */
-function srcInLine(lineEl, node, offset, lineStart, lineEnd) {
-  const clamp = (v) => Math.min(Math.max(v, lineStart), lineEnd);
-  const runEl = (node.nodeType === 1 ? node : node.parentElement)?.closest("[data-src]");
-  if (!runEl) {
-    // An element endpoint: a child index into the line, so sum what precedes it.
-    if (node === lineEl) {
-      let acc = 0;
-      for (let i = 0; i < offset && i < node.childNodes.length; i++) {
-        acc += node.childNodes[i].textContent.length;
-      }
-      return clamp(acc === 0 ? lineStart : lineEnd);
-    }
-    return clamp(lineStart);
-  }
-  const base = Number(runEl.dataset.src);
-  const text = node.nodeType === 3 ? node.textContent : runEl.textContent;
-  let b = base;
-  let u = 0;
-  for (const ch of text) {
-    if (u >= offset) break;
-    u += ch.length;
-    b += utf8Length(ch);
-  }
-  return clamp(b);
-}
-
-/** A string's length in UTF-8 bytes — core's offsets are byte offsets, and JS
- *  strings are counted in UTF-16 units. */
-function utf8Length(text) {
-  let n = 0;
-  for (const ch of text) {
-    const c = ch.codePointAt(0);
-    n += c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4;
-  }
-  return n;
 }
 
 /** Cross-browser `caret{Range,Position}FromPoint` → `{node, offset}` or null. */
