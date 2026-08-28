@@ -43,10 +43,10 @@
 //! [`Row::heading`] level so the whole line can be sized as one unit, mirroring
 //! how gpui shapes a heading's line at a single larger size.
 
-use leaf_core::style::{Role, Style as LStyle};
+use leaf_core::style::{Baseline, Role, Style as LStyle};
 use leaf_core::wysiwyg::text_width;
 use leaf_core::{
-    BlockKind, ColorScheme, Doc, Format, InlineKind, LineFlow as CoreLineFlow,
+    Alignment, BlockKind, ColorScheme, Doc, Format, Glyph, InlineKind, LineFlow as CoreLineFlow,
     MarkupMode as CoreMarkupMode, MediaKind, View, VisualMap,
 };
 use serde::{Deserialize, Serialize};
@@ -67,10 +67,112 @@ pub struct Run {
     italic: bool,
     underline: bool,
     strike: bool,
+    /// Raised off the baseline and drawn smaller — a footnote reference's `[1]`,
+    /// or an author's `^x^`. Mutually exclusive with [`Self::sub`]; core's
+    /// `Baseline` is one value, and these are its two non-default cases
+    /// flattened to the flag shape the rest of this record is spelled in.
+    sup: bool,
+    /// Lowered off the baseline and drawn smaller — an author's `~x~`.
+    sub: bool,
+    /// The byte offset in the source this run's first glyph came from.
+    ///
+    /// What a run *means*, as opposed to how it looks: a `link` role says a span
+    /// is drawn as a link but not where it points, and the only way back to that
+    /// is the source. A renderer making a link followable, or a footnote's `[1]`
+    /// clickable, pairs this with [`LeafDoc::link_destination_at`] or
+    /// [`LeafDoc::footnote_at`].
+    ///
+    /// The alternative was for the renderer to count along the row's text and
+    /// ask [`LeafDoc::offset_for_pos`], which means converting between three
+    /// units that agree only on ASCII: this is a byte offset, the run's text is
+    /// UTF-16 code units, and a row's column is a *display* cell (a wide CJK
+    /// glyph is two). Handing the offset over is exact and O(1).
+    ///
+    /// `0` for the runs of the source view, whose rows are split from raw text
+    /// rather than laid out from glyphs.
+    src: usize,
     /// Whether this run lies inside the active selection — so the renderer can
     /// paint a selection background without the JS side re-deriving it from
     /// offsets. Selection splits a run the same way a style change does.
     sel: bool,
+}
+
+/// One visual line of a table cell — a cell holds more than one only when an
+/// in-cell `<br>` splits it.
+#[derive(Serialize, Tsify)]
+pub struct TableCellLineView {
+    runs: Vec<Run>,
+    /// The source offsets bounding this line's content — the caret home at its
+    /// start and the stop just past its end.
+    start: usize,
+    end: usize,
+}
+
+/// One cell of a table's structural grid: its content as visual lines, the
+/// column alignment its text honours, and the source range the whole cell
+/// occupies (where a click or the caret lands).
+#[derive(Serialize, Tsify)]
+pub struct TableCellView {
+    lines: Vec<TableCellLineView>,
+    /// `"left"`, `"right"`, `"center"`, or `"default"`.
+    align: String,
+    start: usize,
+    end: usize,
+}
+
+/// One row of a table's structural grid; a header row draws bold and is ruled
+/// off from the body below it.
+#[derive(Serialize, Tsify)]
+pub struct TableRowView {
+    head: bool,
+    cells: Vec<TableCellView>,
+}
+
+/// A table described *structurally* rather than as the monospace box-glyph
+/// picture that spells it in [`DocView::rows`].
+///
+/// The picture is exactly right on a fixed-cell surface and unfixable off one:
+/// in a proportional font the `│` of one row and the `│` of the next land at
+/// different x, and the grid shears. So the browser — which is proportional —
+/// **skips the rows in `[start_row, end_row)`** and lays out a real `<table>`
+/// from this instead, exactly as it lays a real `<img>` over a [`MediaView`]'s
+/// placeholder row. The two describe the same cells at the same source offsets,
+/// so the caret lands identically either way. See [`leaf_core::TableInfo`].
+#[derive(Serialize, Tsify)]
+pub struct TableView {
+    /// The [`DocView::rows`] indices the box-drawn picture occupies — the rows a
+    /// grid-drawing renderer skips.
+    start_row: usize,
+    end_row: usize,
+    grid: Vec<TableRowView>,
+}
+
+/// One `{key=value}` attribute of a [`DirectiveView`]. A bare attribute
+/// (`{public}`) has an empty value, which a consumer reads as a flag.
+#[derive(Serialize, Tsify)]
+pub struct DirectiveAttr {
+    key: String,
+    value: String,
+}
+
+/// A leaf directive (`::name{…}`) — a standalone block with no body, drawn in
+/// [`DocView::rows`] as a one-row `⧉ name` placeholder. A renderer that knows
+/// the host app's vocabulary reads this and paints the real thing over the rows
+/// in `[start_row, end_row)` — an `<iframe>` for diaryx's `::embed{src=…}`, say
+/// — exactly as a grid-drawing one replaces a [`TableView`]'s picture rows. One
+/// that doesn't just paints the placeholder.
+///
+/// Core resolves nothing here and neither does this layer: the vocabulary
+/// belongs to the app. See [`leaf_core::DirectiveInfo`].
+#[derive(Serialize, Tsify)]
+pub struct DirectiveView {
+    start_row: usize,
+    end_row: usize,
+    /// The directive's type (`embed`, `toc`, `vis`), no leading colons.
+    name: String,
+    /// Its `[label]` text, or empty — what the placeholder row shows.
+    label: String,
+    attrs: Vec<DirectiveAttr>,
 }
 
 /// One visual line: its styled runs plus the row-level flags a frontend draws
@@ -230,6 +332,15 @@ pub struct MediaHeight {
 #[tsify(into_wasm_abi)]
 pub struct DocView {
     rows: Vec<Row>,
+    /// Tables described structurally, for the proportional renderer that draws
+    /// its own grid instead of painting the box-glyph rows. Empty in the source
+    /// view. Each names the `rows` span its picture occupies, to be skipped.
+    tables: Vec<TableView>,
+    /// Leaf directives (`::name{…}`) described structurally, for a renderer that
+    /// paints what the host app's vocabulary makes of them instead of the `⧉`
+    /// placeholder row. Empty in the source view, where the directive is the
+    /// literal text the caret is editing.
+    directives: Vec<DirectiveView>,
     /// The caret's row: an index into [`Self::rows`].
     caret_row: usize,
     /// The caret's display *column* within its row — core's grid position. Kept
@@ -263,6 +374,20 @@ pub struct DocView {
     /// toolbar lights the matching buttons, the same state the TUI prints in its
     /// footer.
     active: Vec<String>,
+    /// The caret's **source byte offset** — the coordinate a table cell is keyed
+    /// by ([`TableCellView::start`]/[`TableCellView::end`]), so a renderer
+    /// drawing its own grid can find which cell the caret sits in without the
+    /// picture-row indices.
+    caret_src: usize,
+    /// The destination of the link the caret stands in, or `null` — a toolbar
+    /// lights its Link button from it and seeds an edit of that link with it.
+    ///
+    /// It rides the frame rather than being a query the toolbar makes for itself
+    /// because a toolbar only redraws when the *state* changes: walking the
+    /// caret out of a link changes no mark, no heading, and no dirty flag, so a
+    /// Link button reading this by a call of its own would keep a stale light
+    /// on. Same reason `heading` is here and not asked for.
+    link: Option<String>,
     /// Every block-level image, video, and audio in the frame, in row order —
     /// the placeholder rows the renderer replaces with real elements. Empty in
     /// the source view, which shows the markup itself and has no placeholders.
@@ -273,8 +398,11 @@ pub struct DocView {
 /// `Range` counts to. Walks grapheme clusters exactly as core measures columns
 /// ([`text_width`] per cluster), so a wide cluster advances the column by its
 /// cells while the offset advances by its UTF-16 length; the two coincide only
-/// on plain ASCII. A `col` landing inside a wide cluster (it shouldn't — caret
-/// columns are cluster starts) resolves to that cluster's start.
+/// on plain ASCII.
+///
+/// A `col` falling *inside* a wide cluster resolves past it, to the boundary
+/// after — the loop consumes a cluster whole or not at all. Core never asks for
+/// one: a caret column is always a cluster start.
 fn col_to_utf16(text: &str, col: usize) -> usize {
     let mut c = 0usize;
     let mut u = 0usize;
@@ -455,6 +583,9 @@ impl LeafDoc {
             None => (false, caret_row, caret_ch),
         };
         let heading = self.doc.current_heading_level();
+        // Read before the frame is assembled: it needs `&mut self`, which the
+        // struct literal's other fields are already borrowing out of.
+        let link = self.doc.link_destination_at_caret();
         let active = self
             .doc
             .active_inline_marks()
@@ -464,6 +595,16 @@ impl LeafDoc {
 
         Ok(DocView {
             rows,
+            // Both are structural alternatives to rows the WYSIWYG map drew as a
+            // picture; the source view has no picture, only the markup itself.
+            tables: match self.doc.view {
+                View::Wysiwyg => wysiwyg_tables(&self.doc.vmap, ss, se),
+                View::Source => Vec::new(),
+            },
+            directives: match self.doc.view {
+                View::Wysiwyg => wysiwyg_directives(&self.doc.vmap),
+                View::Source => Vec::new(),
+            },
             caret_row,
             caret_col,
             caret_ch,
@@ -474,6 +615,8 @@ impl LeafDoc {
             view: self.doc.view_name().to_string(),
             heading,
             active,
+            caret_src: self.doc.caret,
+            link,
             // Only the WYSIWYG view has placeholder rows to replace; the source
             // view is the markup itself, where a `<video>` tag *is* the content.
             media: match self.doc.view {
@@ -995,29 +1138,8 @@ fn wysiwyg_rows(vmap: &VisualMap, ss: usize, se: usize) -> Vec<Row> {
             // first character landed.
             let heading = vrow.heading;
 
-            let mut runs: Vec<Run> = Vec::new();
-            let mut buf = String::new();
-            let mut cur: Option<(LStyle, bool)> = None;
-
-            for g in &vrow.glyphs {
-                let key = (g.style, g.src >= ss && g.src < se);
-                match cur {
-                    Some(k) if k == key => buf.push(g.ch),
-                    _ => {
-                        if let Some((style, was_sel)) = cur.take() {
-                            runs.push(make_run(std::mem::take(&mut buf), style, was_sel));
-                        }
-                        cur = Some(key);
-                        buf.push(g.ch);
-                    }
-                }
-            }
-            if let Some((style, was_sel)) = cur {
-                runs.push(make_run(buf, style, was_sel));
-            }
-
             Row {
-                runs,
+                runs: runs_of(&vrow.glyphs, ss, se),
                 decoration: vrow.decoration,
                 code: vrow.code,
                 code_lang: vrow.code_lang.clone(),
@@ -1046,14 +1168,14 @@ fn source_rows(source: &str, ss: usize, se: usize) -> Vec<Row> {
         let mut runs = Vec::new();
         if a < b {
             if a > 0 {
-                runs.push(make_run(raw[..a].to_string(), body, false));
+                runs.push(make_run(raw[..a].to_string(), body, false, 0));
             }
-            runs.push(make_run(raw[a..b].to_string(), body, true));
+            runs.push(make_run(raw[a..b].to_string(), body, true, 0));
             if b < raw.len() {
-                runs.push(make_run(raw[b..].to_string(), body, false));
+                runs.push(make_run(raw[b..].to_string(), body, false, 0));
             }
         } else if !raw.is_empty() {
-            runs.push(make_run(raw.to_string(), body, false));
+            runs.push(make_run(raw.to_string(), body, false, 0));
         }
 
         rows.push(Row {
@@ -1069,8 +1191,8 @@ fn source_rows(source: &str, ss: usize, se: usize) -> Vec<Row> {
 }
 
 /// Build a [`Run`] from an accumulated string and the core style it was drawn
-/// with — the one place role and emphasis flags cross into the view shape.
-fn make_run(text: String, style: LStyle, sel: bool) -> Run {
+/// with — the one place role, emphasis, and baseline cross into the view shape.
+fn make_run(text: String, style: LStyle, sel: bool, src: usize) -> Run {
     Run {
         text,
         role: role_name(style.role),
@@ -1078,6 +1200,307 @@ fn make_run(text: String, style: LStyle, sel: bool) -> Run {
         italic: style.italic,
         underline: style.underline,
         strike: style.strikethrough,
+        sup: style.baseline == Baseline::Super,
+        sub: style.baseline == Baseline::Sub,
+        src,
         sel,
+    }
+}
+
+/// Coalesce `glyphs` into maximal runs of identical `(style, selected)` — the
+/// shared body of a row's runs and a table cell's. A glyph is selected when its
+/// source byte lies in `[ss, se)`, so the selection splits a run exactly as a
+/// style change does.
+fn runs_of(glyphs: &[Glyph], ss: usize, se: usize) -> Vec<Run> {
+    let mut runs: Vec<Run> = Vec::new();
+    let mut buf = String::new();
+    // The style/selection key the run is accumulating, and the source offset its
+    // first glyph came from — carried alongside rather than re-derived, since a
+    // run's glyphs are contiguous but its *text* has no offsets in it.
+    let mut cur: Option<(LStyle, bool, usize)> = None;
+    for g in glyphs {
+        let key = (g.style, g.src >= ss && g.src < se);
+        match cur {
+            Some((style, sel, _)) if (style, sel) == key => buf.push(g.ch),
+            _ => {
+                if let Some((style, was_sel, src)) = cur.take() {
+                    runs.push(make_run(std::mem::take(&mut buf), style, was_sel, src));
+                }
+                cur = Some((key.0, key.1, g.src));
+                buf.push(g.ch);
+            }
+        }
+    }
+    if let Some((style, was_sel, src)) = cur {
+        runs.push(make_run(buf, style, was_sel, src));
+    }
+    runs
+}
+
+/// Split a cell's flat glyphs into its visual lines at the in-cell break glyphs
+/// (`\n`, from a `<br>`), each with the source range it spans. A line runs from
+/// its first glyph's offset to the break that ends it (`cell_end` for the last);
+/// an empty line — a leading/trailing break, or an empty cell — collapses to a
+/// single caret home. The break glyphs themselves are dropped (they hold no
+/// caret), exactly as the monospace picture drops them.
+fn cell_lines(
+    glyphs: &[Glyph],
+    cell_start: usize,
+    cell_end: usize,
+    ss: usize,
+    se: usize,
+) -> Vec<TableCellLineView> {
+    let mut lines = Vec::new();
+    let mut seg: Vec<Glyph> = Vec::new();
+    // The current line's start offset: the cell's for the first line, then the
+    // first real glyph after each break (`None` until that glyph is seen).
+    let mut line_start: Option<usize> = Some(cell_start);
+    for g in glyphs {
+        if g.ch == '\n' {
+            let start = line_start.unwrap_or(g.src);
+            lines.push(TableCellLineView {
+                runs: runs_of(&seg, ss, se),
+                start,
+                end: g.src,
+            });
+            seg.clear();
+            line_start = None;
+        } else {
+            if line_start.is_none() {
+                line_start = Some(g.src);
+            }
+            seg.push(g.clone());
+        }
+    }
+    lines.push(TableCellLineView {
+        runs: runs_of(&seg, ss, se),
+        start: line_start.unwrap_or(cell_end),
+        end: cell_end,
+    });
+    lines
+}
+
+/// The structural tables of a WYSIWYG frame — each with the `rows` span its
+/// box-glyph picture occupies (to be skipped) and its grid of styled cells.
+fn wysiwyg_tables(vmap: &VisualMap, ss: usize, se: usize) -> Vec<TableView> {
+    vmap.tables
+        .iter()
+        .map(|t| TableView {
+            start_row: t.rows_span.start,
+            end_row: t.rows_span.end,
+            grid: t
+                .grid
+                .iter()
+                .map(|row| TableRowView {
+                    head: row.head,
+                    cells: row
+                        .cells
+                        .iter()
+                        .map(|cell| TableCellView {
+                            lines: cell_lines(&cell.glyphs, cell.start, cell.end, ss, se),
+                            align: align_name(cell.align),
+                            start: cell.start,
+                            end: cell.end,
+                        })
+                        .collect(),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+/// The leaf directives of a WYSIWYG frame, each naming the placeholder rows a
+/// host-aware renderer replaces.
+fn wysiwyg_directives(vmap: &VisualMap) -> Vec<DirectiveView> {
+    vmap.directives
+        .iter()
+        .map(|d| DirectiveView {
+            start_row: d.rows_span.start,
+            end_row: d.rows_span.end,
+            name: d.name.clone(),
+            label: d.label.clone(),
+            attrs: d
+                .attrs
+                .iter()
+                .map(|(key, value)| DirectiveAttr {
+                    key: key.clone(),
+                    // A bare attribute is a flag; the difference from `key=""`
+                    // has no consumer on this side.
+                    value: value.clone().unwrap_or_default(),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+/// The wire name for a cell's column alignment.
+fn align_name(a: Alignment) -> String {
+    match a {
+        Alignment::Left => "left",
+        Alignment::Right => "right",
+        Alignment::Center => "center",
+        Alignment::Default => "default",
+    }
+    .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a WYSIWYG map the way [`LeafDoc::view`] does, without needing a
+    /// `JsValue` — the view-producing methods return one, so they can't be
+    /// called off wasm, but everything they assemble the frame *from* is
+    /// ordinary Rust and is what these tests exercise.
+    fn wysiwyg(source: &str) -> Doc {
+        let mut doc = Doc::from_source(source.to_string(), Format::Markdown).unwrap();
+        doc.build_visual(80);
+        doc
+    }
+
+    #[test]
+    fn a_column_and_a_utf16_offset_agree_only_on_ascii() {
+        // Two cells wide, one UTF-16 unit: the two measures diverge immediately.
+        assert_eq!(col_to_utf16("漢字", 2), 1);
+        assert_eq!(utf16_to_col("漢字", 1), 2);
+        // An astral emoji is two cells *and* two UTF-16 units, for different reasons.
+        assert_eq!(col_to_utf16("🍃x", 2), 2);
+        assert_eq!(utf16_to_col("🍃x", 2), 2);
+        // Plain ASCII is the one case where they coincide.
+        assert_eq!(col_to_utf16("leaf", 3), 3);
+        assert_eq!(utf16_to_col("leaf", 3), 3);
+    }
+
+    /// A column falling inside a wide cluster resolves to the boundary *after*
+    /// it — clusters are consumed whole. Core never asks for such a column (a
+    /// caret column is a cluster start); this pins down what happens if anything
+    /// ever does, so the answer is a boundary rather than a split cluster.
+    #[test]
+    fn a_column_inside_a_wide_cluster_resolves_past_it() {
+        assert_eq!(col_to_utf16("漢字", 1), 1);
+        assert_eq!(col_to_utf16("漢字", 3), 2);
+    }
+
+    #[test]
+    fn runs_coalesce_by_style_and_split_on_the_selection_edge() {
+        let doc = wysiwyg("plain **bold** plain\n");
+        let glyphs = &doc.vmap.rows[0].glyphs;
+
+        let runs = runs_of(glyphs, usize::MAX, usize::MAX);
+        let texts: Vec<&str> = runs.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(texts, ["plain ", "bold", " plain"]);
+        assert!(runs.iter().all(|r| !r.sel));
+        assert!(runs[1].bold && !runs[0].bold);
+
+        // Each run's `src` is its first glyph's offset, so it points back into
+        // the source rather than into the rendered text.
+        assert_eq!(runs[0].src, 0);
+        assert_eq!(&doc.source[runs[1].src..runs[1].src + 4], "bold");
+
+        // A selection edge inside a styled span splits that span in two, and the
+        // two halves keep the style.
+        let start = doc.source.find("bold").unwrap();
+        let split = runs_of(glyphs, start, start + 2);
+        let selected: Vec<&str> = split
+            .iter()
+            .filter(|r| r.sel)
+            .map(|r| r.text.as_str())
+            .collect();
+        assert_eq!(selected, ["bo"]);
+        assert!(split.iter().filter(|r| r.bold).count() == 2);
+    }
+
+    /// A footnote reference is drawn raised; the flag has to reach the renderer,
+    /// because CSS is the only thing that can make it look raised.
+    #[test]
+    fn a_raised_run_says_so() {
+        let doc = wysiwyg("text[^1]\n\n[^1]: note\n");
+        let sup: Vec<String> = doc
+            .vmap
+            .rows
+            .iter()
+            .flat_map(|r| runs_of(&r.glyphs, usize::MAX, usize::MAX))
+            .filter(|r| r.sup)
+            .map(|r| r.text.clone())
+            .collect();
+        assert!(!sup.is_empty(), "no run came across raised: {sup:?}");
+        assert!(sup.iter().all(|t| !t.is_empty()));
+        assert!(
+            doc.vmap
+                .rows
+                .iter()
+                .flat_map(|r| runs_of(&r.glyphs, usize::MAX, usize::MAX))
+                .all(|r| !(r.sup && r.sub)),
+            "a run cannot be both raised and lowered"
+        );
+    }
+
+    #[test]
+    fn a_table_crosses_as_a_grid_and_names_the_picture_rows_to_skip() {
+        let doc = wysiwyg("| a | b |\n|---|--:|\n| 1 | 2 |\n");
+        let tables = wysiwyg_tables(&doc.vmap, usize::MAX, usize::MAX);
+        assert_eq!(tables.len(), 1);
+        let t = &tables[0];
+
+        // The header row plus one body row — the `|---|` is an alignment spec,
+        // not a row of content.
+        assert_eq!(t.grid.len(), 2);
+        assert!(t.grid[0].head);
+        assert!(!t.grid[1].head);
+        assert_eq!(t.grid[0].cells.len(), 2);
+
+        let text = |c: &TableCellView| -> String {
+            c.lines
+                .iter()
+                .flat_map(|l| l.runs.iter())
+                .map(|r| r.text.as_str())
+                .collect::<String>()
+                .trim()
+                .to_string()
+        };
+        assert_eq!(text(&t.grid[0].cells[0]), "a");
+        assert_eq!(text(&t.grid[1].cells[1]), "2");
+
+        // `|--:|` is a right-aligned column, and the alignment rides the cell.
+        assert_eq!(t.grid[0].cells[1].align, "right");
+        assert_eq!(t.grid[0].cells[0].align, "default");
+
+        // The rows the box-glyph picture occupies really are the drawn ones, and
+        // a renderer skipping them skips the whole table.
+        assert!(t.end_row > t.start_row);
+        assert!(t.end_row <= doc.vmap.rows.len());
+
+        // A cell's source range addresses its own text, which is what makes a
+        // click in a drawn cell land on the right caret offset.
+        let cell = &t.grid[1].cells[0];
+        assert!(doc.source[cell.start..cell.end].contains('1'));
+    }
+
+    /// The two descriptions of a table are alternatives, not layers: whatever a
+    /// renderer skips in `rows`, it must find in the grid.
+    #[test]
+    fn every_table_cell_sits_inside_the_source() {
+        let doc = wysiwyg("| one | two |\n|---|---|\n| three | four |\n");
+        for t in wysiwyg_tables(&doc.vmap, usize::MAX, usize::MAX) {
+            for row in &t.grid {
+                for cell in &row.cells {
+                    assert!(cell.start <= cell.end);
+                    assert!(cell.end <= doc.source.len());
+                    for line in &cell.lines {
+                        assert!(line.start <= line.end, "{}..{}", line.start, line.end);
+                        assert!(line.end <= doc.source.len());
+                    }
+                }
+            }
+        }
+    }
+
+    /// A document with no table publishes no grid — so a renderer's "skip these
+    /// rows" set is empty and it paints every row, as it always did.
+    #[test]
+    fn a_document_without_a_table_publishes_no_grid() {
+        let doc = wysiwyg("# just a heading\n\nand a paragraph.\n");
+        assert!(wysiwyg_tables(&doc.vmap, usize::MAX, usize::MAX).is_empty());
+        assert!(wysiwyg_directives(&doc.vmap).is_empty());
     }
 }
