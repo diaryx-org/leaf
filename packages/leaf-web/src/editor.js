@@ -218,6 +218,33 @@ export class LeafEditor {
   }
 
   /**
+   * Which formatting controls this document's format can actually spell — one
+   * flag per toolbar button.
+   *
+   * Read once when a document opens: the answer depends only on the format, so
+   * no edit can change it. A toolbar that ignores this stays correct — every
+   * gesture refuses on its own — but it offers buttons that do nothing, which is
+   * how the demo shipped a highlight button that Markdown has no syntax for.
+   */
+  capabilities() {
+    return this.doc.capabilities();
+  }
+
+  /** Whether the format offers any door in at all — false only for a wholly
+   *  parse-only one (XML), where a toolbar can be hidden outright. */
+  isAuthorable() {
+    return this.doc.authorable();
+  }
+
+  /** Whether the caret is inside a table — gate the grid controls on this *and*
+   *  on `capabilities().table`, which asks whether this format's tables are
+   *  editable at all. An HTML table answers yes to the first and no to the
+   *  second. */
+  caretInTable() {
+    return this.doc.caret_in_table();
+  }
+
+  /**
    * Recompute the wrap width from the current viewport and repaint. Called
    * automatically on container resize; expose it for hosts that resize the
    * editor programmatically.
@@ -245,6 +272,27 @@ export class LeafEditor {
   toggleBlockquote() { this._command((d) => d.toggle_blockquote()); }
   toggleList(ordered) { this._command((d) => d.toggle_list(!!ordered)); }
   insertLink(dest) { this._command((d) => d.insert_link(dest)); }
+  toggleTaskItem() { this._command((d) => d.toggle_task_item()); }
+  toggleTaskChecked() { this._command((d) => d.toggle_task_checked()); }
+  /** Write a footnote reference at the caret, and the definition it needs. */
+  insertFootnote() { this._command((d) => d.insert_footnote()); }
+  insertThematicBreak() { this._command((d) => d.insert_thematic_break()); }
+  /** Insert block media — `kind` is `"image"`, `"video"`, or `"audio"`. Any
+   *  selection becomes the alt text. */
+  insertMedia(kind, destination, alt = "") {
+    this._command((d) => d.insert_media(kind, destination, alt));
+  }
+  tableInsertRow(below = true) { this._command((d) => d.table_insert_row(below)); }
+  tableDeleteRow() { this._command((d) => d.table_delete_row()); }
+  tableInsertColumn(right = true) { this._command((d) => d.table_insert_column(right)); }
+  tableDeleteColumn() { this._command((d) => d.table_delete_column()); }
+  tableMoveRow(down = true) { this._command((d) => d.table_move_row(down)); }
+  tableMoveColumn(right = true) { this._command((d) => d.table_move_column(right)); }
+  /** `"left"`, `"right"`, `"center"`, or `"default"`. */
+  tableSetAlignment(align) { this._command((d) => d.table_set_alignment(align)); }
+  /** The line-wrapping preference: `"fold"` or `"preserve"`. */
+  lineFlow() { return this.doc.line_flow(); }
+  setLineFlow(mode) { this._command((d) => d.set_line_flow(String(mode))); }
   undo() { this._command((d) => d.undo()); }
   redo() { this._command((d) => d.redo()); }
   selectAll() { this._command((d) => d.select_all()); }
@@ -970,6 +1018,23 @@ export class LeafEditor {
     on(ce, "focus", () => this.container.classList.add("leaf-focus"));
     on(ce, "blur", () => this.container.classList.remove("leaf-focus"));
 
+    // A rendered link and a rendered checkbox are the two things on this surface
+    // that are worth clicking rather than merely worth putting a caret in. Both
+    // are answered from the run's own source offset — the run says where it came
+    // from, and core turns that back into a destination or a tick.
+    on(ce, "click", (e) => this._onClick(e));
+
+    // Core resolves a `<picture>`'s `prefers-color-scheme` sources itself, and
+    // has no theme of its own — so the page answers on its behalf, and keeps
+    // answering. A repaint at the same scheme resolves to the same URLs, so this
+    // is cheap to fire on every change.
+    if (typeof matchMedia === "function") {
+      this._darkQuery = matchMedia("(prefers-color-scheme: dark)");
+      const scheme = () => this.render(this.doc.set_color_scheme(this._darkQuery.matches ? "dark" : "light"));
+      on(this._darkQuery, "change", scheme);
+      this.doc.set_color_scheme(this._darkQuery.matches ? "dark" : "light");
+    }
+
     // Rich clipboard (mirrors leaf-tui / leaf-gpui): copy/cut write both the
     // plain source and twig's HTML; paste prefers the HTML flavor.
     on(ce, "copy", (e) => {
@@ -1009,6 +1074,50 @@ export class LeafEditor {
   }
 
   /**
+   * A click on a rendered link or task box.
+   *
+   * Both act on the run's own `src` rather than on the caret: a click knows an
+   * offset and not a caret position, and asking core about the *caret* would
+   * answer about wherever the last selection change put it, which on a click is
+   * a race. Neither gesture moves the caret, so a plain click still places one.
+   *
+   * A link is followed only with the platform's modifier held (⌘ on a Mac, Ctrl
+   * elsewhere). This is an editor: clicking a link in your own prose should put
+   * the caret in it, not navigate away from the document.
+   */
+  _onClick(e) {
+    const runEl = e.target.closest?.("[data-src]");
+    if (!runEl) return;
+    const src = Number(runEl.dataset.src);
+    if (!Number.isFinite(src)) return;
+
+    // A task marker is core's `☐ `/`☑ ` drawn in the list marker's place.
+    if (runEl.classList.contains("leaf-r-list") && /^[☐☑]/.test(runEl.textContent)) {
+      e.preventDefault();
+      this.render(this.doc.toggle_task_at(src));
+      return;
+    }
+
+    if (runEl.classList.contains("leaf-r-link") && (e.metaKey || e.ctrlKey)) {
+      const dest = this.doc.link_destination_at(src);
+      if (dest) {
+        e.preventDefault();
+        this._onFollowLink ? this._onFollowLink(dest) : window.open(dest, "_blank", "noopener");
+      }
+    }
+  }
+
+  /**
+   * What to do when a link is followed, instead of opening a new tab — for a
+   * host that resolves a relative path against its own document store, or wants
+   * an in-app preview. Called with the destination as core parsed it.
+   */
+  onFollowLink(cb) {
+    this._onFollowLink = cb;
+    return this;
+  }
+
+  /**
    * Translate a `beforeinput` intent into a core operation. Everything is
    * prevented so the browser never edits the projected DOM; core edits, then we
    * repaint and restore the selection. Composition is handled separately.
@@ -1031,8 +1140,15 @@ export class LeafEditor {
         break;
       }
       case "insertParagraph":
+        // Inside a grid, Return means the cell below — adding a row at the last
+        // one — not a new paragraph in the middle of a table. Core answers
+        // `undefined` when the caret isn't in one, which is the signal to fall
+        // through to the ordinary meaning.
+        view = d.cell_return() ?? d.newline();
+        break;
       case "insertLineBreak":
-        view = d.newline();
+        // Shift+Return: a break *within* the cell rather than a new row.
+        view = d.cell_line_break() ?? d.newline();
         break;
       case "deleteContentBackward":
         view = d.backspace();
@@ -1116,9 +1232,15 @@ export class LeafEditor {
       // Tab / Shift+Tab are structural: they indent / outdent the caret's line,
       // nesting or unnesting a list item (not typing spaces). The core decides
       // the step — a list item moves by its marker width, prose by one level.
+      //
+      // In a table it means the next (or previous) cell instead, adding a row
+      // when it steps off the end. Core answers `undefined` when the caret isn't
+      // in one, so the ordinary meaning is the fallback rather than a separate
+      // branch that has to ask first.
       e.preventDefault();
       this._syncFromDom();
-      this.render(e.shiftKey ? d.outdent() : d.indent());
+      const forward = !e.shiftKey;
+      this.render(d.cell_tab(forward) ?? (forward ? d.indent() : d.outdent()));
     }
     // Enter, Backspace, Delete, arrows: handled via beforeinput / native motion.
   }
@@ -1130,6 +1252,12 @@ export class LeafEditor {
       dirty: view.dirty,
       heading: view.heading ?? null,
       active: view.active,
+      // Rides the frame rather than being a query the host makes for itself: a
+      // toolbar redraws on state change, and walking the caret out of a link
+      // changes no mark, no heading and no dirty flag, so a Link affordance
+      // asking on its own would keep a stale answer.
+      link: view.link ?? null,
+      caretSrc: view.caret_src,
     });
   }
 }
@@ -1140,6 +1268,8 @@ export class LeafEditor {
  * @property {boolean} dirty    buffer differs from last saved
  * @property {number | null} heading  heading level at the caret, or null
  * @property {string[]} active  inline marks active at the caret
+ * @property {string | null} link  destination of the link at the caret, or null
+ * @property {number} caretSrc  the caret's source byte offset
  */
 
 // ── module-private helpers ────────────────────────────────────────────────────
@@ -1271,6 +1401,79 @@ function offsetTo(rowEl, node, offset) {
     return domOffsetIn(rowEl, node, offset) <= 0 ? 0 : coreLen;
   }
   return domOffsetIn(rowEl, node, offset);
+}
+
+/**
+ * The UTF-16 offset into a cell line's text at source offset `src` — the inverse
+ * of `srcInLine`, for placing a `Range` where core says the caret is.
+ *
+ * Walks run by run, because a run is the largest unit whose glyphs are known to
+ * be contiguous in the source: within one, advancing a character advances the
+ * offset by that character's UTF-8 length, and the run's own offset says where
+ * it started. `lineStart` is the fallback for a line with no runs at all.
+ */
+function utf16InLine(lineEl, src, lineStart) {
+  let acc = 0;
+  for (const runEl of lineEl.querySelectorAll("[data-src]")) {
+    const base = Number(runEl.dataset.src);
+    const text = runEl.textContent;
+    const bytes = utf8Length(text);
+    if (src < base) return acc;
+    if (src <= base + bytes) {
+      let b = base;
+      let u = 0;
+      for (const ch of text) {
+        if (b >= src) break;
+        b += utf8Length(ch);
+        u += ch.length;
+      }
+      return acc + u;
+    }
+    acc += text.length;
+  }
+  return src <= lineStart ? 0 : acc;
+}
+
+/**
+ * The source offset of a DOM point inside a cell line — the inverse of
+ * `utf16InLine`. Clamped to the line's own range, since a point on the line
+ * element itself (rather than in a run) addresses one of its ends.
+ */
+function srcInLine(lineEl, node, offset, lineStart, lineEnd) {
+  const clamp = (v) => Math.min(Math.max(v, lineStart), lineEnd);
+  const runEl = (node.nodeType === 1 ? node : node.parentElement)?.closest("[data-src]");
+  if (!runEl) {
+    // An element endpoint: a child index into the line, so sum what precedes it.
+    if (node === lineEl) {
+      let acc = 0;
+      for (let i = 0; i < offset && i < node.childNodes.length; i++) {
+        acc += node.childNodes[i].textContent.length;
+      }
+      return clamp(acc === 0 ? lineStart : lineEnd);
+    }
+    return clamp(lineStart);
+  }
+  const base = Number(runEl.dataset.src);
+  const text = node.nodeType === 3 ? node.textContent : runEl.textContent;
+  let b = base;
+  let u = 0;
+  for (const ch of text) {
+    if (u >= offset) break;
+    u += ch.length;
+    b += utf8Length(ch);
+  }
+  return clamp(b);
+}
+
+/** A string's length in UTF-8 bytes — core's offsets are byte offsets, and JS
+ *  strings are counted in UTF-16 units. */
+function utf8Length(text) {
+  let n = 0;
+  for (const ch of text) {
+    const c = ch.codePointAt(0);
+    n += c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4;
+  }
+  return n;
 }
 
 /**

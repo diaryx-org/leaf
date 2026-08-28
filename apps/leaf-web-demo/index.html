@@ -29,6 +29,11 @@
     border: 1px solid var(--border); background: var(--panel); color: var(--text); cursor: pointer; }
   #toolbar button:hover { border-color: var(--accent); }
   #toolbar button.on { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+  /* A control this format cannot spell, or that needs a caret it hasn't got.
+     Dimmed rather than hidden, so the toolbar doesn't reflow as the caret moves
+     in and out of a table. */
+  #toolbar button:disabled { opacity: 0.32; cursor: default; border-color: var(--border); }
+  #toolbar button:disabled:hover { border-color: var(--border); }
   #toolbar .sep { width: 1px; background: var(--border); margin: 2px 4px; }
 
   /* The editor mounts here; LeafEditor injects its own surface styles. */
@@ -51,18 +56,25 @@
     <span id="viewname">wysiwyg</span>
   </header>
   <div id="toolbar">
-    <button data-cmd="toggleBold" id="b-bold"><b>B</b></button>
-    <button data-cmd="toggleItalic" id="b-italic"><i>I</i></button>
-    <button data-cmd="toggleCode" id="b-code">&lt;/&gt;</button>
-    <button data-cmd="toggleMark" id="b-mark">▨</button>
+    <button data-cmd="toggleBold" data-cap="bold" id="b-bold"><b>B</b></button>
+    <button data-cmd="toggleItalic" data-cap="italic" id="b-italic"><i>I</i></button>
+    <button data-cmd="toggleCode" data-cap="code" id="b-code">&lt;/&gt;</button>
+    <button data-cmd="toggleMark" data-cap="mark" id="b-mark">▨</button>
     <div class="sep"></div>
-    <button data-cmd="setParagraph">¶</button>
-    <button data-cmd="setHeading" data-arg="1" id="b-h1">H1</button>
-    <button data-cmd="setHeading" data-arg="2" id="b-h2">H2</button>
-    <button data-cmd="setHeading" data-arg="3" id="b-h3">H3</button>
-    <button data-cmd="toggleBlockquote">❝</button>
-    <button data-cmd="toggleList" data-arg="false">• List</button>
-    <button data-cmd="toggleList" data-arg="true">1. List</button>
+    <button data-cmd="setParagraph" data-cap="heading">¶</button>
+    <button data-cmd="setHeading" data-arg="1" data-cap="heading" id="b-h1">H1</button>
+    <button data-cmd="setHeading" data-arg="2" data-cap="heading" id="b-h2">H2</button>
+    <button data-cmd="setHeading" data-arg="3" data-cap="heading" id="b-h3">H3</button>
+    <button data-cmd="toggleBlockquote" data-cap="blockquote">❝</button>
+    <button data-cmd="toggleList" data-arg="false" data-cap="bullet_list">• List</button>
+    <button data-cmd="toggleList" data-arg="true" data-cap="ordered_list">1. List</button>
+    <div class="sep"></div>
+    <button data-cmd="insertFootnote" data-cap="footnote">[^]</button>
+    <button data-cmd="insertThematicBreak" data-cap="thematic_break">──</button>
+    <div class="sep"></div>
+    <button data-cmd="tableInsertRow" data-arg="true" data-cap="table" data-in-table>+ row</button>
+    <button data-cmd="tableInsertColumn" data-arg="true" data-cap="table" data-in-table>+ col</button>
+    <button data-cmd="tableDeleteRow" data-cap="table" data-in-table>− row</button>
     <div class="sep"></div>
     <button data-cmd="undo">↶</button>
     <button data-cmd="redo">↷</button>
@@ -76,6 +88,7 @@
     <span><span class="k">⌘E</span> toggle view</span>
     <span><span class="k">⌘Z</span> undo</span>
     <span id="marks"></span>
+    <span id="link" class="k"></span>
   </footer>
 </div>
 
@@ -104,6 +117,23 @@ Body text is a real proportional font, \`code\` is monospace, ==marked== text an
 
 > A blockquote, to show block-level styling in the browser.
 
+## Tables are a grid, not a picture
+Core draws a table twice: as box glyphs for a terminal, and structurally for a
+surface that lays out its own. The browser reads the second and builds a real
+table — so the columns line up in a proportional font, which the box-glyph
+picture cannot do.
+
+| Frontend | Draws a table as | Alignment |
+|---|---|:-:|
+| leaf-tui | the box-glyph picture | ─ |
+| leaf-swift | its own grid | ✓ |
+| leaf-web | its own grid | ✓ |
+
+Put the caret in a cell and the grid controls light up; Tab walks the cells.
+
+- [ ] click a checkbox to tick it
+- [x] this one is already done
+
 \`\`\`rust
 fn main() {
     println!("hello from a code block");
@@ -123,6 +153,25 @@ paints the real element over it.
 *Everything you type is a real \`leaf_core::Doc\` edit — try it.*
 `;
 
+// Dim the controls this document's format has no syntax for. The answer depends
+// only on the format, so it is asked once — but the grid controls also need a
+// caret inside a table, which changes as you move, so those are asked per frame.
+function applyCapabilities(editor) {
+  const caps = editor.capabilities();
+  const inTable = editor.caretInTable();
+  for (const btn of document.querySelectorAll("#toolbar button")) {
+    const cap = btn.dataset.cap;
+    const needsTable = btn.hasAttribute("data-in-table");
+    const spellable = cap == null ? true : !!caps[cap];
+    btn.disabled = !spellable || (needsTable && !inTable);
+    btn.title = !spellable
+      ? "this format has no syntax for that"
+      : needsTable && !inTable
+        ? "put the caret in a table first"
+        : "";
+  }
+}
+
 // Reflect editor state onto the app chrome (toolbar lights, dirty flag, footer).
 function syncChrome(state) {
   document.getElementById("viewname").textContent = state.view;
@@ -131,6 +180,7 @@ function syncChrome(state) {
   dirtyEl.style.color = "var(--h3)";
 
   const on = new Set(state.active);
+
   for (const [id, name] of [["b-bold","bold"],["b-italic","italic"],["b-code","code"],["b-mark","mark"]]) {
     document.getElementById(id).classList.toggle("on", on.has(name));
   }
@@ -139,6 +189,11 @@ function syncChrome(state) {
   }
   document.getElementById("marks").textContent =
     (state.heading ? "H"+state.heading+"  " : "") + [...on].join("  ");
+
+  // The link under the caret rides the frame, so the footer can name it without
+  // asking — and without keeping a stale answer when the caret walks out of one.
+  document.getElementById("link").textContent = state.link ? "→ " + state.link : "";
+  if (window.leafEditor) applyCapabilities(window.leafEditor);
 }
 
 async function main() {
@@ -150,13 +205,14 @@ async function main() {
   });
   // Exposed for poking at from the console (and for driving the demo in tests).
   window.leafEditor = editor;
+  applyCapabilities(editor);
 
   // Wire the app's toolbar to the editor's command API.
   for (const btn of document.querySelectorAll("#toolbar button")) {
     btn.addEventListener("click", () => {
       const cmd = btn.dataset.cmd, arg = btn.dataset.arg;
       if (cmd === "setHeading") editor.setHeading(parseInt(arg, 10));
-      else if (cmd === "toggleList") editor.toggleList(arg === "true");
+      else if (arg != null) editor[cmd](arg === "true");
       else editor[cmd]();
       editor.focus();
     });
