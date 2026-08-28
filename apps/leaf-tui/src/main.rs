@@ -359,6 +359,11 @@ fn run(terminal: &mut ratatui::DefaultTerminal, doc: &mut Doc) -> Result<()> {
     // put it in raw mode — the query reads escape-sequence replies. A terminal
     // that can't answer keeps the half-blocks fallback.
     app.editor.query_graphics();
+    // …and ask it whether it's light or dark, for the same reason and in the
+    // same window: the palette behind code has to be tinted toward the user's
+    // actual background, not toward an assumed black one. `LEAF_THEME=light|dark`
+    // overrides the answer for a terminal that won't give a straight one.
+    app.editor.query_color_scheme();
     loop {
         terminal.draw(|f| ui::render(f, doc, &mut app))?;
 

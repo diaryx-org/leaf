@@ -21,6 +21,8 @@ use ratatui_image::{FontSize, Resize, StatefulImage, picker::Picker, protocol::S
 
 use leaf_core::{ColorScheme, MediaInfo};
 
+use crate::style::detect_color_scheme;
+
 /// The most rows a single image may reserve, so one tall picture can't push a
 /// whole screen of text out of view. Mirrors the GUI's `IMAGE_MAX_H` pixel cap,
 /// expressed in the terminal's only vertical unit.
@@ -63,7 +65,10 @@ impl Default for Images {
     /// A half-blocks picker with no terminal query — the safe default before
     /// [`Images::query`] has probed the real terminal (and the permanent state on
     /// a terminal that has no graphics protocol at all). The color scheme is
-    /// sniffed from the environment (see [`detect_color_scheme`]).
+    /// sniffed from the environment (see [`detect_color_scheme`]); the accurate
+    /// answer arrives via [`Images::set_color_scheme`], which
+    /// [`crate::EditorState::query_color_scheme`] calls once the terminal has
+    /// been asked directly.
     fn default() -> Self {
         Images {
             picker: Picker::halfblocks(),
@@ -215,32 +220,6 @@ fn box_cells(intrinsic: (u32, u32), avail_cols: u16, max_rows: u16, font: FontSi
     let cols = w_px.div_ceil(cw).clamp(1, avail_cols.max(1) as u64) as u16;
     let rows = h_px.div_ceil(ch).clamp(1, max_rows.max(1) as u64) as u16;
     (cols, rows)
-}
-
-/// The terminal's color scheme, best-effort, for picking a `<picture>`'s
-/// `prefers-color-scheme` source. Terminals have no universal theme API, so this
-/// reads the widely-set `COLORFGBG` variable (`"fg;bg"`, e.g. `"15;0"` = light
-/// text on a dark background): the trailing background index tells light from
-/// dark — ANSI 0–6 and 8 are the dark backgrounds, 7 and 9–15 the light ones.
-/// Absent or unparseable, it defaults to [`ColorScheme::Dark`], the common
-/// terminal case; a host that knows better calls [`Images::set_color_scheme`].
-fn detect_color_scheme() -> ColorScheme {
-    std::env::var("COLORFGBG")
-        .ok()
-        .and_then(|v| scheme_from_colorfgbg(&v))
-        .unwrap_or(ColorScheme::Dark)
-}
-
-/// Parse a `COLORFGBG` value (`"fg;bg"` or `"fg;;bg"`) into a scheme: the
-/// trailing background ANSI index is dark for 0–6 and 8, light otherwise.
-/// `None` when there's no parseable trailing index.
-fn scheme_from_colorfgbg(value: &str) -> Option<ColorScheme> {
-    let bg: u8 = value.rsplit(';').next()?.trim().parse().ok()?;
-    Some(if bg <= 6 || bg == 8 {
-        ColorScheme::Dark
-    } else {
-        ColorScheme::Light
-    })
 }
 
 /// Resolve an image destination to a readable local path, or `None` when it's
@@ -402,20 +381,6 @@ mod tests {
     #[test]
     fn load_svg_rejects_garbage() {
         assert!(load_svg(b"not an svg at all").is_none());
-    }
-
-    #[test]
-    fn colorfgbg_reads_the_background_index() {
-        // "light text on dark bg" (bg 0) → dark; "dark on light" (bg 15) → light.
-        assert_eq!(scheme_from_colorfgbg("15;0"), Some(ColorScheme::Dark));
-        assert_eq!(scheme_from_colorfgbg("0;15"), Some(ColorScheme::Light));
-        assert_eq!(
-            scheme_from_colorfgbg("15;default;0"),
-            Some(ColorScheme::Dark)
-        );
-        assert_eq!(scheme_from_colorfgbg("7"), Some(ColorScheme::Light));
-        assert_eq!(scheme_from_colorfgbg(""), None);
-        assert_eq!(scheme_from_colorfgbg("nonsense"), None);
     }
 
     #[test]

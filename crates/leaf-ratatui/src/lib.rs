@@ -8,8 +8,9 @@
 //! # Shape
 //!
 //! - [`EditorState`] — the per-view state the widget owns that doesn't belong on
-//!   `Doc`: horizontal scroll, the caret code-block's sideways scroll, and the
-//!   image raster cache / graphics-protocol probe.
+//!   `Doc`: horizontal scroll, the caret code-block's sideways scroll, the
+//!   image raster cache / graphics-protocol probe, and the [`style::Theme`] the
+//!   surface paints with.
 //! - [`render`] — draw the editing surface into a `Rect` of a ratatui `Frame`.
 //! - [`handle_key`] / [`handle_mouse`] — perform the editing an event implies and
 //!   return an [`Outcome`] / [`MouseOutcome`] naming what the *host* must do
@@ -21,6 +22,7 @@
 //! # use ratatui::layout::Rect;
 //! let mut state = leaf_ratatui::EditorState::new();
 //! state.query_graphics(); // once, after the terminal is in raw mode
+//! state.query_color_scheme(); // ditto — picks the light or dark palette
 //! # let mut doc = Doc::blank().unwrap();
 //! # let area = Rect::new(0, 0, 80, 24);
 //! # let mut terminal = ratatui::init();
@@ -41,7 +43,9 @@ pub mod style;
 #[cfg(feature = "images")]
 pub use image::Images;
 pub use input::{MouseOutcome, Outcome, handle_key, handle_mouse};
+pub use leaf_core::ColorScheme;
 pub use render::render;
+pub use style::Theme;
 
 /// Clicks within this long, on the same screen cell, extend the click count
 /// (single → double → triple), for word/block selection.
@@ -51,7 +55,6 @@ const MULTI_CLICK_WINDOW: Duration = Duration::from_millis(400);
 /// bookkeeping that doesn't belong on the frontend-neutral [`leaf_core::Doc`].
 /// One per editing surface; pass the same instance to [`render`],
 /// [`handle_key`], and [`handle_mouse`] each frame.
-#[derive(Default)]
 pub struct EditorState {
     /// How far the source view is scrolled sideways. There's no horizontal
     /// scroll wheel to drive this independently (unlike `doc.scroll`), so it
@@ -76,6 +79,29 @@ pub struct EditorState {
     /// Timing and screen cell of the last left mouse-down, for detecting
     /// double/triple clicks.
     last_click: Option<ClickState>,
+    /// The palette the surface paints with. Seeded from the environment (see
+    /// [`style::detect_color_scheme`]) and replaced by
+    /// [`EditorState::query_color_scheme`] once the terminal can be asked
+    /// directly; a host with its own opinion calls
+    /// [`EditorState::set_color_scheme`] or [`EditorState::set_theme`].
+    theme: Theme,
+}
+
+impl Default for EditorState {
+    fn default() -> Self {
+        // The environment is all we may read here — `Default` must not touch a
+        // terminal that may not even be in raw mode yet. `query_color_scheme`
+        // is where the real question gets asked.
+        EditorState {
+            scroll_x: 0,
+            code_scroll_x: 0,
+            code_caret_span: None,
+            #[cfg(feature = "images")]
+            images: Images::default(),
+            last_click: None,
+            theme: Theme::for_scheme(style::detect_color_scheme()),
+        }
+    }
 }
 
 impl EditorState {
@@ -94,6 +120,81 @@ impl EditorState {
         #[cfg(feature = "images")]
         self.images.query();
     }
+
+    /// Ask the terminal whether it is light or dark and adopt the matching
+    /// palette. Call once, alongside [`query_graphics`] and for the same reason
+    /// — it writes an `OSC 11` query and reads the reply, so the terminal must
+    /// already be in raw mode.
+    ///
+    /// The order of authority is: [`style::THEME_ENV`] or `COLORFGBG` if either
+    /// names a scheme (an explicit answer beats an inferred one, and skips the
+    /// query entirely), then the `OSC 11` reply, then whatever the state
+    /// already had — the dark default. A terminal that doesn't answer is
+    /// detected as such quickly rather than waited out, and `TERM=dumb` is
+    /// never written to at all.
+    ///
+    /// A no-op beyond the environment check when the `theme-detect` feature is
+    /// off.
+    ///
+    /// [`query_graphics`]: EditorState::query_graphics
+    pub fn query_color_scheme(&mut self) {
+        if let Some(scheme) = style::scheme_from_env().or_else(query_terminal_scheme) {
+            self.set_color_scheme(scheme);
+        }
+    }
+
+    /// The scheme the surface is currently painting for.
+    pub fn color_scheme(&self) -> ColorScheme {
+        self.theme.scheme
+    }
+
+    /// Switch to the curated palette for `scheme`. Also re-points image
+    /// resolution at it, so a `<picture>` with `prefers-color-scheme` sources
+    /// picks the matching file on the next frame.
+    ///
+    /// This drops any custom palette a previous [`set_theme`] installed; to
+    /// keep one, call [`set_theme`] again instead.
+    ///
+    /// [`set_theme`]: EditorState::set_theme
+    pub fn set_color_scheme(&mut self, scheme: ColorScheme) {
+        self.set_theme(Theme::for_scheme(scheme));
+    }
+
+    /// Install a palette outright — the hook for a host that themes its whole
+    /// UI and wants the editing surface to match. The theme's own
+    /// [`Theme::scheme`] drives `<picture>` resolution, so a custom light
+    /// palette still picks light images.
+    pub fn set_theme(&mut self, theme: Theme) {
+        self.theme = theme;
+        #[cfg(feature = "images")]
+        self.images.set_color_scheme(theme.scheme);
+    }
+
+    /// The palette in force, for a host drawing chrome that should match the
+    /// editing surface.
+    pub fn theme(&self) -> &Theme {
+        &self.theme
+    }
+}
+
+/// Ask the terminal itself whether it is light or dark, with an `OSC 11` query
+/// to the controlling tty. `None` when the terminal won't say — which covers a
+/// great deal: `TERM=dumb` (never written to at all), a terminal with no `OSC`
+/// support (detected by a fast heuristic rather than waited out), a pipe with no
+/// tty behind it, or a link slow enough to blow the one-second timeout.
+#[cfg(feature = "theme-detect")]
+fn query_terminal_scheme() -> Option<ColorScheme> {
+    match terminal_colorsaurus::theme_mode(Default::default()).ok()? {
+        terminal_colorsaurus::ThemeMode::Light => Some(ColorScheme::Light),
+        terminal_colorsaurus::ThemeMode::Dark => Some(ColorScheme::Dark),
+    }
+}
+
+/// Without the `theme-detect` feature there's nobody to ask: detection stops at
+/// the environment, and an unset environment keeps the dark default.
+#[cfg(not(feature = "theme-detect"))]
+fn query_terminal_scheme() -> Option<ColorScheme> {
+    None
 }
 
 struct ClickState {

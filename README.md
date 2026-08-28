@@ -167,6 +167,16 @@ Formats are detected by extension: `.md`/`.markdown`, `.dj`/`.djot`,
 `.html`/`.htm`, `.xml`. The formatting toolbar targets the lightweight-markup
 formats (Markdown, Djot).
 
+The palette follows the terminal. On startup leaf asks it whether it is light or
+dark (an `OSC 11` query, the same moment it probes for a graphics protocol) and
+picks the matching colors, so the tint behind a code block is a lift off *your*
+background rather than a fixed dark slab. Terminals that won't answer are
+detected as such quickly and fall back to `COLORFGBG`, then to dark. To pin it:
+
+```sh
+LEAF_THEME=light cargo run -- path/to/document.md
+```
+
 ## Keys
 
 | key | action |

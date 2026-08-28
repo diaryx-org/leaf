@@ -6,7 +6,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Position, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
@@ -17,9 +17,7 @@ use ratatui::widgets::Clear;
 use leaf_core::{Doc, View};
 
 use crate::EditorState;
-#[cfg(feature = "images")]
-use crate::style::IMAGE_BORDER;
-use crate::style::{CODE_BG, CODE_BORDER, CODE_INSET, wysiwyg_lines};
+use crate::style::{CODE_INSET, wysiwyg_lines};
 
 /// Render the editing surface into `area`: the document body, its code-block
 /// boxes and framed images, the scrollbar, and the terminal caret. Updates
@@ -27,6 +25,9 @@ use crate::style::{CODE_BG, CODE_BORDER, CODE_INSET, wysiwyg_lines};
 /// back to a source byte.
 pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState) {
     let sel = doc.selection();
+    // The palette, copied out up front: the code boxes and image frames below
+    // read it while `state` is borrowed mutably for the image cache.
+    let theme = *state.theme();
 
     // Reserve the rightmost column for the scrollbar so it doesn't paint over
     // a line's last visible character; everything below reads `content_area`
@@ -114,7 +115,7 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
                         }
                     })
             };
-            wysiwyg_lines(&doc.vmap, sel, code_shift)
+            wysiwyg_lines(&doc.vmap, sel, &theme, code_shift)
         }
     };
     let line_count = lines.len();
@@ -155,8 +156,8 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
             ) {
                 let mut block = Block::default()
                     .borders(borders)
-                    .border_style(Style::default().fg(CODE_BORDER).bg(CODE_BG))
-                    .style(Style::default().bg(CODE_BG));
+                    .border_style(Style::default().fg(theme.code_border).bg(theme.code_bg))
+                    .style(Style::default().bg(theme.code_bg));
                 // The language rides the top border as a small label, the way a
                 // titled panel names itself — shown only when that border is.
                 if let Some(lang) = &cb.lang
@@ -164,7 +165,7 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
                 {
                     block = block.title(Line::from(Span::styled(
                         format!(" {lang} "),
-                        Style::default().fg(Color::Gray).bg(CODE_BG),
+                        Style::default().fg(theme.code_label).bg(theme.code_bg),
                     )));
                 }
                 f.render_widget(block, rect);
@@ -201,7 +202,7 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
             // captioned with its language (only where the top border is drawn).
             let mut block = Block::default()
                 .borders(borders)
-                .border_style(Style::default().fg(IMAGE_BORDER));
+                .border_style(Style::default().fg(theme.image_border));
             if borders.contains(Borders::TOP) {
                 let caption = if info.alt.is_empty() {
                     " 🖼 image ".to_string()
@@ -210,7 +211,7 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
                 };
                 block = block.title(Line::from(Span::styled(
                     caption,
-                    Style::default().fg(IMAGE_BORDER),
+                    Style::default().fg(theme.image_border),
                 )));
             }
             // Wipe the interior so core's `🖼 alt` text (drawn by the paragraph)
@@ -428,19 +429,33 @@ mod tests {
 mod code_render_tests {
     use super::*;
     use crate::EditorState;
-    use leaf_core::Doc;
+    use crate::style::Theme;
+    use leaf_core::{ColorScheme, Doc};
     use ratatui::{Terminal, backend::TestBackend};
 
-    fn render_to_lines(name: &str, src: &str, w: u16, h: u16) -> Vec<String> {
+    /// Draw `src` into an off-screen buffer of `w`×`h`. `scheme` pins the
+    /// palette so a test doesn't inherit the developer's own `COLORFGBG`.
+    fn render_to_buffer(
+        name: &str,
+        src: &str,
+        w: u16,
+        h: u16,
+        scheme: ColorScheme,
+    ) -> ratatui::buffer::Buffer {
         let mut p = std::env::temp_dir();
         p.push(format!("leaf_ratatui_code_render_{name}.md"));
         std::fs::write(&p, src).unwrap();
         let mut doc = Doc::open(p).unwrap();
         let mut state = EditorState::new();
+        state.set_color_scheme(scheme);
         let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
         term.draw(|f| render(f, f.area(), &mut doc, &mut state))
             .unwrap();
-        let buf = term.backend().buffer().clone();
+        term.backend().buffer().clone()
+    }
+
+    fn render_to_lines(name: &str, src: &str, w: u16, h: u16) -> Vec<String> {
+        let buf = render_to_buffer(name, src, w, h, ColorScheme::Dark);
         (0..buf.area.height)
             .map(|y| {
                 (0..buf.area.width)
@@ -490,5 +505,57 @@ mod code_render_tests {
         let joined = lines.join("\n");
         assert!(lines.iter().any(|l| l.contains('┌')), "no box:\n{joined}");
         assert!(joined.contains("plain code"), "code missing:\n{joined}");
+    }
+
+    /// The reported bug: a code block was filled with a fixed near-black grey
+    /// whatever the terminal looked like, so on a light terminal it landed as a
+    /// dark slab across the page. Each scheme must fill its box — every cell of
+    /// it, border and label included — with *its own* tint.
+    #[test]
+    fn a_code_box_is_filled_with_the_active_schemes_tint() {
+        for scheme in [ColorScheme::Dark, ColorScheme::Light] {
+            let expected = Theme::for_scheme(scheme).code_bg;
+            let name = format!("tint_{scheme:?}");
+            let buf = render_to_buffer(
+                &name,
+                "text\n\n```rust\nlet x = 1;\n```\n\nafter\n",
+                40,
+                12,
+                scheme,
+            );
+            // The box's rows: the top border down to the bottom border.
+            let row_of = |ch: char| {
+                (0..buf.area.height)
+                    .find(|&y| (0..buf.area.width).any(|x| buf[(x, y)].symbol() == ch.to_string()))
+                    .unwrap_or_else(|| panic!("no {ch} drawn for {scheme:?}"))
+            };
+            let (top, bottom) = (row_of('┌'), row_of('└'));
+            assert!(top < bottom, "box rows inverted for {scheme:?}");
+            for y in top..=bottom {
+                for x in 0..buf.area.width {
+                    let cell = &buf[(x, y)];
+                    // Only the box itself is tinted; it hugs its content, so the
+                    // page to its right keeps the terminal's own background.
+                    if cell.bg == ratatui::style::Color::Reset {
+                        continue;
+                    }
+                    assert_eq!(
+                        cell.bg,
+                        expected,
+                        "{scheme:?}: cell ({x},{y}) {:?} is filled {:?}, not the scheme's {expected:?}",
+                        cell.symbol(),
+                        cell.bg
+                    );
+                }
+            }
+        }
+    }
+
+    /// …and the two schemes really do differ, so the test above can't pass by
+    /// painting the same slab twice.
+    #[test]
+    fn the_two_schemes_paint_different_code_fills() {
+        assert_ne!(Theme::dark().code_bg, Theme::light().code_bg);
+        assert_ne!(Theme::dark().code_border, Theme::light().code_border);
     }
 }

@@ -85,8 +85,10 @@ fn test() -> Result<()> {
 /// The `--no-default-features` rows are not thoroughness for its own sake: each
 /// is a shape that ships. `leaf-core` without `fs` is what `leaf-wasm` and
 /// `leaf-ffi` link (a browser and a sandboxed embed have no path to read),
-/// `leaf-ratatui` without `images` is the terminal with no graphics protocol,
-/// and `leaf-gpui` without `desktop` is `apps/leaf-ios` on gpui-mobile — the one
+/// `leaf-ratatui` bare is the terminal with no graphics protocol and no
+/// theme query, `leaf-ratatui` with only `images` is a host that paints pictures
+/// but themes the surface itself rather than letting it ask the terminal, and
+/// `leaf-gpui` without `desktop` is `apps/leaf-ios` on gpui-mobile — the one
 /// build in the workspace that no `cargo check` here ever reaches, since
 /// leaf-ios is a standalone workspace.
 ///
@@ -97,6 +99,13 @@ const ISOLATED: &[&[&str]] = &[
     &["-p", "leaf-ffi"],
     &["-p", "leaf-ratatui"],
     &["-p", "leaf-ratatui", "--no-default-features"],
+    &[
+        "-p",
+        "leaf-ratatui",
+        "--no-default-features",
+        "--features",
+        "images",
+    ],
     &["-p", "leaf-wasm"],
     &["-p", "leaf-gpui"],
     &["-p", "leaf-gpui", "--no-default-features"],
