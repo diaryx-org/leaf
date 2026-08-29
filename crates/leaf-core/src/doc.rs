@@ -9412,6 +9412,22 @@ mod tests {
     }
 
     #[test]
+    fn typing_in_a_frontmatter_only_document_lands_after_the_frontmatter() {
+        // A fresh note is frontmatter and nothing else. With no rendered block
+        // to floor the caret it opened at offset 0 — before the opening `---` —
+        // so the first keystroke wrote itself in front of the metadata and the
+        // file came out as `This---\ntitle: …`.
+        let fm = "---\ntitle: 2026-08-29\nid: f8s32cd\n---\n";
+        let mut d = wysiwyg_doc("wys_fm_only", fm);
+        assert_eq!(d.caret, fm.len(), "caret must open past the frontmatter");
+        // Nothing is rendered, so the caret draws at the origin of an empty view
+        // — the same place an empty document puts it.
+        assert_eq!(d.caret_pos(), (0, 0));
+        d.insert("This");
+        assert_eq!(d.source, format!("{fm}This"));
+    }
+
+    #[test]
     fn wysiwyg_backspace_at_content_start_leaves_frontmatter_intact() {
         // Backspace deletes `prev_boundary..caret` directly; at the first real
         // block that boundary is inside the hidden frontmatter, so it must be a

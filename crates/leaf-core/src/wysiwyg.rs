@@ -1073,10 +1073,17 @@ pub fn build(
         reveal: reveal.clone(),
     };
     b.top_blocks(&top);
-    b.emit_trailing_blank_lines(top.last().map_or(BlockClass::Paragraph, |&i| {
-        BlockClass::from_node_kind(&nodes[i].kind)
-    }));
-    let content_start = top.first().map_or(0, |&i| nodes[i].span.start);
+    // The hidden frontmatter's end is the baseline for both the trailing blank
+    // rows and the caret floor — see [`hidden_prefix_end`]. `top_level` has
+    // already dropped every `metadata` child, so read it off the arena.
+    let hidden_end = hidden_prefix_end(source, metadata_end_of(nodes, doc));
+    b.emit_trailing_blank_lines(
+        top.last().map_or(BlockClass::Paragraph, |&i| {
+            BlockClass::from_node_kind(&nodes[i].kind)
+        }),
+        hidden_end,
+    );
+    let content_start = top.first().map_or(hidden_end, |&i| nodes[i].span.start);
     let stops = collect_stops(&b.rows);
     let code_blocks = code_block_spans(&b.rows);
     let media = media_spans(&b.rows);
@@ -1242,9 +1249,19 @@ pub fn build_cached(
     }
 
     let before_trailing = b.rows.len();
-    b.emit_trailing_blank_lines(blocks.last().map_or(BlockClass::Paragraph, |m| {
-        BlockClass::from_node_kind(&m.kind)
-    }));
+    let hidden_end = hidden_prefix_end(
+        source,
+        top.iter()
+            .filter(|m| m.kind == Kind::Metadata)
+            .map(|m| m.span.end)
+            .next_back(),
+    );
+    b.emit_trailing_blank_lines(
+        blocks.last().map_or(BlockClass::Paragraph, |m| {
+            BlockClass::from_node_kind(&m.kind)
+        }),
+        hidden_end,
+    );
     let trailing_rows = b.rows.len() - before_trailing;
 
     // Evict every entry no block reused this build, so the cache tracks the
@@ -1264,10 +1281,11 @@ pub fn build_cached(
         reveal: reveal.clone(),
     };
 
-    // The first rendered offset is the first non-metadata block's start (0 when
-    // the document is empty or all frontmatter) — the analogue of
-    // [`first_content_offset`] for the top-level list.
-    let content_start = blocks.first().map_or(0, |m| m.span.start);
+    // The first rendered offset is the first non-metadata block's start — the
+    // analogue of [`first_content_offset`] for the top-level list. With nothing
+    // but frontmatter it's the end of that frontmatter, and 0 for an empty
+    // document ([`hidden_prefix_end`]).
+    let content_start = blocks.first().map_or(hidden_end, |m| m.span.start);
     let stops = collect_stops(&b.rows);
     let code_blocks = code_block_spans(&b.rows);
     let media = media_spans(&b.rows);
@@ -1768,6 +1786,45 @@ fn rows_within(rows: &[VRow], span: &Range<usize>) -> bool {
                 .iter()
                 .all(|g| g.src >= span.start && g.src <= span.end)
     })
+}
+
+/// Where the rendered document begins when a leading `metadata` block is all
+/// there is — the end of that hidden frontmatter, past the newline that closes
+/// its last line so the floor sits at the start of the (empty) body rather than
+/// on the closing `---`.
+///
+/// With a real block after it the frontmatter's end is never needed: the floor
+/// is that block's start, and the rows begin there. With nothing after it, both
+/// the caret floor and the trailing-blank-line count would otherwise fall back
+/// to offset 0 — inside the hidden frontmatter — which put the caret *before*
+/// the metadata and made typing land ahead of the opening `---`.
+fn hidden_prefix_end(source: &str, meta_end: Option<usize>) -> usize {
+    let Some(end) = meta_end else { return 0 };
+    let end = end.min(source.len());
+    let rest = &source[end..];
+    if rest.starts_with("\r\n") {
+        end + 2
+    } else if rest.starts_with('\n') {
+        end + 1
+    } else {
+        end
+    }
+}
+
+/// The end of the document's hidden frontmatter: the last `metadata` child of
+/// `doc`, which is what [`top_level`] and [`Builder::blocks`] drop. `None` when
+/// there is none.
+fn metadata_end_of(nodes: &[FlatNode], doc: usize) -> Option<usize> {
+    let mut end = None;
+    let mut child = nodes[doc].first_child;
+    while let Some(cid) = child {
+        let n = &nodes[cid.0 as usize];
+        if n.kind == Kind::Metadata {
+            end = Some(n.span.end);
+        }
+        child = n.next_sibling;
+    }
+    end
 }
 
 /// The document's rendered top-level blocks, as node indices in source order.
@@ -3688,8 +3745,11 @@ impl Builder<'_> {
     /// closes. A document with no blocks at all has nothing above these rows, and
     /// [`BlockClass::Paragraph`] is the honest answer there too: what they are is
     /// empty paragraphs, on both sides of the gap.
-    fn emit_trailing_blank_lines(&mut self, above: BlockClass) {
-        let last_end = self.rows.last().map_or(0, |r| r.end_src);
+    fn emit_trailing_blank_lines(&mut self, above: BlockClass, hidden_end: usize) {
+        // With no rows at all the count starts past any hidden frontmatter, not
+        // at 0: its newlines are not trailing blank lines, and counting them
+        // opened phantom rows *inside* the metadata for a frontmatter-only file.
+        let last_end = self.rows.last().map_or(hidden_end, |r| r.end_src);
         if last_end >= self.source.len() {
             return;
         }
@@ -5059,6 +5119,42 @@ mod tests {
             m.content_start,
             fm.len(),
             "floor should be the first real block"
+        );
+    }
+
+    #[test]
+    fn a_frontmatter_only_document_puts_the_floor_after_the_frontmatter() {
+        // Nothing to render, so the caret floor is the end of the hidden
+        // frontmatter — not 0, which is *before* the opening `---` and made the
+        // first keystroke in a fresh metadata-only note land ahead of it. And
+        // the frontmatter's own newlines are not trailing blank lines: they used
+        // to open phantom rows at offsets 1..4, inside the metadata.
+        let src = "---\ntitle: 2026-08-29\nid: f8s32cd\n---\n";
+        let m = map(src);
+        assert_eq!(m.content_start, src.len(), "floor must clear the metadata");
+        assert!(
+            m.rows.is_empty(),
+            "frontmatter must render no rows: {:?}",
+            rendered(&m)
+        );
+        assert!(
+            m.stops.is_empty(),
+            "no stop may sit inside the metadata: {:?}",
+            m.stops
+        );
+    }
+
+    #[test]
+    fn a_frontmatter_only_document_still_counts_its_real_blank_lines() {
+        // Two blank lines after the frontmatter are the author's empty paragraph
+        // and still render, counted from the metadata's end rather than from 0.
+        let fm = "---\ntitle: n\n---\n";
+        let m = map(&format!("{fm}\n\n"));
+        assert_eq!(m.content_start, fm.len());
+        assert_eq!(m.rows.len(), 2, "the two trailing newlines each open a row");
+        assert!(
+            m.rows.iter().all(|r| r.end_src > fm.len()),
+            "rows must sit past the frontmatter"
         );
     }
 
