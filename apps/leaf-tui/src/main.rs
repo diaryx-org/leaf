@@ -25,10 +25,36 @@ use ratatui::{
     layout::Rect,
 };
 
+/// The one-line usage, shared by the no-argument error and `--help` so the two
+/// can never drift apart.
+const USAGE: &str = "usage: leaf <file.md|file.dj|file.html|file.xml>";
+
 fn main() -> Result<()> {
     let arg = std::env::args_os()
         .nth(1)
-        .ok_or_else(|| anyhow!("usage: leaf <file.md|file.dj|file.html|file.xml>"))?;
+        .ok_or_else(|| anyhow!("{USAGE}"))?;
+
+    // `--version` and `--help` are answered before the file is opened or the
+    // terminal is entered. Homebrew's formula test is `leaf --version` on a
+    // machine with no document to hand, and every argument below this point is
+    // treated as a path — so a flag that fell through would be opened as a
+    // filename and exit non-zero. Printing the crate version is also what makes
+    // that test meaningful: it is what `brew` matches the formula's version
+    // against, which is how a mis-tagged release gets caught.
+    if let Some(flag) = arg.to_str() {
+        match flag {
+            "--version" | "-V" => {
+                println!("leaf {}", env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            }
+            "--help" | "-h" => {
+                println!("{USAGE}");
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+
     let mut doc = Doc::open(PathBuf::from(arg))?;
 
     let mut terminal = ratatui::init();
