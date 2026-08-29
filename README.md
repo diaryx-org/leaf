@@ -214,6 +214,15 @@ LEAF_THEME=light cargo run -- path/to/document.md
 | hover | peek at what's under the pointer — a footnote's note, a link's destination — without moving the caret |
 | terminal paste | arrives whole (bracketed paste) and lands as one undo step — into the prompt or the palette when one is open, otherwise into the document |
 
+leaf **watches the file** it has open. Twice a second it stats the path, and on
+the rare tick where that has moved it asks `Doc::disk_state` — the hash against
+leaf's watermark — what actually happened. A document with no unsaved changes
+reloads itself silently, keeping the caret and the scroll, so a `git checkout`
+or a formatter run shows up in the buffer instead of waiting to become a
+conflict. A document *with* unsaved changes is never reloaded behind your back:
+it says so once, and the Overwrite/Reload/Cancel prompt at save time is where
+the choice gets made.
+
 Everything the keyboard doesn't reach is in the **command palette** — the three
 media kinds, all fourteen table operations, and the markup/line-flow modes named
 outright rather than cycled. Type a few letters of a command's name and press

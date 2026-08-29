@@ -12,6 +12,7 @@ mod ui;
 
 use std::io::stdout;
 use std::path::PathBuf;
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Result, anyhow};
 use leaf_core::{Alignment, DiskState, Doc, InlineKind, LineFlow, MarkupMode, MediaKind};
@@ -146,6 +147,19 @@ struct App {
     /// raster cache, and mouse click-counting. Threaded into
     /// `leaf_ratatui::render`/`handle_key`/`handle_mouse` each frame.
     editor: leaf_ratatui::EditorState,
+
+    // ── the file watch (see `tick_disk`) ─────────────────────────────────────
+    /// What a `stat` of the document's file said the last time the watch
+    /// looked — the cheap guard in front of the expensive question. `None`
+    /// while the document has no file on disk to stat.
+    disk_stamp: Option<(SystemTime, u64)>,
+    /// Whether the file is known to hold bytes this document hasn't taken in,
+    /// and wasn't reloaded because there were unsaved changes to protect.
+    /// Held so the watch can catch up the moment there aren't (an undo back to
+    /// the saved state), without re-reading the file on every tick until then.
+    disk_ahead: bool,
+    /// When the watch last ran; `None` before the first turn of the loop.
+    last_disk_check: Option<Instant>,
 }
 
 /// One row of the context menu. `Action` runs a [`Command`] and closes the menu;
@@ -462,25 +476,48 @@ fn run(terminal: &mut ratatui::DefaultTerminal, doc: &mut Doc) -> Result<()> {
     // actual background, not toward an assumed black one. `LEAF_THEME=light|dark`
     // overrides the answer for a terminal that won't give a straight one.
     app.editor.query_color_scheme();
+    // Seed the file watch with what the file looks like right now, so the first
+    // tick has something to compare against and a document opened from an
+    // unchanged file costs no read at all.
+    app.disk_stamp = disk_stamp(doc);
     loop {
         terminal.draw(|f| ui::render(f, doc, &mut app))?;
 
-        match event::read()? {
-            Event::Key(key)
-                if key.kind == KeyEventKind::Press
-                    && handle_key(doc, key, &mut app) == Flow::Quit =>
-            {
-                return Ok(());
+        // Poll rather than block: the file behind the document can change while
+        // nobody is touching the keyboard, and a loop parked in `event::read`
+        // would not find out until the next keystroke. The timeout is the watch
+        // interval, so an idle editor wakes twice a second, does one `stat`, and
+        // goes back to sleep.
+        if event::poll(DISK_POLL)? {
+            match event::read()? {
+                Event::Key(key)
+                    if key.kind == KeyEventKind::Press
+                        && handle_key(doc, key, &mut app) == Flow::Quit =>
+                {
+                    return Ok(());
+                }
+                // Mouse motion (with no button down) drives the context menu's
+                // hover highlight; `EnableMouseCapture` already turns on
+                // any-motion reporting, so these `Moved` events arrive without
+                // extra setup. The editing surface ignores them, so they cost
+                // only a redraw.
+                Event::Mouse(m) => handle_mouse(doc, m, &mut app),
+                // A terminal paste, arriving whole because `main` turned
+                // bracketed paste on.
+                Event::Paste(text) => handle_paste(doc, &text, &mut app),
+                _ => {}
             }
-            // Mouse motion (with no button down) drives the context menu's hover
-            // highlight; `EnableMouseCapture` already turns on any-motion
-            // reporting, so these `Moved` events arrive without extra setup. The
-            // editing surface ignores them, so they cost only a redraw.
-            Event::Mouse(m) => handle_mouse(doc, m, &mut app),
-            // A terminal paste, arriving whole because `main` turned bracketed
-            // paste on.
-            Event::Paste(text) => handle_paste(doc, &text, &mut app),
-            _ => {}
+        }
+
+        // Asked on elapsed time rather than on a timed-out poll, so a user who
+        // is typing steadily — every poll returning an event, none of them ever
+        // timing out — is watched exactly as closely as an idle one.
+        if app
+            .last_disk_check
+            .is_none_or(|at| at.elapsed() >= DISK_POLL)
+        {
+            app.last_disk_check = Some(Instant::now());
+            tick_disk(doc, &mut app);
         }
     }
 }
@@ -1115,6 +1152,112 @@ fn resolve_conflict(doc: &mut Doc, app: &mut App, choice: usize) -> Flow {
             app.pending_action = None;
             Flow::Continue
         }
+    }
+}
+
+/// How often the loop looks at the file behind the document — see [`tick_disk`].
+///
+/// Half a second is short enough that a reload reads as a response to the other
+/// program's write rather than as something that happened later, and long
+/// enough that the `stat` it costs is invisible.
+const DISK_POLL: Duration = Duration::from_millis(500);
+
+/// The file's identity as far as a `stat` can tell it: modification time and
+/// length. `None` when there is no file to stat — an untitled buffer, or a
+/// named document whose file isn't there (yet, or any more).
+///
+/// This is the cheap half of the watch, and deliberately not the authoritative
+/// one: an mtime lies in both directions (two writes inside one timestamp tick
+/// look like none, a `touch` looks like a write), which is exactly why
+/// `Doc::disk_state` reads and hashes the bytes instead. What a stamp is good
+/// for is *not* reading them — it is compared twice a second, and the expensive
+/// question is asked only on the ticks where it has moved.
+fn disk_stamp(doc: &Doc) -> Option<(SystemTime, u64)> {
+    let meta = std::fs::metadata(&doc.path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
+/// One turn of the file watch: has the document's file changed underneath us,
+/// and what follows if it has.
+///
+/// The conflict used to be noticed only at save time, which is late — by then
+/// somebody has been typing for ten minutes into a document that stopped being
+/// the file. This asks the same question `attempt_save` asks (`Doc::disk_state`,
+/// which hashes the bytes against leaf's watermark) on a timer instead, behind
+/// a `stat` so the usual answer — nothing happened — costs no read at all.
+///
+/// What happens next depends on whether there is anything of the user's at
+/// stake, because that is the only thing that makes the two cases different:
+///
+/// - A **clean** document has nothing to lose, so it catches up silently:
+///   `Doc::reload` takes the new bytes, the caret keeps its byte offset
+///   (clamped), and the scroll is put back around it, so a `git checkout` or a
+///   formatter run doesn't throw a reader back to the top of the file.
+/// - A **dirty** document holds two versions of the truth and leaf cannot pick
+///   one. It says so, once, and stops there: the Overwrite/Reload/Cancel prompt
+///   `attempt_save` already puts up is where that choice belongs, because a
+///   save is the moment the user is actually asking for one.
+///
+/// Split out of `run` rather than written inline so it can be called with a
+/// document whose file has just been rewritten, which is what its tests do.
+fn tick_disk(doc: &mut Doc, app: &mut App) {
+    // Nothing to watch. An untitled buffer has no path, and paying a `stat` per
+    // tick to be told so again is the one cost worth avoiding outright.
+    if doc.is_untitled() {
+        return;
+    }
+    let stamp = disk_stamp(doc);
+    let moved = stamp != app.disk_stamp;
+    app.disk_stamp = stamp;
+    // Ask the expensive question only when the file looks different from the
+    // last look — or when we already know it is ahead and the only reason we
+    // didn't reload was unsaved work that has since gone away (an undo back to
+    // the saved state). Without that second clause the document would sit stale
+    // until the next external write or the next save.
+    let worth_asking = moved || (app.disk_ahead && !doc.dirty);
+    if !worth_asking {
+        return;
+    }
+    match doc.disk_state() {
+        DiskState::Changed if doc.dirty => {
+            app.disk_ahead = true;
+            // Only on the tick that found the change. The flag above is what
+            // remembers it afterwards, so this doesn't become a toast that
+            // reappears twice a second until the user does something about it.
+            if moved {
+                doc.status = Some("file changed on disk — ^S will ask".into());
+            }
+        }
+        DiskState::Changed => {
+            let scroll = doc.scroll;
+            let before = doc.revision();
+            doc.reload();
+            // The revision, not the status text, is what says the reload landed:
+            // a failed one leaves its own message up, and overwriting that with
+            // a claim that it worked is the one thing worse than the failure.
+            if doc.revision() != before {
+                // Pinned rather than left to `reload`, which happens not to
+                // touch the field: the viewport is the host's, and a reader
+                // halfway down a document should stay there.
+                doc.scroll = scroll;
+                doc.status = Some("reloaded from disk".into());
+            }
+            app.disk_ahead = false;
+        }
+        DiskState::Missing => {
+            // Nothing to reload from, and nothing lost yet — the buffer still
+            // holds the document, and a save recreates the file. Worth saying,
+            // because the alternative is a ^S that succeeds against a path the
+            // user thought they were still editing.
+            app.disk_ahead = false;
+            if moved {
+                doc.status = Some(format!("{} is no longer on disk", doc.file_name()));
+            }
+        }
+        // Unchanged (the usual answer, and the one our own saves produce),
+        // Unreadable (leaf can't tell, and won't guess), Untitled (unreachable
+        // past the guard above).
+        _ => app.disk_ahead = false,
     }
 }
 
@@ -2177,6 +2320,134 @@ mod tests {
         );
         let html = get_clipboard_html().expect("html flavor");
         assert!(html.contains("<strong>bold</strong>"), "{html:?}");
+    }
+
+    // ── the file watch ───────────────────────────────────────────────────────
+
+    /// `doc_with`, plus an `App` whose watch is seeded the way `run` seeds it
+    /// before its first turn.
+    fn watched(name: &str, body: &str) -> (Doc, App) {
+        let doc = doc_with(name, body);
+        let app = App {
+            disk_stamp: disk_stamp(&doc),
+            ..Default::default()
+        };
+        (doc, app)
+    }
+
+    #[test]
+    fn a_clean_document_reloads_itself_when_the_file_changes_underneath_it() {
+        let (mut doc, mut app) = watched("watch_clean", "hello\n");
+        doc.caret = 3;
+        doc.scroll = 0;
+        std::fs::write(&doc.path, "someone else's edit\n").unwrap();
+
+        tick_disk(&mut doc, &mut app);
+        assert_eq!(doc.source, "someone else's edit\n");
+        assert_eq!(doc.status.as_deref(), Some("reloaded from disk"));
+        assert_eq!(doc.caret, 3, "the caret keeps the offset it had");
+        assert!(!doc.dirty);
+        assert!(!app.disk_ahead);
+    }
+
+    #[test]
+    fn a_dirty_document_is_warned_about_once_rather_than_reloaded() {
+        // Two versions of the truth: leaf can't pick one, so it says so and
+        // leaves the choice to the save-time prompt. What it must never do is
+        // discard the unsaved work to catch up with the file.
+        let (mut doc, mut app) = watched("watch_dirty", "hello\n");
+        doc.caret = 5;
+        doc.insert(" world");
+        std::fs::write(&doc.path, "someone else's edit\n").unwrap();
+
+        tick_disk(&mut doc, &mut app);
+        assert_eq!(doc.source, "hello world\n", "unsaved work survives");
+        assert_eq!(
+            doc.status.as_deref(),
+            Some("file changed on disk — ^S will ask")
+        );
+        assert!(app.disk_ahead);
+
+        // …and not again on every tick after it. A toast that reappears twice a
+        // second is a toast nobody can read the document behind.
+        doc.status = None;
+        tick_disk(&mut doc, &mut app);
+        assert_eq!(doc.status, None, "the warning is said once, not repeatedly");
+    }
+
+    #[test]
+    fn the_watch_catches_up_once_the_unsaved_work_goes_away() {
+        // Warned while dirty, then undone back to the saved state: the file is
+        // still ahead and there is no longer anything to protect, so the next
+        // tick reloads even though nothing moved on disk in between.
+        let (mut doc, mut app) = watched("watch_catchup", "hello\n");
+        doc.caret = 5;
+        doc.insert(" world");
+        std::fs::write(&doc.path, "someone else's edit\n").unwrap();
+        tick_disk(&mut doc, &mut app);
+        assert!(app.disk_ahead);
+
+        doc.undo();
+        assert!(!doc.dirty, "undone back to what was saved");
+        tick_disk(&mut doc, &mut app);
+        assert_eq!(doc.source, "someone else's edit\n");
+        assert!(!app.disk_ahead);
+    }
+
+    #[test]
+    fn our_own_save_is_not_mistaken_for_someone_else_s_write() {
+        // The stamp moves on every save leaf makes; the hash behind it doesn't,
+        // which is the whole reason the stamp isn't the authority.
+        let (mut doc, mut app) = watched("watch_own_save", "hello\n");
+        doc.caret = 5;
+        doc.insert(" world");
+        doc.save();
+        let after_save = doc.status.clone();
+
+        tick_disk(&mut doc, &mut app);
+        assert_eq!(doc.status, after_save, "our own write is not news");
+        assert!(!app.disk_ahead);
+        assert_eq!(doc.source, "hello world\n");
+    }
+
+    #[test]
+    fn a_file_deleted_underneath_the_document_is_reported_not_reloaded() {
+        let (mut doc, mut app) = watched("watch_gone", "hello\n");
+        std::fs::remove_file(&doc.path).unwrap();
+        tick_disk(&mut doc, &mut app);
+        assert_eq!(doc.source, "hello\n", "the buffer is what's left of it");
+        assert!(
+            doc.status
+                .as_deref()
+                .unwrap_or("")
+                .contains("no longer on disk"),
+            "status: {:?}",
+            doc.status
+        );
+    }
+
+    #[test]
+    fn an_untitled_document_is_not_watched_at_all() {
+        // No path to stat, so the watch must not even try — this is the case
+        // that would otherwise pay a filesystem call twice a second forever.
+        let mut doc = Doc::blank().unwrap();
+        doc.insert("typed");
+        let mut app = App::default();
+        tick_disk(&mut doc, &mut app);
+        assert!(app.disk_stamp.is_none());
+        assert_eq!(doc.source, "typed");
+        assert_eq!(doc.status, None);
+    }
+
+    #[test]
+    fn an_unchanged_file_is_left_entirely_alone() {
+        let (mut doc, mut app) = watched("watch_quiet", "hello\n");
+        doc.caret = 2;
+        tick_disk(&mut doc, &mut app);
+        assert_eq!(doc.source, "hello\n");
+        assert_eq!(doc.caret, 2);
+        assert_eq!(doc.status, None);
+        assert!(!app.disk_ahead);
     }
 
     // ── bracketed paste ──────────────────────────────────────────────────────
