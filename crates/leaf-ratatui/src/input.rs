@@ -74,6 +74,16 @@ pub enum MouseOutcome {
 /// Assumes no host overlay (dialog/menu/prompt) is currently capturing input —
 /// the host intercepts those before forwarding here.
 pub fn handle_key(doc: &mut Doc, key: KeyEvent, _state: &mut EditorState) -> Outcome {
+    // A read-only document is a *reading* surface over the same rendering,
+    // selection and navigation the editor has — so everything that moves the
+    // caret, extends a selection, copies, follows a link, or changes how the
+    // document is shown works here exactly as it does anywhere else, and only
+    // the keys that would change it stop. See `asks_to_edit` for why the check
+    // is in front of the dispatch rather than inside it.
+    if doc.read_only() && asks_to_edit(&key) {
+        doc.status = Some("read-only".into());
+        return Outcome::Continue;
+    }
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
@@ -217,6 +227,64 @@ pub fn handle_key(doc: &mut Doc, key: KeyEvent, _state: &mut EditorState) -> Out
     Outcome::Continue
 }
 
+/// Whether this key is asking the document to change — the question the
+/// read-only gate has to answer *before* the dispatch below runs, since by the
+/// time that has answered it the edit has already happened.
+///
+/// Core is the guarantee here, not this table. Every mutation funnels through
+/// `Doc::splice_exact`/`undo`/`redo`, all three of which refuse outright on a
+/// read-only document, so a key this classifier missed still cannot write a
+/// byte. What the classifier adds is the two things core's gate can't: a
+/// *reason* (core refuses silently, which from the keyboard is indistinguishable
+/// from a terminal that has stopped delivering keys), and suppression of the
+/// [`Outcome`]s — ^V, ⌥k, ⌥e — that would otherwise have the host open a
+/// clipboard read or a destination prompt for an edit that can never land.
+///
+/// It names the editing keys rather than excluding the reading ones, so a key
+/// bound to nothing at all (⌥z) stays silent instead of being refused, and a
+/// key added to the dispatch without being added here fails open — into core's
+/// gate, which is the one that actually holds.
+///
+/// The file verbs — ^S, ⌥S, ⌥N — are deliberately *not* here. They change no
+/// bytes of the document; what they do is the host's policy about writing
+/// files, and the host is where that is stated.
+fn asks_to_edit(key: &KeyEvent) -> bool {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        // Cut, paste, undo/redo, and the two readline kill-lines. ^A, ^C, ^Q,
+        // ^P and ^Home/^End are reading gestures and fall through.
+        return matches!(
+            key.code,
+            KeyCode::Char('x' | 'v' | 'z' | 'Z' | 'y' | 'Y' | 'u' | 'k')
+        );
+    }
+    if key.modifiers.contains(KeyModifiers::ALT) {
+        return match key.code {
+            // ⌥←/⌥→ are word *motion* and stay; the two word deletes beside
+            // them, and the in-cell line break, do not.
+            KeyCode::Backspace | KeyCode::Delete | KeyCode::Enter => true,
+            // The formatting toolbar, the block family, the task pair, plain
+            // paste, and the three prompts that insert something. What is
+            // missing from this list is the whole of the reading half: ⌥w,
+            // ⌥⇧W, ⌥⇧F, ⌥g, ⌥p, ⌥h.
+            KeyCode::Char(c) => matches!(
+                c,
+                'b' | 'i' | 'c' | 'm' | 'd' | 'u' | '0'
+                    ..='9' | 'x' | 't' | 'v' | 'k' | 'l' | 'e' | 'f' | 'r'
+            ),
+            _ => false,
+        };
+    }
+    matches!(
+        key.code,
+        KeyCode::Char(_)
+            | KeyCode::Enter
+            | KeyCode::Tab
+            | KeyCode::BackTab
+            | KeyCode::Backspace
+            | KeyCode::Delete
+    )
+}
+
 /// Apply the caret placement / selection / scroll a mouse event implies,
 /// returning the [`MouseOutcome`] the host must act on. Assumes no host overlay
 /// is capturing the mouse (the host dismisses its own menu first).
@@ -264,8 +332,12 @@ pub fn handle_mouse(doc: &mut Doc, m: MouseEvent, state: &mut EditorState) -> Mo
             // list doesn't interrupt what's being typed elsewhere. Shift and the
             // multi-click gestures fall through: those are selection verbs, and
             // a box is not a selection.
+            // …but not in a read-only document, where a box that can't be
+            // ticked is just text and a click on it should place the caret
+            // like a click on any other glyph.
             if !shift
                 && count == 1
+                && !doc.read_only()
                 && let Some(off) = doc.vmap.task_box_at(row, col)
             {
                 doc.toggle_task_at(off);
@@ -559,6 +631,121 @@ fn click_count(state: &mut EditorState, row: u16, col: u16) -> u8 {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    /// A Markdown document with its visual map built, which caret motion in the
+    /// rich view rides — an unbuilt map has no rows to move through.
+    fn doc(body: &str) -> Doc {
+        let mut d = Doc::from_source(body.into(), leaf_core::Format::Markdown).unwrap();
+        d.build_visual(80);
+        d
+    }
+
+    fn plain(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn ctrl(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    fn alt(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT)
+    }
+
+    /// Every key that would change the document is refused *with a reason*.
+    /// Core's gate already makes them harmless; what this is checking is that
+    /// they don't read as a keyboard that has quietly stopped working.
+    #[test]
+    fn a_read_only_document_refuses_the_editing_keys_and_says_so() {
+        let mut d = doc("hello world\n");
+        d.set_read_only(true);
+        d.caret = 5;
+        let mut state = EditorState::new();
+        let refused = [
+            plain(KeyCode::Char('x')),
+            plain(KeyCode::Enter),
+            plain(KeyCode::Tab),
+            plain(KeyCode::Backspace),
+            plain(KeyCode::Delete),
+            ctrl('x'),
+            ctrl('v'),
+            ctrl('z'),
+            ctrl('u'),
+            ctrl('k'),
+            alt('b'),
+            alt('1'),
+            alt('k'),
+            alt('e'),
+            alt('v'),
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT),
+        ];
+        for key in refused {
+            d.status = None;
+            assert_eq!(
+                handle_key(&mut d, key, &mut state),
+                Outcome::Continue,
+                "{key:?} should not reach the host"
+            );
+            assert_eq!(
+                d.status.as_deref(),
+                Some("read-only"),
+                "{key:?} should have said why"
+            );
+        }
+        assert_eq!(d.source, "hello world\n", "and not a byte moved");
+    }
+
+    /// The other half, and the point of the mode: reading a document is not a
+    /// degraded form of editing it.
+    #[test]
+    fn a_read_only_document_still_navigates_selects_and_copies() {
+        let mut d = doc("hello world\n");
+        d.set_read_only(true);
+        let mut state = EditorState::new();
+
+        handle_key(&mut d, plain(KeyCode::Right), &mut state);
+        assert_eq!(d.caret, 1, "the caret moves");
+        handle_key(
+            &mut d,
+            KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT),
+            &mut state,
+        );
+        assert_eq!(d.selected_text(), Some("e"), "selection extends");
+        assert_eq!(handle_key(&mut d, ctrl('c'), &mut state), Outcome::Copy);
+        assert_eq!(handle_key(&mut d, ctrl('a'), &mut state), Outcome::Continue);
+        assert_eq!(d.selected_text(), Some("hello world\n"), "^a selects all");
+        assert_eq!(handle_key(&mut d, ctrl('p'), &mut state), Outcome::Palette);
+        assert_eq!(handle_key(&mut d, alt('h'), &mut state), Outcome::Help);
+        assert_eq!(handle_key(&mut d, ctrl('q'), &mut state), Outcome::Quit);
+
+        // The view dials are about how the document is shown, not what it says.
+        let before = d.view;
+        handle_key(&mut d, alt('w'), &mut state);
+        assert_ne!(d.view, before, "⌥w still toggles the view");
+    }
+
+    /// The file verbs are the host's policy, not the widget's, so they reach it
+    /// and it decides — see `attempt_save` in leaf-tui.
+    #[test]
+    fn the_file_verbs_still_reach_the_host_to_be_refused_there() {
+        let mut d = doc("hello\n");
+        d.set_read_only(true);
+        let mut state = EditorState::new();
+        assert_eq!(handle_key(&mut d, ctrl('s'), &mut state), Outcome::Save);
+        assert_eq!(handle_key(&mut d, alt('s'), &mut state), Outcome::SaveAs);
+        assert_eq!(handle_key(&mut d, alt('n'), &mut state), Outcome::New);
+    }
+
+    /// A key bound to nothing must not be answered with a refusal — that would
+    /// invent a message where the editable document is silent.
+    #[test]
+    fn an_unbound_key_is_still_silent_in_a_read_only_document() {
+        let mut d = doc("hello\n");
+        d.set_read_only(true);
+        let mut state = EditorState::new();
+        handle_key(&mut d, alt('z'), &mut state);
+        assert_eq!(d.status, None);
+    }
 
     #[test]
     fn first_click_is_single() {

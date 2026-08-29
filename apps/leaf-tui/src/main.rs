@@ -31,38 +31,98 @@ use ratatui::{
     layout::Rect,
 };
 
-/// The one-line usage, shared by the no-argument error and `--help` so the two
-/// can never drift apart. A path that isn't there yet is named as part of the
-/// usage because it's a supported way to start, not a tolerated mistake: leaf
-/// opens an empty buffer for it and the first save creates the file.
-const USAGE: &str =
-    "usage: leaf <file.md|file.dj|file.html|file.xml>   (a missing file is created on save)";
+/// The one-line usage, shared by the no-argument error and the full `--help` so
+/// the two can never drift apart. A path that isn't there yet is named as part
+/// of the usage because it's a supported way to start, not a tolerated mistake:
+/// leaf opens an empty buffer for it and the first save creates the file.
+const USAGE: &str = "usage: leaf [-r|--read-only] <file.md|file.dj|file.html|file.xml>   \
+                     (a missing file is created on save)";
 
-fn main() -> Result<()> {
-    let arg = std::env::args_os()
-        .nth(1)
-        .ok_or_else(|| anyhow!("{USAGE}"))?;
+/// What `--help` prints. Written out rather than derived, because the whole
+/// command line is one path and three flags — see [`parse_args`].
+const HELP: &str = "\
+leaf — a caret-based rich-text editor for documents
 
-    // `--version` and `--help` are answered before the file is opened or the
-    // terminal is entered. Homebrew's formula test is `leaf --version` on a
-    // machine with no document to hand, and every argument below this point is
-    // treated as a path — so a flag that fell through would be opened as a
-    // filename and exit non-zero. Printing the crate version is also what makes
-    // that test meaningful: it is what `brew` matches the formula's version
-    // against, which is how a mis-tagged release gets caught.
-    if let Some(flag) = arg.to_str() {
-        match flag {
-            "--version" | "-V" => {
-                println!("leaf {}", env!("CARGO_PKG_VERSION"));
-                return Ok(());
+usage: leaf [-r|--read-only] <file>   (a missing file is created on save)
+
+  <file>             .md, .dj, .html or .xml — the extension picks the format
+  -r, --read-only    open the document for reading: caret motion, selection,
+                     copy, follow, and the view controls all work, and nothing
+                     can be changed or written
+  -h, --help         this
+  -V, --version      the version leaf was built at
+
+Once inside, F1 or ⌥h is the key reference and ^p is the command palette.";
+
+/// The command line, parsed. Hand-rolled because a path and three flags is not
+/// a dependency's worth of argument grammar, and because the entire surface is
+/// then stated in one place a reader can see all of ([`HELP`], just above).
+#[cfg_attr(test, derive(Debug))]
+struct Args {
+    path: PathBuf,
+    read_only: bool,
+}
+
+/// The two things a parse can produce: arguments to open a document with, or a
+/// message to print before exiting cleanly.
+#[cfg_attr(test, derive(Debug))]
+enum Parsed {
+    Run(Args),
+    /// `--help` / `--version` — print this and stop. Not an error: Homebrew's
+    /// formula test is `leaf --version` on a machine with no document to hand,
+    /// and it checks the exit status as well as the string.
+    Print(&'static str),
+}
+
+/// Read the arguments after `argv[0]`.
+///
+/// Flags may come on either side of the path — `leaf -r notes.md` and `leaf
+/// notes.md -r` both work — because neither order is more obviously right than
+/// the other and there is no reason to make anyone remember which one leaf
+/// wants. Anything else starting with `-` is an error rather than a filename:
+/// a mistyped flag treated as a path would open a buffer promising to save
+/// itself to a file called `--raed-only`.
+///
+/// Version and help are answered here, before a file is opened or the terminal
+/// is entered, so neither can be derailed by an unreadable document.
+fn parse_args(argv: &[std::ffi::OsString]) -> Result<Parsed> {
+    let mut path: Option<PathBuf> = None;
+    let mut read_only = false;
+    for arg in argv {
+        match arg.to_str() {
+            Some("--version" | "-V") => {
+                return Ok(Parsed::Print(concat!("leaf ", env!("CARGO_PKG_VERSION"))));
             }
-            "--help" | "-h" => {
-                println!("{USAGE}");
-                return Ok(());
+            Some("--help" | "-h") => return Ok(Parsed::Print(HELP)),
+            Some("--read-only" | "-r") => read_only = true,
+            // `-` alone is left to be a filename, which is what it is on every
+            // other tool that doesn't read stdin.
+            Some(flag) if flag.starts_with('-') && flag != "-" => {
+                return Err(anyhow!("unknown option `{flag}`\n{USAGE}"));
             }
-            _ => {}
+            _ if path.is_some() => {
+                return Err(anyhow!("leaf opens one document at a time\n{USAGE}"));
+            }
+            // Not `to_str`: a path is bytes on this platform, and a filename
+            // that isn't UTF-8 is still a file leaf can open.
+            _ => path = Some(PathBuf::from(arg)),
         }
     }
+    match path {
+        Some(path) => Ok(Parsed::Run(Args { path, read_only })),
+        None => Err(anyhow!("{USAGE}")),
+    }
+}
+
+fn main() -> Result<()> {
+    let argv: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    let args = match parse_args(&argv)? {
+        Parsed::Print(text) => {
+            println!("{text}");
+            return Ok(());
+        }
+        Parsed::Run(args) => args,
+    };
 
     // `open_or_create`, not `open`: naming a file that doesn't exist is how every
     // other terminal editor is asked to start a new one, and refusing it sent the
@@ -71,18 +131,28 @@ fn main() -> Result<()> {
     // only difference from an opened file is that it's empty. A path leaf can't
     // parse (no extension, or an unknown one) is still an error, so a mistyped
     // flag doesn't silently become a buffer.
-    let path = PathBuf::from(arg);
-    // Cosmetic only — it decides a status message, nothing about how the file is
-    // opened. `open_or_create` makes that decision from its own failed read, so
-    // this cheap `stat` racing the open can at worst mislabel a file somebody
-    // created in the microseconds between them.
-    let existed = path.exists();
-    let mut doc = Doc::open_or_create(path)?;
+    //
+    // Cosmetic only — `existed` decides a status message, nothing about how the
+    // file is opened. `open_or_create` makes that decision from its own failed
+    // read, so this cheap `stat` racing the open can at worst mislabel a file
+    // somebody created in the microseconds between them.
+    let existed = args.path.exists();
+    let mut doc = Doc::open_or_create(args.path)?;
+    if args.read_only {
+        doc.set_read_only(true);
+    }
     if !existed {
         // Say it once, in the status line the editor already has: an empty screen
         // under a filename could otherwise be read as "leaf lost my file". It
         // clears on the first keystroke like every other status message.
-        doc.status = Some(format!("{} — new file", doc.file_name()));
+        doc.status = Some(if args.read_only {
+            // The one combination that is almost certainly a typo: there is
+            // nothing to read and nothing will ever be written, so an empty
+            // screen with a read-only badge on it deserves both halves.
+            format!("{} — no such file, and read-only", doc.file_name())
+        } else {
+            format!("{} — new file", doc.file_name())
+        });
     }
 
     let mut terminal = ratatui::init();
@@ -681,6 +751,36 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
     apply_outcome(doc, app, outcome)
 }
 
+/// Whether carrying out this outcome would change the document or write a file
+/// — what a read-only session withholds.
+///
+/// Named as the complement of what a *reader* does, and deliberately not as a
+/// list of what is blocked: an [`Outcome`] added to the widget later is then
+/// withheld by default rather than let through by having been forgotten.
+fn writes(outcome: Outcome) -> bool {
+    !matches!(
+        outcome,
+        Outcome::Continue | Outcome::Quit | Outcome::Copy | Outcome::Palette | Outcome::Help
+    )
+}
+
+/// Refuse a host verb on a read-only document, saying so, and report whether it
+/// was refused — so a caller reads `if refused_read_only(doc) { return … }`.
+///
+/// The widget refuses the *document* gestures (`asks_to_edit` in
+/// `leaf-ratatui`); this refuses the *file* ones, which are the host's policy
+/// and not the widget's. `--read-only` is a reading session over one document,
+/// so leaf writes nothing in it and swaps in no new buffer: Save, Save As and
+/// New are all out, and all three say the same words the widget does, because
+/// the reason is the same and one message is one thing to learn.
+fn refused_read_only(doc: &mut Doc) -> bool {
+    if doc.read_only() {
+        doc.status = Some("read-only".into());
+        return true;
+    }
+    false
+}
+
 /// Carry out an [`Outcome`] — the one place the host's own verbs live.
 ///
 /// Both input paths end here: a key press, whose outcome the editing surface
@@ -690,6 +790,15 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
 /// menu row opens the link prompt" would have had to be written again here; now
 /// a command's host-side behaviour is stated once and both doors reach it.
 fn apply_outcome(doc: &mut Doc, app: &mut App, outcome: Outcome) -> Flow {
+    // A read-only session refuses every outcome that would change the document
+    // or write a file, whichever of the three doors it came through — a key, a
+    // palette row, a context-menu row. The keyboard is already gated inside the
+    // widget (`asks_to_edit` in leaf-ratatui) and the other two are dimmed by
+    // `Command::enabled`; this is where all three converge, so it is the one
+    // place the rule has to actually hold.
+    if writes(outcome) && refused_read_only(doc) {
+        return Flow::Continue;
+    }
     match outcome {
         Outcome::Continue => Flow::Continue,
         // Ctrl+Q: quit, guarding an unsaved document behind the Save/Discard/
@@ -854,6 +963,12 @@ fn handle_paste(doc: &mut Doc, text: &str, app: &mut App) {
     }
     if let Some(prompt) = &mut app.text_prompt {
         insert_into_field(&mut prompt.value, &mut prompt.cursor, text);
+        return;
+    }
+    // The overlays above are fields, and typing into a field is not editing the
+    // document — so the read-only gate belongs here, at the one branch that
+    // reaches the document, rather than at the top.
+    if refused_read_only(doc) {
         return;
     }
     doc.paste(&normalize_newlines(text));
@@ -1075,6 +1190,11 @@ fn replace_with_blank(doc: &mut Doc) {
 /// hand back to `resolve_pending` when it resolves, and resolved immediately
 /// when neither dialog is needed.
 fn attempt_save(doc: &mut Doc, app: &mut App, then: Option<DirtyAction>) -> Flow {
+    // A read-only session writes nothing — not even a document that somehow
+    // came out dirty, which it can't, because every door core has is shut.
+    if refused_read_only(doc) {
+        return Flow::Continue;
+    }
     if doc.is_untitled() {
         app.pending_action = then;
         open_save_as_prompt(doc, app);
@@ -2320,6 +2440,165 @@ mod tests {
         );
         let html = get_clipboard_html().expect("html flavor");
         assert!(html.contains("<strong>bold</strong>"), "{html:?}");
+    }
+
+    // ── read-only ────────────────────────────────────────────────────────────
+
+    fn argv(args: &[&str]) -> Vec<std::ffi::OsString> {
+        args.iter().map(std::ffi::OsString::from).collect()
+    }
+
+    fn parsed(args: &[&str]) -> Args {
+        match parse_args(&argv(args)).unwrap() {
+            Parsed::Run(args) => args,
+            Parsed::Print(_) => panic!("expected arguments, got a message to print"),
+        }
+    }
+
+    #[test]
+    fn the_read_only_flag_is_taken_on_either_side_of_the_path() {
+        // No order here is more obviously right than the other, so both work
+        // rather than one of them being a usage error nobody predicted.
+        for args in [&["-r", "notes.md"], &["notes.md", "-r"]] {
+            let parsed = parsed(args);
+            assert!(parsed.read_only, "{args:?}");
+            assert_eq!(parsed.path, PathBuf::from("notes.md"), "{args:?}");
+        }
+        assert!(parsed(&["--read-only", "notes.md"]).read_only);
+        assert!(!parsed(&["notes.md"]).read_only);
+    }
+
+    #[test]
+    fn an_unknown_flag_is_an_error_rather_than_a_filename() {
+        // The failure this prevents: `--raed-only` opened as a path, giving a
+        // buffer that promises to save itself to a file of that name.
+        let err = parse_args(&argv(&["--raed-only", "notes.md"])).unwrap_err();
+        assert!(err.to_string().contains("unknown option"), "{err}");
+        // …and a second path is a mistake too, not a silently ignored argument.
+        assert!(parse_args(&argv(&["a.md", "b.md"])).is_err());
+        // No arguments at all is the usage message it always was.
+        assert!(parse_args(&argv(&[])).is_err());
+    }
+
+    #[test]
+    fn version_and_help_are_answered_before_anything_is_opened() {
+        for flag in ["--version", "-V"] {
+            match parse_args(&argv(&[flag])).unwrap() {
+                Parsed::Print(text) => assert!(text.starts_with("leaf "), "{text}"),
+                Parsed::Run(_) => panic!("{flag} should not open a document"),
+            }
+        }
+        for flag in ["--help", "-h"] {
+            match parse_args(&argv(&[flag])).unwrap() {
+                // The flag documents itself, which is the only way that stays
+                // true — `--read-only` gaining a line here is the same commit
+                // that gives it a meaning.
+                Parsed::Print(text) => assert!(text.contains("--read-only"), "{text}"),
+                Parsed::Run(_) => panic!("{flag} should not open a document"),
+            }
+        }
+    }
+
+    #[test]
+    fn typing_into_a_read_only_document_changes_nothing_and_says_why() {
+        let mut doc = doc_with("ro_typing", "hello\n");
+        doc.set_read_only(true);
+        let mut app = App::default();
+        handle_key(&mut doc, plain('x'), &mut app);
+        assert_eq!(doc.source, "hello\n");
+        assert_eq!(doc.status.as_deref(), Some("read-only"));
+        assert!(!doc.dirty);
+    }
+
+    #[test]
+    fn ctrl_s_on_a_read_only_document_says_so_and_writes_nothing() {
+        let mut doc = doc_with("ro_save", "hello\n");
+        doc.set_read_only(true);
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('s'), &mut app);
+        assert_eq!(doc.status.as_deref(), Some("read-only"));
+        assert!(app.text_prompt.is_none(), "and opens no Save As box");
+        assert_eq!(std::fs::read_to_string(&doc.path).unwrap(), "hello\n");
+    }
+
+    #[test]
+    fn save_as_and_new_are_refused_in_a_read_only_session_too() {
+        // `--read-only` is a reading session over one document: leaf writes
+        // nothing in it, and doesn't swap in a buffer that would quietly leave
+        // the mode behind.
+        let mut doc = doc_with("ro_saveas", "hello\n");
+        doc.set_read_only(true);
+        let mut app = App::default();
+        handle_key(&mut doc, alt('s'), &mut app);
+        assert!(app.text_prompt.is_none(), "no Save As destination box");
+        handle_key(&mut doc, alt('n'), &mut app);
+        assert_eq!(doc.source, "hello\n", "and no blank document");
+        assert!(!doc.is_untitled());
+    }
+
+    #[test]
+    fn a_paste_into_a_read_only_document_is_refused() {
+        let mut doc = doc_with("ro_paste", "hello\n");
+        doc.set_read_only(true);
+        let mut app = App::default();
+        handle_paste(&mut doc, "pasted text", &mut app);
+        assert_eq!(doc.source, "hello\n");
+        assert_eq!(doc.status.as_deref(), Some("read-only"));
+    }
+
+    #[test]
+    fn a_read_only_document_still_navigates_selects_and_copies() {
+        let mut doc = doc_with("ro_reading", "hello world\n");
+        doc.set_read_only(true);
+        let mut app = App::default();
+
+        // Click, drag-select, and the palette are all reading gestures.
+        handle_mouse(&mut doc, left_down(1, 0), &mut app);
+        handle_mouse(&mut doc, shift_left_down(1, 5), &mut app);
+        assert_eq!(doc.selected_text(), Some("hello"));
+        handle_key(&mut doc, ctrl('a'), &mut app);
+        assert_eq!(doc.selected_text(), Some("hello world\n"));
+        handle_key(&mut doc, alt('p'), &mut app);
+        assert!(app.palette.is_some(), "the palette still opens");
+    }
+
+    #[test]
+    fn clicking_a_checkbox_in_a_read_only_document_places_the_caret_instead() {
+        // A box that can't be ticked is just text, so the click should do what a
+        // click on any other glyph does rather than nothing at all.
+        let mut doc = doc_with("ro_checkbox", "- [ ] one\n- [ ] two\n");
+        doc.set_read_only(true);
+        doc.caret = doc.source.find("two").unwrap();
+        let mut app = App::default();
+        handle_mouse(&mut doc, left_down(1, 0), &mut app);
+        assert_eq!(doc.source, "- [ ] one\n- [ ] two\n", "nothing was ticked");
+        // The box glyph's own cell, so the caret snaps to the first stop on
+        // that row — the start of the item's text, not the hidden `- [ ] `.
+        assert_eq!(
+            doc.caret,
+            doc.source.find("one").unwrap(),
+            "the caret moved to the click"
+        );
+    }
+
+    #[test]
+    fn the_read_only_badge_shows_in_the_corner_and_yields_to_a_status() {
+        let mut doc = doc_with("ro_badge", "hello\n");
+        doc.set_read_only(true);
+        let mut app = App::default();
+        let lines = frame(&mut doc, &mut app, 40, 6);
+        assert!(
+            lines.last().unwrap().ends_with("read-only "),
+            "badge missing from the bottom-right:\n{}",
+            lines.join("\n")
+        );
+
+        // A real message is what somebody is waiting to read, so it wins.
+        doc.status = Some("copied".into());
+        let lines = frame(&mut doc, &mut app, 40, 6);
+        let bottom = lines.last().unwrap();
+        assert!(bottom.ends_with("copied "), "{bottom:?}");
+        assert!(!bottom.contains("read-only"), "{bottom:?}");
     }
 
     // ── the file watch ───────────────────────────────────────────────────────

@@ -185,6 +185,15 @@ detected as such quickly and fall back to `COLORFGBG`, then to dark. To pin it:
 LEAF_THEME=light cargo run -- path/to/document.md
 ```
 
+`leaf -r <file>` (or `--read-only`) opens the document as a **reading surface**
+rather than an editing one. Caret motion, selection, copy, `⌥g` follow, the
+view/markup/line-flow dials, the palette and the key reference all work exactly
+as they do anywhere else; everything that would change the document or write a
+file is refused, says so, and is dimmed in the palette, the context menu and the
+key reference. The flag goes on either side of the path. The gate itself is
+`leaf-core`'s — every mutation funnels through three doors and all three are
+shut — so this is a guarantee rather than a suppressed keyboard.
+
 ## Keys
 
 | key | action |

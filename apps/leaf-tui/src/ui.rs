@@ -101,7 +101,18 @@ pub fn render(f: &mut Frame, doc: &mut Doc, app: &mut App) {
         // bottom-right corner, drawn over the body and cleared by the next edit,
         // rather than a line of permanent chrome. Suppressed while a dialog is up
         // so the two never fight for the same glance.
-        render_status_toast(f, msg, &chrome);
+        render_toast(f, msg, chrome.warn);
+    } else if doc.read_only() {
+        // The read-only badge: a standing fact about the session rather than
+        // news, so it is quiet (dim, not the toast's warning ink) and it yields
+        // to a real status the moment there is one — a transient message is the
+        // thing somebody is actually waiting to read.
+        //
+        // It borrows the toast's corner because leaf-tui has no header or
+        // footer to put it in: the editing surface fills the terminal (see this
+        // module's own doc comment), and inventing a chrome row for one word
+        // would cost every document a line forever.
+        render_toast(f, "read-only", chrome.dim);
     }
 
     if let Some(menu) = &mut app.context_menu {
@@ -166,10 +177,15 @@ fn render_choice_overlay(
     f.render_widget(Paragraph::new(lines).style(chrome.base), rect);
 }
 
-/// A small feedback toast in the bottom-right corner, drawn over the body and
-/// cleared by the next edit. Right-aligned and one row tall so it stays out of
-/// the way of the text and the caret, which usually sit up and to the left.
-fn render_status_toast(f: &mut Frame, msg: &str, chrome: &Chrome) {
+/// A small toast in the bottom-right corner, drawn over the body. Right-aligned
+/// and one row tall so it stays out of the way of the text and the caret, which
+/// usually sit up and to the left.
+///
+/// Takes its `style` rather than reading one off the [`Chrome`], because the two
+/// things drawn here want opposite volumes: a status message is news and is
+/// painted in the warning ink, while the read-only badge is a standing
+/// condition and is painted dim.
+fn render_toast(f: &mut Frame, msg: &str, style: Style) {
     let screen = f.area();
     if screen.width == 0 || screen.height == 0 {
         return;
@@ -184,7 +200,7 @@ fn render_status_toast(f: &mut Frame, msg: &str, chrome: &Chrome) {
     };
     f.render_widget(Clear, rect);
     f.render_widget(
-        Paragraph::new(Line::from(Span::styled(text, chrome.warn))).style(chrome.warn),
+        Paragraph::new(Line::from(Span::styled(text, style))).style(style),
         rect,
     );
 }

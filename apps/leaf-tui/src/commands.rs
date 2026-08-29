@@ -48,6 +48,10 @@ pub struct Ctx {
     pub flow: LineFlow,
     pub has_selection: bool,
     pub view: View,
+    /// `Doc::read_only` — a whole axis of availability on its own, orthogonal
+    /// to the format's. A Markdown document can spell a heading and still
+    /// refuse to be given one.
+    pub read_only: bool,
 }
 
 impl Ctx {
@@ -62,6 +66,7 @@ impl Ctx {
             flow: doc.line_flow(),
             has_selection: doc.selection().is_some(),
             view: doc.view,
+            read_only: doc.read_only(),
         }
     }
 }
@@ -285,6 +290,12 @@ impl Command {
     /// what a format can't do is legible instead of merely absent.
     pub fn enabled(self, ctx: &Ctx) -> bool {
         use Command::*;
+        // A reading session withholds everything that would change the document
+        // or write a file, before any question about the format is asked — the
+        // two are independent, and this one is the coarser.
+        if ctx.read_only && self.writes() {
+            return false;
+        }
         let c = &ctx.caps;
         match self {
             // Nothing to cut or copy without a selection. Paste is always live:
@@ -328,6 +339,29 @@ impl Command {
 
             _ => true,
         }
+    }
+
+    /// Whether running this command would change the document or write a file
+    /// — what [`Command::enabled`] withholds in a read-only session.
+    ///
+    /// Stated as the complement, because the reading half is the short and
+    /// stable list: copy, select-all, the view dials, follow, quit, and the key
+    /// reference. A command added to the table later is then withheld by
+    /// default, which is the direction an omission should fail in.
+    fn writes(self) -> bool {
+        use Command::*;
+        !matches!(
+            self,
+            Copy | SelectAll
+                | ToggleView
+                | CycleMarkup
+                | Markup(_)
+                | ToggleFlow
+                | Flow(_)
+                | Follow
+                | Quit
+                | Help
+        )
     }
 
     /// Whether this command's state is currently *on*, for the row's `✓`.
@@ -590,6 +624,83 @@ mod tests {
 
         doc.caret = doc.source.find("code").unwrap();
         assert!(Command::CodeLanguage.enabled(&Ctx::read(&mut doc)));
+    }
+
+    /// A read-only document dims everything that would change it or write it,
+    /// and dims nothing a reader needs. The dimming is the *point* of the mode
+    /// being visible rather than merely enforced: core refuses these silently,
+    /// so a surface that offered them would teach the keyboard was broken.
+    #[test]
+    fn a_read_only_document_dims_what_would_change_it_and_nothing_else() {
+        let mut doc = Doc::from_source("hello world\n".into(), leaf_core::Format::Djot).unwrap();
+        doc.set_read_only(true);
+        doc.anchor = Some(0);
+        doc.caret = 5; // a selection, so Cut/Copy are otherwise both live
+        let ctx = Ctx::read(&mut doc);
+
+        for cmd in [
+            Command::Undo,
+            Command::Cut,
+            Command::Paste,
+            Command::Heading(1),
+            Command::Inline(InlineKind::Strong),
+            Command::Link,
+            Command::Footnote,
+            Command::Save,
+            Command::SaveAs,
+            Command::New,
+        ] {
+            assert!(
+                !cmd.enabled(&ctx),
+                "{} should be dimmed in a read-only document",
+                cmd.label()
+            );
+        }
+        for cmd in [
+            Command::Copy,
+            Command::SelectAll,
+            Command::ToggleView,
+            Command::CycleMarkup,
+            Command::Follow,
+            Command::Quit,
+            Command::Help,
+        ] {
+            assert!(
+                cmd.enabled(&ctx),
+                "{} is what reading a document is made of",
+                cmd.label()
+            );
+        }
+    }
+
+    /// Every command is on exactly one side of the read-only line, and the
+    /// reading side is the one written out — so a command added to the table
+    /// and forgotten here is withheld rather than quietly offered.
+    #[test]
+    fn every_command_is_classified_for_read_only() {
+        for (_, group) in GROUPS {
+            for cmd in *group {
+                let reads = !cmd.writes();
+                assert_eq!(
+                    reads,
+                    matches!(
+                        cmd,
+                        Command::Copy
+                            | Command::SelectAll
+                            | Command::ToggleView
+                            | Command::CycleMarkup
+                            | Command::Markup(_)
+                            | Command::ToggleFlow
+                            | Command::Flow(_)
+                            | Command::Follow
+                            | Command::Quit
+                            | Command::Help
+                    ),
+                    "{} is on the wrong side of the read-only line",
+                    cmd.label()
+                );
+            }
+        }
     }
 
     /// A command that only touches the document reports `Continue`; one the host
