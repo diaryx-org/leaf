@@ -95,6 +95,10 @@ pub struct Highlight {
     pub id: String,
     /// A rendering hint (`#RRGGBB`), or `None` for the theme's default wash.
     pub color: Option<String>,
+    /// A margin glyph's name (an SF Symbol, for this binding's frontends), or
+    /// `None` for wash-only ink. The marker — not the wash — is what
+    /// activates a highlight; see `leaf_core::Highlight::marker`.
+    pub marker: Option<String>,
 }
 
 /// One maximal span of same-styled glyphs on a visual row — the unit the Swift
@@ -1195,6 +1199,7 @@ impl LeafDoc {
                 end: h.end as usize,
                 id: h.id,
                 color: h.color,
+                marker: h.marker,
             })
             .collect();
         g.doc.set_highlights(hls);
@@ -1205,6 +1210,23 @@ impl LeafDoc {
     /// frontend asks when the reader activates a spot on the page.
     pub fn highlight_at(&self, offset: u32) -> Option<String> {
         self.lock().doc.highlight_at(offset as usize).map(|h| h.id.clone())
+    }
+
+    /// The host-painted ranges as last set, sorted by start — what a frontend
+    /// walks to lay out margin markers.
+    pub fn highlights(&self) -> Vec<Highlight> {
+        self.lock()
+            .doc
+            .highlights()
+            .iter()
+            .map(|h| Highlight {
+                start: h.start as u64,
+                end: h.end as u64,
+                id: h.id.clone(),
+                color: h.color.clone(),
+                marker: h.marker.clone(),
+            })
+            .collect()
     }
 
     /// Mark the buffer saved after the host persisted [`LeafDoc::source`] its own
@@ -3219,6 +3241,7 @@ mod tests {
             end: 7,
             id: "remark-1".into(),
             color: Some("#ffe066".into()),
+            marker: Some("text.bubble".into()),
         }]);
         let row = &view.rows[0];
         let texts: Vec<(&str, Option<&str>)> = row
@@ -3237,6 +3260,11 @@ mod tests {
         );
         assert_eq!(row.runs[1].hl_color.as_deref(), Some("#ffe066"));
         assert_eq!(d.highlight_at(5).as_deref(), Some("remark-1"));
+        assert_eq!(
+            d.highlights().first().and_then(|h| h.marker.clone()).as_deref(),
+            Some("text.bubble"),
+            "the marker rides back out for the frontend's margin pass"
+        );
         assert_eq!(d.highlight_at(7), None, "end is exclusive");
         // A replace with nothing clears the wash.
         let view = d.set_highlights(Vec::new());

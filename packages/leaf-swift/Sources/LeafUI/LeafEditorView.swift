@@ -180,8 +180,11 @@ public final class LeafEditorModel: ObservableObject {
     }
 
     /// Called with a highlight's `id` when the reader taps (iOS) or clicks
-    /// (macOS) inside its wash — how a painted annotation opens. Nil leaves a
-    /// highlight purely visual.
+    /// (macOS) its **margin marker** — the glyph a `Highlight.marker` puts
+    /// beside the wash's first line. The marker is the control and the wash is
+    /// ink: text under a wash still selects, copies and (in an editor) takes a
+    /// caret like any other. A markerless highlight is purely visual whatever
+    /// this is set to.
     public var onTapHighlight: ((String) -> Void)? {
         didSet { textView?.onTapHighlight = tapHighlightBridge }
     }

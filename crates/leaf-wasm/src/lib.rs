@@ -136,6 +136,22 @@ pub struct HighlightIn {
     pub id: String,
     /// A rendering hint (`#RRGGBB`), or absent for the theme's default wash.
     pub color: Option<String>,
+    /// A margin glyph's name (a CSS class, for this binding's frontends), or
+    /// absent for wash-only ink. The marker — not the wash — is what
+    /// activates a highlight; see `leaf_core::Highlight::marker`.
+    pub marker: Option<String>,
+}
+
+/// A host-painted range as [`LeafDoc::highlights`] reports it back — the
+/// outbound twin of [`HighlightIn`], serialized rather than deserialized.
+#[derive(Serialize, Tsify)]
+#[tsify(into_wasm_abi)]
+pub struct HighlightOut {
+    pub start: usize,
+    pub end: usize,
+    pub id: String,
+    pub color: Option<String>,
+    pub marker: Option<String>,
 }
 
 /// One visual line of a table cell — a cell holds more than one only when an
@@ -1056,6 +1072,7 @@ impl LeafDoc {
                     end: h.end,
                     id: h.id,
                     color: h.color,
+                    marker: h.marker,
                 })
                 .collect(),
         );
@@ -1066,6 +1083,22 @@ impl LeafDoc {
     /// frontend asks when the reader activates a spot on the page.
     pub fn highlight_at(&self, offset: usize) -> Option<String> {
         self.doc.highlight_at(offset).map(|h| h.id.clone())
+    }
+
+    /// The host-painted ranges as last set, sorted by start — what a frontend
+    /// walks to lay out margin markers.
+    pub fn highlights(&self) -> Vec<HighlightOut> {
+        self.doc
+            .highlights()
+            .iter()
+            .map(|h| HighlightOut {
+                start: h.start,
+                end: h.end,
+                id: h.id.clone(),
+                color: h.color.clone(),
+                marker: h.marker.clone(),
+            })
+            .collect()
     }
 
     /// Which formatting controls this document's format can actually spell —

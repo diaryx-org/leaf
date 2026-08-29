@@ -117,10 +117,15 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// Quieting the caret and the beep a refused key makes is still to do.
     public var isReadOnly: Bool = false
 
-    /// Called with a highlight's `id` when a plain click lands inside its
-    /// wash — how a host's painted annotation opens. Rides the click that
-    /// places the caret; nil leaves highlights purely visual.
+    /// Called with a highlight's `id` when a click lands on its margin marker
+    /// — how a host's painted annotation opens. The marker, not the wash: the
+    /// wash is ink a reader selects and copies through, the glyph in the
+    /// margin is the control. Nil leaves every highlight purely visual.
     public var onTapHighlight: ((String) -> Void)?
+
+    /// The margin markers' hit targets, in layout coordinates, rebuilt on
+    /// every draw.
+    private var markerHits: [(rect: CGRect, id: String)] = []
 
     /// Asked to edit the destination of the link under the caret, with its
     /// current destination to seed a field with. See `LeafEditorModel.onEditLink`.
@@ -455,6 +460,42 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         if active, caretVisible, let rect = layoutEngine.caretRect(docView, theme: theme) {
             ctx.setFillColor(theme.caretColor.cgColor)
             ctx.fill(rect)
+        }
+
+        drawHighlightMarkers()
+    }
+
+    /// The margin pass: a small glyph beside the first line of every marked
+    /// highlight, at the trailing edge — the UIKit peer's rule, drawn with
+    /// AppKit's symbols. Layout coordinates throughout; the context is already
+    /// scaled, and the hit test divides the zoom back out (`layoutPoint`).
+    private func drawHighlightMarkers() {
+        markerHits.removeAll()
+        let highlights = doc.highlights()
+        guard highlights.contains(where: { $0.marker != nil }) else { return }
+        let box: CGFloat = 20
+        let inset: CGFloat = 4
+        let width = bounds.width / zoom
+        for highlight in highlights {
+            guard let symbol = highlight.marker else { continue }
+            let rc = doc.posForOffset(off: UInt32(highlight.start))
+            guard let line = layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch)) else { continue }
+            let frame = CGRect(
+                x: width - box - inset,
+                y: line.midY - box / 2,
+                width: box, height: box)
+            let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
+                .applying(.init(paletteColors: [theme.secondaryColor]))
+            if let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+                .withSymbolConfiguration(config)
+            {
+                image.draw(
+                    in: CGRect(
+                        x: frame.midX - image.size.width / 2,
+                        y: frame.midY - image.size.height / 2,
+                        width: image.size.width, height: image.size.height))
+            }
+            markerHits.append((frame.insetBy(dx: -6, dy: -4), highlight.id))
         }
     }
 
@@ -800,6 +841,15 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     public override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         let p = layoutPoint(convert(event.locationInWindow, from: nil))
+        // A margin marker outranks everything at its point, and — unlike the
+        // touch surface, which cannot call a tap back — this click is consumed
+        // whole: the caret stays where it was, because the reader asked for
+        // the annotation, not for a caret at the end of its line.
+        if let onTapHighlight,
+           let hit = markerHits.first(where: { $0.rect.contains(p) }) {
+            onTapHighlight(hit.id)
+            return
+        }
         // A plain click on a video or audio box starts it — the box's whole point
         // is the play badge drawn on it — and a click on an *empty* picture box
         // asks the host for it. The caret still moves there first, so a host that
@@ -837,15 +887,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         switch event.clickCount {
         case 2:  render(doc.selectWordCh(row: UInt32(row), ch: UInt32(ch)))
         case 3:  render(doc.selectBlockCh(row: UInt32(row), ch: UInt32(ch)))
-        default:
-            render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: extend))
-            // The click has just placed the caret, so the caret *is* the
-            // clicked spot in source coordinates — ask whether a host
-            // highlight covers it and hand its id back if one does.
-            if let onTapHighlight, !extend,
-               let id = doc.highlightAt(offset: doc.caretOffset()) {
-                onTapHighlight(id)
-            }
+        default: render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: extend))
         }
     }
 

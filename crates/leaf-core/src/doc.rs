@@ -441,6 +441,14 @@ pub struct Highlight {
     /// A rendering hint the frontend maps — a `#RRGGBB` hex string, or
     /// nothing for the theme's default wash.
     pub color: Option<String>,
+    /// A margin glyph's name, or nothing for wash-only ink. A highlight with
+    /// a marker gets a small glyph in the margin beside its first line, and
+    /// the glyph — not the wash — is what activates it: the wash is ink, the
+    /// marker is the control, which is what lets a reader put a caret in (or
+    /// copy from) annotated text without a card leaping at them. The name is
+    /// opaque to leaf; an Apple frontend reads it as an SF Symbol, a web one
+    /// as a class.
+    pub marker: Option<String>,
 }
 
 pub struct Doc {
@@ -12570,9 +12578,9 @@ mod tests {
     fn highlights_are_kept_sorted_and_answer_point_queries() {
         let mut d = doc_with("hl", "one two three\n");
         d.set_highlights(vec![
-            Highlight { start: 8, end: 13, id: "b".into(), color: None },
-            Highlight { start: 0, end: 3, id: "a".into(), color: Some("#ffe066".into()) },
-            Highlight { start: 5, end: 5, id: "empty".into(), color: None },
+            Highlight { start: 8, end: 13, id: "b".into(), color: None, marker: None },
+            Highlight { start: 0, end: 3, id: "a".into(), color: Some("#ffe066".into()), marker: None },
+            Highlight { start: 5, end: 5, id: "empty".into(), color: None, marker: None },
         ]);
         assert_eq!(
             d.highlights().iter().map(|h| h.id.as_str()).collect::<Vec<_>>(),

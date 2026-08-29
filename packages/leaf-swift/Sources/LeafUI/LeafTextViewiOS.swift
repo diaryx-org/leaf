@@ -139,10 +139,17 @@ public final class LeafTextView: UIView, UITextInput {
         }
     }
 
-    /// Called with a highlight's `id` when a tap lands inside its wash — how
-    /// a host's painted annotation opens. Rides the same tap that places the
-    /// caret; nil leaves highlights purely visual.
+    /// Called with a highlight's `id` when a tap lands on its margin marker —
+    /// how a host's painted annotation opens. The marker, not the wash: the
+    /// wash is ink a reader should be able to select and copy through without
+    /// a card leaping at them, and the glyph in the margin is the control that
+    /// says so. Nil leaves every highlight purely visual.
     public var onTapHighlight: ((String) -> Void)?
+
+    /// The margin markers' hit targets, rebuilt on every draw — each a little
+    /// larger than the glyph it stands behind, since a 17pt symbol under a
+    /// thumb is a miss.
+    private var markerHits: [(rect: CGRect, id: String)] = []
 
     /// Extra actions for the *selection's* edit menu, ahead of the system's
     /// Copy/Look Up — how a host puts its own verbs where a reader's thumb
@@ -383,21 +390,19 @@ public final class LeafTextView: UIView, UITextInput {
         // never appeared, because every tap ended as a bare caret.
         guard !docView.hasSelection else { return }
         let point = gesture.location(in: self)
+        // A margin marker outranks everything at its point — it is chrome, and
+        // the whole reason it sits in the margin is to be the one tap that
+        // opens the annotation while the washed text underneath stays ordinary
+        // text (see `onTapHighlight`).
+        if let onTapHighlight,
+           let hit = markerHits.first(where: { $0.rect.contains(point) }) {
+            onTapHighlight(hit.id)
+            return
+        }
         // A tap on a video or audio box starts it, and a tap on an *empty*
         // picture box asks the host for it.
         if let hit = layoutEngine.mediaBox(at: point) {
             _ = activateMedia(hit)
-        }
-        // A tap inside a host highlight's wash hands its id back — after the
-        // media check, since a wash never covers a media box and the box's tap
-        // is the stronger claim. `closestPosition` clamps a miss to the
-        // nearest glyph, which for a tap on the page's empty tail could name
-        // the last highlight; the guard that the position is really *inside*
-        // the wash is `highlightAt`'s exclusive end.
-        if let onTapHighlight,
-           let position = closestPosition(to: point),
-           let id = doc.highlightAt(offset: UInt32(off(position))) {
-            onTapHighlight(id)
         }
     }
 
@@ -853,6 +858,40 @@ public final class LeafTextView: UIView, UITextInput {
 
         if let placeholder, let box = layoutEngine.placeholderBox {
             BlockChrome.drawPlaceholder(placeholder, in: box, theme: renderTheme, in: ctx)
+        }
+
+        drawHighlightMarkers()
+    }
+
+    /// The margin pass: a small glyph beside the first line of every marked
+    /// highlight, at the trailing edge — where an annotation says "there is
+    /// more here" without sitting in the prose. Draws nothing when no
+    /// highlight carries a marker, which is every document outside an
+    /// annotating host.
+    private func drawHighlightMarkers() {
+        markerHits.removeAll()
+        let highlights = doc.highlights()
+        guard highlights.contains(where: { $0.marker != nil }) else { return }
+        let box: CGFloat = 20
+        let inset: CGFloat = 4
+        let config = UIImage.SymbolConfiguration(pointSize: 13, weight: .regular)
+        for highlight in highlights {
+            guard let symbol = highlight.marker else { continue }
+            let rc = doc.posForOffset(off: UInt32(highlight.start))
+            guard let line = layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch)) else { continue }
+            let frame = CGRect(
+                x: bounds.width - box - inset,
+                y: line.midY - box / 2,
+                width: box, height: box)
+            if let image = UIImage(systemName: symbol, withConfiguration: config)?
+                .withTintColor(renderTheme.secondaryColor, renderingMode: .alwaysOriginal)
+            {
+                image.draw(
+                    at: CGPoint(
+                        x: frame.midX - image.size.width / 2,
+                        y: frame.midY - image.size.height / 2))
+            }
+            markerHits.append((frame.insetBy(dx: -10, dy: -8), highlight.id))
         }
     }
 

@@ -667,6 +667,12 @@ public protocol LeafDocProtocol : AnyObject {
     func highlightAt(offset: UInt32)  -> String?
     
     /**
+     * The host-painted ranges as last set, sorted by start — what a frontend
+     * walks to lay out margin markers.
+     */
+    func highlights()  -> [Highlight]
+    
+    /**
      * Tab away from a table: indent the caret's line (or the selected lines) one
      * level, nesting a list item under its sibling. The frontend calls this when
      * [`LeafDoc::cell_tab`] declined because the caret isn't in a table.
@@ -1398,6 +1404,17 @@ open func highlightAt(offset: UInt32) -> String? {
     return try!  FfiConverterOptionString.lift(try! rustCall() {
     uniffi_leaf_ffi_fn_method_leafdoc_highlight_at(self.uniffiClonePointer(),
         FfiConverterUInt32.lower(offset),$0
+    )
+})
+}
+    
+    /**
+     * The host-painted ranges as last set, sorted by start — what a frontend
+     * walks to lay out margin markers.
+     */
+open func highlights() -> [Highlight] {
+    return try!  FfiConverterSequenceTypeHighlight.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_highlights(self.uniffiClonePointer(),$0
     )
 })
 }
@@ -3433,6 +3450,12 @@ public struct Highlight {
      * A rendering hint (`#RRGGBB`), or `None` for the theme's default wash.
      */
     public var color: String?
+    /**
+     * A margin glyph's name (an SF Symbol, for this binding's frontends), or
+     * `None` for wash-only ink. The marker — not the wash — is what
+     * activates a highlight; see `leaf_core::Highlight::marker`.
+     */
+    public var marker: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -3448,11 +3471,17 @@ public struct Highlight {
          */id: String, 
         /**
          * A rendering hint (`#RRGGBB`), or `None` for the theme's default wash.
-         */color: String?) {
+         */color: String?, 
+        /**
+         * A margin glyph's name (an SF Symbol, for this binding's frontends), or
+         * `None` for wash-only ink. The marker — not the wash — is what
+         * activates a highlight; see `leaf_core::Highlight::marker`.
+         */marker: String?) {
         self.start = start
         self.end = end
         self.id = id
         self.color = color
+        self.marker = marker
     }
 }
 
@@ -3472,6 +3501,9 @@ extension Highlight: Equatable, Hashable {
         if lhs.color != rhs.color {
             return false
         }
+        if lhs.marker != rhs.marker {
+            return false
+        }
         return true
     }
 
@@ -3480,6 +3512,7 @@ extension Highlight: Equatable, Hashable {
         hasher.combine(end)
         hasher.combine(id)
         hasher.combine(color)
+        hasher.combine(marker)
     }
 }
 
@@ -3494,7 +3527,8 @@ public struct FfiConverterTypeHighlight: FfiConverterRustBuffer {
                 start: FfiConverterUInt64.read(from: &buf), 
                 end: FfiConverterUInt64.read(from: &buf), 
                 id: FfiConverterString.read(from: &buf), 
-                color: FfiConverterOptionString.read(from: &buf)
+                color: FfiConverterOptionString.read(from: &buf), 
+                marker: FfiConverterOptionString.read(from: &buf)
         )
     }
 
@@ -3503,6 +3537,7 @@ public struct FfiConverterTypeHighlight: FfiConverterRustBuffer {
         FfiConverterUInt64.write(value.end, into: &buf)
         FfiConverterString.write(value.id, into: &buf)
         FfiConverterOptionString.write(value.color, into: &buf)
+        FfiConverterOptionString.write(value.marker, into: &buf)
     }
 }
 
@@ -6187,6 +6222,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_highlight_at() != 39885) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_highlights() != 31038) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_indent() != 12990) {
