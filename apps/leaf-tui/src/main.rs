@@ -31,8 +31,11 @@ use ratatui::{
 };
 
 /// The one-line usage, shared by the no-argument error and `--help` so the two
-/// can never drift apart.
-const USAGE: &str = "usage: leaf <file.md|file.dj|file.html|file.xml>";
+/// can never drift apart. A path that isn't there yet is named as part of the
+/// usage because it's a supported way to start, not a tolerated mistake: leaf
+/// opens an empty buffer for it and the first save creates the file.
+const USAGE: &str =
+    "usage: leaf <file.md|file.dj|file.html|file.xml>   (a missing file is created on save)";
 
 fn main() -> Result<()> {
     let arg = std::env::args_os()
@@ -60,7 +63,26 @@ fn main() -> Result<()> {
         }
     }
 
-    let mut doc = Doc::open(PathBuf::from(arg))?;
+    // `open_or_create`, not `open`: naming a file that doesn't exist is how every
+    // other terminal editor is asked to start a new one, and refusing it sent the
+    // user off to `touch` a file leaf is about to write anyway. What comes back is
+    // a fully named document — ^S writes it, the header shows its name — so the
+    // only difference from an opened file is that it's empty. A path leaf can't
+    // parse (no extension, or an unknown one) is still an error, so a mistyped
+    // flag doesn't silently become a buffer.
+    let path = PathBuf::from(arg);
+    // Cosmetic only — it decides a status message, nothing about how the file is
+    // opened. `open_or_create` makes that decision from its own failed read, so
+    // this cheap `stat` racing the open can at worst mislabel a file somebody
+    // created in the microseconds between them.
+    let existed = path.exists();
+    let mut doc = Doc::open_or_create(path)?;
+    if !existed {
+        // Say it once, in the status line the editor already has: an empty screen
+        // under a filename could otherwise be read as "leaf lost my file". It
+        // clears on the first keystroke like every other status message.
+        doc.status = Some(format!("{} — new file", doc.file_name()));
+    }
 
     let mut terminal = ratatui::init();
     execute!(stdout(), EnableMouseCapture)?;
@@ -1565,6 +1587,72 @@ mod tests {
         handle_key(&mut doc, ctrl('q'), &mut app);
         assert!(handle_key(&mut doc, plain('s'), &mut app) == Flow::Quit);
         assert_eq!(std::fs::read_to_string(&doc.path).unwrap(), "hello world\n");
+    }
+
+    /// A path in the temp dir that nothing has written — `leaf notes.md` for a
+    /// file that isn't there.
+    fn missing_tui_path(name: &str) -> PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!("leaf_tui_test_new_{name}.md"));
+        let _ = std::fs::remove_file(&p);
+        p
+    }
+
+    #[test]
+    fn ctrl_s_on_a_file_that_didnt_exist_writes_it_with_no_save_as_prompt() {
+        // The whole point of `open_or_create` over `blank`: the buffer already
+        // knows its name, so ^S is a plain save. A Save As box here would be
+        // asking the user for a path they typed on the command line.
+        let p = missing_tui_path("ctrl_s");
+        let mut doc = Doc::open_or_create(p.clone()).unwrap();
+        doc.insert("typed into a file that didn't exist\n");
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('s'), &mut app);
+
+        assert!(app.text_prompt.is_none(), "no Save As detour");
+        assert!(app.conflict.is_none(), "and nothing to conflict with");
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            "typed into a file that didn't exist\n"
+        );
+        assert!(!doc.dirty);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn quitting_a_new_file_untouched_leaves_the_disk_alone() {
+        // Nothing was typed, so there is nothing to lose and nothing to write:
+        // no dirty prompt, and the file the user named still doesn't exist.
+        let p = missing_tui_path("quit_untouched");
+        let mut doc = Doc::open_or_create(p.clone()).unwrap();
+        let mut app = App::default();
+        assert!(handle_key(&mut doc, ctrl('q'), &mut app) == Flow::Quit);
+        assert!(app.dirty_prompt.is_none());
+        assert!(!p.exists(), "quitting must not create the file");
+    }
+
+    #[test]
+    fn a_new_file_created_underneath_us_still_gets_the_overwrite_prompt() {
+        // Somebody else writes the file between launch and save. That's the same
+        // clobber the conflict prompt guards for an opened document, and a new
+        // buffer must not be exempt from it just because it started empty.
+        let p = missing_tui_path("conflict");
+        let mut doc = Doc::open_or_create(p.clone()).unwrap();
+        doc.insert("ours\n");
+        std::fs::write(&p, "theirs\n").unwrap();
+
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('s'), &mut app);
+        assert!(
+            app.conflict.is_some(),
+            "a save about to overwrite someone's file has to ask"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            "theirs\n",
+            "and must not have written anything yet"
+        );
+        let _ = std::fs::remove_file(&p);
     }
 
     #[test]

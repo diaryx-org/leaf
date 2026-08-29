@@ -170,6 +170,11 @@ Formats are detected by extension: `.md`/`.markdown`, `.dj`/`.djot`,
 `.html`/`.htm`, `.xml`. The formatting toolbar targets the lightweight-markup
 formats (Markdown, Djot).
 
+A path that doesn't exist yet opens an empty buffer under that name, the way any
+other terminal editor does — `^S` creates the file. The extension still has to be
+one of the above, since it is what the buffer is parsed as, and nothing is
+written until you save, so opening a file and quitting leaves the disk untouched.
+
 The palette follows the terminal. On startup leaf asks it whether it is light or
 dark (an `OSC 11` query, the same moment it probes for a graphics protocol) and
 picks the matching colors, so the tint behind a code block is a lift off *your*

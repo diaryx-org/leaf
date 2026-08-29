@@ -730,6 +730,62 @@ impl Doc {
     #[cfg(feature = "fs")]
     pub fn open(path: PathBuf) -> Result<Self> {
         let bytes = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+        Self::from_disk_bytes(path, bytes)
+    }
+
+    /// An empty document *named* `path`, for a file that isn't there yet — what
+    /// every other terminal editor gives you when you name a file that doesn't
+    /// exist. It is a real named document, not a [`Doc::blank`]: `is_untitled`
+    /// is false, so ⌘S writes straight to `path` with no Save As detour, and
+    /// the header shows the name the user asked for.
+    ///
+    /// The format comes from the extension, exactly as [`Doc::open`] reads it —
+    /// so `leaf notes.dj` starts a djot buffer rather than the Markdown
+    /// [`Doc::blank`] has to assume for want of a name. An extension leaf can't
+    /// parse is still an error: a mistyped flag or a stray argument should say
+    /// so, not open a buffer promising to save somewhere.
+    ///
+    /// The watermark is the hash of *no bytes*, not `None`, and that is the
+    /// whole trick: `None` means untitled, and would leave [`Doc::disk_state`]
+    /// answering [`DiskState::Untitled`] for a document that has a path and
+    /// intends to write to it. Hashing `""` instead makes the answers the true
+    /// ones — [`DiskState::Missing`] while the file still isn't there (a save
+    /// recreates it, which is exactly what this is for), and
+    /// [`DiskState::Changed`] if somebody creates it underneath us between
+    /// launch and save, so the frontend's overwrite prompt guards a new file as
+    /// it guards an opened one.
+    ///
+    /// Nothing is written here. A buffer that is never typed into never touches
+    /// the filesystem, and a `path` whose directory doesn't exist is allowed to
+    /// open — the write is where that fails, and it says so then.
+    #[cfg(feature = "fs")]
+    pub fn create(path: PathBuf) -> Result<Self> {
+        Self::from_disk_bytes(path, Vec::new())
+    }
+
+    /// [`Doc::open`] when the file is there, [`Doc::create`] when it isn't —
+    /// the call a CLI frontend wants for its path argument.
+    ///
+    /// The decision is made from the failed read itself rather than a `exists()`
+    /// check first, so there is no window between the two for the file to appear
+    /// or vanish in. Only `NotFound` opens a new buffer: a permissions error or
+    /// a directory in the way is still an error, because pretending those are
+    /// "no file yet" would offer to save over something leaf couldn't read.
+    #[cfg(feature = "fs")]
+    pub fn open_or_create(path: PathBuf) -> Result<Self> {
+        match std::fs::read(&path) {
+            Ok(bytes) => Self::from_disk_bytes(path, bytes),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::create(path),
+            Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+        }
+    }
+
+    /// The shared body of [`Doc::open`] and [`Doc::create`]: bytes that are (or
+    /// stand in for) the file at `path`, parsed as the format its extension
+    /// names. Keeping the two on one path is what makes a new file's document
+    /// identical in every respect to an opened one but its contents.
+    #[cfg(feature = "fs")]
+    fn from_disk_bytes(path: PathBuf, bytes: Vec<u8>) -> Result<Self> {
         let format = detect_format(&path)?;
         let editor = new_editor(&bytes, format)?;
         let source = String::from_utf8(bytes).map_err(|_| anyhow!("document is not UTF-8"))?;
@@ -12306,6 +12362,125 @@ mod tests {
         d.save();
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "hi!");
         let _ = std::fs::remove_file(&p);
+    }
+
+    // ── a file that isn't there yet ───────────────────────────────────────────
+
+    /// A unique path in the temp dir with the given extension, guaranteed not to
+    /// exist — what `leaf notes.md` is handed when the file has never been made.
+    fn missing_path(name: &str, ext: &str) -> PathBuf {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut p = std::env::temp_dir();
+        p.push(format!("leaf_test_new_{name}_{seq}.{ext}"));
+        let _ = std::fs::remove_file(&p);
+        p
+    }
+
+    #[test]
+    fn a_file_that_doesnt_exist_opens_as_an_empty_named_document() {
+        let p = missing_path("named", "md");
+        let mut d = Doc::open_or_create(p.clone()).unwrap();
+
+        assert_eq!(d.source, "", "nothing was read, so there's nothing in it");
+        assert!(!d.dirty, "an untouched new buffer has nothing to lose");
+        assert!(
+            !d.is_untitled(),
+            "it has the name the user asked for — ^S must not detour to Save As"
+        );
+        assert_eq!(d.file_name(), p.file_name().unwrap().to_str().unwrap());
+        assert!(d.path.is_absolute(), "the same absolute path `open` stores");
+        assert!(!p.exists(), "and opening it wrote nothing");
+        // And it's a document you can be in.
+        d.build_visual(80);
+        assert_eq!(d.caret, 0);
+    }
+
+    #[test]
+    fn a_new_file_is_created_by_its_first_save() {
+        let p = missing_path("first_save", "md");
+        let mut d = Doc::open_or_create(p.clone()).unwrap();
+        d.insert("hello\n");
+        assert!(d.dirty);
+        d.save();
+
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            "hello\n",
+            "a plain ^S wrote it — no Save As, no name to invent"
+        );
+        assert!(!d.dirty);
+        assert_eq!(d.disk_state(), DiskState::Unchanged);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn a_new_file_takes_its_format_from_the_extension() {
+        // The one thing `blank` can't do: with no name it has to assume Markdown,
+        // and typing djot into a Markdown parse is the wrong buffer.
+        let dj = missing_path("format", "dj");
+        assert_eq!(Doc::open_or_create(dj).unwrap().format_name(), "djot");
+        let md = missing_path("format", "md");
+        assert_eq!(Doc::open_or_create(md).unwrap().format_name(), "markdown");
+    }
+
+    #[test]
+    fn a_new_file_reports_itself_missing_until_it_is_saved() {
+        // Not `Untitled` — that's the answer for a document with no path, and it
+        // would tell a frontend there is nothing a save could collide with. Here
+        // there is a path, and the file simply isn't at it yet.
+        let p = missing_path("disk_state", "md");
+        let mut d = Doc::open_or_create(p.clone()).unwrap();
+        assert_eq!(d.disk_state(), DiskState::Missing);
+
+        // Somebody else creates it while the buffer is open: that's an overwrite
+        // the frontend has to be able to prompt about, exactly as for an opened
+        // file. Their bytes, not ours, so `Changed`.
+        std::fs::write(&p, "theirs\n").unwrap();
+        assert_eq!(d.disk_state(), DiskState::Changed);
+
+        // Saving makes the file ours and re-stamps the watermark.
+        d.insert("ours\n");
+        d.save();
+        assert_eq!(d.disk_state(), DiskState::Unchanged);
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "ours\n");
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn open_or_create_still_opens_a_file_that_is_there() {
+        let d = doc_with("open_or_create_existing", "body\n");
+        let reopened = Doc::open_or_create(d.path.clone()).unwrap();
+        assert_eq!(reopened.source, "body\n");
+        assert_eq!(reopened.disk_state(), DiskState::Unchanged);
+    }
+
+    #[test]
+    fn a_missing_file_with_no_readable_extension_is_still_an_error() {
+        // A mistyped flag or a stray argument must not become a buffer promising
+        // to save somewhere — the same refusal `open` gives a real file.
+        let mut p = std::env::temp_dir();
+        p.push("leaf_test_new_bad_ext.wat");
+        assert!(Doc::open_or_create(p).is_err());
+        let mut none = std::env::temp_dir();
+        none.push("leaf_test_new_no_ext");
+        assert!(Doc::open_or_create(none).is_err());
+    }
+
+    #[test]
+    fn a_new_file_in_a_directory_that_doesnt_exist_opens_but_wont_save() {
+        // Opening reads nothing, so there is nothing to fail on yet; the write is
+        // where it fails, and it says so rather than claiming a save.
+        let p = std::env::temp_dir().join("leaf_test_no_such_dir_c41/doc.md");
+        let mut d = Doc::open_or_create(p).unwrap();
+        d.insert("x");
+        d.save();
+        assert!(
+            d.status.as_deref().unwrap().starts_with("save failed:"),
+            "got {:?}",
+            d.status
+        );
+        assert!(d.dirty, "it must not come away believing it saved");
     }
 
     // ── save as ───────────────────────────────────────────────────────────────
