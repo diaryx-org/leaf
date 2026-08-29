@@ -37,6 +37,41 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.1.4 — 2026-08-29
+
+### Added
+
+- **tui** — the commands the Apple and web frontends had and the terminal didn't ([`aeedd78`](https://github.com/diaryx-org/leaf/commit/aeedd781deb40ca6d410f011267f3e2504d91a6e))
+- **reader** — a read-only mode, a quotable selection, and host verbs in the selection menu ([`3261981`](https://github.com/diaryx-org/leaf/commit/3261981884db324891881bd7624b014529851898))
+- **highlights** — host-painted source ranges, washed behind the glyphs ([`d1d900a`](https://github.com/diaryx-org/leaf/commit/d1d900af550442e1d8d7b44fd7a407bfe02b9296))
+- **highlights** — the margin marker is the control, the wash is ink ([`d3c42ff`](https://github.com/diaryx-org/leaf/commit/d3c42ff75e70ed932432842b1ff0ef22a9df8db5))
+
+### Fixed
+
+- **tui** — the host chrome paints from the terminal's palette, not from ANSI ([`59fa726`](https://github.com/diaryx-org/leaf/commit/59fa7262a307a0f6f8045e06db02833405d7637f))
+- **ci** — stop forcing twig's Zig source build on every machine ([`777096f`](https://github.com/diaryx-org/leaf/commit/777096ff087eb7dff7c118ec10b894d1473b2a2f))
+
+### Behavioural changes
+
+- `leaf_ratatui::Outcome` gained six variants (`ImagePrompt`,
+ `VideoPrompt`, `AudioPrompt`, `Palette`, `Help`), so an exhaustive `match` on it
+ in an embedding host no longer compiles and must handle or ignore them. Tab and
+ Return inside a table now grow the table rather than declining at its last cell,
+ and Return no longer falls through to `newline` there. ⌥e, ⌥f, ⌥g, ⌥h, ⌥p, ⌥r,
+ ⌥⇧w, ⌥⇧f, ^p and F1 are now claimed by the widget and no longer reach a host
+ that was handling them itself. A mouse-move over a footnote or link in the rich
+ view now writes `Doc::status` (and clears it again on the way out), which a host
+ drawing that status will see change without an edit.
+
+- `leaf_ratatui::Theme` gained seven fields — `panel_bg`,
+ `panel_fg`, `panel_dim`, `panel_accent`, `panel_selected_bg`,
+ `panel_selected_fg`, `panel_warning`. The struct is `#[non_exhaustive]`, so this
+ is additive for anyone starting from `Theme::dark()`/`Theme::light()` and
+ overriding fields; a host doing that now inherits chrome colors it did not set,
+ which is the intent. Hosts drawing their own chrome are unaffected — these
+ fields describe leaf-tui's overlays and nothing in the widget reads them.
+
+
 ## v0.1.3 — 2026-08-28
 
 ### Breaking
