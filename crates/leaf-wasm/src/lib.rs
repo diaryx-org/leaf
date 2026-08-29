@@ -46,9 +46,8 @@
 use leaf_core::style::{Baseline, Role, Style as LStyle};
 use leaf_core::wysiwyg::text_width;
 use leaf_core::{
-    Alignment, BlockClass, BlockKind, ColorScheme, Doc, Format, Glyph,
-    Highlight as CoreHighlight, InlineKind, LineFlow as CoreLineFlow,
-    MarkupMode as CoreMarkupMode, MediaKind, View, VisualMap,
+    Alignment, BlockClass, BlockKind, ColorScheme, Doc, Format, Glyph, Highlight as CoreHighlight,
+    InlineKind, LineFlow as CoreLineFlow, MarkupMode as CoreMarkupMode, MediaKind, View, VisualMap,
 };
 use serde::{Deserialize, Serialize};
 use tsify_next::Tsify;
@@ -1935,13 +1934,7 @@ fn source_rows(source: &str, ss: usize, se: usize) -> Vec<Row> {
 
 /// Build a [`Run`] from an accumulated string and the core style it was drawn
 /// with — the one place role, emphasis, and baseline cross into the view shape.
-fn make_run(
-    text: String,
-    style: LStyle,
-    sel: bool,
-    hl: Option<&CoreHighlight>,
-    src: usize,
-) -> Run {
+fn make_run(text: String, style: LStyle, sel: bool, hl: Option<&CoreHighlight>, src: usize) -> Run {
     Run {
         text,
         role: role_name(style.role),

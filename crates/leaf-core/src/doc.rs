@@ -12560,7 +12560,10 @@ mod tests {
         d.place_caret(start + "exact".len(), true);
         let q = d.selection_quote(3).unwrap();
         assert_eq!(q.exact, "exact");
-        assert_eq!(q.prefix, "你好 ", "chars, not bytes — the multibyte pair counts as two");
+        assert_eq!(
+            q.prefix, "你好 ",
+            "chars, not bytes — the multibyte pair counts as two"
+        );
         assert_eq!(q.suffix, " 世界");
         assert_eq!(&d.source[q.start..q.end], "exact");
         // At the edges the context clips rather than erring.
@@ -12578,12 +12581,33 @@ mod tests {
     fn highlights_are_kept_sorted_and_answer_point_queries() {
         let mut d = doc_with("hl", "one two three\n");
         d.set_highlights(vec![
-            Highlight { start: 8, end: 13, id: "b".into(), color: None, marker: None },
-            Highlight { start: 0, end: 3, id: "a".into(), color: Some("#ffe066".into()), marker: None },
-            Highlight { start: 5, end: 5, id: "empty".into(), color: None, marker: None },
+            Highlight {
+                start: 8,
+                end: 13,
+                id: "b".into(),
+                color: None,
+                marker: None,
+            },
+            Highlight {
+                start: 0,
+                end: 3,
+                id: "a".into(),
+                color: Some("#ffe066".into()),
+                marker: None,
+            },
+            Highlight {
+                start: 5,
+                end: 5,
+                id: "empty".into(),
+                color: None,
+                marker: None,
+            },
         ]);
         assert_eq!(
-            d.highlights().iter().map(|h| h.id.as_str()).collect::<Vec<_>>(),
+            d.highlights()
+                .iter()
+                .map(|h| h.id.as_str())
+                .collect::<Vec<_>>(),
             ["a", "b"],
             "sorted by start, the empty range dropped"
         );

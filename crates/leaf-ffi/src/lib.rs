@@ -1163,13 +1163,15 @@ impl LeafDoc {
     /// `leaf_core::Doc::selection_quote`.
     pub fn selection_quote(&self, context: u32) -> Option<SelectionQuote> {
         let g = self.lock();
-        g.doc.selection_quote(context as usize).map(|q| SelectionQuote {
-            exact: q.exact,
-            prefix: q.prefix,
-            suffix: q.suffix,
-            start: q.start as u64,
-            end: q.end as u64,
-        })
+        g.doc
+            .selection_quote(context as usize)
+            .map(|q| SelectionQuote {
+                exact: q.exact,
+                prefix: q.prefix,
+                suffix: q.suffix,
+                start: q.start as u64,
+                end: q.end as u64,
+            })
     }
 
     /// Whether the document refuses to change — see `set_read_only`.
@@ -1209,7 +1211,10 @@ impl LeafDoc {
     /// The id of the highlight covering source `offset`, if one does — what a
     /// frontend asks when the reader activates a spot on the page.
     pub fn highlight_at(&self, offset: u32) -> Option<String> {
-        self.lock().doc.highlight_at(offset as usize).map(|h| h.id.clone())
+        self.lock()
+            .doc
+            .highlight_at(offset as usize)
+            .map(|h| h.id.clone())
     }
 
     /// The host-painted ranges as last set, sorted by start — what a frontend
@@ -2259,7 +2264,12 @@ fn wysiwyg_media(vmap: &VisualMap, scheme: ColorScheme) -> Vec<MediaView> {
 
 /// The structural tables of a WYSIWYG frame — each with the `rows` span its
 /// box-glyph picture occupies (to be skipped) and its grid of styled cells.
-fn wysiwyg_tables(vmap: &VisualMap, ss: usize, se: usize, hls: &[leaf_core::Highlight]) -> Vec<TableView> {
+fn wysiwyg_tables(
+    vmap: &VisualMap,
+    ss: usize,
+    se: usize,
+    hls: &[leaf_core::Highlight],
+) -> Vec<TableView> {
     vmap.tables
         .iter()
         .map(|t| TableView {
@@ -3251,17 +3261,16 @@ mod tests {
             .collect();
         assert_eq!(
             texts,
-            [
-                ("one ", None),
-                ("two", Some("remark-1")),
-                (" three", None)
-            ],
+            [("one ", None), ("two", Some("remark-1")), (" three", None)],
             "the wash begins and ends exactly on the highlight's bytes"
         );
         assert_eq!(row.runs[1].hl_color.as_deref(), Some("#ffe066"));
         assert_eq!(d.highlight_at(5).as_deref(), Some("remark-1"));
         assert_eq!(
-            d.highlights().first().and_then(|h| h.marker.clone()).as_deref(),
+            d.highlights()
+                .first()
+                .and_then(|h| h.marker.clone())
+                .as_deref(),
             Some("text.bubble"),
             "the marker rides back out for the frontend's margin pass"
         );
