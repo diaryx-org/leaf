@@ -1,11 +1,16 @@
-# Local development against the sibling twig checkout (../twig), whose Rust
-# binding leaf pins via [patch.crates-io] in Cargo.toml. twig-sys links a
-# prebuilt libtwig.a by default; forcing the source build makes leaf pick up
-# in-progress Zig changes to the engine (list/table structural ops) without
-# rebuilding the payload archive. Requires a Zig toolchain (see rust-toolchain
-# / twig's build.zig.zon: Zig 0.16+).
-[env]
-TWIG_SYS_FORCE_SOURCE = "1"
+# NOTE: this file deliberately does *not* set TWIG_SYS_FORCE_SOURCE. twig-sys
+# links the prebuilt libtwig.a shipped by its `twig-sys-<target>` payload crate,
+# which needs no Zig toolchain — that is what a consumer of leaf gets, so it is
+# what CI and everyday builds should exercise too. Forcing the source build here
+# was a leftover from when leaf pinned twig through its own [patch.crates-io];
+# it made every machine, CI included, shell out to `zig`, and it is why the
+# Swift-bindings job failed on a runner with no Zig on PATH.
+#
+# To build against the sibling twig checkout instead, use the org-wide switch:
+# copy ~/diaryx/.cargo/patches.toml to ~/diaryx/.cargo/config.toml, uncomment
+# `twig-doc`, and set TWIG_SYS_FORCE_SOURCE=1 in that (untracked) file or in the
+# environment. Cargo merges config from every ancestor directory, so it reaches
+# this checkout without a tracked file changing.
 
 # `cargo xtask <task>` — the workspace task runner (xtask/). It builds and runs
 # the frontends whose build leaves Rust (the Apple app over packages/leaf-swift,
