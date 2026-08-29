@@ -109,6 +109,14 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// another app. Nil (or a `false` return) keeps the system behaviour.
     public var onOpenLink: ((String) -> Bool)?
 
+    /// Whether this surface is a reader — see the iOS peer for the full
+    /// contract. The *document* is the enforcement (leaf-core's gate refuses
+    /// every splice, so typing changes nothing whatever the chrome says); on
+    /// this platform the property is currently that guarantee's label alone,
+    /// kept so a cross-platform host sets one flag without conditionals.
+    /// Quieting the caret and the beep a refused key makes is still to do.
+    public var isReadOnly: Bool = false
+
     /// Asked to edit the destination of the link under the caret, with its
     /// current destination to seed a field with. See `LeafEditorModel.onEditLink`.
     public var onEditLink: ((String) -> Void)?

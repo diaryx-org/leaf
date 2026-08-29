@@ -65,6 +65,23 @@ pub enum LeafError {
     Parse { message: String },
 }
 
+/// A selection cited out of the source — the text, a little of what
+/// surrounded it, and the byte range it came from. The FFI shape of
+/// `leaf_core::Quote`; see [`LeafDoc::selection_quote`].
+#[derive(uniffi::Record)]
+pub struct SelectionQuote {
+    /// The selected source, verbatim.
+    pub exact: String,
+    /// What immediately preceded it — empty at the document's start.
+    pub prefix: String,
+    /// What immediately followed it — empty at the document's end.
+    pub suffix: String,
+    /// Byte offset in the source where the selection begins.
+    pub start: u64,
+    /// Byte offset where it ends (exclusive).
+    pub end: u64,
+}
+
 /// One maximal span of same-styled glyphs on a visual row — the unit the Swift
 /// renderer turns into a single styled attributed-string run.
 #[derive(uniffi::Record)]
@@ -1111,6 +1128,37 @@ impl LeafDoc {
     /// The selected text, if any — for a clipboard copy/cut.
     pub fn selected_text(&self) -> Option<String> {
         self.lock().doc.selected_text().map(str::to_string)
+    }
+
+    /// The selection as a quote with up to `context` characters of what
+    /// surrounded it, cut from the **source** — the shape a host that cites or
+    /// annotates a passage wants, findable in the document again by plain
+    /// string search. `None` when nothing is selected. See
+    /// `leaf_core::Doc::selection_quote`.
+    pub fn selection_quote(&self, context: u32) -> Option<SelectionQuote> {
+        let g = self.lock();
+        g.doc.selection_quote(context as usize).map(|q| SelectionQuote {
+            exact: q.exact,
+            prefix: q.prefix,
+            suffix: q.suffix,
+            start: q.start as u64,
+            end: q.end as u64,
+        })
+    }
+
+    /// Whether the document refuses to change — see `set_read_only`.
+    pub fn read_only(&self) -> bool {
+        self.lock().doc.read_only()
+    }
+
+    /// Turn the read-only gate on or off — a *reading* surface over the same
+    /// rendering, selection and navigation the editor has. Enforced in core at
+    /// the three doors every mutation goes through, so a host that also quiets
+    /// its input chrome is polishing, not protecting.
+    pub fn set_read_only(&self, on: bool) -> DocView {
+        let mut g = self.lock();
+        g.doc.set_read_only(on);
+        g.view()
     }
 
     /// Mark the buffer saved after the host persisted [`LeafDoc::source`] its own

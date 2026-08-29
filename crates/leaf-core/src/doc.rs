@@ -397,6 +397,29 @@ pub struct Landing {
     pub end: usize,
 }
 
+/// A selection cited out of the source: the text itself, up to a requested
+/// number of characters either side, and the byte range it came from. See
+/// [`Doc::selection_quote`].
+///
+/// The prefix and suffix are what make the quote *re-findable*: the same text
+/// can occur twice, and a little of what surrounded it is how a later reader —
+/// or the same document after an edit — tells the occurrences apart. The Web
+/// Annotation model calls this a `TextQuoteSelector`; the shape is older than
+/// the name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Quote {
+    /// The selected source, verbatim.
+    pub exact: String,
+    /// What immediately preceded it — possibly empty, at the document's start.
+    pub prefix: String,
+    /// What immediately followed it — possibly empty, at the document's end.
+    pub suffix: String,
+    /// Byte offset in the source where the selection begins.
+    pub start: usize,
+    /// Byte offset where it ends (exclusive).
+    pub end: usize,
+}
+
 pub struct Doc {
     editor: Editor,
     pub format: Format,
@@ -411,6 +434,16 @@ pub struct Doc {
     pub dirty: bool,
     pub status: Option<String>,
     pub view: View,
+    /// Whether the document refuses to change — a *reading* surface over the
+    /// same rendering, selection, and navigation the editor has.
+    ///
+    /// Enforced here rather than by each frontend hiding its input paths,
+    /// because every mutation funnels through three doors —
+    /// [`splice_exact`](Self::splice_exact), [`undo`](Self::undo),
+    /// [`redo`](Self::redo) — and three guarded doors are a guarantee where a
+    /// frontend's suppressed keyboard is a hope. A gated splice reports
+    /// exactly like a rolled-back one, a path every caller already handles.
+    read_only: bool,
     /// How much of the source markup the rich view exposes — a frontend preference (see
     /// [`MarkupMode`]). Its two axes are read apart: the rendering one by
     /// [`reveal_line`](Self::reveal_line), the editing one by
@@ -743,6 +776,7 @@ impl Doc {
             anchor: None,
             dirty: false,
             status: None,
+            read_only: false,
             // leaf opens in the rich-text (WYSIWYG) view by default — the
             // markup-resolved surface is leaf's differentiator. Frontends can
             // still start in source view explicitly (e.g. a CLI flag), and ⌘e/⌥w
@@ -1108,6 +1142,51 @@ impl Doc {
     /// slice a copy/cut hands to the system clipboard.
     pub fn selected_text(&self) -> Option<&str> {
         self.selection().map(|(s, e)| &self.source[s..e])
+    }
+
+    /// The selection as a quote with a little of what surrounds it — the shape
+    /// a host that cites, annotates, or searches for a passage wants, cut from
+    /// the **source** rather than from anything rendered, so the quote is
+    /// findable in the document again by plain string search.
+    ///
+    /// `context` is a count of characters (not bytes) on each side, clipped at
+    /// the document's edges; the slices land on char boundaries by
+    /// construction. `None` when nothing is selected.
+    pub fn selection_quote(&self, context: usize) -> Option<Quote> {
+        let (start, end) = self.selection()?;
+        let mut before = start;
+        for _ in 0..context {
+            match self.source[..before].chars().next_back() {
+                Some(c) => before -= c.len_utf8(),
+                None => break,
+            }
+        }
+        let mut after = end;
+        for _ in 0..context {
+            match self.source[after..].chars().next() {
+                Some(c) => after += c.len_utf8(),
+                None => break,
+            }
+        }
+        Some(Quote {
+            exact: self.source[start..end].to_string(),
+            prefix: self.source[before..start].to_string(),
+            suffix: self.source[end..after].to_string(),
+            start,
+            end,
+        })
+    }
+
+    /// Whether the document refuses to change — see the field.
+    pub fn read_only(&self) -> bool {
+        self.read_only
+    }
+
+    /// Turn the read-only gate on or off. A frontend preference like
+    /// [`set_markup_mode`](Self::set_markup_mode): nothing about the document
+    /// itself changes, only what may be done to it from here on.
+    pub fn set_read_only(&mut self, on: bool) {
+        self.read_only = on;
     }
 
     /// The AST breadcrumb at the caret (root → deepest), e.g.
@@ -2783,6 +2862,10 @@ impl Doc {
     /// own to place afterwards, which a rolled-back splice would leave pointing
     /// into text that never came to exist.
     fn splice_exact(&mut self, start: usize, end: usize, text: &str, kind: EditKind) -> bool {
+        // The read-only gate, for every edit at once — see the field.
+        if self.read_only {
+            return false;
+        }
         // twig records an undo step for every edit; when this one continues a
         // run of the same kind (typing, deleting), tell twig to fold it into the
         // step before it so the whole run undoes at once.
@@ -4340,6 +4423,9 @@ impl Doc {
     /// Undo the last edit step (⌘Z / ^Z), putting the caret and selection back
     /// where they were when that step began.
     pub fn undo(&mut self) {
+        if self.read_only {
+            return;
+        }
         match self.editor.undo() {
             Ok(Some(change)) => self.after_history(change),
             Ok(None) => self.status = Some("nothing to undo".into()),
@@ -4350,6 +4436,9 @@ impl Doc {
     /// Redo the last undone edit step (⇧⌘Z / ^Y), putting the caret and
     /// selection back where that step originally left them.
     pub fn redo(&mut self) {
+        if self.read_only {
+            return;
+        }
         match self.editor.redo() {
             Ok(Some(change)) => self.after_history(change),
             Ok(None) => self.status = Some("nothing to redo".into()),
@@ -12384,5 +12473,44 @@ mod tests {
         d.reload();
         assert_eq!(d.source, "typed");
         assert_eq!(d.status.as_deref(), Some("no file to reload"));
+    }
+
+    #[test]
+    fn a_read_only_document_refuses_every_door() {
+        let mut d = doc_with("readonly", "one two three\n");
+        d.insert("x");
+        assert!(d.dirty, "writable first, so the undo step exists");
+        d.set_read_only(true);
+        let before = d.source.clone();
+        d.insert("y");
+        d.backspace();
+        d.undo();
+        d.redo();
+        assert_eq!(d.source, before, "no door moved a byte");
+        d.set_read_only(false);
+        d.undo();
+        assert_ne!(d.source, before, "off again, the same doors work");
+    }
+
+    #[test]
+    fn a_selection_quote_carries_its_context_on_char_boundaries() {
+        let mut d = doc_with("quote", "before 你好 exact 世界 after\n");
+        let start = d.source.find("exact").unwrap();
+        d.place_caret(start, false);
+        d.place_caret(start + "exact".len(), true);
+        let q = d.selection_quote(3).unwrap();
+        assert_eq!(q.exact, "exact");
+        assert_eq!(q.prefix, "你好 ", "chars, not bytes — the multibyte pair counts as two");
+        assert_eq!(q.suffix, " 世界");
+        assert_eq!(&d.source[q.start..q.end], "exact");
+        // At the edges the context clips rather than erring.
+        d.place_caret(0, false);
+        d.place_caret(6, true);
+        let q = d.selection_quote(40).unwrap();
+        assert_eq!(q.prefix, "");
+        assert_eq!(q.exact, "before");
+        // No selection is no quote.
+        d.place_caret(0, false);
+        assert!(d.selection_quote(3).is_none());
     }
 }

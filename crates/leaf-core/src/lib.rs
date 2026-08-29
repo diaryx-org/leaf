@@ -20,7 +20,7 @@ pub mod wysiwyg;
 
 pub use doc::{
     Capabilities, DiskState, Doc, FootnoteDef, FootnoteRef, InlineMarks, Landing, LineFlow,
-    MarkupMode, View,
+    MarkupMode, Quote, View,
 };
 pub use style::{Baseline, Role, Style};
 pub use wysiwyg::{

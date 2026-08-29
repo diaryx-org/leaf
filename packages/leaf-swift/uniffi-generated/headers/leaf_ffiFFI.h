@@ -501,6 +501,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_paste_rich(void*_Nonnull ptr, RustB
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_pos_for_offset(void*_Nonnull ptr, uint32_t off, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_READ_ONLY
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_READ_ONLY
+int8_t uniffi_leaf_ffi_fn_method_leafdoc_read_only(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_REDO
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_REDO
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_redo(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
@@ -541,6 +546,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_selected_text(void*_Nonnull ptr, Ru
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_selection_html(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SELECTION_QUOTE
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SELECTION_QUOTE
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_selection_quote(void*_Nonnull ptr, uint32_t context, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_DARK_APPEARANCE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_DARK_APPEARANCE
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_dark_appearance(void*_Nonnull ptr, int8_t dark, RustCallStatus *_Nonnull out_status
@@ -569,6 +579,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_media_rows(void*_Nonnull ptr, R
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_PARAGRAPH
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_PARAGRAPH
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_paragraph(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_READ_ONLY
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_READ_ONLY
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_read_only(void*_Nonnull ptr, int8_t on, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_SELECTION
@@ -1288,6 +1303,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_pos_for_offset(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_READ_ONLY
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_READ_ONLY
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_read_only(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_REDO
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_REDO
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_redo(void
@@ -1336,6 +1357,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_selection_html(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SELECTION_QUOTE
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SELECTION_QUOTE
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_selection_quote(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_DARK_APPEARANCE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_DARK_APPEARANCE
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_dark_appearance(void
@@ -1369,6 +1396,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_media_rows(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_PARAGRAPH
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_PARAGRAPH
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_paragraph(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_READ_ONLY
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_READ_ONLY
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_read_only(void
     
 );
 #endif

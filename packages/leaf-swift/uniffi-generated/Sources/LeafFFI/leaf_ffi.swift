@@ -795,6 +795,11 @@ public protocol LeafDocProtocol : AnyObject {
      */
     func posForOffset(off: UInt32)  -> RowCol
     
+    /**
+     * Whether the document refuses to change — see `set_read_only`.
+     */
+    func readOnly()  -> Bool
+    
     func redo()  -> DocView
     
     /**
@@ -841,6 +846,15 @@ public protocol LeafDocProtocol : AnyObject {
      * is selected.
      */
     func selectionHtml()  -> String?
+    
+    /**
+     * The selection as a quote with up to `context` characters of what
+     * surrounded it, cut from the **source** — the shape a host that cites or
+     * annotates a passage wants, findable in the document again by plain
+     * string search. `None` when nothing is selected. See
+     * `leaf_core::Doc::selection_quote`.
+     */
+    func selectionQuote(context: UInt32)  -> SelectionQuote?
     
     /**
      * Tell core whether the host is in a dark appearance, so a `<picture>`'s
@@ -891,6 +905,14 @@ public protocol LeafDocProtocol : AnyObject {
     func setMediaRows(heights: [MediaHeight])  -> DocView
     
     func setParagraph()  -> DocView
+    
+    /**
+     * Turn the read-only gate on or off — a *reading* surface over the same
+     * rendering, selection and navigation the editor has. Enforced in core at
+     * the three doors every mutation goes through, so a host that also quiets
+     * its input chrome is polishing, not protecting.
+     */
+    func setReadOnly(on: Bool)  -> DocView
     
     /**
      * Mirror a native selection into the model: `[anchor, focus]` given as
@@ -1653,6 +1675,16 @@ open func posForOffset(off: UInt32) -> RowCol {
 })
 }
     
+    /**
+     * Whether the document refuses to change — see `set_read_only`.
+     */
+open func readOnly() -> Bool {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_read_only(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
 open func redo() -> DocView {
     return try!  FfiConverterTypeDocView.lift(try! rustCall() {
     uniffi_leaf_ffi_fn_method_leafdoc_redo(self.uniffiClonePointer(),$0
@@ -1750,6 +1782,21 @@ open func selectionHtml() -> String? {
 }
     
     /**
+     * The selection as a quote with up to `context` characters of what
+     * surrounded it, cut from the **source** — the shape a host that cites or
+     * annotates a passage wants, findable in the document again by plain
+     * string search. `None` when nothing is selected. See
+     * `leaf_core::Doc::selection_quote`.
+     */
+open func selectionQuote(context: UInt32) -> SelectionQuote? {
+    return try!  FfiConverterOptionTypeSelectionQuote.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_selection_quote(self.uniffiClonePointer(),
+        FfiConverterUInt32.lower(context),$0
+    )
+})
+}
+    
+    /**
      * Tell core whether the host is in a dark appearance, so a `<picture>`'s
      * `prefers-color-scheme` `<source>`s resolve to the right banner. Call it
      * from `viewDidChangeEffectiveAppearance` (AppKit) or
@@ -1830,6 +1877,20 @@ open func setMediaRows(heights: [MediaHeight]) -> DocView {
 open func setParagraph() -> DocView {
     return try!  FfiConverterTypeDocView.lift(try! rustCall() {
     uniffi_leaf_ffi_fn_method_leafdoc_set_paragraph(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+    /**
+     * Turn the read-only gate on or off — a *reading* surface over the same
+     * rendering, selection and navigation the editor has. Enforced in core at
+     * the three doors every mutation goes through, so a host that also quiets
+     * its input chrome is polishing, not protecting.
+     */
+open func setReadOnly(on: Bool) -> DocView {
+    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_set_read_only(self.uniffiClonePointer(),
+        FfiConverterBool.lower(on),$0
     )
 })
 }
@@ -4295,6 +4356,131 @@ public func FfiConverterTypeRun_lower(_ value: Run) -> RustBuffer {
 
 
 /**
+ * A selection cited out of the source — the text, a little of what
+ * surrounded it, and the byte range it came from. The FFI shape of
+ * `leaf_core::Quote`; see [`LeafDoc::selection_quote`].
+ */
+public struct SelectionQuote {
+    /**
+     * The selected source, verbatim.
+     */
+    public var exact: String
+    /**
+     * What immediately preceded it — empty at the document's start.
+     */
+    public var prefix: String
+    /**
+     * What immediately followed it — empty at the document's end.
+     */
+    public var suffix: String
+    /**
+     * Byte offset in the source where the selection begins.
+     */
+    public var start: UInt64
+    /**
+     * Byte offset where it ends (exclusive).
+     */
+    public var end: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The selected source, verbatim.
+         */exact: String, 
+        /**
+         * What immediately preceded it — empty at the document's start.
+         */prefix: String, 
+        /**
+         * What immediately followed it — empty at the document's end.
+         */suffix: String, 
+        /**
+         * Byte offset in the source where the selection begins.
+         */start: UInt64, 
+        /**
+         * Byte offset where it ends (exclusive).
+         */end: UInt64) {
+        self.exact = exact
+        self.prefix = prefix
+        self.suffix = suffix
+        self.start = start
+        self.end = end
+    }
+}
+
+
+
+extension SelectionQuote: Equatable, Hashable {
+    public static func ==(lhs: SelectionQuote, rhs: SelectionQuote) -> Bool {
+        if lhs.exact != rhs.exact {
+            return false
+        }
+        if lhs.prefix != rhs.prefix {
+            return false
+        }
+        if lhs.suffix != rhs.suffix {
+            return false
+        }
+        if lhs.start != rhs.start {
+            return false
+        }
+        if lhs.end != rhs.end {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(exact)
+        hasher.combine(prefix)
+        hasher.combine(suffix)
+        hasher.combine(start)
+        hasher.combine(end)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSelectionQuote: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SelectionQuote {
+        return
+            try SelectionQuote(
+                exact: FfiConverterString.read(from: &buf), 
+                prefix: FfiConverterString.read(from: &buf), 
+                suffix: FfiConverterString.read(from: &buf), 
+                start: FfiConverterUInt64.read(from: &buf), 
+                end: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SelectionQuote, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.exact, into: &buf)
+        FfiConverterString.write(value.prefix, into: &buf)
+        FfiConverterString.write(value.suffix, into: &buf)
+        FfiConverterUInt64.write(value.start, into: &buf)
+        FfiConverterUInt64.write(value.end, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSelectionQuote_lift(_ buf: RustBuffer) throws -> SelectionQuote {
+    return try FfiConverterTypeSelectionQuote.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSelectionQuote_lower(_ value: SelectionQuote) -> RustBuffer {
+    return FfiConverterTypeSelectionQuote.lower(value)
+}
+
+
+/**
  * One *visual line* of a table cell: its styled runs and the source offsets
  * bounding it. A cell is usually one line, but an in-cell hard break (an inline
  * `<br>`) splits it into several — each its own line here, so the frontend
@@ -5399,6 +5585,30 @@ fileprivate struct FfiConverterOptionTypeLandingView: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeSelectionQuote: FfiConverterRustBuffer {
+    typealias SwiftType = SelectionQuote?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeSelectionQuote.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeSelectionQuote.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
     typealias SwiftType = [String]
 
@@ -5852,6 +6062,9 @@ private var initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_pos_for_offset() != 34494) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_read_only() != 57038) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_redo() != 1011) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -5876,6 +6089,9 @@ private var initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_selection_html() != 4095) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_selection_quote() != 871) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_dark_appearance() != 43306) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -5892,6 +6108,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_paragraph() != 4217) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_read_only() != 20100) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_selection() != 65230) {

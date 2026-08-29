@@ -97,6 +97,24 @@ pub struct Run {
     sel: bool,
 }
 
+/// A selection cited out of the source — the text, a little of what
+/// surrounded it, and the byte range it came from. The wasm shape of
+/// `leaf_core::Quote`; see [`LeafDoc::selection_quote`].
+#[derive(Serialize, Tsify)]
+#[tsify(into_wasm_abi)]
+pub struct SelectionQuote {
+    /// The selected source, verbatim.
+    exact: String,
+    /// What immediately preceded it — empty at the document's start.
+    prefix: String,
+    /// What immediately followed it — empty at the document's end.
+    suffix: String,
+    /// Byte offset in the source where the selection begins.
+    start: usize,
+    /// Byte offset where it ends (exclusive).
+    end: usize,
+}
+
 /// One visual line of a table cell — a cell holds more than one only when an
 /// in-cell `<br>` splits it.
 #[derive(Serialize, Tsify)]
@@ -970,6 +988,37 @@ impl LeafDoc {
     /// The selected text, if any — for a clipboard copy/cut.
     pub fn selected_text(&self) -> Option<String> {
         self.doc.selected_text().map(str::to_string)
+    }
+
+    /// The selection as a quote with up to `context` characters of what
+    /// surrounded it, cut from the **source** — the shape a host that cites or
+    /// annotates a passage wants, findable in the document again by plain
+    /// string search. `None` when nothing is selected. See
+    /// `leaf_core::Doc::selection_quote`.
+    pub fn selection_quote(&self, context: u32) -> Option<SelectionQuote> {
+        self.doc
+            .selection_quote(context as usize)
+            .map(|q| SelectionQuote {
+                exact: q.exact,
+                prefix: q.prefix,
+                suffix: q.suffix,
+                start: q.start,
+                end: q.end,
+            })
+    }
+
+    /// Whether the document refuses to change — see `set_read_only`.
+    pub fn read_only(&self) -> bool {
+        self.doc.read_only()
+    }
+
+    /// Turn the read-only gate on or off — a *reading* surface over the same
+    /// rendering, selection and navigation the editor has. Enforced in core at
+    /// the three doors every mutation goes through, so a host that also quiets
+    /// its input chrome is polishing, not protecting.
+    pub fn set_read_only(&mut self, on: bool) -> Result<DocView, JsValue> {
+        self.doc.set_read_only(on);
+        self.view()
     }
 
     /// Which formatting controls this document's format can actually spell —

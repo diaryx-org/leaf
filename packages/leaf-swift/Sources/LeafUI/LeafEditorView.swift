@@ -127,6 +127,49 @@ public final class LeafEditorModel: ObservableObject {
         }
     }
 
+    /// Whether the document refuses to change — a *reading* surface over the
+    /// same rendering, selection and navigation the editor has.
+    ///
+    /// Set it right after `init` for a document that opens as a reader; it can
+    /// also flip at runtime (a lock control, say). Enforcement is leaf-core's —
+    /// every splice is refused at the model — and the platform views quiet
+    /// their chrome to match: on iOS the interaction swaps to selection-only
+    /// and no keyboard rises; on macOS the guarantee currently arrives without
+    /// the chrome (see `LeafTextView.isReadOnly`).
+    public var isReadOnly: Bool = false {
+        didSet {
+            let on = isReadOnly
+            prefer { $0.setReadOnly(on: on) }
+            textView?.isReadOnly = on
+        }
+    }
+
+    /// The selection as a quote with up to `context` characters of what
+    /// surrounded it, cut from the **source** — for a host that cites or
+    /// annotates the selected passage. `nil` when nothing is selected.
+    public func selectionQuote(context: UInt32 = 30) -> SelectionQuote? {
+        doc.selectionQuote(context: context)
+    }
+
+    #if canImport(UIKit) && !targetEnvironment(macCatalyst)
+    /// Extra actions for the selection's edit menu, ahead of the system's
+    /// Copy/Look Up — a host's own verbs where the reader's thumb already is.
+    /// Asked each time the menu is built; pair with `selectionQuote` inside an
+    /// action to learn what the verbs apply to. iOS-only for now: the macOS
+    /// selection menu is a context menu with its own extension point, still to
+    /// be wired.
+    public var selectionMenuActions: (() -> [UIMenuElement])? {
+        didSet { textView?.selectionMenuActions = selectionMenuBridge }
+    }
+
+    /// The read-through wrapper `selectionMenuActions` reaches the view as —
+    /// nil exactly when the host's is, for the reason `editBridge` exists.
+    fileprivate var selectionMenuBridge: (() -> [UIMenuElement])? {
+        guard selectionMenuActions != nil else { return nil }
+        return { [weak self] in self?.selectionMenuActions?() ?? [] }
+    }
+    #endif
+
     /// Whether a bare `[[target]]` / `[[target|label]]` is a link the reader can
     /// follow. Off by default, because it is a convention rather than a syntax:
     /// neither Markdown nor Djot has it, so twig doesn't parse it and it reaches
@@ -440,7 +483,12 @@ public struct LeafEditor: NSViewRepresentable {
         textView.autoresizingMask = page == nil ? [.width] : []
         textView.frame = CGRect(origin: .zero, size: CGSize(width: scroll.contentSize.width, height: 0))
 
-        DispatchQueue.main.async { scroll.window?.makeFirstResponder(textView) }
+        // A reader is opened to be read, not typed into — leaving focus where
+        // the host put it instead of claiming it for a keyboard that will
+        // change nothing.
+        if !model.isReadOnly {
+            DispatchQueue.main.async { scroll.window?.makeFirstResponder(textView) }
+        }
         return scroll
     }
 
@@ -463,7 +511,9 @@ public struct LeafEditor: NSViewRepresentable {
             // forces an immediate render → `onStateChange`, rather than waiting on
             // whatever layout pass happens to come next.
             textView.command { $0.view() }
-            DispatchQueue.main.async { scroll.window?.makeFirstResponder(textView) }
+            if !model.isReadOnly {
+                DispatchQueue.main.async { scroll.window?.makeFirstResponder(textView) }
+            }
             return
         }
         hosted.theme = theme
@@ -477,6 +527,7 @@ public struct LeafEditor: NSViewRepresentable {
         // flips this on the model after the view exists (or per document, for a
         // vault where only some files use the convention) gets it honoured.
         hosted.recognizesWikilinks = model.recognizesWikilinks
+        hosted.isReadOnly = model.isReadOnly
         hosted.documentDirectory = model.documentDirectory
         hosted.mediaPlayback = model.mediaPlayback
         hosted.onResolveMedia = model.onResolveMedia
@@ -519,6 +570,7 @@ public struct LeafEditor: NSViewRepresentable {
         textView.onOpenMedia = { [weak model] src in
             model?.onOpenMedia?(src)
         }
+        textView.isReadOnly = model.isReadOnly
         model.textView = textView
         // A locator the host followed before there was anything to scroll. After
         // the frame lands, not during: the view has no size yet, so a reveal here
@@ -627,7 +679,10 @@ public struct LeafEditor: UIViewRepresentable {
         scroll.keyboardDismissMode = .interactive
         pin(textView, into: scroll)
 
-        DispatchQueue.main.async { _ = textView.becomeFirstResponder() }
+        // A reader is opened to be read — see the AppKit peer.
+        if !model.isReadOnly {
+            DispatchQueue.main.async { _ = textView.becomeFirstResponder() }
+        }
         return scroll
     }
 
@@ -648,7 +703,9 @@ public struct LeafEditor: UIViewRepresentable {
             // forces an immediate render → `onStateChange`, rather than waiting on
             // whatever layout pass happens to come next.
             textView.command { $0.view() }
-            DispatchQueue.main.async { _ = textView.becomeFirstResponder() }
+            if !model.isReadOnly {
+                DispatchQueue.main.async { _ = textView.becomeFirstResponder() }
+            }
             return
         }
         hosted.theme = theme
@@ -657,6 +714,8 @@ public struct LeafEditor: UIViewRepresentable {
         // flips this on the model after the view exists (or per document, for a
         // vault where only some files use the convention) gets it honoured.
         hosted.recognizesWikilinks = model.recognizesWikilinks
+        hosted.isReadOnly = model.isReadOnly
+        hosted.selectionMenuActions = model.selectionMenuBridge
         hosted.documentDirectory = model.documentDirectory
         hosted.mediaPlayback = model.mediaPlayback
         hosted.onResolveMedia = model.onResolveMedia
@@ -731,6 +790,8 @@ public struct LeafEditor: UIViewRepresentable {
         textView.onOpenMedia = { [weak model] src in
             model?.onOpenMedia?(src)
         }
+        textView.isReadOnly = model.isReadOnly
+        textView.selectionMenuActions = model.selectionMenuBridge
         model.textView = textView
         // A locator the host followed before there was anything to scroll — see
         // the AppKit peer for why this waits a turn.

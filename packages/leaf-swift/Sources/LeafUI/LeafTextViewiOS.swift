@@ -118,6 +118,34 @@ public final class LeafTextView: UIView, UITextInput {
         return interaction
     }()
 
+    /// Whether this surface is a *reader*: selection, scrolling, copy and the
+    /// menus all work, and nothing edits.
+    ///
+    /// The document is the enforcement — leaf-core's read-only gate refuses
+    /// every splice — so what the view owns here is the chrome that would
+    /// otherwise promise an edit it cannot deliver: the interaction swaps to
+    /// `.nonEditable` (no caret placement idiom, selection handles only), the
+    /// keyboard stays down (`inputView`), and Cut/Paste leave the menu
+    /// (`canPerformAction`).
+    public var isReadOnly: Bool = false {
+        didSet {
+            guard isReadOnly != oldValue else { return }
+            removeInteraction(textInteraction)
+            let interaction = UITextInteraction(for: isReadOnly ? .nonEditable : .editable)
+            interaction.textInput = self
+            textInteraction = interaction
+            addInteraction(interaction)
+            if isFirstResponder { reloadInputViews() }
+        }
+    }
+
+    /// Extra actions for the *selection's* edit menu, ahead of the system's
+    /// Copy/Look Up — how a host puts its own verbs where a reader's thumb
+    /// already is (cite this, annotate this). Asked each time the menu is
+    /// built, so the answer can depend on what is selected; nil (the default)
+    /// leaves the system menu alone. See `editMenu(for:suggestedActions:)`.
+    public var selectionMenuActions: (() -> [UIMenuElement])?
+
     /// Host hook for link activation. Called with the link's raw destination
     /// before the view falls back to opening it with the system; return `true`
     /// to claim it. This is how a host resolves destinations only *it* can make
@@ -600,7 +628,13 @@ public final class LeafTextView: UIView, UITextInput {
         }
     }
 
-    public override var inputAccessoryView: UIView? { accessoryView }
+    public override var inputAccessoryView: UIView? { isReadOnly ? nil : accessoryView }
+
+    /// No keyboard over a reader. `nil` here means "the system keyboard", so
+    /// suppressing it takes an explicit empty view — becoming first responder
+    /// (which copy and the edit menu still need) must not raise a keyboard the
+    /// document would refuse every key of.
+    public override var inputView: UIView? { isReadOnly ? UIView() : nil }
 
     private func off(_ p: UITextPosition) -> Int { (p as? LeafTextPosition)?.offset ?? 0 }
 
@@ -968,6 +1002,10 @@ public final class LeafTextView: UIView, UITextInput {
     // MARK: rich clipboard (edit-menu Cut/Copy/Paste keep twig's HTML flavour)
 
     public override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        // A reader copies; nothing else from the clipboard family applies.
+        if isReadOnly, action == #selector(cut(_:)) || action == #selector(paste(_:)) {
+            return false
+        }
         switch action {
         case #selector(copy(_:)), #selector(cut(_:)): return docView.hasSelection
         // A host that claims pastes makes an image-only clipboard pasteable, so
@@ -979,6 +1017,22 @@ public final class LeafTextView: UIView, UITextInput {
         case #selector(selectAll(_:)):                return true
         default: return super.canPerformAction(action, withSender: sender)
         }
+    }
+
+    /// The *selection's* edit menu — the one `UITextInteraction` raises over a
+    /// selection, as against the caret/link menu this view presents itself
+    /// (see `editMenuInteraction(_:menuFor:suggestedActions:)`). This is
+    /// `UITextInput`'s own hook for it, which is what finally made host items
+    /// possible here: `UIMenuController.menuItems` was deprecated with no
+    /// replacement a custom text view could reach until this arrived.
+    ///
+    /// Host verbs lead, inline, with the system's Copy/Look Up kept after
+    /// them: a host adds to the reader's menu, it does not take the menu over.
+    public func editMenu(
+        for textRange: UITextRange, suggestedActions: [UIMenuElement]
+    ) -> UIMenu? {
+        guard let host = selectionMenuActions?(), !host.isEmpty else { return nil }
+        return UIMenu(children: [UIMenu(options: .displayInline, children: host)] + suggestedActions)
     }
 
     public override func copy(_ sender: Any?) {
