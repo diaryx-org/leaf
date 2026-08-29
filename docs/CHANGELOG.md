@@ -37,6 +37,41 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.1.5 — 2026-08-29
+
+### Added
+
+- **tui** — open a buffer for a file that doesn't exist yet ([`eef7ca6`](https://github.com/diaryx-org/leaf/commit/eef7ca693e92e47b941a6e96d0596fb3631baec6))
+
+### Fixed
+
+- **meta** — give leaf-ratatui and leaf-tui the metadata a publish needs ([`3502d5f`](https://github.com/diaryx-org/leaf/commit/3502d5fab3f357d0ba844e7131dd17d4487bf10c))
+- **core** — floor the WYSIWYG caret past frontmatter in a metadata-only file ([`6256b4f`](https://github.com/diaryx-org/leaf/commit/6256b4f7d280170d5ef5c7f827014a1b56aa77fa))
+
+### Behavioural changes
+
+- `leaf <path>` no longer exits with an error when the
+ path doesn't exist; it opens an empty buffer named for that path, and the
+ first save creates the file. A caller relying on leaf to reject a missing
+ file should check for it before invoking. Unchanged: a path whose
+ extension leaf can't parse, and a path it can't read for any reason other
+ than the file not being there, are still errors. `Doc::open` itself is
+ unchanged and still fails on a missing file.
+
+- `Doc::disk_state` on a document from the new
+ `Doc::create`/`Doc::open_or_create` reports `Missing` (not `Untitled`)
+ while its file has yet to be written. Documents from `Doc::open`,
+ `Doc::blank`, and `Doc::from_source` are unaffected.
+
+- For a document whose only top-level block is
+frontmatter, `VisualMap::content_start` is now the end of that frontmatter
+(past its trailing newline) rather than 0, and `rows`/`stops` are empty
+rather than carrying one blank row per newline inside the metadata. A
+frontend that placed the caret at `content_start` for such a document was
+placing it before the opening delimiter; it now lands after the closing
+one. Documents with any real content are unaffected.
+
+
 ## v0.1.4 — 2026-08-29
 
 ### Added
