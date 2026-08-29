@@ -134,6 +134,10 @@ pub enum Command {
     // ── navigate ──
     Follow,
 
+    // ── find ──
+    Find,
+    Replace,
+
     // ── file ──
     Save,
     SaveAs,
@@ -212,6 +216,9 @@ impl Command {
 
             Follow => "Follow Link or Footnote",
 
+            Find => "Find…",
+            Replace => "Find and Replace…",
+
             Save => "Save",
             SaveAs => "Save As…",
             New => "New Document",
@@ -272,6 +279,12 @@ impl Command {
             ToggleFlow => "⌥⇧f",
 
             Follow => "⌥g",
+
+            // The pair everything from a browser to a word processor spells
+            // this way, and both were free. ⌥h is *not* available for the
+            // replace half — it is the key reference, and has been longer.
+            Find => "^f",
+            Replace => "^h",
 
             Save => "^s",
             SaveAs => "⌥s",
@@ -359,6 +372,8 @@ impl Command {
                 | ToggleFlow
                 | Flow(_)
                 | Follow
+                // Finding is reading; replacing is not.
+                | Find
                 | Quit
                 | Help
         )
@@ -440,6 +455,9 @@ impl Command {
 
             Follow => leaf_ratatui::follow(doc),
 
+            Find => return Outcome::Find,
+            Replace => return Outcome::Replace,
+
             Save => return Outcome::Save,
             SaveAs => return Outcome::SaveAs,
             New => return Outcome::New,
@@ -466,6 +484,7 @@ pub const GROUPS: &[(&str, &[Command])] = &[
     ("Table", TABLE),
     ("View", VIEW),
     ("Navigate", NAVIGATE),
+    ("Find", FIND),
     ("File", FILE),
 ];
 
@@ -542,6 +561,8 @@ const VIEW: &[Command] = &[
 ];
 
 const NAVIGATE: &[Command] = &[Command::Follow];
+
+const FIND: &[Command] = &[Command::Find, Command::Replace];
 
 const FILE: &[Command] = &[
     Command::Save,
@@ -693,6 +714,7 @@ mod tests {
                             | Command::ToggleFlow
                             | Command::Flow(_)
                             | Command::Follow
+                            | Command::Find
                             | Command::Quit
                             | Command::Help
                     ),

@@ -216,6 +216,7 @@ shut — so this is a guarantee rather than a suppressed keyboard.
 | `⌥g` | follow what the caret is on — a footnote to its note, a note back to its reference, a `#fragment` to the heading it names |
 | `⌥w` | switch between the source and wysiwyg views |
 | `⌥⇧w` / `⌥⇧f` | cycle the markup mode / flip line flow |
+| `^f` / `^h` | **find** / find and replace — a bar in the footer, matching case-insensitively over the source |
 | `^p` or `⌥p` | **the command palette** |
 | `F1` or `⌥h` | the key reference |
 | `^s` / `⌥s` / `⌥n` / `^q` | save / save as / new / quit |
@@ -231,6 +232,18 @@ or a formatter run shows up in the buffer instead of waiting to become a
 conflict. A document *with* unsaved changes is never reloaded behind your back:
 it says so once, and the Overwrite/Reload/Cancel prompt at save time is where
 the choice gets made.
+
+Inside the find bar: `Enter` steps to the next match (and `^g` repeats it),
+`↑`/`↓` walk back and forward, `Esc` closes and leaves the caret on the match it
+landed on. `⇧Enter` and `^⇧g` are *not* the "previous" half, because a terminal
+sends the identical bytes for `Enter` and `⇧Enter` — the same reason the in-cell
+line break is spelled `⌥Enter` here. With a replacement field up (`^h`, or `^h`
+again on an open find bar, which keeps the query), `Tab` swaps fields, `Enter`
+replaces the current match and moves on, and `^r` replaces all — as a single
+undo step, because replace-all is one thing you did. Matches are painted with
+`leaf-core`'s `Doc::set_highlights`, so a hit inside `**bold**` selects the
+rendered word: the offsets are source bytes, which is the coordinate the caret,
+the selection, and the wash are all already in.
 
 Everything the keyboard doesn't reach is in the **command palette** — the three
 media kinds, all fourteen table operations, and the markup/line-flow modes named

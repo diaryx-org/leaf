@@ -18,8 +18,8 @@
 //! This mirrors `leaf-gpui`'s `RunStyle`, which is likewise a palette passed in
 //! per paint rather than baked into the mapping function.
 
-use leaf_core::VisualMap;
 use leaf_core::style::{Role, Style as LStyle};
+use leaf_core::{Highlight, VisualMap};
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -87,6 +87,19 @@ pub struct Theme {
     pub delimiter: Color,
     /// A block image's `🖼 alt` placeholder text.
     pub image: Color,
+    /// The wash behind a host-painted range — [`leaf_core::Highlight`] — that
+    /// names no color of its own. Search hits are the obvious one; an
+    /// annotation layer is the other.
+    ///
+    /// Its own pair rather than a reuse of [`mark_bg`](Self::mark_bg), because
+    /// a `==mark==` is *in* the document and a highlight is painted over it,
+    /// and a reader has to be able to tell "the author emphasised this" from
+    /// "your search found this". A wash rather than a reverse, so the selection
+    /// — which does reverse — still reads as distinct on top of it, which is
+    /// what makes the current search hit stand out from the rest.
+    pub highlight_bg: Color,
+    /// The ink on [`highlight_bg`](Self::highlight_bg).
+    pub highlight_fg: Color,
     /// The fill behind a floating host overlay — the context menu, the command
     /// palette, the key reference, the dialogs, the status toast.
     ///
@@ -164,6 +177,10 @@ impl Theme {
             delimiter: Color::DarkGray,
             image: Color::Magenta,
             image_border: Color::Indexed(96),
+            // A blue wash, a step off the page rather than a slab, and well
+            // clear of the yellow `mark_bg` above it.
+            highlight_bg: Color::Indexed(24),
+            highlight_fg: Color::Indexed(255),
             // A shade above `code_bg` (235), so an overlay floating over a code
             // block still reads as being *over* it rather than part of it.
             panel_bg: Color::Indexed(238),
@@ -219,6 +236,10 @@ impl Theme {
             delimiter: Color::Indexed(243),
             image: Color::Indexed(96),
             image_border: Color::Indexed(96),
+            // The light half of the same idea: a pale blue tint the page can
+            // carry, with the page's own dark ink left on top of it.
+            highlight_bg: Color::Indexed(153),
+            highlight_fg: Color::Indexed(234),
             // A shade *below* `code_bg` (253) for the same reason the dark panel
             // is a shade above its own: the overlay floats over the page, so it
             // steps away from it, and the step runs downward on a light one.
@@ -364,6 +385,7 @@ fn scheme_from_colorfgbg(value: &str) -> Option<ColorScheme> {
 pub fn wysiwyg_lines(
     vmap: &VisualMap,
     sel: Option<(usize, usize)>,
+    highlights: &[Highlight],
     theme: &Theme,
     code_shift: impl Fn(usize) -> Option<usize>,
 ) -> Vec<Line<'static>> {
@@ -395,6 +417,15 @@ pub fn wysiwyg_lines(
                     continue;
                 }
                 let mut style = theme.to_ratatui(g.style);
+                // Highlight first, selection over it. A host paints a range to
+                // say "this is one of the things you asked for"; the selection
+                // says "and this is the one you are on", so the two have to
+                // compose rather than one replacing the other — reversing the
+                // wash is what makes the current search hit legible among the
+                // rest of them.
+                if let Some(h) = highlight_at(highlights, g.src) {
+                    style = highlight_wash(style, h, theme);
+                }
                 if g.src >= ss && g.src < se {
                     style = style.add_modifier(Modifier::REVERSED);
                 }
@@ -417,6 +448,48 @@ pub fn wysiwyg_lines(
             Line::from(spans)
         })
         .collect()
+}
+
+/// The host-painted range covering source `offset`, if one does.
+///
+/// A linear scan of what is almost always a handful of ranges, called once per
+/// glyph. `Doc::set_highlights` keeps the list sorted, so this could binary
+/// search; it doesn't, because the crossover is well past any count of search
+/// hits a terminal is drawing at once and the straight loop is the one that is
+/// obviously right.
+fn highlight_at(highlights: &[Highlight], offset: usize) -> Option<&Highlight> {
+    highlights
+        .iter()
+        .find(|h| h.start <= offset && offset < h.end)
+}
+
+/// Lay a highlight's wash under a glyph's own style, keeping whatever the
+/// author's markup put there (bold, italic, underline) and replacing only the
+/// ink and the ground.
+///
+/// A `#RRGGBB` on the highlight overrides the theme's ground, since the point of
+/// the field is a host that colors its own annotations; the ink stays the
+/// theme's, because leaf has no way to know what reads on a color it was handed
+/// and the two curated palettes were picked to.
+pub(crate) fn highlight_wash(style: Style, highlight: &Highlight, theme: &Theme) -> Style {
+    let bg = highlight
+        .color
+        .as_deref()
+        .and_then(parse_hex)
+        .unwrap_or(theme.highlight_bg);
+    style.fg(theme.highlight_fg).bg(bg)
+}
+
+/// `#RRGGBB` (or `RRGGBB`) as a color; `None` for anything else, which falls
+/// back to the theme rather than erroring — a malformed hint from a host is not
+/// worth refusing to draw the document over.
+fn parse_hex(hex: &str) -> Option<Color> {
+    let hex = hex.strip_prefix('#').unwrap_or(hex);
+    if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+    Some(Color::Rgb(byte(0)?, byte(2)?, byte(4)?))
 }
 
 /// The display-column width of one glyph — the terminal's own measure, matched
@@ -457,6 +530,94 @@ mod tests {
         // `auto` is how you ask for detection, so it must not resolve.
         assert_eq!(scheme_from_name("auto"), None);
         assert_eq!(scheme_from_name(""), None);
+    }
+
+    /// The `#RRGGBB` a host may put on a highlight, and the shapes that aren't
+    /// one — a malformed hint falls back to the theme rather than refusing to
+    /// draw the document.
+    #[test]
+    fn a_highlight_colour_is_read_as_hex_or_ignored() {
+        assert_eq!(parse_hex("#ffe066"), Some(Color::Rgb(0xff, 0xe0, 0x66)));
+        assert_eq!(parse_hex("ffe066"), Some(Color::Rgb(0xff, 0xe0, 0x66)));
+        assert_eq!(parse_hex("#fff"), None);
+        assert_eq!(parse_hex("rebeccapurple"), None);
+        assert_eq!(parse_hex("#gggggg"), None);
+        assert_eq!(parse_hex(""), None);
+    }
+
+    /// The rendering half of `Doc::set_highlights`, which no frontend painted
+    /// before: a host-painted range gets the theme's wash, and only the glyphs
+    /// inside it do.
+    #[test]
+    fn a_highlight_washes_only_the_glyphs_it_covers() {
+        let mut doc =
+            leaf_core::Doc::from_source("one two three\n".into(), leaf_core::Format::Markdown)
+                .unwrap();
+        doc.build_visual(40);
+        let theme = Theme::dark();
+        let painted = vec![Highlight {
+            start: 4,
+            end: 7,
+            id: "hit".into(),
+            color: None,
+            marker: None,
+        }];
+
+        let lines = wysiwyg_lines(&doc.vmap, None, &painted, &theme, |_| None);
+        let washed: String = lines[0]
+            .spans
+            .iter()
+            .filter(|s| s.style.bg == Some(theme.highlight_bg))
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(washed, "two");
+    }
+
+    /// The current search hit is told apart from the rest by being the
+    /// *selection*, so the two have to compose rather than one winning.
+    #[test]
+    fn the_selection_reverses_on_top_of_a_highlight_rather_than_replacing_it() {
+        let mut doc =
+            leaf_core::Doc::from_source("one two three\n".into(), leaf_core::Format::Markdown)
+                .unwrap();
+        doc.build_visual(40);
+        let theme = Theme::dark();
+        let painted = vec![Highlight {
+            start: 4,
+            end: 7,
+            id: "hit".into(),
+            color: None,
+            marker: None,
+        }];
+
+        let lines = wysiwyg_lines(&doc.vmap, Some((4, 7)), &painted, &theme, |_| None);
+        let span = lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "two")
+            .expect("the selected match should still be one span");
+        assert_eq!(span.style.bg, Some(theme.highlight_bg), "the wash survives");
+        assert!(
+            span.style.add_modifier.contains(Modifier::REVERSED),
+            "and the selection reverses it"
+        );
+    }
+
+    /// A host colour overrides the theme's ground; the ink stays the theme's,
+    /// which is the only one leaf knows reads on anything.
+    #[test]
+    fn a_hosts_own_colour_replaces_the_wash_but_not_the_ink() {
+        let theme = Theme::dark();
+        let highlight = Highlight {
+            start: 0,
+            end: 1,
+            id: "a".into(),
+            color: Some("#102030".into()),
+            marker: None,
+        };
+        let style = highlight_wash(Style::default(), &highlight, &theme);
+        assert_eq!(style.bg, Some(Color::Rgb(0x10, 0x20, 0x30)));
+        assert_eq!(style.fg, Some(theme.highlight_fg));
     }
 
     /// The bug this palette exists to fix: on a light terminal nothing may be

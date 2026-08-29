@@ -7,6 +7,7 @@
 //! stays a valid AST the whole time.
 
 mod commands;
+mod find;
 mod palette;
 mod ui;
 
@@ -19,12 +20,14 @@ use leaf_core::{Alignment, DiskState, Doc, InlineKind, LineFlow, MarkupMode, Med
 use leaf_ratatui::{MouseOutcome, Outcome};
 
 use commands::{Command, Ctx};
+use find::{Find, FindField, find_matches};
 use palette::Palette;
 use ratatui::{
     crossterm::{
         event::{
             self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste,
-            EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, MouseEvent, MouseEventKind,
+            EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent,
+            MouseEventKind,
         },
         execute,
     },
@@ -210,6 +213,11 @@ struct App {
     /// keyboard and the mouse until a command is chosen or it's dismissed — but
     /// unlike the menu it also has a query line, so it takes printable keys too.
     palette: Option<Palette>,
+    /// Present while the find bar is up. Like the palette it owns the keyboard
+    /// and takes printable keys, but unlike every other overlay here it is a
+    /// strip taken out of the bottom of the editing surface rather than a panel
+    /// floated over it — see [`find`] for why.
+    find: Option<Find>,
     /// Whether the key reference is up. A read-only overlay with no state of its
     /// own beyond "showing": any key closes it.
     help: bool,
@@ -281,8 +289,9 @@ impl MenuEntry {
 /// — the same families the palette and the key reference group by.
 ///
 /// `Format` stays at index 4: the block/inline flyout is the one people reach
-/// for constantly, and the three added beside it are appended rather than
-/// interleaved so the muscle memory for it survives.
+/// for constantly, and everything added since is appended past the flyouts
+/// rather than interleaved, so the muscle memory for it survives. Find and
+/// Replace are two rows, which is fewer than a flyout is worth.
 pub const ROOT_MENU: &[MenuEntry] = &[
     MenuEntry::Action(Command::Cut),
     MenuEntry::Action(Command::Copy),
@@ -293,6 +302,8 @@ pub const ROOT_MENU: &[MenuEntry] = &[
     MenuEntry::Submenu("Table", TABLE_MENU),
     MenuEntry::Submenu("View", VIEW_MENU),
     MenuEntry::Action(Command::Follow),
+    MenuEntry::Action(Command::Find),
+    MenuEntry::Action(Command::Replace),
 ];
 
 /// Every styling command the keyboard exposes, gathered into one flyout and
@@ -744,6 +755,15 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
         return Flow::Continue;
     }
 
+    // The find bar owns the keyboard the same way the prompt above does, and
+    // for the same reason: while it is up, every key is aimed at it. It is last
+    // in this chain because it is the least modal thing here — a palette or a
+    // dialog opened over a find bar is answering a newer question, and gets the
+    // keyboard first.
+    if app.find.is_some() {
+        return handle_find_key(doc, key, app);
+    }
+
     // No overlay is capturing input, so the editing surface gets the key. It
     // performs any document edit itself and returns what the *host* must do —
     // quit, save, clipboard, or open one of its own dialogs.
@@ -760,7 +780,13 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
 fn writes(outcome: Outcome) -> bool {
     !matches!(
         outcome,
-        Outcome::Continue | Outcome::Quit | Outcome::Copy | Outcome::Palette | Outcome::Help
+        Outcome::Continue
+            | Outcome::Quit
+            | Outcome::Copy
+            | Outcome::Palette
+            | Outcome::Help
+            // Finding is reading; replacing is not.
+            | Outcome::Find
     )
 }
 
@@ -884,6 +910,15 @@ fn apply_outcome(doc: &mut Doc, app: &mut App, outcome: Outcome) -> Flow {
             app.help = true;
             Flow::Continue
         }
+        // ^F / ^H: the find bar, with or without a replacement field.
+        Outcome::Find => {
+            open_find(doc, app, false);
+            Flow::Continue
+        }
+        Outcome::Replace => {
+            open_find(doc, app, true);
+            Flow::Continue
+        }
     }
 }
 
@@ -936,6 +971,284 @@ fn handle_palette_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
     Flow::Continue
 }
 
+/// ^F and ^H, and the Find / Find and Replace rows: put up the bar.
+///
+/// Seeded from the selection, the way every find bar is — the commonest search
+/// is for the thing already under the caret. A selection spanning a line break
+/// is not used: the field is one row, and a paragraph typed into it would be
+/// both unreadable and (containing a newline the rendered view folds) unlikely
+/// to match anything.
+///
+/// ^H onto a bar that is already open grows the replacement field rather than
+/// starting again, so finding something and *then* deciding to replace it
+/// doesn't cost the query that was already typed.
+fn open_find(doc: &mut Doc, app: &mut App, replacing: bool) {
+    if let Some(find) = &mut app.find {
+        if replacing {
+            find.replacement.get_or_insert_default();
+            find.field = FindField::Replacement;
+        } else {
+            find.field = FindField::Query;
+        }
+        return;
+    }
+    let seed = doc
+        .selected_text()
+        .filter(|text| !text.contains('\n'))
+        .unwrap_or_default()
+        .to_string();
+    // From the start of the selection, not its end, so ^F on a selected word
+    // finds *that* word first rather than the next one after it.
+    let origin = doc.selection().map_or(doc.caret, |(start, _)| start);
+    app.find = Some(Find::new(replacing, seed));
+    refresh_find(doc, app, origin);
+}
+
+/// Put the bar away, leaving the caret wherever the search left it.
+fn close_find(doc: &mut Doc, app: &mut App) {
+    app.find = None;
+    // The wash belongs to the bar, so it goes with it. `set_highlights` replaces
+    // the whole list, which is right here only because the search is the only
+    // thing leaf-tui paints ranges with; a host that also had an annotation
+    // layer would have to merge rather than replace.
+    doc.set_highlights(Vec::new());
+}
+
+/// Re-run the search, repaint the matches, and put the caret on the current one.
+///
+/// `anchor` is where "current" is measured from — see `Find::origin`. It is the
+/// position the search started at while the query is being typed, and the caret
+/// after a replacement, so Enter goes on to the next hit rather than back to
+/// the one just dealt with.
+fn refresh_find(doc: &mut Doc, app: &mut App, anchor: usize) {
+    let Some(find) = &mut app.find else {
+        return;
+    };
+    find.origin = anchor;
+    let matches = find_matches(&doc.source, &find.query);
+    find.set_matches(matches, anchor);
+    let highlights = find.highlights();
+    let current = find.current_match();
+    doc.set_highlights(highlights);
+    if let Some((start, end)) = current {
+        select_match(doc, start, end);
+    }
+}
+
+/// Step to the next (`1`) or previous (`-1`) match and select it.
+fn step_find(doc: &mut Doc, app: &mut App, delta: isize) {
+    let Some(find) = &mut app.find else {
+        return;
+    };
+    let Some((start, end)) = find.step(delta) else {
+        return;
+    };
+    // The step is a deliberate move, so it becomes what the next re-search
+    // measures from: editing the query after walking to the fourth hit should
+    // carry on from there, not jump back to where ^F was pressed.
+    find.origin = start;
+    select_match(doc, start, end);
+}
+
+/// Put the caret on a match and select it.
+///
+/// The selection is what carries the match into view: its caret end is the
+/// match's end, so the next frame's `follow_caret` scrolls to it — the same
+/// scroll-into-view every other caret move gets, rather than a second mechanism
+/// for search.
+///
+/// The range goes on as the search found it, in source bytes, which is the same
+/// coordinate the renderer paints selections from and `Doc::edit` replaces in —
+/// so a hit inside `**bold**` needs no conversion to select the rendered word.
+///
+/// Deliberately *not* a second `place_caret(end, true)`. That snaps to the
+/// nearest visible caret stop, and where a match butts up against a hidden
+/// delimiter the nearest stop is the one before it: searching `**needle**` for
+/// "needle" would come back with "needl" selected, and replacing it would leave
+/// the "e" stranded between the closing asterisks. The one `place_caret` that
+/// does run is for its bookkeeping — it clears the sticky vertical goal column,
+/// which a search jump has no business inheriting from whatever the caret was
+/// doing before it.
+fn select_match(doc: &mut Doc, start: usize, end: usize) {
+    doc.place_caret(start, false);
+    doc.anchor = Some(start);
+    doc.caret = end;
+}
+
+/// Swap the keyboard between the two fields. A no-op on a bar with no
+/// replacement field, where there is nothing to swap to.
+fn toggle_find_field(app: &mut App) {
+    if let Some(find) = &mut app.find
+        && find.replacement.is_some()
+    {
+        find.field = match find.field {
+            FindField::Query => FindField::Replacement,
+            FindField::Replacement => FindField::Query,
+        };
+    }
+}
+
+/// Replace the match the caret is on and move to the next one.
+///
+/// One `Doc::edit` — `EditKind::Other`, which coalesces with nothing on either
+/// side — so each replacement is exactly one undo step, and undoing one doesn't
+/// take the typing around it with it.
+fn replace_current(doc: &mut Doc, app: &mut App) {
+    if refused_read_only(doc) {
+        return;
+    }
+    let Some(find) = &app.find else {
+        return;
+    };
+    let Some(replacement) = find.replacement.clone() else {
+        return;
+    };
+    let Some((start, end)) = find.current_match() else {
+        doc.status = Some("no matches".into());
+        return;
+    };
+    doc.edit(start, end, &replacement);
+    // Measured from where the replacement ended, so the next hit is the next
+    // one — and so a replacement that *contains* the needle ("one" → "one two")
+    // doesn't find itself again and loop.
+    let anchor = doc.caret;
+    refresh_find(doc, app, anchor);
+}
+
+/// Replace every match, as one undo step.
+///
+/// One splice, not one per match: the whole span from the first match's start to
+/// the last one's end is rebuilt with the replacements in it and handed to
+/// `Doc::edit` in a single call. Twenty separate edits would be twenty undo
+/// steps, and "replace all" is one thing the user did — `Doc::edit` has no
+/// batching verb to ask for that, but the edit range is the caller's to choose,
+/// so choosing a wide one gets it without reaching for `edit_composing`, whose
+/// coalescing is for IME runs and would be a misuse here.
+fn replace_all(doc: &mut Doc, app: &mut App) {
+    if refused_read_only(doc) {
+        return;
+    }
+    let Some(find) = &app.find else {
+        return;
+    };
+    let Some(replacement) = find.replacement.clone() else {
+        return;
+    };
+    if find.matches.is_empty() {
+        doc.status = Some("no matches".into());
+        return;
+    }
+    let matches = find.matches.clone();
+    let start = matches[0].0;
+    let end = matches[matches.len() - 1].1;
+    let mut rebuilt = String::new();
+    let mut at = start;
+    for (hit_start, hit_end) in &matches {
+        rebuilt.push_str(&doc.source[at..*hit_start]);
+        rebuilt.push_str(&replacement);
+        at = *hit_end;
+    }
+    doc.edit(start, end, &rebuilt);
+    let n = matches.len();
+    let anchor = doc.caret;
+    refresh_find(doc, app, anchor);
+    doc.status = Some(format!(
+        "replaced {n} {}",
+        if n == 1 { "match" } else { "matches" }
+    ));
+}
+
+/// The find bar's own key handling.
+///
+/// Enter is next rather than "confirm and close", because a find bar is stepped
+/// through and not answered. ⇧Enter would be the other half of that everywhere
+/// but a terminal, which sends the identical bytes for both (the same reason
+/// the in-cell line break is spelled ⌥Enter here) — so previous is Up, next is
+/// also Down, and ^G repeats the step for a hand already on control. ^⇧G is out
+/// for the same reason as ⇧Enter.
+fn handle_find_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
+    // No ⌥ chord means anything in the bar, and none of them may fall through
+    // to be typed as their bare letter: ⌥b in a search box should not put a `b`
+    // in the query, and it certainly must not bold the document underneath.
+    if key.modifiers.contains(KeyModifiers::ALT) {
+        return Flow::Continue;
+    }
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            // The only verb in the bar with no unmodified key left to give
+            // it: Enter, Tab, Esc and the arrows are all spoken for. ^R is free
+            // globally, so it costs nothing outside the bar either.
+            KeyCode::Char('r') => replace_all(doc, app),
+            KeyCode::Char('g') => step_find(doc, app, 1),
+            // ^F and ^H while the bar is up: aim at the field they name, which
+            // is what pressing them again means.
+            KeyCode::Char('f') => open_find(doc, app, false),
+            KeyCode::Char('h') => open_find(doc, app, true),
+            _ => {}
+        }
+        return Flow::Continue;
+    }
+    match key.code {
+        KeyCode::Esc => close_find(doc, app),
+        KeyCode::Down => step_find(doc, app, 1),
+        KeyCode::Up => step_find(doc, app, -1),
+        KeyCode::Tab | KeyCode::BackTab => toggle_find_field(app),
+        // In the query, Enter walks the matches; in the replacement it does what
+        // the field is for, and *then* walks, which is what makes holding Enter
+        // a replace-one-by-one.
+        KeyCode::Enter => match app.find.as_ref().map(|find| find.field) {
+            Some(FindField::Replacement) => replace_current(doc, app),
+            _ => step_find(doc, app, 1),
+        },
+        _ => edit_find_field(doc, key, app),
+    }
+    Flow::Continue
+}
+
+/// Type into whichever field has the keyboard. Editing the query re-runs the
+/// search; editing the replacement doesn't, since the replacement is not part of
+/// what is being looked for.
+fn edit_find_field(doc: &mut Doc, key: KeyEvent, app: &mut App) {
+    let mut research = None;
+    if let Some(find) = &mut app.find {
+        let searching = find.field == FindField::Query;
+        let origin = find.origin;
+        let (value, cursor) = find.field_mut();
+        let mut changed = false;
+        match key.code {
+            KeyCode::Backspace => {
+                if let Some((i, _)) = value[..*cursor].char_indices().next_back() {
+                    value.drain(i..*cursor);
+                    *cursor = i;
+                    changed = true;
+                }
+            }
+            KeyCode::Left => {
+                if let Some((i, _)) = value[..*cursor].char_indices().next_back() {
+                    *cursor = i;
+                }
+            }
+            KeyCode::Right => {
+                if let Some(c) = value[*cursor..].chars().next() {
+                    *cursor += c.len_utf8();
+                }
+            }
+            KeyCode::Char(c) => {
+                value.insert(*cursor, c);
+                *cursor += c.len_utf8();
+                changed = true;
+            }
+            _ => {}
+        }
+        if searching && changed {
+            research = Some(origin);
+        }
+    }
+    if let Some(anchor) = research {
+        refresh_find(doc, app, anchor);
+    }
+}
+
 /// A terminal paste, delivered whole rather than as the burst of key presses it
 /// used to arrive as — see the `EnableBracketedPaste` note in `main`.
 ///
@@ -963,6 +1276,16 @@ fn handle_paste(doc: &mut Doc, text: &str, app: &mut App) {
     }
     if let Some(prompt) = &mut app.text_prompt {
         insert_into_field(&mut prompt.value, &mut prompt.cursor, text);
+        return;
+    }
+    if let Some(find) = &mut app.find {
+        let searching = find.field == FindField::Query;
+        let origin = find.origin;
+        let (value, cursor) = find.field_mut();
+        insert_into_field(value, cursor, text);
+        if searching {
+            refresh_find(doc, app, origin);
+        }
         return;
     }
     // The overlays above are fields, and typing into a field is not editing the
@@ -1361,6 +1684,11 @@ fn tick_disk(doc: &mut Doc, app: &mut App) {
                 // halfway down a document should stay there.
                 doc.scroll = scroll;
                 doc.status = Some("reloaded from disk".into());
+                // An open find bar is holding offsets into bytes that have just
+                // been replaced wholesale. Re-run the search rather than leave a
+                // wash pointing at text that moved out from under it.
+                let anchor = doc.caret;
+                refresh_find(doc, app, anchor);
             }
             app.disk_ahead = false;
         }
@@ -1467,9 +1795,9 @@ fn get_clipboard_html() -> Result<String, arboard::Error> {
 mod tests {
     use super::*;
     use leaf_core::{InlineKind, View};
-    // Modifiers/buttons the non-test code no longer references directly (the
-    // editing dispatch moved into leaf-ratatui), but the test event builders do.
-    use ratatui::crossterm::event::{KeyModifiers, MouseButton};
+    // The buttons the non-test code no longer references directly (the editing
+    // dispatch moved into leaf-ratatui), but the test event builders do.
+    use ratatui::crossterm::event::MouseButton;
 
     /// A `Doc` over `body`, laid out with the body occupying the whole screen
     /// below a one-row header — the geometry `handle_mouse` hit-tests against.
@@ -2440,6 +2768,345 @@ mod tests {
         );
         let html = get_clipboard_html().expect("html flavor");
         assert!(html.contains("<strong>bold</strong>"), "{html:?}");
+    }
+
+    // ── find and replace ─────────────────────────────────────────────────────
+
+    /// Type a run of characters into whatever has the keyboard.
+    fn type_chars(doc: &mut Doc, app: &mut App, text: &str) {
+        for c in text.chars() {
+            handle_key(doc, plain(c), app);
+        }
+    }
+
+    #[test]
+    fn ctrl_f_opens_the_find_bar_and_typing_selects_the_first_match() {
+        let mut doc = doc_with("find_open", "one two three two one\n");
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('f'), &mut app);
+        assert!(app.find.is_some(), "^f should open the bar");
+        type_chars(&mut doc, &mut app, "two");
+
+        let find = app.find.as_ref().unwrap();
+        assert_eq!(find.matches.len(), 2);
+        assert_eq!(find.current, 0);
+        assert_eq!(find.caption(), "1 of 2");
+        assert_eq!(
+            doc.selected_text(),
+            Some("two"),
+            "the current match comes up selected"
+        );
+    }
+
+    #[test]
+    fn matching_is_case_insensitive_and_painted_as_highlights() {
+        let mut doc = doc_with("find_highlights", "Two two TWO\n");
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('f'), &mut app);
+        type_chars(&mut doc, &mut app, "two");
+        assert_eq!(app.find.as_ref().unwrap().matches.len(), 3);
+        // Painted through core's own `set_highlights`, which is what the
+        // renderer washes — not a second highlighting mechanism for search.
+        assert_eq!(doc.highlights().len(), 3);
+        assert_eq!(doc.highlights()[0].start, 0);
+    }
+
+    #[test]
+    fn enter_and_the_arrows_walk_the_matches_and_wrap() {
+        let mut doc = doc_with("find_walk", "a one b one c one d\n");
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('f'), &mut app);
+        type_chars(&mut doc, &mut app, "one");
+        let at = |app: &App| app.find.as_ref().unwrap().current;
+        assert_eq!(at(&app), 0);
+
+        handle_key(&mut doc, keyp(KeyCode::Enter), &mut app);
+        assert_eq!(at(&app), 1);
+        handle_key(&mut doc, keyp(KeyCode::Down), &mut app);
+        assert_eq!(at(&app), 2);
+        // Off the end, round to the start — a search that goes quiet at the
+        // bottom of the file reads as a search that found nothing.
+        handle_key(&mut doc, keyp(KeyCode::Enter), &mut app);
+        assert_eq!(at(&app), 0);
+        handle_key(&mut doc, keyp(KeyCode::Up), &mut app);
+        assert_eq!(at(&app), 2, "and back off zero the other way");
+        // ^g is the same step for a hand already on control.
+        handle_key(&mut doc, ctrl('g'), &mut app);
+        assert_eq!(at(&app), 0);
+    }
+
+    #[test]
+    fn esc_closes_the_bar_leaving_the_caret_and_clearing_the_wash() {
+        let mut doc = doc_with("find_esc", "one two one\n");
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('f'), &mut app);
+        type_chars(&mut doc, &mut app, "two");
+        let landed = doc.caret;
+        handle_key(&mut doc, keyp(KeyCode::Esc), &mut app);
+
+        assert!(app.find.is_none());
+        assert_eq!(
+            doc.caret, landed,
+            "the caret stays where the search left it"
+        );
+        assert!(doc.highlights().is_empty(), "the wash goes with the bar");
+    }
+
+    #[test]
+    fn the_find_bar_owns_the_keyboard_document_keys_dont_leak_through() {
+        // The same isolation the text prompt has: ⌥b must not bold the document
+        // underneath, and a printable key must land in the field.
+        let mut doc = doc_with("find_isolation", "hello world\n");
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('f'), &mut app);
+        handle_key(&mut doc, alt('b'), &mut app);
+        type_chars(&mut doc, &mut app, "wor");
+        assert_eq!(doc.source, "hello world\n", "nothing reached the document");
+        assert_eq!(app.find.as_ref().unwrap().query, "wor");
+    }
+
+    /// The seam the whole design rests on: matching is over source bytes while
+    /// the rich view hides delimiters, so a hit inside `**bold**` has to select
+    /// the rendered word and scroll to it without any coordinate conversion.
+    #[test]
+    fn a_match_inside_bold_selects_the_word_the_view_actually_draws() {
+        let mut doc = doc_with("find_bold", "a **needle** in the haystack\n");
+        let mut app = App::default();
+        assert_eq!(doc.view, View::Wysiwyg, "the view that hides the `**`");
+        handle_key(&mut doc, ctrl('f'), &mut app);
+        type_chars(&mut doc, &mut app, "needle");
+
+        let (start, end) = app.find.as_ref().unwrap().current_match().unwrap();
+        assert_eq!(&doc.source[start..end], "needle");
+        assert_eq!(
+            doc.selected_text(),
+            Some("needle"),
+            "the selection is the word, not the delimiters around it"
+        );
+        // And the caret sits on a real stop in the rendered grid, so the frame's
+        // scroll-into-view has somewhere to aim.
+        let (row, _) = doc.caret_pos();
+        assert!(row < doc.vmap.rows.len(), "caret row {row} is off the map");
+    }
+
+    #[test]
+    fn a_match_below_the_fold_scrolls_into_view_above_the_bar() {
+        let mut doc = doc_with(
+            "find_scroll",
+            &format!("{}needle\n", "filler\n\n".repeat(40)),
+        );
+        let mut app = App::default();
+        // Draw once so the surface has a height and a scroll position.
+        let _ = frame(&mut doc, &mut app, 40, 10);
+        handle_key(&mut doc, ctrl('f'), &mut app);
+        type_chars(&mut doc, &mut app, "needle");
+        let lines = frame(&mut doc, &mut app, 40, 10);
+        assert!(
+            lines.iter().any(|l| l.contains("needle")),
+            "the match should have been scrolled to:\n{}",
+            lines.join("\n")
+        );
+    }
+
+    #[test]
+    fn ctrl_h_opens_the_bar_with_a_replacement_field() {
+        let mut doc = doc_with("replace_open", "one two one\n");
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('h'), &mut app);
+        let find = app.find.as_ref().expect("^h should open the bar");
+        assert!(find.replacement.is_some(), "with a field to replace into");
+        assert_eq!(find.field, FindField::Query, "typing starts in the query");
+        assert_eq!(find.rows(), 3);
+    }
+
+    #[test]
+    fn ctrl_h_on_an_open_find_bar_keeps_the_query_already_typed() {
+        let mut doc = doc_with("replace_grow", "one two one\n");
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('f'), &mut app);
+        type_chars(&mut doc, &mut app, "one");
+        handle_key(&mut doc, ctrl('h'), &mut app);
+        let find = app.find.as_ref().unwrap();
+        assert_eq!(find.query, "one", "the query survives");
+        assert!(find.replacement.is_some());
+        assert_eq!(find.field, FindField::Replacement, "and the focus moves");
+    }
+
+    #[test]
+    fn enter_in_the_replacement_field_replaces_one_match_and_moves_on() {
+        let mut doc = doc_with("replace_one", "one two one\n");
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('h'), &mut app);
+        type_chars(&mut doc, &mut app, "one");
+        handle_key(&mut doc, keyp(KeyCode::Tab), &mut app);
+        type_chars(&mut doc, &mut app, "ONE");
+        handle_key(&mut doc, keyp(KeyCode::Enter), &mut app);
+
+        assert_eq!(doc.source, "ONE two one\n", "only the current match");
+        // The next Enter takes the one after it, not the replacement just made.
+        handle_key(&mut doc, keyp(KeyCode::Enter), &mut app);
+        assert_eq!(doc.source, "ONE two ONE\n");
+    }
+
+    #[test]
+    fn each_replacement_is_its_own_undo_step() {
+        let mut doc = doc_with("replace_undo", "one two one\n");
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('h'), &mut app);
+        type_chars(&mut doc, &mut app, "one");
+        handle_key(&mut doc, keyp(KeyCode::Tab), &mut app);
+        type_chars(&mut doc, &mut app, "ONE");
+        handle_key(&mut doc, keyp(KeyCode::Enter), &mut app);
+        handle_key(&mut doc, keyp(KeyCode::Enter), &mut app);
+        assert_eq!(doc.source, "ONE two ONE\n");
+        doc.undo();
+        assert_eq!(doc.source, "ONE two one\n", "one replacement at a time");
+    }
+
+    #[test]
+    fn replace_all_is_one_undo_step_for_the_whole_operation() {
+        // "Replace all" is one thing the user did, so it has to come off in one
+        // press of ^Z — which is why it goes in as one wide splice rather than
+        // as a loop of them.
+        let mut doc = doc_with("replace_all", "one two one three one\n");
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('h'), &mut app);
+        type_chars(&mut doc, &mut app, "one");
+        handle_key(&mut doc, keyp(KeyCode::Tab), &mut app);
+        type_chars(&mut doc, &mut app, "ONE");
+        handle_key(&mut doc, ctrl('r'), &mut app);
+
+        assert_eq!(doc.source, "ONE two ONE three ONE\n");
+        assert_eq!(doc.status.as_deref(), Some("replaced 3 matches"));
+        doc.undo();
+        assert_eq!(
+            doc.source, "one two one three one\n",
+            "the whole replace-all comes off in one step"
+        );
+    }
+
+    #[test]
+    fn a_replacement_containing_the_needle_does_not_loop() {
+        // "one" → "one two" leaves the needle in the text it just wrote; the
+        // search has to carry on past it rather than finding itself again.
+        let mut doc = doc_with("replace_loop", "one and one\n");
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('h'), &mut app);
+        type_chars(&mut doc, &mut app, "one");
+        handle_key(&mut doc, keyp(KeyCode::Tab), &mut app);
+        type_chars(&mut doc, &mut app, "one two");
+        handle_key(&mut doc, ctrl('r'), &mut app);
+        assert_eq!(doc.source, "one two and one two\n");
+    }
+
+    #[test]
+    fn replacing_with_nothing_deletes_the_matches() {
+        let mut doc = doc_with("replace_empty", "a BAD b BAD c\n");
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('h'), &mut app);
+        type_chars(&mut doc, &mut app, "bad ");
+        handle_key(&mut doc, ctrl('r'), &mut app);
+        assert_eq!(doc.source, "a b c\n");
+    }
+
+    #[test]
+    fn find_seeds_itself_from_the_selection() {
+        let mut doc = doc_with("find_seed", "alpha beta alpha\n");
+        doc.anchor = Some(0);
+        doc.caret = 5; // "alpha" selected
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('f'), &mut app);
+        let find = app.find.as_ref().unwrap();
+        assert_eq!(find.query, "alpha");
+        assert_eq!(find.matches.len(), 2);
+        assert_eq!(find.current, 0, "the selected one, not the next one");
+    }
+
+    #[test]
+    fn a_paste_into_the_find_bar_searches_for_what_was_pasted() {
+        let mut doc = doc_with("find_paste", "one two three\n");
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('f'), &mut app);
+        handle_paste(&mut doc, "three", &mut app);
+        assert_eq!(app.find.as_ref().unwrap().query, "three");
+        assert_eq!(doc.selected_text(), Some("three"));
+    }
+
+    #[test]
+    fn find_is_offered_in_a_read_only_document_and_replace_is_not() {
+        let mut doc = doc_with("find_readonly", "one two one\n");
+        doc.set_read_only(true);
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('f'), &mut app);
+        assert!(
+            app.find.is_some(),
+            "reading a document includes searching it"
+        );
+        type_chars(&mut doc, &mut app, "one");
+        assert_eq!(app.find.as_ref().unwrap().matches.len(), 2);
+
+        handle_key(&mut doc, keyp(KeyCode::Esc), &mut app);
+        handle_key(&mut doc, ctrl('h'), &mut app);
+        assert!(app.find.is_none(), "replace is not");
+        assert_eq!(doc.status.as_deref(), Some("read-only"));
+    }
+
+    #[test]
+    fn the_find_bar_draws_at_the_foot_of_the_screen_with_its_count() {
+        let mut doc = doc_with("find_render", "one two one two one\n");
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('f'), &mut app);
+        type_chars(&mut doc, &mut app, "two");
+        let lines = frame(&mut doc, &mut app, 60, 8);
+        let joined = lines.join("\n");
+        // A plain find bar is two rows: the query and the hints under it.
+        let query_row = &lines[lines.len() - 2];
+        assert!(query_row.contains("find"), "no find row:\n{joined}");
+        assert!(query_row.contains("1 of 2"), "no count:\n{joined}");
+        assert!(
+            lines.last().unwrap().contains("esc"),
+            "no hint row:\n{joined}"
+        );
+    }
+
+    #[test]
+    fn the_replace_bar_draws_both_fields() {
+        let mut doc = doc_with("replace_render", "one two one\n");
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('h'), &mut app);
+        type_chars(&mut doc, &mut app, "one");
+        handle_key(&mut doc, keyp(KeyCode::Tab), &mut app);
+        type_chars(&mut doc, &mut app, "ONE");
+        let lines = frame(&mut doc, &mut app, 60, 8);
+        let joined = lines.join("\n");
+        // Three rows with a replacement field: query, replacement, hints.
+        assert!(lines[lines.len() - 3].contains("one"), "query:\n{joined}");
+        assert!(
+            lines[lines.len() - 2].contains("ONE"),
+            "replacement:\n{joined}"
+        );
+        assert!(joined.contains("replace all"), "hints:\n{joined}");
+    }
+
+    #[test]
+    fn a_reload_under_an_open_find_bar_re_runs_the_search() {
+        // The matches are byte offsets into text the reload just replaced
+        // wholesale, so leaving them would paint a wash over whatever now
+        // happens to sit at those offsets.
+        let (mut doc, mut app) = watched("find_reload", "one two one\n");
+        handle_key(&mut doc, ctrl('f'), &mut app);
+        type_chars(&mut doc, &mut app, "one");
+        assert_eq!(app.find.as_ref().unwrap().matches.len(), 2);
+
+        std::fs::write(&doc.path, "one one one and one more\n").unwrap();
+        tick_disk(&mut doc, &mut app);
+        assert_eq!(doc.source, "one one one and one more\n");
+        assert_eq!(
+            app.find.as_ref().unwrap().matches.len(),
+            4,
+            "the search should have been run again over the new text"
+        );
+        assert_eq!(doc.highlights().len(), 4);
     }
 
     // ── read-only ────────────────────────────────────────────────────────────

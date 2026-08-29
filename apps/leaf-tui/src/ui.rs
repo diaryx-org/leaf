@@ -19,6 +19,7 @@ use leaf_ratatui::Theme;
 use leaf_core::Doc;
 
 use crate::commands::{Ctx, GROUPS};
+use crate::find::{Find, FindField};
 use crate::palette::Palette;
 use crate::{App, ContextMenu, DirtyAction, MenuEntry, TextPrompt};
 
@@ -63,9 +64,20 @@ impl Chrome {
 }
 
 pub fn render(f: &mut Frame, doc: &mut Doc, app: &mut App) {
-    // The editing surface owns the whole terminal; the host paints only floating
-    // overlays over it, and only when one is actually up.
-    leaf_ratatui::render(f, f.area(), doc, &mut app.editor);
+    // The editing surface owns the whole terminal, less whatever the find bar
+    // takes off the bottom. That bar is the one piece of host chrome that
+    // *reserves* rows instead of floating over them: a search is read against
+    // the document it is searching, so a panel over the page would hide the
+    // thing being looked for — and giving the surface its true height is also
+    // what keeps `follow_caret` honest, so a match on the last row scrolls into
+    // view above the bar rather than underneath it.
+    let screen = f.area();
+    let bar_rows = app.find.as_ref().map_or(0, Find::rows).min(screen.height);
+    let body = Rect {
+        height: screen.height - bar_rows,
+        ..screen
+    };
+    leaf_ratatui::render(f, body, doc, &mut app.editor);
 
     // After the surface has painted, so a theme the widget only just resolved
     // (the `OSC 11` reply arrives on the first frame) is the one the chrome uses
@@ -101,7 +113,7 @@ pub fn render(f: &mut Frame, doc: &mut Doc, app: &mut App) {
         // bottom-right corner, drawn over the body and cleared by the next edit,
         // rather than a line of permanent chrome. Suppressed while a dialog is up
         // so the two never fight for the same glance.
-        render_toast(f, msg, chrome.warn);
+        render_toast(f, body, msg, chrome.warn);
     } else if doc.read_only() {
         // The read-only badge: a standing fact about the session rather than
         // news, so it is quiet (dim, not the toast's warning ink) and it yields
@@ -112,7 +124,15 @@ pub fn render(f: &mut Frame, doc: &mut Doc, app: &mut App) {
         // footer to put it in: the editing surface fills the terminal (see this
         // module's own doc comment), and inventing a chrome row for one word
         // would cost every document a line forever.
-        render_toast(f, "read-only", chrome.dim);
+        render_toast(f, body, "read-only", chrome.dim);
+    }
+
+    // Under the body and over nothing: it has rows of its own, and the caret it
+    // draws is the one the terminal shows while the bar has the keyboard — so it
+    // goes on after the surface has placed its own and before any overlay that
+    // would take the keyboard back.
+    if let Some(find) = &app.find {
+        render_find_bar(f, screen, find, &chrome);
     }
 
     if let Some(menu) = &mut app.context_menu {
@@ -177,24 +197,26 @@ fn render_choice_overlay(
     f.render_widget(Paragraph::new(lines).style(chrome.base), rect);
 }
 
-/// A small toast in the bottom-right corner, drawn over the body. Right-aligned
-/// and one row tall so it stays out of the way of the text and the caret, which
-/// usually sit up and to the left.
+/// A small toast in the bottom-right corner of `area`, drawn over the body.
+/// Right-aligned and one row tall so it stays out of the way of the text and the
+/// caret, which usually sit up and to the left.
 ///
-/// Takes its `style` rather than reading one off the [`Chrome`], because the two
-/// things drawn here want opposite volumes: a status message is news and is
+/// `area` is the *body*, not the screen, so the toast rides above the find bar
+/// when there is one rather than being painted over its hints.
+///
+/// It takes its `style` rather than reading one off the [`Chrome`], because the
+/// two things drawn here want opposite volumes: a status message is news and is
 /// painted in the warning ink, while the read-only badge is a standing
 /// condition and is painted dim.
-fn render_toast(f: &mut Frame, msg: &str, style: Style) {
-    let screen = f.area();
-    if screen.width == 0 || screen.height == 0 {
+fn render_toast(f: &mut Frame, area: Rect, msg: &str, style: Style) {
+    if area.width == 0 || area.height == 0 {
         return;
     }
     let text = format!(" {msg} ");
-    let width = (text.chars().count() as u16).min(screen.width);
+    let width = (text.chars().count() as u16).min(area.width);
     let rect = Rect {
-        x: screen.x + screen.width - width,
-        y: screen.y + screen.height - 1,
+        x: area.x + area.width - width,
+        y: area.y + area.height - 1,
         width,
         height: 1,
     };
@@ -203,6 +225,112 @@ fn render_toast(f: &mut Frame, msg: &str, style: Style) {
         Paragraph::new(Line::from(Span::styled(text, style))).style(style),
         rect,
     );
+}
+
+/// The find bar: a query row, a replacement row when there is one, and a row of
+/// key hints, filling the bottom of the screen.
+///
+/// A strip rather than a floating panel — see [`render`] for why — and drawn
+/// like the palette's query line: a `›` prompt so an empty field still reads as
+/// a field, the focused one accented, and the real terminal cursor placed into
+/// it so there is one caret on screen and one mechanism putting it there.
+fn render_find_bar(f: &mut Frame, screen: Rect, find: &Find, chrome: &Chrome) {
+    let rows = find.rows().min(screen.height);
+    if rows == 0 || screen.width == 0 {
+        return;
+    }
+    let rect = Rect {
+        y: screen.y + screen.height - rows,
+        height: rows,
+        ..screen
+    };
+    f.render_widget(Clear, rect);
+
+    let width = rect.width as usize;
+    // The count sits at the right-hand end of the query row, where a browser
+    // puts it, with the field given whatever is left.
+    let caption = find.caption();
+    let field_w = width.saturating_sub(caption.chars().count() + 9);
+
+    let mut lines = vec![field_line(
+        "find",
+        &find.query,
+        find.field == FindField::Query,
+        field_w,
+        &caption,
+        chrome,
+    )];
+    if let Some(replacement) = &find.replacement {
+        lines.push(field_line(
+            "with",
+            replacement,
+            find.field == FindField::Replacement,
+            field_w,
+            "",
+            chrome,
+        ));
+    }
+    // Only the keys this bar actually answers to, and only the ones it has:
+    // there is nothing to replace on a bar with no replacement field, so ^r
+    // isn't offered on one.
+    let mut hints = vec![
+        Span::styled(" enter ", chrome.key),
+        Span::styled("next  ", chrome.dim),
+        Span::styled("↑↓ ", chrome.key),
+        Span::styled("prev/next  ", chrome.dim),
+    ];
+    if find.replacement.is_some() {
+        hints.extend([
+            Span::styled("tab ", chrome.key),
+            Span::styled("field  ", chrome.dim),
+            Span::styled("^r ", chrome.key),
+            Span::styled("replace all  ", chrome.dim),
+        ]);
+    } else {
+        hints.extend([
+            Span::styled("^h ", chrome.key),
+            Span::styled("replace  ", chrome.dim),
+        ]);
+    }
+    hints.extend([
+        Span::styled("esc ", chrome.key),
+        Span::styled("close ", chrome.dim),
+    ]);
+    lines.push(Line::from(hints));
+
+    f.render_widget(Paragraph::new(lines).style(chrome.base), rect);
+
+    // The cursor goes into whichever field has the keyboard — row 0 for the
+    // query, row 1 for the replacement, which is the order they are drawn in.
+    let (value, cursor) = find.field();
+    let row = match find.field {
+        FindField::Query => rect.y,
+        FindField::Replacement => rect.y + 1,
+    };
+    let cursor_x = rect.x + 8 + value[..cursor].chars().count() as u16;
+    if row < rect.y + rect.height && cursor_x < rect.x + rect.width {
+        f.set_cursor_position(Position::new(cursor_x, row));
+    }
+}
+
+/// One labelled field row of the find bar, with an optional right-aligned
+/// caption ("3 of 12"). The label column is fixed so the two rows' fields start
+/// in the same column and read as one control rather than two.
+fn field_line(
+    label: &str,
+    value: &str,
+    focused: bool,
+    field_w: usize,
+    caption: &str,
+    chrome: &Chrome,
+) -> Line<'static> {
+    let ink = if focused { chrome.bold } else { chrome.dim };
+    Line::from(vec![
+        Span::styled(format!(" {label} "), chrome.key),
+        Span::styled("› ", if focused { chrome.key } else { chrome.dim }),
+        Span::styled(format!("{:<field_w$}", truncate(value, field_w)), ink),
+        Span::styled(format!(" {caption} "), chrome.dim),
+    ])
 }
 
 /// Center a `width`×`height` rect within `screen`.

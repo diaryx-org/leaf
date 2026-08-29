@@ -14,10 +14,10 @@ use ratatui::{
 #[cfg(feature = "images")]
 use ratatui::widgets::Clear;
 
-use leaf_core::{Doc, View};
+use leaf_core::{Doc, Highlight, View};
 
 use crate::EditorState;
-use crate::style::{CODE_INSET, wysiwyg_lines};
+use crate::style::{CODE_INSET, Theme, wysiwyg_lines};
 
 /// Render the editing surface into `area`: the document body, its code-block
 /// boxes and framed images, the scrollbar, and the terminal caret. Updates
@@ -97,10 +97,16 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
     state.code_scroll_x = code_scroll;
     state.code_caret_span = caret_span.clone();
 
+    // The host-painted ranges (search hits, an annotation layer), copied out
+    // because the builders below run while `doc` is otherwise borrowed. The list
+    // is a handful of entries; `set_highlights` is the host's to call between
+    // frames, so what is copied here is what this frame paints.
+    let highlights = doc.highlights().to_vec();
+
     // Build the view's lines. A code row is drawn inset for its box and, if it's
     // the caret's block, scrolled by `code_scroll`.
     let lines = match doc.view {
-        View::Source => build_lines(&doc.source, sel),
+        View::Source => build_lines(&doc.source, sel, &highlights, &theme),
         View::Wysiwyg => {
             let code_shift = |r: usize| -> Option<usize> {
                 doc.vmap
@@ -115,7 +121,7 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
                         }
                     })
             };
-            wysiwyg_lines(&doc.vmap, sel, &theme, code_shift)
+            wysiwyg_lines(&doc.vmap, sel, &highlights, &theme, code_shift)
         }
     };
     let line_count = lines.len();
@@ -362,27 +368,56 @@ fn follow_caret_x(scroll_x: &mut usize, caret_col: usize, width: usize) {
 
 /// Split `source` into styled lines, drawing any part of the `[start, end)`
 /// selection reversed.
-fn build_lines(source: &str, sel: Option<(usize, usize)>) -> Vec<Line<'static>> {
-    let hl = Style::default().add_modifier(Modifier::REVERSED);
-    let (sel_start, sel_end) = sel.unwrap_or((0, 0));
+fn build_lines(
+    source: &str,
+    sel: Option<(usize, usize)>,
+    highlights: &[Highlight],
+    theme: &Theme,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let mut byte = 0usize;
+    // Reused across lines rather than allocated per line: a document is a few
+    // thousand of them and this is rebuilt every frame.
+    let mut cuts: Vec<usize> = Vec::new();
 
     for raw in source.split('\n') {
         let line_start = byte;
         let line_end = line_start + raw.len();
 
-        // Overlap of the selection with this line, in line-local byte coords.
-        let a = sel_start.clamp(line_start, line_end) - line_start;
-        let b = sel_end.clamp(line_start, line_end) - line_start;
+        // Where the styling can change within this line: its two ends, plus
+        // every selection and highlight edge falling inside it, in line-local
+        // byte coordinates. This used to be a three-way split around the
+        // selection alone, which had nowhere to put a second overlapping range
+        // — and search hits are exactly that.
+        cuts.clear();
+        cuts.push(0);
+        cuts.push(raw.len());
+        let mut cut = |at: usize| {
+            if at > line_start && at < line_end {
+                cuts.push(at - line_start);
+            }
+        };
+        if let Some((s, e)) = sel {
+            cut(s);
+            cut(e);
+        }
+        for h in highlights {
+            cut(h.start);
+            cut(h.end);
+        }
+        cuts.sort_unstable();
+        cuts.dedup();
 
         let mut spans = Vec::new();
-        if a < b {
-            push(&mut spans, &raw[..a], Style::default());
-            push(&mut spans, &raw[a..b], hl);
-            push(&mut spans, &raw[b..], Style::default());
-        } else {
-            push(&mut spans, raw, Style::default());
+        for pair in cuts.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            // Styled by what covers the run's first byte: no edge falls strictly
+            // inside a run, by construction, so one probe answers for all of it.
+            push(
+                &mut spans,
+                &raw[a..b],
+                run_style(line_start + a, sel, highlights, theme),
+            );
         }
         if spans.is_empty() {
             spans.push(Span::raw(""));
@@ -391,6 +426,25 @@ fn build_lines(source: &str, sel: Option<(usize, usize)>) -> Vec<Line<'static>> 
         byte = line_end + 1; // skip the '\n' that `split` consumed
     }
     lines
+}
+
+/// The style for a source-view run starting at source byte `at`: the
+/// highlight's wash if one covers it, reversed if the selection does. The same
+/// order, and for the same reason, as the WYSIWYG painter in `style.rs`.
+fn run_style(
+    at: usize,
+    sel: Option<(usize, usize)>,
+    highlights: &[Highlight],
+    theme: &Theme,
+) -> Style {
+    let mut style = Style::default();
+    if let Some(h) = highlights.iter().find(|h| h.start <= at && at < h.end) {
+        style = crate::style::highlight_wash(style, h, theme);
+    }
+    if sel.is_some_and(|(s, e)| at >= s && at < e) {
+        style = style.add_modifier(Modifier::REVERSED);
+    }
+    style
 }
 
 fn push(spans: &mut Vec<Span<'static>>, text: &str, style: Style) {
@@ -402,6 +456,67 @@ fn push(spans: &mut Vec<Span<'static>>, text: &str, style: Style) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The source view's own painter, which used to split each line three ways
+    /// around the selection and had nowhere to put a second, overlapping range.
+    #[test]
+    fn the_source_view_paints_highlights_and_the_selection_together() {
+        let theme = Theme::dark();
+        let painted = vec![Highlight {
+            start: 4,
+            end: 7,
+            id: "hit".into(),
+            color: None,
+            marker: None,
+        }];
+        // Selection over the second half of the highlight, so the line has to
+        // come apart into four runs rather than three.
+        let lines = build_lines("one two three", Some((6, 9)), &painted, &theme);
+        let text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "one two three", "the line still reads whole");
+
+        let washed: String = lines[0]
+            .spans
+            .iter()
+            .filter(|s| s.style.bg == Some(theme.highlight_bg))
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(washed, "two");
+        let reversed: String = lines[0]
+            .spans
+            .iter()
+            .filter(|s| s.style.add_modifier.contains(Modifier::REVERSED))
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(reversed, "o t");
+    }
+
+    /// Highlight ranges are document-wide byte offsets, so a painter that
+    /// forgot to clamp them per line would wash the wrong words further down.
+    #[test]
+    fn a_highlight_lands_on_the_line_it_actually_covers() {
+        let theme = Theme::dark();
+        let source = "alpha\nbravo\ncharlie";
+        let painted = vec![Highlight {
+            start: 6,
+            end: 11, // "bravo", on the second line
+            id: "hit".into(),
+            color: None,
+            marker: None,
+        }];
+        let lines = build_lines(source, None, &painted, &theme);
+        let washed = |i: usize| -> String {
+            lines[i]
+                .spans
+                .iter()
+                .filter(|s| s.style.bg == Some(theme.highlight_bg))
+                .map(|s| s.content.as_ref())
+                .collect()
+        };
+        assert_eq!(washed(0), "");
+        assert_eq!(washed(1), "bravo");
+        assert_eq!(washed(2), "");
+    }
 
     #[test]
     fn follow_caret_x_scrolls_right_just_far_enough_to_reveal_the_caret() {

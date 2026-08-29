@@ -57,6 +57,10 @@ pub enum Outcome {
     AudioPrompt,
     /// ⌥P (and ^P) — the host opens the command palette.
     Palette,
+    /// ^F — the host opens its find bar.
+    Find,
+    /// ^H — the host opens its find bar with a replacement field.
+    Replace,
     /// ⌥H (and F1) — the host opens the key reference.
     Help,
 }
@@ -108,6 +112,15 @@ pub fn handle_key(doc: &mut Doc, key: KeyEvent, _state: &mut EditorState) -> Out
             // ^P as well as ⌥p: the palette is the one door to every command
             // that has no key of its own, so it answers to both conventions.
             KeyCode::Char('p') => return Outcome::Palette,
+            // ^F find, ^H find-and-replace — the pair everything from a browser
+            // to a word processor spells this way. Both were free here, and
+            // both arrive as an ordinary `Char` + CONTROL: `\x08` is not one of
+            // the bytes crossterm maps to a named key, so ^H does not collide
+            // with Backspace (which terminals send as `\x7F`). ⌥h is not
+            // available for the replace half — it is the key reference, and has
+            // been longer.
+            KeyCode::Char('f') => return Outcome::Find,
+            KeyCode::Char('h') => return Outcome::Replace,
             // ^Home / ^End jump to the document's start / end.
             KeyCode::Home => doc.move_doc_start(shift),
             KeyCode::End => doc.move_doc_end(shift),
