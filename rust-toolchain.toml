@@ -1,6 +1,26 @@
-# gpui (pulled by leaf-gui from the Zed monorepo) uses library features that
-# stabilized in 1.95 — Zed itself pins this exact channel. leaf-core and
-# leaf-tui build fine on it too, so the whole workspace uses one toolchain.
+# gpui uses library features that stabilized in 1.95, and Zed itself pins this
+# exact channel. Nothing in *this* workspace needs it any more — leaf-gpui and
+# apps/leaf are their own workspaces now — but this file sits at the repository
+# root and rustup resolves it by walking up, so it is what those two get as well.
+# One toolchain for the checkout, chosen by its most demanding corner.
+#
+# It is also the number diaryx-org/nix publishes as `versions.rust` for the whole
+# org, for this reason and named as leaf's. The two are meant to agree; the
+# `toolchain-pin` CI job checks this file against what homebrew.yml passes the
+# shared release workflow, which is the pair that silently breaks the release.
 [toolchain]
 channel = "1.95.0"
 profile = "minimal"
+# `minimal` is rustc, cargo, and rust-std — deliberately, since that is all a
+# build needs. But `cargo xtask ci` is this repo's CI and its first two jobs are
+# rustfmt and clippy, so a toolchain rustup auto-installed from this file could
+# not run the checks a release has to pass:
+#
+#     error: 'cargo-fmt' is not installed for the toolchain '1.95.0-...'
+#
+# Naming them here is what makes that self-healing: rustup installs a missing
+# declared component on next use, so a fresh machine, a second RUSTUP_HOME, or a
+# new contributor gets a toolchain that can run CI without being told to. It
+# stays `minimal` plus these two rather than `default`, which would also pull
+# rust-docs and rust-analyzer that nothing here calls.
+components = ["rustfmt", "clippy"]
