@@ -9,10 +9,12 @@
 use ratatui::{
     Frame,
     layout::{Position, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Clear, Paragraph},
 };
+
+use leaf_ratatui::Theme;
 
 use leaf_core::Doc;
 
@@ -20,10 +22,55 @@ use crate::commands::{Ctx, GROUPS};
 use crate::palette::Palette;
 use crate::{App, ContextMenu, DirtyAction, MenuEntry, TextPrompt};
 
+/// The styles every floating overlay paints with, resolved once per frame from
+/// the editing surface's own [`Theme`].
+///
+/// The host used to spell these as ANSI constants — `DarkGray` behind `White`,
+/// `Cyan` for a key, `Yellow` for a warning. That is a dark-terminal assumption
+/// wearing no label: on a light terminal it drops a near-black slab onto a cream
+/// page, and the dim grey and the yellow it puts on that slab are the two least
+/// readable colors available. Meanwhile the *body* had adapted correctly all
+/// along, because the widget asks the terminal whether it is light or dark and
+/// paints from a palette. This is the chrome finally reading the same answer.
+#[derive(Clone, Copy)]
+struct Chrome {
+    /// A panel's ordinary text on its own fill.
+    base: Style,
+    /// A title or a query — `base`, emphasised.
+    bold: Style,
+    /// Section headers, footers, and rows this document can't run.
+    dim: Style,
+    /// A key chord, a checked row, the palette's prompt.
+    key: Style,
+    /// The row under the highlight.
+    selected: Style,
+    /// What a dialog is warning about, and the status toast.
+    warn: Style,
+}
+
+impl Chrome {
+    fn new(theme: &Theme) -> Self {
+        let base = Style::default().bg(theme.panel_bg).fg(theme.panel_fg);
+        Chrome {
+            base,
+            bold: base.add_modifier(Modifier::BOLD),
+            dim: base.fg(theme.panel_dim),
+            key: base.fg(theme.panel_accent),
+            selected: base.bg(theme.panel_selected_bg).fg(theme.panel_selected_fg),
+            warn: base.fg(theme.panel_warning).add_modifier(Modifier::BOLD),
+        }
+    }
+}
+
 pub fn render(f: &mut Frame, doc: &mut Doc, app: &mut App) {
     // The editing surface owns the whole terminal; the host paints only floating
     // overlays over it, and only when one is actually up.
     leaf_ratatui::render(f, f.area(), doc, &mut app.editor);
+
+    // After the surface has painted, so a theme the widget only just resolved
+    // (the `OSC 11` reply arrives on the first frame) is the one the chrome uses
+    // — rather than the chrome trailing the body by a frame on startup.
+    let chrome = Chrome::new(app.editor.theme());
 
     // The two safety dialogs take over the keyboard until answered, so they float
     // centered and modal (the widest, most attention-drawing chrome we have) —
@@ -38,6 +85,7 @@ pub fn render(f: &mut Frame, doc: &mut Doc, app: &mut App) {
             &format!("Unsaved changes — {verb}?"),
             &["Save", "Discard", "Cancel"],
             prompt.selected,
+            &chrome,
         );
     } else if let Some(prompt) = &app.conflict {
         render_choice_overlay(
@@ -45,6 +93,7 @@ pub fn render(f: &mut Frame, doc: &mut Doc, app: &mut App) {
             "File changed on disk since it was opened",
             &["Overwrite", "Reload", "Cancel"],
             prompt.selected,
+            &chrome,
         );
     } else if let Some(msg) = &doc.status {
         // A status ("copied", "pasted", "clipboard unavailable", a list-nest
@@ -52,25 +101,25 @@ pub fn render(f: &mut Frame, doc: &mut Doc, app: &mut App) {
         // bottom-right corner, drawn over the body and cleared by the next edit,
         // rather than a line of permanent chrome. Suppressed while a dialog is up
         // so the two never fight for the same glance.
-        render_status_toast(f, msg);
+        render_status_toast(f, msg, &chrome);
     }
 
     if let Some(menu) = &mut app.context_menu {
         let ctx = Ctx::read(doc);
-        render_context_menu(f, f.area(), menu, &ctx);
+        render_context_menu(f, f.area(), menu, &ctx, &chrome);
     }
     if let Some(palette) = &mut app.palette {
         let ctx = Ctx::read(doc);
-        render_palette(f, f.area(), palette, &ctx);
+        render_palette(f, f.area(), palette, &ctx, &chrome);
     }
     if let Some(prompt) = &app.text_prompt {
-        render_text_prompt(f, f.area(), prompt);
+        render_text_prompt(f, f.area(), prompt, &chrome);
     }
     // Last, and over everything: the key reference is the one overlay that is
     // asked for *while* something else is confusing, so it must not be able to
     // end up underneath whatever prompted the question.
     if app.help {
-        render_help(f, f.area(), doc);
+        render_help(f, f.area(), doc, &chrome);
     }
 }
 
@@ -81,26 +130,28 @@ pub fn render(f: &mut Frame, doc: &mut Doc, app: &mut App) {
 /// the label rather than derived). Shaped like [`render_text_prompt`] — a
 /// `Clear`ed, bordered island floated over the document — because both suspend
 /// editing until answered.
-fn render_choice_overlay(f: &mut Frame, message: &str, items: &[&str], selected: usize) {
-    let base = Style::default().bg(Color::DarkGray).fg(Color::White);
-    let warn = base.fg(Color::Yellow).add_modifier(Modifier::BOLD);
-    let key = base.fg(Color::Cyan);
-
+fn render_choice_overlay(
+    f: &mut Frame,
+    message: &str,
+    items: &[&str],
+    selected: usize,
+    chrome: &Chrome,
+) {
     let mut choices = Vec::new();
     for (i, label) in items.iter().enumerate() {
         if i > 0 {
-            choices.push(Span::styled("   ", base));
+            choices.push(Span::styled("   ", chrome.base));
         }
         let style = if i == selected {
-            key.add_modifier(Modifier::REVERSED)
+            chrome.selected
         } else {
-            key
+            chrome.key
         };
         let mnemonic = label.chars().next().unwrap_or(' ').to_ascii_lowercase();
         choices.push(Span::styled(format!(" {label} ({mnemonic}) "), style));
     }
     let lines = vec![
-        Line::from(Span::styled(format!(" {message} "), warn)),
+        Line::from(Span::styled(format!(" {message} "), chrome.warn)),
         Line::from(choices),
     ];
 
@@ -112,13 +163,13 @@ fn render_choice_overlay(f: &mut Frame, message: &str, items: &[&str], selected:
     let height = 2u16.min(screen.height.max(1));
     let rect = centered(screen, width, height);
     f.render_widget(Clear, rect);
-    f.render_widget(Paragraph::new(lines).style(base), rect);
+    f.render_widget(Paragraph::new(lines).style(chrome.base), rect);
 }
 
 /// A small feedback toast in the bottom-right corner, drawn over the body and
 /// cleared by the next edit. Right-aligned and one row tall so it stays out of
 /// the way of the text and the caret, which usually sit up and to the left.
-fn render_status_toast(f: &mut Frame, msg: &str) {
+fn render_status_toast(f: &mut Frame, msg: &str, chrome: &Chrome) {
     let screen = f.area();
     if screen.width == 0 || screen.height == 0 {
         return;
@@ -131,10 +182,9 @@ fn render_status_toast(f: &mut Frame, msg: &str) {
         width,
         height: 1,
     };
-    let style = Style::default().bg(Color::DarkGray).fg(Color::Yellow);
     f.render_widget(Clear, rect);
     f.render_widget(
-        Paragraph::new(Line::from(Span::styled(text, style))).style(style),
+        Paragraph::new(Line::from(Span::styled(text, chrome.warn))).style(chrome.warn),
         rect,
     );
 }
@@ -160,9 +210,13 @@ fn centered(screen: Rect, width: u16, height: u16) -> Rect {
 /// Rows carry live state: an active inline mark or the caret's heading level
 /// shows a `✓`, read once off `doc` up front so a menu of sixteen rows doesn't
 /// re-query the AST sixteen times a frame.
-fn render_context_menu(f: &mut Frame, screen: Rect, menu: &mut ContextMenu, ctx: &Ctx) {
-    let base = Style::default().bg(Color::DarkGray).fg(Color::White);
-
+fn render_context_menu(
+    f: &mut Frame,
+    screen: Rect,
+    menu: &mut ContextMenu,
+    ctx: &Ctx,
+    chrome: &Chrome,
+) {
     // Walk parent → child: a submenu's position depends on the rect its parent
     // was just painted at, and its top aligns with the parent row it opened from.
     let mut parent: Option<(Rect, usize)> = None;
@@ -201,11 +255,11 @@ fn render_context_menu(f: &mut Frame, screen: Rect, menu: &mut ContextMenu, ctx:
         let lines: Vec<Line<'static>> = items
             .iter()
             .enumerate()
-            .map(|(r, entry)| menu_row(*entry, r == selected, ctx, label_w, hint_w, base))
+            .map(|(r, entry)| menu_row(*entry, r == selected, ctx, label_w, hint_w, chrome))
             .collect();
 
         f.render_widget(Clear, rect);
-        f.render_widget(Paragraph::new(lines).style(base), rect);
+        f.render_widget(Paragraph::new(lines).style(chrome.base), rect);
 
         parent = Some((rect, selected));
     }
@@ -253,7 +307,7 @@ fn menu_row(
     ctx: &Ctx,
     label_w: usize,
     hint_w: usize,
-    base: Style,
+    chrome: &Chrome,
 ) -> Line<'static> {
     let keys = |hint: &str| -> String {
         if hint_w == 0 {
@@ -264,26 +318,25 @@ fn menu_row(
     };
     match entry {
         MenuEntry::Header(label) => {
-            // Non-selectable: dim and never reversed, so it reads as a divider
+            // Non-selectable: dim and never highlighted, so it reads as a divider
             // rather than a choice.
-            let style = base.fg(Color::Gray).add_modifier(Modifier::DIM);
             let w = label_w + hint_w + if hint_w > 0 { 2 } else { 0 } + 4;
-            Line::from(Span::styled(format!(" {label:<w$} "), style))
+            Line::from(Span::styled(format!(" {label:<w$} "), chrome.dim))
         }
         MenuEntry::Action(cmd) => {
             let enabled = cmd.enabled(ctx);
             let active = enabled && cmd.active(ctx);
             let check = if active { '✓' } else { ' ' };
             let style = if !enabled {
-                base.fg(Color::Gray).add_modifier(Modifier::DIM)
+                chrome.dim
             } else if selected {
-                base.add_modifier(Modifier::REVERSED)
+                chrome.selected
             } else if active {
                 // Lit even without the pointer on it, so what's already on is
                 // legible at a glance, not only under the highlight.
-                base.fg(Color::Cyan)
+                chrome.key
             } else {
-                base
+                chrome.base
             };
             Line::from(Span::styled(
                 format!(
@@ -300,11 +353,11 @@ fn menu_row(
                 _ => false,
             });
             let style = if !enabled {
-                base.fg(Color::Gray).add_modifier(Modifier::DIM)
+                chrome.dim
             } else if selected {
-                base.add_modifier(Modifier::REVERSED)
+                chrome.selected
             } else {
-                base
+                chrome.base
             };
             Line::from(Span::styled(
                 format!("   {label:<label_w$}{k} ▸ ", k = keys("")),
@@ -321,12 +374,7 @@ fn menu_row(
 ///
 /// The list scrolls to keep the highlight visible rather than paging, and stashes
 /// the rect it painted at so a click maps to a row the same way the menu's does.
-fn render_palette(f: &mut Frame, screen: Rect, palette: &mut Palette, ctx: &Ctx) {
-    let base = Style::default().bg(Color::DarkGray).fg(Color::White);
-    let bold = base.add_modifier(Modifier::BOLD);
-    let dim = base.fg(Color::Gray).add_modifier(Modifier::DIM);
-    let key = base.fg(Color::Cyan);
-
+fn render_palette(f: &mut Frame, screen: Rect, palette: &mut Palette, ctx: &Ctx, chrome: &Chrome) {
     let width = 52u16.min(screen.width.max(1));
     // Two rows of chrome (the query line and the hint line) plus the list. The
     // list is as tall as it has rows, capped both by what fits and by a ceiling
@@ -338,16 +386,16 @@ fn render_palette(f: &mut Frame, screen: Rect, palette: &mut Palette, ctx: &Ctx)
     let height = (list_h + 2).min(screen.height.max(1));
     let rect = centered(screen, width, height);
     f.render_widget(Clear, rect);
-    f.render_widget(Paragraph::new(Vec::<Line>::new()).style(base), rect);
+    f.render_widget(Paragraph::new(Vec::<Line>::new()).style(chrome.base), rect);
 
     // The query line, with a `›` prompt so an empty box still reads as a box.
     let query = Rect { height: 1, ..rect };
     f.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(" › ", key),
-            Span::styled(palette.query.clone(), bold),
+            Span::styled(" › ", chrome.key),
+            Span::styled(palette.query.clone(), chrome.bold),
         ]))
-        .style(base),
+        .style(chrome.base),
         query,
     );
 
@@ -367,24 +415,21 @@ fn render_palette(f: &mut Frame, screen: Rect, palette: &mut Palette, ctx: &Ctx)
         .enumerate()
         .map(|(i, row)| {
             let selected = first + i == palette.selected;
+            let active = row.enabled && row.command.active(ctx);
             let label_w = (width as usize).saturating_sub(14);
             let style = if !row.enabled {
-                dim
+                chrome.dim
             } else if selected {
-                base.add_modifier(Modifier::REVERSED)
-            } else if row.command.active(ctx) {
-                base.fg(Color::Cyan)
+                chrome.selected
+            } else if active {
+                chrome.key
             } else {
-                base
-            };
-            let check = if row.enabled && row.command.active(ctx) {
-                '✓'
-            } else {
-                ' '
+                chrome.base
             };
             Line::from(Span::styled(
                 format!(
                     " {check} {label:<label_w$} {hint:>8} ",
+                    check = if active { '✓' } else { ' ' },
                     label = truncate(row.command.label(), label_w),
                     hint = row.command.hint()
                 ),
@@ -392,7 +437,7 @@ fn render_palette(f: &mut Frame, screen: Rect, palette: &mut Palette, ctx: &Ctx)
             ))
         })
         .collect();
-    f.render_widget(Paragraph::new(lines).style(base), list_rect);
+    f.render_widget(Paragraph::new(lines).style(chrome.base), list_rect);
     // Stashed against the *painted* geometry, exactly as the menu does — and
     // offset by the scroll, so a click maps to the row under the pointer rather
     // than to the row that would be there if the list had never scrolled.
@@ -406,14 +451,14 @@ fn render_palette(f: &mut Frame, screen: Rect, palette: &mut Palette, ctx: &Ctx)
     };
     f.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(" ↑↓ ", key),
-            Span::styled("choose  ", dim),
-            Span::styled("enter ", key),
-            Span::styled("run  ", dim),
-            Span::styled("esc ", key),
-            Span::styled("close ", dim),
+            Span::styled(" ↑↓ ", chrome.key),
+            Span::styled("choose  ", chrome.dim),
+            Span::styled("enter ", chrome.key),
+            Span::styled("run  ", chrome.dim),
+            Span::styled("esc ", chrome.key),
+            Span::styled("close ", chrome.dim),
         ]))
-        .style(base),
+        .style(chrome.base),
         hint,
     );
 
@@ -429,12 +474,7 @@ fn render_palette(f: &mut Frame, screen: Rect, palette: &mut Palette, ctx: &Ctx)
 /// Generated from [`GROUPS`] rather than written out, which is the only reason
 /// it can be trusted: a command that gains a key gains a line here in the same
 /// commit, and one that loses it loses the line.
-fn render_help(f: &mut Frame, screen: Rect, doc: &mut Doc) {
-    let base = Style::default().bg(Color::DarkGray).fg(Color::White);
-    let bold = base.add_modifier(Modifier::BOLD);
-    let dim = base.fg(Color::Gray).add_modifier(Modifier::DIM);
-    let key = base.fg(Color::Cyan);
-
+fn render_help(f: &mut Frame, screen: Rect, doc: &mut Doc, chrome: &Chrome) {
     // Only the keyed commands: this is the *key* reference, and the palette is
     // where the keyless ones are found.
     let mut rows: Vec<HelpRow> = Vec::new();
@@ -475,13 +515,7 @@ fn render_help(f: &mut Frame, screen: Rect, doc: &mut Doc) {
     for i in 0..per_column {
         let mut spans = Vec::new();
         for c in 0..columns {
-            spans.extend(help_spans(
-                rows.get(i + c * per_column),
-                COLUMN,
-                base,
-                bold,
-                key,
-            ));
+            spans.extend(help_spans(rows.get(i + c * per_column), COLUMN, chrome));
         }
         lines.push(Line::from(spans));
     }
@@ -496,14 +530,14 @@ fn render_help(f: &mut Frame, screen: Rect, doc: &mut Doc) {
             leaf_ratatui::markup_mode_name(doc.markup_mode()),
             leaf_ratatui::line_flow_name(doc.line_flow()),
         ),
-        dim,
+        chrome.dim,
     )));
 
     let width = ((COLUMN * columns) as u16).min(screen.width.max(1));
     let height = (lines.len() as u16).min(screen.height.max(1));
     let rect = centered(screen, width, height);
     f.render_widget(Clear, rect);
-    f.render_widget(Paragraph::new(lines).style(base), rect);
+    f.render_widget(Paragraph::new(lines).style(chrome.base), rect);
 }
 
 /// One line of the key reference before it's been placed in a column.
@@ -517,25 +551,25 @@ enum HelpRow {
 /// Render one help row into exactly `width` columns, so the second column of a
 /// two-up card starts in the same place on every line. `None` — the right column
 /// running out of rows before the left does — is that many spaces.
-fn help_spans(
-    row: Option<&HelpRow>,
-    width: usize,
-    base: Style,
-    bold: Style,
-    key: Style,
-) -> Vec<Span<'static>> {
+fn help_spans(row: Option<&HelpRow>, width: usize, chrome: &Chrome) -> Vec<Span<'static>> {
     match row {
-        None | Some(HelpRow::Blank) => vec![Span::styled(" ".repeat(width), base)],
+        None | Some(HelpRow::Blank) => vec![Span::styled(" ".repeat(width), chrome.base)],
         Some(HelpRow::Group(name)) => {
-            vec![Span::styled(format!(" {name:<w$}", w = width - 1), bold)]
+            vec![Span::styled(
+                format!(" {name:<w$}", w = width - 1),
+                chrome.bold,
+            )]
         }
         Some(HelpRow::Key(hint, label)) => {
             // The key is right-aligned in its own narrow column so the chords
             // line up as a list rather than as ragged text.
             let label_w = width.saturating_sub(9);
             vec![
-                Span::styled(format!("  {hint:>4}  "), key),
-                Span::styled(format!("{:<label_w$} ", truncate(label, label_w)), base),
+                Span::styled(format!("  {hint:>4}  "), chrome.key),
+                Span::styled(
+                    format!("{:<label_w$} ", truncate(label, label_w)),
+                    chrome.base,
+                ),
             ]
         }
     }
@@ -556,7 +590,7 @@ fn truncate(s: &str, width: usize) -> String {
 /// this stashes no rect back for hit-testing. The caret is the real terminal
 /// cursor, positioned into the value row exactly the way the document body
 /// positions it into the source — one visible caret, one mechanism.
-fn render_text_prompt(f: &mut Frame, screen: Rect, prompt: &TextPrompt) {
+fn render_text_prompt(f: &mut Frame, screen: Rect, prompt: &TextPrompt, chrome: &Chrome) {
     let hint = " enter confirm  esc cancel ";
     let content = [
         prompt.label.chars().count(),
@@ -571,23 +605,19 @@ fn render_text_prompt(f: &mut Frame, screen: Rect, prompt: &TextPrompt) {
     let height = 3u16.min(screen.height.max(1));
     let rect = centered(screen, width, height);
 
-    let base = Style::default().bg(Color::DarkGray).fg(Color::White);
-    let bold = base.add_modifier(Modifier::BOLD);
-    let key = base.fg(Color::Cyan);
-    let dim = base.fg(Color::Gray);
     let lines = vec![
-        Line::from(Span::styled(format!(" {} ", prompt.label), bold)),
-        Line::from(Span::styled(format!(" {} ", prompt.value), base)),
+        Line::from(Span::styled(format!(" {} ", prompt.label), chrome.bold)),
+        Line::from(Span::styled(format!(" {} ", prompt.value), chrome.base)),
         Line::from(vec![
-            Span::styled(" enter ", key),
-            Span::styled("confirm  ", dim),
-            Span::styled("esc ", key),
-            Span::styled("cancel ", dim),
+            Span::styled(" enter ", chrome.key),
+            Span::styled("confirm  ", chrome.dim),
+            Span::styled("esc ", chrome.key),
+            Span::styled("cancel ", chrome.dim),
         ]),
     ];
 
     f.render_widget(Clear, rect);
-    f.render_widget(Paragraph::new(lines).style(base), rect);
+    f.render_widget(Paragraph::new(lines).style(chrome.base), rect);
 
     let cursor_x = rect.x + 1 + prompt.value[..prompt.cursor].chars().count() as u16;
     if rect.height >= 2 && cursor_x < rect.x + rect.width {

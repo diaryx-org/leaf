@@ -2785,4 +2785,108 @@ mod tests {
         handle_mouse(&mut doc, moved(row as u16 + 1, col as u16), &mut app);
         assert_eq!(doc.status.as_deref(), Some("→ https://example.com"));
     }
+
+    // ── chrome colors ────────────────────────────────────────────────────────
+
+    /// Paint `overlay` in `scheme` and hand back every cell of the frame.
+    use ratatui::style::Color;
+
+    fn chrome_cells(
+        scheme: leaf_core::ColorScheme,
+        overlay: impl Fn(&mut Doc, &mut App),
+    ) -> ratatui::buffer::Buffer {
+        let mut doc = doc_with("chrome", "hello\n");
+        let mut app = App::default();
+        app.editor.set_color_scheme(scheme);
+        overlay(&mut doc, &mut app);
+        let mut term = Terminal::new(TestBackend::new(70, 24)).unwrap();
+        term.draw(|f| ui::render(f, &mut doc, &mut app)).unwrap();
+        term.backend().buffer().clone()
+    }
+
+    /// The bug this guards: the host chrome used to spell its colors as ANSI
+    /// constants — a dark-grey panel with white text — while the editing surface
+    /// underneath read a light-or-dark palette from the terminal. On a light
+    /// terminal that painted the menu and the palette as a near-black slab, and
+    /// the grey and yellow on top of it were the two least readable colors
+    /// available. Chrome that doesn't move when the scheme does is the failure.
+    #[test]
+    fn the_chrome_follows_the_terminal_s_light_or_dark_scheme() {
+        let open_palette = |doc: &mut Doc, app: &mut App| {
+            handle_key(doc, alt('p'), app);
+        };
+        let light = chrome_cells(leaf_core::ColorScheme::Light, open_palette);
+        let dark = chrome_cells(leaf_core::ColorScheme::Dark, open_palette);
+
+        // The row under the palette's highlight, in each scheme.
+        let panel = |buf: &ratatui::buffer::Buffer| {
+            (0..buf.area.height)
+                .map(|y| buf[(12, y)].clone())
+                .find(|c| c.bg != ratatui::style::Color::Reset)
+                .expect("the palette should paint a panel")
+        };
+        let (l, d) = (panel(&light), panel(&dark));
+        assert_ne!(l.bg, d.bg, "the panel fill must differ between schemes");
+        assert_ne!(l.fg, d.fg, "and so must the text on it");
+    }
+
+    /// No overlay may paint a cell whose text is the same color as the ground
+    /// under it. Cheap, and it catches the whole family of "this row turned out
+    /// invisible in one of the two schemes" — which is how the chrome broke in
+    /// the first place.
+    #[test]
+    fn no_overlay_paints_invisible_text() {
+        /// One overlay to paint, and the name to blame if it paints badly.
+        type Overlay = (&'static str, fn(&mut Doc, &mut App));
+
+        let overlays: [Overlay; 4] = [
+            ("palette", |doc, app| {
+                handle_key(doc, alt('p'), app);
+            }),
+            ("key reference", |doc, app| {
+                handle_key(doc, alt('h'), app);
+            }),
+            ("context menu", |doc, app| {
+                handle_mouse(doc, right_down(1, 2), app);
+            }),
+            ("unsaved-changes dialog", |doc, app| {
+                doc.insert("x"); // make it dirty, so ^q asks rather than quitting
+                handle_key(doc, ctrl('q'), app);
+            }),
+        ];
+        for scheme in [leaf_core::ColorScheme::Light, leaf_core::ColorScheme::Dark] {
+            for (name, overlay) in overlays {
+                let buf = chrome_cells(scheme, overlay);
+                for y in 0..buf.area.height {
+                    for x in 0..buf.area.width {
+                        let cell = &buf[(x, y)];
+                        // Only the cells the chrome actually painted. A cell
+                        // left on the terminal's own defaults is the document
+                        // showing through, and those two contrast by definition
+                        // — it's the user's own theme.
+                        if cell.bg == Color::Reset || cell.symbol().trim().is_empty() {
+                            continue;
+                        }
+                        assert_ne!(
+                            cell.fg,
+                            cell.bg,
+                            "{name} in {scheme:?} paints {:?} invisibly at ({x}, {y})",
+                            cell.symbol()
+                        );
+                        // An explicit fill with an inherited foreground is the
+                        // same bug one step less obvious: the terminal's own
+                        // text color is dark on a light terminal and light on a
+                        // dark one, and our panel is neither.
+                        assert_ne!(
+                            cell.fg,
+                            Color::Reset,
+                            "{name} in {scheme:?} leaves {:?} at ({x}, {y}) on the \
+                             terminal's foreground over a panel fill",
+                            cell.symbol()
+                        );
+                    }
+                }
+            }
+        }
+    }
 }

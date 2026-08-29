@@ -87,6 +87,38 @@ pub struct Theme {
     pub delimiter: Color,
     /// A block image's `🖼 alt` placeholder text.
     pub image: Color,
+    /// The fill behind a floating host overlay — the context menu, the command
+    /// palette, the key reference, the dialogs, the status toast.
+    ///
+    /// The chrome colors below exist for the same reason the rest of this
+    /// palette does, and were the last place in leaf still ignoring it: a
+    /// hardcoded dark-grey panel with white text is a dark-mode assumption, and
+    /// on a light terminal it renders a menu as a black hole with grey text in
+    /// it. A panel has to be a legible step off *the user's* page in whichever
+    /// direction their page runs.
+    pub panel_bg: Color,
+    /// An overlay's ordinary text.
+    pub panel_fg: Color,
+    /// An overlay's quiet text: section headers, key hints in the footer, and
+    /// the rows a document's format can't run. Muted enough to recede, not so
+    /// muted it stops being readable — a disabled row still has to be legible,
+    /// because saying what a format *can't* do is the whole reason it's drawn.
+    pub panel_dim: Color,
+    /// The accent on an overlay: a key chord, a checked row, the palette's
+    /// prompt. Kin to [`link`](Self::link), which is the same "this is
+    /// actionable" signal in the body.
+    pub panel_accent: Color,
+    /// The highlighted row's fill. An explicit color rather than `REVERSED`,
+    /// which inverts against the *panel* and so lands somewhere different in
+    /// each scheme — and, on a checked row, throws away the accent it was
+    /// carrying.
+    pub panel_selected_bg: Color,
+    /// The highlighted row's text.
+    pub panel_selected_fg: Color,
+    /// What's at stake in a dialog, and the status toast. ANSI yellow on a light
+    /// terminal is the worst offender in the whole palette, so the light scheme
+    /// takes amber here exactly as it does for headings.
+    pub panel_warning: Color,
     /// The frame drawn around a block image's reserved area — the picture sits
     /// inside it, and it stands alone as the "picture goes here" placeholder
     /// when the raster can't be painted (a remote/unresolved image, or one
@@ -132,6 +164,18 @@ impl Theme {
             delimiter: Color::DarkGray,
             image: Color::Magenta,
             image_border: Color::Indexed(96),
+            // A shade above `code_bg` (235), so an overlay floating over a code
+            // block still reads as being *over* it rather than part of it.
+            panel_bg: Color::Indexed(238),
+            panel_fg: Color::Indexed(253),
+            // 249, not the 247 that looks right in isolation: dim text on a
+            // *panel* has a lighter ground under it than dim text on the page,
+            // so it has to be lighter still to keep the same ~4.5:1 separation.
+            panel_dim: Color::Indexed(249),
+            panel_accent: Color::Cyan,
+            panel_selected_bg: Color::Indexed(24),
+            panel_selected_fg: Color::Indexed(255),
+            panel_warning: Color::Yellow,
         }
     }
 
@@ -175,6 +219,22 @@ impl Theme {
             delimiter: Color::Indexed(243),
             image: Color::Indexed(96),
             image_border: Color::Indexed(96),
+            // A shade *below* `code_bg` (253) for the same reason the dark panel
+            // is a shade above its own: the overlay floats over the page, so it
+            // steps away from it, and the step runs downward on a light one.
+            panel_bg: Color::Indexed(251),
+            panel_fg: Color::Indexed(234),
+            panel_dim: Color::Indexed(239),
+            // A shade darker than `link`'s 26: a key chord sits on the panel's
+            // grey rather than on the page's white, and loses contrast to it.
+            panel_accent: Color::Indexed(25),
+            panel_selected_bg: Color::Indexed(24),
+            panel_selected_fg: Color::Indexed(255),
+            // The same amber the light palette gives headings and list markers,
+            // rather than a red that would read better and belong to nothing:
+            // ANSI yellow is invisible here, and this is where the light theme
+            // already decided what stands in for it.
+            panel_warning: Color::Indexed(94),
         }
     }
 
