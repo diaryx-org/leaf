@@ -212,6 +212,7 @@ LEAF_THEME=light cargo run -- path/to/document.md
 | `^s` / `⌥s` / `⌥n` / `^q` | save / save as / new / quit |
 | right-click | the context menu: Format, Insert, Table and View flyouts |
 | hover | peek at what's under the pointer — a footnote's note, a link's destination — without moving the caret |
+| terminal paste | arrives whole (bracketed paste) and lands as one undo step — into the prompt or the palette when one is open, otherwise into the document |
 
 Everything the keyboard doesn't reach is in the **command palette** — the three
 media kinds, all fourteen table operations, and the markup/line-flow modes named

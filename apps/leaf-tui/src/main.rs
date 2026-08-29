@@ -22,8 +22,8 @@ use palette::Palette;
 use ratatui::{
     crossterm::{
         event::{
-            self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-            MouseEvent, MouseEventKind,
+            self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste,
+            EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, MouseEvent, MouseEventKind,
         },
         execute,
     },
@@ -85,9 +85,18 @@ fn main() -> Result<()> {
     }
 
     let mut terminal = ratatui::init();
-    execute!(stdout(), EnableMouseCapture)?;
+    // Mouse capture, and — the other half of "the terminal tells us what the
+    // user did rather than making us guess" — bracketed paste. Without it a
+    // paste is delivered as a burst of ordinary key presses, which is not just
+    // slow: each character is a separate `Doc::insert`, so the paste is a
+    // hundred undo steps and a hundred list-continuation/autoformat decisions
+    // taken on text nobody typed. With it the run arrives whole, as
+    // `Event::Paste`, and goes through the same `Doc::paste` the clipboard
+    // verbs use. Both are turned back off on the way out, in the reverse
+    // order, so a terminal leaf crashed in isn't left in either mode.
+    execute!(stdout(), EnableMouseCapture, EnableBracketedPaste)?;
     let result = run(&mut terminal, &mut doc);
-    let _ = execute!(stdout(), DisableMouseCapture);
+    let _ = execute!(stdout(), DisableBracketedPaste, DisableMouseCapture);
     ratatui::restore();
     result
 }
@@ -468,6 +477,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal, doc: &mut Doc) -> Result<()> {
             // reporting, so these `Moved` events arrive without extra setup. The
             // editing surface ignores them, so they cost only a redraw.
             Event::Mouse(m) => handle_mouse(doc, m, &mut app),
+            // A terminal paste, arriving whole because `main` turned bracketed
+            // paste on.
+            Event::Paste(text) => handle_paste(doc, &text, &mut app),
             _ => {}
         }
     }
@@ -776,6 +788,80 @@ fn handle_palette_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
         _ => {}
     }
     Flow::Continue
+}
+
+/// A terminal paste, delivered whole rather than as the burst of key presses it
+/// used to arrive as — see the `EnableBracketedPaste` note in `main`.
+///
+/// It routes exactly the way a key press does, by asking the same overlays in
+/// the same order whether they own the keyboard. The two modal safety dialogs
+/// (and the context menu, and the key reference) answer a question with a
+/// keystroke and have no field for text to land in, so a paste at one of those
+/// is dropped rather than allowed through to the document they exist to guard.
+/// The palette and the text prompt *are* fields, so it goes into whichever is
+/// open. Anything else is the document, through [`Doc::paste`] — the clipboard
+/// door, not the typing one, so the whole run is one undo step and none of it
+/// is read as markup somebody typed.
+fn handle_paste(doc: &mut Doc, text: &str, app: &mut App) {
+    if app.dirty_prompt.is_some()
+        || app.conflict.is_some()
+        || app.context_menu.is_some()
+        || app.help
+    {
+        return;
+    }
+    if let Some(palette) = &mut app.palette {
+        insert_into_field(&mut palette.query, &mut palette.cursor, text);
+        palette.refilter(&Ctx::read(doc));
+        return;
+    }
+    if let Some(prompt) = &mut app.text_prompt {
+        insert_into_field(&mut prompt.value, &mut prompt.cursor, text);
+        return;
+    }
+    doc.paste(&normalize_newlines(text));
+    doc.status = Some("pasted".into());
+}
+
+/// Splice a pasted run into a single-line field at `cursor`, flattened first:
+/// a prompt and the palette's query are one row tall, so a multi-line paste
+/// has to become one line or the field holds characters it can never show.
+fn insert_into_field(value: &mut String, cursor: &mut usize, text: &str) {
+    let flat = flatten(text);
+    value.insert_str(*cursor, &flat);
+    *cursor += flat.len();
+}
+
+/// One line's worth of a pasted run: every line break (in any of the three
+/// spellings a paste can carry) becomes a single space, and the other control
+/// characters are dropped. A destination or a query with a `\t` or a `\x1b` in
+/// it is a field that looks right and confirms wrong.
+fn flatten(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut last_was_break = false;
+    for c in normalize_newlines(text).chars() {
+        if c == '\n' {
+            if !last_was_break {
+                out.push(' ');
+            }
+            last_was_break = true;
+        } else if !c.is_control() {
+            out.push(c);
+            last_was_break = false;
+        }
+    }
+    out
+}
+
+/// A pasted run with its line endings normalized to `\n`.
+///
+/// Pasted text is bytes from somewhere else, and both `\r\n` (anything that
+/// came through Windows) and a lone `\r` (a terminal that translates, or a
+/// classic-Mac file) would otherwise be spliced into the source verbatim — a
+/// carriage return the document acquires by being pasted into, which neither
+/// view draws and the next save writes to disk.
+fn normalize_newlines(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
 }
 
 fn handle_mouse(doc: &mut Doc, m: MouseEvent, app: &mut App) {
@@ -2091,6 +2177,95 @@ mod tests {
         );
         let html = get_clipboard_html().expect("html flavor");
         assert!(html.contains("<strong>bold</strong>"), "{html:?}");
+    }
+
+    // ── bracketed paste ──────────────────────────────────────────────────────
+
+    #[test]
+    fn a_bracketed_paste_lands_as_one_undo_step_not_a_run_of_keystrokes() {
+        // The whole point of routing `Event::Paste` to `Doc::paste`: before it,
+        // a paste was a burst of `KeyEvent`s and so a burst of `Doc::insert`s —
+        // one undo step per character, folded into whatever typing run preceded
+        // it. Now the run peels off in one.
+        let mut doc = doc_with("bracketed_undo", "");
+        let mut app = App::default();
+        doc.insert("a"); // a one-character typing run to fold into
+        handle_paste(&mut doc, "one\ntwo", &mut app);
+        assert_eq!(doc.source, "aone\ntwo");
+        doc.undo();
+        assert_eq!(doc.source, "a", "the whole paste comes off in one step");
+    }
+
+    #[test]
+    fn a_pasted_list_marker_is_not_read_as_typing_a_list() {
+        // `- ` typed at the start of a line is an autoformat gesture; the same
+        // two characters arriving inside a paste are text. `Doc::paste` splices
+        // rather than interpreting, which is exactly the difference.
+        let mut doc = doc_with("bracketed_literal", "");
+        let mut app = App::default();
+        handle_paste(&mut doc, "- one\n- two\n", &mut app);
+        assert_eq!(doc.source, "- one\n- two\n");
+    }
+
+    #[test]
+    fn a_pasted_crlf_run_lands_as_plain_newlines() {
+        let mut doc = doc_with("bracketed_crlf", "");
+        let mut app = App::default();
+        handle_paste(&mut doc, "one\r\ntwo\rthree", &mut app);
+        assert_eq!(
+            doc.source, "one\ntwo\nthree",
+            "no carriage return should reach the source"
+        );
+    }
+
+    #[test]
+    fn a_paste_goes_into_the_text_prompt_rather_than_the_document() {
+        let mut doc = doc_with("bracketed_prompt", "hello\n");
+        let mut app = App::default();
+        handle_key(&mut doc, alt('k'), &mut app);
+        handle_paste(&mut doc, "https://example.com", &mut app);
+        assert_eq!(
+            app.text_prompt.as_ref().unwrap().value,
+            "https://example.com"
+        );
+        assert_eq!(doc.source, "hello\n", "and not into the document");
+    }
+
+    #[test]
+    fn a_multi_line_paste_into_a_one_row_field_flattens_to_spaces() {
+        let mut doc = doc_with("bracketed_flatten", "hello\n");
+        let mut app = App::default();
+        handle_key(&mut doc, alt('k'), &mut app);
+        handle_paste(&mut doc, "one\r\n\ttwo\nthree", &mut app);
+        assert_eq!(app.text_prompt.as_ref().unwrap().value, "one two three");
+    }
+
+    #[test]
+    fn a_paste_into_the_palette_narrows_the_query() {
+        let mut doc = doc_with("bracketed_palette", "hello\n");
+        let mut app = App::default();
+        handle_key(&mut doc, alt('p'), &mut app);
+        handle_paste(&mut doc, "bold", &mut app);
+        let palette = app
+            .palette
+            .as_ref()
+            .expect("the palette should still be up");
+        assert_eq!(palette.query, "bold");
+        assert_eq!(palette.rows[palette.selected].command.label(), "Bold");
+    }
+
+    #[test]
+    fn a_paste_while_a_modal_prompt_is_up_is_ignored() {
+        // The dirty prompt is guarding the document; a paste that leaked past it
+        // would edit exactly the text the dialog is asking about.
+        let mut doc = doc_with("bracketed_modal", "hello\n");
+        doc.caret = 5;
+        doc.insert(" world");
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('q'), &mut app);
+        handle_paste(&mut doc, "nope", &mut app);
+        assert_eq!(doc.source, "hello world\n");
+        assert!(app.dirty_prompt.is_some(), "and the prompt stays up");
     }
 
     // ── drag autoscroll ──────────────────────────────────────────────────────
