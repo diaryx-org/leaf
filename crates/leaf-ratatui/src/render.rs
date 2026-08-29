@@ -6,7 +6,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Position, Rect},
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
@@ -14,10 +14,10 @@ use ratatui::{
 #[cfg(feature = "images")]
 use ratatui::widgets::Clear;
 
-use leaf_core::{Doc, Highlight, View};
+use leaf_core::{Doc, Highlight, HighlightCursor, View};
 
 use crate::EditorState;
-use crate::style::{CODE_INSET, Theme, wysiwyg_lines};
+use crate::style::{CODE_INSET, Theme, composed, wysiwyg_lines};
 
 /// Render the editing surface into `area`: the document body, its code-block
 /// boxes and framed images, the scrollbar, and the terminal caret. Updates
@@ -97,16 +97,16 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
     state.code_scroll_x = code_scroll;
     state.code_caret_span = caret_span.clone();
 
-    // The host-painted ranges (search hits, an annotation layer), copied out
-    // because the builders below run while `doc` is otherwise borrowed. The list
-    // is a handful of entries; `set_highlights` is the host's to call between
-    // frames, so what is copied here is what this frame paints.
-    let highlights = doc.highlights().to_vec();
+    // The host-painted ranges (search hits, an annotation layer). Both builders
+    // take them by shared reference, alongside the shared borrows of
+    // `doc.source` and `doc.vmap` they already take, so this is the list itself
+    // rather than a copy of it made every frame.
+    let highlights = doc.highlights();
 
     // Build the view's lines. A code row is drawn inset for its box and, if it's
     // the caret's block, scrolled by `code_scroll`.
     let lines = match doc.view {
-        View::Source => build_lines(&doc.source, sel, &highlights, &theme),
+        View::Source => build_lines(&doc.source, sel, highlights, &theme),
         View::Wysiwyg => {
             let code_shift = |r: usize| -> Option<usize> {
                 doc.vmap
@@ -121,7 +121,7 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
                         }
                     })
             };
-            wysiwyg_lines(&doc.vmap, sel, &highlights, &theme, code_shift)
+            wysiwyg_lines(&doc.vmap, sel, highlights, &theme, code_shift)
         }
     };
     let line_count = lines.len();
@@ -379,6 +379,9 @@ fn build_lines(
     // Reused across lines rather than allocated per line: a document is a few
     // thousand of them and this is rebuilt every frame.
     let mut cuts: Vec<usize> = Vec::new();
+    // The runs are visited in ascending source order, so one cursor answers the
+    // whole view — see `HighlightCursor`.
+    let mut covering = HighlightCursor::new(highlights);
 
     for raw in source.split('\n') {
         let line_start = byte;
@@ -416,7 +419,7 @@ fn build_lines(
             push(
                 &mut spans,
                 &raw[a..b],
-                run_style(line_start + a, sel, highlights, theme),
+                composed(Style::default(), line_start + a, sel, &mut covering, theme),
             );
         }
         if spans.is_empty() {
@@ -428,25 +431,6 @@ fn build_lines(
     lines
 }
 
-/// The style for a source-view run starting at source byte `at`: the
-/// highlight's wash if one covers it, reversed if the selection does. The same
-/// order, and for the same reason, as the WYSIWYG painter in `style.rs`.
-fn run_style(
-    at: usize,
-    sel: Option<(usize, usize)>,
-    highlights: &[Highlight],
-    theme: &Theme,
-) -> Style {
-    let mut style = Style::default();
-    if let Some(h) = highlights.iter().find(|h| h.start <= at && at < h.end) {
-        style = crate::style::highlight_wash(style, h, theme);
-    }
-    if sel.is_some_and(|(s, e)| at >= s && at < e) {
-        style = style.add_modifier(Modifier::REVERSED);
-    }
-    style
-}
-
 fn push(spans: &mut Vec<Span<'static>>, text: &str, style: Style) {
     if !text.is_empty() {
         spans.push(Span::styled(text.to_string(), style));
@@ -456,6 +440,7 @@ fn push(spans: &mut Vec<Span<'static>>, text: &str, style: Style) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::style::Modifier;
 
     /// The source view's own painter, which used to split each line three ways
     /// around the selection and had nowhere to put a second, overlapping range.

@@ -19,7 +19,7 @@
 //! per paint rather than baked into the mapping function.
 
 use leaf_core::style::{Role, Style as LStyle};
-use leaf_core::{Highlight, VisualMap};
+use leaf_core::{Highlight, HighlightCursor, VisualMap};
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -389,7 +389,9 @@ pub fn wysiwyg_lines(
     theme: &Theme,
     code_shift: impl Fn(usize) -> Option<usize>,
 ) -> Vec<Line<'static>> {
-    let (ss, se) = sel.unwrap_or((usize::MAX, usize::MAX));
+    // One cursor for the whole view: the rows are walked in order and so are
+    // their glyphs, which is exactly what it is for.
+    let mut covering = HighlightCursor::new(highlights);
     vmap.rows
         .iter()
         .enumerate()
@@ -416,19 +418,7 @@ pub fn wysiwyg_lines(
                 if hidden {
                     continue;
                 }
-                let mut style = theme.to_ratatui(g.style);
-                // Highlight first, selection over it. A host paints a range to
-                // say "this is one of the things you asked for"; the selection
-                // says "and this is the one you are on", so the two have to
-                // compose rather than one replacing the other — reversing the
-                // wash is what makes the current search hit legible among the
-                // rest of them.
-                if let Some(h) = highlight_at(highlights, g.src) {
-                    style = highlight_wash(style, h, theme);
-                }
-                if g.src >= ss && g.src < se {
-                    style = style.add_modifier(Modifier::REVERSED);
-                }
+                let style = composed(theme.to_ratatui(g.style), g.src, sel, &mut covering, theme);
                 if cur == Some(style) {
                     buf.push(g.ch);
                 } else {
@@ -450,17 +440,30 @@ pub fn wysiwyg_lines(
         .collect()
 }
 
-/// The host-painted range covering source `offset`, if one does.
+/// A glyph's or a run's final style at source byte `at`: its own style, the
+/// host's wash under it, the selection reversed over that.
 ///
-/// A linear scan of what is almost always a handful of ranges, called once per
-/// glyph. `Doc::set_highlights` keeps the list sorted, so this could binary
-/// search; it doesn't, because the crossover is well past any count of search
-/// hits a terminal is drawing at once and the straight loop is the one that is
-/// obviously right.
-fn highlight_at(highlights: &[Highlight], offset: usize) -> Option<&Highlight> {
-    highlights
-        .iter()
-        .find(|h| h.start <= offset && offset < h.end)
+/// One function because both painters compose the same three layers and had
+/// better not disagree about the order. A host paints a range to say "this is
+/// one of the things you asked for"; the selection says "and this is the one
+/// you are on", so the two compose rather than one replacing the other —
+/// reversing the wash is what makes the current search hit legible among the
+/// rest of them.
+pub(crate) fn composed(
+    base: Style,
+    at: usize,
+    sel: Option<(usize, usize)>,
+    highlights: &mut HighlightCursor<'_>,
+    theme: &Theme,
+) -> Style {
+    let mut style = base;
+    if let Some(h) = highlights.at(at) {
+        style = highlight_wash(style, h, theme);
+    }
+    if sel.is_some_and(|(s, e)| at >= s && at < e) {
+        style = style.add_modifier(Modifier::REVERSED);
+    }
+    style
 }
 
 /// Lay a highlight's wash under a glyph's own style, keeping whatever the
@@ -468,28 +471,50 @@ fn highlight_at(highlights: &[Highlight], offset: usize) -> Option<&Highlight> {
 /// ink and the ground.
 ///
 /// A `#RRGGBB` on the highlight overrides the theme's ground, since the point of
-/// the field is a host that colors its own annotations; the ink stays the
-/// theme's, because leaf has no way to know what reads on a color it was handed
-/// and the two curated palettes were picked to.
+/// the field is a host that colors its own annotations — and then the ink has to
+/// be picked against *that* ground rather than left as the theme's. The theme's
+/// `highlight_fg` is chosen to read on the theme's own wash; forcing it onto a
+/// color the host named puts the dark palette's near-white ink on `#ffe066`,
+/// which is the failure this branch exists for. The two curated inks are the
+/// candidates, and [`contrast_ink`] picks whichever the host's color can carry.
 pub(crate) fn highlight_wash(style: Style, highlight: &Highlight, theme: &Theme) -> Style {
-    let bg = highlight
-        .color
-        .as_deref()
-        .and_then(parse_hex)
-        .unwrap_or(theme.highlight_bg);
-    style.fg(theme.highlight_fg).bg(bg)
+    match highlight.color.as_deref().and_then(parse_rgb) {
+        Some((r, g, b)) => style.fg(contrast_ink(r, g, b)).bg(Color::Rgb(r, g, b)),
+        None => style.fg(theme.highlight_fg).bg(theme.highlight_bg),
+    }
 }
 
-/// `#RRGGBB` (or `RRGGBB`) as a color; `None` for anything else, which falls
-/// back to the theme rather than erroring — a malformed hint from a host is not
-/// worth refusing to draw the document over.
-fn parse_hex(hex: &str) -> Option<Color> {
+/// The ink that reads on a host-supplied `#RRGGBB` wash: the light palette's
+/// near-black on a light color, the dark palette's near-white on a dark one.
+///
+/// The two curated `highlight_fg`s rather than a computed shade, so a
+/// host-colored range still looks like it belongs to this editor. The split is
+/// by relative luminance, which is coarse next to a real contrast ratio and
+/// exactly right for the one decision being made — the two candidates sit at
+/// opposite ends of the scale, so anything nearer one than the other is a
+/// comfortable choice rather than a marginal one.
+fn contrast_ink(r: u8, g: u8, b: u8) -> Color {
+    let luminance = 0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32;
+    if luminance > 0.5 * 255.0 {
+        Theme::light().highlight_fg
+    } else {
+        Theme::dark().highlight_fg
+    }
+}
+
+/// `#RRGGBB` (or `RRGGBB`) as its three components; `None` for anything else,
+/// which falls back to the theme rather than erroring — a malformed hint from a
+/// host is not worth refusing to draw the document over.
+///
+/// The components rather than a `Color`, because the caller has to weigh them
+/// to pick an ink that reads on them ([`contrast_ink`]).
+fn parse_rgb(hex: &str) -> Option<(u8, u8, u8)> {
     let hex = hex.strip_prefix('#').unwrap_or(hex);
     if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
     let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
-    Some(Color::Rgb(byte(0)?, byte(2)?, byte(4)?))
+    Some((byte(0)?, byte(2)?, byte(4)?))
 }
 
 /// The display-column width of one glyph — the terminal's own measure, matched
@@ -537,12 +562,48 @@ mod tests {
     /// draw the document.
     #[test]
     fn a_highlight_colour_is_read_as_hex_or_ignored() {
-        assert_eq!(parse_hex("#ffe066"), Some(Color::Rgb(0xff, 0xe0, 0x66)));
-        assert_eq!(parse_hex("ffe066"), Some(Color::Rgb(0xff, 0xe0, 0x66)));
-        assert_eq!(parse_hex("#fff"), None);
-        assert_eq!(parse_hex("rebeccapurple"), None);
-        assert_eq!(parse_hex("#gggggg"), None);
-        assert_eq!(parse_hex(""), None);
+        assert_eq!(parse_rgb("#ffe066"), Some((0xff, 0xe0, 0x66)));
+        assert_eq!(parse_rgb("ffe066"), Some((0xff, 0xe0, 0x66)));
+        assert_eq!(parse_rgb("#fff"), None);
+        assert_eq!(parse_rgb("rebeccapurple"), None);
+        assert_eq!(parse_rgb("#gggggg"), None);
+        assert_eq!(parse_rgb(""), None);
+    }
+
+    /// A host that colours its own range has to be given an ink that reads on
+    /// it. The dark theme's near-white on `#ffe066` is the bug this is for, and
+    /// the answer must not depend on which theme is in force: the wash is the
+    /// host's colour in both, so the ink is too.
+    #[test]
+    fn a_host_coloured_highlight_gets_an_ink_that_reads_on_it() {
+        let painted = |hex: &str| Highlight {
+            start: 0,
+            end: 1,
+            id: String::new(),
+            color: Some(hex.into()),
+            marker: None,
+        };
+        let dark_ink = Theme::dark().highlight_fg;
+        let light_ink = Theme::light().highlight_fg;
+        for theme in [Theme::dark(), Theme::light()] {
+            let wash = |hex: &str| highlight_wash(Style::default(), &painted(hex), &theme);
+            // A pale wash takes the dark ink, whichever theme is running.
+            assert_eq!(wash("#ffe066").fg, Some(light_ink), "pale yellow");
+            assert_eq!(wash("#ffffff").fg, Some(light_ink), "white");
+            // A dark one takes the light ink.
+            assert_eq!(wash("#1a1a2e").fg, Some(dark_ink), "near-black navy");
+            assert_eq!(wash("#000000").fg, Some(dark_ink), "black");
+            // Either way the ground is what the host asked for.
+            assert_eq!(wash("#ffe066").bg, Some(Color::Rgb(0xff, 0xe0, 0x66)));
+            // And a highlight with no colour is still the theme's own pair.
+            let plain = Highlight {
+                color: None,
+                ..painted("")
+            };
+            let style = highlight_wash(Style::default(), &plain, &theme);
+            assert_eq!(style.bg, Some(theme.highlight_bg));
+            assert_eq!(style.fg, Some(theme.highlight_fg));
+        }
     }
 
     /// The rendering half of `Doc::set_highlights`, which no frontend painted

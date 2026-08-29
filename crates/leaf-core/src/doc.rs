@@ -451,6 +451,74 @@ pub struct Highlight {
     pub marker: Option<String>,
 }
 
+impl Highlight {
+    /// The range covering source `offset` in a list [`Doc::set_highlights`]
+    /// sorted, first by start where several overlap — the one place that
+    /// question is answered, for the frontends that paint by asking it as well
+    /// as for [`Doc::highlight_at`].
+    ///
+    /// The list is sorted by `(start, end)`, so the scan can stop at the first
+    /// range starting past `offset` rather than running to the end. A painter
+    /// asking once per glyph wants [`HighlightCursor`] instead; this is the
+    /// one-shot form, for the host asking what the reader just activated.
+    pub fn covering(highlights: &[Highlight], offset: usize) -> Option<&Highlight> {
+        highlights
+            .iter()
+            .take_while(|h| h.start <= offset)
+            .find(|h| offset < h.end)
+    }
+}
+
+/// [`Highlight::covering`] for a caller walking the document in order — which
+/// is every painter, since a frontend draws rows top to bottom and glyphs left
+/// to right.
+///
+/// The one-shot form is a scan from the front of the list per glyph, and a
+/// document with two hundred search hits pays that two hundred times a row. A
+/// range that ends at or before an offset can never cover that offset *or any
+/// later one*, so the cursor retires those permanently and each glyph costs the
+/// ranges that actually reach it. The answer is identical to
+/// [`Highlight::covering`]'s, offset for offset — this is the same scan with
+/// the part that was being redone dropped, not a cheaper approximation.
+///
+/// Offsets are expected to arrive non-decreasing. One that goes backwards is
+/// still answered correctly: the cursor re-seats to the front, since a painter
+/// that revisits a row is asking a question the retired ranges may own again.
+pub struct HighlightCursor<'a> {
+    highlights: &'a [Highlight],
+    /// The first range not yet retired.
+    at: usize,
+    /// The last offset asked about, to notice a caller going backwards.
+    last: usize,
+}
+
+impl<'a> HighlightCursor<'a> {
+    pub fn new(highlights: &'a [Highlight]) -> Self {
+        HighlightCursor {
+            highlights,
+            at: 0,
+            last: 0,
+        }
+    }
+
+    /// The range covering `offset`, advancing the cursor past every range that
+    /// can no longer cover anything.
+    pub fn at(&mut self, offset: usize) -> Option<&'a Highlight> {
+        if offset < self.last {
+            self.at = 0;
+        }
+        self.last = offset;
+        while self
+            .highlights
+            .get(self.at)
+            .is_some_and(|h| h.end <= offset)
+        {
+            self.at += 1;
+        }
+        Highlight::covering(&self.highlights[self.at..], offset)
+    }
+}
+
 pub struct Doc {
     editor: Editor,
     pub format: Format,
@@ -1299,10 +1367,13 @@ impl Doc {
     /// The highlight covering source `offset`, if one does — first by start
     /// when several overlap, which makes overlapping washes resolvable rather
     /// than undefined. What a frontend asks when the reader activates a spot.
+    ///
+    /// [`Highlight::covering`] is the whole of it: the frontends paint by
+    /// asking the same question per glyph, against a slice they were handed
+    /// rather than against a `Doc`, and one answer for both is what keeps a
+    /// wash and an activation agreeing about which range a spot is in.
     pub fn highlight_at(&self, offset: usize) -> Option<&Highlight> {
-        self.highlights
-            .iter()
-            .find(|h| h.start <= offset && offset < h.end)
+        Highlight::covering(&self.highlights, offset)
     }
 
     /// The AST breadcrumb at the caret (root → deepest), e.g.
@@ -12807,5 +12878,82 @@ mod tests {
         assert_eq!(d.highlight_at(8).map(|h| h.id.as_str()), Some("b"));
         d.set_highlights(Vec::new());
         assert!(d.highlights().is_empty(), "a replace is a replace");
+    }
+
+    /// `Highlight::covering` and the cursor over it are what both painters ask
+    /// per glyph, so they have to answer the same as the scan they replaced —
+    /// including in the gaps, which is where most glyphs are.
+    #[test]
+    fn covering_answers_from_a_sorted_list_without_scanning_all_of_it() {
+        let hl = |start: usize, end: usize, id: &str| Highlight {
+            start,
+            end,
+            id: id.into(),
+            color: None,
+            marker: None,
+        };
+        // Disjoint, as search hits are: in a range, in a gap, and past the end.
+        let hits: Vec<Highlight> = (0..20).map(|i| hl(i * 10, i * 10 + 3, "hit")).collect();
+        assert_eq!(Highlight::covering(&hits, 0).map(|h| h.start), Some(0));
+        assert_eq!(Highlight::covering(&hits, 102).map(|h| h.start), Some(100));
+        assert_eq!(
+            Highlight::covering(&hits, 105),
+            None,
+            "a gap covers nothing"
+        );
+        assert_eq!(Highlight::covering(&hits, 103), None, "end is exclusive");
+        assert_eq!(Highlight::covering(&hits, 9_999), None);
+        assert_eq!(Highlight::covering(&[], 0), None);
+
+        // Nested: first by start, so a hit inside an annotation still resolves
+        // to the annotation — and the range that stops short doesn't mask it.
+        let nested = vec![hl(0, 20, "outer"), hl(5, 10, "inner")];
+        assert_eq!(
+            Highlight::covering(&nested, 7).map(|h| h.id.as_str()),
+            Some("outer")
+        );
+        assert_eq!(
+            Highlight::covering(&nested, 15).map(|h| h.id.as_str()),
+            Some("outer")
+        );
+    }
+
+    /// The cursor is an optimisation, so the only thing worth asserting is that
+    /// it is not also a change of answer — at every offset, over a list with a
+    /// nest in it, walked forwards and then backwards.
+    #[test]
+    fn the_highlight_cursor_answers_exactly_what_a_fresh_scan_would() {
+        let hl = |start: usize, end: usize, id: &str| Highlight {
+            start,
+            end,
+            id: id.into(),
+            color: None,
+            marker: None,
+        };
+        let mut list = vec![
+            hl(0, 20, "outer"),
+            hl(5, 10, "inner"),
+            hl(30, 33, "hit"),
+            hl(40, 43, "hit"),
+        ];
+        list.sort_by_key(|h| (h.start, h.end));
+
+        let mut cursor = HighlightCursor::new(&list);
+        for offset in 0..50 {
+            assert_eq!(
+                cursor.at(offset).map(|h| h.id.as_str()),
+                Highlight::covering(&list, offset).map(|h| h.id.as_str()),
+                "cursor disagrees at {offset}"
+            );
+        }
+        // Backwards: the cursor re-seats rather than answering from where it
+        // had got to, so a painter that revisits a row is still told the truth.
+        for offset in (0..50).rev() {
+            assert_eq!(
+                cursor.at(offset).map(|h| h.id.as_str()),
+                Highlight::covering(&list, offset).map(|h| h.id.as_str()),
+                "cursor disagrees walking back at {offset}"
+            );
+        }
     }
 }
