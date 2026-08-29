@@ -2,6 +2,9 @@
 name = "leaf-ratatui"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
 description = "Embeddable rich-text editor widget for ratatui: renders leaf-core's WYSIWYG/source view into a Rect and turns key/mouse events into document edits. The terminal peer of leaf-gpui."
 
 [features]

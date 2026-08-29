@@ -4,7 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-readme.workspace = true
+# Not `readme.workspace` — this crate has its own README.md, and the workspace
+# value (`../../README.md`) resolves outside the package. Cargo already ships
+# the local copy in the archive; this makes the manifest say so.
+readme = "README.md"
 description = "C-ABI / Swift frontend binding for leaf: wraps the filesystem-free leaf-core Doc behind UniFFI so an AppKit/SwiftUI app can drive the byte-offset caret model and render the VisualMap as style runs — the native-Apple peer of leaf-wasm."
 
 # staticlib -> the .a linked into the xcframework for device/simulator.

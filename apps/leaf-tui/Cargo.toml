@@ -2,6 +2,9 @@
 name = "leaf-tui"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
 description = "A caret-based rich-text TUI editor for documents, built on twig's round-trippable AST."
 
 # The everyday `cargo run -- file.md` invocation still runs `leaf`.
