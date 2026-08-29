@@ -4775,13 +4775,23 @@ impl Doc {
     /// Re-read the file and replace the document with what's there — the other
     /// answer to a [`DiskState::Changed`].
     ///
-    /// **Discards unsaved changes and the undo history, unconditionally.** It
-    /// doesn't check `dirty` first: a frontend that wants to protect unsaved
-    /// work asks (`dirty` + [`Doc::disk_state`]) *before* calling this, and one
-    /// reloading a clean document shouldn't have to argue with a guard. The
-    /// history goes because twig's undo stack belongs to the buffer, and these
-    /// are different bytes — replaying a step recorded against the old ones onto
-    /// them would corrupt the document, and nothing here can honestly rebase it.
+    /// **Discards unsaved changes, unconditionally.** It doesn't check `dirty`
+    /// first: a frontend that wants to protect unsaved work asks (`dirty` +
+    /// [`Doc::disk_state`]) *before* calling this, and one reloading a clean
+    /// document shouldn't have to argue with a guard.
+    ///
+    /// **The undo history survives, and the reload is one step in it.** The
+    /// whole buffer is spliced with the file's bytes through the same door every
+    /// other edit goes through, as an [`EditKind::Other`] that coalesces with
+    /// nothing on either side — so ^Z after a formatter or a `git checkout` has
+    /// swapped the document out from under a reader gives them back what they
+    /// were looking at, marked dirty, and ^Z again carries on into whatever they
+    /// had done before it. This used to build a fresh parse and drop the stack,
+    /// on the reasoning that twig's history belongs to the buffer and these are
+    /// different bytes; that is true of *rebasing* a step onto them and not of
+    /// recording the swap itself as one, which is all this is. A splice twig
+    /// won't take falls back to the fresh parse, and only that path still costs
+    /// the history.
     ///
     /// The caret keeps its byte offset, clamped to the new length; the selection
     /// is dropped. Anything cleverer would be a lie: leaf doesn't know how the
@@ -4811,31 +4821,58 @@ impl Doc {
             self.status = Some("reload failed: file is not UTF-8".into());
             return;
         };
-        // Reparse rather than splice the difference in: leaf doesn't know what
-        // changed, and `format` is the format this document is, not what the
-        // (unchanged) name now says — see `save_as`.
-        let editor = match new_editor(source.as_bytes(), self.format) {
-            Ok(ed) => ed,
-            Err(e) => {
-                self.status = Some(format!("reload failed: {e}"));
-                return;
+        // Already these bytes — someone saved a file back unchanged, or leaf's
+        // own write is being read back. Re-baseline against it and stop: a
+        // splice of the text onto itself would put an undo step on the stack for
+        // something nobody did.
+        if source == self.source {
+            self.disk_hash = Some(hash_bytes(source.as_bytes()));
+            self.clean_source = source;
+            self.dirty = false;
+            self.status = Some(format!("reloaded {}", self.file_name()));
+            return;
+        }
+        let caret = self.caret;
+        // The pre-reload caret, so undoing the swap puts it back where the
+        // reader was standing — the same bracketing `splice_exact` does.
+        self.record_caret();
+        if self
+            .editor
+            .edit_range(0, self.source.len(), &source)
+            .is_ok()
+        {
+            self.refresh();
+        } else {
+            // twig wouldn't take the splice. Start over from the bytes, which is
+            // what this always did, and is the one path that still costs the
+            // history — `format` is the format this document *is*, not what the
+            // (unchanged) name now says, see `save_as`.
+            match new_editor(source.as_bytes(), self.format) {
+                Ok(editor) => {
+                    self.editor = editor;
+                    self.source = source.clone();
+                    // Not going through `refresh`, so the revision has to move
+                    // here or every frontend keeps painting the old file from
+                    // cache.
+                    self.revision += 1;
+                }
+                Err(e) => {
+                    self.status = Some(format!("reload failed: {e}"));
+                    return;
+                }
             }
-        };
-        self.editor = editor;
+        }
         self.disk_hash = Some(hash_bytes(source.as_bytes()));
-        self.clean_source = source.clone();
-        self.source = source;
-        // Reload replaces the text without going through `refresh`, so it has to
-        // move the revision itself or every frontend would keep painting the old
-        // file from cache.
-        self.revision += 1;
-        self.caret = self.caret.min(self.source.len());
+        self.clean_source = self.source.clone();
+        self.caret = caret.min(self.source.len());
         self.anchor = None;
         self.goal_col = None;
         self.last_edit_kind = None;
         self.dirty = false;
         self.status = Some(format!("reloaded {}", self.file_name()));
         self.clamp_caret();
+        // And the post-reload caret, so a redo restores it.
+        self.record_caret();
     }
 
     /// Re-read the source from twig after it has changed the document. The one
@@ -12845,20 +12882,52 @@ mod tests {
         assert_eq!(d.caret, 2);
     }
 
+    /// A silent reload is something that happened *to* a reader — a formatter,
+    /// a `git checkout` — so it has to be undoable like anything else that
+    /// changes the document, and undoable as one step rather than as however
+    /// many the file happens to differ by.
     #[test]
-    fn reload_drops_the_undo_history() {
-        // twig's stack belongs to the buffer, and these are different bytes:
-        // replaying a step recorded against the old ones would corrupt the file.
+    fn reload_is_one_undo_step_and_keeps_the_history_under_it() {
         let mut d = doc_with("reload_undo", "body\n");
         d.insert("x");
+        assert_eq!(d.source, "xbody\n");
         std::fs::write(&d.path, "replaced\n").unwrap();
         d.reload();
+        assert_eq!(d.source, "replaced\n");
+        assert!(!d.dirty, "a reload lands clean");
+
+        // One ^Z takes the whole swap off, and hands back the unsaved work it
+        // replaced — which is unsaved again, because the file no longer says it.
+        d.undo();
+        assert_eq!(d.source, "xbody\n", "the reload comes off in one step");
+        assert!(d.dirty, "and what it comes back to is unsaved");
+        // …and the history under it is still there.
         d.undo();
         assert_eq!(
-            d.source, "replaced\n",
-            "an undo must not resurrect the old buffer"
+            d.source, "body\n",
+            "the typing before the reload undoes too"
         );
-        assert_eq!(d.status.as_deref(), Some("nothing to undo"));
+        // Redo walks back up through the reload.
+        d.redo();
+        d.redo();
+        assert_eq!(d.source, "replaced\n");
+    }
+
+    /// A file rewritten with the bytes it already had is not an edit, so it
+    /// must not leave an undo step behind for something nobody did.
+    #[test]
+    fn reloading_identical_bytes_pushes_no_undo_step() {
+        let mut d = doc_with("reload_same", "body\n");
+        d.insert("x");
+        std::fs::write(&d.path, "xbody\n").unwrap();
+        d.reload();
+        assert_eq!(d.source, "xbody\n");
+        assert!(!d.dirty, "the file now says what the buffer does");
+        d.undo();
+        assert_eq!(
+            d.source, "body\n",
+            "one step back is the typing, not a no-op"
+        );
     }
 
     #[test]

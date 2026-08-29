@@ -242,6 +242,12 @@ struct App {
     /// Held so the watch can catch up the moment there aren't (an undo back to
     /// the saved state), without re-reading the file on every tick until then.
     disk_ahead: bool,
+    /// Whether the last tick found the file changed and is waiting for it to
+    /// stand still before taking the bytes — see [`tick_disk`]. A write is not
+    /// atomic: a program that truncates and then writes leaves the file empty,
+    /// or half written, for as long as it takes, and a watch that reads on the
+    /// first tick that notices reads exactly that.
+    disk_settling: bool,
     /// When the watch last ran; `None` before the first turn of the loop.
     last_disk_check: Option<Instant>,
 }
@@ -567,8 +573,16 @@ fn run(terminal: &mut ratatui::DefaultTerminal, doc: &mut Doc) -> Result<()> {
     // tick has something to compare against and a document opened from an
     // unchanged file costs no read at all.
     app.disk_stamp = disk_stamp(doc);
+    // The loop used to redraw at the top of every turn, so an editor nobody was
+    // touching repainted the whole document twice a second forever. Nothing on
+    // screen can change without arriving here as an event or coming out of
+    // `tick_disk`, so those two are what earn a frame.
+    let mut redraw = true;
     loop {
-        terminal.draw(|f| ui::render(f, doc, &mut app))?;
+        if redraw {
+            terminal.draw(|f| ui::render(f, doc, &mut app))?;
+            redraw = false;
+        }
 
         // Poll rather than block: the file behind the document can change while
         // nobody is touching the keyboard, and a loop parked in `event::read`
@@ -576,6 +590,10 @@ fn run(terminal: &mut ratatui::DefaultTerminal, doc: &mut Doc) -> Result<()> {
         // interval, so an idle editor wakes twice a second, does one `stat`, and
         // goes back to sleep.
         if event::poll(DISK_POLL)? {
+            // Any event at all earns the frame, including the ones the match
+            // below does nothing with: a resize changes every rect on screen,
+            // and a focus change can move the terminal's own cursor.
+            redraw = true;
             match event::read()? {
                 Event::Key(key)
                     if key.kind == KeyEventKind::Press
@@ -604,7 +622,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, doc: &mut Doc) -> Result<()> {
             .is_none_or(|at| at.elapsed() >= DISK_POLL)
         {
             app.last_disk_check = Some(Instant::now());
-            tick_disk(doc, &mut app);
+            redraw |= tick_disk(doc, &mut app);
         }
     }
 }
@@ -1750,7 +1768,7 @@ fn resolve_conflict(doc: &mut Doc, app: &mut App, choice: usize) -> Flow {
             resolve_pending(doc, app)
         }
         1 => {
-            doc.reload();
+            reload_keeping_view(doc, app);
             app.pending_action = None;
             Flow::Continue
         }
@@ -1789,7 +1807,8 @@ fn disk_stamp(doc: &Doc) -> Option<(SystemTime, u64)> {
 }
 
 /// One turn of the file watch: has the document's file changed underneath us,
-/// and what follows if it has.
+/// and what follows if it has. Returns whether anything on screen moved, so the
+/// loop can go back to sleep without repainting when nothing did.
 ///
 /// The conflict used to be noticed only at save time, which is late — by then
 /// somebody has been typing for ten minutes into a document that stopped being
@@ -1801,64 +1820,68 @@ fn disk_stamp(doc: &Doc) -> Option<(SystemTime, u64)> {
 /// stake, because that is the only thing that makes the two cases different:
 ///
 /// - A **clean** document has nothing to lose, so it catches up silently:
-///   `Doc::reload` takes the new bytes, the caret keeps its byte offset
-///   (clamped), and the scroll is put back around it, so a `git checkout` or a
-///   formatter run doesn't throw a reader back to the top of the file.
+///   `Doc::reload` takes the new bytes as one undo step, the caret keeps its
+///   byte offset (clamped), and the scroll is put back around it, so a `git
+///   checkout` or a formatter run doesn't throw a reader back to the top of the
+///   file — or cost them the ^Z that would put it back.
 /// - A **dirty** document holds two versions of the truth and leaf cannot pick
 ///   one. It says so, once, and stops there: the Overwrite/Reload/Cancel prompt
 ///   `attempt_save` already puts up is where that choice belongs, because a
 ///   save is the moment the user is actually asking for one.
 ///
+/// A change is never taken on the tick that *notices* it. A write is not one
+/// operation: a program that truncates and then writes leaves the file empty,
+/// or half written, for as long as that takes, and reading on the first tick
+/// that sees the mtime move reads exactly that — a document silently replaced
+/// with nothing. So the first tick only marks the file as settling, and the
+/// reload waits for a tick where the stamp hasn't moved again. It costs the
+/// reload one watch interval, which is the cheapest half-second in the program.
+///
 /// Split out of `run` rather than written inline so it can be called with a
 /// document whose file has just been rewritten, which is what its tests do.
-fn tick_disk(doc: &mut Doc, app: &mut App) {
+fn tick_disk(doc: &mut Doc, app: &mut App) -> bool {
     // Nothing to watch. An untitled buffer has no path, and paying a `stat` per
     // tick to be told so again is the one cost worth avoiding outright.
     if doc.is_untitled() {
-        return;
+        return false;
     }
     let stamp = disk_stamp(doc);
     let moved = stamp != app.disk_stamp;
     app.disk_stamp = stamp;
-    // Ask the expensive question only when the file looks different from the
-    // last look — or when we already know it is ahead and the only reason we
-    // didn't reload was unsaved work that has since gone away (an undo back to
-    // the saved state). Without that second clause the document would sit stale
-    // until the next external write or the next save.
-    let worth_asking = moved || (app.disk_ahead && !doc.dirty);
+    // Ask the expensive question when the file looks different from the last
+    // look, when it looked different on the *previous* look and we are waiting
+    // for it to stand still, or when we already know it is ahead and the only
+    // reason we didn't reload was unsaved work that has since gone away (an undo
+    // back to the saved state). Without that last clause the document would sit
+    // stale until the next external write or the next save.
+    let worth_asking = moved || app.disk_settling || (app.disk_ahead && !doc.dirty);
     if !worth_asking {
-        return;
+        return false;
     }
     match doc.disk_state() {
         DiskState::Changed if doc.dirty => {
             app.disk_ahead = true;
+            app.disk_settling = false;
             // Only on the tick that found the change. The flag above is what
             // remembers it afterwards, so this doesn't become a toast that
             // reappears twice a second until the user does something about it.
             if moved {
                 doc.status = Some("file changed on disk — ^S will ask".into());
+                return true;
             }
+            false
+        }
+        // Changed, and there is nothing of the user's to protect. Take it — but
+        // only once the file has stopped moving, or the bytes taken may be the
+        // middle of somebody's write.
+        DiskState::Changed if moved => {
+            app.disk_settling = true;
+            false
         }
         DiskState::Changed => {
-            let scroll = doc.scroll;
-            let before = doc.revision();
-            doc.reload();
-            // The revision, not the status text, is what says the reload landed:
-            // a failed one leaves its own message up, and overwriting that with
-            // a claim that it worked is the one thing worse than the failure.
-            if doc.revision() != before {
-                // Pinned rather than left to `reload`, which happens not to
-                // touch the field: the viewport is the host's, and a reader
-                // halfway down a document should stay there.
-                doc.scroll = scroll;
-                doc.status = Some("reloaded from disk".into());
-                // An open find bar is holding offsets into bytes that have just
-                // been replaced wholesale. Re-run the search rather than leave a
-                // wash pointing at text that moved out from under it.
-                let anchor = doc.caret;
-                refresh_find(doc, app, anchor);
-            }
+            app.disk_settling = false;
             app.disk_ahead = false;
+            reload_keeping_view(doc, app)
         }
         DiskState::Missing => {
             // Nothing to reload from, and nothing lost yet — the buffer still
@@ -1866,15 +1889,56 @@ fn tick_disk(doc: &mut Doc, app: &mut App) {
             // because the alternative is a ^S that succeeds against a path the
             // user thought they were still editing.
             app.disk_ahead = false;
+            app.disk_settling = false;
             if moved {
                 doc.status = Some(format!("{} is no longer on disk", doc.file_name()));
+                return true;
             }
+            false
         }
-        // Unchanged (the usual answer, and the one our own saves produce),
-        // Unreadable (leaf can't tell, and won't guess), Untitled (unreachable
-        // past the guard above).
-        _ => app.disk_ahead = false,
+        // Unchanged (the usual answer, and the one our own saves produce, and
+        // the one a half-written file settles back to if the writer finishes
+        // with the bytes it started with), Unreadable (leaf can't tell, and
+        // won't guess), Untitled (unreachable past the guard above).
+        _ => {
+            app.disk_ahead = false;
+            app.disk_settling = false;
+            false
+        }
     }
+}
+
+/// Take the file's bytes, keeping everything about the view that is the host's
+/// rather than the document's — and tell the caller whether it landed.
+///
+/// One function because there are two doors to a reload and they were doing
+/// different amounts of work: the watch pinned the scroll and re-ran the search,
+/// while the conflict prompt's Reload arm called a bare `Doc::reload` and did
+/// neither, so choosing Reload there threw the reader back to the top of the
+/// file with a wash pointing at bytes that had moved.
+///
+/// The revision, not the status text, is what says the reload landed: a failed
+/// one leaves its own message up, and overwriting that with a claim that it
+/// worked is the one thing worse than the failure.
+fn reload_keeping_view(doc: &mut Doc, app: &mut App) -> bool {
+    let scroll = doc.scroll;
+    let before = doc.revision();
+    doc.reload();
+    if doc.revision() == before {
+        return false;
+    }
+    // Pinned rather than left to `reload`, which happens not to touch the
+    // field: the viewport is the host's, and a reader halfway down a document
+    // should stay there.
+    doc.scroll = scroll;
+    doc.status = Some("reloaded from disk".into());
+    // An open find bar is holding offsets into bytes that have just been
+    // replaced wholesale. Re-run the search rather than leave a wash pointing at
+    // text that moved out from under it.
+    if app.find.is_some() {
+        refresh_find_after_edit(doc, app);
+    }
+    true
 }
 
 /// Copy the current selection to the system clipboard, in both flavors.
@@ -3555,7 +3619,7 @@ mod tests {
         assert_eq!(app.find.as_ref().unwrap().matches.len(), 2);
 
         std::fs::write(&doc.path, "one one one and one more\n").unwrap();
-        tick_disk(&mut doc, &mut app);
+        settle(&mut doc, &mut app);
         assert_eq!(doc.source, "one one one and one more\n");
         assert_eq!(
             app.find.as_ref().unwrap().matches.len(),
@@ -3726,6 +3790,16 @@ mod tests {
 
     // ── the file watch ───────────────────────────────────────────────────────
 
+    /// Two turns of the watch, which is what a change on disk now costs: the
+    /// first notices the file has moved, the second finds it standing still and
+    /// takes the bytes. See `tick_disk` — a write is not atomic, and reading on
+    /// the tick that notices reads whatever half of it has landed.
+    fn settle(doc: &mut Doc, app: &mut App) -> bool {
+        let a = tick_disk(doc, app);
+        let b = tick_disk(doc, app);
+        a || b
+    }
+
     /// `doc_with`, plus an `App` whose watch is seeded the way `run` seeds it
     /// before its first turn.
     fn watched(name: &str, body: &str) -> (Doc, App) {
@@ -3744,7 +3818,11 @@ mod tests {
         doc.scroll = 0;
         std::fs::write(&doc.path, "someone else's edit\n").unwrap();
 
-        tick_disk(&mut doc, &mut app);
+        // The tick that *notices* takes nothing: the file may still be being
+        // written. Nothing on screen moved, so it doesn't earn a frame either.
+        assert!(!tick_disk(&mut doc, &mut app), "not on the first look");
+        assert_eq!(doc.source, "hello\n", "and nothing was taken yet");
+        assert!(tick_disk(&mut doc, &mut app), "taken once it stands still");
         assert_eq!(doc.source, "someone else's edit\n");
         assert_eq!(doc.status.as_deref(), Some("reloaded from disk"));
         assert_eq!(doc.caret, 3, "the caret keeps the offset it had");
@@ -3791,9 +3869,80 @@ mod tests {
 
         doc.undo();
         assert!(!doc.dirty, "undone back to what was saved");
+        // One tick, not two: the file settled long ago, and it is the *unsaved
+        // work* that has just gone away rather than the file that has just moved.
         tick_disk(&mut doc, &mut app);
         assert_eq!(doc.source, "someone else's edit\n");
         assert!(!app.disk_ahead);
+    }
+
+    /// A write is a truncate and then a write, and a watch that reads on the
+    /// tick it notices reads whatever half of it has landed — a document
+    /// silently replaced with nothing.
+    #[test]
+    fn a_write_still_in_progress_is_not_taken_half_finished() {
+        let (mut doc, mut app) = watched("watch_partial", "the whole document\n");
+        // The truncate half of somebody's non-atomic write.
+        std::fs::write(&doc.path, "").unwrap();
+        assert!(!tick_disk(&mut doc, &mut app));
+        assert_eq!(doc.source, "the whole document\n", "not the empty half");
+
+        // …and the rest of it, before the next tick.
+        std::fs::write(&doc.path, "the whole replacement\n").unwrap();
+        assert!(
+            !tick_disk(&mut doc, &mut app),
+            "it moved again — wait again"
+        );
+        assert!(tick_disk(&mut doc, &mut app));
+        assert_eq!(doc.source, "the whole replacement\n");
+    }
+
+    /// A silent reload is something that happened *to* a reader, so ^Z has to
+    /// put it back — and put back the unsaved work it replaced, which is what
+    /// dropping twig's history used to cost.
+    #[test]
+    fn a_silent_reload_can_be_undone() {
+        let (mut doc, mut app) = watched("watch_undo", "mine\n");
+        doc.caret = 4;
+        doc.insert(" own");
+        doc.save();
+        assert_eq!(doc.source, "mine own\n");
+
+        std::fs::write(&doc.path, "the formatter's idea\n").unwrap();
+        settle(&mut doc, &mut app);
+        assert_eq!(doc.source, "the formatter's idea\n");
+        assert_eq!(doc.status.as_deref(), Some("reloaded from disk"));
+
+        doc.undo();
+        assert_eq!(doc.source, "mine own\n", "^z puts the reader back");
+        doc.undo();
+        assert_eq!(doc.source, "mine\n", "and the history under it is intact");
+    }
+
+    /// Choosing Reload at the conflict prompt used to call a bare `Doc::reload`
+    /// while the watch did a scroll-preserving, search-refreshing one — so the
+    /// same verb behaved differently depending on which door it came through.
+    #[test]
+    fn the_conflict_prompt_s_reload_keeps_the_view_the_way_the_watch_does() {
+        let mut doc = doc_with("conflict_reload_view", &"line\n".repeat(60));
+        let mut app = App::default();
+        doc.caret = doc.source.len() - 5;
+        doc.insert("X");
+        doc.scroll = 40;
+        std::fs::write(&doc.path, "other\n".repeat(60)).unwrap();
+
+        handle_key(&mut doc, ctrl('f'), &mut app);
+        type_chars(&mut doc, &mut app, "other");
+        assert_eq!(app.find.as_ref().unwrap().matches.len(), 0);
+        close_find(&mut doc, &mut app);
+        doc.scroll = 40;
+
+        handle_key(&mut doc, ctrl('s'), &mut app);
+        assert!(app.conflict.is_some());
+        handle_key(&mut doc, plain('r'), &mut app);
+        assert_eq!(doc.source, "other\n".repeat(60));
+        assert_eq!(doc.scroll, 40, "a reader halfway down stays there");
+        assert_eq!(doc.status.as_deref(), Some("reloaded from disk"));
     }
 
     #[test]

@@ -229,9 +229,12 @@ the rare tick where that has moved it asks `Doc::disk_state` — the hash agains
 leaf's watermark — what actually happened. A document with no unsaved changes
 reloads itself silently, keeping the caret and the scroll, so a `git checkout`
 or a formatter run shows up in the buffer instead of waiting to become a
-conflict. A document *with* unsaved changes is never reloaded behind your back:
-it says so once, and the Overwrite/Reload/Cancel prompt at save time is where
-the choice gets made.
+conflict — and the reload is **one undo step**, so `^z` gives you back what you
+were looking at. Never on the tick that notices: a write is a truncate and then
+a write, so the reload waits for a tick where the file has stopped moving rather
+than reading somebody's half-finished one. A document *with* unsaved changes is
+never reloaded behind your back: it says so once, and the Overwrite/Reload/Cancel
+prompt at save time is where the choice gets made.
 
 Inside the find bar: `Enter` steps to the next match (and `^g` repeats it),
 `↑`/`↓` walk back and forward, `Esc` closes and leaves the caret on the match it
