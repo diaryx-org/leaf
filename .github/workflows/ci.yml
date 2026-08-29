@@ -50,9 +50,11 @@ jobs:
   # rust-toolchain.toml, auto-installs what it names, and adds the target there.
   # The pin stays stated in exactly one file.
   #
-  # `-p leaf-tui` deliberately: apps/leaf (the gpui GUI) is a workspace member
-  # pinning gpui to a Zed git rev, and resolving it here would cost more than the
-  # rest of CI put together. The release does not build it either.
+  # `-p leaf-tui` deliberately. It used to matter a great deal: apps/leaf pinned
+  # gpui to a Zed git rev from inside this workspace. The gpui crates are now
+  # excluded and have their own lockfiles, so `--workspace` would no longer reach
+  # them either — but the release builds exactly this, so CI rehearses exactly
+  # this.
   release-build:
     name: Release build ${{ matrix.asset }}
     runs-on: ${{ matrix.os }}

@@ -3,14 +3,30 @@ resolver = "3"
 # crates/* are all Rust libraries. Under apps/ the Rust binaries are listed
 # explicitly — apps/ also holds non-Cargo frontends (apps/leaf-web-demo) that a
 # glob would wrongly try to load as workspace members.
-members = ["crates/*", "apps/leaf-tui", "apps/leaf", "xtask"]
-# leaf-ios is a standalone workspace (it path-deps the external gpui-mobile fork
-# and needs its own [patch] table); keep its heavy gpui/wgpu graph out of this
-# workspace's Cargo.lock. Build it explicitly from apps/leaf-ios.
-exclude = ["apps/leaf-ios"]
+members = ["crates/*", "apps/leaf-tui", "xtask"]
+# The gpui side of the project, deliberately outside this workspace. All three
+# reach the Zed monorepo, and a lockfile that names it carries 22 git-sourced
+# crates and roughly 500 packages nothing here compiles — measured: 769 packages
+# with them, 275 without, against the 141 `leaf-tui` actually uses. That is a
+# cost to everything that reads this lockfile rather than resolving fresh, and
+# nix's `buildRustPackage` made it a hard stop: it demands an output hash for
+# every git entry and vendors them all, whatever `-p` it is told to build.
+#
+# `exclude` applies to the `crates/*` glob above as well as to named members, so
+# leaf-gpui leaves the workspace without the glob having to be expanded by hand.
+#
+# Each is its own workspace with its own lockfile. Build them from their own
+# manifests:
+#
+#     cargo build --manifest-path crates/leaf-gpui/Cargo.toml   # the widget
+#     cargo build --manifest-path apps/leaf/Cargo.toml          # the desktop app
+#     cargo build --manifest-path apps/leaf-ios/Cargo.toml      # the iOS host
+#
+# leaf-ios additionally path-deps the external gpui-mobile fork and needs its own
+# [patch] table, which is why it was the first one out.
+exclude = ["apps/leaf-ios", "apps/leaf", "crates/leaf-gpui"]
 # `cargo run -- file.md` and `cargo build` default to the TUI, so the workspace
-# split doesn't change the everyday UX. leaf-gui, once it grows a binary, is
-# built explicitly with `-p leaf-gui`. xtask is a member so `cargo xtask` shares
+# split doesn't change the everyday UX. xtask is a member so `cargo xtask` shares
 # this lockfile, but never a default member — nobody wants the task runner
 # rebuilt by a bare `cargo build`.
 default-members = ["apps/leaf-tui"]

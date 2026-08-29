@@ -1,8 +1,19 @@
 [package]
 name = "leaf-gpui"
-version.workspace = true
-edition.workspace = true
+version = "0.1.2"
+edition = "2024"
 description = "Embeddable gpui rich-text editor widget for leaf: the Editor view, its input/rendering, and a turnkey app runner. Built on leaf-core + twig."
+# crates.io accepts no upload carrying a git dependency, and this crate's whole
+# reason for existing is gpui, which is only on the Zed monorepo. The same line
+# and the same reason as apps/leaf.
+publish = false
+
+# Standalone workspace — deliberately separate from leaf's, and `exclude`d there.
+# gpui brings 22 git-sourced crates with it, and a lockfile that carries them
+# makes every consumer that vendors rather than resolves (nix's buildRustPackage,
+# to name the one that forced this) fetch the Zed monorepo to build anything at
+# all. Keeping it here costs leaf's own lockfile 494 packages it never uses.
+[workspace]
 
 [features]
 # The `Editor` widget itself is backend-agnostic (it only touches `gpui`), so the
@@ -17,8 +28,10 @@ default = ["desktop"]
 desktop = ["dep:gpui_platform", "dep:arboard"]
 
 [dependencies]
-leaf-core.workspace = true
-anyhow.workspace = true
+# Explicit rather than inherited: this is its own workspace now, so there is no
+# outer [workspace.dependencies] to read them from.
+leaf-core = { path = "../leaf-core" }
+anyhow = "1"
 
 # gpui is consumed from the Zed monorepo as a git dependency (not on crates.io),
 # pinned to a specific commit. The `font-kit` feature on gpui_platform is

@@ -4,10 +4,10 @@ name: Homebrew
 # diaryx-org/.github; only what makes leaf different is below.
 #
 # leaf is a Rust workspace and the CLI is `leaf-tui`, whose binary is named
-# `leaf` — hence `cargo-package` and `name` differing. The sibling `apps/leaf`
-# (the gpui GUI) is a workspace member pinning gpui to a Zed git rev, but
-# `cargo build -p leaf-tui` resolves against the committed lockfile without
-# fetching it, so the release build never pays for that graph.
+# `leaf` — hence `cargo-package` and `name` differing. The gpui crates
+# (crates/leaf-gpui, apps/leaf, apps/leaf-ios) are `exclude`d from that workspace
+# and carry their own lockfiles, so nothing this builds can reach the Zed
+# monorepo.
 #
 # `rust-toolchain: 1.95.0` is not optional and is not cosmetic. leaf carries a
 # `rust-toolchain.toml` pinning 1.95.0 (gpui needs it), and a toolchain file

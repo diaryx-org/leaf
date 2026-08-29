@@ -35,14 +35,17 @@ clipboard, and file I/O.
 | app | what it is |
 |-----|------------|
 | [`leaf-tui`](apps/leaf-tui) | the terminal editor (binary `leaf`) — a thin host around `leaf-ratatui` wiring a terminal, clipboard, and dialogs. The workspace default `cargo run`. |
-| [`leaf`](apps/leaf) | the standalone gpui **application** (binary `leaf-gui`) — a thin host around `leaf-gpui`. |
+| [`leaf`](apps/leaf) | the standalone gpui **application** (binary `leaf-gui`) — a thin host around `leaf-gpui`. A standalone workspace, like `leaf-ios`. |
 | [`leaf-ios`](apps/leaf-ios) | the gpui iOS host (a standalone workspace on the gpui-mobile platform). |
 | [`leaf-editor`](apps/leaf-editor) | the cross-platform (macOS + iOS) AppKit/UIKit/UniFFI demo app, consuming `packages/leaf-swift`. |
 | [`leaf-web-demo`](apps/leaf-web-demo) | the web demo page, consuming `packages/leaf-web`. |
 
 ```sh
 cargo run -- path/to/document.md            # the TUI (workspace default)
-cargo run -p leaf -- path/to/document.md     # the GUI
+
+# The GUI is its own workspace (see `exclude` in Cargo.toml), so it is reached
+# by manifest rather than by `-p`:
+cargo run --manifest-path apps/leaf/Cargo.toml -- path/to/document.md
 ```
 
 The other two frontends aren't a `cargo run` away — the Apple app is a Rust
@@ -113,8 +116,8 @@ written once and work in either view. Keys: arrows/Home/End (+`⇧` to select),
 type to edit, `⌘b`/`⌘i` bold/italic, `⌘e` toggle view, `⌘s` save, `⌘q` quit.
 
 ```sh
-cargo run -p leaf -- document.md            # opens in the source view
-cargo run -p leaf -- document.md wysiwyg    # opens straight in wysiwyg
+cargo run --manifest-path apps/leaf/Cargo.toml -- document.md
+cargo run --manifest-path apps/leaf/Cargo.toml -- document.md wysiwyg
 ```
 
 **gpui gotchas (macOS), learned the hard way:**

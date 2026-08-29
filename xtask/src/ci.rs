@@ -86,11 +86,15 @@ fn test() -> Result<()> {
 /// is a shape that ships. `leaf-core` without `fs` is what `leaf-wasm` and
 /// `leaf-ffi` link (a browser and a sandboxed embed have no path to read),
 /// `leaf-ratatui` bare is the terminal with no graphics protocol and no
-/// theme query, `leaf-ratatui` with only `images` is a host that paints pictures
-/// but themes the surface itself rather than letting it ask the terminal, and
-/// `leaf-gpui` without `desktop` is `apps/leaf-ios` on gpui-mobile — the one
-/// build in the workspace that no `cargo check` here ever reaches, since
-/// leaf-ios is a standalone workspace.
+/// theme query, and `leaf-ratatui` with only `images` is a host that paints
+/// pictures but themes the surface itself rather than letting it ask the
+/// terminal.
+///
+/// The gpui crates are not here because they are not in this workspace:
+/// `crates/leaf-gpui`, `apps/leaf`, and `apps/leaf-ios` are `exclude`d, each
+/// with its own lockfile, and nothing in this file reaches them. That is
+/// deliberate — see the `exclude` note in the root Cargo.toml — and it means the
+/// gpui side is checked by building it, not by CI.
 ///
 /// A new workspace member belongs in this list; the test below is what says so.
 const ISOLATED: &[&[&str]] = &[
@@ -107,10 +111,7 @@ const ISOLATED: &[&[&str]] = &[
         "images",
     ],
     &["-p", "leaf-wasm"],
-    &["-p", "leaf-gpui"],
-    &["-p", "leaf-gpui", "--no-default-features"],
     &["-p", "leaf-tui"],
-    &["-p", "leaf"],
     &["-p", "xtask"],
 ];
 
@@ -179,9 +180,12 @@ pub fn run_all() -> Result<()> {
 
 /// Every workspace member's package name, with `crates/*` expanded.
 ///
-/// `exclude`d members are deliberately not here: `apps/leaf-ios` is a standalone
-/// workspace with its own lockfile and its own `[patch]` table, and it is not
-/// part of this workspace's `--workspace`.
+/// `exclude`d members are deliberately not here, and are subtracted explicitly
+/// rather than left to the glob: `crates/*` is a directory listing, so
+/// `crates/leaf-gpui` is still on disk and would otherwise be demanded of
+/// `ISOLATED` — for a crate `cargo check -p` in this workspace can no longer
+/// reach. The three excluded are the gpui side, each a standalone workspace with
+/// its own lockfile.
 #[cfg(test)]
 fn member_names() -> Result<Vec<String>> {
     let manifest = read("Cargo.toml")?;
@@ -189,6 +193,11 @@ fn member_names() -> Result<Vec<String>> {
         .lines()
         .find(|line| line.trim_start().starts_with("members"))
         .context("no `members` in [workspace]")?;
+    let excluded: Vec<&str> = manifest
+        .lines()
+        .find(|line| line.trim_start().starts_with("exclude"))
+        .map(|line| line.split('"').skip(1).step_by(2).collect())
+        .unwrap_or_default();
 
     let mut dirs = Vec::new();
     for entry in line.split('"').skip(1).step_by(2) {
@@ -211,6 +220,7 @@ fn member_names() -> Result<Vec<String>> {
         }
     }
 
+    dirs.retain(|dir| !excluded.contains(&dir.as_str()));
     dirs.iter().map(|dir| package_name(dir)).collect()
 }
 

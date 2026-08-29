@@ -1,7 +1,7 @@
 [package]
 name = "leaf"
-version.workspace = true
-edition.workspace = true
+version = "0.1.2"
+edition = "2024"
 description = "leaf — the flagship rich-text document editor: a standalone gpui application over the leaf-gpui editor widget."
 # Never crates.io, for two independent reasons: the app pins gpui to a Zed commit
 # (crates.io accepts no upload carrying a git dependency), and the name `leaf`
@@ -12,13 +12,22 @@ publish = false
 
 # The binary keeps the name `leaf-gui`; the TUI crate ships the `leaf` binary for
 # the fast everyday `cargo run`. Run this GUI app with `cargo run -p leaf`.
+# Standalone workspace, alongside crates/leaf-gpui and for the same reason: the
+# gpui graph stays out of leaf's lockfile. Built from here, not from the root:
+#
+#     cargo build --manifest-path apps/leaf/Cargo.toml
+[workspace]
+
 [[bin]]
 name = "leaf-gui"
 path = "src/main.rs"
 
 [dependencies]
-leaf-gpui = { path = "../../crates/leaf-gpui", version = "0.1.2" }
-leaf-core.workspace = true
+# Explicit paths, no `version`: neither crate is publishable (both carry gpui,
+# which is a git dependency), so a version pin here would only be a second place
+# for the number to drift.
+leaf-gpui = { path = "../../crates/leaf-gpui" }
+leaf-core = { path = "../../crates/leaf-core" }
 
 # The app shell owns the window and the run-loop, so it pulls gpui + the platform
 # backend directly (font-kit is required — see leaf-gpui's Cargo.toml).
