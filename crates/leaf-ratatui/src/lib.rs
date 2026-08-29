@@ -42,7 +42,10 @@ pub mod style;
 
 #[cfg(feature = "images")]
 pub use image::Images;
-pub use input::{MouseOutcome, Outcome, handle_key, handle_mouse};
+pub use input::{
+    MouseOutcome, Outcome, cycle_markup_mode, follow, handle_key, handle_mouse, line_flow_name,
+    markup_mode_name, toggle_line_flow,
+};
 pub use leaf_core::ColorScheme;
 pub use render::render;
 pub use style::Theme;
@@ -76,6 +79,13 @@ pub struct EditorState {
     /// inline `🖼 alt` placeholder and this field (and its deps) are gone.
     #[cfg(feature = "images")]
     images: Images,
+    /// The offset the pointer is currently peeking at — a footnote reference or
+    /// a link — or `None` when it's over ordinary text. Held so the peek is
+    /// published once when the pointer arrives rather than on every one of the
+    /// mouse-move events a terminal sends while crossing a word, and so it can
+    /// be taken back down when the pointer leaves without clearing a status
+    /// somebody else put up.
+    peek: Option<usize>,
     /// Timing and screen cell of the last left mouse-down, for detecting
     /// double/triple clicks.
     last_click: Option<ClickState>,
@@ -98,6 +108,7 @@ impl Default for EditorState {
             code_caret_span: None,
             #[cfg(feature = "images")]
             images: Images::default(),
+            peek: None,
             last_click: None,
             theme: Theme::for_scheme(style::detect_color_scheme()),
         }

@@ -185,24 +185,52 @@ LEAF_THEME=light cargo run -- path/to/document.md
 | key | action |
 |-----|--------|
 | *(printable)* | insert at the caret (replacing any selection) |
-| `Enter` / `Backspace` / `Delete` | the usual |
+| `Enter` / `Backspace` / `Delete` | the usual — `Enter` in a table drops to the cell below, growing the table when there isn't one |
+| `Tab` / `⇧Tab` | indent / outdent — in a table, walk the cells, appending a row off the last one |
+| `⌥Enter` | an in-cell line break (the terminal's spelling of `⇧Enter`, which a terminal can't tell from `Enter`) |
 | arrows / `Home` / `End` | move the caret |
 | `Shift`+move | extend the selection |
 | click / drag | place / drag the caret |
 | `⌥b` / `⌥i` / `⌥c` | toggle **bold** / *italic* / `code` on the selection |
-| `⌥m` | toggle mark/highlight (Djot) |
+| `⌥m` / `⌥d` / `⌥u` | toggle mark/highlight (Djot) / strikethrough / underline |
 | `⌥1`…`⌥6` | make the block at the caret a heading of that level |
 | `⌥0` | make it a paragraph |
+| `⌥7` / `⌥8` / `⌥9` | numbered list / bulleted list / quote |
+| `⌥t` / `⌥x` | give the item at the caret a checkbox / tick the box |
+| `⌥k` / `⌥l` | set the link destination / the code block's language |
+| `⌥e` / `⌥f` / `⌥r` | insert an image / a footnote / a horizontal rule |
+| `⌥g` | follow what the caret is on — a footnote to its note, a note back to its reference, a `#fragment` to the heading it names |
 | `⌥w` | switch between the source and wysiwyg views |
-| `^s` / `^q` | save / quit |
+| `⌥⇧w` / `⌥⇧f` | cycle the markup mode / flip line flow |
+| `^p` or `⌥p` | **the command palette** |
+| `F1` or `⌥h` | the key reference |
+| `^s` / `⌥s` / `⌥n` / `^q` | save / save as / new / quit |
+| right-click | the context menu: Format, Insert, Table and View flyouts |
+| hover | peek at what's under the pointer — a footnote's note, a link's destination — without moving the caret |
+
+Everything the keyboard doesn't reach is in the **command palette** — the three
+media kinds, all fourteen table operations, and the markup/line-flow modes named
+outright rather than cycled. Type a few letters of a command's name and press
+Return; `table` finds the whole grid family, `ir` finds Insert Row Above.
+
+The palette, the context menu, and the key reference are all generated from one
+command table (`apps/leaf-tui/src/commands.rs`), so a command cannot gain a key
+without gaining a menu row and a line in the help. Every one of those surfaces
+also **dims what the document's format cannot spell** — `==highlight==` in a
+Markdown file, a footnote in an HTML one — rather than hiding it, so what a
+format can't do stays legible instead of merely absent.
 
 ## Status
 
-Both views work: caret editing, mouse, selection, the format-aware toolbar, and
-live AST awareness (the breadcrumb), in either source or wysiwyg.
+Both views work: caret editing, mouse, selection, the format-aware toolbar, undo/
+redo, and live AST awareness, in either source or wysiwyg. Tables are editable as
+a grid; footnotes can be written and walked in both directions; images, video and
+audio embed; and the markup and line-flow dials are reachable.
 
 Known rough edges (next steps): no soft-wrap-aware width for wide/emoji glyphs
 (columns are counted in chars); code blocks render read-styled but map coarsely,
 so edit code in the source view; no inline-image rendering yet (kitty/sixel is
-the natural follow-up now that the glyph map exists); and no undo/redo (that
-belongs in twig, which owns the buffer).
+the natural follow-up now that the glyph map exists); and `⌥g` names an external
+link's destination rather than opening it — launching a browser out of a text
+editor is a decision for the person at the keyboard, and most terminals already
+make a printed URL clickable.

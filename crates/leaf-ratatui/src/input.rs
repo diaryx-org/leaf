@@ -14,7 +14,7 @@ use ratatui::crossterm::event::{
     KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 
-use leaf_core::{BlockKind, Doc, InlineKind, View};
+use leaf_core::{BlockKind, Doc, InlineKind, LineFlow, MarkupMode, View};
 
 use crate::style::CODE_INSET;
 use crate::{ClickState, EditorState, MULTI_CLICK_WINDOW};
@@ -47,6 +47,18 @@ pub enum Outcome {
     LinkPrompt,
     /// ⌥L — the host opens its code-language prompt.
     LanguagePrompt,
+    /// ⌥E — the host opens its image-destination prompt.
+    ImagePrompt,
+    /// The host opens its video-source prompt (no direct key; reached from the
+    /// command palette and the Insert menu, since a terminal editor embeds a
+    /// movie far less often than it embeds a picture).
+    VideoPrompt,
+    /// The host opens its audio-source prompt. Palette/menu only, as `VideoPrompt`.
+    AudioPrompt,
+    /// ⌥P (and ^P) — the host opens the command palette.
+    Palette,
+    /// ⌥H (and F1) — the host opens the key reference.
+    Help,
 }
 
 /// What the host must do after the editor has handled a mouse event.
@@ -83,6 +95,9 @@ pub fn handle_key(doc: &mut Doc, key: KeyEvent, _state: &mut EditorState) -> Out
             // fingers.
             KeyCode::Char('u') => doc.delete_to_line_start(),
             KeyCode::Char('k') => doc.delete_to_line_end(),
+            // ^P as well as ⌥p: the palette is the one door to every command
+            // that has no key of its own, so it answers to both conventions.
+            KeyCode::Char('p') => return Outcome::Palette,
             // ^Home / ^End jump to the document's start / end.
             KeyCode::Home => doc.move_doc_start(shift),
             KeyCode::End => doc.move_doc_end(shift),
@@ -137,18 +152,45 @@ pub fn handle_key(doc: &mut Doc, key: KeyEvent, _state: &mut EditorState) -> Out
             KeyCode::Char('l') => return Outcome::LanguagePrompt,
             KeyCode::Char('s') => return Outcome::SaveAs,
             KeyCode::Char('n') => return Outcome::New,
+            // The insert family, each on the first letter of what it writes:
+            // ⌥f a footnote, ⌥r a rule, ⌥e an embedded picture ("e" because ⌥i
+            // is already italic, and a picture is the one embed a terminal
+            // actually draws). Video and audio have no key — they're rarer than
+            // the keyspace they'd cost — and live in the palette instead.
+            KeyCode::Char('f') => doc.insert_footnote(),
+            KeyCode::Char('r') => doc.insert_thematic_break(),
+            KeyCode::Char('e') => return Outcome::ImagePrompt,
+            // ⌥g: follow whatever the caret is standing on — a footnote
+            // reference to its note, a note back to its reference, a `#fragment`
+            // link to the heading it names.
+            KeyCode::Char('g') => follow(doc),
+            // The two rendering preferences, shifted onto the keys their
+            // unshifted neighbours already own: ⌥w toggles the *view*, so ⌥⇧W
+            // cycles how much markup that view reveals; ⌥⇧F flips line flow.
+            KeyCode::Char('W') => cycle_markup_mode(doc),
+            KeyCode::Char('F') => toggle_line_flow(doc),
+            KeyCode::Char('p') => return Outcome::Palette,
+            KeyCode::Char('h') => return Outcome::Help,
             _ => {}
         }
         return Outcome::Continue;
     }
 
     match key.code {
+        // F1 is the one help key every terminal agrees on, and the one a reader
+        // who has never seen ⌥h will try.
+        KeyCode::F(1) => return Outcome::Help,
         KeyCode::Char(c) => doc.insert(&c.to_string()),
+        // In a table, Return drops to the cell below, growing the table by a row
+        // when there is none — core's `cell_return` policy, shared with the Apple
+        // frontend. Off a table it declines and Return is an ordinary newline.
+        KeyCode::Enter if doc.cell_return() => {}
         KeyCode::Enter => doc.newline(),
-        // In a table, Tab walks the cells (Shift+Tab back). Only once the caret
-        // isn't in a table does Tab/Shift+Tab fall through to indent/outdent.
-        KeyCode::Tab if doc.cell_hop(true) => {}
-        KeyCode::BackTab if doc.cell_hop(false) => {}
+        // In a table, Tab walks the cells (Shift+Tab back) and appends a row when
+        // it runs off the last one. Only once the caret isn't in a table does
+        // Tab/Shift+Tab fall through to indent/outdent.
+        KeyCode::Tab if doc.cell_tab(true) => {}
+        KeyCode::BackTab if doc.cell_tab(false) => {}
         KeyCode::Tab => doc.indent(),
         KeyCode::BackTab => doc.outdent(),
         KeyCode::Backspace => doc.backspace(),
@@ -278,11 +320,185 @@ pub fn handle_mouse(doc: &mut Doc, m: MouseEvent, state: &mut EditorState) -> Mo
                 y: m.row,
             };
         }
+        // Pointer over the body with no button down: peek at whatever it's
+        // resting on, without moving the caret. See `peek`.
+        MouseEventKind::Moved if within => {
+            let row = doc.scroll + (m.row - by) as usize;
+            let col = col_at(doc, state, row, m.column);
+            peek(doc, state, row, col);
+        }
+        MouseEventKind::Moved => clear_peek(doc, state),
         MouseEventKind::ScrollDown => doc.scroll = doc.scroll.saturating_add(1),
         MouseEventKind::ScrollUp => doc.scroll = doc.scroll.saturating_sub(1),
         _ => {}
     }
     MouseOutcome::Continue
+}
+
+/// Show what the pointer is resting on, without disturbing where anyone is
+/// typing — a footnote reference resolved to its note, or a link resolved to its
+/// destination.
+///
+/// This is what core's *offset-based* `footnote_at` and `link_destination_at`
+/// are for, as against their `_at_caret` siblings: the gesture that most wants
+/// to know what a `[1]` names is precisely the one that must not move the caret
+/// to find out. A reader hovering a reference mid-sentence is asking a question
+/// about the document, not editing it.
+///
+/// Only in the rich view: the source view already shows `[^1]` and the URL in
+/// full, so there is nothing hidden to reveal.
+///
+/// The peek is published once, when the pointer arrives on a target, rather than
+/// on every mouse-move a terminal sends while crossing a word — and it is taken
+/// back down only if *this* is what put it up, so hovering past a footnote can't
+/// wipe out a "saved" or "clipboard unavailable" the user still needs to read.
+fn peek(doc: &mut Doc, state: &mut EditorState, row: usize, col: usize) {
+    if doc.view != View::Wysiwyg {
+        return clear_peek(doc, state);
+    }
+    let off = doc.vmap.offset_of_pos(row, col);
+    if state.peek == Some(off) {
+        return; // already showing this one
+    }
+    if let Some(note) = doc.footnote_at(off) {
+        // The note's own words, trimmed to a line — a peek is a glance, and a
+        // footnote that runs to a paragraph would otherwise push a paragraph
+        // into a one-row toast.
+        let body = note.text.unwrap_or_else(|| "(no note)".into());
+        doc.status = Some(format!("[{}] {}", note.label, summarize(&body)));
+        state.peek = Some(off);
+    } else if let Some(dest) = doc.link_destination_at(off) {
+        doc.status = Some(format!("→ {}", summarize(&dest)));
+        state.peek = Some(off);
+    } else {
+        clear_peek(doc, state);
+    }
+}
+
+/// Take down a peek this module put up, and only that. A status somebody else
+/// set is left alone — the pointer wandering across the document is not an
+/// event that should be able to clear a message about a failed save.
+fn clear_peek(doc: &mut Doc, state: &mut EditorState) {
+    if state.peek.take().is_some() {
+        doc.status = None;
+    }
+}
+
+/// One line's worth of `text`, with newlines folded to spaces and a tail cut off
+/// at an ellipsis. The peek shares the status toast with everything else, and
+/// the toast is one row.
+fn summarize(text: &str) -> String {
+    const LIMIT: usize = 60;
+    let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= LIMIT {
+        return flat;
+    }
+    flat.chars().take(LIMIT - 1).collect::<String>() + "…"
+}
+
+/// ⌥g — follow whatever the caret is standing on, without leaving the document.
+///
+/// Three things in a document point somewhere, and all three are *in-document*
+/// moves, which is why one key covers them: a footnote reference points at its
+/// note, a note points back at the reference that cites it, and a `#fragment`
+/// link points at the block whose id or heading text it names (`Doc::locate`,
+/// the rule every Markdown renderer already follows). The caret lands on the
+/// target; nothing is opened and nothing is spawned.
+///
+/// An *external* destination is reported rather than followed. Opening one means
+/// launching a browser out of a text editor, which is a decision for the person
+/// at the keyboard and not for a keystroke that also means "jump to a footnote";
+/// most terminals already make a printed URL clickable, so saying what the link
+/// points at is the useful half and the safe one.
+///
+/// The order is reference → definition → link, which is the order of how
+/// specific the thing under the caret is: a `[^1]` is unambiguous, a note body
+/// is the only other place a footnote round trip can start, and a link is
+/// whatever is left.
+pub fn follow(doc: &mut Doc) {
+    // A footnote reference: go to the note it names.
+    if let Some(note) = doc.footnote_at_caret() {
+        match note.offset {
+            Some(off) => {
+                doc.place_caret(off, false);
+                doc.status = Some(format!("note [{}]", note.label));
+            }
+            // A reference with no definition to read: worth saying so, since the
+            // silence would otherwise read as a key that did nothing.
+            None => doc.status = Some(format!("[^{}] has no note", note.label)),
+        }
+        return;
+    }
+    // Inside a note: go back to the reference that cites it.
+    if let Some(def) = doc.footnote_definition_at_caret() {
+        match def.offset {
+            Some(off) => {
+                doc.place_caret(off, false);
+                doc.status = Some(format!("back to [^{}]", def.label));
+            }
+            None => doc.status = Some(format!("[^{}] is never cited", def.label)),
+        }
+        return;
+    }
+    // A link: a fragment lands in this document, anything else is reported.
+    if let Some(dest) = doc.link_destination_at_caret() {
+        match dest.strip_prefix('#') {
+            Some(fragment) => match doc.locate(fragment) {
+                Some(landing) => {
+                    doc.place_caret(landing.start, false);
+                    doc.status = Some(format!("#{fragment}"));
+                }
+                None => doc.status = Some(format!("no #{fragment} in this document")),
+            },
+            None => doc.status = Some(format!("→ {dest}")),
+        }
+        return;
+    }
+    doc.status = Some("nothing to follow here".into());
+}
+
+/// ⌥⇧W — cycle how much markup the rich view reveals: none → shortcuts → full →
+/// none. A cycle rather than three separate commands because the three are one
+/// dial, and a dial with three notches is quicker to *turn* than to aim at; the
+/// status names the notch it landed on, so the key teaches its own range.
+pub fn cycle_markup_mode(doc: &mut Doc) {
+    let next = match doc.markup_mode() {
+        MarkupMode::None => MarkupMode::Shortcuts,
+        MarkupMode::Shortcuts => MarkupMode::Full,
+        MarkupMode::Full => MarkupMode::None,
+    };
+    doc.set_markup_mode(next);
+    doc.status = Some(format!("markup: {}", markup_mode_name(next)));
+}
+
+/// ⌥⇧F — flip between folding soft breaks into the reflowed paragraph and
+/// preserving them where they were written.
+pub fn toggle_line_flow(doc: &mut Doc) {
+    let next = match doc.line_flow() {
+        LineFlow::Fold => LineFlow::Preserve,
+        LineFlow::Preserve => LineFlow::Fold,
+    };
+    doc.set_line_flow(next);
+    doc.status = Some(format!("line flow: {}", line_flow_name(next)));
+}
+
+/// The word for a [`MarkupMode`], for a status line or a menu row. Deliberately
+/// the reader's word rather than the variant's: `None` is a mode in which markup
+/// is hidden, and "none" alone reads like the absence of a setting.
+pub fn markup_mode_name(mode: MarkupMode) -> &'static str {
+    match mode {
+        MarkupMode::None => "hidden",
+        MarkupMode::Shortcuts => "shortcuts",
+        MarkupMode::Full => "full",
+    }
+}
+
+/// The word for a [`LineFlow`], for the same two places as [`markup_mode_name`].
+pub fn line_flow_name(flow: LineFlow) -> &'static str {
+    match flow {
+        LineFlow::Fold => "fold",
+        LineFlow::Preserve => "preserve",
+    }
 }
 
 /// The page step: the body's visible rows minus one for overlap (at least one).

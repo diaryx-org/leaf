@@ -6,14 +6,19 @@
 //! offset-addressed twig edit that reparses live. You type into a document that
 //! stays a valid AST the whole time.
 
+mod commands;
+mod palette;
 mod ui;
 
 use std::io::stdout;
 use std::path::PathBuf;
 
 use anyhow::{Result, anyhow};
-use leaf_core::{BlockKind, DiskState, Doc, InlineKind, InlineMarks};
+use leaf_core::{Alignment, DiskState, Doc, InlineKind, LineFlow, MarkupMode, MediaKind};
 use leaf_ratatui::{MouseOutcome, Outcome};
+
+use commands::{Command, Ctx};
+use palette::Palette;
 use ratatui::{
     crossterm::{
         event::{
@@ -99,20 +104,30 @@ struct App {
     /// Save As later) is open; consumes the keyboard the same way
     /// `context_menu` does, until Enter confirms or Esc cancels it.
     text_prompt: Option<TextPrompt>,
+    /// Present while the command palette is open. Like the menu it consumes the
+    /// keyboard and the mouse until a command is chosen or it's dismissed — but
+    /// unlike the menu it also has a query line, so it takes printable keys too.
+    palette: Option<Palette>,
+    /// Whether the key reference is up. A read-only overlay with no state of its
+    /// own beyond "showing": any key closes it.
+    help: bool,
     /// The editor widget's own view state: horizontal/code scroll, the image
     /// raster cache, and mouse click-counting. Threaded into
     /// `leaf_ratatui::render`/`handle_key`/`handle_mouse` each frame.
     editor: leaf_ratatui::EditorState,
 }
 
-/// One row of the context menu. `Action` runs a command and closes the menu;
-/// `Submenu` opens a flyout of further rows (the Format menu of styling
-/// options); `Header` is a dim, unselectable section label — the divider
-/// between the block and inline styles. `ui::render_context_menu` reads its
-/// labels off these same values, so what's drawn and what's wired can't drift.
+/// One row of the context menu. `Action` runs a [`Command`] and closes the menu;
+/// `Submenu` opens a flyout of further rows; `Header` is a dim, unselectable
+/// section label — the divider between the block and inline styles.
+///
+/// An `Action` carries no label of its own: the command already knows what it's
+/// called, and a second copy of the word here is a second place for it to drift.
+/// `ui::render_context_menu` reads labels, keys, checkmarks, and availability
+/// off these same values, so what's drawn and what's wired can't disagree.
 #[derive(Clone, Copy)]
 pub enum MenuEntry {
-    Action(&'static str, MenuAction),
+    Action(Command),
     Submenu(&'static str, &'static [MenuEntry]),
     Header(&'static str),
 }
@@ -120,100 +135,125 @@ pub enum MenuEntry {
 impl MenuEntry {
     pub fn label(self) -> &'static str {
         match self {
-            MenuEntry::Action(l, _) | MenuEntry::Submenu(l, _) | MenuEntry::Header(l) => l,
+            MenuEntry::Action(c) => c.label(),
+            MenuEntry::Submenu(l, _) | MenuEntry::Header(l) => l,
         }
     }
 
-    /// A `Header` is drawn but never highlighted or activated: the arrow keys
-    /// and mouse hover step over it.
-    fn selectable(self) -> bool {
-        !matches!(self, MenuEntry::Header(_))
-    }
-}
-
-/// What activating an `Action` row does. Kept as data (rather than the old
-/// `fn(&mut Doc)` pointers) so the same value can also answer "is this style
-/// already on?" for the row's checkmark — see [`MenuAction::active`].
-#[derive(Clone, Copy)]
-pub enum MenuAction {
-    Cut,
-    Copy,
-    Paste,
-    SelectAll,
-    Paragraph,
-    Heading(u32),
-    BulletList,
-    NumberedList,
-    Quote,
-    /// Give the list item at the caret a checkbox, or take it away.
-    TaskItem,
-    /// Tick or untick the box on the task item at the caret.
-    TaskChecked,
-    Inline(InlineKind),
-}
-
-impl MenuAction {
-    fn run(self, doc: &mut Doc) {
+    /// The key that runs this row, for the right-hand column. Submenus and
+    /// headers have none.
+    pub fn hint(self) -> &'static str {
         match self {
-            MenuAction::Cut => clipboard_cut(doc),
-            MenuAction::Copy => clipboard_copy(doc),
-            MenuAction::Paste => clipboard_paste(doc),
-            MenuAction::SelectAll => doc.select_all(),
-            MenuAction::Paragraph => doc.set_block(BlockKind::Paragraph),
-            MenuAction::Heading(n) => doc.toggle_heading(n),
-            MenuAction::BulletList => doc.toggle_list(false),
-            MenuAction::NumberedList => doc.toggle_list(true),
-            MenuAction::Quote => doc.toggle_blockquote(),
-            MenuAction::TaskItem => doc.toggle_task_item(),
-            MenuAction::TaskChecked => doc.toggle_task_checked(),
-            MenuAction::Inline(k) => doc.toggle(k),
+            MenuEntry::Action(c) => c.hint(),
+            _ => "",
         }
     }
 
-    /// Whether this style is currently in force at the caret — drives the row's
-    /// checkmark. Only the inline marks and headings answer cheaply and without
-    /// ambiguity; the clipboard verbs and the list/quote/paragraph toggles
-    /// (whose "on" state needs AST ancestry the toolbar never exposed) show none.
-    pub fn active(self, marks: InlineMarks, heading: Option<u32>) -> bool {
+    /// Whether this row can be highlighted and run in the document as it stands.
+    /// A `Header` never can. A `Submenu` can exactly when something inside it
+    /// can — so the Table flyout dims itself away when the caret isn't in a
+    /// table, without the menu tree having to state that condition twice.
+    fn selectable(self, ctx: &Ctx) -> bool {
         match self {
-            MenuAction::Inline(k) => marks.contains(k),
-            MenuAction::Heading(n) => heading == Some(n),
-            _ => false,
+            MenuEntry::Header(_) => false,
+            MenuEntry::Action(c) => c.enabled(ctx),
+            MenuEntry::Submenu(_, items) => items.iter().any(|e| e.selectable(ctx)),
         }
     }
 }
 
-/// The root right-click menu; `Format` drills into [`FORMAT_MENU`].
+/// The root right-click menu. The four clipboard verbs, then a flyout per family
+/// — the same families the palette and the key reference group by.
+///
+/// `Format` stays at index 4: the block/inline flyout is the one people reach
+/// for constantly, and the three added beside it are appended rather than
+/// interleaved so the muscle memory for it survives.
 pub const ROOT_MENU: &[MenuEntry] = &[
-    MenuEntry::Action("Cut", MenuAction::Cut),
-    MenuEntry::Action("Copy", MenuAction::Copy),
-    MenuEntry::Action("Paste", MenuAction::Paste),
-    MenuEntry::Action("Select All", MenuAction::SelectAll),
+    MenuEntry::Action(Command::Cut),
+    MenuEntry::Action(Command::Copy),
+    MenuEntry::Action(Command::Paste),
+    MenuEntry::Action(Command::SelectAll),
     MenuEntry::Submenu("Format", FORMAT_MENU),
+    MenuEntry::Submenu("Insert", INSERT_MENU),
+    MenuEntry::Submenu("Table", TABLE_MENU),
+    MenuEntry::Submenu("View", VIEW_MENU),
+    MenuEntry::Action(Command::Follow),
 ];
 
 /// Every styling command the keyboard exposes, gathered into one flyout and
 /// split into a block section (what the whole paragraph becomes) and an inline
-/// section (marks on the selection). The labels are the toolbar words a reader
-/// knows, not the AST kinds underneath.
+/// section (marks on the selection).
 pub const FORMAT_MENU: &[MenuEntry] = &[
     MenuEntry::Header("Block"),
-    MenuEntry::Action("Paragraph", MenuAction::Paragraph),
-    MenuEntry::Action("Heading 1", MenuAction::Heading(1)),
-    MenuEntry::Action("Heading 2", MenuAction::Heading(2)),
-    MenuEntry::Action("Heading 3", MenuAction::Heading(3)),
-    MenuEntry::Action("Bulleted List", MenuAction::BulletList),
-    MenuEntry::Action("Numbered List", MenuAction::NumberedList),
-    MenuEntry::Action("Quote", MenuAction::Quote),
-    MenuEntry::Action("Checklist Item", MenuAction::TaskItem),
-    MenuEntry::Action("Tick Checkbox", MenuAction::TaskChecked),
+    MenuEntry::Action(Command::Paragraph),
+    MenuEntry::Action(Command::Heading(1)),
+    MenuEntry::Action(Command::Heading(2)),
+    MenuEntry::Action(Command::Heading(3)),
+    MenuEntry::Action(Command::BulletList),
+    MenuEntry::Action(Command::NumberedList),
+    MenuEntry::Action(Command::Quote),
+    MenuEntry::Action(Command::TaskItem),
+    MenuEntry::Action(Command::TaskChecked),
     MenuEntry::Header("Inline"),
-    MenuEntry::Action("Bold", MenuAction::Inline(InlineKind::Strong)),
-    MenuEntry::Action("Italic", MenuAction::Inline(InlineKind::Emph)),
-    MenuEntry::Action("Code", MenuAction::Inline(InlineKind::Verbatim)),
-    MenuEntry::Action("Highlight", MenuAction::Inline(InlineKind::Mark)),
-    MenuEntry::Action("Strikethrough", MenuAction::Inline(InlineKind::Delete)),
-    MenuEntry::Action("Underline", MenuAction::Inline(InlineKind::Insert)),
+    MenuEntry::Action(Command::Inline(InlineKind::Strong)),
+    MenuEntry::Action(Command::Inline(InlineKind::Emph)),
+    MenuEntry::Action(Command::Inline(InlineKind::Verbatim)),
+    MenuEntry::Action(Command::Inline(InlineKind::Mark)),
+    MenuEntry::Action(Command::Inline(InlineKind::Delete)),
+    MenuEntry::Action(Command::Inline(InlineKind::Insert)),
+];
+
+/// What can be put *into* the document that isn't a restyling of what's already
+/// there. The three media kinds sit together because they are one control with
+/// three destinations behind it, which is how core gates them too.
+pub const INSERT_MENU: &[MenuEntry] = &[
+    MenuEntry::Action(Command::Link),
+    MenuEntry::Action(Command::Image),
+    MenuEntry::Action(Command::Video),
+    MenuEntry::Action(Command::Audio),
+    MenuEntry::Action(Command::Footnote),
+    MenuEntry::Action(Command::ThematicBreak),
+    MenuEntry::Action(Command::CodeLanguage),
+];
+
+/// The grid controls, in the order a spreadsheet puts them: add, remove, move,
+/// align. Every row here needs a caret in a table, so the whole flyout dims
+/// together when there isn't one — which is the honest shape, since a table menu
+/// off a table has nothing partial to offer.
+pub const TABLE_MENU: &[MenuEntry] = &[
+    MenuEntry::Header("Rows"),
+    MenuEntry::Action(Command::RowAbove),
+    MenuEntry::Action(Command::RowBelow),
+    MenuEntry::Action(Command::DeleteRow),
+    MenuEntry::Action(Command::MoveRowUp),
+    MenuEntry::Action(Command::MoveRowDown),
+    MenuEntry::Header("Columns"),
+    MenuEntry::Action(Command::ColumnLeft),
+    MenuEntry::Action(Command::ColumnRight),
+    MenuEntry::Action(Command::DeleteColumn),
+    MenuEntry::Action(Command::MoveColumnLeft),
+    MenuEntry::Action(Command::MoveColumnRight),
+    MenuEntry::Header("Alignment"),
+    MenuEntry::Action(Command::Align(Alignment::Left)),
+    MenuEntry::Action(Command::Align(Alignment::Center)),
+    MenuEntry::Action(Command::Align(Alignment::Right)),
+    MenuEntry::Action(Command::Align(Alignment::Default)),
+];
+
+/// How the document is *shown* rather than what it says — the one flyout whose
+/// rows are radio groups, so every row here carries a live checkmark naming the
+/// setting in force.
+pub const VIEW_MENU: &[MenuEntry] = &[
+    MenuEntry::Action(Command::ToggleView),
+    MenuEntry::Header("Markup"),
+    MenuEntry::Action(Command::CycleMarkup),
+    MenuEntry::Action(Command::Markup(MarkupMode::None)),
+    MenuEntry::Action(Command::Markup(MarkupMode::Shortcuts)),
+    MenuEntry::Action(Command::Markup(MarkupMode::Full)),
+    MenuEntry::Header("Line flow"),
+    MenuEntry::Action(Command::ToggleFlow),
+    MenuEntry::Action(Command::Flow(LineFlow::Fold)),
+    MenuEntry::Action(Command::Flow(LineFlow::Preserve)),
 ];
 
 /// The right-click menu, as a stack of open levels: the root first, then any
@@ -240,8 +280,8 @@ pub struct MenuLevel {
 }
 
 impl MenuLevel {
-    fn new(items: &'static [MenuEntry]) -> Self {
-        let selected = items.iter().position(|e| e.selectable()).unwrap_or(0);
+    fn new(items: &'static [MenuEntry], ctx: &Ctx) -> Self {
+        let selected = items.iter().position(|e| e.selectable(ctx)).unwrap_or(0);
         MenuLevel {
             items,
             selected,
@@ -249,10 +289,11 @@ impl MenuLevel {
         }
     }
 
-    /// Move the highlight `delta` rows, skipping headers and wrapping at the
-    /// ends. A no-op for a level with nothing selectable (can't happen for the
-    /// two real menus, but keeps the walk total).
-    fn step(&mut self, delta: isize) {
+    /// Move the highlight `delta` rows, skipping headers and rows this document
+    /// can't run, and wrapping at the ends. A no-op for a level with nothing
+    /// selectable — which a real menu can now be (the Table flyout off a table),
+    /// so the walk has to stay total rather than merely happening to be.
+    fn step(&mut self, delta: isize, ctx: &Ctx) {
         let n = self.items.len() as isize;
         if n == 0 {
             return;
@@ -260,7 +301,7 @@ impl MenuLevel {
         let mut i = self.selected as isize;
         for _ in 0..n {
             i = (i + delta).rem_euclid(n);
-            if self.items[i as usize].selectable() {
+            if self.items[i as usize].selectable(ctx) {
                 self.selected = i as usize;
                 return;
             }
@@ -269,10 +310,10 @@ impl MenuLevel {
 }
 
 impl ContextMenu {
-    fn new(anchor: (u16, u16)) -> Self {
+    fn new(anchor: (u16, u16), ctx: &Ctx) -> Self {
         ContextMenu {
             anchor,
-            levels: vec![MenuLevel::new(ROOT_MENU)],
+            levels: vec![MenuLevel::new(ROOT_MENU, ctx)],
         }
     }
 
@@ -285,7 +326,7 @@ impl ContextMenu {
     /// already showing (hovering a different submenu row swaps the flyout). A
     /// no-op if this exact submenu is already open, so hovering its parent row
     /// doesn't keep resetting the child's own highlight.
-    fn open_submenu(&mut self, parent: usize, items: &'static [MenuEntry]) {
+    fn open_submenu(&mut self, parent: usize, items: &'static [MenuEntry], ctx: &Ctx) {
         if self
             .levels
             .get(parent + 1)
@@ -294,7 +335,7 @@ impl ContextMenu {
             return;
         }
         self.levels.truncate(parent + 1);
-        self.levels.push(MenuLevel::new(items));
+        self.levels.push(MenuLevel::new(items, ctx));
     }
 
     /// The `(level, row)` under a screen cell, deepest level first so a submenu
@@ -462,23 +503,26 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
     // do: arrows move the highlight (skipping section headers), Right/Enter open
     // a submenu or run the highlighted row, Left/Esc back out one level (or
     // close at the root), and any other key closes it without acting.
-    if let Some(menu) = &mut app.context_menu {
+    if app.context_menu.is_some() {
+        let ctx = Ctx::read(doc);
+        let menu = app.context_menu.as_mut().unwrap();
         let lvl = menu.active_level();
         let entry = menu.levels[lvl].items[menu.levels[lvl].selected];
         match key.code {
-            KeyCode::Up => menu.levels[lvl].step(-1),
-            KeyCode::Down => menu.levels[lvl].step(1),
+            KeyCode::Up => menu.levels[lvl].step(-1, &ctx),
+            KeyCode::Down => menu.levels[lvl].step(1, &ctx),
             KeyCode::Right => {
                 if let MenuEntry::Submenu(_, items) = entry {
-                    menu.open_submenu(lvl, items);
+                    menu.open_submenu(lvl, items, &ctx);
                 }
             }
             KeyCode::Enter => match entry {
-                MenuEntry::Action(_, act) => {
+                MenuEntry::Action(cmd) => {
                     app.context_menu = None;
-                    act.run(doc);
+                    let outcome = cmd.run(doc);
+                    return apply_outcome(doc, app, outcome);
                 }
-                MenuEntry::Submenu(_, items) => menu.open_submenu(lvl, items),
+                MenuEntry::Submenu(_, items) => menu.open_submenu(lvl, items, &ctx),
                 MenuEntry::Header(_) => {}
             },
             KeyCode::Left | KeyCode::Esc => {
@@ -491,6 +535,20 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
             _ => app.context_menu = None,
         }
         return Flow::Continue;
+    }
+
+    // The key reference is a read-only card: it answers nothing, so any key at
+    // all puts it away rather than making the reader hunt for the one that does.
+    if app.help {
+        app.help = false;
+        return Flow::Continue;
+    }
+
+    // The palette owns the keyboard the way the text prompt does — it *is* a
+    // text prompt, with a list under it — so nothing below may leak through to
+    // the document while it's up.
+    if app.palette.is_some() {
+        return handle_palette_key(doc, key, app);
     }
 
     // The text prompt takes the keyboard over completely — every code below
@@ -548,7 +606,20 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
     // No overlay is capturing input, so the editing surface gets the key. It
     // performs any document edit itself and returns what the *host* must do —
     // quit, save, clipboard, or open one of its own dialogs.
-    match leaf_ratatui::handle_key(doc, key, &mut app.editor) {
+    let outcome = leaf_ratatui::handle_key(doc, key, &mut app.editor);
+    apply_outcome(doc, app, outcome)
+}
+
+/// Carry out an [`Outcome`] — the one place the host's own verbs live.
+///
+/// Both input paths end here: a key press, whose outcome the editing surface
+/// returns, and a command chosen from the palette or the context menu, which
+/// returns the *same* type from [`Command::run`]. That convergence is the point.
+/// Before it, "⌥k opens the link prompt" was written in the widget and "the Link
+/// menu row opens the link prompt" would have had to be written again here; now
+/// a command's host-side behaviour is stated once and both doors reach it.
+fn apply_outcome(doc: &mut Doc, app: &mut App, outcome: Outcome) -> Flow {
+    match outcome {
         Outcome::Continue => Flow::Continue,
         // Ctrl+Q: quit, guarding an unsaved document behind the Save/Discard/
         // Cancel prompt the way it always did.
@@ -602,7 +673,7 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
             clipboard_paste_plain(doc);
             Flow::Continue
         }
-        // ⌥K / ⌥L: open a single-line prompt the host owns.
+        // ⌥K / ⌥L / ⌥E and their menu rows: open a single-line prompt the host owns.
         Outcome::LinkPrompt => {
             open_link_prompt(doc, app);
             Flow::Continue
@@ -611,7 +682,78 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
             open_language_prompt(doc, app);
             Flow::Continue
         }
+        Outcome::ImagePrompt => {
+            open_media_prompt(app, MediaKind::Image);
+            Flow::Continue
+        }
+        Outcome::VideoPrompt => {
+            open_media_prompt(app, MediaKind::Video);
+            Flow::Continue
+        }
+        Outcome::AudioPrompt => {
+            open_media_prompt(app, MediaKind::Audio);
+            Flow::Continue
+        }
+        // ⌥P / ^P: the palette, seeded with this document's availability.
+        Outcome::Palette => {
+            app.palette = Some(Palette::new(&Ctx::read(doc)));
+            Flow::Continue
+        }
+        // ⌥H / F1: the key reference.
+        Outcome::Help => {
+            app.help = true;
+            Flow::Continue
+        }
     }
+}
+
+/// The palette's own key handling: a query line over a filtered list. Return
+/// runs the highlighted command and closes; Esc closes without acting; the
+/// arrows walk the list (skipping what this document can't run); everything
+/// printable edits the query and re-filters.
+fn handle_palette_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
+    let ctx = Ctx::read(doc);
+    let palette = app.palette.as_mut().unwrap();
+    match key.code {
+        KeyCode::Up => palette.step(-1),
+        KeyCode::Down => palette.step(1),
+        KeyCode::Esc => app.palette = None,
+        KeyCode::Enter => {
+            // Read the choice out before dropping the palette, the same "read
+            // what's needed, then clear" order the context menu uses — so the
+            // command runs against a `doc` with no overlay standing over it.
+            let chosen = palette.chosen();
+            app.palette = None;
+            if let Some(cmd) = chosen {
+                let outcome = cmd.run(doc);
+                return apply_outcome(doc, app, outcome);
+            }
+        }
+        KeyCode::Backspace => {
+            if let Some((i, _)) = palette.query[..palette.cursor].char_indices().next_back() {
+                palette.query.drain(i..palette.cursor);
+                palette.cursor = i;
+                palette.refilter(&ctx);
+            }
+        }
+        KeyCode::Left => {
+            if let Some((i, _)) = palette.query[..palette.cursor].char_indices().next_back() {
+                palette.cursor = i;
+            }
+        }
+        KeyCode::Right => {
+            if let Some(c) = palette.query[palette.cursor..].chars().next() {
+                palette.cursor += c.len_utf8();
+            }
+        }
+        KeyCode::Char(c) => {
+            palette.query.insert(palette.cursor, c);
+            palette.cursor += c.len_utf8();
+            palette.refilter(&ctx);
+        }
+        _ => {}
+    }
+    Flow::Continue
 }
 
 fn handle_mouse(doc: &mut Doc, m: MouseEvent, app: &mut App) {
@@ -621,33 +763,71 @@ fn handle_mouse(doc: &mut Doc, m: MouseEvent, app: &mut App) {
     // one. A press runs the row's action (or opens its submenu); a press outside
     // every level dismisses the menu. Either way the event doesn't fall through
     // to the document underneath.
-    if let Some(menu) = &mut app.context_menu {
+    if app.context_menu.is_some() {
+        let ctx = Ctx::read(doc);
+        let menu = app.context_menu.as_mut().unwrap();
         match m.kind {
             MouseEventKind::Moved | MouseEventKind::Drag(_) => {
                 if let Some((lvl, idx)) = menu.hit(m.row, m.column)
-                    && menu.levels[lvl].items[idx].selectable()
+                    && menu.levels[lvl].items[idx].selectable(&ctx)
                 {
                     // Close any deeper flyout first, then highlight the row —
                     // and reopen its submenu if that's what it is.
                     menu.levels.truncate(lvl + 1);
                     menu.levels[lvl].selected = idx;
                     if let MenuEntry::Submenu(_, items) = menu.levels[lvl].items[idx] {
-                        menu.open_submenu(lvl, items);
+                        menu.open_submenu(lvl, items, &ctx);
                     }
                 }
             }
             MouseEventKind::Down(_) => match menu.hit(m.row, m.column) {
                 Some((lvl, idx)) => match menu.levels[lvl].items[idx] {
-                    MenuEntry::Action(_, act) => {
+                    // A dimmed row is not a row: clicking one holds the menu
+                    // open rather than closing it on an action that didn't run.
+                    MenuEntry::Action(cmd) if cmd.enabled(&ctx) => {
                         app.context_menu = None;
-                        act.run(doc);
+                        let outcome = cmd.run(doc);
+                        apply_outcome(doc, app, outcome);
                     }
-                    MenuEntry::Submenu(_, items) => menu.open_submenu(lvl, items),
-                    MenuEntry::Header(_) => {}
+                    MenuEntry::Submenu(_, items) if !items.is_empty() => {
+                        menu.open_submenu(lvl, items, &ctx)
+                    }
+                    _ => {}
                 },
                 None => app.context_menu = None,
             },
             _ => {}
+        }
+        return;
+    }
+
+    // The help card and the palette own the mouse the same way the menu does.
+    // Anywhere on the card dismisses the help; in the palette, a press on a
+    // runnable row runs it and a press outside dismisses.
+    if app.help {
+        if matches!(m.kind, MouseEventKind::Down(_)) {
+            app.help = false;
+        }
+        return;
+    }
+    if app.palette.is_some() {
+        if matches!(m.kind, MouseEventKind::Down(_)) {
+            let palette = app.palette.as_ref().unwrap();
+            let chosen = palette
+                .hit(m.row, m.column)
+                .filter(|row| row.enabled)
+                .map(|row| row.command);
+            match chosen {
+                Some(cmd) => {
+                    app.palette = None;
+                    let outcome = cmd.run(doc);
+                    apply_outcome(doc, app, outcome);
+                }
+                // A press inside the list but on a dimmed row holds the palette
+                // open; one outside it entirely dismisses.
+                None if palette.covers(m.row, m.column) => {}
+                None => app.palette = None,
+            }
         }
         return;
     }
@@ -659,7 +839,8 @@ fn handle_mouse(doc: &mut Doc, m: MouseEvent, app: &mut App) {
     match leaf_ratatui::handle_mouse(doc, m, &mut app.editor) {
         MouseOutcome::Continue => {}
         MouseOutcome::ContextMenu { x, y } => {
-            app.context_menu = Some(ContextMenu::new((x, y)));
+            let ctx = Ctx::read(doc);
+            app.context_menu = Some(ContextMenu::new((x, y), &ctx));
         }
     }
 }
@@ -689,6 +870,29 @@ fn open_language_prompt(doc: &mut Doc, app: &mut App) {
     app.text_prompt = Some(TextPrompt::new("Code language", initial, |doc, lang| {
         doc.set_code_language(lang);
     }));
+}
+
+/// ⌥e and the Insert menu's three media rows: prompt for a source, then embed
+/// it. One prompt shape for all three kinds because they differ only in the tag
+/// they write — and the *alt* text isn't asked for at all, because core already
+/// takes it from the selection (select the caption, press ⌥e, get an image
+/// captioned with it). A second field for something the gesture already has a
+/// better answer to would be a field left empty every time.
+///
+/// The confirm callback is a plain `fn` pointer, so the kind can't be captured
+/// and each gets its own — three lines that keep `TextPrompt` free of a closure
+/// type it would otherwise have to be generic over.
+fn open_media_prompt(app: &mut App, kind: MediaKind) {
+    let (label, confirm): (&'static str, fn(&mut Doc, &str)) = match kind {
+        MediaKind::Image => ("Image source", |doc, dest| doc.insert_image(dest, "")),
+        MediaKind::Video => ("Video source", |doc, dest| {
+            doc.insert_media(MediaKind::Video, dest, "")
+        }),
+        MediaKind::Audio => ("Audio source", |doc, dest| {
+            doc.insert_media(MediaKind::Audio, dest, "")
+        }),
+    };
+    app.text_prompt = Some(TextPrompt::new(label, String::new(), confirm));
 }
 
 /// ⌥s and the `dirty_prompt`/conflict flows' Save-As detour: prompt for a
@@ -1049,9 +1253,12 @@ mod tests {
     #[test]
     fn context_menu_arrows_and_enter_run_the_highlighted_action() {
         let mut doc = doc_with("menu_nav", "one two three\n");
+        // With something selected, Cut and Copy are live and the highlight opens
+        // on Cut — three Downs from there lands on Select All.
+        doc.anchor = Some(0);
+        doc.caret = 3;
         let mut app = App::default();
         handle_mouse(&mut doc, right_down(1, 4), &mut app);
-        // Cut, Copy, Paste, Select All: three Downs from Cut lands on Select All.
         for _ in 0..3 {
             handle_key(
                 &mut doc,
@@ -1941,12 +2148,36 @@ mod tests {
 
     // ── context menu: Format submenu, hover, active state ────────────────────
 
-    /// Right-click, then walk the root down to the `Format` row (index 4).
-    fn open_format(doc: &mut Doc, app: &mut App) {
-        handle_mouse(doc, right_down(1, 2), app);
-        for _ in 0..4 {
+    /// Walk the frontmost menu level's highlight onto the row called `label`,
+    /// pressing Down until it lands there. By name rather than by a count of
+    /// keystrokes: rows are now dimmed by the document's format and the caret's
+    /// surroundings, so which index the *n*th Down reaches is a property of the
+    /// document, and a test that hard-codes it is testing the fixture.
+    fn step_to(doc: &mut Doc, app: &mut App, label: &str) {
+        let level = |app: &App| {
+            let menu = app.context_menu.as_ref().expect("a menu should be open");
+            let lvl = menu.active_level();
+            (menu.levels[lvl].items, menu.levels[lvl].selected)
+        };
+        let (items, _) = level(app);
+        for _ in 0..items.len() {
+            let (items, selected) = level(app);
+            if items[selected].label() == label {
+                return;
+            }
             handle_key(doc, keyp(KeyCode::Down), app);
         }
+        let (items, selected) = level(app);
+        panic!(
+            "no selectable row called {label:?}; stopped on {:?}",
+            items[selected].label()
+        );
+    }
+
+    /// Right-click, then open the `Format` flyout.
+    fn open_format(doc: &mut Doc, app: &mut App) {
+        handle_mouse(doc, right_down(1, 2), app);
+        step_to(doc, app, "Format");
         handle_key(doc, keyp(KeyCode::Right), app); // open the submenu
     }
 
@@ -1959,7 +2190,10 @@ mod tests {
         assert_eq!(menu.levels.len(), 2, "Format should push a second level");
         // Its highlight starts on the first *selectable* row — past the "Block"
         // header at index 0, on Paragraph at index 1.
-        assert_eq!(menu.levels[1].selected, 1);
+        assert_eq!(
+            menu.levels[1].items[menu.levels[1].selected].label(),
+            "Paragraph"
+        );
     }
 
     #[test]
@@ -1967,13 +2201,19 @@ mod tests {
         let mut doc = doc_with("submenu_headers", "hello\n");
         let mut app = App::default();
         open_format(&mut doc, &mut app);
-        // Up from Paragraph (1) wraps past the "Inline" header (10) to the last
-        // row, Underline (16) — never landing on a header.
+        let row = |app: &App| {
+            let lvl = &app.context_menu.as_ref().unwrap().levels[1];
+            lvl.items[lvl.selected].label()
+        };
+        // Up from Paragraph wraps to the last row this *Markdown* document can
+        // actually run — Code, because Markdown spells three of the eight inline
+        // marks and highlight, strikethrough and underline are not among them —
+        // never landing on the "Inline" header on the way.
         handle_key(&mut doc, keyp(KeyCode::Up), &mut app);
-        assert_eq!(app.context_menu.as_ref().unwrap().levels[1].selected, 16);
-        // Down from there wraps past the "Block" header (0) to Paragraph (1).
+        assert_eq!(row(&app), "Code");
+        // Down from there wraps past the "Block" header back to Paragraph.
         handle_key(&mut doc, keyp(KeyCode::Down), &mut app);
-        assert_eq!(app.context_menu.as_ref().unwrap().levels[1].selected, 1);
+        assert_eq!(row(&app), "Paragraph");
     }
 
     #[test]
@@ -1983,11 +2223,7 @@ mod tests {
         doc.caret = 5; // "hello" selected
         let mut app = App::default();
         open_format(&mut doc, &mut app);
-        // Paragraph(1) → Tick Checkbox(9) is eight Downs; a ninth skips the
-        // "Inline" header to Bold(11), then Enter applies it.
-        for _ in 0..9 {
-            handle_key(&mut doc, keyp(KeyCode::Down), &mut app);
-        }
+        step_to(&mut doc, &mut app, "Bold");
         handle_key(&mut doc, keyp(KeyCode::Enter), &mut app);
         assert!(
             app.context_menu.is_none(),
@@ -2001,8 +2237,7 @@ mod tests {
         let mut doc = doc_with("submenu_heading", "hello\n");
         let mut app = App::default();
         open_format(&mut doc, &mut app);
-        // Paragraph(1) → Heading 1(2) is one Down.
-        handle_key(&mut doc, keyp(KeyCode::Down), &mut app);
+        step_to(&mut doc, &mut app, "Heading 1");
         handle_key(&mut doc, keyp(KeyCode::Enter), &mut app);
         assert_eq!(doc.source, "# hello\n");
     }
@@ -2027,6 +2262,9 @@ mod tests {
     #[test]
     fn hovering_a_row_highlights_it_and_hovering_format_opens_the_submenu() {
         let mut doc = doc_with("hover", "hello\n");
+        // Selected, so the two clipboard rows this test hovers are live.
+        doc.anchor = Some(0);
+        doc.caret = 5;
         let mut app = App::default();
         handle_mouse(&mut doc, right_down(1, 2), &mut app);
         // Paint once so each level gets a rect to hit-test against.
@@ -2097,5 +2335,454 @@ mod tests {
             joined.contains("  Italic"),
             "inactive Italic should not:\n{joined}"
         );
+    }
+
+    // ── the commands that had no surface before ──────────────────────────────
+
+    /// Alt with Shift: crossterm reports the shifted letter *and* the modifier,
+    /// which is how ⌥⇧W stays distinguishable from ⌥w in a terminal.
+    fn alt_shift(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT | KeyModifiers::SHIFT)
+    }
+
+    #[test]
+    fn alt_f_inserts_a_footnote_pair() {
+        let mut doc = doc_with("footnote_insert", "a claim\n");
+        let mut app = App::default();
+        doc.caret = 7; // after "claim"
+        handle_key(&mut doc, alt('f'), &mut app);
+        assert!(
+            doc.source.contains("[^1]") && doc.source.contains("[^1]:"),
+            "⌥f should write both the reference and its definition:\n{}",
+            doc.source
+        );
+    }
+
+    #[test]
+    fn alt_g_walks_a_footnote_round_trip() {
+        let mut doc = doc_with("footnote_follow", "a claim[^1]\n\n[^1]: the note\n");
+        let mut app = App::default();
+        doc.caret = doc.source.find("[^1]").unwrap() + 2; // on the reference's label
+
+        handle_key(&mut doc, alt('g'), &mut app);
+        let note_body = doc.source.find("the note").unwrap();
+        assert_eq!(doc.caret, note_body, "⌥g should land in the note's body");
+
+        // …and again, from the note back to the reference that cites it.
+        handle_key(&mut doc, alt('g'), &mut app);
+        assert!(
+            doc.caret < note_body,
+            "⌥g in the note should go back to the reference, not deeper"
+        );
+    }
+
+    #[test]
+    fn alt_g_on_a_fragment_link_lands_on_the_heading_it_names() {
+        let mut doc = doc_with(
+            "fragment_follow",
+            "see [below](#the-target)\n\n## The Target\n\nbody\n",
+        );
+        let mut app = App::default();
+        doc.caret = doc.source.find("below").unwrap();
+        handle_key(&mut doc, alt('g'), &mut app);
+        assert!(
+            doc.caret >= doc.source.find("## The Target").unwrap(),
+            "⌥g should jump forward to the heading the fragment slugs to, not sit still"
+        );
+    }
+
+    #[test]
+    fn alt_g_reports_an_external_destination_rather_than_opening_it() {
+        let mut doc = doc_with("external_follow", "see [docs](https://example.com)\n");
+        let mut app = App::default();
+        let before = doc.caret;
+        doc.caret = doc.source.find("docs").unwrap();
+        handle_key(&mut doc, alt('g'), &mut app);
+        assert_eq!(
+            doc.status.as_deref(),
+            Some("→ https://example.com"),
+            "an external link is named, not followed"
+        );
+        assert_ne!(doc.caret, before + 1000); // the caret stays in the document
+    }
+
+    #[test]
+    fn alt_r_inserts_a_horizontal_rule() {
+        let mut doc = doc_with("rule", "before\n");
+        let mut app = App::default();
+        doc.caret = 6;
+        handle_key(&mut doc, alt('r'), &mut app);
+        assert!(
+            doc.source.contains("---") || doc.source.contains("***"),
+            "⌥r should write a thematic break:\n{}",
+            doc.source
+        );
+    }
+
+    #[test]
+    fn alt_e_opens_the_image_prompt_and_confirming_embeds_the_picture() {
+        let mut doc = doc_with("image_prompt", "hello\n");
+        let mut app = App::default();
+        handle_key(&mut doc, alt('e'), &mut app);
+        assert_eq!(
+            app.text_prompt.as_ref().map(|p| p.label),
+            Some("Image source")
+        );
+        for c in "pic.png".chars() {
+            handle_key(&mut doc, plain(c), &mut app);
+        }
+        handle_key(&mut doc, keyp(KeyCode::Enter), &mut app);
+        assert!(
+            doc.source.contains("pic.png"),
+            "confirming should embed the image:\n{}",
+            doc.source
+        );
+    }
+
+    #[test]
+    fn alt_shift_w_cycles_the_markup_mode_and_alt_shift_f_flips_line_flow() {
+        let mut doc = doc_with("modes", "hello\n");
+        let mut app = App::default();
+        assert_eq!(doc.markup_mode(), MarkupMode::None);
+        handle_key(&mut doc, alt_shift('W'), &mut app);
+        assert_eq!(doc.markup_mode(), MarkupMode::Shortcuts);
+        handle_key(&mut doc, alt_shift('W'), &mut app);
+        assert_eq!(doc.markup_mode(), MarkupMode::Full);
+        handle_key(&mut doc, alt_shift('W'), &mut app);
+        assert_eq!(
+            doc.markup_mode(),
+            MarkupMode::None,
+            "three notches, then round"
+        );
+
+        assert_eq!(doc.line_flow(), LineFlow::Fold);
+        handle_key(&mut doc, alt_shift('F'), &mut app);
+        assert_eq!(doc.line_flow(), LineFlow::Preserve);
+    }
+
+    // ── tables: the key policy, and the structural commands ──────────────────
+
+    #[test]
+    fn tab_off_the_last_cell_grows_the_table_by_a_row() {
+        let mut doc = doc_with("table_grow", "| a | b |\n| - | - |\n| c | d |\n");
+        let mut app = App::default();
+        doc.caret = doc.source.rfind('d').unwrap(); // the last cell
+        let rows_before = doc.source.lines().count();
+        handle_key(&mut doc, keyp(KeyCode::Tab), &mut app);
+        assert!(
+            doc.source.lines().count() > rows_before,
+            "Tab off the last cell should append a row:\n{}",
+            doc.source
+        );
+    }
+
+    #[test]
+    fn return_in_a_table_drops_a_row_instead_of_splitting_the_cell() {
+        let mut doc = doc_with("table_return", "| a | b |\n| - | - |\n| c | d |\n");
+        let mut app = App::default();
+        doc.caret = doc.source.find('c').unwrap();
+        handle_key(&mut doc, keyp(KeyCode::Enter), &mut app);
+        assert!(
+            doc.source.starts_with("| a | b |"),
+            "Return in a cell must not break the table apart:\n{}",
+            doc.source
+        );
+    }
+
+    #[test]
+    fn the_table_commands_edit_the_grid() {
+        let mut doc = doc_with("table_ops", "| a | b |\n| - | - |\n| c | d |\n");
+        doc.caret = doc.source.find('c').unwrap();
+
+        Command::RowBelow.run(&mut doc);
+        assert_eq!(
+            doc.source.lines().count(),
+            4,
+            "a row was inserted:\n{}",
+            doc.source
+        );
+
+        Command::ColumnRight.run(&mut doc);
+        assert_eq!(
+            doc.source.lines().next().unwrap().matches('|').count(),
+            4,
+            "a column was inserted:\n{}",
+            doc.source
+        );
+
+        Command::DeleteColumn.run(&mut doc);
+        assert_eq!(
+            doc.source.lines().next().unwrap().matches('|').count(),
+            3,
+            "and removed again:\n{}",
+            doc.source
+        );
+    }
+
+    // ── the palette ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn alt_p_opens_the_palette_and_typing_narrows_it() {
+        let mut doc = doc_with("palette_open", "hello\n");
+        let mut app = App::default();
+        handle_key(&mut doc, alt('p'), &mut app);
+        let all = app.palette.as_ref().unwrap().rows.len();
+
+        for c in "rule".chars() {
+            handle_key(&mut doc, plain(c), &mut app);
+        }
+        let narrowed = app.palette.as_ref().unwrap();
+        assert!(narrowed.rows.len() < all, "typing should filter");
+        assert_eq!(narrowed.chosen(), Some(Command::ThematicBreak));
+    }
+
+    #[test]
+    fn the_palette_runs_the_chosen_command_and_closes() {
+        let mut doc = doc_with("palette_run", "| a | b |\n| - | - |\n| c | d |\n");
+        let mut app = App::default();
+        doc.caret = doc.source.find('c').unwrap();
+        handle_key(&mut doc, ctrl('p'), &mut app); // ^p opens it too
+        for c in "insert row below".chars() {
+            handle_key(&mut doc, plain(c), &mut app);
+        }
+        handle_key(&mut doc, keyp(KeyCode::Enter), &mut app);
+        assert!(
+            app.palette.is_none(),
+            "running a command closes the palette"
+        );
+        assert_eq!(
+            doc.source.lines().count(),
+            4,
+            "the row landed:\n{}",
+            doc.source
+        );
+    }
+
+    /// The palette owns the keyboard completely: a letter typed into its query
+    /// must not also reach the document underneath.
+    #[test]
+    fn the_palette_swallows_document_keys_while_it_is_open() {
+        let mut doc = doc_with("palette_capture", "hello\n");
+        let before = doc.source.clone();
+        let mut app = App::default();
+        handle_key(&mut doc, alt('p'), &mut app);
+        for c in "bold".chars() {
+            handle_key(&mut doc, plain(c), &mut app);
+        }
+        handle_key(&mut doc, ctrl('s'), &mut app);
+        assert_eq!(
+            doc.source, before,
+            "nothing should have reached the document"
+        );
+        handle_key(&mut doc, keyp(KeyCode::Esc), &mut app);
+        assert!(app.palette.is_none());
+    }
+
+    /// A command the format cannot spell is listed and dimmed, and Return on a
+    /// query that matches only such commands does nothing rather than something
+    /// surprising.
+    #[test]
+    fn the_palette_will_not_run_a_command_this_format_cannot_spell() {
+        let mut doc = doc_with("palette_gated", "hello\n"); // Markdown
+        let mut app = App::default();
+        let before = doc.source.clone();
+        handle_key(&mut doc, alt('p'), &mut app);
+        for c in "highlight".chars() {
+            handle_key(&mut doc, plain(c), &mut app);
+        }
+        let palette = app.palette.as_ref().unwrap();
+        assert!(
+            palette
+                .rows
+                .iter()
+                .any(|r| r.command == Command::Inline(InlineKind::Mark) && !r.enabled),
+            "the djot-only highlight should be listed and dimmed in Markdown"
+        );
+        handle_key(&mut doc, keyp(KeyCode::Enter), &mut app);
+        assert_eq!(doc.source, before);
+    }
+
+    #[test]
+    fn the_palette_renders_its_query_and_rows() {
+        let mut doc = doc_with("palette_render", "hello\n");
+        let mut app = App::default();
+        handle_key(&mut doc, alt('p'), &mut app);
+        for c in "foot".chars() {
+            handle_key(&mut doc, plain(c), &mut app);
+        }
+        let joined = frame(&mut doc, &mut app, 70, 20).join("\n");
+        assert!(joined.contains("foot"), "the query line:\n{joined}");
+        assert!(joined.contains("Footnote"), "the matching row:\n{joined}");
+        assert!(joined.contains("⌥f"), "its key:\n{joined}");
+    }
+
+    // ── the key reference ────────────────────────────────────────────────────
+
+    #[test]
+    fn alt_h_opens_the_key_reference_and_any_key_closes_it() {
+        let mut doc = doc_with("help", "hello\n");
+        let mut app = App::default();
+        handle_key(&mut doc, alt('h'), &mut app);
+        assert!(app.help);
+        // A realistic terminal: the card lays itself out in as many columns as
+        // it needs to fit this one.
+        let joined = frame(&mut doc, &mut app, 100, 30).join("\n");
+        assert!(joined.contains("⌥b"), "it lists keys:\n{joined}");
+        assert!(
+            joined.contains("palette"),
+            "and names the palette:\n{joined}"
+        );
+        assert!(
+            joined.contains("⌥⇧w"),
+            "including the shifted ones:\n{joined}"
+        );
+
+        handle_key(&mut doc, keyp(KeyCode::Esc), &mut app);
+        assert!(!app.help);
+    }
+
+    #[test]
+    fn f1_opens_the_key_reference_too() {
+        let mut doc = doc_with("help_f1", "hello\n");
+        let mut app = App::default();
+        handle_key(&mut doc, keyp(KeyCode::F(1)), &mut app);
+        assert!(app.help);
+    }
+
+    // ── menu gating ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn the_table_flyout_is_dimmed_off_a_table_and_live_inside_one() {
+        let mut doc = doc_with(
+            "menu_table_gate",
+            "para\n\n| a | b |\n| - | - |\n| c | d |\n",
+        );
+        let mut app = App::default();
+        // The menu is opened directly rather than by a right-click: a click also
+        // *places* the caret, and where the caret is standing is the whole point
+        // of this test.
+        let open_at_caret = |doc: &mut Doc, app: &mut App| {
+            let ctx = Ctx::read(doc);
+            app.context_menu = Some(ContextMenu::new((1, 2), &ctx));
+        };
+
+        doc.caret = 1; // in the paragraph
+        open_at_caret(&mut doc, &mut app);
+        // Walking the whole root never lands on Table: the flyout has nothing to
+        // offer off a table, so it dims and the highlight steps over it.
+        for _ in 0..ROOT_MENU.len() {
+            let menu = app.context_menu.as_ref().unwrap();
+            assert_ne!(
+                menu.levels[0].items[menu.levels[0].selected].label(),
+                "Table",
+                "the Table flyout should be unreachable off a table"
+            );
+            handle_key(&mut doc, keyp(KeyCode::Down), &mut app);
+        }
+
+        // With the caret in the table, it becomes reachable — and opens.
+        doc.caret = doc.source.find('c').unwrap();
+        open_at_caret(&mut doc, &mut app);
+        step_to(&mut doc, &mut app, "Table");
+        handle_key(&mut doc, keyp(KeyCode::Right), &mut app);
+        let menu = app.context_menu.as_ref().unwrap();
+        assert_eq!(menu.levels.len(), 2, "Table should push a second level");
+        assert_eq!(
+            menu.levels[1].items[menu.levels[1].selected].label(),
+            "Insert Row Above",
+            "past the \"Rows\" header, onto the first real row"
+        );
+    }
+
+    #[test]
+    fn a_dimmed_row_is_drawn_but_not_run_by_a_click() {
+        // Markdown spells no highlight, so the Format flyout's Highlight row is
+        // dimmed — and clicking it must leave both the menu and the document as
+        // they were.
+        let mut doc = doc_with("menu_dimmed_click", "hello\n");
+        doc.anchor = Some(0);
+        doc.caret = 5;
+        let mut app = App::default();
+        let before = doc.source.clone();
+        open_format(&mut doc, &mut app);
+        let _ = frame(&mut doc, &mut app, 70, 30);
+
+        let rect = app.context_menu.as_ref().unwrap().levels[1].rect.unwrap();
+        let row = FORMAT_MENU
+            .iter()
+            .position(|e| e.label() == "Highlight")
+            .unwrap() as u16;
+        handle_mouse(&mut doc, left_down(rect.y + row, rect.x + 1), &mut app);
+        assert!(
+            app.context_menu.is_some(),
+            "a click on a dimmed row holds the menu open"
+        );
+        assert_eq!(doc.source, before);
+    }
+
+    // ── the hover peek ───────────────────────────────────────────────────────
+
+    #[test]
+    fn hovering_a_footnote_reference_shows_the_note_without_moving_the_caret() {
+        let mut doc = doc_with("peek_footnote", "a claim[^1]\n\n[^1]: the note itself\n");
+        doc.view = leaf_core::View::Wysiwyg;
+        doc.build_visual(80);
+        let mut app = App::default();
+        doc.caret = 0;
+
+        // The rendered row/col of the reference, found through the same map the
+        // pointer hit-test uses.
+        let off = doc.source.find("[^1]").unwrap() + 2;
+        let (row, col) = doc.vmap.pos_of_offset(off);
+        handle_mouse(&mut doc, moved(row as u16 + 1, col as u16), &mut app);
+
+        assert_eq!(doc.caret, 0, "a peek must not move the caret");
+        let status = doc.status.clone().unwrap_or_default();
+        assert!(
+            status.contains("the note itself"),
+            "hovering should preview the note, got {status:?}"
+        );
+    }
+
+    /// Moving off the reference takes the peek back down — but a status this
+    /// module didn't put up survives the pointer wandering over it.
+    #[test]
+    fn a_peek_clears_itself_and_leaves_other_statuses_alone() {
+        let mut doc = doc_with(
+            "peek_clear",
+            "a claim[^1] and more text here\n\n[^1]: note\n",
+        );
+        doc.view = leaf_core::View::Wysiwyg;
+        doc.build_visual(80);
+        let mut app = App::default();
+
+        let off = doc.source.find("[^1]").unwrap() + 2;
+        let (row, col) = doc.vmap.pos_of_offset(off);
+        handle_mouse(&mut doc, moved(row as u16 + 1, col as u16), &mut app);
+        assert!(doc.status.is_some());
+
+        // Off the reference, onto ordinary text.
+        let plain_off = doc.source.find("more").unwrap();
+        let (prow, pcol) = doc.vmap.pos_of_offset(plain_off);
+        handle_mouse(&mut doc, moved(prow as u16 + 1, pcol as u16), &mut app);
+        assert_eq!(doc.status, None, "the peek should come back down");
+
+        // A status from elsewhere is not the peek's to clear.
+        doc.status = Some("saved".into());
+        handle_mouse(&mut doc, moved(prow as u16 + 1, pcol as u16 + 1), &mut app);
+        assert_eq!(doc.status.as_deref(), Some("saved"));
+    }
+
+    #[test]
+    fn hovering_a_link_shows_where_it_points() {
+        let mut doc = doc_with("peek_link", "see [docs](https://example.com) here\n");
+        doc.view = leaf_core::View::Wysiwyg;
+        doc.build_visual(80);
+        let mut app = App::default();
+
+        let off = doc.source.find("docs").unwrap();
+        let (row, col) = doc.vmap.pos_of_offset(off);
+        handle_mouse(&mut doc, moved(row as u16 + 1, col as u16), &mut app);
+        assert_eq!(doc.status.as_deref(), Some("→ https://example.com"));
     }
 }
