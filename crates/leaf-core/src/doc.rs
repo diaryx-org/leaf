@@ -4872,13 +4872,7 @@ impl Doc {
             // to — but "every byte" still means every *character* boundary. A
             // caret resting inside a multi-byte character draws nowhere real
             // and panics the next time anything slices there.
-            View::Source => {
-                let mut o = offset.min(self.source.len());
-                while o > 0 && !self.source.is_char_boundary(o) {
-                    o -= 1;
-                }
-                o
-            }
+            View::Source => self.char_boundary_at_or_before(offset),
         };
         self.move_to(target, extend);
         self.clamp_caret();
@@ -4940,6 +4934,57 @@ impl Doc {
         self.clamp_caret();
     }
 
+    /// Select the exact source range `[start, end)` — anchor at `start`, caret
+    /// at `end` — without snapping either end to a visible caret stop.
+    ///
+    /// The one caret verb that takes a range it was *handed* rather than one it
+    /// worked out, for a host that already knows the bytes it means: a search
+    /// hit, an annotation's footprint, a quote re-anchored through
+    /// [`Doc::selection_quote`]. [`place_caret`](Self::place_caret) is the
+    /// wrong tool for that, and not by a little — it snaps to the nearest
+    /// *visible* stop, and where a range butts up against a hidden delimiter
+    /// the nearest stop is the one before it, so selecting the "needle" of
+    /// `**needle**` comes back with "needl" and an edit against it strands the
+    /// "e".
+    ///
+    /// What `place_caret` does that is bookkeeping rather than snapping still
+    /// happens here, because a host handing in a range is not asking to opt out
+    /// of the invariants:
+    ///
+    /// - both ends are clamped into the document and up to
+    ///   [`caret_floor`](Self::caret_floor) — in WYSIWYG the leading
+    ///   frontmatter is hidden, and a caret parked in it draws nowhere and
+    ///   types into the metadata;
+    /// - both land on character boundaries, so nothing slices a `é` in half;
+    /// - the sticky vertical goal column is dropped, and any armed inline mark
+    ///   disarmed, since a range from outside inherits neither.
+    ///
+    /// An empty range is a caret rather than a selection —
+    /// [`selection`](Self::selection) reports `None` for it, as it does for any
+    /// anchor that has met the caret.
+    pub fn select_range(&mut self, start: usize, end: usize) {
+        let floor = self.caret_floor();
+        let anchor = self.char_boundary_at_or_before(start.clamp(floor, self.source.len()));
+        let caret = self.char_boundary_at_or_before(end.clamp(floor, self.source.len()));
+        self.anchor = Some(anchor);
+        self.caret = caret;
+        self.goal_col = None;
+        self.status = None;
+        self.last_edit_kind = None;
+        self.clear_pending();
+    }
+
+    /// `offset` itself if it is a character boundary, else the boundary before
+    /// it. An offset that isn't one draws nowhere real and panics the next time
+    /// anything slices there.
+    fn char_boundary_at_or_before(&self, offset: usize) -> usize {
+        let mut o = offset.min(self.source.len());
+        while o > 0 && !self.source.is_char_boundary(o) {
+            o -= 1;
+        }
+        o
+    }
+
     /// The lowest source offset the caret may occupy in the active view. In
     /// WYSIWYG, leading frontmatter is hidden and unreachable, so the floor is
     /// the first rendered offset; the source view reaches everything, so it's 0.
@@ -4956,13 +5001,7 @@ impl Doc {
     /// replaces it and an arrow collapses to an edge. An empty cell (`start ==
     /// end`) collapses to a plain caret home (an empty selection is no selection).
     fn select_cell(&mut self, start: usize, end: usize) {
-        let floor = self.caret_floor();
-        self.anchor = Some(start.min(self.source.len()).max(floor));
-        self.caret = end.min(self.source.len()).max(floor);
-        self.goal_col = None;
-        self.status = None;
-        self.last_edit_kind = None;
-        self.clear_pending();
+        self.select_range(start, end);
     }
 
     fn move_to(&mut self, offset: usize, extend: bool) {
@@ -9496,6 +9535,53 @@ mod tests {
         assert_eq!(d.caret_pos(), (0, 0));
         d.insert("This");
         assert_eq!(d.source, format!("{fm}This"));
+    }
+
+    /// `select_range` is the verb for a range a host already knows the bytes of,
+    /// so it must not snap — and must still hold every invariant `place_caret`
+    /// holds, the frontmatter floor above all.
+    #[test]
+    fn select_range_takes_the_range_as_given_but_still_floors_it() {
+        let fm = "---\ntitle: foo\n---\n\n";
+        let body = format!("{fm}body foo here\n");
+        let mut d = wysiwyg_doc("wys_select_range", &body);
+
+        // The `foo` in the body: taken exactly, not snapped to a caret stop.
+        let at = body.rfind("foo").unwrap();
+        d.select_range(at, at + 3);
+        assert_eq!(d.selection(), Some((at, at + 3)));
+        assert_eq!(d.selected_text(), Some("foo"));
+
+        // The `foo` in the hidden frontmatter: below the floor, so both ends
+        // come up to it rather than parking the caret in the metadata, where a
+        // later keystroke would rewrite `title:`.
+        let hidden = body.find("foo").unwrap();
+        assert!(hidden < d.vmap.content_start);
+        d.select_range(hidden, hidden + 3);
+        assert!(
+            d.caret >= d.vmap.content_start && d.anchor.unwrap() >= d.vmap.content_start,
+            "a range under the floor must not leave the caret in the frontmatter"
+        );
+
+        // Past the end, and mid-character, are both brought back to something
+        // sliceable rather than panicking the next reader of the range.
+        let multi = wysiwyg_doc("wys_select_range_utf8", "héllo\n");
+        let mut d = multi;
+        d.select_range(2, 9_999);
+        assert_eq!(d.caret, d.source.len());
+        assert!(d.source.is_char_boundary(d.anchor.unwrap()));
+        assert!(d.source.is_char_boundary(d.caret));
+    }
+
+    /// The bug `select_range` exists for: a match butting up against a hidden
+    /// delimiter. `place_caret` snaps to the nearest *visible* stop, which is
+    /// the one before the `**`.
+    #[test]
+    fn select_range_does_not_snap_off_a_hidden_delimiter() {
+        let mut d = wysiwyg_doc("wys_select_range_bold", "a **needle** in it\n");
+        let at = d.source.find("needle").unwrap();
+        d.select_range(at, at + 6);
+        assert_eq!(d.selected_text(), Some("needle"), "not \"needl\"");
     }
 
     #[test]

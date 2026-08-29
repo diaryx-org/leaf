@@ -1650,6 +1650,19 @@ impl LeafDoc {
         self.view()
     }
 
+    /// Select the exact source range `[start, end)`, snapping neither end to a
+    /// visible caret stop — for a host painting a range it already knows the
+    /// bytes of (a search hit, an annotation) rather than hit-testing a click.
+    ///
+    /// `set_selection_offsets` above is the *other* verb: it goes through
+    /// `place_caret`, which snaps, and is what a drag handle wants. This one
+    /// takes the range as given, so a selection over `**needle**`'s inner word
+    /// is the word and not one byte short of it.
+    pub fn select_range(&mut self, start: usize, end: usize) -> Result<DocView, JsValue> {
+        self.doc.select_range(start, end);
+        self.view()
+    }
+
     /// Replace the source range `[from, to)` with `text`.
     pub fn replace_range(
         &mut self,

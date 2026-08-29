@@ -1061,18 +1061,17 @@ fn step_find(doc: &mut Doc, app: &mut App, delta: isize) {
 /// coordinate the renderer paints selections from and `Doc::edit` replaces in —
 /// so a hit inside `**bold**` needs no conversion to select the rendered word.
 ///
-/// Deliberately *not* a second `place_caret(end, true)`. That snaps to the
-/// nearest visible caret stop, and where a match butts up against a hidden
-/// delimiter the nearest stop is the one before it: searching `**needle**` for
-/// "needle" would come back with "needl" selected, and replacing it would leave
-/// the "e" stranded between the closing asterisks. The one `place_caret` that
-/// does run is for its bookkeeping — it clears the sticky vertical goal column,
-/// which a search jump has no business inheriting from whatever the caret was
-/// doing before it.
+/// [`Doc::select_range`] and deliberately not `place_caret`, which snaps to the
+/// nearest *visible* caret stop: where a match butts up against a hidden
+/// delimiter the nearest stop is the one before it, so searching `**needle**`
+/// for "needle" would come back with "needl" selected and replacing it would
+/// strand the "e". This used to be written here as a `place_caret` for its
+/// bookkeeping with two raw field writes over the top of it — which also stepped
+/// over the bookkeeping's other half, the WYSIWYG frontmatter floor and the
+/// length clamp, and parked the caret in hidden metadata where the next
+/// keystroke rewrote the `title:`.
 fn select_match(doc: &mut Doc, start: usize, end: usize) {
-    doc.place_caret(start, false);
-    doc.anchor = Some(start);
-    doc.caret = end;
+    doc.select_range(start, end);
 }
 
 /// Swap the keyboard between the two fields. A no-op on a bar with no
@@ -3030,6 +3029,39 @@ mod tests {
         handle_paste(&mut doc, "three", &mut app);
         assert_eq!(app.find.as_ref().unwrap().query, "three");
         assert_eq!(doc.selected_text(), Some("three"));
+    }
+
+    /// Selecting a match used to write `doc.anchor`/`doc.caret` by hand to dodge
+    /// `place_caret`'s snap — and so dodged the rest of what `place_caret` does
+    /// too, the WYSIWYG frontmatter floor above all. A hit in the hidden
+    /// metadata parked the caret inside it: nothing was visibly selected, and
+    /// the next keystroke after Esc rewrote the `title:`.
+    #[test]
+    fn a_hit_in_hidden_frontmatter_never_parks_the_caret_inside_it() {
+        let fm = "---\ntitle: foo\n---\n\n";
+        let mut doc = doc_with("find_frontmatter", &format!("{fm}body foo here\n"));
+        let mut app = App::default();
+        assert_eq!(doc.view, View::Wysiwyg, "the view that hides frontmatter");
+        handle_key(&mut doc, ctrl('f'), &mut app);
+        type_chars(&mut doc, &mut app, "foo");
+
+        let floor = doc.vmap.content_start;
+        assert!(floor > 0, "there is frontmatter to be floored past");
+        assert!(
+            doc.caret >= floor && doc.anchor.is_none_or(|a| a >= floor),
+            "caret {} / anchor {:?} is inside the hidden frontmatter (floor {floor})",
+            doc.caret,
+            doc.anchor,
+        );
+
+        // The keystroke that used to land in the metadata.
+        handle_key(&mut doc, keyp(KeyCode::Esc), &mut app);
+        type_chars(&mut doc, &mut app, "X");
+        assert!(
+            doc.source.starts_with(fm),
+            "the frontmatter was edited: {:?}",
+            doc.source
+        );
     }
 
     #[test]
