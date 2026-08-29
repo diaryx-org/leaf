@@ -17,6 +17,7 @@ use ratatui::{
 use leaf_ratatui::Theme;
 
 use leaf_core::Doc;
+use leaf_core::wysiwyg::text_width;
 
 use crate::commands::{Ctx, GROUPS};
 use crate::find::{Find, FindField};
@@ -250,15 +251,19 @@ fn render_find_bar(f: &mut Frame, screen: Rect, find: &Find, read_only: bool, ch
     };
     f.render_widget(Clear, rect);
 
-    let width = rect.width as usize;
     // The count sits at the right-hand end of the query row, where a browser
-    // puts it, with the field given whatever is left.
+    // puts it, with the field given whatever is left. Every one of these is a
+    // *column* count and not a character count: `你好` is four columns wide, and
+    // a field measured in characters puts the caption — and the terminal cursor
+    // — two cells off the text it belongs to.
     let caption = find.caption();
-    let field_w = width.saturating_sub(caption.chars().count() + 9);
+    let caption_w = text_width(&caption) + 2;
+    let field_w = (rect.width as usize).saturating_sub(FIELD_PREFIX + caption_w);
 
     let mut lines = vec![field_line(
         "find",
         &find.query,
+        find.query_cursor,
         find.field == FindField::Query,
         field_w,
         &caption,
@@ -268,6 +273,7 @@ fn render_find_bar(f: &mut Frame, screen: Rect, find: &Find, read_only: bool, ch
         lines.push(field_line(
             "with",
             replacement,
+            find.replacement_cursor,
             find.field == FindField::Replacement,
             field_w,
             "",
@@ -308,36 +314,102 @@ fn render_find_bar(f: &mut Frame, screen: Rect, find: &Find, read_only: bool, ch
     f.render_widget(Paragraph::new(lines).style(chrome.base), rect);
 
     // The cursor goes into whichever field has the keyboard — row 0 for the
-    // query, row 1 for the replacement, which is the order they are drawn in.
+    // query, row 1 for the replacement, which is the order they are drawn in —
+    // and at the column the *window* puts it in, which is what keeps it on
+    // screen no matter how long the value has grown.
     let (value, cursor) = find.field();
     let row = match find.field {
         FindField::Query => rect.y,
         FindField::Replacement => rect.y + 1,
     };
-    let cursor_x = rect.x + 8 + value[..cursor].chars().count() as u16;
+    let (_, cursor_col) = field_window(value, cursor, field_w);
+    let cursor_x = rect.x.saturating_add((FIELD_PREFIX + cursor_col) as u16);
     if row < rect.y + rect.height && cursor_x < rect.x + rect.width {
         f.set_cursor_position(Position::new(cursor_x, row));
     }
 }
 
+/// The columns `field_line` spends before a field's own text: `" find "` and the
+/// `"› "` prompt after it.
+///
+/// Derived from the spans that row actually emits rather than written as the 8
+/// it comes to. The terminal cursor is placed against this number, so a literal
+/// here is a second copy of the layout — and the copy that drifts is the one
+/// that puts the caret a cell away from the character it is in front of.
+const FIELD_PREFIX: usize = FIELD_LABEL_W + 2 + 2;
+
+/// The widest of the two field labels. They are the same width today, which is
+/// the point: the two rows' fields start in the same column and read as one
+/// control rather than as two.
+const FIELD_LABEL_W: usize = "find".len();
+
 /// One labelled field row of the find bar, with an optional right-aligned
 /// caption ("3 of 12"). The label column is fixed so the two rows' fields start
 /// in the same column and read as one control rather than two.
+#[allow(clippy::too_many_arguments)]
 fn field_line(
     label: &str,
     value: &str,
+    cursor: usize,
     focused: bool,
     field_w: usize,
     caption: &str,
     chrome: &Chrome,
 ) -> Line<'static> {
     let ink = if focused { chrome.bold } else { chrome.dim };
+    let (window, _) = field_window(value, cursor, field_w);
     Line::from(vec![
-        Span::styled(format!(" {label} "), chrome.key),
+        Span::styled(format!(" {label:<FIELD_LABEL_W$} "), chrome.key),
         Span::styled("› ", if focused { chrome.key } else { chrome.dim }),
-        Span::styled(format!("{:<field_w$}", truncate(value, field_w)), ink),
+        Span::styled(window, ink),
         Span::styled(format!(" {caption} "), chrome.dim),
     ])
+}
+
+/// The slice of a field's value to draw — a window exactly `width` columns wide
+/// with the cursor inside it — and the cursor's column within that window.
+///
+/// A one-row field holds more than it can show. This used to draw the *head* of
+/// the value and place the terminal cursor at `x + 8 + value[..cursor].chars()`;
+/// once the value grew past the field, that column failed the bar's own bounds
+/// check, so the cursor stayed wherever the document body had left it while the
+/// keystrokes went into a tail nothing drew. A window keyed to the cursor keeps
+/// it on screen: the field scrolls under it, the way every other one-line field
+/// in every other editor does.
+///
+/// Columns throughout, never `char`s — `你好` is two characters and four cells,
+/// and a cursor placed by character count lands inside the first of them.
+fn field_window(value: &str, cursor: usize, width: usize) -> (String, usize) {
+    let cursor_col = text_width(&value[..cursor.min(value.len())]);
+    // Scrolled just far enough that the cursor is in the last column, and no
+    // further — so a value that fits shows its head and one that doesn't follows
+    // the typing.
+    let start = cursor_col.saturating_sub(width.saturating_sub(1));
+    let end = start + width;
+    let mut out = String::new();
+    let mut drawn = 0usize;
+    let mut col = 0usize;
+    for ch in value.chars() {
+        let w = text_width(ch.encode_utf8(&mut [0u8; 4]));
+        if col >= start && col + w <= end {
+            // A wide character clipped by the left edge is drawn as the blank it
+            // half-covers rather than as half of itself.
+            while drawn < col - start {
+                out.push(' ');
+                drawn += 1;
+            }
+            out.push(ch);
+            drawn += w;
+        }
+        col += w;
+    }
+    // Padded here rather than with `{:<w$}`, which pads by characters and would
+    // leave the caption ragged the moment a field held a wide glyph.
+    while drawn < width {
+        out.push(' ');
+        drawn += 1;
+    }
+    (out, cursor_col.saturating_sub(start))
 }
 
 /// Center a `width`×`height` rect within `screen`.
@@ -628,6 +700,14 @@ fn render_palette(f: &mut Frame, screen: Rect, palette: &mut Palette, ctx: &Ctx,
 fn render_help(f: &mut Frame, screen: Rect, doc: &mut Doc, chrome: &Chrome) {
     // Only the keyed commands: this is the *key* reference, and the palette is
     // where the keyless ones are found.
+    //
+    // Read once, off the same `Ctx` the palette and the context menu are filtered
+    // by, so all three surfaces dim the same rows for the same reasons — the
+    // whole point of their coming out of one command table. A reading session is
+    // the coarsest of those reasons and the one the README has been promising:
+    // "refused, says so, and is dimmed in the palette, the context menu and the
+    // key reference".
+    let ctx = Ctx::read(doc);
     let mut rows: Vec<HelpRow> = Vec::new();
     for (group, commands) in GROUPS {
         let keyed: Vec<_> = commands.iter().filter(|c| !c.hint().is_empty()).collect();
@@ -639,13 +719,14 @@ fn render_help(f: &mut Frame, screen: Rect, doc: &mut Doc, chrome: &Chrome) {
         }
         rows.push(HelpRow::Group(group));
         for cmd in keyed {
-            rows.push(HelpRow::Key(cmd.hint(), cmd.label()));
+            rows.push(HelpRow::Key(cmd.hint(), cmd.label(), cmd.enabled(&ctx)));
         }
     }
     // The one line the command table can't produce: the palette is how you reach
-    // everything that has no key, so the key reference has to name it.
+    // everything that has no key, so the key reference has to name it. Always
+    // live — a reading session has a palette, it just has fewer rows in it.
     rows.push(HelpRow::Blank);
-    rows.push(HelpRow::Key("⌥p", "the command palette"));
+    rows.push(HelpRow::Key("⌥p", "the command palette", true));
 
     // Columns, because the reference is fifty-odd rows and a terminal is
     // typically twenty-four. Take the *fewest* columns that fit the screen's
@@ -695,7 +776,11 @@ fn render_help(f: &mut Frame, screen: Rect, doc: &mut Doc, chrome: &Chrome) {
 #[derive(Clone, Copy)]
 enum HelpRow {
     Group(&'static str),
-    Key(&'static str, &'static str),
+    /// A chord, what it does, and whether this document can run it — `false`
+    /// dims the row rather than dropping it, the same as the palette and the
+    /// context menu do, so what is unavailable stays legible instead of merely
+    /// absent.
+    Key(&'static str, &'static str, bool),
     Blank,
 }
 
@@ -711,16 +796,18 @@ fn help_spans(row: Option<&HelpRow>, width: usize, chrome: &Chrome) -> Vec<Span<
                 chrome.bold,
             )]
         }
-        Some(HelpRow::Key(hint, label)) => {
+        Some(HelpRow::Key(hint, label, enabled)) => {
             // The key is right-aligned in its own narrow column so the chords
             // line up as a list rather than as ragged text.
             let label_w = width.saturating_sub(9);
+            let (key, ink) = if *enabled {
+                (chrome.key, chrome.base)
+            } else {
+                (chrome.dim, chrome.dim)
+            };
             vec![
-                Span::styled(format!("  {hint:>4}  "), chrome.key),
-                Span::styled(
-                    format!("{:<label_w$} ", truncate(label, label_w)),
-                    chrome.base,
-                ),
+                Span::styled(format!("  {hint:>4}  "), key),
+                Span::styled(format!("{:<label_w$} ", truncate(label, label_w)), ink),
             ]
         }
     }

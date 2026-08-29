@@ -3434,6 +3434,116 @@ mod tests {
         assert!(joined.contains("replace all"), "hints:\n{joined}");
     }
 
+    /// A value longer than the field used to be drawn head-first while the
+    /// terminal cursor was placed past the field's right edge — where the bar's
+    /// own bounds check dropped it, leaving it in the document body while the
+    /// typing went into a tail nothing drew.
+    #[test]
+    fn a_query_longer_than_the_field_scrolls_under_the_cursor() {
+        let mut doc = doc_with("find_long", "needle at the end\n");
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('f'), &mut app);
+        // Comfortably longer than the field a 40-column terminal leaves.
+        type_chars(&mut doc, &mut app, "abcdefghijklmnopqrstuvwxyz0123456789");
+        let lines = frame(&mut doc, &mut app, 40, 8);
+        let joined = lines.join("\n");
+        assert!(
+            joined.contains("6789"),
+            "the field should have scrolled to the tail being typed:\n{joined}"
+        );
+        assert!(
+            !joined.contains("abcdef"),
+            "…and away from the head:\n{joined}"
+        );
+
+        // Home-ish: walking the cursor back to the front scrolls the head into
+        // view again rather than leaving the cursor off screen.
+        for _ in 0..36 {
+            handle_key(&mut doc, keyp(KeyCode::Left), &mut app);
+        }
+        let joined = frame(&mut doc, &mut app, 40, 8).join("\n");
+        assert!(joined.contains("abcdef"), "back to the head:\n{joined}");
+    }
+
+    /// The field is measured in columns, not characters: `你好` is two
+    /// characters and four cells, and a caption placed by character count lands
+    /// two cells inside the text.
+    #[test]
+    fn a_wide_character_query_keeps_the_bar_one_row_wide() {
+        let mut doc = doc_with("find_cjk", "你好世界 hello\n");
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('f'), &mut app);
+        type_chars(&mut doc, &mut app, "你好");
+        let lines = frame(&mut doc, &mut app, 40, 8);
+        let bar = &lines[lines.len() - 2];
+        // A `TestBackend` spells a two-cell glyph as the glyph plus a blank
+        // continuation cell, so the row reads `你 好` — the point is that both
+        // are there and the caption still ends the row, rather than being
+        // pushed two cells off it by a field measured in characters.
+        assert!(bar.contains('你') && bar.contains('好'), "query: {bar:?}");
+        assert!(bar.trim_end().ends_with("1 of 1"), "count: {bar:?}");
+        // Every row of a `TestBackend` is the full width; what matters is that
+        // the caption did not get pushed off the end by the two extra cells.
+        assert_eq!(app.find.as_ref().unwrap().matches.len(), 1);
+    }
+
+    /// The README says a reading session dims what it refuses "in the palette,
+    /// the context menu and the key reference". The first two consulted
+    /// `Command::enabled`; the third never did.
+    #[test]
+    fn the_key_reference_dims_what_a_read_only_document_cannot_run() {
+        let mut doc = doc_with("help_dim", "hello\n");
+        let mut app = App {
+            help: true,
+            ..Default::default()
+        };
+        let editable = dimmed_labels(&mut doc, &mut app, 120, 40);
+        assert!(!editable.contains("Bold"), "an editable document can bold");
+
+        doc.set_read_only(true);
+        let card = frame(&mut doc, &mut app, 120, 40).join("\n");
+        let reading = dimmed_labels(&mut doc, &mut app, 120, 40);
+
+        // Dimmed, not hidden: the card keeps every row it had, so what a
+        // reading session can't do stays legible instead of merely absent.
+        for row in ["Bold", "Save", "Quit", "Paste"] {
+            assert!(card.contains(row), "{row} was dropped from the card");
+        }
+        // Reading a document includes quitting it, and finding in it.
+        assert!(
+            !reading.contains("Quit"),
+            "quit is not withheld:\n{reading}"
+        );
+        assert!(!reading.contains("Find…"), "nor is find:\n{reading}");
+        // Everything that would change it, or write a file, is.
+        for row in ["Bold", "Save", "Paste", "New Document"] {
+            assert!(reading.contains(row), "{row} should be dimmed:\n{reading}");
+        }
+    }
+
+    /// Every label drawn in the key reference whose row came out dim.
+    fn dimmed_labels(doc: &mut Doc, app: &mut App, w: u16, h: u16) -> String {
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| ui::render(f, doc, app)).unwrap();
+        let buf = term.backend().buffer().clone();
+        let theme = app.editor.theme();
+        (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| {
+                        let cell = &buf[(x, y)];
+                        if cell.fg == theme.panel_dim {
+                            cell.symbol()
+                        } else {
+                            " "
+                        }
+                    })
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     #[test]
     fn a_reload_under_an_open_find_bar_re_runs_the_search() {
         // The matches are byte offsets into text the reload just replaced
