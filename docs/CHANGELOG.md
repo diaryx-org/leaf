@@ -33,6 +33,35 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
+_No commits since the last tag._
+
+<!-- git-cliff:end -->
+
+## v0.1.3 — 2026-08-28
+
+### Breaking
+
+- **workspace** — move the gpui crates out into their own workspaces ([`19ff9c8`](https://github.com/diaryx-org/leaf/commit/19ff9c84274d81a7d0176a388f6c686312571cc9))
+
+### Added
+
+- **wasm** — the frame the Swift binding sends, in the browser's shape ([`2da5ae4`](https://github.com/diaryx-org/leaf/commit/2da5ae45701b13a8ae1f74e72e2137dee0861e0f))
+- **wasm** — the commands the Swift binding has, and a test that keeps them level ([`6e70b50`](https://github.com/diaryx-org/leaf/commit/6e70b509c55130a28868dd55ebafb91a0102e556))
+- **web** — the commands wired to something a reader can click ([`2b0c12c`](https://github.com/diaryx-org/leaf/commit/2b0c12cad9a748394363e62f93eb7289ccb2f568))
+- **tui** — answer --version and --help before opening a file ([`38968b0`](https://github.com/diaryx-org/leaf/commit/38968b043d56c8ef294ea38fbf6b11c1a00c06f4))
+- **release** — ship the leaf CLI through the Homebrew tap ([`bf48d05`](https://github.com/diaryx-org/leaf/commit/bf48d05ea3a06a7d26b99b449d8dd5db259704e7))
+- **nix** — a dev shell on the org's pinned toolchains ([`b67c6d5`](https://github.com/diaryx-org/leaf/commit/b67c6d57c24ec45cff47e7c5a70f21b3edbe40cd))
+- **nix** — package the leaf CLI ([`55479c2`](https://github.com/diaryx-org/leaf/commit/55479c21199de7f437fc45bd6f3a79b159c76955))
+
+### Fixed
+
+- **xtask** — a repo root that survives moving the checkout ([`ebe9890`](https://github.com/diaryx-org/leaf/commit/ebe98907a8220576f043f0b0d5dac5c3401dfd78))
+- **web** — a wrap budget checked against what the browser drew ([`aa6666f`](https://github.com/diaryx-org/leaf/commit/aa6666fc3e3117f31162e8f788e2f58cc3b66c40))
+- **web** — a real grid where the box-drawn picture used to shear ([`d7c0f60`](https://github.com/diaryx-org/leaf/commit/d7c0f60876bb53c69f27c2e9acd2f78bcc90dc34))
+- **web** — a caret that can stand after a picture ([`a17c552`](https://github.com/diaryx-org/leaf/commit/a17c552673ffd67a3afdd3eb59e83f1e8604b3dd))
+- **tui** — a palette picked against the terminal you actually have ([`331be62`](https://github.com/diaryx-org/leaf/commit/331be62c2b2245663437d1b3c95c3e5a4f682101))
+- **toolchain** — declare the components this repo's CI actually runs ([`b07503d`](https://github.com/diaryx-org/leaf/commit/b07503d8ecd63c9488bae89461938e11bce27786))
+
 ### Changed
 
 - **xtask** — cut releases with the shared tooling, not a fifth copy ([`ee0ca08`](https://github.com/diaryx-org/leaf/commit/ee0ca0801b46310f20116382f3343ea195250c71))
@@ -49,7 +78,36 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
   for its git-cliff config as well as for `release` itself. Nothing in the tree
   configures git-cliff any more.
 
-<!-- git-cliff:end -->
+- `cargo xtask <task>` now works in a checkout that was moved
+after its last build, instead of operating on the old path. A task run from a
+tree with no `xtask/Cargo.toml` above it now panics with an explanation rather
+than silently using a stale root.
+
+- the editor now re-wraps a document up to four times on open
+and on resize, and calls `set_width` with a smaller column budget than the
+average-width estimate returns. A host reading `LeafEditor` internals for the
+column count should ask after the first paint, not before.
+
+- `DocView` and `Run` gain fields. Additive for a JS consumer
+reading properties, but a TypeScript object literal built to the old `Run` or
+`DocView` interface no longer satisfies it — the generated `leaf_wasm.d.ts` now
+requires `sup`, `sub`, `src`, `tables`, `directives`, `caret_src`, and `link`.
+
+- a media row now has two reachable caret positions rather
+than one. A host stepping the caret through a document with images will see one
+fewer key press per image, and a caret placed after an image now reports the
+row's end column instead of 0.
+
+- `leaf --version` / `-V` now prints `leaf <version>` and
+ exits 0; `leaf --help` / `-h` prints the usage line and exits 0. All four
+ previously exited 1 having failed to open a file by that name.
+
+- the gpui frontends are no longer reachable by `-p` from the
+ repository root. `cargo run -p leaf` becomes
+ `cargo run --manifest-path apps/leaf/Cargo.toml`, and likewise
+ `cargo build -p leaf-gpui` becomes `--manifest-path crates/leaf-gpui/Cargo.toml`.
+ `cargo build`, `cargo run`, and `cargo xtask ci` at the root are unchanged.
+
 
 ## v0.1.2 — 2026-08-22
 
