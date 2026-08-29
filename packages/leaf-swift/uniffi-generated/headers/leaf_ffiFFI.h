@@ -361,6 +361,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_footnote_at_caret(void*_Nonnull ptr
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_footnote_definition_at_caret(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_HIGHLIGHT_AT
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_HIGHLIGHT_AT
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_highlight_at(void*_Nonnull ptr, uint32_t offset, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INDENT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INDENT
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_indent(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
@@ -559,6 +564,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_dark_appearance(void*_Nonnull p
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_HEADING
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_HEADING
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_heading(void*_Nonnull ptr, uint32_t level, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_HIGHLIGHTS
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_HIGHLIGHTS
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_highlights(void*_Nonnull ptr, RustBuffer highlights, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_LINE_FLOW
@@ -1135,6 +1145,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_footnote_definition_at_caret(vo
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_HIGHLIGHT_AT
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_HIGHLIGHT_AT
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_highlight_at(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_INDENT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_INDENT
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_indent(void
@@ -1372,6 +1388,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_dark_appearance(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_HEADING
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_HEADING
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_heading(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_HIGHLIGHTS
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_HIGHLIGHTS
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_highlights(void
     
 );
 #endif

@@ -147,6 +147,13 @@ enum AttributedRow {
         } else if run.role == "mark" {
             attrs[.backgroundColor] = theme.markBackground
         }
+        // A host highlight washes over whatever role background the run had —
+        // it is the newer statement about these bytes, and a wash that lost to
+        // an author's `==mark==` would make the host's marks vanish exactly
+        // where the text is already marked.
+        if run.hl != nil {
+            attrs[.backgroundColor] = theme.highlightBackground(run.hlColor)
+        }
 
         // A link is underlined; the author's own `{+ins+}` underline adds to it.
         if run.underline || run.role == "link" {

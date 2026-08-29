@@ -170,6 +170,29 @@ public final class LeafEditorModel: ObservableObject {
     }
     #endif
 
+    /// Paint host ranges over the source — annotation footprints, search
+    /// hits. The whole set each time (see `leaf_core::Doc::set_highlights`);
+    /// safe to call before the view exists, since the doc holds them and the
+    /// first render paints them. Ranges are source bytes, the same coordinate
+    /// `selectionQuote` reports — anchor a quote, paint what it found.
+    public func setHighlights(_ highlights: [Highlight]) {
+        prefer { $0.setHighlights(highlights: highlights) }
+    }
+
+    /// Called with a highlight's `id` when the reader taps (iOS) or clicks
+    /// (macOS) inside its wash — how a painted annotation opens. Nil leaves a
+    /// highlight purely visual.
+    public var onTapHighlight: ((String) -> Void)? {
+        didSet { textView?.onTapHighlight = tapHighlightBridge }
+    }
+
+    /// The read-through wrapper `onTapHighlight` reaches the view as — nil
+    /// exactly when the host's is, for the reason `editBridge` exists.
+    fileprivate var tapHighlightBridge: ((String) -> Void)? {
+        guard onTapHighlight != nil else { return nil }
+        return { [weak self] id in self?.onTapHighlight?(id) }
+    }
+
     /// Whether a bare `[[target]]` / `[[target|label]]` is a link the reader can
     /// follow. Off by default, because it is a convention rather than a syntax:
     /// neither Markdown nor Djot has it, so twig doesn't parse it and it reaches
@@ -528,6 +551,7 @@ public struct LeafEditor: NSViewRepresentable {
         // vault where only some files use the convention) gets it honoured.
         hosted.recognizesWikilinks = model.recognizesWikilinks
         hosted.isReadOnly = model.isReadOnly
+        hosted.onTapHighlight = model.tapHighlightBridge
         hosted.documentDirectory = model.documentDirectory
         hosted.mediaPlayback = model.mediaPlayback
         hosted.onResolveMedia = model.onResolveMedia
@@ -571,6 +595,7 @@ public struct LeafEditor: NSViewRepresentable {
             model?.onOpenMedia?(src)
         }
         textView.isReadOnly = model.isReadOnly
+        textView.onTapHighlight = model.tapHighlightBridge
         model.textView = textView
         // A locator the host followed before there was anything to scroll. After
         // the frame lands, not during: the view has no size yet, so a reveal here
@@ -716,6 +741,7 @@ public struct LeafEditor: UIViewRepresentable {
         hosted.recognizesWikilinks = model.recognizesWikilinks
         hosted.isReadOnly = model.isReadOnly
         hosted.selectionMenuActions = model.selectionMenuBridge
+        hosted.onTapHighlight = model.tapHighlightBridge
         hosted.documentDirectory = model.documentDirectory
         hosted.mediaPlayback = model.mediaPlayback
         hosted.onResolveMedia = model.onResolveMedia
@@ -792,6 +818,7 @@ public struct LeafEditor: UIViewRepresentable {
         }
         textView.isReadOnly = model.isReadOnly
         textView.selectionMenuActions = model.selectionMenuBridge
+        textView.onTapHighlight = model.tapHighlightBridge
         model.textView = textView
         // A locator the host followed before there was anything to scroll — see
         // the AppKit peer for why this waits a turn.

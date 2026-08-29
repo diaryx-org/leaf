@@ -82,6 +82,21 @@ pub struct SelectionQuote {
     pub end: u64,
 }
 
+/// A host-painted range of the source — an annotation's footprint, a search
+/// hit. The FFI shape of `leaf_core::Highlight`; see
+/// [`LeafDoc::set_highlights`].
+#[derive(uniffi::Record)]
+pub struct Highlight {
+    /// Byte offset in the source where the wash begins.
+    pub start: u64,
+    /// Byte offset where it ends (exclusive).
+    pub end: u64,
+    /// The host's name for it, handed back on activation. Opaque to leaf.
+    pub id: String,
+    /// A rendering hint (`#RRGGBB`), or `None` for the theme's default wash.
+    pub color: Option<String>,
+}
+
 /// One maximal span of same-styled glyphs on a visual row — the unit the Swift
 /// renderer turns into a single styled attributed-string run.
 #[derive(uniffi::Record)]
@@ -123,6 +138,13 @@ pub struct Run {
     /// Whether this run lies inside the active selection — so the renderer can
     /// paint a selection background without re-deriving it from offsets.
     pub sel: bool,
+    /// The id of the host highlight covering this run, if one does — see
+    /// [`LeafDoc::set_highlights`]. A highlight splits a run the way the
+    /// selection does, so a wash begins and ends exactly on its bytes.
+    pub hl: Option<String>,
+    /// That highlight's rendering hint (`#RRGGBB`, or `None` for the theme's
+    /// default wash), carried beside the id so a renderer needs no lookup.
+    pub hl_color: Option<String>,
 }
 
 /// Where a locator lands — what [`LeafDoc::locate`] answers with, and the FFI
@@ -935,13 +957,13 @@ impl Inner {
         // vs the raw source split on newlines — and `caret_pos` branches to match,
         // so the rows must too or the caret lands on the wrong text.
         let rows = match self.doc.view {
-            View::Wysiwyg => wysiwyg_rows(&self.doc.vmap, ss, se),
+            View::Wysiwyg => wysiwyg_rows(&self.doc.vmap, ss, se, self.doc.highlights()),
             View::Source => source_rows(&self.doc.source, ss, se),
         };
         // Structural tables, for a proportional renderer that draws its own grid;
         // none in the source view (the caret rides raw pipe text there).
         let tables = match self.doc.view {
-            View::Wysiwyg => wysiwyg_tables(&self.doc.vmap, ss, se),
+            View::Wysiwyg => wysiwyg_tables(&self.doc.vmap, ss, se, self.doc.highlights()),
             View::Source => Vec::new(),
         };
 
@@ -1159,6 +1181,30 @@ impl LeafDoc {
         let mut g = self.lock();
         g.doc.set_read_only(on);
         g.view()
+    }
+
+    /// Replace the host-painted source ranges wholesale and repaint — see
+    /// `leaf_core::Doc::set_highlights` for why it is a replace, and
+    /// [`Highlight`] for what one is.
+    pub fn set_highlights(&self, highlights: Vec<Highlight>) -> DocView {
+        let mut g = self.lock();
+        let hls = highlights
+            .into_iter()
+            .map(|h| leaf_core::Highlight {
+                start: h.start as usize,
+                end: h.end as usize,
+                id: h.id,
+                color: h.color,
+            })
+            .collect();
+        g.doc.set_highlights(hls);
+        g.view()
+    }
+
+    /// The id of the highlight covering source `offset`, if one does — what a
+    /// frontend asks when the reader activates a spot on the page.
+    pub fn highlight_at(&self, offset: u32) -> Option<String> {
+        self.lock().doc.highlight_at(offset as usize).map(|h| h.id.clone())
     }
 
     /// Mark the buffer saved after the host persisted [`LeafDoc::source`] its own
@@ -2016,12 +2062,12 @@ fn mark_id(kind: InlineKind) -> &'static str {
 /// The WYSIWYG rows: each visual row's glyphs coalesced into maximal runs of
 /// identical `(style, selected)`. A glyph is selected when its source byte lies
 /// in `[ss, se)`.
-fn wysiwyg_rows(vmap: &VisualMap, ss: usize, se: usize) -> Vec<Row> {
+fn wysiwyg_rows(vmap: &VisualMap, ss: usize, se: usize, hls: &[leaf_core::Highlight]) -> Vec<Row> {
     vmap.rows
         .iter()
         .map(|vrow| {
             Row {
-                runs: runs_of(&vrow.glyphs, ss, se),
+                runs: runs_of(&vrow.glyphs, ss, se, hls),
                 decoration: vrow.decoration,
                 code: vrow.code,
                 code_lang: vrow.code_lang.clone(),
@@ -2055,6 +2101,7 @@ fn cell_lines(
     cell_end: usize,
     ss: usize,
     se: usize,
+    hls: &[leaf_core::Highlight],
 ) -> Vec<TableCellLineView> {
     let mut lines = Vec::new();
     let mut seg: Vec<leaf_core::Glyph> = Vec::new();
@@ -2065,7 +2112,7 @@ fn cell_lines(
         if g.ch == '\n' {
             let start = line_start.unwrap_or(g.src);
             lines.push(TableCellLineView {
-                runs: runs_of(&seg, ss, se),
+                runs: runs_of(&seg, ss, se, hls),
                 start: start as u32,
                 end: g.src as u32,
             });
@@ -2079,35 +2126,52 @@ fn cell_lines(
         }
     }
     lines.push(TableCellLineView {
-        runs: runs_of(&seg, ss, se),
+        runs: runs_of(&seg, ss, se, hls),
         start: line_start.unwrap_or(cell_end) as u32,
         end: cell_end as u32,
     });
     lines
 }
 
-fn runs_of(glyphs: &[leaf_core::Glyph], ss: usize, se: usize) -> Vec<Run> {
+fn runs_of(
+    glyphs: &[leaf_core::Glyph],
+    ss: usize,
+    se: usize,
+    hls: &[leaf_core::Highlight],
+) -> Vec<Run> {
+    // Which highlight (by index) covers a glyph — first by start when several
+    // overlap, matching `Doc::highlight_at`. Part of the run key: a highlight
+    // splits a run exactly the way the selection does, so its wash begins and
+    // ends on its own bytes.
+    let hl_of = |src: usize| hls.iter().position(|h| h.start <= src && src < h.end);
     let mut runs: Vec<Run> = Vec::new();
     let mut buf = String::new();
-    // The style/selection key the run is accumulating, and the source offset its
-    // first glyph came from — carried alongside rather than re-derived, since a
-    // run's glyphs are contiguous but its *text* has no offsets in it.
-    let mut cur: Option<(LStyle, bool, usize)> = None;
+    // The style/selection/highlight key the run is accumulating, and the source
+    // offset its first glyph came from — carried alongside rather than
+    // re-derived, since a run's glyphs are contiguous but its *text* has no
+    // offsets in it.
+    let mut cur: Option<(LStyle, bool, Option<usize>, usize)> = None;
     for g in glyphs {
-        let key = (g.style, g.src >= ss && g.src < se);
+        let key = (g.style, g.src >= ss && g.src < se, hl_of(g.src));
         match cur {
-            Some((style, sel, _)) if (style, sel) == key => buf.push(g.ch),
+            Some((style, sel, hl, _)) if (style, sel, hl) == key => buf.push(g.ch),
             _ => {
-                if let Some((style, was_sel, src)) = cur.take() {
-                    runs.push(make_run(std::mem::take(&mut buf), style, was_sel, src));
+                if let Some((style, was_sel, hl, src)) = cur.take() {
+                    runs.push(make_run(
+                        std::mem::take(&mut buf),
+                        style,
+                        was_sel,
+                        hl.map(|i| &hls[i]),
+                        src,
+                    ));
                 }
-                cur = Some((key.0, key.1, g.src));
+                cur = Some((key.0, key.1, key.2, g.src));
                 buf.push(g.ch);
             }
         }
     }
-    if let Some((style, was_sel, src)) = cur {
-        runs.push(make_run(buf, style, was_sel, src));
+    if let Some((style, was_sel, hl, src)) = cur {
+        runs.push(make_run(buf, style, was_sel, hl.map(|i| &hls[i]), src));
     }
     runs
 }
@@ -2173,7 +2237,7 @@ fn wysiwyg_media(vmap: &VisualMap, scheme: ColorScheme) -> Vec<MediaView> {
 
 /// The structural tables of a WYSIWYG frame — each with the `rows` span its
 /// box-glyph picture occupies (to be skipped) and its grid of styled cells.
-fn wysiwyg_tables(vmap: &VisualMap, ss: usize, se: usize) -> Vec<TableView> {
+fn wysiwyg_tables(vmap: &VisualMap, ss: usize, se: usize, hls: &[leaf_core::Highlight]) -> Vec<TableView> {
     vmap.tables
         .iter()
         .map(|t| TableView {
@@ -2188,7 +2252,7 @@ fn wysiwyg_tables(vmap: &VisualMap, ss: usize, se: usize) -> Vec<TableView> {
                         .cells
                         .iter()
                         .map(|cell| TableCellView {
-                            lines: cell_lines(&cell.glyphs, cell.start, cell.end, ss, se),
+                            lines: cell_lines(&cell.glyphs, cell.start, cell.end, ss, se, hls),
                             align: align_name(cell.align),
                             start: cell.start as u32,
                             end: cell.end as u32,
@@ -2231,14 +2295,14 @@ fn source_rows(source: &str, ss: usize, se: usize) -> Vec<Row> {
         let mut runs = Vec::new();
         if a < b {
             if a > 0 {
-                runs.push(make_run(raw[..a].to_string(), body, false, start));
+                runs.push(make_run(raw[..a].to_string(), body, false, None, start));
             }
-            runs.push(make_run(raw[a..b].to_string(), body, true, start + a));
+            runs.push(make_run(raw[a..b].to_string(), body, true, None, start + a));
             if b < raw.len() {
-                runs.push(make_run(raw[b..].to_string(), body, false, start + b));
+                runs.push(make_run(raw[b..].to_string(), body, false, None, start + b));
             }
         } else if !raw.is_empty() {
-            runs.push(make_run(raw.to_string(), body, false, start));
+            runs.push(make_run(raw.to_string(), body, false, None, start));
         }
 
         rows.push(Row {
@@ -2258,7 +2322,13 @@ fn source_rows(source: &str, ss: usize, se: usize) -> Vec<Row> {
 
 /// Build a [`Run`] from an accumulated string and the core style it was drawn
 /// with — the one place role and emphasis flags cross into the view shape.
-fn make_run(text: String, style: LStyle, sel: bool, src: usize) -> Run {
+fn make_run(
+    text: String,
+    style: LStyle,
+    sel: bool,
+    hl: Option<&leaf_core::Highlight>,
+    src: usize,
+) -> Run {
     Run {
         text,
         role: role_name(style.role),
@@ -2270,6 +2340,8 @@ fn make_run(text: String, style: LStyle, sel: bool, src: usize) -> Run {
         sub: style.baseline == Baseline::Sub,
         src: src as u32,
         sel,
+        hl: hl.map(|h| h.id.clone()),
+        hl_color: hl.and_then(|h| h.color.clone()),
     }
 }
 
@@ -2541,7 +2613,7 @@ mod tests {
         };
         // "a" at 10, a `<br>` at 11..15 (the break glyph), "b" at 15; cell 10..16.
         let glyphs = [g('a', 10), g('\n', 11), g('b', 15)];
-        let lines = cell_lines(&glyphs, 10, 16, 0, 0);
+        let lines = cell_lines(&glyphs, 10, 16, 0, 0, &[]);
         assert_eq!(lines.len(), 2, "one break makes two lines");
         assert_eq!(
             (lines[0].start, lines[0].end),
@@ -2560,14 +2632,14 @@ mod tests {
 
         // A trailing break leaves an empty last line homed at the cell's end.
         let trailing = [g('a', 10), g('\n', 11)];
-        let lines = cell_lines(&trailing, 10, 15, 0, 0);
+        let lines = cell_lines(&trailing, 10, 15, 0, 0, &[]);
         assert_eq!(lines.len(), 2);
         assert!(lines[1].runs.is_empty());
         assert_eq!((lines[1].start, lines[1].end), (15, 15));
 
         // No break: one line spanning the whole cell.
         let plain = [g('P', 10), g('e', 11)];
-        let lines = cell_lines(&plain, 10, 12, 0, 0);
+        let lines = cell_lines(&plain, 10, 12, 0, 0, &[]);
         assert_eq!(lines.len(), 1);
         assert_eq!((lines[0].start, lines[0].end), (10, 12));
     }
@@ -3137,5 +3209,37 @@ mod tests {
             1,
             "one Right crosses the whole gap"
         );
+    }
+
+    #[test]
+    fn a_highlight_splits_runs_on_its_own_bytes_and_carries_its_id() {
+        let d = doc("one two three\n");
+        let view = d.set_highlights(vec![Highlight {
+            start: 4,
+            end: 7,
+            id: "remark-1".into(),
+            color: Some("#ffe066".into()),
+        }]);
+        let row = &view.rows[0];
+        let texts: Vec<(&str, Option<&str>)> = row
+            .runs
+            .iter()
+            .map(|r| (r.text.as_str(), r.hl.as_deref()))
+            .collect();
+        assert_eq!(
+            texts,
+            [
+                ("one ", None),
+                ("two", Some("remark-1")),
+                (" three", None)
+            ],
+            "the wash begins and ends exactly on the highlight's bytes"
+        );
+        assert_eq!(row.runs[1].hl_color.as_deref(), Some("#ffe066"));
+        assert_eq!(d.highlight_at(5).as_deref(), Some("remark-1"));
+        assert_eq!(d.highlight_at(7), None, "end is exclusive");
+        // A replace with nothing clears the wash.
+        let view = d.set_highlights(Vec::new());
+        assert!(view.rows[0].runs.iter().all(|r| r.hl.is_none()));
     }
 }

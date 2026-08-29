@@ -87,6 +87,10 @@ public struct EditorTheme {
     /// A directive container's (`:::name{.class}`) dashed outline colour.
     public var directiveBorderColor: LeafColor
     public var markBackground: LeafColor
+    /// The wash behind a host-painted highlight — see
+    /// `LeafEditorModel.setHighlights`. A `Highlight.color` hex hint overrides
+    /// the hue per highlight (`highlightBackground(_:)`); this is the default.
+    public var highlightBackground: LeafColor
     /// The painted bar down a blockquote's left edge — one per nesting level.
     public var quoteBarColor: LeafColor
     /// The bar's thickness in points.
@@ -149,6 +153,7 @@ public struct EditorTheme {
         codeBackground: LeafColor = Palette.codeBackground,
         directiveBorderColor: LeafColor = Palette.directiveBorderColor,
         markBackground: LeafColor = Palette.markBackground,
+        highlightBackground: LeafColor = Palette.hostHighlight,
         quoteBarColor: LeafColor = Palette.tertiary,
         quoteBarWidth: CGFloat = 3,
         quoteIndent: CGFloat = 22,
@@ -187,6 +192,7 @@ public struct EditorTheme {
         self.codeBackground = codeBackground
         self.directiveBorderColor = directiveBorderColor
         self.markBackground = markBackground
+        self.highlightBackground = highlightBackground
         self.quoteBarColor = quoteBarColor
         self.quoteBarWidth = quoteBarWidth
         self.quoteIndent = quoteIndent
@@ -263,6 +269,14 @@ public struct EditorTheme {
     var lineRatio: CGFloat { lineHeight / fontSize }
 
     /// The point size for a heading of `level` (1–6), clamped to the ramp.
+    /// The wash for one highlight: its own `#RRGGBB` hint at a readable
+    /// alpha, or the theme's default. Strictly hex — an unparseable hint is
+    /// the default, not a guess.
+    func highlightBackground(_ hint: String?) -> LeafColor {
+        guard let hint, let color = leafColor(hex: hint) else { return highlightBackground }
+        return color.withAlphaComponent(0.32)
+    }
+
     func headingSize(_ level: Int) -> CGFloat {
         let i = min(max(level, 1), 6) - 1
         return fontSize * headingScale[i]

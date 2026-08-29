@@ -1800,8 +1800,6 @@ dependencies = [
 [[package]]
 name = "twig-doc"
 version = "3.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e8351d2ad28da01599038b70d227550e58d6b08bba530e2344aeb4df05631ca"
 dependencies = [
  "twig-sys",
 ]
@@ -1809,8 +1807,6 @@ dependencies = [
 [[package]]
 name = "twig-sys"
 version = "3.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4feb15e47e16e6529e24b7b37b0a37d134054fab41d03247705ace6ecdc48df"
 dependencies = [
  "twig-sys-linux-arm64-gnu",
  "twig-sys-linux-x64-gnu",
@@ -1822,32 +1818,22 @@ dependencies = [
 [[package]]
 name = "twig-sys-linux-arm64-gnu"
 version = "3.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c2a5cf04ebd8c0e7fa9fd7f943585a89818c5aee58d490d479b68f4004e41a8"
 
 [[package]]
 name = "twig-sys-linux-x64-gnu"
 version = "3.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f85254b9d01c2f97d2577189239315d560d17899ccdb16c1b6b332f00b4013a1"
 
 [[package]]
 name = "twig-sys-macos-arm64"
 version = "3.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "26b9355652253e057119c62f4d858af3356dcf8a4096fc1bcd9c3876b051ffdf"
 
 [[package]]
 name = "twig-sys-wasm32"
 version = "3.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4246465bd7a2c158a291a5dc96ef0bfeaa570218c6c56ce065a26515212b08e2"
 
 [[package]]
 name = "twig-sys-windows-x64-msvc"
 version = "3.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85f8626563c4d7b50438b8d9539249e3f49002b31087abc9231ab7538f15f76c"
 
 [[package]]
 name = "unicase"

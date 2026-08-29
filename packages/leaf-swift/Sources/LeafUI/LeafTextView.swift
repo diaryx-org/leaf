@@ -117,6 +117,11 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// Quieting the caret and the beep a refused key makes is still to do.
     public var isReadOnly: Bool = false
 
+    /// Called with a highlight's `id` when a plain click lands inside its
+    /// wash — how a host's painted annotation opens. Rides the click that
+    /// places the caret; nil leaves highlights purely visual.
+    public var onTapHighlight: ((String) -> Void)?
+
     /// Asked to edit the destination of the link under the caret, with its
     /// current destination to seed a field with. See `LeafEditorModel.onEditLink`.
     public var onEditLink: ((String) -> Void)?
@@ -832,7 +837,15 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         switch event.clickCount {
         case 2:  render(doc.selectWordCh(row: UInt32(row), ch: UInt32(ch)))
         case 3:  render(doc.selectBlockCh(row: UInt32(row), ch: UInt32(ch)))
-        default: render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: extend))
+        default:
+            render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: extend))
+            // The click has just placed the caret, so the caret *is* the
+            // clicked spot in source coordinates — ask whether a host
+            // highlight covers it and hand its id back if one does.
+            if let onTapHighlight, !extend,
+               let id = doc.highlightAt(offset: doc.caretOffset()) {
+                onTapHighlight(id)
+            }
         }
     }
 

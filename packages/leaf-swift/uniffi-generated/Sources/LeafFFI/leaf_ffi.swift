@@ -661,6 +661,12 @@ public protocol LeafDocProtocol : AnyObject {
     func footnoteDefinitionAtCaret()  -> FootnoteDefView?
     
     /**
+     * The id of the highlight covering source `offset`, if one does — what a
+     * frontend asks when the reader activates a spot on the page.
+     */
+    func highlightAt(offset: UInt32)  -> String?
+    
+    /**
      * Tab away from a table: indent the caret's line (or the selected lines) one
      * level, nesting a list item under its sibling. The frontend calls this when
      * [`LeafDoc::cell_tab`] declined because the caret isn't in a table.
@@ -872,6 +878,13 @@ public protocol LeafDocProtocol : AnyObject {
      * active level off returns it to a paragraph, per core.
      */
     func setHeading(level: UInt32)  -> DocView
+    
+    /**
+     * Replace the host-painted source ranges wholesale and repaint — see
+     * `leaf_core::Doc::set_highlights` for why it is a replace, and
+     * [`Highlight`] for what one is.
+     */
+    func setHighlights(highlights: [Highlight])  -> DocView
     
     /**
      * Set the soft-break flow preference. Returns a fresh view so a frontend
@@ -1378,6 +1391,18 @@ open func footnoteDefinitionAtCaret() -> FootnoteDefView? {
 }
     
     /**
+     * The id of the highlight covering source `offset`, if one does — what a
+     * frontend asks when the reader activates a spot on the page.
+     */
+open func highlightAt(offset: UInt32) -> String? {
+    return try!  FfiConverterOptionString.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_highlight_at(self.uniffiClonePointer(),
+        FfiConverterUInt32.lower(offset),$0
+    )
+})
+}
+    
+    /**
      * Tab away from a table: indent the caret's line (or the selected lines) one
      * level, nesting a list item under its sibling. The frontend calls this when
      * [`LeafDoc::cell_tab`] declined because the caret isn't in a table.
@@ -1821,6 +1846,19 @@ open func setHeading(level: UInt32) -> DocView {
     return try!  FfiConverterTypeDocView.lift(try! rustCall() {
     uniffi_leaf_ffi_fn_method_leafdoc_set_heading(self.uniffiClonePointer(),
         FfiConverterUInt32.lower(level),$0
+    )
+})
+}
+    
+    /**
+     * Replace the host-painted source ranges wholesale and repaint — see
+     * `leaf_core::Doc::set_highlights` for why it is a replace, and
+     * [`Highlight`] for what one is.
+     */
+open func setHighlights(highlights: [Highlight]) -> DocView {
+    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_set_highlights(self.uniffiClonePointer(),
+        FfiConverterSequenceTypeHighlight.lower(highlights),$0
     )
 })
 }
@@ -3374,6 +3412,117 @@ public func FfiConverterTypeFootnoteView_lower(_ value: FootnoteView) -> RustBuf
 
 
 /**
+ * A host-painted range of the source — an annotation's footprint, a search
+ * hit. The FFI shape of `leaf_core::Highlight`; see
+ * [`LeafDoc::set_highlights`].
+ */
+public struct Highlight {
+    /**
+     * Byte offset in the source where the wash begins.
+     */
+    public var start: UInt64
+    /**
+     * Byte offset where it ends (exclusive).
+     */
+    public var end: UInt64
+    /**
+     * The host's name for it, handed back on activation. Opaque to leaf.
+     */
+    public var id: String
+    /**
+     * A rendering hint (`#RRGGBB`), or `None` for the theme's default wash.
+     */
+    public var color: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Byte offset in the source where the wash begins.
+         */start: UInt64, 
+        /**
+         * Byte offset where it ends (exclusive).
+         */end: UInt64, 
+        /**
+         * The host's name for it, handed back on activation. Opaque to leaf.
+         */id: String, 
+        /**
+         * A rendering hint (`#RRGGBB`), or `None` for the theme's default wash.
+         */color: String?) {
+        self.start = start
+        self.end = end
+        self.id = id
+        self.color = color
+    }
+}
+
+
+
+extension Highlight: Equatable, Hashable {
+    public static func ==(lhs: Highlight, rhs: Highlight) -> Bool {
+        if lhs.start != rhs.start {
+            return false
+        }
+        if lhs.end != rhs.end {
+            return false
+        }
+        if lhs.id != rhs.id {
+            return false
+        }
+        if lhs.color != rhs.color {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(start)
+        hasher.combine(end)
+        hasher.combine(id)
+        hasher.combine(color)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeHighlight: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Highlight {
+        return
+            try Highlight(
+                start: FfiConverterUInt64.read(from: &buf), 
+                end: FfiConverterUInt64.read(from: &buf), 
+                id: FfiConverterString.read(from: &buf), 
+                color: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: Highlight, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.start, into: &buf)
+        FfiConverterUInt64.write(value.end, into: &buf)
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterOptionString.write(value.color, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHighlight_lift(_ buf: RustBuffer) throws -> Highlight {
+    return try FfiConverterTypeHighlight.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHighlight_lower(_ value: Highlight) -> RustBuffer {
+    return FfiConverterTypeHighlight.lower(value)
+}
+
+
+/**
  * Where a locator lands — what [`LeafDoc::locate`] answers with, and the FFI
  * mirror of [`leaf_core::Landing`].
  *
@@ -4197,6 +4346,17 @@ public struct Run {
      * paint a selection background without re-deriving it from offsets.
      */
     public var sel: Bool
+    /**
+     * The id of the host highlight covering this run, if one does — see
+     * [`LeafDoc::set_highlights`]. A highlight splits a run the way the
+     * selection does, so a wash begins and ends exactly on its bytes.
+     */
+    public var hl: String?
+    /**
+     * That highlight's rendering hint (`#RRGGBB`, or `None` for the theme's
+     * default wash), carried beside the id so a renderer needs no lookup.
+     */
+    public var hlColor: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -4239,7 +4399,16 @@ public struct Run {
         /**
          * Whether this run lies inside the active selection — so the renderer can
          * paint a selection background without re-deriving it from offsets.
-         */sel: Bool) {
+         */sel: Bool, 
+        /**
+         * The id of the host highlight covering this run, if one does — see
+         * [`LeafDoc::set_highlights`]. A highlight splits a run the way the
+         * selection does, so a wash begins and ends exactly on its bytes.
+         */hl: String?, 
+        /**
+         * That highlight's rendering hint (`#RRGGBB`, or `None` for the theme's
+         * default wash), carried beside the id so a renderer needs no lookup.
+         */hlColor: String?) {
         self.text = text
         self.role = role
         self.bold = bold
@@ -4250,6 +4419,8 @@ public struct Run {
         self.sub = sub
         self.src = src
         self.sel = sel
+        self.hl = hl
+        self.hlColor = hlColor
     }
 }
 
@@ -4287,6 +4458,12 @@ extension Run: Equatable, Hashable {
         if lhs.sel != rhs.sel {
             return false
         }
+        if lhs.hl != rhs.hl {
+            return false
+        }
+        if lhs.hlColor != rhs.hlColor {
+            return false
+        }
         return true
     }
 
@@ -4301,6 +4478,8 @@ extension Run: Equatable, Hashable {
         hasher.combine(sub)
         hasher.combine(src)
         hasher.combine(sel)
+        hasher.combine(hl)
+        hasher.combine(hlColor)
     }
 }
 
@@ -4321,7 +4500,9 @@ public struct FfiConverterTypeRun: FfiConverterRustBuffer {
                 sup: FfiConverterBool.read(from: &buf), 
                 sub: FfiConverterBool.read(from: &buf), 
                 src: FfiConverterUInt32.read(from: &buf), 
-                sel: FfiConverterBool.read(from: &buf)
+                sel: FfiConverterBool.read(from: &buf), 
+                hl: FfiConverterOptionString.read(from: &buf), 
+                hlColor: FfiConverterOptionString.read(from: &buf)
         )
     }
 
@@ -4336,6 +4517,8 @@ public struct FfiConverterTypeRun: FfiConverterRustBuffer {
         FfiConverterBool.write(value.sub, into: &buf)
         FfiConverterUInt32.write(value.src, into: &buf)
         FfiConverterBool.write(value.sel, into: &buf)
+        FfiConverterOptionString.write(value.hl, into: &buf)
+        FfiConverterOptionString.write(value.hlColor, into: &buf)
     }
 }
 
@@ -5684,6 +5867,31 @@ fileprivate struct FfiConverterSequenceTypeDirectiveView: FfiConverterRustBuffer
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeHighlight: FfiConverterRustBuffer {
+    typealias SwiftType = [Highlight]
+
+    public static func write(_ value: [Highlight], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeHighlight.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [Highlight] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [Highlight]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeHighlight.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeMediaHeight: FfiConverterRustBuffer {
     typealias SwiftType = [MediaHeight]
 
@@ -5978,6 +6186,9 @@ private var initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_footnote_definition_at_caret() != 43634) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_highlight_at() != 39885) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_indent() != 12990) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -6096,6 +6307,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_heading() != 23018) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_highlights() != 7876) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_line_flow() != 4051) {

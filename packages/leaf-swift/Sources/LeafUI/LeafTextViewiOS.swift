@@ -139,6 +139,11 @@ public final class LeafTextView: UIView, UITextInput {
         }
     }
 
+    /// Called with a highlight's `id` when a tap lands inside its wash — how
+    /// a host's painted annotation opens. Rides the same tap that places the
+    /// caret; nil leaves highlights purely visual.
+    public var onTapHighlight: ((String) -> Void)?
+
     /// Extra actions for the *selection's* edit menu, ahead of the system's
     /// Copy/Look Up — how a host puts its own verbs where a reader's thumb
     /// already is (cite this, annotate this). Asked each time the menu is
@@ -382,6 +387,17 @@ public final class LeafTextView: UIView, UITextInput {
         // picture box asks the host for it.
         if let hit = layoutEngine.mediaBox(at: point) {
             _ = activateMedia(hit)
+        }
+        // A tap inside a host highlight's wash hands its id back — after the
+        // media check, since a wash never covers a media box and the box's tap
+        // is the stronger claim. `closestPosition` clamps a miss to the
+        // nearest glyph, which for a tap on the page's empty tail could name
+        // the last highlight; the guard that the position is really *inside*
+        // the wash is `highlightAt`'s exclusive end.
+        if let onTapHighlight,
+           let position = closestPosition(to: point),
+           let id = doc.highlightAt(offset: UInt32(off(position))) {
+            onTapHighlight(id)
         }
     }
 

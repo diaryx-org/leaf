@@ -420,6 +420,29 @@ pub struct Quote {
     pub end: usize,
 }
 
+/// A host-painted range of the source — an annotation's footprint, a search
+/// hit, a reviewer's mark. Leaf renders it (a background wash behind the
+/// glyphs whose source falls inside it) and hands back the `id` when the
+/// reader activates it; what the range *means* is entirely the host's.
+///
+/// Ranges are source bytes, like the caret and the selection, so a host that
+/// anchors quotes against the source ([`Doc::selection_quote`] is the other
+/// half of that loop) can paint what it found without any coordinate
+/// conversion. A range that drifts off the text it meant is the host's to
+/// re-anchor; leaf draws what it is told.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Highlight {
+    /// Byte offset in the source where the wash begins.
+    pub start: usize,
+    /// Byte offset where it ends (exclusive).
+    pub end: usize,
+    /// The host's name for it, handed back on activation. Opaque to leaf.
+    pub id: String,
+    /// A rendering hint the frontend maps — a `#RRGGBB` hex string, or
+    /// nothing for the theme's default wash.
+    pub color: Option<String>,
+}
+
 pub struct Doc {
     editor: Editor,
     pub format: Format,
@@ -444,6 +467,10 @@ pub struct Doc {
     /// frontend's suppressed keyboard is a hope. A gated splice reports
     /// exactly like a rolled-back one, a path every caller already handles.
     read_only: bool,
+    /// The host-painted ranges, kept sorted by start — see [`Highlight`].
+    /// State like the selection rather than like the text: no edit history,
+    /// no dirty bit, redrawn from whatever the host last set.
+    highlights: Vec<Highlight>,
     /// How much of the source markup the rich view exposes — a frontend preference (see
     /// [`MarkupMode`]). Its two axes are read apart: the rendering one by
     /// [`reveal_line`](Self::reveal_line), the editing one by
@@ -777,6 +804,7 @@ impl Doc {
             dirty: false,
             status: None,
             read_only: false,
+            highlights: Vec::new(),
             // leaf opens in the rich-text (WYSIWYG) view by default — the
             // markup-resolved surface is leaf's differentiator. Frontends can
             // still start in source view explicitly (e.g. a CLI flag), and ⌘e/⌥w
@@ -1187,6 +1215,30 @@ impl Doc {
     /// itself changes, only what may be done to it from here on.
     pub fn set_read_only(&mut self, on: bool) {
         self.read_only = on;
+    }
+
+    /// The host-painted ranges, sorted by start — see [`Highlight`].
+    pub fn highlights(&self) -> &[Highlight] {
+        &self.highlights
+    }
+
+    /// Replace the host-painted ranges wholesale. The whole set each time,
+    /// rather than add/remove verbs: the host owns the list (it derives it
+    /// from its own state — annotations, search hits), and a replace can
+    /// never leave the two disagreeing about what should be on screen.
+    pub fn set_highlights(&mut self, mut highlights: Vec<Highlight>) {
+        highlights.retain(|h| h.start < h.end);
+        highlights.sort_by_key(|h| (h.start, h.end));
+        self.highlights = highlights;
+    }
+
+    /// The highlight covering source `offset`, if one does — first by start
+    /// when several overlap, which makes overlapping washes resolvable rather
+    /// than undefined. What a frontend asks when the reader activates a spot.
+    pub fn highlight_at(&self, offset: usize) -> Option<&Highlight> {
+        self.highlights
+            .iter()
+            .find(|h| h.start <= offset && offset < h.end)
     }
 
     /// The AST breadcrumb at the caret (root → deepest), e.g.
@@ -12512,5 +12564,25 @@ mod tests {
         // No selection is no quote.
         d.place_caret(0, false);
         assert!(d.selection_quote(3).is_none());
+    }
+
+    #[test]
+    fn highlights_are_kept_sorted_and_answer_point_queries() {
+        let mut d = doc_with("hl", "one two three\n");
+        d.set_highlights(vec![
+            Highlight { start: 8, end: 13, id: "b".into(), color: None },
+            Highlight { start: 0, end: 3, id: "a".into(), color: Some("#ffe066".into()) },
+            Highlight { start: 5, end: 5, id: "empty".into(), color: None },
+        ]);
+        assert_eq!(
+            d.highlights().iter().map(|h| h.id.as_str()).collect::<Vec<_>>(),
+            ["a", "b"],
+            "sorted by start, the empty range dropped"
+        );
+        assert_eq!(d.highlight_at(1).map(|h| h.id.as_str()), Some("a"));
+        assert_eq!(d.highlight_at(3), None, "end is exclusive");
+        assert_eq!(d.highlight_at(8).map(|h| h.id.as_str()), Some("b"));
+        d.set_highlights(Vec::new());
+        assert!(d.highlights().is_empty(), "a replace is a replace");
     }
 }

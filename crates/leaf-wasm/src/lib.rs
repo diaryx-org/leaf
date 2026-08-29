@@ -46,8 +46,9 @@
 use leaf_core::style::{Baseline, Role, Style as LStyle};
 use leaf_core::wysiwyg::text_width;
 use leaf_core::{
-    Alignment, BlockClass, BlockKind, ColorScheme, Doc, Format, Glyph, InlineKind,
-    LineFlow as CoreLineFlow, MarkupMode as CoreMarkupMode, MediaKind, View, VisualMap,
+    Alignment, BlockClass, BlockKind, ColorScheme, Doc, Format, Glyph,
+    Highlight as CoreHighlight, InlineKind, LineFlow as CoreLineFlow,
+    MarkupMode as CoreMarkupMode, MediaKind, View, VisualMap,
 };
 use serde::{Deserialize, Serialize};
 use tsify_next::Tsify;
@@ -95,6 +96,13 @@ pub struct Run {
     /// paint a selection background without the JS side re-deriving it from
     /// offsets. Selection splits a run the same way a style change does.
     sel: bool,
+    /// The id of the host highlight covering this run, if one does — see
+    /// [`LeafDoc::set_highlights`]. A highlight splits a run the way the
+    /// selection does, so a wash begins and ends exactly on its bytes.
+    hl: Option<String>,
+    /// That highlight's rendering hint (`#RRGGBB`, or `None` for the theme's
+    /// default wash), carried beside the id so a renderer needs no lookup.
+    hl_color: Option<String>,
 }
 
 /// A selection cited out of the source — the text, a little of what
@@ -113,6 +121,21 @@ pub struct SelectionQuote {
     start: usize,
     /// Byte offset where it ends (exclusive).
     end: usize,
+}
+
+/// A host-painted range of the source, as [`LeafDoc::set_highlights`] takes
+/// it — the wasm shape of `leaf_core::Highlight`.
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+pub struct HighlightIn {
+    /// Byte offset in the source where the wash begins.
+    pub start: usize,
+    /// Byte offset where it ends (exclusive).
+    pub end: usize,
+    /// The host's name for it, handed back on activation. Opaque to leaf.
+    pub id: String,
+    /// A rendering hint (`#RRGGBB`), or absent for the theme's default wash.
+    pub color: Option<String>,
 }
 
 /// One visual line of a table cell — a cell holds more than one only when an
@@ -858,7 +881,7 @@ impl LeafDoc {
         // branches to match, so the rows must too or the caret lands on the wrong
         // text. See `Doc::caret_pos`.
         let rows = match self.doc.view {
-            View::Wysiwyg => wysiwyg_rows(&self.doc.vmap, ss, se),
+            View::Wysiwyg => wysiwyg_rows(&self.doc.vmap, ss, se, self.doc.highlights()),
             View::Source => source_rows(&self.doc.source, ss, se),
         };
 
@@ -892,7 +915,7 @@ impl LeafDoc {
             // Both are structural alternatives to rows the WYSIWYG map drew as a
             // picture; the source view has no picture, only the markup itself.
             tables: match self.doc.view {
-                View::Wysiwyg => wysiwyg_tables(&self.doc.vmap, ss, se),
+                View::Wysiwyg => wysiwyg_tables(&self.doc.vmap, ss, se, self.doc.highlights()),
                 View::Source => Vec::new(),
             },
             directives: match self.doc.view {
@@ -1019,6 +1042,30 @@ impl LeafDoc {
     pub fn set_read_only(&mut self, on: bool) -> Result<DocView, JsValue> {
         self.doc.set_read_only(on);
         self.view()
+    }
+
+    /// Replace the host-painted source ranges wholesale and repaint — see
+    /// `leaf_core::Doc::set_highlights` for why it is a replace. Takes
+    /// `[start, end, id, color?]` tuples as a JS array of objects.
+    pub fn set_highlights(&mut self, highlights: Vec<HighlightIn>) -> Result<DocView, JsValue> {
+        self.doc.set_highlights(
+            highlights
+                .into_iter()
+                .map(|h| CoreHighlight {
+                    start: h.start,
+                    end: h.end,
+                    id: h.id,
+                    color: h.color,
+                })
+                .collect(),
+        );
+        self.view()
+    }
+
+    /// The id of the highlight covering source `offset`, if one does — what a
+    /// frontend asks when the reader activates a spot on the page.
+    pub fn highlight_at(&self, offset: usize) -> Option<String> {
+        self.doc.highlight_at(offset).map(|h| h.id.clone())
     }
 
     /// Which formatting controls this document's format can actually spell —
@@ -1781,7 +1828,7 @@ fn media_views(vmap: &VisualMap, scheme: ColorScheme) -> Vec<MediaView> {
         .collect()
 }
 
-fn wysiwyg_rows(vmap: &VisualMap, ss: usize, se: usize) -> Vec<Row> {
+fn wysiwyg_rows(vmap: &VisualMap, ss: usize, se: usize, hls: &[CoreHighlight]) -> Vec<Row> {
     vmap.rows
         .iter()
         .map(|vrow| {
@@ -1793,7 +1840,7 @@ fn wysiwyg_rows(vmap: &VisualMap, ss: usize, se: usize) -> Vec<Row> {
             let heading = vrow.heading;
 
             Row {
-                runs: runs_of(&vrow.glyphs, ss, se),
+                runs: runs_of(&vrow.glyphs, ss, se, hls),
                 decoration: vrow.decoration,
                 code: vrow.code,
                 code_lang: vrow.code_lang.clone(),
@@ -1828,14 +1875,14 @@ fn source_rows(source: &str, ss: usize, se: usize) -> Vec<Row> {
         let mut runs = Vec::new();
         if a < b {
             if a > 0 {
-                runs.push(make_run(raw[..a].to_string(), body, false, 0));
+                runs.push(make_run(raw[..a].to_string(), body, false, None, 0));
             }
-            runs.push(make_run(raw[a..b].to_string(), body, true, 0));
+            runs.push(make_run(raw[a..b].to_string(), body, true, None, 0));
             if b < raw.len() {
-                runs.push(make_run(raw[b..].to_string(), body, false, 0));
+                runs.push(make_run(raw[b..].to_string(), body, false, None, 0));
             }
         } else if !raw.is_empty() {
-            runs.push(make_run(raw.to_string(), body, false, 0));
+            runs.push(make_run(raw.to_string(), body, false, None, 0));
         }
 
         rows.push(Row {
@@ -1855,7 +1902,13 @@ fn source_rows(source: &str, ss: usize, se: usize) -> Vec<Row> {
 
 /// Build a [`Run`] from an accumulated string and the core style it was drawn
 /// with — the one place role, emphasis, and baseline cross into the view shape.
-fn make_run(text: String, style: LStyle, sel: bool, src: usize) -> Run {
+fn make_run(
+    text: String,
+    style: LStyle,
+    sel: bool,
+    hl: Option<&CoreHighlight>,
+    src: usize,
+) -> Run {
     Run {
         text,
         role: role_name(style.role),
@@ -1867,6 +1920,8 @@ fn make_run(text: String, style: LStyle, sel: bool, src: usize) -> Run {
         sub: style.baseline == Baseline::Sub,
         src,
         sel,
+        hl: hl.map(|h| h.id.clone()),
+        hl_color: hl.and_then(|h| h.color.clone()),
     }
 }
 
@@ -1874,28 +1929,39 @@ fn make_run(text: String, style: LStyle, sel: bool, src: usize) -> Run {
 /// shared body of a row's runs and a table cell's. A glyph is selected when its
 /// source byte lies in `[ss, se)`, so the selection splits a run exactly as a
 /// style change does.
-fn runs_of(glyphs: &[Glyph], ss: usize, se: usize) -> Vec<Run> {
+fn runs_of(glyphs: &[Glyph], ss: usize, se: usize, hls: &[CoreHighlight]) -> Vec<Run> {
+    // Which highlight (by index) covers a glyph — first by start when several
+    // overlap, matching `Doc::highlight_at`. Part of the run key: a highlight
+    // splits a run exactly the way the selection does.
+    let hl_of = |src: usize| hls.iter().position(|h| h.start <= src && src < h.end);
     let mut runs: Vec<Run> = Vec::new();
     let mut buf = String::new();
-    // The style/selection key the run is accumulating, and the source offset its
-    // first glyph came from — carried alongside rather than re-derived, since a
-    // run's glyphs are contiguous but its *text* has no offsets in it.
-    let mut cur: Option<(LStyle, bool, usize)> = None;
+    // The style/selection/highlight key the run is accumulating, and the source
+    // offset its first glyph came from — carried alongside rather than
+    // re-derived, since a run's glyphs are contiguous but its *text* has no
+    // offsets in it.
+    let mut cur: Option<(LStyle, bool, Option<usize>, usize)> = None;
     for g in glyphs {
-        let key = (g.style, g.src >= ss && g.src < se);
+        let key = (g.style, g.src >= ss && g.src < se, hl_of(g.src));
         match cur {
-            Some((style, sel, _)) if (style, sel) == key => buf.push(g.ch),
+            Some((style, sel, hl, _)) if (style, sel, hl) == key => buf.push(g.ch),
             _ => {
-                if let Some((style, was_sel, src)) = cur.take() {
-                    runs.push(make_run(std::mem::take(&mut buf), style, was_sel, src));
+                if let Some((style, was_sel, hl, src)) = cur.take() {
+                    runs.push(make_run(
+                        std::mem::take(&mut buf),
+                        style,
+                        was_sel,
+                        hl.map(|i| &hls[i]),
+                        src,
+                    ));
                 }
-                cur = Some((key.0, key.1, g.src));
+                cur = Some((key.0, key.1, key.2, g.src));
                 buf.push(g.ch);
             }
         }
     }
-    if let Some((style, was_sel, src)) = cur {
-        runs.push(make_run(buf, style, was_sel, src));
+    if let Some((style, was_sel, hl, src)) = cur {
+        runs.push(make_run(buf, style, was_sel, hl.map(|i| &hls[i]), src));
     }
     runs
 }
@@ -1912,6 +1978,7 @@ fn cell_lines(
     cell_end: usize,
     ss: usize,
     se: usize,
+    hls: &[CoreHighlight],
 ) -> Vec<TableCellLineView> {
     let mut lines = Vec::new();
     let mut seg: Vec<Glyph> = Vec::new();
@@ -1922,7 +1989,7 @@ fn cell_lines(
         if g.ch == '\n' {
             let start = line_start.unwrap_or(g.src);
             lines.push(TableCellLineView {
-                runs: runs_of(&seg, ss, se),
+                runs: runs_of(&seg, ss, se, hls),
                 start,
                 end: g.src,
             });
@@ -1936,7 +2003,7 @@ fn cell_lines(
         }
     }
     lines.push(TableCellLineView {
-        runs: runs_of(&seg, ss, se),
+        runs: runs_of(&seg, ss, se, hls),
         start: line_start.unwrap_or(cell_end),
         end: cell_end,
     });
@@ -1945,7 +2012,7 @@ fn cell_lines(
 
 /// The structural tables of a WYSIWYG frame — each with the `rows` span its
 /// box-glyph picture occupies (to be skipped) and its grid of styled cells.
-fn wysiwyg_tables(vmap: &VisualMap, ss: usize, se: usize) -> Vec<TableView> {
+fn wysiwyg_tables(vmap: &VisualMap, ss: usize, se: usize, hls: &[CoreHighlight]) -> Vec<TableView> {
     vmap.tables
         .iter()
         .map(|t| TableView {
@@ -1960,7 +2027,7 @@ fn wysiwyg_tables(vmap: &VisualMap, ss: usize, se: usize) -> Vec<TableView> {
                         .cells
                         .iter()
                         .map(|cell| TableCellView {
-                            lines: cell_lines(&cell.glyphs, cell.start, cell.end, ss, se),
+                            lines: cell_lines(&cell.glyphs, cell.start, cell.end, ss, se, hls),
                             align: align_name(cell.align),
                             start: cell.start,
                             end: cell.end,
@@ -2049,7 +2116,7 @@ mod tests {
         let doc = wysiwyg("plain **bold** plain\n");
         let glyphs = &doc.vmap.rows[0].glyphs;
 
-        let runs = runs_of(glyphs, usize::MAX, usize::MAX);
+        let runs = runs_of(glyphs, usize::MAX, usize::MAX, &[]);
         let texts: Vec<&str> = runs.iter().map(|r| r.text.as_str()).collect();
         assert_eq!(texts, ["plain ", "bold", " plain"]);
         assert!(runs.iter().all(|r| !r.sel));
@@ -2063,7 +2130,7 @@ mod tests {
         // A selection edge inside a styled span splits that span in two, and the
         // two halves keep the style.
         let start = doc.source.find("bold").unwrap();
-        let split = runs_of(glyphs, start, start + 2);
+        let split = runs_of(glyphs, start, start + 2, &[]);
         let selected: Vec<&str> = split
             .iter()
             .filter(|r| r.sel)
@@ -2082,7 +2149,7 @@ mod tests {
             .vmap
             .rows
             .iter()
-            .flat_map(|r| runs_of(&r.glyphs, usize::MAX, usize::MAX))
+            .flat_map(|r| runs_of(&r.glyphs, usize::MAX, usize::MAX, &[]))
             .filter(|r| r.sup)
             .map(|r| r.text.clone())
             .collect();
@@ -2092,7 +2159,7 @@ mod tests {
             doc.vmap
                 .rows
                 .iter()
-                .flat_map(|r| runs_of(&r.glyphs, usize::MAX, usize::MAX))
+                .flat_map(|r| runs_of(&r.glyphs, usize::MAX, usize::MAX, &[]))
                 .all(|r| !(r.sup && r.sub)),
             "a run cannot be both raised and lowered"
         );
@@ -2101,7 +2168,7 @@ mod tests {
     #[test]
     fn a_table_crosses_as_a_grid_and_names_the_picture_rows_to_skip() {
         let doc = wysiwyg("| a | b |\n|---|--:|\n| 1 | 2 |\n");
-        let tables = wysiwyg_tables(&doc.vmap, usize::MAX, usize::MAX);
+        let tables = wysiwyg_tables(&doc.vmap, usize::MAX, usize::MAX, &[]);
         assert_eq!(tables.len(), 1);
         let t = &tables[0];
 
@@ -2144,7 +2211,7 @@ mod tests {
     #[test]
     fn every_table_cell_sits_inside_the_source() {
         let doc = wysiwyg("| one | two |\n|---|---|\n| three | four |\n");
-        for t in wysiwyg_tables(&doc.vmap, usize::MAX, usize::MAX) {
+        for t in wysiwyg_tables(&doc.vmap, usize::MAX, usize::MAX, &[]) {
             for row in &t.grid {
                 for cell in &row.cells {
                     assert!(cell.start <= cell.end);
@@ -2284,7 +2351,7 @@ mod tests {
     #[test]
     fn a_document_without_a_table_publishes_no_grid() {
         let doc = wysiwyg("# just a heading\n\nand a paragraph.\n");
-        assert!(wysiwyg_tables(&doc.vmap, usize::MAX, usize::MAX).is_empty());
+        assert!(wysiwyg_tables(&doc.vmap, usize::MAX, usize::MAX, &[]).is_empty());
         assert!(wysiwyg_directives(&doc.vmap).is_empty());
     }
 }

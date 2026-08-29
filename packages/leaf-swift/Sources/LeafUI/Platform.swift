@@ -72,6 +72,11 @@ public enum Palette {
     /// competing with prose for attention the way a solid tint would.
     public static var directiveBorderColor: LeafColor { separator }
     public static var markBackground: LeafColor { LeafColor.systemYellow.withAlphaComponent(0.28) }
+    /// The wash behind a host-painted highlight (`LeafEditorModel.setHighlights`)
+    /// — an annotation's footprint, a search hit. The same yellow family as
+    /// `markBackground` (both mean "someone marked this"), a step stronger so a
+    /// host's mark reads over an author's `==mark==` where the two coincide.
+    public static var hostHighlight: LeafColor { LeafColor.systemYellow.withAlphaComponent(0.36) }
     /// The light a landing leaves on the block it arrived at, for the moment
     /// before it fades. The accent colour, because this is the app telling the
     /// reader where it took them — not a mark in their document, which is what
@@ -83,6 +88,23 @@ public enum Palette {
     public static var tableBorder: LeafColor { separator }
     public static var tableHeader: LeafColor { secondary.withAlphaComponent(0.12) }
     public static var tableStripe: LeafColor { secondary.withAlphaComponent(0.05) }
+}
+
+/// Parse a `#RRGGBB` hex string into a colour, or nil for anything else — the
+/// one spelling a `Highlight.color` hint may use. Deliberately strict: a hint
+/// that doesn't parse falls back to the theme's default wash rather than
+/// guessing at CSS names.
+func leafColor(hex: String) -> LeafColor? {
+    let trimmed = hex.trimmingCharacters(in: .whitespaces)
+    guard trimmed.hasPrefix("#"), trimmed.count == 7,
+          let value = UInt32(trimmed.dropFirst(), radix: 16)
+    else { return nil }
+    return LeafColor(
+        red: CGFloat((value >> 16) & 0xFF) / 255,
+        green: CGFloat((value >> 8) & 0xFF) / 255,
+        blue: CGFloat(value & 0xFF) / 255,
+        alpha: 1
+    )
 }
 
 /// Build a font by family name + size with optional bold/italic traits — the one
