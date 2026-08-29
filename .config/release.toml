@@ -8,7 +8,12 @@ release_branch = "main"
 # What to run before cutting. Each repo owns its own CI; this names it.
 verify = "cargo xtask ci"
 
-# No `tag_starts`: leaf has no tag workflow. Nothing publishes on the tag, and
-# every upload to crates.io is `cargo publish --workspace`, run deliberately —
-# so the warning before the push says exactly that, rather than naming workflows
-# that do not exist.
+# What pushing the tag sets off, most consequential first. The warning printed
+# before the push is handed back to you is composed from these.
+#
+# This is leaf's only tag workflow. crates.io is still not one of them: every
+# upload there is `cargo publish --workspace`, run deliberately by hand, and a
+# tag does not trigger it.
+[[tag_starts]]
+workflow = "homebrew.yml"
+does = "builds the `leaf` CLI binaries and writes the tap formula"

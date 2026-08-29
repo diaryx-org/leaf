@@ -31,3 +31,93 @@ jobs:
     - uses: dtolnay/rust-toolchain@stable
     - uses: Swatinem/rust-cache@v2
     - run: bash scripts/gen-bindings.sh --check
+
+  # Rehearse the release build. homebrew.yml cross-compiles `leaf-tui` to these
+  # four targets on a `v*.*.*` tag, and until this job existed none of it was
+  # exercised until the tag was already pushed — the repo's Rust code was never
+  # built in CI at all. Two things here are only ever wrong on a cross target:
+  #
+  #   - The Zig fallback. twig-doc -> twig-sys ships prebuilt payloads for
+  #     aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu,
+  #     x86_64-pc-windows-msvc, and wasm32. `macos-x86_64` is not on that list, so
+  #     that leg alone compiles libtwig.a from vendored Zig source.
+  #   - The toolchain. leaf pins 1.95.0 in rust-toolchain.toml, and a toolchain
+  #     file outranks whatever `rustup default` was set to — so targets have to be
+  #     added to the *resolved* toolchain, not to `stable`.
+  #
+  # Which is why this installs the target with a bare `rustup target add` from
+  # inside the checkout rather than naming a version: rustup reads
+  # rust-toolchain.toml, auto-installs what it names, and adds the target there.
+  # The pin stays stated in exactly one file.
+  #
+  # `-p leaf-tui` deliberately: apps/leaf (the gpui GUI) is a workspace member
+  # pinning gpui to a Zed git rev, and resolving it here would cost more than the
+  # rest of CI put together. The release does not build it either.
+  release-build:
+    name: Release build ${{ matrix.asset }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - asset: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+          - asset: macos-x86_64
+            os: macos-latest
+            target: x86_64-apple-darwin
+          - asset: linux-x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - asset: linux-aarch64
+            os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            cross-apt: gcc-aarch64-linux-gnu
+            cross-linker: aarch64-linux-gnu-gcc
+    steps:
+    - uses: actions/checkout@v7
+    # Matches the shared release workflow's default, and the version twig-sys's
+    # vendored build.zig expects.
+    - uses: mlugg/setup-zig@v2
+      with: { version: "0.16.0" }
+    - name: Add the target to the pinned toolchain
+      run: rustup target add ${{ matrix.target }}
+    - name: Install cross linker
+      if: matrix.cross-apt != ''
+      env:
+        CROSS_APT: ${{ matrix.cross-apt }}
+      run: sudo apt-get update && sudo apt-get install -y "$CROSS_APT"
+    - uses: Swatinem/rust-cache@v2
+      with: { key: "${{ matrix.target }}" }
+    - name: Build
+      env:
+        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.cross-linker }}
+      run: cargo build --release -p leaf-tui --target ${{ matrix.target }}
+    # The binary the formula installs, and the command its `test do` block runs.
+    # Only meaningful on the leg whose target is the runner's own arch.
+    - name: Check `leaf --version`
+      if: matrix.asset == 'macos-arm64' || matrix.asset == 'linux-x86_64'
+      run: ./target/${{ matrix.target }}/release/leaf --version
+
+  # The pin above and the one homebrew.yml passes to the shared workflow have to
+  # agree; nothing else notices if they stop agreeing, because the shared
+  # workflow would happily install the wrong toolchain and only the three
+  # cross-compiled legs would fail, on a tag, after the release was cut.
+  toolchain-pin:
+    name: Toolchain pin agrees with homebrew.yml
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    - run: |
+        set -euo pipefail
+        pinned=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+        declared=$(sed -n 's/^ *rust-toolchain: "\(.*\)"$/\1/p' .github/workflows/homebrew.yml)
+        echo "rust-toolchain.toml: ${pinned:-<none>}"
+        echo "homebrew.yml:        ${declared:-<none>}"
+        if [ -z "$pinned" ] || [ -z "$declared" ]; then
+          echo "::error::could not read one of the two pins"; exit 1
+        fi
+        if [ "$pinned" != "$declared" ]; then
+          echo "::error::homebrew.yml passes rust-toolchain $declared but rust-toolchain.toml pins $pinned"
+          exit 1
+        fi

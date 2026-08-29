@@ -1,0 +1,51 @@
+name: Homebrew
+# Release the `leaf` TUI editor to Homebrew. The build/attach/render/push
+# mechanics are shared with fig, twig, moid, and prov and live in
+# diaryx-org/.github; only what makes leaf different is below.
+#
+# leaf is a Rust workspace and the CLI is `leaf-tui`, whose binary is named
+# `leaf` — hence `cargo-package` and `name` differing. The sibling `apps/leaf`
+# (the gpui GUI) is a workspace member pinning gpui to a Zed git rev, but
+# `cargo build -p leaf-tui` resolves against the committed lockfile without
+# fetching it, so the release build never pays for that graph.
+#
+# `rust-toolchain: 1.95.0` is not optional and is not cosmetic. leaf carries a
+# `rust-toolchain.toml` pinning 1.95.0 (gpui needs it), and a toolchain file
+# outranks the `rustup default` that dtolnay/rust-toolchain sets. Left at the
+# `stable` default, the action would install the cross-compilation targets onto
+# `stable` and cargo would then build with 1.95.0, which has none of them —
+# `can't find crate for std`, on the three cross-compiled legs only, and not
+# until a tag is pushed. Keep this in step with rust-toolchain.toml; ci.yml
+# builds with the file, so a drift shows up there first.
+#
+# `needs-zig: true` because leaf depends on twig-doc -> twig-sys, which ships
+# prebuilt payload crates for aarch64-apple-darwin, x86_64-unknown-linux-gnu,
+# aarch64-unknown-linux-gnu, x86_64-pc-windows-msvc, and wasm32 — and for
+# nothing else. The `macos-x86_64` leg of the matrix is not on that list, so its
+# build.rs falls back to compiling libtwig.a from the vendored Zig source. One
+# of the four legs needs a Zig toolchain; the other three ignore it.
+#
+# No `wasi:` — leaf is a terminal editor that wants a tty, a clipboard, and a
+# graphics protocol. A wasm32-wasip1 build would compile and be useless.
+#
+# Runs on `v*.*.*` tags. Prerequisite before the first tagged release: install
+# the diaryx-bot GitHub App on diaryx-org/homebrew-tap (Contents:write) and add
+# its App ID + private key as the TAP_APP_ID / TAP_APP_KEY secrets on this repo.
+on:
+  push: { tags: [v*.*.*] }
+  workflow_dispatch:
+permissions:
+  contents: write # caps what the called workflow may request
+jobs:
+  homebrew:
+    uses: diaryx-org/.github/.github/workflows/reusable-homebrew.yml@main
+    with:
+      name: leaf
+      desc: "Caret-based rich-text terminal editor for Markdown, Djot, HTML, and XML"
+      language: rust
+      cargo-package: leaf-tui
+      rust-toolchain: "1.95.0"
+      needs-zig: true
+    secrets:
+      TAP_APP_ID: ${{ secrets.TAP_APP_ID }}
+      TAP_APP_KEY: ${{ secrets.TAP_APP_KEY }}
