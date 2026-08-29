@@ -16,11 +16,11 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Result, anyhow};
-use leaf_core::{Alignment, DiskState, Doc, InlineKind, LineFlow, MarkupMode, MediaKind};
+use leaf_core::{Alignment, DiskState, Doc, InlineKind, LineFlow, MarkupMode, MediaKind, View};
 use leaf_ratatui::{MouseOutcome, Outcome};
 
 use commands::{Command, Ctx};
-use find::{Find, FindField, find_matches};
+use find::{Find, FindField, find_matches, is_visible};
 use palette::Palette;
 use ratatui::{
     crossterm::{
@@ -225,6 +225,12 @@ struct App {
     /// raster cache, and mouse click-counting. Threaded into
     /// `leaf_ratatui::render`/`handle_key`/`handle_mouse` each frame.
     editor: leaf_ratatui::EditorState,
+    /// The width the editing surface was last laid out at, stashed by
+    /// `ui::render`. The find bar needs it: it asks the visual map which of its
+    /// matches the rich view draws, and a map built at a different width — or
+    /// not rebuilt since the last edit — answers about a layout that is not the
+    /// one on screen. Zero before the first frame.
+    body_width: u16,
 
     // ── the file watch (see `tick_disk`) ─────────────────────────────────────
     /// What a `stat` of the document's file said the last time the watch
@@ -603,7 +609,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, doc: &mut Doc) -> Result<()> {
     }
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 enum Flow {
     Continue,
     Quit,
@@ -672,7 +678,7 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
                 MenuEntry::Action(cmd) => {
                     app.context_menu = None;
                     let outcome = cmd.run(doc);
-                    return apply_outcome(doc, app, outcome);
+                    return apply_over_find(doc, app, outcome);
                 }
                 MenuEntry::Submenu(_, items) => menu.open_submenu(lvl, items, &ctx),
                 MenuEntry::Header(_) => {}
@@ -709,26 +715,6 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
     // formatting command on the document underneath.
     if let Some(prompt) = &mut app.text_prompt {
         match key.code {
-            KeyCode::Backspace => {
-                if let Some((i, _)) = prompt.value[..prompt.cursor].char_indices().next_back() {
-                    prompt.value.drain(i..prompt.cursor);
-                    prompt.cursor = i;
-                }
-            }
-            KeyCode::Left => {
-                if let Some((i, _)) = prompt.value[..prompt.cursor].char_indices().next_back() {
-                    prompt.cursor = i;
-                }
-            }
-            KeyCode::Right => {
-                if let Some(c) = prompt.value[prompt.cursor..].chars().next() {
-                    prompt.cursor += c.len_utf8();
-                }
-            }
-            KeyCode::Char(c) => {
-                prompt.value.insert(prompt.cursor, c);
-                prompt.cursor += c.len_utf8();
-            }
             KeyCode::Enter => {
                 // Pull the value and callback out before dropping the prompt —
                 // same "read what's needed, then clear" order the context menu
@@ -750,7 +736,9 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
                 // backed out of naming a file, not of the choice to save.
                 app.pending_action = None;
             }
-            _ => {}
+            code => {
+                edit_field(&mut prompt.value, &mut prompt.cursor, code);
+            }
         }
         return Flow::Continue;
     }
@@ -922,6 +910,29 @@ fn apply_outcome(doc: &mut Doc, app: &mut App, outcome: Outcome) -> Flow {
     }
 }
 
+/// [`apply_outcome`] for a command chosen from an overlay that was drawn *over*
+/// a standing find bar — the context menu, the palette.
+///
+/// Those two take the keyboard before the bar does, so a Cut or a Heading run
+/// from one edits the document without the bar's own handling ever seeing a
+/// key. The bar's matches, and the wash `Doc::set_highlights` is painting from
+/// them, are then offsets into bytes that have moved: the next Enter in the
+/// replacement field splices at them, past the end of the document or into the
+/// middle of a character.
+///
+/// The revision is what says an edit happened — a command that only moved the
+/// caret or toggled a view leaves the search alone, and re-running it would
+/// step the bar for no reason. [`handle_mouse`] does the same for its own two
+/// doors, one of which (a task checkbox) never reaches an `Outcome` at all.
+fn apply_over_find(doc: &mut Doc, app: &mut App, outcome: Outcome) -> Flow {
+    let before = doc.revision();
+    let flow = apply_outcome(doc, app, outcome);
+    if app.find.is_some() && doc.revision() != before {
+        refresh_find_after_edit(doc, app);
+    }
+    flow
+}
+
 /// The palette's own key handling: a query line over a filtered list. Return
 /// runs the highlighted command and closes; Esc closes without acting; the
 /// arrows walk the list (skipping what this document can't run); everything
@@ -941,32 +952,14 @@ fn handle_palette_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
             app.palette = None;
             if let Some(cmd) = chosen {
                 let outcome = cmd.run(doc);
-                return apply_outcome(doc, app, outcome);
+                return apply_over_find(doc, app, outcome);
             }
         }
-        KeyCode::Backspace => {
-            if let Some((i, _)) = palette.query[..palette.cursor].char_indices().next_back() {
-                palette.query.drain(i..palette.cursor);
-                palette.cursor = i;
+        code => {
+            if edit_field(&mut palette.query, &mut palette.cursor, code) {
                 palette.refilter(&ctx);
             }
         }
-        KeyCode::Left => {
-            if let Some((i, _)) = palette.query[..palette.cursor].char_indices().next_back() {
-                palette.cursor = i;
-            }
-        }
-        KeyCode::Right => {
-            if let Some(c) = palette.query[palette.cursor..].chars().next() {
-                palette.cursor += c.len_utf8();
-            }
-        }
-        KeyCode::Char(c) => {
-            palette.query.insert(palette.cursor, c);
-            palette.cursor += c.len_utf8();
-            palette.refilter(&ctx);
-        }
-        _ => {}
     }
     Flow::Continue
 }
@@ -983,6 +976,14 @@ fn handle_palette_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
 /// starting again, so finding something and *then* deciding to replace it
 /// doesn't cost the query that was already typed.
 fn open_find(doc: &mut Doc, app: &mut App, replacing: bool) {
+    // Finding is reading and replacing is not, so ^h is refused in a reading
+    // session — here rather than only in `apply_outcome`, because ^h *over an
+    // open bar* doesn't go through an `Outcome` at all. It used to reach the
+    // branch below directly: the field grew, the hint row offered "^r replace
+    // all", and the refusal came only once a replacement had been typed into it.
+    if replacing && refused_read_only(doc) {
+        return;
+    }
     if let Some(find) = &mut app.find {
         if replacing {
             find.replacement.get_or_insert_default();
@@ -1021,17 +1022,81 @@ fn close_find(doc: &mut Doc, app: &mut App) {
 /// after a replacement, so Enter goes on to the next hit rather than back to
 /// the one just dealt with.
 fn refresh_find(doc: &mut Doc, app: &mut App, anchor: usize) {
-    let Some(find) = &mut app.find else {
+    if app.find.is_none() {
         return;
-    };
+    }
+    // Ask the visibility question of a map that matches the bytes about to be
+    // searched. `build_visual` is keyed on the revision, so this is free unless
+    // something has edited the document since the last frame — which is exactly
+    // when the map would otherwise be answering about offsets that have moved,
+    // and would call a real match hidden because the stop it needed is at an
+    // offset the reload or the edit shifted.
+    //
+    // At the last drawn width, or a nominal one before the first frame. The
+    // width decides which *row* a stop lands on and not whether an offset is a
+    // stop at all, so it only has to be plausible; the next frame rebuilds at
+    // the real one for free, since by then the revision hasn't moved again.
+    if doc.view == View::Wysiwyg {
+        let width = if app.body_width > 0 {
+            app.body_width as usize
+        } else {
+            NOMINAL_WIDTH
+        };
+        doc.build_visual(width);
+    }
+    let find = app.find.as_mut().expect("checked above");
     find.origin = anchor;
-    let matches = find_matches(&doc.source, &find.query);
-    find.set_matches(matches, anchor);
+    let all = find_matches(&doc.source, &find.query);
+    let hidden = all.len();
+    let matches: Vec<(usize, usize)> = all
+        .into_iter()
+        .filter(|&(start, end)| is_visible(doc, start, end))
+        .collect();
+    let hidden = hidden - matches.len();
+
+    let find = app.find.as_mut().expect("checked above");
+    find.set_matches(matches, hidden, anchor);
     let highlights = find.highlights();
     let current = find.current_match();
     doc.set_highlights(highlights);
-    if let Some((start, end)) = current {
-        select_match(doc, start, end);
+    match current {
+        Some((start, end)) => select_match(doc, start, end),
+        // Nothing to land on. The selection has to go with the match it was:
+        // leaving `hel`'s hit armed while the bar says "no matches" for `helx`
+        // means Esc and one keystroke overwrite a word nobody chose. Collapsing
+        // to the caret keeps the other half of the contract — Esc leaves the
+        // caret where the search left it — while making the arrow keys and the
+        // next character behave as if nothing were selected, which is what the
+        // bar is now saying.
+        None => doc.select_range(doc.caret, doc.caret),
+    }
+}
+
+/// Re-run the search over a document that something *other than typing in the
+/// bar* has just changed — a context-menu Cut, a task checkbox, a reload — and
+/// keep the bar on the match it was on rather than stepping to the next one.
+///
+/// Anchored at the current match's start rather than at `doc.caret`, which is
+/// where the edit left off: anchoring there would make every outside edit
+/// silently advance the bar by one.
+///
+/// The offsets it anchors from are pre-edit and may no longer name anything;
+/// that is fine and is the whole reason this is a re-run rather than a fix-up.
+/// The matches are found afresh over the current source, and the anchor is only
+/// ever compared, never sliced with.
+fn refresh_find_after_edit(doc: &mut Doc, app: &mut App) {
+    let anchor = app.find.as_ref().map_or(doc.caret, |find| {
+        find.current_match().map_or(find.origin, |(start, _)| start)
+    });
+    // Whatever forced this refresh is the thing with something to say —
+    // "copied", "reloaded from disk", "replaced 3 matches". The refresh itself
+    // lands on `Doc::select_range`, which clears the status the way every caret
+    // move does, so the message has to be carried across it or the toast never
+    // appears while a find bar happens to be open.
+    let said = doc.status.take();
+    refresh_find(doc, app, anchor);
+    if said.is_some() {
+        doc.status = said;
     }
 }
 
@@ -1166,11 +1231,18 @@ fn replace_all(doc: &mut Doc, app: &mut App) {
 /// also Down, and ^G repeats the step for a hand already on control. ^⇧G is out
 /// for the same reason as ⇧Enter.
 fn handle_find_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
-    // No ⌥ chord means anything in the bar, and none of them may fall through
-    // to be typed as their bare letter: ⌥b in a search box should not put a `b`
-    // in the query, and it certainly must not bold the document underneath.
+    // ⌥ chords are the host's dials and overlays, and none of them may fall
+    // through to be *typed* as their bare letter: ⌥b in a search box should not
+    // put a `b` in the query, and it certainly must not bold the document
+    // underneath. The two that still make sense over an open bar go through
+    // anyway — the key reference is asked for precisely when something is
+    // confusing, and the view toggle is how you reach a hit this view is
+    // hiding, which the caption has just told you about.
     if key.modifiers.contains(KeyModifiers::ALT) {
-        return Flow::Continue;
+        return match key.code {
+            KeyCode::Char('h') | KeyCode::Char('w') => fall_through(doc, key, app, BarAfter::Keep),
+            _ => Flow::Continue,
+        };
     }
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         match key.code {
@@ -1180,15 +1252,38 @@ fn handle_find_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
             KeyCode::Char('r') => replace_all(doc, app),
             KeyCode::Char('g') => step_find(doc, app, 1),
             // ^F and ^H while the bar is up: aim at the field they name, which
-            // is what pressing them again means.
+            // is what pressing them again means. ^H has to pass the same
+            // read-only gate the closed-bar path does — growing the field and
+            // offering "^r replace all" in a reading session, and refusing only
+            // once a replacement had been typed, was an invitation to type one.
             KeyCode::Char('f') => open_find(doc, app, false),
             KeyCode::Char('h') => open_find(doc, app, true),
+            // The host's own verbs, which a find bar has no business swallowing.
+            // Quitting and saving are about the document, not the search; ^C
+            // copies the match, which is most of why anyone searched for it.
+            // The bar stays up under all three, because none of them changes
+            // what it is holding — and if ^Q stops at the unsaved-changes prompt,
+            // cancelling puts the reader back where they were, bar and all.
+            KeyCode::Char('q') | KeyCode::Char('s') | KeyCode::Char('c') => {
+                return fall_through(doc, key, app, BarAfter::Keep);
+            }
+            // These two do change it. ^A replaces the selection the bar is
+            // holding with the whole document, and the palette can run an
+            // editing command over a bar it is drawn on top of — so the bar goes
+            // away first rather than being left pointing at a search nobody is
+            // in the middle of any more.
+            KeyCode::Char('a') | KeyCode::Char('p') => {
+                return fall_through(doc, key, app, BarAfter::Close);
+            }
             _ => {}
         }
         return Flow::Continue;
     }
     match key.code {
         KeyCode::Esc => close_find(doc, app),
+        // The one help key every terminal agrees on, and the one a reader who
+        // has never seen ⌥h will try. Same answer as ⌥h above.
+        KeyCode::F(1) => return fall_through(doc, key, app, BarAfter::Keep),
         KeyCode::Down => step_find(doc, app, 1),
         KeyCode::Up => step_find(doc, app, -1),
         KeyCode::Tab | KeyCode::BackTab => toggle_find_field(app),
@@ -1204,47 +1299,55 @@ fn handle_find_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
     Flow::Continue
 }
 
+/// What becomes of the find bar when a key is handed back to the editing
+/// surface — see [`fall_through`].
+#[derive(PartialEq, Eq)]
+enum BarAfter {
+    /// The verb doesn't touch what the bar is holding, so it stays up.
+    Keep,
+    /// The verb replaces the selection or opens something that can edit under
+    /// the bar, so the bar goes first.
+    Close,
+}
+
+/// Hand a key the bar has no use for to the handler it would have reached if
+/// the bar weren't up.
+///
+/// The bar owns the keyboard, but "owns" was doing too much work: every `^`
+/// chord it had no verb for, every `⌥` chord, and `F1` were eaten in silence,
+/// so ^Q didn't quit and ^S didn't save while a search was open and nothing
+/// said why. A find bar is not a modal dialog — it is a strip with two fields in
+/// it — and the host verbs that don't conflict with those fields belong to the
+/// host.
+///
+/// Whatever ran may have edited the document (the palette, once it resolves) or
+/// re-laid it out (⌥w, which changes what the rich view hides and so what counts
+/// as a match), so a bar still standing afterwards is re-run against what is
+/// there now.
+fn fall_through(doc: &mut Doc, key: KeyEvent, app: &mut App, after: BarAfter) -> Flow {
+    if after == BarAfter::Close {
+        close_find(doc, app);
+    }
+    let outcome = leaf_ratatui::handle_key(doc, key, &mut app.editor);
+    let flow = apply_outcome(doc, app, outcome);
+    if app.find.is_some() {
+        refresh_find_after_edit(doc, app);
+    }
+    flow
+}
+
 /// Type into whichever field has the keyboard. Editing the query re-runs the
 /// search; editing the replacement doesn't, since the replacement is not part of
 /// what is being looked for.
 fn edit_find_field(doc: &mut Doc, key: KeyEvent, app: &mut App) {
-    let mut research = None;
-    if let Some(find) = &mut app.find {
-        let searching = find.field == FindField::Query;
-        let origin = find.origin;
-        let (value, cursor) = find.field_mut();
-        let mut changed = false;
-        match key.code {
-            KeyCode::Backspace => {
-                if let Some((i, _)) = value[..*cursor].char_indices().next_back() {
-                    value.drain(i..*cursor);
-                    *cursor = i;
-                    changed = true;
-                }
-            }
-            KeyCode::Left => {
-                if let Some((i, _)) = value[..*cursor].char_indices().next_back() {
-                    *cursor = i;
-                }
-            }
-            KeyCode::Right => {
-                if let Some(c) = value[*cursor..].chars().next() {
-                    *cursor += c.len_utf8();
-                }
-            }
-            KeyCode::Char(c) => {
-                value.insert(*cursor, c);
-                *cursor += c.len_utf8();
-                changed = true;
-            }
-            _ => {}
-        }
-        if searching && changed {
-            research = Some(origin);
-        }
-    }
-    if let Some(anchor) = research {
-        refresh_find(doc, app, anchor);
+    let Some(find) = &mut app.find else {
+        return;
+    };
+    let searching = find.field == FindField::Query;
+    let origin = find.origin;
+    let (value, cursor) = find.field_mut();
+    if edit_field(value, cursor, key.code) && searching {
+        refresh_find(doc, app, origin);
     }
 }
 
@@ -1297,6 +1400,48 @@ fn handle_paste(doc: &mut Doc, text: &str, app: &mut App) {
     doc.status = Some("pasted".into());
 }
 
+/// One keystroke's worth of editing a single-line field: the four keys that
+/// move a cursor through text or change it, and nothing else.
+///
+/// Returns whether the *text* changed, which is the question every caller has
+/// to ask next — the palette re-filters on it, the find bar re-runs the search
+/// on it, and neither should do that for a bare arrow key.
+///
+/// One function because there are three of these fields (the text prompt, the
+/// palette's query, the find bar's two) and they were three copies of the same
+/// twenty lines. The copies had already started to differ, and the difference a
+/// fourth one would introduce is the kind nobody notices: a cursor that walks
+/// bytes instead of `char`s panics only on the first accented letter anybody
+/// types into it.
+fn edit_field(value: &mut String, cursor: &mut usize, key: KeyCode) -> bool {
+    match key {
+        KeyCode::Backspace => {
+            if let Some((i, _)) = value[..*cursor].char_indices().next_back() {
+                value.drain(i..*cursor);
+                *cursor = i;
+                return true;
+            }
+        }
+        KeyCode::Left => {
+            if let Some((i, _)) = value[..*cursor].char_indices().next_back() {
+                *cursor = i;
+            }
+        }
+        KeyCode::Right => {
+            if let Some(c) = value[*cursor..].chars().next() {
+                *cursor += c.len_utf8();
+            }
+        }
+        KeyCode::Char(c) => {
+            value.insert(*cursor, c);
+            *cursor += c.len_utf8();
+            return true;
+        }
+        _ => {}
+    }
+    false
+}
+
 /// Splice a pasted run into a single-line field at `cursor`, flattened first:
 /// a prompt and the palette's query are one row tall, so a multi-line paste
 /// has to become one line or the field holds characters it can never show.
@@ -1338,7 +1483,26 @@ fn normalize_newlines(text: &str) -> String {
     text.replace("\r\n", "\n").replace('\r', "\n")
 }
 
+/// A mouse event, and the one thing that has to happen after any of them.
+///
+/// The find bar holds byte offsets into the source, and the mouse can edit that
+/// source without the bar's key handling ever running: a context-menu Cut or
+/// Heading, a click on a task checkbox. The matches (and the wash core is
+/// painting from them) would then be offsets into bytes that had moved, and the
+/// next Enter in the replacement field would splice at them — past the end of
+/// the document, or into the middle of a character.
+///
+/// The revision is what says an edit happened, whichever of the paths below did
+/// it, which is why this is a wrapper rather than a line repeated in each arm.
 fn handle_mouse(doc: &mut Doc, m: MouseEvent, app: &mut App) {
+    let before = doc.revision();
+    dispatch_mouse(doc, m, app);
+    if app.find.is_some() && doc.revision() != before {
+        refresh_find_after_edit(doc, app);
+    }
+}
+
+fn dispatch_mouse(doc: &mut Doc, m: MouseEvent, app: &mut App) {
     // The menu owns the mouse while it's open. Motion (with no button, or a
     // drag) hovers: the row under the pointer becomes the highlight, and moving
     // onto a submenu row opens its flyout while moving off it closes any deeper
@@ -1596,6 +1760,11 @@ fn resolve_conflict(doc: &mut Doc, app: &mut App, choice: usize) -> Flow {
         }
     }
 }
+
+/// The width the find bar lays the document out at when nothing has been drawn
+/// yet — see [`refresh_find`]. Any plausible terminal width does; this is the
+/// one the tests draw at.
+const NOMINAL_WIDTH: usize = 80;
 
 /// How often the loop looks at the file behind the document — see [`tick_disk`].
 ///
@@ -3077,10 +3246,155 @@ mod tests {
         type_chars(&mut doc, &mut app, "one");
         assert_eq!(app.find.as_ref().unwrap().matches.len(), 2);
 
+        // ^h *while the bar is up* went straight to `open_find` and grew the
+        // field, offering "^r replace all" in a reading session and refusing
+        // only once a replacement had been typed into it.
+        handle_key(&mut doc, ctrl('h'), &mut app);
+        let find = app.find.as_ref().expect("the find bar stays up");
+        assert!(find.replacement.is_none(), "no field to replace into");
+        assert_eq!(doc.status.as_deref(), Some("read-only"));
+        let lines = frame(&mut doc, &mut app, 60, 8);
+        assert!(
+            !lines.join("\n").contains("^h"),
+            "the hint row must not offer a key that refuses:\n{}",
+            lines.join("\n")
+        );
+
         handle_key(&mut doc, keyp(KeyCode::Esc), &mut app);
         handle_key(&mut doc, ctrl('h'), &mut app);
         assert!(app.find.is_none(), "replace is not");
         assert_eq!(doc.status.as_deref(), Some("read-only"));
+    }
+
+    /// A right-click command edits the document without the bar's key handling
+    /// ever running, so nothing used to re-run the search: `find.matches` went
+    /// on holding pre-edit offsets, and the next Enter in the replacement field
+    /// spliced at them — past the end of the document, or mid-character.
+    #[test]
+    fn a_context_menu_edit_under_the_find_bar_re_runs_the_search() {
+        // Cut goes to the system pasteboard, so this takes its turn with the
+        // other tests that touch it.
+        let _clip = clipboard_lock();
+        let mut doc = doc_with("find_menu_edit", "alpha beta alpha gamma\n");
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('h'), &mut app);
+        type_chars(&mut doc, &mut app, "gamma");
+        assert_eq!(app.find.as_ref().unwrap().matches.len(), 1);
+
+        // Select and cut the first word through the context menu, which shifts
+        // every offset after it back by six bytes.
+        doc.select_range(0, 5);
+        handle_mouse(&mut doc, right_down(1, 2), &mut app);
+        step_to(&mut doc, &mut app, "Cut");
+        handle_key(&mut doc, keyp(KeyCode::Enter), &mut app);
+        if doc.status.as_deref() == Some("clipboard unavailable") {
+            return; // no pasteboard here, so nothing was cut
+        }
+        assert_eq!(doc.source, " beta alpha gamma\n", "the menu ran the cut");
+
+        // …and the bar has to have caught up, or this Enter splices at an
+        // offset naming something else.
+        let (start, end) = app.find.as_ref().unwrap().current_match().unwrap();
+        assert_eq!(&doc.source[start..end], "gamma");
+        handle_key(&mut doc, keyp(KeyCode::Tab), &mut app);
+        type_chars(&mut doc, &mut app, "DELTA");
+        handle_key(&mut doc, keyp(KeyCode::Enter), &mut app);
+        assert_eq!(doc.source, " beta alpha DELTA\n");
+    }
+
+    /// Typing one character too many used to leave the previous hit selected
+    /// while the caption said "no matches" — so Esc and one keystroke replaced a
+    /// word nobody had chosen.
+    #[test]
+    fn a_query_with_no_matches_disarms_the_selection() {
+        let mut doc = doc_with("find_none", "hello world\n");
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('f'), &mut app);
+        type_chars(&mut doc, &mut app, "hel");
+        assert_eq!(doc.selected_text(), Some("hel"));
+
+        type_chars(&mut doc, &mut app, "x");
+        assert_eq!(app.find.as_ref().unwrap().caption(), "no matches");
+        assert_eq!(doc.selection(), None, "and nothing is left armed");
+
+        // Esc leaves the caret where the search left it — the end of the last
+        // hit — and the keystroke after it inserts rather than replacing.
+        handle_key(&mut doc, keyp(KeyCode::Esc), &mut app);
+        type_chars(&mut doc, &mut app, "X");
+        assert_eq!(doc.source, "helXlo world\n", "no word was overwritten");
+    }
+
+    /// The bar owned every `^` chord it had no verb for, so ^Q didn't quit and
+    /// ^S didn't save while a search was open, and nothing said why.
+    #[test]
+    fn the_bar_hands_the_host_s_own_chords_back_to_the_host() {
+        let _lock = clipboard_lock();
+        let mut doc = doc_with("find_chords", "alpha needle omega\n");
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('f'), &mut app);
+        type_chars(&mut doc, &mut app, "needle");
+
+        // ^C copies the match, which is most of why anyone searched for it —
+        // and the bar stays up, because copying changed nothing it holds. The
+        // status is the assertion rather than the pasteboard itself: `^c` with
+        // the bar up used to be swallowed, and "copied" is exactly the report
+        // that it no longer is. What lands on the pasteboard is
+        // `copy_publishes_both_flavors`' business.
+        assert_eq!(doc.selected_text(), Some("needle"));
+        handle_key(&mut doc, ctrl('c'), &mut app);
+        assert!(app.find.is_some(), "the bar stays up over a copy");
+        assert_eq!(
+            doc.status.as_deref().map(|s| s == "copied"),
+            Some(true),
+            "^c must reach the host's clipboard verb, not be eaten by the bar"
+        );
+
+        // ^P closes the bar first: the palette can run an editing command over
+        // a bar it is drawn on top of.
+        handle_key(&mut doc, ctrl('p'), &mut app);
+        assert!(app.palette.is_some(), "^p reaches the palette");
+        assert!(app.find.is_none(), "and takes the bar down with it");
+        handle_key(&mut doc, keyp(KeyCode::Esc), &mut app);
+
+        // ^Q reaches the quit path rather than being eaten.
+        handle_key(&mut doc, ctrl('f'), &mut app);
+        assert_eq!(
+            handle_key(&mut doc, ctrl('q'), &mut app),
+            Flow::Quit,
+            "^q must reach the quit path"
+        );
+    }
+
+    /// The visibility policy, end to end: the rich view hides the frontmatter,
+    /// so a hit in it is counted and said out loud but never stepped to and
+    /// never replaced. ⌥w into the source view is where the whole count is.
+    #[test]
+    fn a_hit_the_rich_view_hides_is_counted_but_never_replaced() {
+        let fm = "---\ntitle: foo\n---\n\n";
+        let mut doc = doc_with("find_hidden", &format!("{fm}body foo here\n"));
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('h'), &mut app);
+        type_chars(&mut doc, &mut app, "foo");
+
+        let find = app.find.as_ref().unwrap();
+        assert_eq!(find.matches.len(), 1, "only the one in the body");
+        assert_eq!(find.hidden, 1, "and the frontmatter's is counted");
+        assert_eq!(find.caption(), "1 of 1, 1 hidden");
+        assert_eq!(doc.highlights().len(), 1, "the hidden one gets no wash");
+
+        // Replace-all must not touch what it never showed.
+        handle_key(&mut doc, keyp(KeyCode::Tab), &mut app);
+        type_chars(&mut doc, &mut app, "BAR");
+        handle_key(&mut doc, ctrl('r'), &mut app);
+        assert_eq!(doc.source, format!("{fm}body BAR here\n"));
+
+        // The source view draws every byte, so there is nothing hidden in it.
+        doc.toggle_view();
+        assert_eq!(doc.view, View::Source);
+        refresh_find_after_edit(&mut doc, &mut app);
+        let find = app.find.as_ref().unwrap();
+        assert_eq!(find.hidden, 0);
+        assert_eq!(find.matches.len(), 1, "only `foo` is left in the metadata");
     }
 
     #[test]

@@ -238,12 +238,24 @@ Inside the find bar: `Enter` steps to the next match (and `^g` repeats it),
 landed on. `⇧Enter` and `^⇧g` are *not* the "previous" half, because a terminal
 sends the identical bytes for `Enter` and `⇧Enter` — the same reason the in-cell
 line break is spelled `⌥Enter` here. With a replacement field up (`^h`, or `^h`
-again on an open find bar, which keeps the query), `Tab` swaps fields, `Enter`
-replaces the current match and moves on, and `^r` replaces all — as a single
-undo step, because replace-all is one thing you did. Matches are painted with
-`leaf-core`'s `Doc::set_highlights`, so a hit inside `**bold**` selects the
-rendered word: the offsets are source bytes, which is the coordinate the caret,
-the selection, and the wash are all already in.
+again on an open find bar, which keeps the query), `Tab` swaps fields and `^r`
+replaces all — as a single undo step, because replace-all is one thing you did.
+`Enter` does whichever field the keyboard is in: in the replacement it replaces
+the current match and moves on, in the query it steps, as it always does. `^h`
+over a selection, or over a bar that already has a query, starts in the
+replacement field, so the common path is one key. The bar hands the host's own
+chords back to the host — `^q`, `^s`, `^c` (which copies the match), `^p`, `⌥h`,
+`⌥w` — rather than swallowing them; it is a strip with two fields in it, not a
+modal dialog.
+
+Matches are painted with `leaf-core`'s `Doc::set_highlights`, so a hit inside
+`**bold**` selects the rendered word: the offsets are source bytes, which is the
+coordinate the caret, the selection, and the wash are all already in. Searching
+the source is also what makes a hit possible in text the *rich* view doesn't
+draw — inside hidden frontmatter, or in a link's destination — and those don't
+count as matches in that view. They are counted and said out loud ("2 of 3, 1
+hidden"), and never stepped to, washed, or replaced; `⌥w` into the source view,
+where every byte is on screen, is where the whole count is.
 
 Everything the keyboard doesn't reach is in the **command palette** — the three
 media kinds, all fourteen table operations, and the markup/line-flow modes named

@@ -78,6 +78,10 @@ pub fn render(f: &mut Frame, doc: &mut Doc, app: &mut App) {
         ..screen
     };
     leaf_ratatui::render(f, body, doc, &mut app.editor);
+    // Stashed for the find bar, which asks the visual map what it draws and so
+    // has to be able to rebuild it at the width it was drawn at — see
+    // `App::body_width`.
+    app.body_width = body.width;
 
     // After the surface has painted, so a theme the widget only just resolved
     // (the `OSC 11` reply arrives on the first frame) is the one the chrome uses
@@ -132,7 +136,7 @@ pub fn render(f: &mut Frame, doc: &mut Doc, app: &mut App) {
     // goes on after the surface has placed its own and before any overlay that
     // would take the keyboard back.
     if let Some(find) = &app.find {
-        render_find_bar(f, screen, find, &chrome);
+        render_find_bar(f, screen, find, doc.read_only(), &chrome);
     }
 
     if let Some(menu) = &mut app.context_menu {
@@ -234,7 +238,7 @@ fn render_toast(f: &mut Frame, area: Rect, msg: &str, style: Style) {
 /// like the palette's query line: a `›` prompt so an empty field still reads as
 /// a field, the focused one accented, and the real terminal cursor placed into
 /// it so there is one caret on screen and one mechanism putting it there.
-fn render_find_bar(f: &mut Frame, screen: Rect, find: &Find, chrome: &Chrome) {
+fn render_find_bar(f: &mut Frame, screen: Rect, find: &Find, read_only: bool, chrome: &Chrome) {
     let rows = find.rows().min(screen.height);
     if rows == 0 || screen.width == 0 {
         return;
@@ -286,7 +290,10 @@ fn render_find_bar(f: &mut Frame, screen: Rect, find: &Find, chrome: &Chrome) {
             Span::styled("^r ", chrome.key),
             Span::styled("replace all  ", chrome.dim),
         ]);
-    } else {
+    } else if !read_only {
+        // Not offered in a reading session: ^h is refused there, and a hint row
+        // that names a key which answers "read-only" is an invitation to press
+        // it. Finding is reading, so the rest of the row stands.
         hints.extend([
             Span::styled("^h ", chrome.key),
             Span::styled("replace  ", chrome.dim),

@@ -19,8 +19,30 @@
 //! through `Doc::place_caret`. Searching the rendered text instead would mean
 //! mapping back through the visual map for every one of those, and would make
 //! `# ` unfindable in a document that contains it.
+//!
+//! # What counts as a match
+//!
+//! Matching over the source finds text the *rich* view doesn't draw: the
+//! `title:` inside hidden frontmatter, the URL inside `[text](url)`, the `**`
+//! around a bold run. Offering those as matches is worse than not finding them.
+//! They select nothing a reader can see, stepping to one looks like the bar
+//! froze, and replacing one edits bytes the person doing it was never shown.
+//!
+//! So the policy is one line: **in the WYSIWYG view a match counts only if the
+//! view draws some part of it** ([`is_visible`]). The rest are counted and said
+//! out loud — "2 of 3, 1 hidden" — and are never stepped to, never washed, and
+//! never replaced. The source view draws every byte, so nothing is hidden there
+//! and the count is the whole count; searching the source view is how you reach
+//! a hit in the frontmatter, which is also where you would have to be to edit it
+//! by hand.
+//!
+//! "Draws some part of it" rather than "draws all of it", so a hit that runs
+//! from visible text into a hidden delimiter is still a hit. The question is
+//! asked of [`leaf_core::VisualMap`] as the last frame laid it out; `main`
+//! rebuilds the map before asking, so the answer is never a frame behind the
+//! bytes.
 
-use leaf_core::Highlight;
+use leaf_core::{Doc, Highlight, View};
 
 /// Which of the bar's two fields the keyboard is typing into.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -45,8 +67,13 @@ pub struct Find {
     pub replacement_cursor: usize,
     /// Which field has the keyboard, and the terminal cursor.
     pub field: FindField,
-    /// Every match, in document order, as `[start, end)` source byte ranges.
+    /// Every match the view draws, in document order, as `[start, end)` source
+    /// byte ranges. See the module docs for what "draws" means.
     pub matches: Vec<(usize, usize)>,
+    /// How many matches the view does *not* draw. Counted so the caption can
+    /// say so — a query that matches only hidden text has to read as "found,
+    /// not shown" rather than as "not found".
+    pub hidden: usize,
     /// Index into `matches` of the one the caret is on. Meaningless — and never
     /// read — when `matches` is empty.
     pub current: usize,
@@ -66,15 +93,23 @@ impl Find {
     /// commonest search is for the thing already under the caret.
     pub fn new(replacing: bool, query: String) -> Self {
         let query_cursor = query.len();
+        let seeded = !query.is_empty();
         Find {
             query,
             query_cursor,
             replacement: replacing.then(String::new),
             replacement_cursor: 0,
-            // The query, even when opened to replace: there is nothing to
-            // replace until there is something to find.
-            field: FindField::Query,
+            // The query, unless there is already one — there is nothing to
+            // replace until there is something to find, but when ^h is pressed
+            // over a selection the finding is already done and the next thing
+            // anybody types is the replacement.
+            field: if replacing && seeded {
+                FindField::Replacement
+            } else {
+                FindField::Query
+            },
             matches: Vec::new(),
+            hidden: 0,
             current: 0,
             origin: 0,
         }
@@ -113,12 +148,13 @@ impl Find {
     /// when the anchor is past them all. Wrapping rather than stopping, because
     /// a search that goes quiet at the end of the file reads as a search that
     /// found nothing.
-    pub fn set_matches(&mut self, matches: Vec<(usize, usize)>, anchor: usize) {
+    pub fn set_matches(&mut self, matches: Vec<(usize, usize)>, hidden: usize, anchor: usize) {
         self.current = matches
             .iter()
             .position(|(start, _)| *start >= anchor)
             .unwrap_or(0);
         self.matches = matches;
+        self.hidden = hidden;
     }
 
     /// The match the caret is on, if there is one.
@@ -143,30 +179,60 @@ impl Find {
     /// *current* one is told apart by being the selection, which the renderer
     /// draws reversed on top of the wash. Two washes would have meant picking a
     /// second color here, in the host, against a terminal palette it can't see.
+    /// The `id` is empty on every one of them. It is the host's name for a
+    /// range, handed back when a reader activates it — and the only host here is
+    /// this bar, which finds its match by index and never looks one up by name.
+    /// A `format!("find:{i}")` per hit was an allocation per hit for a string
+    /// nothing read.
     pub fn highlights(&self) -> Vec<Highlight> {
-        self.matches
-            .iter()
-            .enumerate()
-            .map(|(i, (start, end))| Highlight {
-                start: *start,
-                end: *end,
-                id: format!("find:{i}"),
-                color: None,
-                marker: None,
-            })
-            .collect()
+        let mut out = Vec::with_capacity(self.matches.len());
+        out.extend(self.matches.iter().map(|&(start, end)| Highlight {
+            start,
+            end,
+            id: String::new(),
+            color: None,
+            marker: None,
+        }));
+        out
     }
 
     /// What the right-hand end of the bar says: which match of how many, or
     /// that there are none, or nothing at all before anything has been typed.
     pub fn caption(&self) -> String {
+        let hidden = match self.hidden {
+            0 => String::new(),
+            n => format!(", {n} hidden"),
+        };
         if self.query.is_empty() {
             String::new()
+        } else if self.matches.is_empty() && self.hidden > 0 {
+            // Found, but not anywhere this view draws — which is a different
+            // answer from "not in this document", and has a different next step
+            // (⌥w, into the source view).
+            format!("none shown{hidden}")
         } else if self.matches.is_empty() {
             "no matches".to_string()
         } else {
-            format!("{} of {}", self.current + 1, self.matches.len())
+            format!("{} of {}{hidden}", self.current + 1, self.matches.len())
         }
+    }
+}
+
+/// Whether the active view draws any part of the source range `[start, end)` —
+/// the whole of the policy in this module's docs.
+///
+/// In the source view every byte is on screen, so the answer is always yes. In
+/// WYSIWYG it is asked of the caret stops: a stop is a place the rendered grid
+/// has a home for a source offset, so a range with a stop inside it has
+/// something drawn in it, and a range with none — hidden frontmatter, a link's
+/// destination, the `**` around a bold run — has nothing.
+pub fn is_visible(doc: &Doc, start: usize, end: usize) -> bool {
+    match doc.view {
+        View::Source => true,
+        View::Wysiwyg => doc
+            .vmap
+            .stop_at_or_after(start)
+            .is_some_and(|stop| stop < end),
     }
 }
 
@@ -183,33 +249,41 @@ impl Find {
 /// every offset after one of those in the document would be shifted, and the
 /// match would be painted somewhere other than where it is.
 ///
-/// Naive, at `O(n·m)`. A document held open in a terminal is small enough that
-/// this is invisible next to the reparse a single keystroke already costs, and
-/// the version that is obviously correct is worth more here than the version
-/// that is fast.
+/// Naive, at `O(n·m)` comparisons. A document held open in a terminal is small
+/// enough that this is invisible next to the reparse a single keystroke already
+/// costs, and the version that is obviously correct is worth more here than the
+/// version that is fast.
+///
+/// The haystack is folded *once*, into `(source offset, folded char)`, and the
+/// needle is then slid along that. Folding inside the candidate loop — which is
+/// what this did — re-folded the same characters once per needle character, so
+/// a six-letter query folded the whole document six times per keystroke. The
+/// pairs keep the source offsets, which is the reason the whole thing is written
+/// this way rather than over `to_lowercase`.
 pub fn find_matches(source: &str, needle: &str) -> Vec<(usize, usize)> {
     let needle: Vec<char> = needle.chars().map(fold_case).collect();
     if needle.is_empty() {
         return Vec::new();
     }
+    let hay: Vec<(usize, char)> = source
+        .char_indices()
+        .map(|(at, c)| (at, fold_case(c)))
+        .collect();
     let mut out = Vec::new();
-    let mut at = 0;
-    'candidate: while at < source.len() {
-        let mut chars = source[at..].char_indices();
-        let mut end = at;
-        for want in &needle {
-            match chars.next() {
-                Some((offset, c)) if fold_case(c) == *want => end = at + offset + c.len_utf8(),
-                // No match here (or the source ran out): step one whole char
-                // along and try again from there.
-                _ => {
-                    at += source[at..].chars().next().map_or(1, char::len_utf8);
-                    continue 'candidate;
-                }
-            }
+    let mut i = 0;
+    while i + needle.len() <= hay.len() {
+        if (0..needle.len()).all(|k| hay[i + k].1 == needle[k]) {
+            // The end is the *next* character's offset (or the end of the
+            // source), never a folded char's own length: folding can change how
+            // many bytes a character takes, and these are offsets into `source`.
+            let end = hay
+                .get(i + needle.len())
+                .map_or(source.len(), |&(at, _)| at);
+            out.push((hay[i].0, end));
+            i += needle.len();
+        } else {
+            i += 1;
         }
-        out.push((at, end));
-        at = end;
     }
     out
 }
@@ -286,20 +360,20 @@ mod tests {
         let matches = find_matches("one two one two one", "one");
         assert_eq!(matches.len(), 3);
 
-        find.set_matches(matches.clone(), 0);
+        find.set_matches(matches.clone(), 0, 0);
         assert_eq!(find.current, 0);
-        find.set_matches(matches.clone(), 5);
+        find.set_matches(matches.clone(), 0, 5);
         assert_eq!(find.current, 1, "the first hit at or after the anchor");
         // Past the last one, the search comes round again rather than going
         // quiet at the end of the document.
-        find.set_matches(matches, 999);
+        find.set_matches(matches, 0, 999);
         assert_eq!(find.current, 0);
     }
 
     #[test]
     fn stepping_wraps_at_both_ends() {
         let mut find = Find::new(false, "one".into());
-        find.set_matches(find_matches("one one one", "one"), 0);
+        find.set_matches(find_matches("one one one", "one"), 0, 0);
         assert_eq!(find.step(-1), find.matches.last().copied(), "back off zero");
         assert_eq!(find.step(1), find.matches.first().copied(), "and forward");
     }
@@ -310,10 +384,36 @@ mod tests {
         assert_eq!(find.caption(), "", "nothing typed yet is not 'no matches'");
         find.query = "zzz".into();
         assert_eq!(find.caption(), "no matches");
-        find.set_matches(find_matches("one one", "one"), 0);
+        find.set_matches(find_matches("one one", "one"), 0, 0);
         assert_eq!(find.caption(), "1 of 2");
         find.step(1);
         assert_eq!(find.caption(), "2 of 2");
+    }
+
+    /// The caption is where the visibility policy is said out loud: a hit the
+    /// rich view doesn't draw is neither offered nor silently dropped.
+    #[test]
+    fn the_caption_says_how_many_matches_the_view_is_not_showing() {
+        let mut find = Find::new(false, "one".into());
+        find.set_matches(find_matches("one one", "one"), 1, 0);
+        assert_eq!(find.caption(), "1 of 2, 1 hidden");
+        // Matched, but nowhere this view draws — a different answer from "not
+        // in this document", and with a different next step (⌥w).
+        find.set_matches(Vec::new(), 2, 0);
+        assert_eq!(find.caption(), "none shown, 2 hidden");
+        find.set_matches(Vec::new(), 0, 0);
+        assert_eq!(find.caption(), "no matches");
+    }
+
+    #[test]
+    fn opening_to_replace_over_a_selection_puts_the_keyboard_in_the_replacement() {
+        // ^h with nothing selected: the query first, because there is nothing to
+        // replace until there is something to find.
+        assert_eq!(Find::new(true, String::new()).field, FindField::Query);
+        // ^h over a selection: the finding is already done.
+        assert_eq!(Find::new(true, "seed".into()).field, FindField::Replacement);
+        // A plain ^f never lands in a field it doesn't have.
+        assert_eq!(Find::new(false, "seed".into()).field, FindField::Query);
     }
 
     #[test]
