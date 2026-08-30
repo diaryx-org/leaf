@@ -14,6 +14,8 @@ use ratatui::{
 #[cfg(feature = "images")]
 use ratatui::widgets::Clear;
 
+#[cfg(feature = "images")]
+use leaf_core::VisualMap;
 use leaf_core::{Doc, Highlight, HighlightCursor, View};
 
 use crate::EditorState;
@@ -70,6 +72,26 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
             doc.build_visual(width);
         }
     }
+
+    // Oversized headings are a presentation of core's ordinary editable rows.
+    // Always restore the canonical map first: the previous frame may have added
+    // blank rows beneath inactive H1/H2 blocks, and caret motion must be able to
+    // collapse the heading it just entered without changing the document.
+    #[cfg(feature = "images")]
+    let heading_rasters = if doc.view == View::Wysiwyg {
+        let key = (doc.revision(), width);
+        if let Some((revision, cached_width, base)) = &state.heading_base
+            && (*revision, *cached_width) == key
+        {
+            doc.vmap = base.clone();
+        } else {
+            state.heading_base = Some((key.0, key.1, doc.vmap.clone()));
+        }
+        let active_row = doc.vmap.pos_of_offset(doc.caret).0;
+        expand_inactive_headings(&mut doc.vmap, active_row, sel)
+    } else {
+        Vec::new()
+    };
     let (caret_row, caret_col) = doc.caret_pos();
 
     // The code block the caret is in, and how far it's scrolled sideways to keep
@@ -246,6 +268,30 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
                 }
             }
         }
+
+        // Paint composed H1/H2 blocks last, over the ordinary terminal glyphs.
+        // The active heading is absent from this list and therefore remains a
+        // completely normal Leaf editing row with the real terminal caret.
+        for heading in &heading_rasters {
+            let span = &heading.rows_span;
+            let fully_visible = span.start >= doc.scroll && span.end <= doc.scroll + height;
+            if !fully_visible {
+                continue;
+            }
+            let rect = Rect {
+                x: content_area.x,
+                y: content_area.y + (span.start - doc.scroll) as u16,
+                width: content_area.width,
+                height: (span.end - span.start) as u16,
+            };
+            state.images.paint_heading(
+                f,
+                &heading.text,
+                heading.level,
+                theme.heading[(heading.level as usize - 1).min(5)],
+                rect,
+            );
+        }
     }
 
     // A thumb-only affordance (no `<`/`>` end glyphs — there's no click target
@@ -279,6 +325,101 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
         let y = content_area.y + (caret_row - doc.scroll) as u16;
         f.set_cursor_position(Position::new(x, y));
     }
+}
+
+#[cfg(feature = "images")]
+struct HeadingRaster {
+    level: u8,
+    text: String,
+    rows_span: std::ops::Range<usize>,
+}
+
+/// Insert presentation-only blank rows after inactive H1/H2 blocks and shift
+/// every structural side table by the same row-boundary map. The source/caret
+/// stops themselves are unchanged; filler rows are decoration and therefore
+/// mouse clicks on their lower half resolve to the heading's trailing stop.
+#[cfg(feature = "images")]
+fn expand_inactive_headings(
+    vmap: &mut VisualMap,
+    active_row: usize,
+    selection: Option<(usize, usize)>,
+) -> Vec<HeadingRaster> {
+    let old = std::mem::take(&mut vmap.rows);
+    let mut boundary = vec![0usize; old.len() + 1];
+    let mut rows = Vec::with_capacity(old.len() + 8);
+    let mut rasters = Vec::new();
+    let mut i = 0;
+    while i < old.len() {
+        boundary[i] = rows.len();
+        let Some(level @ 1..=2) = old[i].heading else {
+            rows.push(old[i].clone());
+            i += 1;
+            continue;
+        };
+        let start = i;
+        while i < old.len() && old[i].heading == Some(level) {
+            boundary[i] = rows.len();
+            rows.push(old[i].clone());
+            i += 1;
+        }
+        let source_start = old[start..i]
+            .iter()
+            .flat_map(|row| row.glyphs.iter().map(|g| g.src))
+            .min()
+            .unwrap_or(old[start].end_src);
+        let source_end = old[start..i]
+            .iter()
+            .map(|row| row.end_src)
+            .max()
+            .unwrap_or(source_start);
+        let selected = selection.is_some_and(|(s, e)| s < source_end && e > source_start);
+        if (start..i).contains(&active_row) || selected {
+            continue;
+        }
+        let target = if level == 1 { 3 } else { 2 };
+        let text = old[start..i]
+            .iter()
+            .flat_map(|row| row.glyphs.iter().map(|g| g.ch))
+            .collect::<String>();
+        while rows.len() - boundary[start] < target {
+            let mut filler = old[i - 1].clone();
+            filler.glyphs.clear();
+            filler.decoration = true;
+            filler.code = false;
+            filler.code_lang = None;
+            filler.media = None;
+            filler.task = None;
+            filler.directive = false;
+            filler.directive_label = None;
+            filler.leaf_directive = None;
+            filler.boundary = None;
+            rows.push(filler);
+        }
+        rasters.push(HeadingRaster {
+            level,
+            text,
+            rows_span: boundary[start]..rows.len(),
+        });
+    }
+    boundary[old.len()] = rows.len();
+    let shift = |span: &mut std::ops::Range<usize>| {
+        span.start = boundary[span.start];
+        span.end = boundary[span.end];
+    };
+    for table in &mut vmap.tables {
+        shift(&mut table.rows_span);
+    }
+    for code in &mut vmap.code_blocks {
+        shift(&mut code.rows_span);
+    }
+    for media in &mut vmap.media {
+        shift(&mut media.rows_span);
+    }
+    for directive in &mut vmap.directives {
+        shift(&mut directive.rows_span);
+    }
+    vmap.rows = rows;
+    rasters
 }
 
 /// The width of a code block's box: its widest line plus the two border
@@ -522,6 +663,43 @@ mod tests {
         let mut scroll_x = 10;
         follow_caret_x(&mut scroll_x, 15, 20);
         assert_eq!(scroll_x, 10);
+    }
+
+    #[cfg(feature = "images")]
+    fn heading_doc() -> Doc {
+        let mut path = std::env::temp_dir();
+        path.push("leaf_ratatui_heading_layout.md");
+        std::fs::write(&path, "# Large title\n\nbody\n").unwrap();
+        let mut doc = Doc::open(path).unwrap();
+        doc.build_visual(80);
+        doc
+    }
+
+    #[cfg(feature = "images")]
+    #[test]
+    fn inactive_h1_reserves_three_rows_without_adding_caret_stops() {
+        let mut doc = heading_doc();
+        doc.caret = doc.source.len();
+        let active = doc.vmap.pos_of_offset(doc.caret).0;
+        let old_rows = doc.vmap.rows.len();
+        let rasters = expand_inactive_headings(&mut doc.vmap, active, None);
+        assert_eq!(rasters.len(), 1);
+        assert_eq!(rasters[0].text, "Large title");
+        assert_eq!(rasters[0].rows_span.len(), 3);
+        assert_eq!(doc.vmap.rows.len(), old_rows + 2);
+        assert!(doc.vmap.rows[rasters[0].rows_span.end - 1].decoration);
+    }
+
+    #[cfg(feature = "images")]
+    #[test]
+    fn active_heading_stays_as_one_ordinary_editable_row() {
+        let mut doc = heading_doc();
+        let active = doc.vmap.pos_of_offset(doc.caret).0;
+        let old_rows = doc.vmap.rows.len();
+        let rasters = expand_inactive_headings(&mut doc.vmap, active, None);
+        assert!(rasters.is_empty());
+        assert_eq!(doc.vmap.rows.len(), old_rows);
+        assert!(!doc.vmap.rows[active].decoration);
     }
 }
 

@@ -16,8 +16,13 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use ratatui::style::Color as TerminalColor;
 use ratatui::{Frame, layout::Rect, widgets::Clear};
 use ratatui_image::{FontSize, Resize, StatefulImage, picker::Picker, protocol::StatefulProtocol};
+
+use cosmic_text::{
+    Attrs, Buffer, Color as TextColor, FontSystem, Metrics, Shaping, SwashCache, Weight, Wrap,
+};
 
 use leaf_core::{ColorScheme, MediaInfo};
 
@@ -53,6 +58,12 @@ pub struct Images {
     /// The `None` is cached too, so a broken reference is tried once, not every
     /// frame.
     cache: HashMap<PathBuf, Option<Entry>>,
+    /// Composed heading raster cache. Unlike document images these are keyed by
+    /// content and geometry, so leaving a heading after editing it creates one
+    /// new entry while steady frames only re-place the encoded protocol image.
+    headings: HashMap<HeadingKey, Entry>,
+    fonts: FontSystem,
+    swash: SwashCache,
     /// The terminal's color scheme, used to pick a `<picture>`'s
     /// `prefers-color-scheme` `<source>` (see [`MediaInfo::resolve`]). Detected
     /// once at startup and refreshable via [`Images::set_color_scheme`]; the
@@ -73,6 +84,9 @@ impl Default for Images {
         Images {
             picker: Picker::halfblocks(),
             cache: HashMap::new(),
+            headings: HashMap::new(),
+            fonts: FontSystem::new(),
+            swash: SwashCache::new(),
             scheme: detect_color_scheme(),
         }
     }
@@ -181,6 +195,62 @@ impl Images {
         true
     }
 
+    /// Shape and paint an inactive H1/H2 as a terminal graphics image. The
+    /// source remains ordinary Leaf text; this is only its composed projection.
+    pub fn paint_heading(
+        &mut self,
+        f: &mut Frame,
+        text: &str,
+        level: u8,
+        color: TerminalColor,
+        rect: Rect,
+    ) {
+        if rect.width == 0 || rect.height == 0 || text.is_empty() {
+            return;
+        }
+        let font = self.picker.font_size();
+        let rgb = terminal_rgb(color, self.scheme);
+        let key = HeadingKey {
+            text: text.to_owned(),
+            level,
+            cells: (rect.width, rect.height),
+            font: (font.0, font.1),
+            rgb,
+        };
+        if !self.headings.contains_key(&key) {
+            let image = raster_heading(
+                &mut self.fonts,
+                &mut self.swash,
+                text,
+                level,
+                rgb,
+                rect.width,
+                rect.height,
+                font,
+            );
+            let intrinsic = (image.width(), image.height());
+            self.headings.insert(
+                key.clone(),
+                Entry {
+                    protocol: self
+                        .picker
+                        .new_resize_protocol(image::DynamicImage::ImageRgba8(image)),
+                    intrinsic,
+                    box_cells: (rect.width, rect.height),
+                },
+            );
+        }
+        let Some(entry) = self.headings.get_mut(&key) else {
+            return;
+        };
+        f.render_widget(Clear, rect);
+        f.render_stateful_widget(
+            StatefulImage::new().resize(Resize::Fit(None)),
+            rect,
+            &mut entry.protocol,
+        );
+    }
+
     /// The cache entry for a resolved path, decoding it on first use. `None` (and
     /// a cached `None`) when the file can't be read or decoded.
     fn entry(&mut self, path: &Path) -> Option<&mut Entry> {
@@ -197,6 +267,89 @@ impl Images {
         }
         self.cache.get_mut(path).and_then(|e| e.as_mut())
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct HeadingKey {
+    text: String,
+    level: u8,
+    cells: (u16, u16),
+    font: (u16, u16),
+    rgb: (u8, u8, u8),
+}
+
+fn terminal_rgb(color: TerminalColor, scheme: ColorScheme) -> (u8, u8, u8) {
+    match color {
+        TerminalColor::Rgb(r, g, b) => (r, g, b),
+        TerminalColor::Black => (0, 0, 0),
+        TerminalColor::White => (255, 255, 255),
+        TerminalColor::Red | TerminalColor::LightRed => (235, 95, 95),
+        TerminalColor::Green | TerminalColor::LightGreen => (100, 210, 140),
+        TerminalColor::Blue | TerminalColor::LightBlue => (100, 160, 240),
+        TerminalColor::Cyan | TerminalColor::LightCyan => (80, 205, 215),
+        TerminalColor::Magenta | TerminalColor::LightMagenta => (205, 130, 225),
+        TerminalColor::Yellow | TerminalColor::LightYellow => (220, 165, 55),
+        TerminalColor::Gray | TerminalColor::DarkGray => (145, 145, 145),
+        // Indexed terminal colors cannot be queried portably. The curated Leaf
+        // palettes use RGB; this is a legible fallback for a custom indexed one.
+        TerminalColor::Indexed(_) | TerminalColor::Reset => match scheme {
+            ColorScheme::Dark => (235, 235, 235),
+            ColorScheme::Light => (35, 35, 35),
+        },
+    }
+}
+
+fn raster_heading(
+    fonts: &mut FontSystem,
+    swash: &mut SwashCache,
+    text: &str,
+    level: u8,
+    rgb: (u8, u8, u8),
+    cols: u16,
+    rows: u16,
+    cell: FontSize,
+) -> image::RgbaImage {
+    let width = u32::from(cols) * u32::from(cell.0.max(1));
+    let height = u32::from(rows) * u32::from(cell.1.max(1));
+    let line_height = height as f32;
+    let font_size = if level == 1 {
+        line_height * 0.72
+    } else {
+        line_height * 0.68
+    };
+    let mut buffer = Buffer::new(fonts, Metrics::new(font_size, line_height));
+    buffer.set_wrap(Wrap::WordOrGlyph);
+    buffer.set_size(Some(width as f32), Some(height as f32));
+    buffer.set_text(
+        text,
+        &Attrs::new().weight(Weight::BOLD),
+        Shaping::Advanced,
+        None,
+    );
+    let mut pixels = image::RgbaImage::new(width.max(1), height.max(1));
+    buffer.draw(
+        fonts,
+        swash,
+        TextColor::rgb(rgb.0, rgb.1, rgb.2),
+        |x, y, w, h, c| {
+            for py in y.max(0) as u32..(y.saturating_add(h as i32)).max(0) as u32 {
+                if py >= height {
+                    break;
+                }
+                for px in x.max(0) as u32..(x.saturating_add(w as i32)).max(0) as u32 {
+                    if px >= width {
+                        break;
+                    }
+                    let dst = pixels.get_pixel_mut(px, py);
+                    let a = c.a();
+                    if a >= dst.0[3] {
+                        *dst = image::Rgba([c.r(), c.g(), c.b(), a]);
+                    }
+                }
+            }
+        },
+    );
+    pixels
 }
 
 /// The character-cell box an image fits into: as wide as the content allows (but

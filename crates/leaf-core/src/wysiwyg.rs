@@ -386,7 +386,7 @@ pub struct MediaSource {
 }
 
 /// The rendered document plus the offset⇄position mapping the caret rides on.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct VisualMap {
     /// The document's **default monospace rendering** — one [`VRow`] of glyphs
     /// per visual line, tables spelled with box-drawing borders (`│ ─ ┌┬┐…`) and
@@ -2568,7 +2568,19 @@ impl Builder<'_> {
                         stop: true,
                     });
                 }
-                self.push_row(glyphs, node.span.start);
+                // The dashes share one caret home in front of the atomic block,
+                // while the row's end is the second home just past its source.
+                // Without that trailing stop a final rule made the document end
+                // unreachable: Right could not cross it and a click in the
+                // empty space below it snapped back before the rule.
+                let after_line = node.span.end
+                    + self.source[node.span.end..]
+                        .strip_prefix("\r\n")
+                        .map_or_else(
+                            || usize::from(self.source[node.span.end..].starts_with('\n')),
+                            |_| 2,
+                        );
+                self.push_row_at(glyphs, after_line);
             }
             // A block-level image node with no wrapping paragraph — a promoted
             // top-level HTML `<img>` lands as a direct `doc` child like this

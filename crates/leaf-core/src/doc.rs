@@ -6666,6 +6666,8 @@ mod tests {
         // The toggled region stays selected, so a second toggle reverses it.
         d.toggle(InlineKind::Strong);
         assert_eq!(d.source, "a word b\n");
+        d.toggle(InlineKind::Strong);
+        assert_eq!(d.source, "a **word** b\n");
     }
 
     #[test]
@@ -7096,6 +7098,13 @@ mod tests {
         d.caret = 7; // "word "
         d.toggle(InlineKind::Strong);
         assert_eq!(d.source, "a **word** b\n");
+        d.toggle(InlineKind::Strong);
+        assert_eq!(d.source, "a word b\n");
+        d.toggle(InlineKind::Strong);
+        assert_eq!(
+            d.source, "a **word** b\n",
+            "reapplying the mark must not wrap stale delimiter offsets"
+        );
         // And a selection of nothing but whitespace has no word to mark.
         let mut d = wysiwyg_doc("edge_sel_ws", "a word b\n");
         d.anchor = Some(6);
@@ -7907,6 +7916,16 @@ mod tests {
         dj.caret = 2;
         dj.insert_thematic_break();
         assert_eq!(dj.source, "pa\n\n* * *\n\nra\n");
+    }
+
+    #[test]
+    fn clicking_below_a_final_thematic_break_can_type_after_it() {
+        let mut d = wysiwyg_doc("hr_final_click", "---\n");
+        d.build_visual(80);
+        d.click(d.vmap.num_rows() + 2, 0, false);
+        assert_eq!(d.caret, d.source.len(), "the caret belongs after the rule");
+        d.insert("after");
+        assert_eq!(d.source, "---\nafter");
     }
 
     #[test]

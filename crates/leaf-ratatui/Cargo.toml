@@ -15,7 +15,7 @@ default = ["images", "theme-detect"]
 # inline `🖼 alt` placeholder text — the same fallback a terminal with no
 # graphics protocol already gets. Everything else (text, code boxes, selection,
 # input) is unchanged.
-images = ["dep:ratatui-image", "dep:image", "dep:resvg"]
+images = ["dep:ratatui-image", "dep:image", "dep:resvg", "dep:cosmic-text"]
 # Ask the terminal whether it is light or dark (an `OSC 11` query) so the
 # palette can match it. On by default: a code panel tinted for the wrong
 # background is the single most visible way the surface can look broken, and
@@ -48,6 +48,10 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # Version 0.46 matches the one already resolved in the workspace (via gpui), so
 # no second copy is pulled. Optional: only the `images` feature wants it.
 resvg = { version = "0.46", optional = true }
+# Shape and rasterize oversized H1/H2 text into the same terminal-image pipeline
+# used by block media. Kept behind `images`, since without a graphics backend the
+# ordinary bold/coloured terminal heading remains the better fallback.
+cosmic-text = { version = "0.19", optional = true }
 # "Is this terminal dark or light?", asked properly: an `OSC 11` query with a
 # timeout, a fast heuristic for terminals that won't answer, no escape sequences
 # at all under `TERM=dumb`, and a guaranteed termios restore even on panic. It

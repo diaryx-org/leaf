@@ -79,6 +79,11 @@ pub struct EditorState {
     /// inline `🖼 alt` placeholder and this field (and its deps) are gone.
     #[cfg(feature = "images")]
     images: Images,
+    /// The unexpanded core map for the current document revision and width.
+    /// Oversized headings add presentation-only filler rows to `doc.vmap`; this
+    /// copy lets the next frame start from core's canonical caret map again.
+    #[cfg(feature = "images")]
+    heading_base: Option<(u64, usize, leaf_core::VisualMap)>,
     /// The offset the pointer is currently peeking at — a footnote reference or
     /// a link — or `None` when it's over ordinary text. Held so the peek is
     /// published once when the pointer arrives rather than on every one of the
@@ -108,6 +113,8 @@ impl Default for EditorState {
             code_caret_span: None,
             #[cfg(feature = "images")]
             images: Images::default(),
+            #[cfg(feature = "images")]
+            heading_base: None,
             peek: None,
             last_click: None,
             theme: Theme::for_scheme(style::detect_color_scheme()),
