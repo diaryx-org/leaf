@@ -38,32 +38,36 @@ use ratatui::{
 /// the two can never drift apart. A path that isn't there yet is named as part
 /// of the usage because it's a supported way to start, not a tolerated mistake:
 /// leaf opens an empty buffer for it and the first save creates the file.
-const USAGE: &str = "usage: leaf [-r|--read-only] <file.md|file.dj|file.html|file.xml>   \
+const USAGE: &str = "usage: leaf [-r|--read-only] [-w|--width columns] <file.md|file.dj|file.html|file.xml>   \
                      (a missing file is created on save)";
 
 /// What `--help` prints. Written out rather than derived, because the whole
-/// command line is one path and three flags — see [`parse_args`].
+/// command line is one path and four flags — see [`parse_args`].
 const HELP: &str = "\
 leaf — a caret-based rich-text editor for documents
 
-usage: leaf [-r|--read-only] <file>   (a missing file is created on save)
+usage: leaf [-r|--read-only] [-w|--width columns] <file>
+       (a missing file is created on save)
 
   <file>             .md, .dj, .html or .xml — the extension picks the format
   -r, --read-only    open the document for reading: caret motion, selection,
                      copy, follow, and the view controls all work, and nothing
                      can be changed or written
+  -w, --width N      center the document in a column at most N cells wide
+                     (default: 80; use 0 to fill the terminal)
   -h, --help         this
   -V, --version      the version leaf was built at
 
 Once inside, F1 or ⌥h is the key reference and ^p is the command palette.";
 
-/// The command line, parsed. Hand-rolled because a path and three flags is not
+/// The command line, parsed. Hand-rolled because a path and four flags is not
 /// a dependency's worth of argument grammar, and because the entire surface is
 /// then stated in one place a reader can see all of ([`HELP`], just above).
 #[cfg_attr(test, derive(Debug))]
 struct Args {
     path: PathBuf,
     read_only: bool,
+    line_width: u16,
 }
 
 /// The two things a parse can produce: arguments to open a document with, or a
@@ -91,13 +95,24 @@ enum Parsed {
 fn parse_args(argv: &[std::ffi::OsString]) -> Result<Parsed> {
     let mut path: Option<PathBuf> = None;
     let mut read_only = false;
-    for arg in argv {
+    let mut line_width = 80;
+    let mut args = argv.iter();
+    while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--version" | "-V") => {
                 return Ok(Parsed::Print(concat!("leaf ", env!("CARGO_PKG_VERSION"))));
             }
             Some("--help" | "-h") => return Ok(Parsed::Print(HELP)),
             Some("--read-only" | "-r") => read_only = true,
+            Some("--width" | "-w") => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow!("--width needs a column count\n{USAGE}"))?;
+                line_width = parse_line_width(value)?;
+            }
+            Some(value) if value.starts_with("--width=") => {
+                line_width = parse_line_width(std::ffi::OsStr::new(&value[8..]))?;
+            }
             // `-` alone is left to be a filename, which is what it is on every
             // other tool that doesn't read stdin.
             Some(flag) if flag.starts_with('-') && flag != "-" => {
@@ -112,9 +127,22 @@ fn parse_args(argv: &[std::ffi::OsString]) -> Result<Parsed> {
         }
     }
     match path {
-        Some(path) => Ok(Parsed::Run(Args { path, read_only })),
+        Some(path) => Ok(Parsed::Run(Args {
+            path,
+            read_only,
+            line_width,
+        })),
         None => Err(anyhow!("{USAGE}")),
     }
+}
+
+fn parse_line_width(value: &std::ffi::OsStr) -> Result<u16> {
+    let value = value
+        .to_str()
+        .ok_or_else(|| anyhow!("line width must be a number\n{USAGE}"))?;
+    value
+        .parse()
+        .map_err(|_| anyhow!("invalid line width `{value}`\n{USAGE}"))
 }
 
 fn main() -> Result<()> {
@@ -169,7 +197,7 @@ fn main() -> Result<()> {
     // verbs use. Both are turned back off on the way out, in the reverse
     // order, so a terminal leaf crashed in isn't left in either mode.
     execute!(stdout(), EnableMouseCapture, EnableBracketedPaste)?;
-    let result = run(&mut terminal, &mut doc);
+    let result = run(&mut terminal, &mut doc, args.line_width);
     let _ = execute!(stdout(), DisableBracketedPaste, DisableMouseCapture);
     ratatui::restore();
     result
@@ -231,6 +259,10 @@ struct App {
     /// not rebuilt since the last edit — answers about a layout that is not the
     /// one on screen. Zero before the first frame.
     body_width: u16,
+    /// Maximum width of the centered document column. Zero means the full
+    /// terminal width; the CLI defaults this to 80 while `Default` keeps tests
+    /// and embedders on the historical full-width layout.
+    line_width: u16,
 
     // ── the file watch (see `tick_disk`) ─────────────────────────────────────
     /// What a `stat` of the document's file said the last time the watch
@@ -558,8 +590,9 @@ struct ConflictPrompt {
     selected: usize,
 }
 
-fn run(terminal: &mut ratatui::DefaultTerminal, doc: &mut Doc) -> Result<()> {
+fn run(terminal: &mut ratatui::DefaultTerminal, doc: &mut Doc, line_width: u16) -> Result<()> {
     let mut app = App::default();
+    app.line_width = line_width;
     // Probe the terminal for its graphics protocol now that `ratatui::init` has
     // put it in raw mode — the query reads escape-sequence replies. A terminal
     // that can't answer keeps the half-blocks fallback.
@@ -3656,6 +3689,16 @@ mod tests {
     }
 
     #[test]
+    fn line_width_defaults_to_eighty_and_accepts_both_spellings() {
+        assert_eq!(parsed(&["notes.md"]).line_width, 80);
+        assert_eq!(parsed(&["-w", "100", "notes.md"]).line_width, 100);
+        assert_eq!(parsed(&["notes.md", "--width=72"]).line_width, 72);
+        assert_eq!(parsed(&["--width", "0", "notes.md"]).line_width, 0);
+        assert!(parse_args(&argv(&["--width", "wide", "notes.md"])).is_err());
+        assert!(parse_args(&argv(&["--width", "notes.md"])).is_err());
+    }
+
+    #[test]
     fn an_unknown_flag_is_an_error_rather_than_a_filename() {
         // The failure this prevents: `--raed-only` opened as a path, giving a
         // buffer that promises to save itself to a file of that name.
@@ -4155,6 +4198,31 @@ mod tests {
             lines[0].starts_with("hello world"),
             "body not on row 0:\n{}",
             lines.join("\n")
+        );
+    }
+
+    #[test]
+    fn a_configured_document_column_is_centered_at_its_exact_line_width() {
+        let mut doc = doc_with("centered_body", "hello world\n");
+        let mut app = App {
+            line_width: 20,
+            ..Default::default()
+        };
+        let lines = frame(&mut doc, &mut app, 41, 6);
+        assert_eq!(doc.body_width, 20, "the scrollbar is outside the measure");
+        assert_eq!(doc.body_origin.0, 10);
+        assert!(
+            lines[0].starts_with("          hello world"),
+            "{:?}",
+            lines[0]
+        );
+        assert!(
+            lines.iter().any(|line| line.chars().nth(40) != Some(' ')),
+            "scrollbar should occupy the terminal's last column: {lines:?}"
+        );
+        assert!(
+            lines.iter().all(|line| line.chars().nth(30) == Some(' ')),
+            "the old scrollbar column beside the text should be empty: {lines:?}"
         );
     }
 

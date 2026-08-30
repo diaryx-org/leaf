@@ -5,7 +5,7 @@
 
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Position, Rect},
+    layout::{Position, Rect},
     style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
@@ -35,8 +35,22 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
     // a line's last visible character; everything below reads `content_area`
     // instead of `area` for exactly that reason (the WYSIWYG soft-wrap width,
     // the mouse hit-test geometry, the horizontal source follow).
-    let [content_area, scrollbar_area] =
-        Layout::horizontal([Constraint::Min(1), Constraint::Length(1)]).areas(area);
+    let scrollbar_width = u16::from(area.width > 0);
+    let available_width = area.width.saturating_sub(scrollbar_width);
+    let content_width = state
+        .line_width
+        .unwrap_or(available_width)
+        .min(available_width);
+    let content_area = Rect {
+        x: area.x + available_width.saturating_sub(content_width) / 2,
+        width: content_width,
+        ..area
+    };
+    let scrollbar_area = Rect {
+        x: area.x + available_width,
+        width: scrollbar_width,
+        ..area
+    };
     let width = content_area.width as usize;
     let height = content_area.height as usize;
 
@@ -151,6 +165,7 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
 
     // Stash geometry for mouse hit-testing.
     doc.body_origin = (content_area.x, content_area.y);
+    doc.body_width = content_area.width;
     doc.body_height = content_area.height;
 
     // The source view splits on '\n' alone and can run a line past the right

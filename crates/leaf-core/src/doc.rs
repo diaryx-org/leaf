@@ -636,6 +636,9 @@ pub struct Doc {
     // screen cell back to a byte offset.
     pub scroll: usize,
     pub body_origin: (u16, u16),
+    /// Width of the body rectangle last painted by the frontend. Zero means
+    /// unknown (used by tests or a frontend that has not drawn yet).
+    pub body_width: u16,
     pub body_height: u16,
     /// The caret as of the last frame drawn, or `None` before the first.
     ///
@@ -961,6 +964,7 @@ impl Doc {
             media_rows: HashMap::new(),
             scroll: 0,
             body_origin: (0, 0),
+            body_width: 0,
             body_height: 0,
             drawn_caret: None,
         }

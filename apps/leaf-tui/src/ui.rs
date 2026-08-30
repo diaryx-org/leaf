@@ -1,10 +1,10 @@
 //! The host's chrome around the editor widget. There is deliberately almost
-//! none: the editing surface fills the entire terminal, and everything else —
+//! none: the editing surface fills a centered document column, and everything else —
 //! the Save/Discard/Cancel and conflict dialogs, the right-click context menu,
 //! the single-line text prompt, and the transient status toast — floats over it
 //! only while it's needed, then gets out of the way. The editing surface itself
 //! (the document body, its code boxes, images, scrollbar, and caret) is drawn by
-//! [`leaf_ratatui::render`] into the whole frame.
+//! [`leaf_ratatui::render`] into that column.
 
 use ratatui::{
     Frame,
@@ -74,15 +74,18 @@ pub fn render(f: &mut Frame, doc: &mut Doc, app: &mut App) {
     // view above the bar rather than underneath it.
     let screen = f.area();
     let bar_rows = app.find.as_ref().map_or(0, Find::rows).min(screen.height);
-    let body = Rect {
+    let available = Rect {
         height: screen.height - bar_rows,
         ..screen
     };
+    app.editor
+        .set_line_width((app.line_width > 0).then_some(app.line_width));
+    let body = available;
     leaf_ratatui::render(f, body, doc, &mut app.editor);
     // Stashed for the find bar, which asks the visual map what it draws and so
     // has to be able to rebuild it at the width it was drawn at — see
     // `App::body_width`.
-    app.body_width = body.width;
+    app.body_width = doc.body_width;
 
     // After the surface has painted, so a theme the widget only just resolved
     // (the `OSC 11` reply arrives on the first frame) is the one the chrome uses

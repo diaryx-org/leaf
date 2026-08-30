@@ -42,6 +42,7 @@ clipboard, and file I/O.
 
 ```sh
 cargo run -- path/to/document.md            # the TUI (workspace default)
+cargo run -- --width 100 path/to/document.md # centered 100-column document
 
 # The GUI is its own workspace (see `exclude` in Cargo.toml), so it is reached
 # by manifest rather than by `-p`:

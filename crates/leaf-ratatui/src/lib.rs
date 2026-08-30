@@ -59,6 +59,10 @@ const MULTI_CLICK_WINDOW: Duration = Duration::from_millis(400);
 /// One per editing surface; pass the same instance to [`render`],
 /// [`handle_key`], and [`handle_mouse`] each frame.
 pub struct EditorState {
+    /// Maximum prose width in terminal cells. `None` fills the supplied area;
+    /// a host can set a measure while still giving the widget the full terminal
+    /// rectangle, leaving the scrollbar pinned to that rectangle's right edge.
+    line_width: Option<u16>,
     /// How far the source view is scrolled sideways. There's no horizontal
     /// scroll wheel to drive this independently (unlike `doc.scroll`), so it
     /// only ever chases the caret — see the horizontal follow in [`render`].
@@ -108,6 +112,7 @@ impl Default for EditorState {
         // terminal that may not even be in raw mode yet. `query_color_scheme`
         // is where the real question gets asked.
         EditorState {
+            line_width: None,
             scroll_x: 0,
             code_scroll_x: 0,
             code_caret_span: None,
@@ -128,6 +133,13 @@ impl EditorState {
     /// [`query_graphics`]: EditorState::query_graphics
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Center document text at no more than `width` cells while leaving the
+    /// scrollbar at the right edge of the rectangle passed to [`render`].
+    /// `None` restores the historical full-width surface.
+    pub fn set_line_width(&mut self, width: Option<u16>) {
+        self.line_width = width;
     }
 
     /// Probe the terminal for its graphics protocol. Call once, *after* the

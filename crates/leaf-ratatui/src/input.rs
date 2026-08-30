@@ -303,8 +303,10 @@ fn asks_to_edit(key: &KeyEvent) -> bool {
 /// is capturing the mouse (the host dismisses its own menu first).
 pub fn handle_mouse(doc: &mut Doc, m: MouseEvent, state: &mut EditorState) -> MouseOutcome {
     let (bx, by) = doc.body_origin;
-    let within =
-        m.row >= by && (m.row as usize) < by as usize + doc.body_height as usize && m.column >= bx;
+    let within = m.row >= by
+        && (m.row as usize) < by as usize + doc.body_height as usize
+        && m.column >= bx
+        && (doc.body_width == 0 || m.column < bx.saturating_add(doc.body_width));
 
     // A code row is drawn inset for its box and — if it's the caret's block —
     // scrolled sideways, so a raw screen column has to be shifted back into the
