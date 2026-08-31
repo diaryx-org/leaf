@@ -88,6 +88,14 @@ pub struct EditorState {
     /// copy lets the next frame start from core's canonical caret map again.
     #[cfg(feature = "images")]
     heading_base: Option<(u64, usize, leaf_core::VisualMap)>,
+    /// The heading rasters the last frame actually painted, published by
+    /// [`render`] so [`handle_mouse`] can route a click on one through the
+    /// raster's own hit-test — the rasterized glyphs are far wider than the
+    /// character cells beneath them. A heading whose raster was skipped (partly
+    /// scrolled off, say) is absent, and its clicks map through the cell grid
+    /// like any other text.
+    #[cfg(feature = "images")]
+    heading_rasters: Vec<render::HeadingRaster>,
     /// The offset the pointer is currently peeking at — a footnote reference or
     /// a link — or `None` when it's over ordinary text. Held so the peek is
     /// published once when the pointer arrives rather than on every one of the
@@ -120,6 +128,8 @@ impl Default for EditorState {
             images: Images::default(),
             #[cfg(feature = "images")]
             heading_base: None,
+            #[cfg(feature = "images")]
+            heading_rasters: Vec::new(),
             peek: None,
             last_click: None,
             theme: Theme::for_scheme(style::detect_color_scheme()),

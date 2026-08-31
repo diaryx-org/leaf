@@ -101,6 +101,7 @@ const ISOLATED: &[&[&str]] = &[
     &["-p", "leaf-core"],
     &["-p", "leaf-core", "--no-default-features"],
     &["-p", "leaf-ffi"],
+    &["-p", "leaf-raster"],
     &["-p", "leaf-ratatui"],
     &["-p", "leaf-ratatui", "--no-default-features"],
     &[

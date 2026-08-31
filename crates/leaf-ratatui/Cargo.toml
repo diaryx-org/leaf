@@ -15,7 +15,7 @@ default = ["images", "theme-detect"]
 # inline `🖼 alt` placeholder text — the same fallback a terminal with no
 # graphics protocol already gets. Everything else (text, code boxes, selection,
 # input) is unchanged.
-images = ["dep:ratatui-image", "dep:image", "dep:resvg", "dep:cosmic-text"]
+images = ["dep:ratatui-image", "dep:leaf-raster"]
 # Ask the terminal whether it is light or dark (an `OSC 11` query) so the
 # palette can match it. On by default: a code panel tinted for the wrong
 # background is the single most visible way the surface can look broken, and
@@ -37,21 +37,14 @@ ratatui = "0.29"
 # C libs. `crossterm` matches the backend ratatui already uses here. Optional:
 # pulled in only by the `images` feature.
 ratatui-image = { version = "9", default-features = false, features = ["crossterm"], optional = true }
-# Decoding image files to the `DynamicImage` ratatui-image rasterizes. Same 0.25
-# line ratatui-image and leaf-gpui pin, so the `image` types line up across the
-# workspace's one resolved version. Optional: gated behind the `images` feature.
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"], optional = true }
-# SVG rasterization: the `image` codec crate can't decode SVG at all, so a
-# vector picture (a README banner is often one — `assets/*.svg`) needs its own
-# path. resvg parses with usvg and paints onto a tiny-skia pixmap we hand back
-# to `image` as an `RgbaImage`; it re-exports both, so this is the only new dep.
-# Version 0.46 matches the one already resolved in the workspace (via gpui), so
-# no second copy is pulled. Optional: only the `images` feature wants it.
-resvg = { version = "0.46", optional = true }
-# Shape and rasterize oversized H1/H2 text into the same terminal-image pipeline
-# used by block media. Kept behind `images`, since without a graphics backend the
-# ordinary bold/coloured terminal heading remains the better fallback.
-cosmic-text = { version = "0.19", optional = true }
+# The shared CPU rasterization layer: image decode (SVG included), the fit
+# policy, path resolution, and the oversized-heading rasters with the caret and
+# selection painted into the pixels. It re-exports `image`, pinned to the same
+# 0.25 line ratatui-image builds against, so the `DynamicImage`s handed across
+# resolve to one crate version. Optional: only the `images` feature wants any
+# of it — without a graphics protocol the ordinary bold coloured heading and
+# the `🖼 alt` placeholder are the better rendering anyway.
+leaf-raster = { workspace = true, optional = true }
 # "Is this terminal dark or light?", asked properly: an `OSC 11` query with a
 # timeout, a fast heuristic for terminals that won't answer, no escape sequences
 # at all under `TERM=dumb`, and a guaranteed termios restore even on panic. It

@@ -45,3 +45,6 @@ anyhow = "1"
 # Frontend-neutral core: the caret/selection model + AST→glyph map, styled with
 # a toolkit-agnostic Style. Each frontend crate maps that to its own styling.
 leaf-core = { path = "crates/leaf-core", version = "0.1.5" }
+# Backend-neutral CPU rasterization: image decode/fit/path policy plus the
+# oversized-heading rasters with caret/selection painted into the pixels.
+leaf-raster = { path = "crates/leaf-raster", version = "0.1.5" }

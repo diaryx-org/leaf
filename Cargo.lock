@@ -879,15 +879,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "leaf-ratatui"
+name = "leaf-raster"
 version = "0.1.5"
 dependencies = [
  "cosmic-text",
  "image",
+ "resvg",
+]
+
+[[package]]
+name = "leaf-ratatui"
+version = "0.1.5"
+dependencies = [
  "leaf-core",
+ "leaf-raster",
  "ratatui",
  "ratatui-image",
- "resvg",
  "terminal-colorsaurus",
 ]
 

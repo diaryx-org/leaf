@@ -12,6 +12,10 @@
 //! open the file to learn the aspect ratio. We decode once, cache the decoded
 //! raster keyed by resolved path, and hand core the row counts each frame; a
 //! frame that measures the same images it did last time is a no-op on both sides.
+//!
+//! The decoding, the fit policy, and the heading rasterization itself live in
+//! [`leaf_raster`], the pixel layer shared across frontends; this module owns
+//! only what is terminal-shaped — cells, the protocol picker, and the caches.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -24,9 +28,7 @@ use ratatui_image::{
     protocol::StatefulProtocol,
 };
 
-use cosmic_text::{
-    Attrs, Buffer, Color as TextColor, FontSystem, Metrics, Shaping, SwashCache, Weight, Wrap,
-};
+use leaf_raster::{EditingUi, HeadingSpec, Rasterizer, image, resolve_image_path};
 
 use leaf_core::{ColorScheme, MediaInfo};
 
@@ -36,6 +38,13 @@ use crate::style::detect_color_scheme;
 /// whole screen of text out of view. Mirrors the GUI's `IMAGE_MAX_H` pixel cap,
 /// expressed in the terminal's only vertical unit.
 const MAX_IMAGE_ROWS: usize = 30;
+
+/// How many composed heading rasters to hold before the cache is emptied and
+/// rebuilt from what's on screen. One entry per distinct heading is the steady
+/// state — editing a heading *replaces* its entry rather than growing the map
+/// (see [`HeadingEntry`]) — so the cap only bounds a session that scrolls
+/// through many headings, and a clear costs one re-raster per visible one.
+const HEADING_CACHE_MAX: usize = 64;
 
 /// A decoded image plus the box it was last measured into.
 struct Entry {
@@ -62,12 +71,16 @@ pub struct Images {
     /// The `None` is cached too, so a broken reference is tried once, not every
     /// frame.
     cache: HashMap<PathBuf, Option<Entry>>,
-    /// Composed heading raster cache. Unlike document images these are keyed by
-    /// content and geometry, so leaving a heading after editing it creates one
-    /// new entry while steady frames only re-place the encoded protocol image.
-    headings: HashMap<HeadingKey, Entry>,
-    fonts: FontSystem,
-    swash: SwashCache,
+    /// Composed heading raster cache: one slot per distinct heading (text,
+    /// geometry, ink), each holding the raster for whatever editing UI was
+    /// last baked into it. A caret move re-renders *that* heading's slot and
+    /// leaves the others' encoded protocol images untouched. Bounded by
+    /// [`HEADING_CACHE_MAX`].
+    headings: HashMap<HeadingKey, HeadingEntry>,
+    /// The shared pixel layer: font database, glyph cache, and the heading
+    /// raster/hit-test pair, kept together so a click is answered by exactly
+    /// the layout that was drawn.
+    raster: Rasterizer,
     /// The terminal's color scheme, used to pick a `<picture>`'s
     /// `prefers-color-scheme` `<source>` (see [`MediaInfo::resolve`]). Detected
     /// once at startup and refreshable via [`Images::set_color_scheme`]; the
@@ -89,8 +102,7 @@ impl Default for Images {
             picker: Picker::halfblocks(),
             cache: HashMap::new(),
             headings: HashMap::new(),
-            fonts: FontSystem::new(),
-            swash: SwashCache::new(),
+            raster: Rasterizer::new(),
             scheme: detect_color_scheme(),
         }
     }
@@ -213,13 +225,21 @@ impl Images {
         true
     }
 
-    /// Shape and paint an inactive H1/H2 as a terminal graphics image. The
-    /// source remains ordinary Leaf text; this is only its composed projection.
+    /// Shape and paint an H1/H2 as a terminal graphics image, returning whether
+    /// anything was actually painted. The source remains ordinary Leaf text;
+    /// this is only its composed projection — but it is an *editable*
+    /// projection: the caret and selection, given as byte offsets into `text`,
+    /// are painted into the pixels, because nothing drawn from cells can land
+    /// on top of a graphics-protocol image.
     ///
-    /// A no-op without a graphics protocol (see [`Images::supports_graphics`]):
-    /// callers already skip the expansion in that case, and repeating the rule
-    /// here means a caller that forgets leaves the terminal's own heading text
-    /// standing rather than painting half-blocks over it.
+    /// A `false` no-op without a graphics protocol (see
+    /// [`Images::supports_graphics`]): callers already skip the expansion in
+    /// that case, and repeating the rule here means a caller that forgets
+    /// leaves the terminal's own heading text standing rather than painting
+    /// half-blocks over it. The caller uses the return to know whether the
+    /// heading's editing UI now lives in the raster — a skipped paint keeps
+    /// the ordinary text and the real terminal caret.
+    #[allow(clippy::too_many_arguments)]
     pub fn paint_heading(
         &mut self,
         f: &mut Frame,
@@ -227,9 +247,11 @@ impl Images {
         level: u8,
         color: TerminalColor,
         rect: Rect,
-    ) {
+        caret: Option<usize>,
+        selection: Option<(usize, usize)>,
+    ) -> bool {
         if !self.supports_graphics() || rect.width == 0 || rect.height == 0 || text.is_empty() {
-            return;
+            return false;
         }
         let font = self.picker.font_size();
         let rgb = terminal_rgb(color, self.scheme);
@@ -240,36 +262,94 @@ impl Images {
             font: (font.0, font.1),
             rgb,
         };
-        if !self.headings.contains_key(&key) {
-            let image = raster_heading(&mut self.fonts, &mut self.swash, &key);
+        let ui = (caret, selection);
+        if self.headings.get(&key).is_none_or(|h| h.ui != ui) {
+            // Only a heading never seen before grows the map — an edited one
+            // replaces its own slot — so the cap trips only when many distinct
+            // headings have scrolled by, and everything still on screen
+            // re-rasters on the very next frame.
+            if !self.headings.contains_key(&key) && self.headings.len() >= HEADING_CACHE_MAX {
+                self.headings.clear();
+            }
+            let spec = heading_spec(&key.text, level, key.cells, font);
+            let editing = EditingUi {
+                caret,
+                selection,
+                // The terminal's selection is reverse video: the heading's own
+                // ink becomes the fill, and the glyphs on it take whichever
+                // ink reads on that fill — decided by the fill itself, not the
+                // scheme, so an amber heading on a light palette still gets
+                // dark selected glyphs (and so the choice can never go stale
+                // in the cache: it is a pure function of `rgb`, which is in
+                // the key).
+                selection_bg: rgb,
+                selection_fg: selection_ink(rgb),
+            };
+            let image = self.raster.heading(&spec, rgb, &editing);
             let intrinsic = (image.width(), image.height());
             self.headings.insert(
                 key.clone(),
-                Entry {
-                    protocol: self
-                        .picker
-                        .new_resize_protocol(image::DynamicImage::ImageRgba8(image)),
-                    intrinsic,
-                    box_cells: (rect.width, rect.height),
+                HeadingEntry {
+                    ui,
+                    entry: Entry {
+                        protocol: self
+                            .picker
+                            .new_resize_protocol(image::DynamicImage::ImageRgba8(image)),
+                        intrinsic,
+                        box_cells: (rect.width, rect.height),
+                    },
                 },
             );
         }
-        let Some(entry) = self.headings.get_mut(&key) else {
-            return;
+        let Some(heading) = self.headings.get_mut(&key) else {
+            return false;
         };
         f.render_widget(Clear, rect);
         f.render_stateful_widget(
             StatefulImage::new().resize(Resize::Fit(None)),
             rect,
-            &mut entry.protocol,
+            &mut heading.entry.protocol,
         );
+        true
+    }
+
+    /// The character index (into `text`) a click on a painted heading raster
+    /// lands on. `cells` is the box the raster was painted into and `pos` the
+    /// clicked cell within it; the answer comes from the same layout the raster
+    /// was drawn from, so the caret goes to the glyph the pointer visually hit
+    /// — the rasterized glyphs are far wider than character cells, and mapping
+    /// the click through the cell grid instead would land it half a title away.
+    pub fn heading_hit(
+        &mut self,
+        text: &str,
+        level: u8,
+        cells: (u16, u16),
+        pos: (u16, u16),
+    ) -> usize {
+        let font = self.picker.font_size();
+        let spec = heading_spec(text, level, cells, font);
+        // The middle of the clicked cell, in raster pixels.
+        let x = (pos.0 as f32 + 0.5) * font.0.max(1) as f32;
+        let y = (pos.1 as f32 + 0.5) * font.1.max(1) as f32;
+        let byte = self.raster.heading_hit(&spec, x, y).min(text.len());
+        text[..byte].chars().count()
+    }
+
+    /// Whether `text` lays out on the one line a rasterized heading of `level`
+    /// gets in a box of `cells`. `false` routes the heading back to ordinary
+    /// terminal text: a wrapped tail would be culled from the raster —
+    /// invisible, unclickable, and with no truthful place for its caret.
+    pub fn heading_fits(&mut self, text: &str, level: u8, cells: (u16, u16)) -> bool {
+        let font = self.picker.font_size();
+        let spec = heading_spec(text, level, cells, font);
+        self.raster.heading_fits(&spec)
     }
 
     /// The cache entry for a resolved path, decoding it on first use. `None` (and
     /// a cached `None`) when the file can't be read or decoded.
     fn entry(&mut self, path: &Path) -> Option<&mut Entry> {
         if !self.cache.contains_key(path) {
-            let decoded = load_image(path).map(|img| {
+            let decoded = leaf_raster::load_image(path).map(|img| {
                 let intrinsic = (img.width(), img.height());
                 Entry {
                     protocol: self.picker.new_resize_protocol(img),
@@ -283,8 +363,10 @@ impl Images {
     }
 }
 
-/// Everything a composed heading's pixels depend on, and therefore both the
-/// cache key and the whole argument list [`raster_heading`] needs.
+/// What identifies a composed heading: its text, geometry, and ink. The
+/// editing UI is deliberately *not* here — a caret stop is a different picture
+/// but the same heading, so it lives on the entry and replaces in place
+/// ([`HeadingEntry`]) instead of minting a cache entry per keystroke.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct HeadingKey {
     text: String,
@@ -294,6 +376,46 @@ struct HeadingKey {
     /// The terminal's cell size in pixels, `(width, height)`.
     font: (u16, u16),
     rgb: (u8, u8, u8),
+}
+
+/// A heading's cached raster plus the editing UI baked into its pixels — the
+/// caret byte offset and selected byte range the raster was drawn with. When
+/// the frame wants a different pair the slot is re-rendered and replaced.
+struct HeadingEntry {
+    ui: (Option<usize>, Option<(usize, usize)>),
+    entry: Entry,
+}
+
+/// The ink for glyphs standing on a selection fill. The fill is the heading's
+/// own color (reverse video), so the ink is picked against *it* by relative
+/// luminance — the same split [`crate::style`]'s `contrast_ink` makes for
+/// host-colored highlights, and for the same reason: a scheme-based choice
+/// misreads whenever a color's luminance disagrees with its scheme (the light
+/// palette's amber H2 is a light fill wanting dark glyphs).
+fn selection_ink((r, g, b): (u8, u8, u8)) -> (u8, u8, u8) {
+    let luminance = 0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32;
+    if luminance > 0.5 * 255.0 {
+        (20, 20, 20)
+    } else {
+        (250, 250, 250)
+    }
+}
+
+/// The [`HeadingSpec`] for a heading painted into a cell box — the one place
+/// cells become pixels, used by both the raster and the hit-test so the two
+/// cannot disagree about the layout.
+fn heading_spec<'a>(
+    text: &'a str,
+    level: u8,
+    cells: (u16, u16),
+    font: FontSize,
+) -> HeadingSpec<'a> {
+    HeadingSpec {
+        text,
+        level,
+        width_px: u32::from(cells.0) * u32::from(font.0.max(1)),
+        height_px: u32::from(cells.1) * u32::from(font.1.max(1)),
+    }
 }
 
 fn terminal_rgb(color: TerminalColor, scheme: ColorScheme) -> (u8, u8, u8) {
@@ -317,176 +439,22 @@ fn terminal_rgb(color: TerminalColor, scheme: ColorScheme) -> (u8, u8, u8) {
     }
 }
 
-fn raster_heading(
-    fonts: &mut FontSystem,
-    swash: &mut SwashCache,
-    key: &HeadingKey,
-) -> image::RgbaImage {
-    let HeadingKey {
-        text,
-        level,
-        cells: (cols, rows),
-        font: cell,
-        rgb,
-    } = key;
-    let width = u32::from(*cols) * u32::from(cell.0.max(1));
-    let height = u32::from(*rows) * u32::from(cell.1.max(1));
-    let line_height = height as f32;
-    let font_size = if *level == 1 {
-        line_height * 0.72
-    } else {
-        line_height * 0.68
-    };
-    let mut buffer = Buffer::new(fonts, Metrics::new(font_size, line_height));
-    buffer.set_wrap(Wrap::WordOrGlyph);
-    buffer.set_size(Some(width as f32), Some(height as f32));
-    buffer.set_text(
-        text,
-        &Attrs::new().weight(Weight::BOLD),
-        Shaping::Advanced,
-        None,
-    );
-    let mut pixels = image::RgbaImage::new(width.max(1), height.max(1));
-    buffer.draw(
-        fonts,
-        swash,
-        TextColor::rgb(rgb.0, rgb.1, rgb.2),
-        |x, y, w, h, c| {
-            for py in y.max(0) as u32..(y.saturating_add(h as i32)).max(0) as u32 {
-                if py >= height {
-                    break;
-                }
-                for px in x.max(0) as u32..(x.saturating_add(w as i32)).max(0) as u32 {
-                    if px >= width {
-                        break;
-                    }
-                    let dst = pixels.get_pixel_mut(px, py);
-                    let a = c.a();
-                    if a >= dst.0[3] {
-                        *dst = image::Rgba([c.r(), c.g(), c.b(), a]);
-                    }
-                }
-            }
-        },
-    );
-    pixels
-}
-
 /// The character-cell box an image fits into: as wide as the content allows (but
 /// never upscaled past the source's own pixels) and as tall as that width makes
-/// it, capped at `max_rows`. Works in pixels so the terminal's non-square cells
-/// (`font`) don't distort the aspect ratio, then rounds up to whole cells.
+/// it, capped at `max_rows`. The policy is [`leaf_raster::fit_within`], run in
+/// pixels so the terminal's non-square cells (`font`) don't distort the aspect
+/// ratio; only the round-up to whole cells is the terminal's own.
 fn box_cells(intrinsic: (u32, u32), avail_cols: u16, max_rows: u16, font: FontSize) -> (u16, u16) {
-    let (iw, ih) = (intrinsic.0.max(1) as u64, intrinsic.1.max(1) as u64);
     // `FontSize` is `(cell_width_px, cell_height_px)`.
-    let (cw, ch) = (font.0.max(1) as u64, font.1.max(1) as u64);
-    let avail_px = avail_cols.max(1) as u64 * cw;
-
-    // Fit the width, never upscaling; the height follows from the aspect ratio.
-    let mut w_px = iw.min(avail_px);
-    let mut h_px = w_px * ih / iw;
-    let max_h_px = max_rows.max(1) as u64 * ch;
-    if h_px > max_h_px {
-        h_px = max_h_px;
-        w_px = h_px * iw / ih;
-    }
-    let cols = w_px.div_ceil(cw).clamp(1, avail_cols.max(1) as u64) as u16;
-    let rows = h_px.div_ceil(ch).clamp(1, max_rows.max(1) as u64) as u16;
-    (cols, rows)
-}
-
-/// Resolve an image destination to a readable local path, or `None` when it's
-/// not one this synchronous loader handles: a remote URL, a `data:` URI, a
-/// protocol-relative `//host/…`, or a relative path with no document directory
-/// to anchor it. Mirrors leaf-gpui's resolver — the same policy, since both
-/// frontends decode local files eagerly and leave the rest as a placeholder.
-fn resolve_image_path(dest: &str, doc_dir: Option<&Path>) -> Option<PathBuf> {
-    let dest = dest.trim();
-    if dest.is_empty() {
-        return None;
-    }
-    let lower = dest.to_ascii_lowercase();
-    if lower.starts_with("http://")
-        || lower.starts_with("https://")
-        || lower.starts_with("data:")
-        || dest.starts_with("//")
-    {
-        return None;
-    }
-    let raw = dest.strip_prefix("file://").unwrap_or(dest);
-    let path = Path::new(raw);
-    if path.is_absolute() {
-        Some(path.to_path_buf())
-    } else {
-        doc_dir.map(|d| d.join(path))
-    }
-}
-
-/// Decode an image file to a `DynamicImage`, or `None` on any failure (missing,
-/// unreadable, or a format no decoder covers). SVG is rasterized with resvg
-/// ([`load_svg`]); every raster format goes through the `image` codec crate.
-fn load_image(path: &Path) -> Option<image::DynamicImage> {
-    if path
-        .extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case("svg"))
-    {
-        return load_svg(&std::fs::read(path).ok()?);
-    }
-    image::ImageReader::open(path)
-        .ok()?
-        .with_guessed_format()
-        .ok()?
-        .decode()
-        .ok()
-}
-
-/// Rasterize an SVG's bytes to a `DynamicImage`, or `None` if it won't parse.
-///
-/// The `image` crate has no SVG support, so this is the vector path: usvg parses
-/// the document, resvg paints it onto a tiny-skia pixmap, and we hand the pixels
-/// back as an `RgbaImage` the rest of the pipeline treats like any decoded
-/// raster. We render at a fixed target resolution (scaling the SVG's own size so
-/// its longer side is ~[`SVG_TARGET_PX`]) rather than its intrinsic size: an SVG
-/// may declare a tiny viewport, and rasterizing that small would leave the
-/// terminal upscaling a blurry thumbnail. System fonts are loaded so an SVG that
-/// draws real `<text>` (not outlined paths) still renders its glyphs.
-fn load_svg(data: &[u8]) -> Option<image::DynamicImage> {
-    use resvg::{tiny_skia, usvg};
-
-    /// The longer side, in pixels, we rasterize an SVG to before the terminal
-    /// downscales it — big enough to stay crisp, capped so a huge viewport can't
-    /// blow up the allocation.
-    const SVG_TARGET_PX: f32 = 640.0;
-
-    let mut opt = usvg::Options::default();
-    opt.fontdb_mut().load_system_fonts();
-    let tree = usvg::Tree::from_data(data, &opt).ok()?;
-
-    let size = tree.size();
-    let longest = size.width().max(size.height()).max(1.0);
-    // Scale so the longer side hits the target; clamp so a big SVG scales down
-    // and a small one up, but neither runs away. Never below 1px per side.
-    let scale = (SVG_TARGET_PX / longest).clamp(0.05, 16.0);
-    let w = (size.width() * scale).ceil().max(1.0) as u32;
-    let h = (size.height() * scale).ceil().max(1.0) as u32;
-
-    let mut pixmap = tiny_skia::Pixmap::new(w, h)?;
-    resvg::render(
-        &tree,
-        tiny_skia::Transform::from_scale(scale, scale),
-        &mut pixmap.as_mut(),
+    let (cw, ch) = (u32::from(font.0.max(1)), u32::from(font.1.max(1)));
+    let (w_px, h_px) = leaf_raster::fit_within(
+        intrinsic,
+        u32::from(avail_cols.max(1)) * cw,
+        u32::from(max_rows.max(1)) * ch,
     );
-
-    // tiny-skia stores premultiplied alpha; `image` expects straight alpha, so
-    // demultiply each pixel on the way into the RGBA buffer.
-    let mut rgba = Vec::with_capacity((w as usize) * (h as usize) * 4);
-    for px in pixmap.pixels() {
-        let c = px.demultiply();
-        rgba.extend_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
-    }
-    Some(image::DynamicImage::ImageRgba8(image::RgbaImage::from_raw(
-        w, h, rgba,
-    )?))
+    let cols = w_px.div_ceil(cw).clamp(1, u32::from(avail_cols.max(1))) as u16;
+    let rows = h_px.div_ceil(ch).clamp(1, u32::from(max_rows.max(1))) as u16;
+    (cols, rows)
 }
 
 #[cfg(test)]
@@ -528,51 +496,5 @@ mod tests {
             (1..40).contains(&cols),
             "width shrinks with the capped height: {cols}"
         );
-    }
-
-    #[test]
-    fn load_svg_rasterizes_to_straight_alpha_rgba() {
-        // A 20×10 solid-red rect. `image` can't decode SVG at all, so this only
-        // works via the resvg path.
-        let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><rect width="20" height="10" fill="#ff0000"/></svg>"##;
-        let img = load_svg(svg).expect("valid SVG should rasterize");
-        // Rendered at the target resolution, so upscaled from its 20×10 viewport
-        // while keeping the 2:1 aspect.
-        assert!(
-            img.width() >= 20 && img.height() >= 10,
-            "got {}×{}",
-            img.width(),
-            img.height()
-        );
-        assert_eq!(img.width(), img.height() * 2, "aspect ratio preserved");
-        // The fill lands as opaque, straight-alpha red — not premultiplied mush.
-        let rgba = img.to_rgba8();
-        let center = rgba.get_pixel(rgba.width() / 2, rgba.height() / 2).0;
-        assert_eq!(center, [255, 0, 0, 255], "center pixel is opaque red");
-    }
-
-    #[test]
-    fn load_svg_rejects_garbage() {
-        assert!(load_svg(b"not an svg at all").is_none());
-    }
-
-    #[test]
-    fn resolve_rejects_remote_and_anchors_relative() {
-        let dir = Path::new("/docs");
-        assert_eq!(
-            resolve_image_path("pics/cat.png", Some(dir)),
-            Some(PathBuf::from("/docs/pics/cat.png"))
-        );
-        assert_eq!(
-            resolve_image_path("/abs/cat.png", Some(dir)),
-            Some(PathBuf::from("/abs/cat.png"))
-        );
-        assert_eq!(resolve_image_path("https://x.dev/a.png", Some(dir)), None);
-        assert_eq!(
-            resolve_image_path("data:image/png;base64,AAAA", Some(dir)),
-            None
-        );
-        // A relative path with no document directory can't be anchored.
-        assert_eq!(resolve_image_path("cat.png", None), None);
     }
 }

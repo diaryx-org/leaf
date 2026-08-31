@@ -1,0 +1,20 @@
+[package]
+name = "leaf-raster"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "CPU rasterization shared by leaf frontends: image decode/fit/path policy and oversized-text rasters with the caret and selection painted into the pixels. Backend-agnostic — it produces RGBA frames, not toolkit scenes."
+
+[dependencies]
+# Text shaping and glyph rasterization for the oversized-heading rasters.
+cosmic-text = "0.19"
+# Decoding image files to `DynamicImage`s. The same 0.25 line ratatui-image and
+# leaf-gpui pin, so the `image` types line up across one resolved version; it is
+# re-exported so consumers can't accidentally pull a second copy.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"] }
+# SVG rasterization: the `image` codec crate can't decode SVG at all, so a
+# vector picture needs its own path. resvg parses with usvg and paints onto a
+# tiny-skia pixmap handed back to `image` as an `RgbaImage`.
+resvg = "0.46"

@@ -361,10 +361,10 @@ pub fn handle_mouse(doc: &mut Doc, m: MouseEvent, state: &mut EditorState) -> Mo
 
             // Single click places the caret (extending on shift); double selects
             // the word under it; triple selects the block it's in. All three start
-            // from the same `click` hit-test so the row/col → offset mapping lives
-            // in one place. The block, not the source line: a paragraph broken over
-            // several lines is one paragraph.
-            doc.click(row, col, shift);
+            // from the same `click_at` hit-test so the position → offset mapping
+            // lives in one place. The block, not the source line: a paragraph
+            // broken over several lines is one paragraph.
+            click_at(doc, state, row, col, shift);
             match count {
                 2 => doc.select_word_at(doc.caret),
                 n if n >= 3 => doc.select_block_at(doc.caret),
@@ -374,7 +374,7 @@ pub fn handle_mouse(doc: &mut Doc, m: MouseEvent, state: &mut EditorState) -> Mo
         MouseEventKind::Drag(MouseButton::Left) if within => {
             let row = doc.scroll + (m.row - by) as usize;
             let col = col_at(doc, state, row, m.column);
-            doc.click(row, col, true); // extend the selection
+            click_at(doc, state, row, col, true); // extend the selection
         }
         // Dragging past the top or bottom edge of the body scrolls to keep
         // revealing more document. `within`'s column check still applies, but its
@@ -382,7 +382,7 @@ pub fn handle_mouse(doc: &mut Doc, m: MouseEvent, state: &mut EditorState) -> Mo
         MouseEventKind::Drag(MouseButton::Left) if m.column >= bx && m.row < by => {
             doc.scroll = doc.scroll.saturating_sub(1);
             let col = col_at(doc, state, doc.scroll, m.column);
-            doc.click(doc.scroll, col, true);
+            click_at(doc, state, doc.scroll, col, true);
         }
         MouseEventKind::Drag(MouseButton::Left)
             if m.column >= bx && (m.row as usize) >= by as usize + doc.body_height as usize =>
@@ -390,7 +390,7 @@ pub fn handle_mouse(doc: &mut Doc, m: MouseEvent, state: &mut EditorState) -> Mo
             doc.scroll = doc.scroll.saturating_add(1);
             let row = doc.scroll + doc.body_height.saturating_sub(1) as usize;
             let col = col_at(doc, state, row, m.column);
-            doc.click(row, col, true);
+            click_at(doc, state, row, col, true);
         }
         MouseEventKind::Down(MouseButton::Right) if within => {
             // A right-click on top of an existing selection should offer to act
@@ -400,7 +400,7 @@ pub fn handle_mouse(doc: &mut Doc, m: MouseEvent, state: &mut EditorState) -> Mo
             if doc.selection().is_none() {
                 let row = doc.scroll + (m.row - by) as usize;
                 let col = col_at(doc, state, row, m.column);
-                doc.click(row, col, false);
+                click_at(doc, state, row, col, false);
             }
             return MouseOutcome::ContextMenu {
                 x: m.column,
@@ -420,6 +420,60 @@ pub fn handle_mouse(doc: &mut Doc, m: MouseEvent, state: &mut EditorState) -> Mo
         _ => {}
     }
     MouseOutcome::Continue
+}
+
+/// Place the caret (or extend the selection) at a mouse position — the one
+/// funnel every mouse gesture's caret placement goes through, so none of them
+/// can forget the raster case. A position over a painted heading raster is
+/// answered by the raster's own layout and lands as a source offset via
+/// `Doc::place_caret`; everywhere else the ordinary cell-grid `Doc::click`
+/// serves.
+#[cfg_attr(not(feature = "images"), allow(unused_variables))]
+fn click_at(doc: &mut Doc, state: &mut EditorState, row: usize, col: usize, extend: bool) {
+    #[cfg(feature = "images")]
+    if let Some(off) = raster_offset(doc, state, row, col) {
+        doc.place_caret(off, extend);
+        return;
+    }
+    doc.click(row, col, extend);
+}
+
+/// The source offset a pointer position over a *painted* heading raster names,
+/// or `None` when it isn't over one. The rasterized glyphs are far wider than
+/// the character cells beneath them, so a click mapped through the cell grid
+/// would place the caret half a title away from the glyph the pointer visually
+/// hit — and with the caret painted into the raster, that miss would now be
+/// drawn. The raster's own layout answers instead
+/// ([`crate::Images::heading_hit`]), and the character index it returns is a
+/// straight lookup in the raster's own char→source table — never a trip
+/// through display columns, whose per-cluster widths are core's business, not
+/// this module's.
+#[cfg(feature = "images")]
+fn raster_offset(doc: &Doc, state: &mut EditorState, row: usize, col: usize) -> Option<usize> {
+    if doc.view != View::Wysiwyg {
+        return None;
+    }
+    // Split borrows: the raster list is read while the image subsystem (the
+    // shaper behind `heading_hit`) is borrowed mutably beside it.
+    let EditorState {
+        heading_rasters,
+        images,
+        ..
+    } = state;
+    let h = heading_rasters
+        .iter()
+        .find(|h| h.rows_span.contains(&row))?;
+    // The raster was painted across the full content width and the span's rows.
+    let cells = (doc.body_width, h.rows_span.len() as u16);
+    let pos = (
+        col.min(u16::MAX as usize) as u16,
+        (row - h.rows_span.start) as u16,
+    );
+    let idx = images.heading_hit(&h.text, h.level, cells, pos);
+    // The `idx`-th character's source offset; past the end — a click in the
+    // clear space right of the title — lands after the last glyph, exactly
+    // where End would put the caret.
+    Some(h.srcs.get(idx).copied().unwrap_or(h.end_src))
 }
 
 /// Show what the pointer is resting on, without disturbing where anyone is
@@ -443,6 +497,13 @@ fn peek(doc: &mut Doc, state: &mut EditorState, row: usize, col: usize) {
     if doc.view != View::Wysiwyg {
         return clear_peek(doc, state);
     }
+    // Over a painted heading raster the offset comes from the raster's layout,
+    // like a click's would — a link inside a big title peeks at the words the
+    // pointer is visually on.
+    #[cfg(feature = "images")]
+    let off =
+        raster_offset(doc, state, row, col).unwrap_or_else(|| doc.vmap.offset_of_pos(row, col));
+    #[cfg(not(feature = "images"))]
     let off = doc.vmap.offset_of_pos(row, col);
     if state.peek == Some(off) {
         return; // already showing this one

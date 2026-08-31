@@ -104,6 +104,10 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
     // than the letters themselves. So there we reserve no filler rows and take
     // no raster, and the heading stays the ordinary bold coloured terminal text
     // the theme already gives it.
+    // Last frame's painted rasters are stale the moment a new frame starts;
+    // the paint loop below re-publishes the ones it actually paints.
+    #[cfg(feature = "images")]
+    state.heading_rasters.clear();
     #[cfg(feature = "images")]
     let heading_rasters = if doc.view == View::Wysiwyg && state.images.supports_graphics() {
         let key = (doc.revision(), width);
@@ -115,7 +119,14 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
             state.heading_base = Some((key.0, key.1, doc.vmap.clone()));
         }
         let active_row = doc.vmap.pos_of_offset(doc.caret).0;
-        expand_inactive_headings(&mut doc.vmap, active_row, sel)
+        let images = &mut state.images;
+        expand_headings(
+            &mut doc.vmap,
+            doc.caret,
+            active_row,
+            sel,
+            |text, l, rows| images.heading_fits(text, l, (width as u16, rows)),
+        )
     } else {
         // Nothing to expand this frame. A base left from a frame that did expand
         // still has to be put back, or its filler rows would outlive the reason
@@ -307,9 +318,18 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
         }
 
         // Paint composed H1/H2 blocks last, over the ordinary terminal glyphs.
-        // The active heading is absent from this list and therefore remains a
-        // completely normal Leaf editing row with the real terminal caret.
-        for heading in &heading_rasters {
+        // The *active* heading is painted too — its caret (and any selection)
+        // is baked into the raster, since nothing drawn from cells can land on
+        // top of a graphics-protocol image. Only a heading partly scrolled off
+        // screen collapses to ordinary text (a protocol image can't be
+        // clipped), and there the real terminal caret still serves.
+        //
+        // What actually got painted is published to `state.heading_rasters`:
+        // those are the headings whose editing UI now lives in pixels, so the
+        // caret suppression below and the mouse handler's raster hit-test key
+        // off exactly this set — a skipped paint stays ordinary text with the
+        // ordinary caret and click mapping.
+        for heading in heading_rasters {
             let span = &heading.rows_span;
             let fully_visible = span.start >= doc.scroll && span.end <= doc.scroll + height;
             if !fully_visible {
@@ -321,13 +341,17 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
                 width: content_area.width,
                 height: (span.end - span.start) as u16,
             };
-            state.images.paint_heading(
+            if state.images.paint_heading(
                 f,
                 &heading.text,
                 heading.level,
                 theme.heading[(heading.level as usize - 1).min(5)],
                 rect,
-            );
+                heading.caret,
+                heading.selection,
+            ) {
+                state.heading_rasters.push(heading);
+            }
         }
     }
 
@@ -346,6 +370,18 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
     // Draw the real terminal caret (only when it's within the viewport). A code
     // row is inset and scrolled, so its caret column is measured from inside the
     // box; every other row measures from the content edge.
+    //
+    // …unless a painted heading raster covers the caret's row: that raster
+    // carries its own caret in its pixels, and the terminal cursor would sit on
+    // top of it as a cell-sized block in the wrong place. Left unset, ratatui
+    // keeps the terminal cursor hidden for the frame.
+    #[cfg(feature = "images")]
+    let caret_in_raster = state
+        .heading_rasters
+        .iter()
+        .any(|h| h.rows_span.contains(&caret_row));
+    #[cfg(not(feature = "images"))]
+    let caret_in_raster = false;
     let in_caret_code = caret_span.as_ref().is_some_and(|s| s.contains(&caret_row));
     let caret_x = if in_caret_code {
         let vis = caret_col.saturating_sub(code_scroll);
@@ -355,7 +391,8 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
         let col_visible = caret_col >= scroll_x && (width == 0 || caret_col < scroll_x + width);
         col_visible.then(|| content_area.x + (caret_col - scroll_x) as u16)
     };
-    if let Some(x) = caret_x
+    if !caret_in_raster
+        && let Some(x) = caret_x
         && caret_row >= doc.scroll
         && (height == 0 || caret_row < doc.scroll + height)
     {
@@ -364,22 +401,53 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
     }
 }
 
+/// A heading block the terminal will paint as a graphics-protocol raster: its
+/// projection (level, text), where it sits in the expanded map, the editing UI
+/// to bake into the pixels, and the per-character source offsets that turn the
+/// raster's hit-test answer back into a caret position. Only the rasters a
+/// frame actually painted end up on [`crate::EditorState`] — a skipped one
+/// stays ordinary text with the ordinary click mapping.
 #[cfg(feature = "images")]
-struct HeadingRaster {
-    level: u8,
-    text: String,
-    rows_span: std::ops::Range<usize>,
+pub(crate) struct HeadingRaster {
+    pub(crate) level: u8,
+    pub(crate) text: String,
+    pub(crate) rows_span: std::ops::Range<usize>,
+    /// Caret byte offset into `text`, when the caret sits in this heading.
+    pub(crate) caret: Option<usize>,
+    /// Selected byte range of `text`, when the selection touches this heading.
+    pub(crate) selection: Option<(usize, usize)>,
+    /// The source offset of each character of `text`, in order — the reverse
+    /// of the projection, so a hit-tested character index maps straight to the
+    /// offset `Doc::place_caret` wants, with no trip through display columns
+    /// (whose per-cluster widths this module has no business re-deriving).
+    pub(crate) srcs: Vec<usize>,
+    /// Where a hit past the last character lands: the heading's trailing edge.
+    pub(crate) end_src: usize,
 }
 
-/// Insert presentation-only blank rows after inactive H1/H2 blocks and shift
-/// every structural side table by the same row-boundary map. The source/caret
-/// stops themselves are unchanged; filler rows are decoration and therefore
-/// mouse clicks on their lower half resolve to the heading's trailing stop.
+/// Insert presentation-only blank rows after H1/H2 blocks and shift every
+/// structural side table by the same row-boundary map. The source/caret stops
+/// themselves are unchanged; filler rows are decoration and therefore mouse
+/// clicks on their lower half resolve to the heading's trailing stop.
+///
+/// The active heading expands like any other — its raster carries the caret —
+/// so each returned [`HeadingRaster`] also maps the document's caret and
+/// selection into byte offsets of its own text, where the rasterizer needs
+/// them.
+///
+/// Two kinds of heading are left alone (no filler, no raster): one with no
+/// visible glyphs, where the ordinary empty row is the honest rendering, and
+/// one `fits` refuses — a title too long for the single layout line a raster
+/// box holds, whose tail would be culled from the pixels: undrawn, unclickable,
+/// and with nowhere truthful for its caret to stand. Those stay ordinary
+/// (fully visible, fully editable) terminal text.
 #[cfg(feature = "images")]
-fn expand_inactive_headings(
+fn expand_headings(
     vmap: &mut VisualMap,
+    caret: usize,
     active_row: usize,
     selection: Option<(usize, usize)>,
+    mut fits: impl FnMut(&str, u8, u16) -> bool,
 ) -> Vec<HeadingRaster> {
     let old = std::mem::take(&mut vmap.rows);
     let mut boundary = vec![0usize; old.len() + 1];
@@ -399,25 +467,44 @@ fn expand_inactive_headings(
             rows.push(old[i].clone());
             i += 1;
         }
-        let source_start = old[start..i]
-            .iter()
-            .flat_map(|row| row.glyphs.iter().map(|g| g.src))
-            .min()
-            .unwrap_or(old[start].end_src);
-        let source_end = old[start..i]
+        // The heading's projected text, built glyph by glyph alongside the two
+        // mappings between it and the source: `srcs`/`byte_starts` record each
+        // character's source offset and text-byte position, so a source offset
+        // maps into the text (for the caret and selection the rasterizer
+        // paints) and a hit-tested character index maps back out (for the
+        // mouse). One snap-forward rule serves every direction: an offset lands
+        // at the first glyph at-or-past it (offsets between glyphs — hidden
+        // markup, say — snap forward), or at the end of the text when every
+        // glyph lies before it.
+        let mut text = String::new();
+        let mut srcs = Vec::new();
+        let mut byte_starts = Vec::new();
+        for row in &old[start..i] {
+            for g in &row.glyphs {
+                srcs.push(g.src);
+                byte_starts.push(text.len());
+                text.push(g.ch);
+            }
+        }
+        let target: usize = if level == 1 { 3 } else { 2 };
+        if text.is_empty() || !fits(&text, level, target as u16) {
+            continue;
+        }
+        let byte_of = |src: usize| {
+            srcs.iter()
+                .position(|&s| s >= src)
+                .map_or(text.len(), |j| byte_starts[j])
+        };
+        let caret_b = (start..i).contains(&active_row).then(|| byte_of(caret));
+        let heading_sel = selection.and_then(|(s, e)| {
+            let (s, e) = (byte_of(s), byte_of(e));
+            (s < e).then_some((s, e))
+        });
+        let end_src = old[start..i]
             .iter()
             .map(|row| row.end_src)
             .max()
-            .unwrap_or(source_start);
-        let selected = selection.is_some_and(|(s, e)| s < source_end && e > source_start);
-        if (start..i).contains(&active_row) || selected {
-            continue;
-        }
-        let target = if level == 1 { 3 } else { 2 };
-        let text = old[start..i]
-            .iter()
-            .flat_map(|row| row.glyphs.iter().map(|g| g.ch))
-            .collect::<String>();
+            .unwrap_or(old[start].end_src);
         while rows.len() - boundary[start] < target {
             let mut filler = old[i - 1].clone();
             filler.glyphs.clear();
@@ -436,6 +523,10 @@ fn expand_inactive_headings(
             level,
             text,
             rows_span: boundary[start]..rows.len(),
+            caret: caret_b,
+            selection: heading_sel,
+            srcs,
+            end_src,
         });
     }
     boundary[old.len()] = rows.len();
@@ -828,6 +919,13 @@ mod tests {
         doc
     }
 
+    /// Every title fits — the shape of the closure `render` builds on a
+    /// terminal wide enough for the heading under test.
+    #[cfg(feature = "images")]
+    fn fits(_: &str, _: u8, _: u16) -> bool {
+        true
+    }
+
     #[cfg(feature = "images")]
     #[test]
     fn inactive_h1_reserves_three_rows_without_adding_caret_stops() {
@@ -835,24 +933,100 @@ mod tests {
         doc.caret = doc.source.len();
         let active = doc.vmap.pos_of_offset(doc.caret).0;
         let old_rows = doc.vmap.rows.len();
-        let rasters = expand_inactive_headings(&mut doc.vmap, active, None);
+        let rasters = expand_headings(&mut doc.vmap, doc.caret, active, None, fits);
         assert_eq!(rasters.len(), 1);
         assert_eq!(rasters[0].text, "Large title");
         assert_eq!(rasters[0].rows_span.len(), 3);
         assert_eq!(doc.vmap.rows.len(), old_rows + 2);
         assert!(doc.vmap.rows[rasters[0].rows_span.end - 1].decoration);
+        // The caret is elsewhere, so this raster carries no editing UI.
+        assert_eq!(rasters[0].caret, None);
+        assert_eq!(rasters[0].selection, None);
     }
 
+    /// The point of painting the editing UI into the raster: the active heading
+    /// expands like any other, and its raster names where the caret falls in
+    /// its own text.
     #[cfg(feature = "images")]
     #[test]
-    fn active_heading_stays_as_one_ordinary_editable_row() {
+    fn the_active_heading_rasterizes_too_and_carries_the_caret() {
         let mut doc = heading_doc();
+        // "# Large title\n" — byte 8 is between "Large " and "title", which is
+        // byte 6 of the projected text "Large title".
+        doc.caret = 8;
         let active = doc.vmap.pos_of_offset(doc.caret).0;
         let old_rows = doc.vmap.rows.len();
-        let rasters = expand_inactive_headings(&mut doc.vmap, active, None);
+        let rasters = expand_headings(&mut doc.vmap, doc.caret, active, None, fits);
+        assert_eq!(rasters.len(), 1);
+        assert_eq!(rasters[0].rows_span.len(), 3);
+        assert_eq!(doc.vmap.rows.len(), old_rows + 2);
+        assert_eq!(rasters[0].caret, Some(6));
+    }
+
+    /// A selection reaching into the heading maps to a byte range of the
+    /// heading's own text, clamped to it; one that misses it entirely leaves
+    /// the raster plain.
+    #[cfg(feature = "images")]
+    #[test]
+    fn a_selection_maps_into_the_headings_own_text() {
+        let mut doc = heading_doc();
+        doc.caret = doc.source.len();
+        let active = doc.vmap.pos_of_offset(doc.caret).0;
+
+        // "Large" is source bytes 2..7 → text bytes 0..5.
+        let rasters = expand_headings(&mut doc.vmap, doc.caret, active, Some((2, 7)), fits);
+        assert_eq!(rasters[0].selection, Some((0, 5)));
+
+        // A selection running past the heading's end clamps to the text.
+        let mut doc = heading_doc();
+        let rasters = expand_headings(
+            &mut doc.vmap,
+            doc.caret,
+            active,
+            Some((8, doc.source.len())),
+            fits,
+        );
+        assert_eq!(rasters[0].selection, Some((6, "Large title".len())));
+
+        // One entirely in the body doesn't touch the raster.
+        let mut doc = heading_doc();
+        let end = doc.source.len();
+        let rasters = expand_headings(&mut doc.vmap, doc.caret, active, Some((end - 3, end)), fits);
+        assert_eq!(rasters[0].selection, None);
+    }
+
+    /// The raster's reverse mapping: `srcs[i]` is the source offset of the
+    /// projection's `i`-th character, which is what a hit-tested click is
+    /// answered with — never a re-derived display column.
+    #[cfg(feature = "images")]
+    #[test]
+    fn the_raster_carries_a_char_to_source_table() {
+        let mut doc = heading_doc();
+        doc.caret = doc.source.len();
+        let active = doc.vmap.pos_of_offset(doc.caret).0;
+        let rasters = expand_headings(&mut doc.vmap, doc.caret, active, None, fits);
+        // "# Large title": 'L' is at source byte 2, 't' of "title" at 8.
+        assert_eq!(rasters[0].srcs.len(), "Large title".chars().count());
+        assert_eq!(rasters[0].srcs[0], 2);
+        assert_eq!(rasters[0].srcs[6], 8);
+        // Past the end lands at the heading's trailing edge, inside its rows.
+        assert!(rasters[0].end_src > *rasters[0].srcs.last().unwrap());
+    }
+
+    /// A title `fits` refuses — one that would wrap past the raster's single
+    /// layout line — is not expanded at all: it stays ordinary terminal text,
+    /// fully visible and fully editable, rather than a raster with a culled,
+    /// unclickable tail.
+    #[cfg(feature = "images")]
+    #[test]
+    fn a_title_too_long_for_the_raster_stays_ordinary_text() {
+        let mut doc = heading_doc();
+        doc.caret = doc.source.len();
+        let active = doc.vmap.pos_of_offset(doc.caret).0;
+        let old_rows = doc.vmap.rows.len();
+        let rasters = expand_headings(&mut doc.vmap, doc.caret, active, None, |_, _, _| false);
         assert!(rasters.is_empty());
-        assert_eq!(doc.vmap.rows.len(), old_rows);
-        assert!(!doc.vmap.rows[active].decoration);
+        assert_eq!(doc.vmap.rows.len(), old_rows, "no filler rows reserved");
     }
 }
 
