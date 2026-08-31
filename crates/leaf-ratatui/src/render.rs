@@ -910,9 +910,22 @@ mod tests {
     }
 
     #[cfg(feature = "images")]
+    /// A one-H1 document on disk, under a path unique to this call.
+    ///
+    /// Unique because every test here needs the same *content*, and sharing one
+    /// filename for it meant sharing one file across threads: `cargo test` runs
+    /// these concurrently, so one test's `Doc::open` could read the file during
+    /// another's `fs::write`, land a truncated `# Large ti`, and fail an
+    /// assertion about a heading that had nothing wrong with it. It failed
+    /// roughly one run in eight.
     fn heading_doc() -> Doc {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut path = std::env::temp_dir();
-        path.push("leaf_ratatui_heading_layout.md");
+        path.push(format!(
+            "leaf_ratatui_heading_layout_{}_{n}.md",
+            std::process::id()
+        ));
         std::fs::write(&path, "# Large title\n\nbody\n").unwrap();
         let mut doc = Doc::open(path).unwrap();
         doc.build_visual(80);
