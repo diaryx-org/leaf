@@ -189,19 +189,62 @@ impl EditorState {
     ///
     /// The order of authority is: [`style::THEME_ENV`] or `COLORFGBG` if either
     /// names a scheme (an explicit answer beats an inferred one, and skips the
-    /// query entirely), then the `OSC 11` reply, then whatever the state
+    /// query entirely), then the terminal's reply, then whatever the state
     /// already had — the dark default. A terminal that doesn't answer is
     /// detected as such quickly rather than waited out, and `TERM=dumb` is
     /// never written to at all.
+    ///
+    /// The same reply also carries the terminal's *exact* foreground RGB, which
+    /// this records (see [`set_foreground`]) because the heading rasters have to
+    /// paint text in real pixels and cannot say "whatever the default ink is"
+    /// the way a cell can. Nothing extra is asked for it: the scheme is derived
+    /// from the foreground/background pair, so the color came back either way.
     ///
     /// A no-op beyond the environment check when the `theme-detect` feature is
     /// off.
     ///
     /// [`query_graphics`]: EditorState::query_graphics
+    /// [`set_foreground`]: EditorState::set_foreground
     pub fn query_color_scheme(&mut self) {
-        if let Some(scheme) = style::scheme_from_env().or_else(query_terminal_scheme) {
+        // An environment that names a scheme skips the query — that is the whole
+        // point of the escape hatch, since it exists for terminals the query does
+        // not get an answer out of, and asking them anyway is what costs the
+        // timeout it was meant to avoid.
+        let from_env = style::scheme_from_env();
+        let queried = from_env.is_none().then(query_terminal_colors).flatten();
+        if let Some(scheme) = from_env.or(queried.map(|c| c.scheme)) {
             self.set_color_scheme(scheme);
         }
+        // Ink, best answer first: what the terminal said, else what `COLORFGBG`
+        // implies, else nothing — and `None` leaves the raster on the
+        // scheme-derived near-black/near-white it used before any of this.
+        self.set_foreground(
+            queried
+                .map(|c| c.foreground)
+                .or_else(style::foreground_from_env),
+        );
+    }
+
+    /// Tell the surface the exact RGB of the terminal's own text, or `None` to
+    /// go back to inferring it from the color scheme.
+    ///
+    /// This exists for the pixels, not the cells. A styled cell says
+    /// [`ratatui::style::Color::Reset`] and the terminal paints its own default
+    /// ink — exact, free, and impossible to get wrong. An oversized heading is
+    /// a *raster*: leaf chooses every pixel's value itself, so "the default
+    /// foreground" has to be resolved to an actual color, and a heading meant to
+    /// read as ordinary un-tinted text will only match the text around it if
+    /// that color is the terminal's real one.
+    ///
+    /// [`query_color_scheme`] calls this with the queried answer. A host that
+    /// knows better — one that themes its own terminal — can call it directly.
+    ///
+    /// [`query_color_scheme`]: EditorState::query_color_scheme
+    pub fn set_foreground(&mut self, rgb: Option<(u8, u8, u8)>) {
+        #[cfg(feature = "images")]
+        self.images.set_foreground(rgb);
+        #[cfg(not(feature = "images"))]
+        let _ = rgb;
     }
 
     /// The scheme the surface is currently painting for.
@@ -238,23 +281,41 @@ impl EditorState {
     }
 }
 
-/// Ask the terminal itself whether it is light or dark, with an `OSC 11` query
-/// to the controlling tty. `None` when the terminal won't say — which covers a
-/// great deal: `TERM=dumb` (never written to at all), a terminal with no `OSC`
-/// support (detected by a fast heuristic rather than waited out), a pipe with no
-/// tty behind it, or a link slow enough to blow the one-second timeout.
+/// What the terminal says about its own colors: which scheme it is, and the
+/// exact RGB of the text it draws.
+///
+/// The two arrive together because they come from one query. The scheme is
+/// *derived* from the pair (text lighter than background means dark mode), so
+/// asking for it already costs the foreground — there is no cheaper question.
+#[derive(Clone, Copy)]
+struct TerminalColors {
+    scheme: ColorScheme,
+    /// The terminal's default foreground, 8 bits per channel.
+    foreground: (u8, u8, u8),
+}
+
+/// Ask the terminal itself what colors it draws with, with an `OSC 10`/`OSC 11`
+/// query to the controlling tty. `None` when the terminal won't say — which
+/// covers a great deal: `TERM=dumb` (never written to at all), a terminal with
+/// no `OSC` support (detected by a fast heuristic rather than waited out), a
+/// pipe with no tty behind it, or a link slow enough to blow the one-second
+/// timeout.
 #[cfg(feature = "theme-detect")]
-fn query_terminal_scheme() -> Option<ColorScheme> {
-    match terminal_colorsaurus::theme_mode(Default::default()).ok()? {
-        terminal_colorsaurus::ThemeMode::Light => Some(ColorScheme::Light),
-        terminal_colorsaurus::ThemeMode::Dark => Some(ColorScheme::Dark),
-    }
+fn query_terminal_colors() -> Option<TerminalColors> {
+    let palette = terminal_colorsaurus::color_palette(Default::default()).ok()?;
+    Some(TerminalColors {
+        scheme: match palette.theme_mode() {
+            terminal_colorsaurus::ThemeMode::Light => ColorScheme::Light,
+            terminal_colorsaurus::ThemeMode::Dark => ColorScheme::Dark,
+        },
+        foreground: palette.foreground.scale_to_8bit(),
+    })
 }
 
 /// Without the `theme-detect` feature there's nobody to ask: detection stops at
 /// the environment, and an unset environment keeps the dark default.
 #[cfg(not(feature = "theme-detect"))]
-fn query_terminal_scheme() -> Option<ColorScheme> {
+fn query_terminal_colors() -> Option<TerminalColors> {
     None
 }
 

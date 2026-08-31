@@ -393,6 +393,52 @@ fn scheme_from_colorfgbg(value: &str) -> Option<ColorScheme> {
     })
 }
 
+/// The terminal's foreground as RGB, from `COLORFGBG`'s *leading* field — the
+/// environment's half-answer to "what color is the text?", for use when the
+/// `OSC 10` query didn't run or didn't answer.
+///
+/// It is a half-answer because `COLORFGBG` names an ANSI palette *index*, not a
+/// color, and a terminal is free to have re-tinted that slot. So this resolves
+/// through [`ansi_base16_rgb`]'s xterm defaults, which is a good guess for the
+/// common values (7 and 15 for light-on-dark, 0 for dark-on-light) and never
+/// worse than the scheme-derived near-white/near-black it replaces. The exact
+/// answer is the query; this is what's left when there wasn't one.
+pub(crate) fn foreground_from_env() -> Option<(u8, u8, u8)> {
+    foreground_from_colorfgbg(&std::env::var("COLORFGBG").ok()?)
+}
+
+/// The parsing half of [`foreground_from_env`], split out so it can be tested
+/// without mutating the process environment.
+fn foreground_from_colorfgbg(value: &str) -> Option<(u8, u8, u8)> {
+    ansi_base16_rgb(value.split(';').next()?.trim().parse().ok()?)
+}
+
+/// xterm's default RGB for the sixteen base ANSI slots. Only the base 16 — an
+/// index above 15 lands in the 6×6×6 cube or the greyscale ramp, which a
+/// foreground is never set to in practice, and which this returns `None` for
+/// rather than guessing at.
+fn ansi_base16_rgb(index: u8) -> Option<(u8, u8, u8)> {
+    Some(match index {
+        0 => (0, 0, 0),
+        1 => (205, 0, 0),
+        2 => (0, 205, 0),
+        3 => (205, 205, 0),
+        4 => (0, 0, 238),
+        5 => (205, 0, 205),
+        6 => (0, 205, 205),
+        7 => (229, 229, 229),
+        8 => (127, 127, 127),
+        9 => (255, 0, 0),
+        10 => (0, 255, 0),
+        11 => (255, 255, 0),
+        12 => (92, 92, 255),
+        13 => (255, 0, 255),
+        14 => (0, 255, 255),
+        15 => (255, 255, 255),
+        _ => return None,
+    })
+}
+
 /// Styled ratatui lines for the WYSIWYG map, drawing any glyph whose source
 /// offset is within the `[start, end)` selection reversed. Adjacent glyphs of
 /// equal style are merged into one span.
@@ -568,6 +614,22 @@ mod tests {
         assert_eq!(scheme_from_colorfgbg(""), None);
         assert_eq!(scheme_from_colorfgbg("nonsense"), None);
         assert_eq!(scheme_from_colorfgbg("default;default"), None);
+    }
+
+    /// `COLORFGBG`'s leading field is the text color, and it is an index, so it
+    /// resolves through the xterm defaults. The three values that actually turn
+    /// up in the wild are 15, 7 and 0.
+    #[test]
+    fn colorfgbg_yields_the_foreground_as_rgb() {
+        assert_eq!(foreground_from_colorfgbg("15;0"), Some((255, 255, 255)));
+        assert_eq!(foreground_from_colorfgbg("7;0"), Some((229, 229, 229)));
+        assert_eq!(foreground_from_colorfgbg("0;15"), Some((0, 0, 0)));
+        // The `fg;;bg` shape rxvt emits: the leading field is still the fg.
+        assert_eq!(foreground_from_colorfgbg("15;;0"), Some((255, 255, 255)));
+        // Past the base 16 there is no defensible guess, so there isn't one.
+        assert_eq!(foreground_from_colorfgbg("123;0"), None);
+        assert_eq!(foreground_from_colorfgbg("default;0"), None);
+        assert_eq!(foreground_from_colorfgbg(""), None);
     }
 
     #[test]

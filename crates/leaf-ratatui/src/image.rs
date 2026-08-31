@@ -87,6 +87,11 @@ pub struct Images {
     /// per-path cache keys off the *resolved* file, so a scheme change naturally
     /// loads (and caches) the newly-picked image without disturbing the old one.
     scheme: ColorScheme,
+    /// The terminal's own text color, when it has been asked (see
+    /// [`crate::EditorState::set_foreground`]). Used to resolve a
+    /// [`TerminalColor::Reset`] heading to real pixels; `None` falls back to
+    /// inferring it from [`Images::scheme`].
+    foreground: Option<(u8, u8, u8)>,
 }
 
 impl Default for Images {
@@ -104,6 +109,7 @@ impl Default for Images {
             headings: HashMap::new(),
             raster: Rasterizer::new(),
             scheme: detect_color_scheme(),
+            foreground: None,
         }
     }
 }
@@ -140,6 +146,14 @@ impl Images {
     /// whichever `<source>` the new scheme selects.
     pub fn set_color_scheme(&mut self, scheme: ColorScheme) {
         self.scheme = scheme;
+    }
+
+    /// Record the terminal's own text color, for resolving a `Reset` heading to
+    /// pixels. `None` goes back to inferring it from the scheme. The heading
+    /// cache keys off the resolved RGB, so a change here re-rasters on the next
+    /// frame without anything having to clear it.
+    pub fn set_foreground(&mut self, rgb: Option<(u8, u8, u8)>) {
+        self.foreground = rgb;
     }
 
     /// Decode (once) and measure every block image, returning the row count each
@@ -254,7 +268,7 @@ impl Images {
             return false;
         }
         let font = self.picker.font_size();
-        let rgb = terminal_rgb(color, self.scheme);
+        let rgb = terminal_rgb(color, self.scheme, self.foreground);
         let key = HeadingKey {
             text: text.to_owned(),
             level,
@@ -418,7 +432,11 @@ fn heading_spec<'a>(
     }
 }
 
-fn terminal_rgb(color: TerminalColor, scheme: ColorScheme) -> (u8, u8, u8) {
+fn terminal_rgb(
+    color: TerminalColor,
+    scheme: ColorScheme,
+    foreground: Option<(u8, u8, u8)>,
+) -> (u8, u8, u8) {
     match color {
         TerminalColor::Rgb(r, g, b) => (r, g, b),
         TerminalColor::Black => (0, 0, 0),
@@ -430,9 +448,20 @@ fn terminal_rgb(color: TerminalColor, scheme: ColorScheme) -> (u8, u8, u8) {
         TerminalColor::Magenta | TerminalColor::LightMagenta => (205, 130, 225),
         TerminalColor::Yellow | TerminalColor::LightYellow => (220, 165, 55),
         TerminalColor::Gray | TerminalColor::DarkGray => (145, 145, 145),
-        // Indexed terminal colors cannot be queried portably. The curated Leaf
-        // palettes use RGB; this is a legible fallback for a custom indexed one.
-        TerminalColor::Indexed(_) | TerminalColor::Reset => match scheme {
+        // `Reset` means "whatever ink this terminal draws text in" — the color a
+        // plain heading has to match exactly, since it sits in a raster among
+        // cells the terminal painted itself. So the measured answer is used when
+        // there is one, and only an unasked or unanswering terminal falls back to
+        // guessing from the scheme.
+        TerminalColor::Reset => foreground.unwrap_or(match scheme {
+            ColorScheme::Dark => (235, 235, 235),
+            ColorScheme::Light => (35, 35, 35),
+        }),
+        // Indexed terminal colors cannot be queried portably, and unlike `Reset`
+        // there is nothing measured to fall back on: slot 94 is whatever this
+        // terminal decided it is. The curated Leaf palettes use RGB; this is a
+        // legible fallback for a custom indexed one.
+        TerminalColor::Indexed(_) => match scheme {
             ColorScheme::Dark => (235, 235, 235),
             ColorScheme::Light => (35, 35, 35),
         },
@@ -463,6 +492,54 @@ mod tests {
 
     fn font() -> FontSize {
         (10, 20) // 10px wide, 20px tall cells
+    }
+
+    /// The point of asking the terminal for its foreground: a plain heading is
+    /// drawn in pixels next to cells the terminal painted, so `Reset` has to
+    /// resolve to the terminal's *real* ink, not to a plausible near-white.
+    #[test]
+    fn a_measured_foreground_beats_the_guess_for_reset() {
+        let ink = Some((198, 160, 246));
+        assert_eq!(
+            terminal_rgb(TerminalColor::Reset, ColorScheme::Dark, ink),
+            (198, 160, 246)
+        );
+        // …and it is the scheme's guess that it replaces, in either scheme.
+        assert_eq!(
+            terminal_rgb(TerminalColor::Reset, ColorScheme::Light, ink),
+            (198, 160, 246)
+        );
+    }
+
+    /// An unasked or unanswering terminal keeps the old scheme-derived ink,
+    /// which is why `None` is a supported state rather than a bug.
+    #[test]
+    fn without_a_measurement_reset_falls_back_to_the_scheme() {
+        assert_eq!(
+            terminal_rgb(TerminalColor::Reset, ColorScheme::Dark, None),
+            (235, 235, 235)
+        );
+        assert_eq!(
+            terminal_rgb(TerminalColor::Reset, ColorScheme::Light, None),
+            (35, 35, 35)
+        );
+    }
+
+    /// Only `Reset` means "the terminal's text color". An indexed slot is a
+    /// different question with no measured answer, so it must not pick up the
+    /// foreground.
+    #[test]
+    fn an_indexed_color_is_not_the_foreground() {
+        let ink = Some((198, 160, 246));
+        assert_eq!(
+            terminal_rgb(TerminalColor::Indexed(94), ColorScheme::Dark, ink),
+            (235, 235, 235)
+        );
+        // A named color keeps its curated legible value too.
+        assert_eq!(
+            terminal_rgb(TerminalColor::Red, ColorScheme::Dark, ink),
+            (235, 95, 95)
+        );
     }
 
     #[test]
