@@ -203,6 +203,12 @@ pub enum BlockClass {
     Code,
     Table,
     /// A block-level image, video, or audio.
+    ///
+    /// Never reached through [`from_node_kind`](BlockClass::from_node_kind): a
+    /// block picture is not a node of its own — [`Builder::media_only`] promotes
+    /// the paragraph (or `<picture>`/`<video>` container) wrapping it — so the
+    /// walk only ever sees the wrapper's kind. [`label_media_boundaries`] reads
+    /// it back off the finished rows instead, after the fact.
     Media,
     /// A `:::name{.class}` directive container.
     Directive,
@@ -232,9 +238,12 @@ impl BlockClass {
             // node's `origin`, and the incremental walk has only this kind.
             // `Directive` is the right answer for the case that motivates the
             // class (nothing else draws a tinted panel) and a harmless one for
-            // the rest: `BlockClass` is descriptive, core never branches on it,
-            // and the only frontend that reads a boundary spaces by
-            // `below == Heading` alone. Anything that must be exact reads
+            // the rest: `BlockClass` is descriptive and core never branches on
+            // it. The one case where it was actively wrong — a promoted
+            // `<video>`, which would have been handed to a frontend as something
+            // to draw a fenced-div panel around — is corrected by
+            // [`label_media_boundaries`] once the rows are final, along the same
+            // door as a block image. Anything else that must be exact reads
             // [`container_is_directive`] off a real node.
             Kind::Container => BlockClass::Directive,
             Kind::ThematicBreak => BlockClass::Rule,
@@ -982,6 +991,61 @@ fn media_spans(rows: &[VRow]) -> Vec<MediaInfo> {
         .collect()
 }
 
+/// Re-label the drawn block boundaries either side of a block-level media
+/// placeholder, so the pair a frontend spaces by names the picture.
+///
+/// [`BlockClass::from_node_kind`] classifies the node the walk is standing on,
+/// and a block image is never a node of its own: [`Builder::media_only`] promotes
+/// its *wrapper* — a `paragraph`, or the `container` a `<video>`/`<audio>`
+/// arrives as — so the gap above a picture reported [`BlockClass::Paragraph`] and
+/// the gap above a movie reported [`BlockClass::Directive`], the class a frontend
+/// paints a tinted panel for. [`BlockClass::Media`] was unreachable in
+/// consequence: the vocabulary named a kind no frontend could ever be told about.
+///
+/// Done as a pass over the finished rows rather than inside the walk because
+/// only the rows know. The incremental top-level walk carries no node arena at
+/// all (`nodes: &[]`) and can classify by kind alone, so teaching the wrapper
+/// promotion to the whole-arena walk would label the full and incremental builds
+/// differently — the exact drift that walk's own comment forbids. Both builds
+/// emit the same [`VRow::media`] marks, so both reach the same answer here. The
+/// [`media_spans`] / [`code_block_spans`] pattern.
+///
+/// One gap can be spelled with several rows — [`Builder::emit_separators_before`]
+/// draws the row that closes the block above and the row that opens the block
+/// below, with any extra blank source lines navigable between them — and gives
+/// every one of them the same [`Boundary`]. So the walk crosses those navigable
+/// blanks and relabels the whole run, stopping at the first row that is neither.
+fn label_media_boundaries(rows: &mut [VRow]) {
+    let spans: Vec<Range<usize>> = rows
+        .iter()
+        .enumerate()
+        .filter_map(|(i, row)| row.media.as_ref().map(|m| i..i + m.rows.max(1)))
+        .collect();
+    // A row inside one gap: a drawn boundary to relabel, or one of the navigable
+    // blank lines sitting between two drawn ones. Anything else ends the run.
+    fn in_gap(row: &VRow) -> bool {
+        row.boundary.is_some() || (!row.decoration && row.glyphs.is_empty())
+    }
+    for span in spans {
+        for i in (0..span.start).rev() {
+            if !in_gap(&rows[i]) {
+                break;
+            }
+            if let Some(b) = rows[i].boundary.as_mut() {
+                b.below = BlockClass::Media;
+            }
+        }
+        for row in rows.iter_mut().skip(span.end) {
+            if !in_gap(row) {
+                break;
+            }
+            if let Some(b) = row.boundary.as_mut() {
+                b.above = BlockClass::Media;
+            }
+        }
+    }
+}
+
 /// Collect one [`DirectiveInfo`] per row carrying a [`VRow::leaf_directive`]
 /// mark — the block-level view a frontend needs to replace each placeholder row
 /// with whatever the directive means to it. The peer of [`media_spans`], derived
@@ -1085,6 +1149,7 @@ pub fn build(
     );
     let content_start = top.first().map_or(hidden_end, |&i| nodes[i].span.start);
     let stops = collect_stops(&b.rows);
+    label_media_boundaries(&mut b.rows);
     let code_blocks = code_block_spans(&b.rows);
     let media = media_spans(&b.rows);
     let directives = directive_spans(&b.rows);
@@ -1287,6 +1352,7 @@ pub fn build_cached(
     // document ([`hidden_prefix_end`]).
     let content_start = blocks.first().map_or(hidden_end, |m| m.span.start);
     let stops = collect_stops(&b.rows);
+    label_media_boundaries(&mut b.rows);
     let code_blocks = code_block_spans(&b.rows);
     let media = media_spans(&b.rows);
     let directives = directive_spans(&b.rows);
@@ -1488,6 +1554,7 @@ pub fn build_spliced(
         reveal,
     };
 
+    label_media_boundaries(&mut rows);
     let code_blocks = code_block_spans(&rows);
     let media = media_spans(&rows);
     let directives = directive_spans(&rows);
@@ -7042,6 +7109,54 @@ mod tests {
         assert_eq!(
             boundaries(&nested),
             vec![(BlockClass::Directive, BlockClass::Paragraph)]
+        );
+    }
+
+    #[test]
+    fn a_block_media_names_itself_in_the_boundaries_either_side() {
+        use BlockClass::*;
+        // A block image is never a node of its own — `media_only` promotes the
+        // *paragraph* wrapping it — so classifying the node the walk stands on
+        // called the picture `Paragraph` and left `BlockClass::Media` unreachable:
+        // a frontend could not give a photo more air than a line of prose.
+        // `label_media_boundaries` reads it back off the finished rows instead.
+        let m = map("one\n\n![alt](p.png)\n\ntwo\n");
+        assert_eq!(boundaries(&m), vec![(Paragraph, Media), (Media, Paragraph)]);
+        // At the edges of the document too: the leading gap has no boundary of
+        // its own, and the trailing one is `emit_trailing_blank_lines`'.
+        let edges = map("![a](p.png)\n\nmid\n\n![b](q.png)\n");
+        assert_eq!(
+            boundaries(&edges),
+            vec![(Media, Paragraph), (Paragraph, Media)]
+        );
+        // One gap spelled with several rows — the row closing the block above and
+        // the row opening the one below, with the author's spare blank line
+        // navigable between them — carries the same pair on every drawn row.
+        let roomy = map("one\n\n\n\n![alt](p.png)\n");
+        assert_eq!(
+            boundaries(&roomy),
+            vec![(Paragraph, Media), (Paragraph, Media)]
+        );
+    }
+
+    #[test]
+    fn a_block_video_is_media_at_its_boundaries_not_a_directive_panel() {
+        // Worse than the image case before `label_media_boundaries`: a `<video>`
+        // arrives as twig's generic `container`, which classifies `Directive` —
+        // the one class a frontend reads as "draw a tinted panel here". A movie
+        // got the chrome of a fenced div.
+        let mut doc = crate::Doc::from_source(
+            "one\n\n<video src=\"v.mp4\"></video>\n\ntwo\n".to_string(),
+            Format::Markdown,
+        )
+        .unwrap();
+        doc.build_visual(80);
+        assert_eq!(
+            boundaries(&doc.vmap),
+            vec![
+                (BlockClass::Paragraph, BlockClass::Media),
+                (BlockClass::Media, BlockClass::Paragraph),
+            ]
         );
     }
 
