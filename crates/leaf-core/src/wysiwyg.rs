@@ -2405,6 +2405,13 @@ impl Builder<'_> {
                         row.directive_label = label.clone();
                     }
                 }
+                // Anchor the block's end past its closing `:::` fence, exactly as
+                // the code-block arm anchors past its ```` ``` ````. A container's
+                // last content row ends at its last *child*, before the fence and
+                // the blank line under it, so the separator logic counted the
+                // fence line as a blank row of its own and drew a second boundary
+                // — one gap's worth of margin twice, under every fenced div.
+                self.last_off = node.span.end;
             }
             "bullet_list" | "ordered_list" | "task_list" => {
                 let ordered = node.kind == Kind::OrderedList;
@@ -7007,6 +7014,34 @@ mod tests {
         assert_eq!(
             boundaries(&m),
             vec![(BlockClass::Paragraph, BlockClass::Paragraph)]
+        );
+    }
+
+    #[test]
+    fn a_directive_container_draws_one_boundary_like_every_other_block() {
+        // A container's rows stop at its last *child*, so without anchoring
+        // `last_off` past the closing `:::` the separator logic counted the fence
+        // line as a blank row of its own and drew the gap twice — one authored
+        // blank line, two boundaries, and a frontend spacing each of them put
+        // double margin under every fenced div. The code-block arm anchors past
+        // its ``` for exactly this reason; compare the two here.
+        let fenced = map_directives(":::note\nin\n:::\n\ntwo\n");
+        assert_eq!(
+            boundaries(&fenced),
+            vec![(BlockClass::Directive, BlockClass::Paragraph)],
+            "one authored gap, one boundary row"
+        );
+        let code = map("```\nc\n```\n\ntwo\n");
+        assert_eq!(
+            boundaries(&code).len(),
+            boundaries(&fenced).len(),
+            "a fenced div spaces like a fenced code block"
+        );
+        // Nesting closes several fences at once; still one gap.
+        let nested = map_directives(":::a\n:::b\nin\n:::\n:::\n\ntwo\n");
+        assert_eq!(
+            boundaries(&nested),
+            vec![(BlockClass::Directive, BlockClass::Paragraph)]
         );
     }
 
