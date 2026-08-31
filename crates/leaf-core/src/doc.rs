@@ -1115,18 +1115,20 @@ impl Doc {
     ///
     /// The builds it does do cost a whole-arena marshal, which is precisely what
     /// the WYSIWYG path works to avoid, so this has no incremental path where
-    /// that one has two. Measured on `examples/bench`'s document, per keystroke:
+    /// that one has two. From `cargo run --release -p leaf-core --example
+    /// bench`, per keystroke, against the WYSIWYG build the source view is
+    /// *not* doing:
     ///
-    /// |  size |  nodes | marshal | build | total |
-    /// |------:|-------:|--------:|------:|------:|
-    /// |  10 KB|    613 |  0.14 ms| 0.10 ms| 0.24 ms|
-    /// | 100 KB|  6 097 |  1.00 ms| 0.44 ms| 1.44 ms|
-    /// |   1 MB| 60 601 |  6.59 ms| 3.22 ms| 9.81 ms|
+    /// |  size |  nodes | marshal | `source::build` | (`wysiwyg::build`) |
+    /// |------:|-------:|--------:|----------------:|-------------------:|
+    /// |  10 KB|    613 |  0.16 ms|         0.07 ms |            0.28 ms |
+    /// | 100 KB|  6 097 |  0.84 ms|         0.38 ms |            2.43 ms |
+    /// |   1 MB| 60 601 |  5.67 ms|         3.12 ms |           23.39 ms |
     ///
-    /// Linear, and two thirds of it is the marshal. That is comfortable next to
-    /// the WYSIWYG build the source view is *not* doing (0.22 ms at 10 KB) up to
-    /// documents far larger than one a person edits in a terminal — and a
-    /// megabyte would want [`Editor::dirty_range`] and the same splice treatment
+    /// Linear, two thirds of it the marshal, and the build itself five to seven
+    /// times cheaper than the one it stands in for at every size. Comfortable
+    /// well past any document a person edits in a terminal — a megabyte is where
+    /// it would want [`Editor::dirty_range`] and the same splice treatment
     /// `build_spliced` gives the other map. The door is open; nothing has needed
     /// it yet.
     pub fn build_source(&mut self) {

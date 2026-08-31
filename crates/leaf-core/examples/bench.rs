@@ -45,6 +45,15 @@ fn main() {
         time("twig edit_range (reparse)", 5, || {
             ed.edit_range(src.len() / 2, src.len() / 2, "x").is_ok()
         });
+        // That loop left five `x`s in the editor, and every block below measures
+        // `ed` against `src` — spans from a document five bytes longer than the
+        // string they index. Re-parse so the two are the same document again.
+        //
+        // Untimed on purpose: this is the bench putting its fixture back, not a
+        // cost leaf pays. Skipping it used to end every run in a slice panic
+        // (`push_escaped_text`, walking a span past the end of a shorter source)
+        // and would otherwise have quietly measured a build over a mismatch.
+        let mut ed = Editor::new_str(&src, Format::Markdown).unwrap();
         time("twig nodes() FFI marshal", 5, || ed.nodes().unwrap().len());
         time("wysiwyg::build", 5, || {
             wysiwyg::build(&nodes, &src, None, false, &HashMap::new(), None)
