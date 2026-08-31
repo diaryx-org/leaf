@@ -4497,8 +4497,25 @@ fn push_escaped_text(
     // lengths and takes the fast path above).
     let sb = src.as_bytes();
     let mut si = 0usize;
-    for (_, cluster) in text.grapheme_indices(true) {
+    'text: for (_, cluster) in text.grapheme_indices(true) {
         for (ci, ch) in cluster.char_indices() {
+            // The text outlasted the source it is being mapped onto. In a
+            // consistent document that cannot happen on this path: the slow path
+            // is only entered when the two lengths differ, and everything that
+            // makes them differ makes the *source* the longer one — an escape
+            // backslash the parse ate, or source folded into a neighbouring node.
+            // A `smart_punctuation` node reports its canonical ASCII spelling
+            // (`--`, `...`, `"`), which is never longer than what was written.
+            //
+            // So reaching here means `span` was measured against a document that
+            // `source` is no longer, and there is no honest offset left to give
+            // the remaining characters. Stop: the row comes out short, which is
+            // a wrong picture of a document that is already inconsistent. The
+            // alternative was `si` stepping past the end and the slice below
+            // panicking — which is what it did, in a paint loop.
+            if si >= sb.len() {
+                break 'text;
+            }
             // Advance to the source character this one came from, stepping over
             // whatever the parse dropped on the way. An escape backslash is the
             // common case, but not the only one: a span can cover source that
@@ -4787,6 +4804,47 @@ mod tests {
     /// need a taller image drive it through [`crate::Doc::set_media_rows`] instead.
     fn build_t(nodes: &[FlatNode], src: &str, wrap: Option<usize>) -> VisualMap {
         build(nodes, src, wrap, false, &HashMap::new(), None)
+    }
+
+    /// An arena and a string that disagree — spans reaching past the source they
+    /// are built against.
+    ///
+    /// [`crate::Doc`] keeps the two in step, so this is a "cannot happen" that
+    /// nonetheless *did*: `examples/bench` timed a loop of `edit_range` and then
+    /// went on handing the grown editor's spans to a builder holding the string
+    /// from before it, and every run ended in a slice panic rather than a
+    /// number. `push_escaped_text` was already written to survive the mismatch —
+    /// it clamps the span's end and falls back to an empty slice — and this is
+    /// the half of that intent it did not carry through.
+    ///
+    /// Rendering the wrong thing is the acceptable answer here; panicking in a
+    /// paint loop is not.
+    #[test]
+    fn a_source_shorter_than_the_arena_built_over_it_renders_rather_than_panicking() {
+        // An escape puts the run on `push_escaped_text`'s slow path — the fast
+        // path is a length comparison that a truncated source fails anyway.
+        let src = "alpha \\*beta\\* gamma delta epsilon\n";
+        let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
+        let nodes = ed.nodes().unwrap();
+
+        // Every truncation of it, so the cut lands before, inside and after the
+        // escaped run rather than only where one hand-picked index put it.
+        for cut in 0..=src.len() {
+            if !src.is_char_boundary(cut) {
+                continue;
+            }
+            let map = build_t(&nodes, &src[..cut], Some(80));
+            for row in &map.rows {
+                for g in &row.glyphs {
+                    assert!(
+                        g.src <= src.len(),
+                        "cut {cut}: glyph {:?} points past the source at {}",
+                        g.ch,
+                        g.src
+                    );
+                }
+            }
+        }
     }
 
     fn rendered(m: &VisualMap) -> String {
