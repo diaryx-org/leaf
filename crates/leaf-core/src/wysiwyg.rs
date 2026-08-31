@@ -110,7 +110,7 @@ pub struct VRow {
     /// skipping the row named by [`MediaInfo::rows_span`]. Like
     /// [`code_lang`](Self::code_lang) it's plain display strings, not source
     /// slices, so it rides row reuse and needs no offset shifting; the map's
-    /// [`images`](VisualMap::images) side-table is derived from it once the rows
+    /// [`media`](VisualMap::media) side-table is derived from it once the rows
     /// are final, the same way [`code_blocks`](VisualMap::code_blocks) is.
     pub media: Option<MediaMark>,
     /// Set on the **first** row of a task list item, carrying whether its box is
@@ -129,7 +129,7 @@ pub struct VRow {
     /// Set on the single placeholder row a **leaf** directive (`::name{…}`)
     /// renders to, carrying its name and attributes; `None` on every other row.
     /// The container form isn't this — it wraps real blocks and marks each of
-    /// them [`directive`](Self::directive) instead. Like [`image`](Self::image)
+    /// them [`directive`](Self::directive) instead. Like [`media`](Self::media)
     /// it's plain display strings, so it rides row reuse untouched, and the map's
     /// [`directives`](VisualMap::directives) side-table is derived from it once
     /// the rows are final.
@@ -353,7 +353,7 @@ pub struct MediaMark {
     /// asks for as many rows as the fitted picture is tall; the pixel-laid-out GUI
     /// ignores this and sets its own row height, so it always leaves it `1`. The
     /// count comes from the frontend (via [`crate::Doc::set_media_rows`]) because
-    /// core does no I/O and can't measure the image itself. See [`VRow::image`].
+    /// core does no I/O and can't measure the image itself. See [`VRow::media`].
     pub rows: usize,
 }
 
@@ -432,14 +432,14 @@ pub struct VisualMap {
     pub code_blocks: Vec<CodeBlockInfo>,
     /// Every block-level image in the document, in order — one per placeholder
     /// row a frontend replaces with a real picture. Derived from the per-row
-    /// [`VRow::image`] mark once the rows are final (so it survives incremental
+    /// [`VRow::media`] mark once the rows are final (so it survives incremental
     /// row reuse), the same way [`code_blocks`](VisualMap::code_blocks) is
     /// derived from [`VRow::code`].
     pub media: Vec<MediaInfo>,
     /// Every **leaf** directive in the document, in order — one per placeholder
     /// row a frontend may replace with whatever the host app's vocabulary makes
     /// of it. Derived from the per-row [`VRow::leaf_directive`] mark once the
-    /// rows are final, exactly as [`images`](VisualMap::images) is.
+    /// rows are final, exactly as [`media`](VisualMap::media) is.
     pub directives: Vec<DirectiveInfo>,
 }
 
@@ -947,14 +947,6 @@ fn code_block_spans(rows: &[VRow]) -> Vec<CodeBlockInfo> {
     blocks
 }
 
-/// Collect one [`MediaInfo`] per row carrying an [`VRow::image`] mark — the
-/// block-level view a frontend needs to replace each placeholder row with a real
-/// picture. The mark rides the block's *first* row and names how many rows the
-/// image reserves ([`MediaMark::rows`]); the rows below it are blank
-/// [`decoration`](VRow::decoration) fillers that hold the vertical space and no
-/// caret. So the span runs from the marked row across those fillers. Derived from
-/// the final rows rather than tracked through the builder so it survives however
-/// [`build_cached`] and [`build_spliced`] shuffle rows around.
 /// The value of `node`'s `key` attribute, if it carries one *with* a value. A
 /// bare attribute (`controls`, `muted`) has a `None` value and so reads as
 /// absent here — a caller wanting presence-not-value tests the list directly.
@@ -966,6 +958,14 @@ fn attr_of(node: &FlatNode, key: &str) -> Option<String> {
         .and_then(|(_, v)| v.clone())
 }
 
+/// Collect one [`MediaInfo`] per row carrying a [`VRow::media`] mark — the
+/// block-level view a frontend needs to replace each placeholder row with a real
+/// picture. The mark rides the block's *first* row and names how many rows the
+/// media reserves ([`MediaMark::rows`]); the rows below it are blank
+/// [`decoration`](VRow::decoration) fillers that hold the vertical space and no
+/// caret. So the span runs from the marked row across those fillers. Derived from
+/// the final rows rather than tracked through the builder so it survives however
+/// [`build_cached`] and [`build_spliced`] shuffle rows around.
 fn media_spans(rows: &[VRow]) -> Vec<MediaInfo> {
     rows.iter()
         .enumerate()
@@ -4046,7 +4046,7 @@ pub struct CodeBlockInfo {
 /// surface paints the `🖼 alt` placeholder glyphs as-is. An image-capable
 /// frontend instead **skips the row in `rows_span`** and paints the resolved
 /// picture there, exactly as it skips a [`TableInfo`]'s box-drawn rows. Derived
-/// from [`VRow::image`] by [`media_spans`], so it survives the row reuse of
+/// from [`VRow::media`] by [`media_spans`], so it survives the row reuse of
 /// [`BlockCache`] and [`build_spliced`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MediaInfo {

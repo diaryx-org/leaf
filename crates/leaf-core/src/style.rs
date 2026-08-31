@@ -55,7 +55,7 @@ pub enum Role {
     /// A block-level image's placeholder text (`🖼 alt`). The glyphs are a
     /// *default* rendering any surface can paint as-is (a terminal shows the
     /// label); an image-capable frontend skips the placeholder row named by the
-    /// map's [`ImageInfo`](crate::wysiwyg::ImageInfo) `rows_span` and paints the
+    /// map's [`MediaInfo`](crate::wysiwyg::MediaInfo) `rows_span` and paints the
     /// real picture in its place — the same skip-the-picture contract
     /// [`Role::Rule`] table borders use.
     Image,

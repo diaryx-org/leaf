@@ -392,7 +392,7 @@ pub struct Landing {
     /// The first byte of the block the locator names — where a caret goes.
     pub start: usize,
     /// One past its last byte, so a frontend can map the pair through
-    /// [`Doc::pos_for_offset`] to the rendered rows the block occupies and draw
+    /// [`VisualMap::row_range_for`](crate::wysiwyg::VisualMap::row_range_for) to the rendered rows the block occupies and draw
     /// those, the way a footnote peek draws a note ([`FootnoteRef::end`]).
     pub end: usize,
 }
@@ -5476,7 +5476,7 @@ impl Doc {
     /// the same column, landing with the cell's whole content selected (see
     /// [`Self::select_cell`]). Returns `false` at the grid's top/bottom edge (or
     /// when the caret isn't in a table), so the frontend can fall through — the
-    /// vertical counterpart of [`cell_hop`].
+    /// vertical counterpart of [`Self::cell_hop`].
     ///
     /// A ragged row that is short a column clamps to its last cell, so Down never
     /// falls out of the table over a gap the row above happened to have.
