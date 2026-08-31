@@ -161,6 +161,27 @@ impl EditorState {
         self.images.query();
     }
 
+    /// Whether the terminal speaks a real graphics protocol — kitty, iTerm2 or
+    /// sixel — as [`query_graphics`] found it. `false` before that probe has
+    /// run, and always `false` without the `images` feature.
+    ///
+    /// Published because it is a *presentation* fact a host may want to answer
+    /// too, not only an internal one: with a graphics protocol the surface
+    /// draws oversized H1/H2 as rasters, so a host can drop the heading color
+    /// ramp ([`Theme::with_plain_headings`]) and let size carry the level.
+    ///
+    /// [`query_graphics`]: EditorState::query_graphics
+    pub fn supports_graphics(&self) -> bool {
+        #[cfg(feature = "images")]
+        {
+            self.images.supports_graphics()
+        }
+        #[cfg(not(feature = "images"))]
+        {
+            false
+        }
+    }
+
     /// Ask the terminal whether it is light or dark and adopt the matching
     /// palette. Call once, alongside [`query_graphics`] and for the same reason
     /// — it writes an `OSC 11` query and reads the reply, so the terminal must

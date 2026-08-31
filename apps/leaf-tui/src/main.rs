@@ -604,6 +604,18 @@ fn run(terminal: &mut ratatui::DefaultTerminal, doc: &mut Doc, line_width: u16) 
     // actual background, not toward an assumed black one. `LEAF_THEME=light|dark`
     // overrides the answer for a terminal that won't give a straight one.
     app.editor.query_color_scheme();
+    // Both answers are in, so the palette can be finalised. The heading color
+    // ramp is there to tell an H2 from a paragraph on a terminal that draws
+    // every glyph at one size; where a graphics protocol lets the surface
+    // raster H1/H2 several times that size, the size already says it and the
+    // hue is a second, gaudier answer to the same question. So: colored
+    // headings only where we can't draw big ones. This has to come after
+    // `query_color_scheme`, which reinstalls the curated palette for whichever
+    // scheme it found and would otherwise undo it.
+    if app.editor.supports_graphics() {
+        let plain = app.editor.theme().with_plain_headings();
+        app.editor.set_theme(plain);
+    }
     // Seed the file watch with what the file looks like right now, so the first
     // tick has something to compare against and a document opened from an
     // unchanged file costs no read at all.

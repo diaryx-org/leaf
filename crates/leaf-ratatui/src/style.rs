@@ -40,10 +40,12 @@ pub const THEME_ENV: &str = "LEAF_THEME";
 
 /// The terminal's palette, keyed on a glyph's semantic [`Role`]. This is the
 /// presentation the core used to bake in and no longer does: a terminal can
-/// only tell a heading from body text by *color*, so the choice of which color
-/// lives here, in the frontend that has the constraint — not in the shared
-/// model. A GUI, which can vary size and font, maps the same roles to entirely
-/// different looks.
+/// usually only tell a heading from body text by *color*, so the choice of
+/// which color lives here, in the frontend that has the constraint — not in the
+/// shared model. A GUI, which can vary size and font, maps the same roles to
+/// entirely different looks. ("Usually" because a terminal with a graphics
+/// protocol can vary size too, for the H1/H2 rasters; a host that has found one
+/// takes [`Theme::with_plain_headings`] and lets size carry the level.)
 ///
 /// Two curated variants ship: [`Theme::dark`] and [`Theme::light`]. They differ
 /// in more than the backgrounds — a hue that reads on black often doesn't read
@@ -265,6 +267,26 @@ impl Theme {
             ColorScheme::Dark => Theme::dark(),
             ColorScheme::Light => Theme::light(),
         }
+    }
+
+    /// The same palette with headings in the terminal's own foreground instead
+    /// of the level ramp — still bold, still underlined at level 1, just not
+    /// tinted.
+    ///
+    /// The ramp exists because a terminal that can only draw one size of text
+    /// has nothing else to tell a heading from a paragraph with. Where it *can*
+    /// draw another size — a graphics protocol, which is what makes the
+    /// oversized H1/H2 rasters possible — the size says it, and the color is a
+    /// second answer to a question already answered. So a host that has probed
+    /// for kitty/iTerm2/sixel and found one installs this variant; one that
+    /// hasn't, or found none, keeps the ramp.
+    ///
+    /// [`Color::Reset`] rather than a chosen grey: the point is the terminal's
+    /// default ink, whatever the user themed it to. The heading rasters read it
+    /// too and come out in the matching near-black or near-white.
+    pub const fn with_plain_headings(mut self) -> Self {
+        self.heading = [Color::Reset; 6];
+        self
     }
 
     /// The base style for a glyph's role; the caller layers the author's own
@@ -746,6 +768,33 @@ mod tests {
         assert_eq!(color(9), t.heading[5]);
         // Level 0 is not a thing, but a malformed AST must not index out of range.
         assert_eq!(color(0), t.heading[0]);
+    }
+
+    /// The plain-heading variant drops the ramp and nothing else: every level
+    /// comes back in the terminal's own ink, still bold, and level 1 still
+    /// underlined. A host installs this once it knows the terminal can draw the
+    /// oversized rasters that make the hue redundant.
+    #[test]
+    fn plain_headings_keep_the_weight_and_lose_the_hue() {
+        for scheme in [ColorScheme::Dark, ColorScheme::Light] {
+            let ramped = Theme::for_scheme(scheme);
+            let plain = ramped.with_plain_headings();
+            for level in 1..=6u8 {
+                let s = plain.role_style(Role::Heading(level));
+                assert_eq!(s.fg, Some(Color::Reset), "level {level} in {scheme:?}");
+                assert!(s.add_modifier.contains(Modifier::BOLD));
+                assert_eq!(
+                    s.add_modifier.contains(Modifier::UNDERLINED),
+                    level == 1,
+                    "level {level} underline"
+                );
+            }
+            // Only the headings move; the rest of the palette is untouched, so a
+            // host can install this without losing the scheme it detected.
+            assert_eq!(plain.scheme, ramped.scheme);
+            assert_eq!(plain.code_bg, ramped.code_bg);
+            assert_eq!(plain.role_style(Role::Code), ramped.role_style(Role::Code));
+        }
     }
 
     /// Only level 1 is underlined — the rest are told apart by hue and weight.
