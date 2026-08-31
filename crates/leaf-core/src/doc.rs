@@ -39,6 +39,7 @@ use twig::{
 use unicode_segmentation::GraphemeCursor;
 
 use crate::html;
+use crate::source::{self, SourceMap};
 use crate::wysiwyg::{self, MediaKind, MediaStop, VisualMap};
 
 /// Which view the body shows.
@@ -605,6 +606,16 @@ pub struct Doc {
     /// The rendered map for the WYSIWYG view; empty in the source view. Movement
     /// and clicks read it to stay in visible space.
     pub vmap: VisualMap,
+    /// The syntax map for the source view; empty in the WYSIWYG view, which
+    /// styles resolved glyphs instead. Built by [`Doc::build_source`] — a
+    /// frontend that never calls it paints raw source unstyled, which is what
+    /// every frontend did before this map existed.
+    pub smap: SourceMap,
+    /// The revision `smap` was built from, or `None` before the first build.
+    /// The map is a pure function of the text alone — no width, no caret, no
+    /// reveal line — so unlike [`vmap_key`](Self::vmap_key) the revision is the
+    /// whole key.
+    smap_key: Option<u64>,
     /// Everything the map is built from, as one number: bumped whenever the
     /// document's text changes, and never by a motion, a selection, or a save.
     /// A frontend can hold work against it — see [`Doc::revision`].
@@ -957,6 +968,9 @@ impl Doc {
             pending_at: None,
             goal_col: None,
             vmap: VisualMap::default(),
+            smap: SourceMap::default(),
+            // No map yet — the first `build_source` always builds.
+            smap_key: None,
             revision: 0,
             // No map yet — the first `build_visual` always builds.
             vmap_key: None,
@@ -1085,6 +1099,43 @@ impl Doc {
     /// than a fixed character column.
     pub fn build_visual_unwrapped(&mut self) {
         self.build_map(None);
+    }
+
+    /// Build the source view's syntax map ([`Doc::smap`]) — the styling for
+    /// [`View::Source`], the way [`build_visual`](Self::build_visual) is the
+    /// styling for [`View::Wysiwyg`].
+    ///
+    /// A frontend calls this before painting raw source. One that doesn't gets
+    /// an empty map and paints unstyled text, so this is additive: nothing
+    /// breaks by not calling it.
+    ///
+    /// Built at most once per revision, and the revision is the whole key — the
+    /// map has no width and no caret in it, so it survives every resize, every
+    /// motion, and every selection change.
+    ///
+    /// The builds it does do cost a whole-arena marshal, which is precisely what
+    /// the WYSIWYG path works to avoid, so this has no incremental path where
+    /// that one has two. Measured on `examples/bench`'s document, per keystroke:
+    ///
+    /// |  size |  nodes | marshal | build | total |
+    /// |------:|-------:|--------:|------:|------:|
+    /// |  10 KB|    613 |  0.14 ms| 0.10 ms| 0.24 ms|
+    /// | 100 KB|  6 097 |  1.00 ms| 0.44 ms| 1.44 ms|
+    /// |   1 MB| 60 601 |  6.59 ms| 3.22 ms| 9.81 ms|
+    ///
+    /// Linear, and two thirds of it is the marshal. That is comfortable next to
+    /// the WYSIWYG build the source view is *not* doing (0.22 ms at 10 KB) up to
+    /// documents far larger than one a person edits in a terminal — and a
+    /// megabyte would want [`Editor::dirty_range`] and the same splice treatment
+    /// `build_spliced` gives the other map. The door is open; nothing has needed
+    /// it yet.
+    pub fn build_source(&mut self) {
+        if self.smap_key == Some(self.revision) {
+            return;
+        }
+        let nodes = self.nodes();
+        self.smap = source::build(&nodes, &self.source);
+        self.smap_key = Some(self.revision);
     }
 
     /// Tell the model how many visual rows each block image should reserve, keyed

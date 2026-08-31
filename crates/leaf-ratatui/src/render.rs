@@ -16,7 +16,7 @@ use ratatui::widgets::Clear;
 
 #[cfg(feature = "images")]
 use leaf_core::VisualMap;
-use leaf_core::{Doc, Highlight, HighlightCursor, View};
+use leaf_core::{Doc, Highlight, HighlightCursor, SourceMap, View};
 
 use crate::EditorState;
 use crate::style::{CODE_INSET, Theme, composed, wysiwyg_lines};
@@ -67,6 +67,12 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
     // The WYSIWYG map must be built before we read the caret position (which
     // rides it). Code lines don't wrap — the map keeps them full length — so a
     // long one scrolls inside its box (below) rather than folding.
+    if doc.view == View::Source {
+        // The source view's peer of `build_visual`: the styling for raw markup.
+        // Cached on the revision, so this is a no-op on every frame that isn't
+        // the first after an edit.
+        doc.build_source();
+    }
     if doc.view == View::Wysiwyg {
         doc.build_visual(width);
         // With image support: learn which images the document has, decode and
@@ -158,7 +164,7 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
     // Build the view's lines. A code row is drawn inset for its box and, if it's
     // the caret's block, scrolled by `code_scroll`.
     let lines = match doc.view {
-        View::Source => build_lines(&doc.source, sel, highlights, &theme),
+        View::Source => build_lines(&doc.source, &doc.smap, sel, highlights, &theme),
         View::Wysiwyg => {
             let code_shift = |r: usize| -> Option<usize> {
                 doc.vmap
@@ -538,10 +544,17 @@ fn follow_caret_x(scroll_x: &mut usize, caret_col: usize, width: usize) {
     }
 }
 
-/// Split `source` into styled lines, drawing any part of the `[start, end)`
-/// selection reversed.
+/// Split `source` into styled lines: its markup coloured by `smap`, any part of
+/// the `[start, end)` selection reversed, and the host's highlights washed under
+/// both.
+///
+/// `smap` is the source view's answer to the WYSIWYG view's glyph styles. An
+/// empty one paints every line as plain text — which is exactly what this did
+/// before the map existed, and what a frontend that never calls
+/// [`Doc::build_source`] still gets.
 fn build_lines(
     source: &str,
+    smap: &SourceMap,
     sel: Option<(usize, usize)>,
     highlights: &[Highlight],
     theme: &Theme,
@@ -580,6 +593,18 @@ fn build_lines(
             cut(h.start);
             cut(h.end);
         }
+        // Where the syntax changes is a place to break a span for exactly the
+        // reason a selection edge is. `edges_in` does its own clipping to the
+        // line, but it speaks *document* offsets, as every range in core does —
+        // and `cuts` is line-local, which is what `raw` below is indexed by. So
+        // the edges it just appended are rebased, the way `cut` rebases the ones
+        // above. Getting this wrong is invisible on the first line of a document
+        // and slices out of bounds on every other one.
+        let appended = cuts.len();
+        smap.edges_in(line_start..line_end, &mut cuts);
+        for cut in &mut cuts[appended..] {
+            *cut -= line_start;
+        }
         cuts.sort_unstable();
         cuts.dedup();
 
@@ -588,10 +613,15 @@ fn build_lines(
             let (a, b) = (pair[0], pair[1]);
             // Styled by what covers the run's first byte: no edge falls strictly
             // inside a run, by construction, so one probe answers for all of it.
+            // No style edge falls strictly inside a run, by construction — the
+            // syntax edges are among the `cuts` — so one probe at the run's
+            // first byte answers for all of it, as it already did for the
+            // selection.
+            let base = theme.to_ratatui(smap.style_at(line_start + a));
             push(
                 &mut spans,
                 &raw[a..b],
-                composed(Style::default(), line_start + a, sel, &mut covering, theme),
+                composed(base, line_start + a, sel, &mut covering, theme),
             );
         }
         if spans.is_empty() {
@@ -612,7 +642,25 @@ fn push(spans: &mut Vec<Span<'static>>, text: &str, style: Style) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use leaf_core::Format;
     use ratatui::style::Modifier;
+
+    /// The syntax map for `src`, built the way [`render`] builds it.
+    fn smap(src: &str) -> SourceMap {
+        let mut doc = Doc::from_source(src.into(), Format::Markdown).unwrap();
+        doc.build_source();
+        doc.smap.clone()
+    }
+
+    /// The text of every span the predicate accepts, concatenated — "what came
+    /// out dim?" in a form an assertion can read.
+    fn spans_where(line: &Line<'_>, pred: impl Fn(&Style) -> bool) -> String {
+        line.spans
+            .iter()
+            .filter(|s| pred(&s.style))
+            .map(|s| s.content.as_ref())
+            .collect()
+    }
 
     /// The source view's own painter, which used to split each line three ways
     /// around the selection and had nowhere to put a second, overlapping range.
@@ -628,7 +676,15 @@ mod tests {
         }];
         // Selection over the second half of the highlight, so the line has to
         // come apart into four runs rather than three.
-        let lines = build_lines("one two three", Some((6, 9)), &painted, &theme);
+        // Prose with no markup in it, so the syntax map is empty and this stays
+        // the test of the selection/highlight composition it always was.
+        let lines = build_lines(
+            "one two three",
+            &SourceMap::default(),
+            Some((6, 9)),
+            &painted,
+            &theme,
+        );
         let text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "one two three", "the line still reads whole");
 
@@ -661,7 +717,7 @@ mod tests {
             color: None,
             marker: None,
         }];
-        let lines = build_lines(source, None, &painted, &theme);
+        let lines = build_lines(source, &SourceMap::default(), None, &painted, &theme);
         let washed = |i: usize| -> String {
             lines[i]
                 .spans
@@ -673,6 +729,72 @@ mod tests {
         assert_eq!(washed(0), "");
         assert_eq!(washed(1), "bravo");
         assert_eq!(washed(2), "");
+    }
+
+    /// The point of the whole exercise: raw markup comes out coloured, with the
+    /// scaffolding told apart from the prose it holds.
+    #[test]
+    fn the_source_view_paints_markup_apart_from_the_text_it_delimits() {
+        let theme = Theme::dark();
+        let src = "# Title\n";
+        let lines = build_lines(src, &smap(src), None, &[], &theme);
+        assert_eq!(
+            spans_where(&lines[0], |s| s.fg == Some(theme.delimiter)),
+            "# ",
+            "the hash is scaffolding"
+        );
+        assert_eq!(
+            spans_where(&lines[0], |s| s.fg == Some(theme.heading[0])),
+            "Title",
+            "and the text is a heading"
+        );
+    }
+
+    /// The map is document-wide byte offsets, like the highlights beside it, so
+    /// a painter that forgot to clamp per line would colour the wrong columns
+    /// further down.
+    #[test]
+    fn syntax_lands_on_the_line_it_actually_covers() {
+        let theme = Theme::dark();
+        let src = "plain line\n\n# Heading\n";
+        let lines = build_lines(src, &smap(src), None, &[], &theme);
+        let dim = |i: usize| spans_where(&lines[i], |s| s.fg == Some(theme.delimiter));
+        assert_eq!(dim(0), "", "nothing on the prose line");
+        assert_eq!(dim(2), "# ", "and the hash on the heading's");
+        let whole: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(whole, "plain line", "the line still reads whole");
+    }
+
+    /// Syntax is a *base* the selection and the host's washes compose over, not
+    /// a fourth thing fighting them — the delimiter keeps its ink under a
+    /// highlight and still reverses under the selection.
+    #[test]
+    fn syntax_composes_with_the_selection_over_it() {
+        let theme = Theme::dark();
+        let src = "a **b** c\n";
+        // Over the opening `**` and the `b` inside it.
+        let lines = build_lines(src, &smap(src), Some((2, 5)), &[], &theme);
+        let reversed = spans_where(&lines[0], |s| s.add_modifier.contains(Modifier::REVERSED));
+        assert_eq!(
+            reversed, "**b",
+            "the selection still reverses what it covers"
+        );
+        let bold = spans_where(&lines[0], |s| s.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(
+            bold, "**b**",
+            "and the bold run is bold, delimiters and all"
+        );
+    }
+
+    /// An unbuilt map is the old behaviour exactly: every frontend that never
+    /// calls `build_source` keeps painting plain text.
+    #[test]
+    fn an_empty_map_paints_exactly_what_it_used_to() {
+        let theme = Theme::dark();
+        let src = "# Title\n";
+        let plain = build_lines(src, &SourceMap::default(), None, &[], &theme);
+        assert_eq!(plain[0].spans.len(), 1, "one unstyled run for the line");
+        assert_eq!(plain[0].spans[0].style, Style::default());
     }
 
     #[test]

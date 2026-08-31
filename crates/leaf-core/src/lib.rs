@@ -7,6 +7,12 @@
 //! each point back at the source byte they came from, so a caret can ride the
 //! *visible* text and step over hidden markup delimiters.
 //!
+//! The [`source`] module is that map's opposite number: where [`wysiwyg`]
+//! resolves the markup away, it styles the markup *itself*, so the source view
+//! can paint a heading's `# ` and a link's destination as the scaffolding they
+//! are. Both read the same twig AST, so the two views cannot disagree about what
+//! the document is.
+//!
 //! Nothing here depends on a UI toolkit. Glyphs carry a toolkit-agnostic
 //! [`Style`], which a frontend crate (`leaf-tui`, and next `leaf-gui`) maps onto
 //! its own styling. Both frontends share this exact caret math, edit surface,
@@ -15,6 +21,7 @@
 
 pub mod doc;
 mod html;
+pub mod source;
 pub mod style;
 pub mod wysiwyg;
 
@@ -22,6 +29,7 @@ pub use doc::{
     Capabilities, DiskState, Doc, FootnoteDef, FootnoteRef, Highlight, HighlightCursor,
     InlineMarks, Landing, LineFlow, MarkupMode, Quote, View,
 };
+pub use source::{SourceMap, StyledRun};
 pub use style::{Baseline, Role, Style};
 pub use wysiwyg::{
     BlockClass, Boundary, CodeBlockInfo, ColorScheme, Glyph, MediaInfo, MediaKind, MediaSource,

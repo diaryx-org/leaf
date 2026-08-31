@@ -1,7 +1,7 @@
 //! Where does leaf's per-keystroke and per-paint time actually go?
 //!
 //! `cargo run --release -p leaf-core --example bench`
-use leaf_core::{Doc, View, wysiwyg};
+use leaf_core::{Doc, View, source, wysiwyg};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::time::Instant;
@@ -50,6 +50,13 @@ fn main() {
             wysiwyg::build(&nodes, &src, None, false, &HashMap::new(), None)
                 .rows
                 .len()
+        });
+        // The source view's whole per-edit cost, next to the WYSIWYG view's, so
+        // the "cheaper view" claim in `source::build`'s docs is a measured one.
+        // It has no incremental path: this plus the marshal above is what a
+        // keystroke in `View::Source` pays.
+        time("source::build", 5, || {
+            source::build(&nodes, &src).runs().len()
         });
         {
             // The incremental path with a warm cache and nothing changed: the
