@@ -591,8 +591,10 @@ struct ConflictPrompt {
 }
 
 fn run(terminal: &mut ratatui::DefaultTerminal, doc: &mut Doc, line_width: u16) -> Result<()> {
-    let mut app = App::default();
-    app.line_width = line_width;
+    let mut app = App {
+        line_width,
+        ..App::default()
+    };
     // Probe the terminal for its graphics protocol now that `ratatui::init` has
     // put it in raw mode — the query reads escape-sequence replies. A terminal
     // that can't answer keeps the half-blocks fallback.
