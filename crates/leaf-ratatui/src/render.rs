@@ -91,8 +91,15 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
     // Always restore the canonical map first: the previous frame may have added
     // blank rows beneath inactive H1/H2 blocks, and caret motion must be able to
     // collapse the heading it just entered without changing the document.
+    //
+    // Only on a terminal with a real graphics protocol, though. The composed
+    // heading is text we rasterized; without kitty/iTerm2/sixel ratatui-image
+    // would paint it as unicode half-blocks — a blocky picture of letters, worse
+    // than the letters themselves. So there we reserve no filler rows and take
+    // no raster, and the heading stays the ordinary bold coloured terminal text
+    // the theme already gives it.
     #[cfg(feature = "images")]
-    let heading_rasters = if doc.view == View::Wysiwyg {
+    let heading_rasters = if doc.view == View::Wysiwyg && state.images.supports_graphics() {
         let key = (doc.revision(), width);
         if let Some((revision, cached_width, base)) = &state.heading_base
             && (*revision, *cached_width) == key
@@ -104,6 +111,15 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
         let active_row = doc.vmap.pos_of_offset(doc.caret).0;
         expand_inactive_headings(&mut doc.vmap, active_row, sel)
     } else {
+        // Nothing to expand this frame. A base left from a frame that did expand
+        // still has to be put back, or its filler rows would outlive the reason
+        // for them — a document rebuilt since then is canonical already, which is
+        // what the revision/width check asks.
+        if let Some((revision, cached_width, base)) = state.heading_base.take()
+            && (revision, cached_width) == (doc.revision(), width)
+        {
+            doc.vmap = base;
+        }
         Vec::new()
     };
     let (caret_row, caret_col) = doc.caret_pos();
@@ -850,5 +866,53 @@ mod code_render_tests {
     fn the_two_schemes_paint_different_code_fills() {
         assert_ne!(Theme::dark().code_bg, Theme::light().code_bg);
         assert_ne!(Theme::dark().code_border, Theme::light().code_border);
+    }
+
+    /// A terminal with no graphics protocol gets the heading as *text*, not as a
+    /// half-block mosaic of one. `EditorState::new` is half-blocks until
+    /// `query_graphics` finds better, which is exactly the state a kitty-less
+    /// terminal stays in, so the heading must render as ordinary bold letters on
+    /// one row with nothing reserved beneath it.
+    #[cfg(feature = "images")]
+    #[test]
+    fn a_heading_stays_plain_text_without_a_graphics_protocol() {
+        let src = "# Large title\n\nbody\n";
+        let mut p = std::env::temp_dir();
+        p.push("leaf_ratatui_plain_heading.md");
+        std::fs::write(&p, src).unwrap();
+        let mut doc = Doc::open(p).unwrap();
+        // Park the caret in the body: an *active* heading is left alone anyway,
+        // so only an inactive one can show whether rows were reserved for a
+        // raster that this terminal cannot paint.
+        doc.caret = doc.source.len();
+        let mut state = EditorState::new();
+        state.set_color_scheme(ColorScheme::Dark);
+        let mut term = Terminal::new(TestBackend::new(40, 10)).unwrap();
+        term.draw(|f| render(f, f.area(), &mut doc, &mut state))
+            .unwrap();
+        let buf = term.backend().buffer().clone();
+        let lines: Vec<String> = (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect();
+        let joined = lines.join("\n");
+        let title = lines
+            .iter()
+            .position(|l| l.contains("Large title"))
+            .unwrap_or_else(|| panic!("heading not drawn as text:\n{joined}"));
+        let body = lines
+            .iter()
+            .position(|l| l.contains("body"))
+            .unwrap_or_else(|| panic!("body not drawn:\n{joined}"));
+        // One heading row, one blank line, then the body — the two filler rows an
+        // H1 raster would reserve are absent.
+        assert_eq!(
+            body - title,
+            2,
+            "heading reserved raster rows on a half-blocks terminal:\n{joined}"
+        );
     }
 }

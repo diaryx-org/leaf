@@ -18,7 +18,11 @@ use std::path::{Path, PathBuf};
 
 use ratatui::style::Color as TerminalColor;
 use ratatui::{Frame, layout::Rect, widgets::Clear};
-use ratatui_image::{FontSize, Resize, StatefulImage, picker::Picker, protocol::StatefulProtocol};
+use ratatui_image::{
+    FontSize, Resize, StatefulImage,
+    picker::{Picker, ProtocolType},
+    protocol::StatefulProtocol,
+};
 
 use cosmic_text::{
     Attrs, Buffer, Color as TextColor, FontSystem, Metrics, Shaping, SwashCache, Weight, Wrap,
@@ -102,6 +106,20 @@ impl Images {
         if let Ok(picker) = Picker::from_query_stdio() {
             self.picker = picker;
         }
+    }
+
+    /// Whether the terminal speaks a real graphics protocol — kitty, iTerm2 or
+    /// sixel — rather than ratatui-image's unicode half-block fallback.
+    ///
+    /// The two rasterized surfaces want opposite answers to that. A photograph
+    /// in half-blocks is coarse but still recognisably the photograph, so block
+    /// images take the fallback and stay worth drawing. An oversized heading is
+    /// *text we rasterized ourselves*: in half-blocks it comes back as a mosaic
+    /// caricature of letters the terminal could have drawn properly, so there
+    /// the ordinary bold coloured heading is the better rendering. [`crate::render`]
+    /// asks this before expanding a heading at all.
+    pub fn supports_graphics(&self) -> bool {
+        self.picker.protocol_type() != ProtocolType::Halfblocks
     }
 
     /// Override the detected color scheme — what a host wires to a config option
@@ -197,6 +215,11 @@ impl Images {
 
     /// Shape and paint an inactive H1/H2 as a terminal graphics image. The
     /// source remains ordinary Leaf text; this is only its composed projection.
+    ///
+    /// A no-op without a graphics protocol (see [`Images::supports_graphics`]):
+    /// callers already skip the expansion in that case, and repeating the rule
+    /// here means a caller that forgets leaves the terminal's own heading text
+    /// standing rather than painting half-blocks over it.
     pub fn paint_heading(
         &mut self,
         f: &mut Frame,
@@ -205,7 +228,7 @@ impl Images {
         color: TerminalColor,
         rect: Rect,
     ) {
-        if rect.width == 0 || rect.height == 0 || text.is_empty() {
+        if !self.supports_graphics() || rect.width == 0 || rect.height == 0 || text.is_empty() {
             return;
         }
         let font = self.picker.font_size();
@@ -218,16 +241,7 @@ impl Images {
             rgb,
         };
         if !self.headings.contains_key(&key) {
-            let image = raster_heading(
-                &mut self.fonts,
-                &mut self.swash,
-                text,
-                level,
-                rgb,
-                rect.width,
-                rect.height,
-                font,
-            );
+            let image = raster_heading(&mut self.fonts, &mut self.swash, &key);
             let intrinsic = (image.width(), image.height());
             self.headings.insert(
                 key.clone(),
@@ -269,11 +283,15 @@ impl Images {
     }
 }
 
+/// Everything a composed heading's pixels depend on, and therefore both the
+/// cache key and the whole argument list [`raster_heading`] needs.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct HeadingKey {
     text: String,
     level: u8,
+    /// The character-cell box the heading occupies, `(cols, rows)`.
     cells: (u16, u16),
+    /// The terminal's cell size in pixels, `(width, height)`.
     font: (u16, u16),
     rgb: (u8, u8, u8),
 }
@@ -302,17 +320,19 @@ fn terminal_rgb(color: TerminalColor, scheme: ColorScheme) -> (u8, u8, u8) {
 fn raster_heading(
     fonts: &mut FontSystem,
     swash: &mut SwashCache,
-    text: &str,
-    level: u8,
-    rgb: (u8, u8, u8),
-    cols: u16,
-    rows: u16,
-    cell: FontSize,
+    key: &HeadingKey,
 ) -> image::RgbaImage {
-    let width = u32::from(cols) * u32::from(cell.0.max(1));
-    let height = u32::from(rows) * u32::from(cell.1.max(1));
+    let HeadingKey {
+        text,
+        level,
+        cells: (cols, rows),
+        font: cell,
+        rgb,
+    } = key;
+    let width = u32::from(*cols) * u32::from(cell.0.max(1));
+    let height = u32::from(*rows) * u32::from(cell.1.max(1));
     let line_height = height as f32;
-    let font_size = if level == 1 {
+    let font_size = if *level == 1 {
         line_height * 0.72
     } else {
         line_height * 0.68
