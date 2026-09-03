@@ -27,7 +27,7 @@ pub mod wysiwyg;
 
 pub use doc::{
     Capabilities, DiskState, Doc, FootnoteDef, FootnoteRef, Highlight, HighlightCursor,
-    InlineMarks, Landing, LineFlow, MarkupMode, Quote, View,
+    InlineMarks, Landing, LineFlow, MarkupMode, Quote, View, VisualKey,
 };
 pub use source::{SourceMap, StyledRun};
 pub use style::{Baseline, Role, Style};

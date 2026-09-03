@@ -520,6 +520,12 @@ impl<'a> HighlightCursor<'a> {
     }
 }
 
+/// The identity of a built [`VisualMap`] — see [`Doc::visual_key`]. Opaque on
+/// purpose: the only useful question is whether two of them are the same map,
+/// and the tuple behind it (revision, wrap, reveal line) is core's business.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct VisualKey(Option<(u64, Option<usize>, Option<Range<usize>>)>);
+
 pub struct Doc {
     editor: Editor,
     pub format: Format,
@@ -1176,6 +1182,23 @@ impl Doc {
     /// needlessly, never wrongly reused.
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+
+    /// The identity of the map presently in [`vmap`](Self::vmap) — what the last
+    /// [`build_visual`](Self::build_visual) built it from, or the identity of an
+    /// unbuilt map before the first one.
+    ///
+    /// This is *not* [`revision`](Self::revision). The revision says where the
+    /// text is; this says where the map is, and the two part company the moment
+    /// an edit lands, until something rebuilds. A frontend that keeps its own
+    /// copy of the map — leaf-ratatui stashes core's before splicing filler rows
+    /// under an oversized heading — compares this against the value it held when
+    /// it took the copy, and learns whether `vmap` is still the map it stashed
+    /// or one somebody else has since rebuilt. Restoring a copy over a newer
+    /// map would paint a stale document; restoring nothing hands core's
+    /// incremental rebuild a map it never built.
+    pub fn visual_key(&self) -> VisualKey {
+        VisualKey(self.vmap_key.clone())
     }
 
     /// The map, built at most once per `(revision, wrap)`. `clamp_caret` still
@@ -9380,6 +9403,39 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A frontend is handed [`Doc::vmap`] and may present it differently:
+    /// leaf-ratatui splices blank filler rows under an oversized heading so the
+    /// raster it paints there has somewhere to stand, and leaves them in the map
+    /// because the caret and the mouse both read it between frames. The splice
+    /// path addresses that map by *row index*, against the block layout the last
+    /// build recorded — so handed a map with rows in it that no block owns, it
+    /// laid the re-rendered block over one of the fillers and carried the rows
+    /// the block really occupied into the suffix. One stranded copy of the
+    /// edited line, and everything below it a row further down, per keystroke.
+    ///
+    /// A map that isn't the one the layout describes is a map this path can't
+    /// patch, whoever changed it and for whatever reason. It rebuilds instead.
+    #[test]
+    fn an_edit_over_a_map_a_frontend_reshaped_rebuilds_it_whole() {
+        let mut d = wysiwyg_doc("reshaped", "# Title\n\nThe quick brown fox jumps.\n");
+        d.build_visual_unwrapped();
+
+        // Stand in for the heading filler rows: two blank rows past the heading
+        // that no block accounts for. Cloning a real row keeps every field
+        // plausible — it is the row *count* the splice can't survive.
+        let filler = d.vmap.rows[0].clone();
+        d.vmap.rows.insert(1, filler.clone());
+        d.vmap.rows.insert(1, filler);
+
+        // An edit inside the last block: the single-block case the splice path
+        // is for, and the one the frontend hits on every keystroke.
+        let at = d.source.len() - 1;
+        d.edit(at, at, "!");
+        d.build_visual_unwrapped();
+
+        wysiwyg::assert_maps_eq(&d.vmap, &reference_map(&d.source), "after the edit");
     }
 
     #[test]

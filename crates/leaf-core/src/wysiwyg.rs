@@ -1429,6 +1429,25 @@ pub fn build_spliced(
     if prev_layout.built_len == 0 || prev_layout.has_tables || !prev_layout.all_shift_safe {
         return None;
     }
+    // The layout addresses `prev` by row index, so it is only usable against the
+    // map it was built from. A frontend is free to hold the map it was handed and
+    // present it differently — leaf-ratatui splices blank filler rows under an
+    // oversized heading so the raster has somewhere to stand — and if one of those
+    // comes back here the row arithmetic below lands on the wrong rows: the
+    // re-rendered block is laid over a filler and the rows it really occupied
+    // survive into the suffix, stranding a stale copy of the edited line and
+    // pushing everything after it one row down, once per keystroke. A row count
+    // that doesn't match what this layout describes is the tell, and the honest
+    // answer is the full rebuild.
+    let described_rows = prev_layout
+        .blocks
+        .iter()
+        .map(|pl| pl.sep_rows + pl.content_rows)
+        .sum::<usize>()
+        + prev_layout.trailing_rows;
+    if described_rows != prev.rows.len() {
+        return None;
+    }
 
     let blocks: Vec<&QueryMatch> = top.iter().filter(|m| m.kind != Kind::Metadata).collect();
     if blocks.is_empty() || blocks.len() != prev_layout.blocks.len() {
