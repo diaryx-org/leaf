@@ -140,6 +140,19 @@ impl Images {
         self.picker.protocol_type() != ProtocolType::Halfblocks
     }
 
+    /// Claim a graphics protocol without a terminal to ask. Everything about
+    /// oversized headings — the filler rows, the raster, the caret that lives in
+    /// its pixels — is gated on [`supports_graphics`](Self::supports_graphics),
+    /// so a test that draws to a `TestBackend` sees none of it otherwise, and
+    /// the layout bugs that live there are exactly the ones no test could reach.
+    #[cfg(test)]
+    pub(crate) fn assume_graphics(&mut self) {
+        // Only the protocol changes: the picker keeps whatever font size it was
+        // built with, which for the half-blocks default is the nominal cell the
+        // box arithmetic wants and a `TestBackend` has no opinion about anyway.
+        self.picker.set_protocol_type(ProtocolType::Kitty);
+    }
+
     /// Override the detected color scheme — what a host wires to a config option
     /// or a `prefers-color-scheme`-style toggle. Re-picking is automatic: the
     /// cache keys off the resolved file, so the next frame measures and paints

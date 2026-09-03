@@ -83,11 +83,19 @@ pub struct EditorState {
     /// inline `🖼 alt` placeholder and this field (and its deps) are gone.
     #[cfg(feature = "images")]
     images: Images,
-    /// The unexpanded core map for the current document revision and width.
-    /// Oversized headings add presentation-only filler rows to `doc.vmap`; this
-    /// copy lets the next frame start from core's canonical caret map again.
+    /// Core's own map, as it was before [`render`] spliced an oversized
+    /// heading's filler rows into `doc.vmap`, paired with the
+    /// [`leaf_core::VisualKey`] it was built under.
+    ///
+    /// The next frame puts it back before anything reads or rebuilds the map,
+    /// so core's incremental rebuild is handed the map core itself last built
+    /// rather than our presentation of it. The key is what makes that safe: it
+    /// says whether `doc.vmap` is still our expansion of this copy, or a newer
+    /// map somebody else (`refresh_find`, say) has rebuilt in the meantime — in
+    /// which case the copy is stale and putting it back would paint an old
+    /// document.
     #[cfg(feature = "images")]
-    heading_base: Option<(u64, usize, leaf_core::VisualMap)>,
+    heading_base: Option<(leaf_core::VisualKey, leaf_core::VisualMap)>,
     /// The heading rasters the last frame actually painted, published by
     /// [`render`] so [`handle_mouse`] can route a click on one through the
     /// raster's own hit-test — the rasterized glyphs are far wider than the

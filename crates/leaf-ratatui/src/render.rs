@@ -64,6 +64,28 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
         .filter(|p| !p.as_os_str().is_empty())
         .map(|p| p.to_path_buf());
 
+    // Put core's own map back before anything reads or rebuilds it. The last
+    // frame left `doc.vmap` carrying the filler rows an oversized heading's
+    // raster stands on (see `expand_headings`), and core's incremental rebuild
+    // patches whatever map it finds against the block layout *it* last built:
+    // handed the expanded one, it lays the re-rendered block over a filler row
+    // and keeps the rows the block really occupied, so every keystroke strands a
+    // stale copy of the edited line and pushes the rest of the document one row
+    // further down. Restoring here rather than after `build_visual` is the whole
+    // point — after is too late, the splice has already happened.
+    //
+    // Only when `doc.vmap` is still our expansion of this copy: between frames a
+    // host may rebuild the map itself (leaf-tui's `refresh_find` does, so a
+    // replacement is searched against the bytes it just wrote), and putting a
+    // copy from before that back would paint the document as it no longer is.
+    // `visual_key` is core's answer to which of the two happened.
+    #[cfg(feature = "images")]
+    if let Some((key, base)) = state.heading_base.take()
+        && key == doc.visual_key()
+    {
+        doc.vmap = base;
+    }
+
     // The WYSIWYG map must be built before we read the caret position (which
     // rides it). Code lines don't wrap — the map keeps them full length — so a
     // long one scrolls inside its box (below) rather than folding.
@@ -93,10 +115,11 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
         }
     }
 
-    // Oversized headings are a presentation of core's ordinary editable rows.
-    // Always restore the canonical map first: the previous frame may have added
-    // blank rows beneath inactive H1/H2 blocks, and caret motion must be able to
-    // collapse the heading it just entered without changing the document.
+    // Oversized headings are a presentation of core's ordinary editable rows: the
+    // map above is canonical, and the filler rows an inactive H1/H2 stands on go
+    // in from here, so that caret motion can collapse the heading it just left
+    // without changing the document. The copy taken first is what the next frame
+    // puts back (see the restore at the top).
     //
     // Only on a terminal with a real graphics protocol, though. The composed
     // heading is text we rasterized; without kitty/iTerm2/sixel ratatui-image
@@ -110,14 +133,7 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
     state.heading_rasters.clear();
     #[cfg(feature = "images")]
     let heading_rasters = if doc.view == View::Wysiwyg && state.images.supports_graphics() {
-        let key = (doc.revision(), width);
-        if let Some((revision, cached_width, base)) = &state.heading_base
-            && (*revision, *cached_width) == key
-        {
-            doc.vmap = base.clone();
-        } else {
-            state.heading_base = Some((key.0, key.1, doc.vmap.clone()));
-        }
+        state.heading_base = Some((doc.visual_key(), doc.vmap.clone()));
         let active_row = doc.vmap.pos_of_offset(doc.caret).0;
         let images = &mut state.images;
         expand_headings(
@@ -128,15 +144,8 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
             |text, l, rows| images.heading_fits(text, l, (width as u16, rows)),
         )
     } else {
-        // Nothing to expand this frame. A base left from a frame that did expand
-        // still has to be put back, or its filler rows would outlive the reason
-        // for them — a document rebuilt since then is canonical already, which is
-        // what the revision/width check asks.
-        if let Some((revision, cached_width, base)) = state.heading_base.take()
-            && (revision, cached_width) == (doc.revision(), width)
-        {
-            doc.vmap = base;
-        }
+        // Nothing expanded this frame, so there is nothing for the next one to
+        // put back. The `take` at the top has already dropped it.
         Vec::new()
     };
     let (caret_row, caret_col) = doc.caret_pos();
@@ -1040,6 +1049,113 @@ mod tests {
         let rasters = expand_headings(&mut doc.vmap, doc.caret, active, None, |_, _, _| false);
         assert!(rasters.is_empty());
         assert_eq!(doc.vmap.rows.len(), old_rows, "no filler rows reserved");
+    }
+
+    /// A document on disk under a path unique to this call, for the tests that
+    /// need `Doc::open` rather than `Doc::from_source` (an image path resolves
+    /// against the document's directory, so the surface wants a real one).
+    #[cfg(feature = "images")]
+    fn doc_on_disk(slug: &str, src: &str) -> Doc {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut path = std::env::temp_dir();
+        path.push(format!("leaf_ratatui_{slug}_{}_{n}.md", std::process::id()));
+        std::fs::write(&path, src).unwrap();
+        Doc::open(path).unwrap()
+    }
+
+    /// Which rows of the drawn frame contain `needle`.
+    #[cfg(feature = "images")]
+    fn rows_containing(buf: &ratatui::buffer::Buffer, needle: &str) -> Vec<u16> {
+        (0..buf.area.height)
+            .filter(|&y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+                    .contains(needle)
+            })
+            .collect()
+    }
+
+    /// Typing under an oversized heading used to leave a copy of the line behind
+    /// on every keystroke, each one row lower than the last, until the document
+    /// had marched off the bottom of the screen.
+    ///
+    /// The cause was an ordering, not a miscount. `render` splices the heading's
+    /// filler rows into `doc.vmap` and leaves them there — the caret and the
+    /// mouse both read that map between frames — and core's incremental rebuild
+    /// patches the map it finds against the block layout it last built. Handed
+    /// the expanded map, it laid the re-rendered paragraph over a filler row and
+    /// carried the rows the paragraph really occupied into the suffix: one
+    /// stranded copy of the old line, and everything below it one row further
+    /// down, per keystroke. Restoring core's map *before* `build_visual` rather
+    /// than after is the fix here; core grew a guard of its own against being
+    /// handed a map it didn't build, so either alone keeps this honest and the
+    /// pair keeps the splice fast path as well. This asserts the outcome.
+    #[cfg(feature = "images")]
+    #[test]
+    fn an_edit_under_an_oversized_heading_strands_no_copy_of_the_line_it_replaced() {
+        let mut doc = doc_on_disk(
+            "heading_edit_ghost",
+            "# diaryx-org\n\nThe meta repo for the Diaryx organization\n",
+        );
+        let mut state = EditorState::default();
+        state.images.assume_graphics();
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(70, 24)).unwrap();
+
+        // Backspacing from the end of the paragraph, which is what it took to
+        // find this: every frame's body is a prefix of the last one's, so a
+        // stranded row is still on screen and still matches.
+        doc.caret = doc.source.len() - 1;
+        for step in 0..12 {
+            term.draw(|f| render(f, f.area(), &mut doc, &mut state))
+                .unwrap();
+            let buf = term.backend().buffer();
+            assert_eq!(
+                rows_containing(buf, "The meta repo for the D"),
+                vec![4],
+                "at keystroke {step} the body should be one row, in the place \
+                 the heading's three and the blank after them leave it:\n{}",
+                (0..buf.area.height)
+                    .map(|y| (0..buf.area.width)
+                        .map(|x| buf[(x, y)].symbol())
+                        .collect::<String>())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
+            doc.backspace();
+        }
+    }
+
+    /// The other half of that ordering: a host may rebuild the map itself
+    /// between frames (leaf-tui's `refresh_find` does, so a replacement is
+    /// searched against the bytes it just wrote). The stashed copy is then a map
+    /// of a document that no longer exists, and putting it back would paint the
+    /// old text. `visual_key` is what tells the two cases apart.
+    #[cfg(feature = "images")]
+    #[test]
+    fn a_rebuild_between_frames_retires_the_stashed_map() {
+        let mut doc = doc_on_disk("heading_rebuild_between", "# diaryx-org\n\nbody\n");
+        let mut state = EditorState::default();
+        state.images.assume_graphics();
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(70, 24)).unwrap();
+        term.draw(|f| render(f, f.area(), &mut doc, &mut state))
+            .unwrap();
+
+        // An edit, and then somebody else's rebuild before the next frame.
+        doc.caret = doc.source.len() - 1;
+        doc.insert(" text");
+        doc.build_visual(69); // the content width: the 70 columns less the scrollbar
+
+        term.draw(|f| render(f, f.area(), &mut doc, &mut state))
+            .unwrap();
+        let buf = term.backend().buffer();
+        assert_eq!(rows_containing(buf, "body text"), vec![4]);
+        assert_eq!(
+            rows_containing(buf, "body ").len(),
+            1,
+            "the pre-edit map was painted back over the edit"
+        );
     }
 }
 
