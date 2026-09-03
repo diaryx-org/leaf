@@ -616,6 +616,14 @@ fn run(terminal: &mut ratatui::DefaultTerminal, doc: &mut Doc, line_width: u16) 
         let plain = app.editor.theme().with_plain_headings();
         app.editor.set_theme(plain);
     }
+    // Wipe whatever the two queries above left on the screen. They are written
+    // as escape sequences a terminal is meant to swallow and answer; one that
+    // doesn't recognise them prints what it can read of them instead, and
+    // Terminal.app opens leaf with `Gi=31,s=1,v=1,a=q,t=d` across the first row.
+    // It stays there for the session: ratatui writes only the cells that differ
+    // from the frame it last drew, and it has drawn none yet, so a row the
+    // document leaves blank is a row it never touches.
+    terminal.clear()?;
     // Seed the file watch with what the file looks like right now, so the first
     // tick has something to compare against and a document opened from an
     // unchanged file costs no read at all.
