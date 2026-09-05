@@ -1372,7 +1372,9 @@ export class LeafEditor {
       e.preventDefault();
     });
     on(ce, "paste", (e) => {
-      const html = e.clipboardData.getData("text/html");
+      const plain = this._plainPaste;
+      this._plainPaste = false;
+      const html = plain ? "" : e.clipboardData.getData("text/html");
       const text = e.clipboardData.getData("text/plain");
       if (!html && !text) return;
       this._syncFromDom();
@@ -1580,17 +1582,16 @@ export class LeafEditor {
     if (this._composing || e.isComposing || e.keyCode === 229) return;
     const d = this.doc;
 
+    // ⌘⇧V: the paste that follows takes the plain flavour. Remembered here and
+    // consumed by the paste handler, since the paste itself is the browser's
+    // to deliver; any other key retires it, so a ⌘⇧V with nothing to paste
+    // can't turn the *next* paste plain.
+    this._plainPaste = primaryModifier(e) && e.shiftKey && e.key.toLowerCase() === "v";
+    if (this._plainPaste) return;
+
     if (primaryModifier(e)) {
-      let op;
-      switch (e.key.toLowerCase()) {
-        case "b": op = () => d.toggle_bold(); break;
-        case "i": op = () => d.toggle_italic(); break;
-        case "u": op = () => d.toggle_underline(); break;
-        case "e": op = () => d.toggle_view(); break;
-        case "z": op = e.shiftKey ? () => d.redo() : () => d.undo(); break;
-        case "y": op = () => d.redo(); break;
-        default: return; // copy/cut/paste, select-all, ⌘←/→, … stay the browser's
-      }
+      const op = this._shortcut(e);
+      if (!op) return; // copy/cut/paste, select-all, ⌘←/→, … stay the browser's
       e.preventDefault();
       this._syncFromDom();
       this.render(op());
@@ -1612,6 +1613,47 @@ export class LeafEditor {
       this.render(d.cell_tab(forward) ?? (forward ? d.indent() : d.outdent()));
     }
     // Enter, Backspace, Delete, arrows: handled via beforeinput / native motion.
+  }
+
+  /**
+   * The model operation a modified key names, or null — the set leaf-gpui
+   * binds, spelled for a browser. Headings and lists go by `code` (the
+   * physical key) rather than `key`: with ⌥ held a Mac types a symbol for a
+   * digit, and with ⇧ held every keyboard does.
+   */
+  _shortcut(e) {
+    const d = this.doc;
+    const key = e.key.toLowerCase();
+    if (e.altKey && !e.shiftKey) {
+      // ⌘⌥0–6: paragraph, then heading levels — the web-editor convention.
+      const m = /^Digit([0-6])$/.exec(e.code);
+      if (!m) return null;
+      const level = Number(m[1]);
+      return level === 0 ? () => d.set_paragraph() : () => d.set_heading(level);
+    }
+    if (e.altKey) return null;
+    if (e.shiftKey) {
+      switch (e.code === "Digit7" || e.code === "Digit8" ? e.code : key) {
+        case "c": return () => d.toggle_code();
+        case "m": return () => d.toggle_mark();
+        case "x": return () => d.toggle_strike();
+        case "z": return () => d.redo();
+        case "Digit7": return () => d.toggle_list(true);
+        case "Digit8": return () => d.toggle_list(false);
+        default: return null;
+      }
+    }
+    switch (key) {
+      case "b": return () => d.toggle_bold();
+      case "i": return () => d.toggle_italic();
+      case "u": return () => d.toggle_underline();
+      case "e": return () => d.toggle_view();
+      case "z": return () => d.undo();
+      case "y": return () => d.redo();
+      case "[": return () => d.outdent();
+      case "]": return () => d.indent();
+      default: return null;
+    }
   }
 
   _emitChange(view) {

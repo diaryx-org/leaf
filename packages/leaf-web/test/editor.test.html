@@ -545,6 +545,45 @@ await test("hovering a link shows where it goes", () => {
   return ed;
 });
 
+await test("the shortcuts leaf-gpui binds reach the model", () => {
+  const ed = editor("word\n");
+  const mac = /mac/i.test(navigator.platform);
+  const mod = mac ? { metaKey: true } : { ctrlKey: true };
+  const key = (init) =>
+    ed.contentEl.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...mod, ...init }));
+  ed.selectAll();
+  key({ key: "c", shiftKey: true });
+  eq(ed.source(), "`word`\n", "⌘⇧C did not toggle code");
+  key({ key: "c", shiftKey: true });
+  key({ key: "¡", code: "Digit1", altKey: true });
+  eq(ed.source(), "# word\n", "⌘⌥1 did not make a heading");
+  key({ key: "º", code: "Digit0", altKey: true });
+  eq(ed.source(), "word\n", "⌘⌥0 did not make a paragraph");
+  key({ key: "*", code: "Digit8", shiftKey: true });
+  eq(ed.source(), "- word\n", "⌘⇧8 did not make a list");
+  key({ key: "*", code: "Digit8", shiftKey: true });
+  eq(ed.source(), "word\n", "⌘⇧8 did not toggle the list off");
+  return ed;
+});
+
+await test("⌘⇧V pastes the plain flavour, and only for that paste", () => {
+  const ed = editor("\n");
+  const mac = /mac/i.test(navigator.platform);
+  const mod = mac ? { metaKey: true } : { ctrlKey: true };
+  const paste = () => {
+    const dt = new DataTransfer();
+    dt.setData("text/html", "<b>rich</b>");
+    dt.setData("text/plain", "plain");
+    ed.contentEl.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+  };
+  ed.contentEl.dispatchEvent(new KeyboardEvent("keydown", { key: "v", shiftKey: true, bubbles: true, cancelable: true, ...mod }));
+  paste();
+  eq(ed.source(), "plain\n", "the plain flavour was not taken");
+  paste();
+  eq(ed.source(), "plain**rich**\n", "the next paste was still plain");
+  return ed;
+});
+
 // ── what the format can spell ─────────────────────────────────────────────
 
 await test("capabilities answer for the format, not for the editor", () => {
