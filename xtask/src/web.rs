@@ -50,6 +50,17 @@ pub struct Args {
     /// as on screen, so a driver that does have a browser can read the outcome.
     #[arg(long)]
     test: bool,
+
+    /// Run the editor tests in a headless browser and report the outcome,
+    /// instead of serving the page for a person.
+    ///
+    /// Implies `--test` and `--no-open`. The browser is Chrome or Chromium:
+    /// `$LEAF_BROWSER` if set, else the macOS application bundle, else
+    /// whichever of `google-chrome`, `chromium` and friends is on PATH. Exits
+    /// non-zero when a test fails, or when the page never reports at all —
+    /// which is what a wasm that failed to load looks like.
+    #[arg(long)]
+    headless: bool,
 }
 
 pub fn run_task(args: Args) -> Result<()> {
@@ -87,7 +98,14 @@ pub fn run_task(args: Args) -> Result<()> {
     }
 
     require_tool("python3", "install Python 3.7+ (xtask/serve.py runs on it)")?;
-    let page = if args.test {
+    // Resolved before the server is up, so a machine with no browser hears so
+    // at once rather than after a spawn it then has to tear down.
+    let browser = if args.headless {
+        Some(find_browser()?)
+    } else {
+        None
+    };
+    let page = if args.test || args.headless {
         "packages/leaf-web/test/editor.test.html"
     } else {
         "apps/leaf-web-demo/"
@@ -104,6 +122,21 @@ pub fn run_task(args: Args) -> Result<()> {
         .arg(&root)
         .spawn()
         .context("could not start xtask/serve.py")?;
+
+    if let Some(browser) = browser {
+        // The server lives exactly as long as the one page load it exists for.
+        let outcome = if wait_for_port(args.port) {
+            run_headless(&browser, &url)
+        } else {
+            Err(anyhow::anyhow!(
+                "the server never came up on port {} — is it in use?",
+                args.port
+            ))
+        };
+        let _ = server.kill();
+        let _ = server.wait();
+        return outcome;
+    }
 
     if !args.no_open {
         // Opening before the socket is listening races the browser to a
@@ -129,6 +162,120 @@ pub fn run_task(args: Args) -> Result<()> {
         bail!("the static server exited with {status}");
     }
     Ok(())
+}
+
+/// The Chrome or Chromium binary to run the tests in, or an error naming how to
+/// point one out. `$LEAF_BROWSER` wins, for a machine whose browser lives
+/// somewhere this list does not look.
+fn find_browser() -> Result<PathBuf> {
+    if let Some(explicit) = std::env::var_os("LEAF_BROWSER") {
+        let explicit = PathBuf::from(explicit);
+        if explicit.is_file() {
+            return Ok(explicit);
+        }
+        bail!("LEAF_BROWSER={} is not a file", explicit.display());
+    }
+    let bundles = [
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    ];
+    if let Some(found) = bundles.iter().map(Path::new).find(|p| p.is_file()) {
+        return Ok(found.to_path_buf());
+    }
+    let names = [
+        "google-chrome",
+        "google-chrome-stable",
+        "chromium",
+        "chromium-browser",
+        "chrome",
+    ];
+    for name in names {
+        if require_tool(name, "").is_ok() {
+            return Ok(PathBuf::from(name));
+        }
+    }
+    bail!(
+        "no Chrome or Chromium found — install one, or set LEAF_BROWSER to the binary \
+         (on macOS: \"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome\")"
+    )
+}
+
+/// Load the test page in a headless browser and turn what it reported into an
+/// exit status.
+///
+/// `--dump-dom` prints the document once it has loaded, and the tests run
+/// under a top-level `await`, so the page is given a virtual-time budget in
+/// which to finish — the wasm has to instantiate, then every test has to lay a
+/// document out and measure it. The page reports into `document.title`
+/// (`PASS n` / `FAIL k/n`) and each result into an `<li class="pass|fail">`,
+/// which is all this reads; no scraping of anything the page didn't put there
+/// for a driver to read.
+fn run_headless(browser: &Path, url: &str) -> Result<()> {
+    let mut chrome = cmd(browser);
+    chrome.args([
+        "--headless=new",
+        "--disable-gpu",
+        "--no-sandbox",
+        "--window-size=1200,900",
+        "--virtual-time-budget=60000",
+        "--dump-dom",
+        url,
+    ]);
+    println!("▸ {} --headless=new --dump-dom {url}", browser.display());
+    let output = chrome
+        .stderr(std::process::Stdio::null())
+        .output()
+        .with_context(|| format!("could not run {}", browser.display()))?;
+    let dom = String::from_utf8_lossy(&output.stdout);
+
+    let title = between(&dom, "<title>", "</title>").unwrap_or_default();
+    // Every result the page listed, pass or fail, so the run reads like the
+    // page does. A failure's reason follows it in a `.why` block.
+    let mut rest = dom.as_ref();
+    while let Some(start) = rest.find("<li class=\"") {
+        let li = &rest[start..];
+        let Some(end) = li.find("</li>") else { break };
+        let class = between(li, "<li class=\"", "\"").unwrap_or_default();
+        let name = li[..end].rsplit('>').next().unwrap_or_default();
+        let mark = if class == "pass" { "ok  " } else { "FAIL" };
+        println!("  {mark} {}", unescape(name));
+        rest = &li[end..];
+        if class != "pass"
+            && let Some(why) = between(rest, "<div class=\"why\">", "</div>")
+        {
+            println!("       {}", unescape(why));
+        }
+    }
+
+    if let Some(n) = title.strip_prefix("PASS ") {
+        println!("✓ all {n} web editor tests passed");
+        return Ok(());
+    }
+    if let Some(counts) = title.strip_prefix("FAIL ") {
+        bail!("web editor tests: {counts} failed");
+    }
+    bail!(
+        "the test page never reported (title was {title:?}) — the wasm may not have loaded; \
+         run `cargo xtask web --test` and look at the browser console"
+    )
+}
+
+/// The text between the first `open` and the `close` that follows it.
+fn between<'a>(s: &'a str, open: &str, close: &str) -> Option<&'a str> {
+    let start = s.find(open)? + open.len();
+    let end = s[start..].find(close)? + start;
+    Some(&s[start..end])
+}
+
+/// Undo the entity escaping `--dump-dom` applies to text, enough to print a
+/// test name or an assertion message as it was written.
+fn unescape(s: &str) -> String {
+    s.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
 }
 
 /// Parse-check the hand-written JS before serving it.
