@@ -295,6 +295,82 @@ export class LeafEditor {
     return this.doc.caret_in_table();
   }
 
+  // ── navigation ────────────────────────────────────────────────────────────
+
+  /**
+   * Put the caret at source `offset`, scrolled into view, and land the reader
+   * on it. `end` bounds the block that was named — pass it whenever the
+   * arrival is at a *block* rather than a point — and the rows it covers are
+   * flashed, so the reader is told which words they were sent to.
+   */
+  reveal(offset, end = null) {
+    this.render(this.doc.set_selection_offsets(offset, offset));
+    if (end == null || end <= offset) return;
+    const rows = this.doc.row_range_for(offset, end);
+    for (let r = rows.first; r <= rows.last; r++) {
+      const rowEl = this.rowEls[r];
+      if (!rowEl || !rowEl.isConnected) continue;
+      rowEl.classList.remove("leaf-landed");
+      void rowEl.offsetWidth; // restart the animation on a row still flashing
+      rowEl.classList.add("leaf-landed");
+    }
+  }
+
+  /**
+   * Land on what a locator names — the fragment of an in-document link, a
+   * heading's id — and say whether it named anything. Resolving `chapter.md`
+   * to a document is the host's business; this is the rest of the address.
+   */
+  goTo(locator) {
+    const landing = this.doc.locate(locator);
+    if (!landing) return false;
+    this.reveal(landing.start, landing.end);
+    return true;
+  }
+
+  /** The footnote reference at source `offset` and the note it names, or
+   *  null — `{label, text, offset, end}`, `text` null when nothing defines
+   *  it. */
+  footnoteAt(offset) {
+    return this.doc.footnote_at(offset) ?? null;
+  }
+
+  /** `footnoteAt` for the caret. */
+  footnoteAtCaret() {
+    this._syncFromDom();
+    return this.doc.footnote_at_caret() ?? null;
+  }
+
+  /** The footnote *definition* the caret stands in and where its first
+   *  reference is — `{label, offset}` — or null. The return leg. */
+  footnoteDefinitionAtCaret() {
+    this._syncFromDom();
+    return this.doc.footnote_definition_at_caret() ?? null;
+  }
+
+  /**
+   * Follow the footnote the caret stands on: a reference down to its note, a
+   * note back up to its first reference. Returns whether there was one to
+   * follow — false on no footnote, on a reference nothing defines, and in a
+   * note nothing cites, which all have nowhere to go.
+   */
+  followFootnote() {
+    this._syncFromDom();
+    const ref = this.doc.footnote_at_caret();
+    if (ref && ref.offset != null) {
+      this.reveal(ref.offset, ref.end ?? null);
+      return true;
+    }
+    const def = this.doc.footnote_definition_at_caret();
+    if (def && def.offset != null) {
+      this.reveal(def.offset);
+      return true;
+    }
+    return false;
+  }
+
+  // ── host highlights ───────────────────────────────────────────────────────
+
   /**
    * Replace the host-painted ranges wholesale and repaint — search hits, a
    * reviewer's annotations, whatever the host wants washed over a span of the
@@ -1253,6 +1329,17 @@ export class LeafEditor {
     // from, and core turns that back into a destination or a tick.
     on(ce, "click", (e) => this._onClick(e));
 
+    // Where a link goes, shown on hover as a native tooltip. Asked on each
+    // pass rather than at build: a link's text can stay the same while its
+    // destination is edited underneath it, and the row would be reused as it
+    // stands.
+    on(ce, "mouseover", (e) => {
+      const runEl = e.target.closest?.(".leaf-r-link");
+      if (!runEl) return;
+      const dest = this.doc.link_destination_at(runEl._src);
+      if (dest) runEl.title = dest;
+    });
+
     // Core resolves a `<picture>`'s `prefers-color-scheme` sources itself, and
     // has no theme of its own — so the page answers on its behalf, and keeps
     // answering. A repaint at the same scheme resolves to the same URLs, so this
@@ -1333,12 +1420,28 @@ export class LeafEditor {
       return;
     }
 
-    if (runEl.classList.contains("leaf-r-link") && primaryModifier(e)) {
-      const dest = this.doc.link_destination_at(src);
-      if (dest) {
+    if (!primaryModifier(e)) return;
+
+    // A footnote reference before the link question: it is drawn with the
+    // link role too (that is how it gets its colour), so asking about the link
+    // first would answer for one and send the reader out of the document.
+    if (runEl.classList.contains("leaf-sup")) {
+      const note = this.doc.footnote_at(src);
+      if (note) {
         e.preventDefault();
-        this._onFollowLink ? this._onFollowLink(dest) : window.open(dest, "_blank", "noopener");
+        if (note.offset != null) this.reveal(note.offset, note.end ?? null);
+        return;
       }
+    }
+
+    if (runEl.classList.contains("leaf-r-link")) {
+      const dest = this.doc.link_destination_at(src);
+      if (!dest) return;
+      e.preventDefault();
+      // A fragment names a place in this document; land there rather than
+      // hand the host an address it would only send back.
+      if (dest.startsWith("#") && this.goTo(dest.slice(1))) return;
+      this._onFollowLink ? this._onFollowLink(dest) : window.open(dest, "_blank", "noopener");
     }
   }
 
@@ -1988,6 +2091,13 @@ const EDITOR_CSS = `
    No backticks in here: this comment is inside EDITOR_CSS, a template literal,
    and one would close it. */
 .leaf-r-delimiter { color: var(--leaf-muted); }
+
+/* Where a reveal landed the reader: the block flashes once and fades. */
+.leaf-landed { animation: leaf-land 1.2s ease-out; }
+@keyframes leaf-land {
+  from { background: var(--leaf-hl-bg); }
+  to { background: transparent; }
+}
 
 /* A host-painted highlight. The wash is the theme's unless the highlight
    brought a colour, which is mixed down so the text stays readable over it. */

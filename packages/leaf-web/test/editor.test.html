@@ -496,6 +496,55 @@ await test("the selection can be read as text and as a quote", () => {
   return ed;
 });
 
+// ── navigation ────────────────────────────────────────────────────────────
+
+await test("a locator lands on the block it names, and a fragment link follows it", () => {
+  const ed = editor("# Intro\n\nbody text\n\n[up](#intro)\n");
+  let followed = null;
+  ed.onFollowLink((d) => { followed = d; });
+  ed.render(ed.doc.move_doc_end(false));
+  assert(ed._lastView.caret_src > 0, "the caret did not leave the top");
+  const landing = ed.doc.locate("intro");
+  assert(landing && landing.start === 0 && landing.end > 0, "the heading was not located");
+  assert(ed.goTo("intro"), "the heading was not located");
+  // The block starts at its marker; the caret lands on its first visible stop.
+  const onHeading = (src) => src >= landing.start && src <= landing.end;
+  assert(onHeading(ed._lastView.caret_src), `the caret landed at ${ed._lastView.caret_src}, off the heading`);
+  assert(ed.rowEls[0].classList.contains("leaf-landed"), "the landing was not flashed");
+  eq(ed.goTo("nowhere"), false, "an unknown locator claimed to land");
+
+  ed.render(ed.doc.move_doc_end(false));
+  const link = ed.contentEl.querySelector(".leaf-r-link");
+  link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, metaKey: true }));
+  assert(onHeading(ed._lastView.caret_src), "the fragment link did not land in the document");
+  eq(followed, null, "an in-document link was handed to the host");
+  return ed;
+});
+
+await test("a footnote goes down to its note and back up to its reference", () => {
+  const ed = editor("text[^1] more\n\n[^1]: the note\n");
+  const sup = ed.contentEl.querySelector(".leaf-sup");
+  assert(sup, "no footnote reference was drawn");
+  const note = ed.footnoteAt(sup._src);
+  assert(note && note.offset != null, "the reference does not know its note");
+  sup.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, metaKey: true }));
+  eq(ed._lastView.caret_src, note.offset, "the click did not land on the note");
+  const def = ed.footnoteDefinitionAtCaret();
+  assert(def && def.offset != null, "the note does not know its reference");
+  assert(ed.followFootnote(), "there was nothing to follow back");
+  eq(ed._lastView.caret_src, def.offset, "the return leg did not land on the reference");
+  return ed;
+});
+
+await test("hovering a link shows where it goes", () => {
+  const ed = editor("see [the docs](https://example.com/x) now\n");
+  const link = ed.contentEl.querySelector(".leaf-r-link");
+  eq(link.title, "", "the tooltip was set before anyone hovered");
+  link.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+  eq(link.title, "https://example.com/x");
+  return ed;
+});
+
 // ── what the format can spell ─────────────────────────────────────────────
 
 await test("capabilities answer for the format, not for the editor", () => {
