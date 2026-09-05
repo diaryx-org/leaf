@@ -224,6 +224,50 @@ export class LeafEditor {
     this.render(this.doc.mark_saved());
   }
 
+  /** Whether the document refuses to change — see `setReadOnly`. */
+  isReadOnly() {
+    return this.doc.read_only();
+  }
+
+  /**
+   * Turn the read-only gate on or off: a *reading* surface with the same
+   * rendering, selection, and navigation as the editor, that refuses every
+   * edit. Enforced in core, at the doors every mutation goes through; what
+   * this layer adds is the chrome — the surface stops being contenteditable,
+   * so no caret blinks in it and no keyboard rises to meet it on a phone,
+   * while staying focusable and selectable.
+   */
+  setReadOnly(on) {
+    on = !!on;
+    const ce = this.contentEl;
+    ce.setAttribute("contenteditable", on ? "false" : "true");
+    ce.setAttribute("aria-readonly", on ? "true" : "false");
+    // A non-editable div is not in the tab order on its own.
+    if (on) ce.setAttribute("tabindex", "0");
+    else ce.removeAttribute("tabindex");
+    this.container.classList.toggle("leaf-readonly", on);
+    this.render(this.doc.set_read_only(on));
+  }
+
+  /** The selected source, verbatim — markup included, as a copy takes it —
+   *  or null with nothing selected. */
+  selectedText() {
+    this._syncFromDom();
+    return this.doc.selected_text() ?? null;
+  }
+
+  /**
+   * The selection cited out of the source — `{exact, prefix, suffix, start,
+   * end}`: the selected bytes verbatim, up to `context` characters of what
+   * surrounds them, and where they sit — enough for a host to anchor a
+   * comment or a quotation that survives edits nearby. Null with nothing
+   * selected.
+   */
+  selectionQuote(context = 30) {
+    this._syncFromDom();
+    return this.doc.selection_quote(context) ?? null;
+  }
+
   /**
    * Which formatting controls this document's format can actually spell — one
    * flag per toolbar button.
@@ -1472,6 +1516,10 @@ export class LeafEditor {
     this._onChange({
       view: view.view,
       dirty: view.dirty,
+      // What the history buttons enable by; both false on a read-only document.
+      canUndo: view.can_undo,
+      canRedo: view.can_redo,
+      readOnly: this.doc.read_only(),
       heading: view.heading ?? null,
       active: view.active,
       // Rides the frame rather than being a query the host makes for itself: a
@@ -1488,6 +1536,9 @@ export class LeafEditor {
  * @typedef {Object} EditorState
  * @property {string} view      `"wysiwyg"` | `"source"`
  * @property {boolean} dirty    buffer differs from last saved
+ * @property {boolean} canUndo  there is an edit to undo
+ * @property {boolean} canRedo  there is an undone edit to redo
+ * @property {boolean} readOnly the document refuses edits — see `setReadOnly`
  * @property {number | null} heading  heading level at the caret, or null
  * @property {string[]} active  inline marks active at the caret
  * @property {string | null} link  destination of the link at the caret, or null

@@ -453,6 +453,49 @@ await test("a host highlight washes exactly its bytes and answers a click", () =
   return ed;
 });
 
+// ── what the host is told ─────────────────────────────────────────────────
+
+await test("read-only refuses the edit and drops the editing chrome", () => {
+  let state = null;
+  const ed = editor("fixed\n", { onChange: (s) => { state = s; } });
+  ed.setReadOnly(true);
+  assert(ed.isReadOnly(), "the gate did not close");
+  eq(state.readOnly, true, "the state did not say so");
+  assert(!ed.contentEl.isContentEditable, "the surface is still editable");
+  place(firstText(ed.rowEls[0]), 5);
+  ed._syncFromDom();
+  input(ed, "insertText", "!");
+  eq(ed.source(), "fixed\n", "a read-only document took an edit");
+  ed.setReadOnly(false);
+  assert(ed.contentEl.isContentEditable, "the surface did not come back");
+  input(ed, "insertText", "!");
+  eq(ed.source(), "fixed!\n", "the reopened document refused the edit");
+  return ed;
+});
+
+await test("the change state carries what the history buttons enable by", () => {
+  let state = null;
+  const ed = editor("start\n", { onChange: (s) => { state = s; } });
+  eq([state.canUndo, state.canRedo], [false, false], "a fresh document has no history");
+  place(firstText(ed.rowEls[0]), 5);
+  ed._syncFromDom();
+  input(ed, "insertText", "!");
+  eq([state.canUndo, state.canRedo], [true, false], "after an edit");
+  ed.undo();
+  eq([state.canUndo, state.canRedo], [false, true], "after undoing it");
+  return ed;
+});
+
+await test("the selection can be read as text and as a quote", () => {
+  const ed = editor("alpha beta gamma\n");
+  eq(ed.selectedText(), null, "nothing selected yet");
+  ed.render(ed.doc.select_range(6, 10));
+  eq(ed.selectedText(), "beta");
+  const q = ed.selectionQuote(3);
+  eq([q.exact, q.prefix, q.suffix, q.start, q.end], ["beta", "ha ", " ga", 6, 10]);
+  return ed;
+});
+
 // ── what the format can spell ─────────────────────────────────────────────
 
 await test("capabilities answer for the format, not for the editor", () => {
