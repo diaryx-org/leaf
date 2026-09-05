@@ -37,18 +37,18 @@ enum AttributedRow {
         let isHeadingRow = row.heading != nil
 
         for run in runs {
-            result.append(
-                NSAttributedString(
-                    string: run.text,
-                    attributes: attributes(
-                        run: run,
-                        size: size,
-                        headingRow: isHeadingRow,
-                        codeRow: row.code,
-                        theme: theme
-                    )
+            let piece = NSMutableAttributedString(
+                string: run.text,
+                attributes: attributes(
+                    run: run,
+                    size: size,
+                    headingRow: isHeadingRow,
+                    codeRow: row.code,
+                    theme: theme
                 )
             )
+            if run.role == "quote" { kernGutter(piece, theme: theme) }
+            result.append(piece)
         }
         return result
     }
@@ -121,10 +121,7 @@ enum AttributedRow {
         // clear, stretched to the themed gutter width so the quoted text is inset
         // by a readable amount rather than by the width of a bar-and-a-space.
         case "quote":
-            attrs[.foregroundColor] = LeafColor.clear
-            if let kern = gutterKern(run.text, font: attrs[.font] as? LeafFont, theme: theme) {
-                attrs[.kern] = kern
-            }
+            attrs[.foregroundColor] = LeafColor.clear   // stretched by `kernGutter`
         // Likewise a thematic break's `───`: the row draws a line, not dashes. Any
         // other rule glyph (a table picture's box drawing, when the grid can't be
         // laid out) still paints as text.
@@ -165,30 +162,36 @@ enum AttributedRow {
         return attrs
     }
 
-    /// The per-character kerning that sizes a `│ `-per-level gutter run to exactly
-    /// `theme.quoteIndent` per level — widening it in a font where `│ ` is narrow,
-    /// tightening it where it's wide. Pinning the width (rather than only padding
-    /// it out) is what keeps every level's bar at the same x down a quote whatever
-    /// each row's font size is: a heading inside a quote shapes its gutter at the
-    /// heading's size, and would otherwise sit its bar further right than the body
-    /// rows around it.
+    /// Kern a `│ `-per-level gutter run to exactly `theme.quoteIndent` per level
+    /// — widening it in a font where `│ ` is narrow, tightening it where it's
+    /// wide. Pinning the width (rather than only padding it out) is what keeps
+    /// every level's bar at the same x down a quote whatever each row's font size
+    /// is: a heading inside a quote shapes its gutter at the heading's size, and
+    /// would otherwise sit its bar further right than the body rows around it.
     ///
-    /// Spread over every character rather than the last one, since Core Text drops
-    /// the trailing character's kern at a line end — a quoted thematic break's
-    /// gutter, which is all the line holds, is exactly that case. `nil` when the
-    /// run carries no bar: there's no level count to size against.
-    private static func gutterKern(_ text: String, font: LeafFont?, theme: EditorTheme) -> CGFloat? {
-        let levels = text.filter { $0 == Self.quoteBar }.count
-        guard levels > 0, !text.isEmpty else { return nil }
-        var attrs: [NSAttributedString.Key: Any] = [:]
-        if let font { attrs[.font] = font }
-        let line = CTLineCreateWithAttributedString(
-            NSAttributedString(string: text, attributes: attrs) as CFAttributedString)
-        let natural = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+    /// The kern goes on the bar glyphs and never on the spaces. Core Text puts
+    /// the caret between two glyphs halfway across whatever kern lies between
+    /// them, so kern on the gutter's final space would stand the caret at the
+    /// start of a quoted line half a kern short of its first letter — three and a
+    /// half points in the system font, whose `│ ` is narrow. A bar is always
+    /// followed by its space, so it is never the trailing glyph whose kern Core
+    /// Text drops at a line end (a quoted rule's gutter, all that line holds, is
+    /// that case for the space). No-op on a run with no bar: there is no level
+    /// count to size against.
+    private static func kernGutter(_ piece: NSMutableAttributedString, theme: EditorTheme) {
+        let text = piece.string as NSString
+        let bar = String(Self.quoteBar)
+        let barIndices = (0..<text.length).filter { text.substring(with: NSRange(location: $0, length: 1)) == bar }
+        guard !barIndices.isEmpty else { return }
+        let natural = CGFloat(CTLineGetTypographicBounds(
+            CTLineCreateWithAttributedString(piece as CFAttributedString), nil, nil, nil))
         // Never tighten past the painted bar itself — a gutter narrower than the
         // bar would run the quoted text over it.
-        let target = max(CGFloat(levels) * theme.quoteIndent, theme.quoteBarWidth)
-        return (target - natural) / CGFloat(text.count)
+        let target = max(CGFloat(barIndices.count) * theme.quoteIndent, theme.quoteBarWidth)
+        let kern = (target - natural) / CGFloat(barIndices.count)
+        for i in barIndices {
+            piece.addAttribute(.kern, value: kern, range: NSRange(location: i, length: 1))
+        }
     }
 
     /// The character core spells one blockquote level's gutter with.
