@@ -20,10 +20,13 @@ func mkRun(
     // mapping back to the source (a peek's followable runs), since the geometry
     // and attribute tests this file mostly serves never look at it.
     src: UInt32 = 0,
-    sel: Bool = false
+    sel: Bool = false,
+    // A host highlight over the run: its id and `#RRGGBB` hint, or neither.
+    hl: String? = nil,
+    hlColor: String? = nil
 ) -> Run {
     Run(text: text, role: role, bold: bold, italic: italic, underline: underline,
-        strike: strike, sup: sup, sub: sub, src: src, sel: sel)
+        strike: strike, sup: sup, sub: sub, src: src, sel: sel, hl: hl, hlColor: hlColor)
 }
 
 func row(
