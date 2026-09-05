@@ -125,7 +125,11 @@ hands the responder chain an `undoManager` over the document's own history, so
 the menu, ⌘Z, and iOS's three-finger swipe all reach the same steps. Edit ▸ Find
 is the system find bar (`NSTextFinder`): ⌘F slides it in over the scroll view,
 matches light up incrementally as the pattern is typed, Find Next/Previous and
-Find and Replace work, and ⌘J jumps to the selection.
+Find and Replace work, and ⌘J jumps to the selection. The selection can be
+picked up and dragged — out to another app as text and HTML, or within the
+document as a move (⌥ to copy) — and a dropped file or image goes to the host's
+`onDrop` hook, the drag-and-drop peer of `onPaste`, before the editor decides
+there was nothing to insert.
 Customize fonts, colours, and page layout via `EditorTheme`.
 
 **A measured text column.** `EditorTheme.measure` caps the text at a number of

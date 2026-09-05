@@ -25,7 +25,7 @@ import AppKit
 import LeafFFI
 
 public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuRequestor, NSUserInterfaceValidations,
-                                 NSTextFinderClient, FootnotePeekDelegate {
+                                 NSTextFinderClient, NSDraggingSource, FootnotePeekDelegate {
     let doc: LeafDoc
     public var theme: EditorTheme {
         didSet {
@@ -195,6 +195,16 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     /// Gets first refusal on a paste. See `LeafEditorModel.onPaste`.
     public var onPaste: (() -> Bool)?
+
+    /// Gets first refusal on a drop, with the drag's pasteboard. See
+    /// `LeafEditorModel.onDrop`.
+    public var onDrop: ((NSPasteboard) -> Bool)?
+
+    /// A mouse-down inside the selection that has not yet become a drag. A
+    /// native text view lets the selected text be picked up and carried, so the
+    /// caret must not move on that press — it moves on the release, if no drag
+    /// came of it. The point is in layout space.
+    private var dragCandidate: (point: CGPoint, event: NSEvent)?
 
     /// Reconsider `src` — or every source, for nil — and redraw.
     /// See `LeafEditorModel.reloadMedia`.
@@ -934,8 +944,28 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         switch event.clickCount {
         case 2:  render(doc.selectWordCh(row: UInt32(row), ch: UInt32(ch)))
         case 3:  render(doc.selectBlockCh(row: UInt32(row), ch: UInt32(ch)))
-        default: render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: extend))
+        default:
+            // A press on the selection picks it up rather than collapsing it —
+            // the drag, if it comes, starts in `mouseDragged`; the caret, if it
+            // doesn't, is placed in `mouseUp`.
+            if !extend, hasSelection, selectionContains(p) {
+                dragCandidate = (p, event)
+                return
+            }
+            render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: extend))
         }
+    }
+
+    public override func mouseUp(with event: NSEvent) {
+        guard let candidate = dragCandidate else { return super.mouseUp(with: event) }
+        dragCandidate = nil
+        let (row, ch) = hitRowCh(candidate.point)
+        render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: false))
+    }
+
+    /// Whether `p` (layout space) lies on the selected text.
+    private func selectionContains(_ p: CGPoint) -> Bool {
+        rangeRects(fromByte: selLowByte, toByte: selHighByte).contains { $0.contains(p) }
     }
 
     /// Open the link under the caret, if there is one. The host gets first
@@ -1279,26 +1309,115 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     public override func mouseDragged(with event: NSEvent) {
         let p = layoutPoint(convert(event.locationInWindow, from: nil))
+        if let candidate = dragCandidate {
+            // A few points of slop, so a press that wobbles is still a click.
+            guard hypot(p.x - candidate.point.x, p.y - candidate.point.y) > 3 else { return }
+            dragCandidate = nil
+            beginDraggingSelection(with: candidate.event)
+            return
+        }
         let (row, ch) = hitRowCh(p)
         render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: true))
+    }
+
+    // MARK: drag & drop (source) — the selection, picked up
+
+    /// Start dragging the selected text: its plain and HTML flavours on the
+    /// pasteboard, under an image of the text itself, as every text view does.
+    private func beginDraggingSelection(with event: NSEvent) {
+        guard let text = doc.selectedText() else { return }
+        let item = NSPasteboardItem()
+        item.setString(text, forType: .string)
+        if let html = doc.selectionHtml() { item.setString(html, forType: .html) }
+        let boxes = rangeRects(fromByte: selLowByte, toByte: selHighByte)
+        guard let first = boxes.first else { return }
+        let frame = viewRect(boxes.dropFirst().reduce(first) { $0.union($1) })
+        let dragging = NSDraggingItem(pasteboardWriter: item)
+        dragging.setDraggingFrame(frame, contents: dragImage(of: frame))
+        beginDraggingSession(with: [dragging], event: event, source: self)
+    }
+
+    /// The selected text as it is drawn, for the drag to carry.
+    private func dragImage(of frame: CGRect) -> NSImage? {
+        guard let rep = bitmapImageRepForCachingDisplay(in: frame) else { return nil }
+        cacheDisplay(in: frame, to: rep)
+        let image = NSImage(size: frame.size)
+        image.addRepresentation(rep)
+        return image
+    }
+
+    public func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+        // Within the app the text moves (⌥ copies); another app gets a copy.
+        switch context {
+        case .withinApplication: return isReadOnly ? .copy : [.move, .copy]
+        case .outsideApplication: return .copy
+        @unknown default: return .copy
+        }
     }
 
     // MARK: drag & drop (destination)
 
     public override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        let op = dropOperation(for: sender)
+        guard op != [] else { return [] }
         window?.makeFirstResponder(self)
-        moveCaretToDrop(sender)
-        return .copy
+        previewDrop(sender)
+        return op
     }
 
     public override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-        moveCaretToDrop(sender)   // track the drop point so the caret previews it
+        let op = dropOperation(for: sender)
+        if op != [] { previewDrop(sender) }   // track the drop point so the caret previews it
+        return op
+    }
+
+    public override func draggingExited(_ sender: NSDraggingInfo?) {
+        // The selection the drag came from was left standing for the preview;
+        // let it stand. Nothing to undo here.
+    }
+
+    /// What a drop of `sender` would do here: nothing on a reader, nothing for
+    /// flavours neither the editor nor the host can use, a move for the view's
+    /// own selection (⌥ copies), a copy for everything else.
+    private func dropOperation(for sender: NSDraggingInfo) -> NSDragOperation {
+        guard !isReadOnly, hasUsableFlavor(sender.draggingPasteboard) else { return [] }
+        if sender.draggingSource as AnyObject? === self {
+            return sender.draggingSourceOperationMask.contains(.move) ? .move : .copy
+        }
         return .copy
     }
 
-    public override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+    /// Text the editor pastes itself, or anything else when a host has said it
+    /// will look — the same rule `paste(_:)` and its validation follow.
+    private func hasUsableFlavor(_ pb: NSPasteboard) -> Bool {
+        if pb.string(forType: .string) != nil || pb.string(forType: .html) != nil { return true }
+        return onDrop != nil && pb.canReadObject(forClasses: [NSURL.self, NSImage.self])
+    }
+
+    /// Show where the drop would land. For the view's own selection the caret
+    /// is *not* moved: that would collapse the text being carried. The drop
+    /// point is read again at the drop.
+    private func previewDrop(_ sender: NSDraggingInfo) {
+        guard sender.draggingSource as AnyObject? !== self else { return }
         moveCaretToDrop(sender)
+    }
+
+    public override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         let pb = sender.draggingPasteboard
+        let dropByte = dropOffset(sender)
+        if sender.draggingSource as AnyObject? === self {
+            return dropSelection(at: dropByte, move: sender.draggingSourceOperationMask.contains(.move), from: pb)
+        }
+        moveCaretToDrop(sender)
+        // The host first, for the flavours a text editor has no answer for — a
+        // picture, a file — and before the text ones, since a dragged file has
+        // a path as its text and the host's answer to it is the better one.
+        if let onDrop, pb.canReadObject(forClasses: [NSURL.self, NSImage.self]), onDrop(pb) { return true }
+        return insertDropped(pb)
+    }
+
+    /// Paste the pasteboard's text at the caret. Rich first, plain second.
+    private func insertDropped(_ pb: NSPasteboard) -> Bool {
         if let html = pb.string(forType: .html) {
             render(doc.pasteRich(html: html, text: pb.string(forType: .string) ?? ""))
             return true
@@ -1308,6 +1427,50 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             return true
         }
         return false
+    }
+
+    /// The view's own selection let go at `drop`: a move takes it out of where
+    /// it was, a copy leaves it. Both hold the selection until the last moment,
+    /// because it *is* the text being carried.
+    ///
+    /// A move is two edits, in the order that keeps the offsets honest. The
+    /// document's byte length before and after the first says exactly how far
+    /// the second's target shifted — pasting rich text may not insert as many
+    /// bytes as the pasteboard held, and deleting a selection in the WYSIWYG
+    /// view may take delimiters with it — so nothing here guesses at either.
+    private func dropSelection(at drop: Int, move: Bool, from pb: NSPasteboard) -> Bool {
+        let (low, high) = (selLowByte, selHighByte)
+        if move, drop >= low, drop <= high { return true }   // let go where it was picked up
+        let place = { (offset: Int) in
+            self.render(self.doc.setSelectionOffsets(anchor: UInt32(offset), focus: UInt32(offset)))
+        }
+        guard move else {
+            place(drop)
+            return insertDropped(pb)
+        }
+        let before = doc.source().utf8.count
+        if drop < low {
+            // Insert first, then delete the original from where it moved to.
+            place(drop)
+            guard insertDropped(pb) else { return false }
+            let delta = doc.source().utf8.count - before
+            render(doc.selectRange(start: UInt32(low + delta), end: UInt32(high + delta)))
+            render(doc.backspace())
+        } else {
+            // Delete first, then insert at the point the deletion pulled up.
+            render(doc.backspace())
+            let delta = doc.source().utf8.count - before
+            place(drop + delta)
+            guard insertDropped(pb) else { return false }
+        }
+        return true
+    }
+
+    /// The source offset under the drag's pointer.
+    private func dropOffset(_ sender: NSDraggingInfo) -> Int {
+        let p = layoutPoint(convert(sender.draggingLocation, from: nil))
+        let (row, ch) = hitRowCh(p)
+        return Int(doc.offsetForPos(row: UInt32(row), ch: UInt32(ch)))
     }
 
     private func moveCaretToDrop(_ sender: NSDraggingInfo) {
@@ -1871,7 +2034,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // Advertise the selection to the app-wide Services menu (Edit ▸ Services).
         NSApp.registerServicesMenuSendTypes([.string], returnTypes: [.string])
         // Accept text/rich content dropped into the editor.
-        registerForDraggedTypes([.string, .html])
+        registerForDraggedTypes([.string, .html, .fileURL, .tiff, .png])
         nc.addObserver(self, selector: #selector(keyStateChanged), name: NSWindow.didBecomeKeyNotification, object: window)
         nc.addObserver(self, selector: #selector(keyStateChanged), name: NSWindow.didResignKeyNotification, object: window)
     }

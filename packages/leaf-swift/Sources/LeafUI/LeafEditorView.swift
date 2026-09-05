@@ -264,6 +264,21 @@ public final class LeafEditorModel: ObservableObject {
     /// draw.
     public var onPaste: (() -> Bool)?
 
+    #if canImport(AppKit) && !targetEnvironment(macCatalyst)
+    /// Gets first refusal on a drop, handed the drag's own pasteboard — the
+    /// `onPaste` of drag and drop. Return `true` to say it was handled.
+    ///
+    /// Asked only for what the editor cannot use itself: a file or an image.
+    /// Dragged text is dropped as text without asking, the way it is pasted.
+    /// The caret has been moved to the drop point before this is called, so
+    /// `insertMedia` lands where the reader let go.
+    ///
+    /// A closure over the pasteboard rather than the general one because a drag
+    /// carries its own — reading `NSPasteboard.general` here would find
+    /// whatever was last copied, not what was dropped.
+    public var onDrop: ((NSPasteboard) -> Bool)?
+    #endif
+
     /// Have `source` resolved again on the next draw — or every source, when it
     /// is nil.
     ///
@@ -587,6 +602,9 @@ public struct LeafEditor: NSViewRepresentable {
         // the view is composed, after the model was built.
         textView.onPaste = { [weak model] in
             model?.onPaste?() ?? false
+        }
+        textView.onDrop = { [weak model] pasteboard in
+            model?.onDrop?(pasteboard) ?? false
         }
         textView.recognizesWikilinks = model.recognizesWikilinks
         textView.documentDirectory = model.documentDirectory
