@@ -29,7 +29,7 @@ clipboard, and file I/O.
 | package | what it is |
 |---------|------------|
 | [`leaf-swift`](packages/leaf-swift) | the Swift Package (manifest at the repo root, so SwiftPM can resolve it by version) — `LeafUI`, the AppKit/UIKit editor view, over the committed UniFFI `leaf-ffi` binding. The Apple peer of `leaf-ratatui`/`leaf-gpui`. |
-| [`leaf-web`](packages/leaf-web) | the npm package (not yet published; private until there is a consumer) — `LeafEditor`, a framework-agnostic web editor, over the `leaf-wasm` binding. Tables draw as a real grid from core's structural `TableView`, not as the box-glyph picture; links and task boxes are clickable; the toolbar dims what the format cannot spell. |
+| [`leaf-web`](packages/leaf-web) | the npm package (not yet published; private until there is a consumer) — `LeafEditor`, a framework-agnostic web editor, over the `leaf-wasm` binding. Tables draw as a real grid from core's structural `TableView`, not as the box-glyph picture; links, footnotes, task boxes and host highlights are clickable; text and files drop onto it; a frame repaints only the rows it changed; the toolbar dims what the format cannot spell. |
 
 ### `apps/` — runnable frontends
 
@@ -58,8 +58,9 @@ wasm build behind a static server. Both are one word through the task runner in
 ```sh
 cargo xtask swift        # build + launch apps/leaf-editor on macOS
 cargo xtask swift --ios  # …in the iOS Simulator instead (--device to pick one)
-cargo xtask web          # build the wasm, serve apps/leaf-web-demo, open it
-cargo xtask web --test   # …serve the leaf-web editor tests instead
+cargo xtask web            # build the wasm, serve apps/leaf-web-demo, open it
+cargo xtask web --test     # …serve the leaf-web editor tests instead
+cargo xtask web --headless # …run those tests in Chrome and exit with the outcome
 ```
 
 `cargo xtask swift` regenerates the UniFFI binding and the Xcode project when
@@ -90,8 +91,9 @@ The web editor's own tests live in a browser, not in `cargo test`
 `TreeWalker`, a `Range`, a native selection, and text laid out in a proportional
 font, and a stub DOM would mostly be testing the stub. `cargo xtask web --test`
 serves them; the page reports into `document.title` and `window.__results` as
-well as on screen. There is no browser in `cargo xtask ci`, so this is a task a
-person runs.
+well as on screen, and `cargo xtask web --headless` reads that outcome out of
+a headless Chrome and exits with it. It is not part of `cargo xtask ci`, which
+has no browser to assume, so run it before pushing a change to the web editor.
 
 `release` is the shared tooling in [diaryx-org/devtools][devtools], which leaf,
 prov, twig, flower, and the historica repos all cut releases with; what makes

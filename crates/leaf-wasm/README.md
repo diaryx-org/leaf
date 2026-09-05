@@ -31,21 +31,25 @@ are read back out of it: the caret's x from a collapsed DOM `Range` at the caret
 column, and a click's `(row, col)` from `caretRangeFromPoint`. The browser
 measures; core keeps the model.
 
-## Input: web-native without contenteditable
+## Input: native selection, intercepted intents
 
-The surface isn't `contenteditable` — it's a *projection* of core's model
-(WYSIWYG hides markup; list markers and quote gutters are synthetic; the caret
-rides a column grid), so letting the browser mutate it would bypass core's
-offset↔position mapping. Instead a hidden `<textarea>` is parked at the caret as
-an **input sink**: it captures IME composition (CJK, accents), mobile keyboards,
-dictation, and autocorrect the way a native field does, and the resulting text is
-forwarded to `doc.insert`. Control keys and shortcuts are handled on `keydown`;
-plain text flows through the `input`/composition events so the IME is never
-bypassed. This is how Monaco and CodeMirror drive a model-owned document — custom
-caret and selection, a textarea purely for input. Wide glyphs stay correct: core
-speaks display *columns* while a DOM `Range` counts UTF-16 units, so the caret is
-communicated as `DocView.caret_ch` (a UTF-16 offset) and clicks come back through
-`click_ch`, with the two mapped by core's own grapheme-width measure.
+The surface is one `contenteditable` element, so the browser owns the caret
+and the selection natively — which is what makes word and line selection, drag,
+right-click Look Up, mobile selection handles, and IME behave like a real
+field. But the DOM is a *projection* of core's model (WYSIWYG hides markup;
+list markers and quote gutters are synthetic), so the browser is never allowed
+to mutate it: every `beforeinput` is prevented and its intent — insertText,
+deleteContentBackward, insertParagraph, formatBold, insertReplacementText with
+its target range — is translated into a core operation, after which the editor
+repaints and restores the native selection to core's caret. IME composition is
+the one exception the browser won't let anyone prevent; it composes into the
+DOM and is reconciled into core on `compositionend`. This is the CodeMirror 6
+shape rather than Monaco's hidden textarea, and it is the only way to have
+native selection and IME on the same focused element. Wide glyphs stay
+correct: core speaks display *columns* while a DOM `Range` counts UTF-16
+units, so the caret crosses as `DocView.caret_ch` (a UTF-16 offset) and
+selections come back through `set_selection`, with the two mapped by core's
+own grapheme-width measure.
 
 ## Build
 
@@ -84,7 +88,9 @@ const md = editor.source();                           // persist however you lik
 
 The editor owns the editing surface and input; the host owns chrome (toolbar,
 footer, save). Presentation is themeable via the `theme` option (fonts, sizes,
-the heading ramp) — see `DEFAULT_THEME` in `packages/leaf-web/src/editor.d.ts`.
+the heading ramp) — see `DEFAULT_THEME` in `packages/leaf-web/src/editor.d.ts`,
+and [`packages/leaf-web/README.md`](../../packages/leaf-web/README.md) for the
+rest of the surface: highlights, read-only, navigation, drag and drop.
 
 ## Packaged
 
