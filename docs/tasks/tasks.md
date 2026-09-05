@@ -9,6 +9,9 @@ contents:
 - '[Writing Tools in the Apple views](writing-tools.md)'
 - '[Find on iOS](ios-find-interaction.md)'
 - '[Right-to-left text](right-to-left-text.md)'
+- '[A host hook for directives in the web editor](web-directive-hook.md)'
+- '[The frame crosses the wasm boundary whole on every keystroke](wasm-frame-crosses-whole.md)'
+- '[An empty last line inside a code fence gets no row](empty-last-line-in-a-fence-has-no-row.md)'
 ---
 # Tasks
 
