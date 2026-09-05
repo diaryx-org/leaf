@@ -127,7 +127,7 @@ export class LeafEditor {
    * @param {HTMLElement} container  the element to mount into (becomes the
    *   scroll viewport; its contents are replaced).
    * @param {{ source?: string, format?: string, theme?: Partial<typeof DEFAULT_THEME>,
-   *           onChange?: (state: EditorState) => void }} [opts]
+   *           autofocus?: boolean, onChange?: (state: EditorState) => void }} [opts]
    */
   constructor(container, opts = {}) {
     if (!wasmReady) {
@@ -172,7 +172,9 @@ export class LeafEditor {
 
     // First paint at the wrap width the viewport implies.
     this._fitWidth();
-    this.focus();
+    // Focus on construction is what a page with one editor wants, and what a
+    // page with a form around it, or an editor below the fold, does not.
+    if (opts.autofocus ?? true) this.focus();
   }
 
   // ── lifecycle ─────────────────────────────────────────────────────────────
@@ -194,6 +196,30 @@ export class LeafEditor {
     this.doc.free?.();
     this.container.innerHTML = "";
     this.container.classList.remove("leaf-editor");
+  }
+
+  /**
+   * Replace the document with another, in place — for a host that opens a
+   * second file into the same editor rather than tearing this one down. The
+   * preferences a reader set on the editor (markup exposure, line flow,
+   * read-only, the colour scheme) carry over; the history does not, since it
+   * belonged to the old text. The caret starts at the top.
+   * @param {string} source
+   * @param {string} [format]  defaults to markdown, as the constructor does
+   */
+  load(source, format = "markdown") {
+    const old = this.doc;
+    const doc = new LeafDoc(source ?? "", format);
+    doc.set_markup_mode(old.markup_mode());
+    doc.set_line_flow(old.line_flow());
+    doc.set_read_only(old.read_only());
+    if (this._darkQuery) doc.set_color_scheme(this._darkQuery.matches ? "dark" : "light");
+    this.doc = doc;
+    old.free?.();
+    // A new document is a new measure: the surrender to an unwrappable row
+    // belonged to the old one.
+    this._acceptedOverflow = false;
+    this._fitWidth();
   }
 
   /** Register (or replace) the change callback fired after every repaint. */
