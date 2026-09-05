@@ -129,7 +129,8 @@ Find and Replace work, and ⌘J jumps to the selection. The selection can be
 picked up and dragged — out to another app as text and HTML, or within the
 document as a move (⌥ to copy) — and a dropped file or image goes to the host's
 `onDrop` hook, the drag-and-drop peer of `onPaste`, before the editor decides
-there was nothing to insert.
+there was nothing to insert. File ▸ Print lays the document onto the printer's
+paper at the print panel's margins, one page per sheet, whatever the screen shows.
 Customize fonts, colours, and page layout via `EditorTheme`.
 
 **A measured text column.** `EditorTheme.measure` caps the text at a number of

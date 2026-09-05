@@ -433,14 +433,17 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         ctx.scaleBy(x: zoom, y: zoom)
         let band = layoutRect(dirtyRect)
 
-        let active = selectionIsActive
-        let selColor = active ? theme.selectionColor : theme.inactiveSelectionColor
+        // On paper there is no caret, no selection, no flash, no marker in the
+        // margin, and no picture of a sheet on a backdrop — the sheet is the paper.
+        let printing = !NSGraphicsContext.currentContextDrawingToScreen()
+        let active = selectionIsActive && !printing
+        let selColor: NSColor = printing ? .clear : active ? theme.selectionColor : theme.inactiveSelectionColor
 
         // The paper first: every other thing here paints onto a sheet.
-        PageChrome.draw(layoutEngine.pages, theme: theme, clip: band, in: ctx)
+        if !printing { PageChrome.draw(layoutEngine.pages, theme: theme, clip: band, in: ctx) }
         // Then the landing flash, under every other mark: it is a light behind
         // the words, not something drawn over them.
-        drawLandingFlash(in: ctx)
+        if !printing { drawLandingFlash(in: ctx) }
         drawDirectiveBorders(in: ctx, dirtyRect: band)
         // The quote bars are one pass over the frame (a run of quoted rows merges
         // into a single bar), so they're painted before the rows, like the
@@ -505,6 +508,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             }
         }
 
+        if printing { return }
         if markedByteRange != nil { drawMarkedUnderline(in: ctx) }
 
         // Before the caret, never after: the caret stands at the cue's first
@@ -520,6 +524,70 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         }
 
         drawHighlightMarkers()
+    }
+
+    // MARK: printing — the document on the printer's paper
+
+    /// File ▸ Print. The document is laid onto the printer's paper — every page
+    /// of it, at the margins in the print panel — whatever the screen shows: a
+    /// continuous flow prints as pages, and a paginated view prints on the
+    /// printer's sheet rather than its own. Done by a second view over the same
+    /// document, paginated to the paper, so nothing on screen moves.
+    public override func printView(_ sender: Any?) {
+        guard let info = NSPrintInfo.shared.copy() as? NSPrintInfo else { return }
+        let operation = printOperation(with: info)
+        operation.showsPrintPanel = true
+        operation.showsProgressPanel = true
+        if let window {
+            operation.runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
+        } else {
+            operation.run()
+        }
+    }
+
+    /// The operation `printView(_:)` runs, over a fresh view paginated to
+    /// `info`'s paper and margins. `info` is edited: the margins are read into
+    /// the page setup and then zeroed, so the operation draws each sheet onto
+    /// the whole of the paper it stands for rather than inset by them twice.
+    func printOperation(with info: NSPrintInfo) -> NSPrintOperation {
+        let paper = PageSetup(
+            size: info.paperSize,
+            margins: LeafInsets(top: info.topMargin, left: info.leftMargin,
+                                bottom: info.bottomMargin, right: info.rightMargin),
+            gap: 0, backdrop: 0)
+        info.topMargin = 0; info.bottomMargin = 0; info.leftMargin = 0; info.rightMargin = 0
+        info.isHorizontallyCentered = false
+        info.isVerticallyCentered = false
+
+        let sheet = LeafTextView(doc: doc, theme: theme)
+        // Ink on paper, whatever the screen's appearance: the theme's semantic
+        // colours resolve against the view's, and a dark one would print white.
+        sheet.appearance = NSAppearance(named: .aqua)
+        sheet.frame = NSRect(origin: .zero, size: CGSize(width: info.paperSize.width, height: 0))
+        sheet.documentDirectory = documentDirectory
+        sheet.pageSetup = paper
+
+        let operation = NSPrintOperation(view: sheet, printInfo: info)
+        if let title = window?.title, !title.isEmpty { operation.jobTitle = title }
+        return operation
+    }
+
+    /// The File menu's other spelling of the same command.
+    @objc public func printDocument(_ sender: Any?) { printView(sender) }
+
+    /// One printed page per laid-out sheet. `false` off paper, which hands the
+    /// continuous flow to AppKit's own slicing — reached only if a host prints
+    /// this view directly rather than through `print(_:)`.
+    public override func knowsPageRange(_ range: NSRangePointer) -> Bool {
+        guard pageSetup != nil, !layoutEngine.pages.isEmpty else { return false }
+        range.pointee = NSRange(location: 1, length: layoutEngine.pages.count)
+        return true
+    }
+
+    public override func rectForPage(_ page: Int) -> NSRect {
+        let pages = layoutEngine.pages
+        guard pages.indices.contains(page - 1) else { return .zero }
+        return viewRect(pages[page - 1])
     }
 
     /// The margin pass: a small glyph beside the first line of every marked
@@ -1685,6 +1753,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             guard let tag = (item as? NSMenuItem)?.tag, let action = NSTextFinder.Action(rawValue: tag) else { return false }
             return textFinder.validateAction(action)
         case #selector(centerSelectionInVisibleArea(_:)): return true
+        case #selector(printView(_:)), #selector(printDocument(_:)): return !docView.rows.isEmpty
         // Anything else is enabled by whether the view answers it at all — what
         // AppKit does for a responder with no validation of its own.
         default: return item.action.map { responds(to: $0) } ?? false
