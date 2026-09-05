@@ -544,11 +544,15 @@ pub struct Doc {
     /// same rendering, selection, and navigation the editor has.
     ///
     /// Enforced here rather than by each frontend hiding its input paths,
-    /// because every mutation funnels through three doors —
+    /// because every mutation funnels through a few doors —
     /// [`splice_exact`](Self::splice_exact), [`undo`](Self::undo),
-    /// [`redo`](Self::redo) — and three guarded doors are a guarantee where a
-    /// frontend's suppressed keyboard is a hope. A gated splice reports
-    /// exactly like a rolled-back one, a path every caller already handles.
+    /// [`redo`](Self::redo), and the handful of inserts that go to twig's own
+    /// verbs directly rather than through the splice (a typed literal, a link,
+    /// an image, a rule, a footnote, a cell's line break) — and guarded doors
+    /// are a guarantee where a frontend's suppressed keyboard is a hope. A
+    /// gated door reports exactly like a rolled-back splice, a path every
+    /// caller already handles. `a_read_only_document_refuses_every_door` is
+    /// the list; a new `self.editor.insert_*` call belongs on it.
     read_only: bool,
     /// The host-painted ranges, kept sorted by start — see [`Highlight`].
     /// State like the selection rather than like the text: no edit history,
@@ -1500,6 +1504,11 @@ impl Doc {
     ///
     /// Typed input only — clipboard text goes through [`paste`](Self::paste).
     pub fn insert(&mut self, text: &str) {
+        // The read-only gate, up front: the paths below reach twig by several
+        // verbs, not all of them through the splice — see the field.
+        if self.read_only {
+            return;
+        }
         // Typing against a block picture would dissolve it — see
         // `open_paragraph_at_block_media`. Give the text a paragraph first, so
         // what the caret was standing beside stays a picture.
@@ -1863,6 +1872,10 @@ impl Doc {
     /// are symmetric (`**`…`**`, `_`…`_`, `` ` ``…`` ` ``), so the bytes twig
     /// added split evenly around the content — half the growth on each side.
     fn wrap_span(&mut self, s: usize, e: usize, kind: InlineKind) -> (usize, usize) {
+        // The read-only gate — this door reaches twig without the splice.
+        if self.read_only {
+            return (s, e);
+        }
         match self.editor.toggle_inline(s, e, kind) {
             Ok(change) => {
                 self.last_edit_kind = None;
@@ -2426,6 +2439,10 @@ impl Doc {
     /// Falls back to a plain paragraph break if twig declines, so an unhandled
     /// shape still moves the caret down rather than swallowing the keystroke.
     fn split_block_here(&mut self) {
+        // The read-only gate — this door reaches twig without the splice.
+        if self.read_only {
+            return;
+        }
         match self.editor.split_block(self.caret) {
             Ok(change) => {
                 self.last_edit_kind = None;
@@ -3357,6 +3374,11 @@ impl Doc {
         kind: EditKind,
         force_coalesce: bool,
     ) -> bool {
+        // The read-only gate: this door goes to twig directly, not through
+        // `splice_exact`, so it guards itself — see the field.
+        if self.read_only {
+            return false;
+        }
         // `force_coalesce` folds this into the immediately preceding edit (the
         // selection-delete of an overwrite) so the pair is one undo step; else it
         // coalesces only when it continues a run of the same-kind typing.
@@ -3409,6 +3431,10 @@ impl Doc {
     /// caret — for an edit that leaves the caret one past the item it just wrote,
     /// where twig resolves no list to renumber.
     fn renumber_at(&mut self, off: usize) {
+        // The read-only gate — this door reaches twig without the splice.
+        if self.read_only {
+            return;
+        }
         let before = self.source.clone();
         if self.editor.renumber_ordered_lists(off).is_err() {
             return; // not inside an ordered list — nothing to renumber
@@ -3513,6 +3539,10 @@ impl Doc {
     /// Toggle an inline mark over the selection (Bold / Italic / Code / …). Keeps
     /// the toggled region selected so a second press cleanly reverses it.
     pub fn toggle(&mut self, kind: InlineKind) {
+        // The read-only gate — this door reaches twig without the splice.
+        if self.read_only {
+            return;
+        }
         // Ahead of the no-selection branch below: arming a mark for text not yet
         // typed is a promise `insert` cannot keep in a format with no delimiters
         // to spell it with. Per *kind*, not per format — Markdown spells three
@@ -3566,6 +3596,10 @@ impl Doc {
 
     /// Convert the block at the caret to a heading level or paragraph.
     pub fn set_block(&mut self, kind: BlockKind) {
+        // The read-only gate — this door reaches twig without the splice.
+        if self.read_only {
+            return;
+        }
         if self.refuse_unsupported(&format!("{kind:?}"), Gesture::SetBlock) {
             return;
         }
@@ -3771,6 +3805,10 @@ impl Doc {
     /// its own offset and must not first move the caret there: ticking a box
     /// three paragraphs away should not take the cursor with it.
     pub fn toggle_task_at(&mut self, offset: usize) {
+        // The read-only gate — this door reaches twig without the splice.
+        if self.read_only {
+            return;
+        }
         if self.refuse_unsupported("task", Gesture::ToggleTaskChecked) {
             return;
         }
@@ -3786,6 +3824,10 @@ impl Doc {
     /// the gesture that converts between a plain bullet and a task. A new box
     /// arrives unticked.
     pub fn toggle_task_item(&mut self) {
+        // The read-only gate — this door reaches twig without the splice.
+        if self.read_only {
+            return;
+        }
         if self.refuse_unsupported("task", Gesture::ToggleTaskItem) {
             return;
         }
@@ -3924,6 +3966,10 @@ impl Doc {
     /// container only comes off when the range covers every block it holds is
     /// what the re-anchoring below is built around.
     fn toggle_container(&mut self, kind: BlockContainerKind) {
+        // The read-only gate — this door reaches twig without the splice.
+        if self.read_only {
+            return;
+        }
         if self.refuse_unsupported(&format!("{kind:?}"), Gesture::ToggleBlockContainer(kind)) {
             return;
         }
@@ -4048,7 +4094,7 @@ impl Doc {
     /// it. A destination twig can't carry at all (one with a newline) comes back
     /// as an error rather than a quietly rewritten URL.
     pub fn insert_link(&mut self, destination: &str) {
-        if self.refuse_unsupported("link", Gesture::InsertLink) {
+        if self.read_only || self.refuse_unsupported("link", Gesture::InsertLink) {
             return;
         }
         let (start, end) = self.selection().unwrap_or((self.caret, self.caret));
@@ -4094,7 +4140,7 @@ impl Doc {
     /// not an image at all — and the fix is per-format, since moving into the
     /// `<…>` form is exactly wrong for Djot, where `<…>` becomes the URL itself.
     pub fn insert_image(&mut self, destination: &str, alt: &str) {
-        if self.refuse_unsupported("image", Gesture::InsertImage) {
+        if self.read_only || self.refuse_unsupported("image", Gesture::InsertImage) {
             return;
         }
         let (start, end) = self.selection().unwrap_or((self.caret, self.caret));
@@ -4207,7 +4253,8 @@ impl Doc {
     /// heading refuse the split outright, so they take the same path by
     /// themselves.
     pub fn insert_thematic_break(&mut self) {
-        if self.refuse_unsupported("thematic break", Gesture::InsertThematicBreak) {
+        if self.read_only || self.refuse_unsupported("thematic break", Gesture::InsertThematicBreak)
+        {
             return;
         }
         self.caret = self.skip_trailing_close_delims(self.caret);
@@ -4410,7 +4457,7 @@ impl Doc {
     /// reference annotates the words before it, so "select the claim, add a
     /// footnote" should mark that claim, not consume it.
     pub fn insert_footnote(&mut self) {
-        if self.refuse_unsupported("footnote", Gesture::InsertFootnote) {
+        if self.read_only || self.refuse_unsupported("footnote", Gesture::InsertFootnote) {
             return;
         }
         let at = self.selection().map_or(self.caret, |(_, end)| end);
@@ -4645,6 +4692,10 @@ impl Doc {
     /// itself and `trim()` the input, which handled the one bad case it had
     /// thought of.
     pub fn set_code_language(&mut self, lang: &str) {
+        // The read-only gate — this door reaches twig without the splice.
+        if self.read_only {
+            return;
+        }
         if self.refuse_unsupported("code language", Gesture::SetCodeLanguage) {
             return;
         }
@@ -5755,7 +5806,7 @@ impl Doc {
     /// the message was already a guess that HTML — which spells the break as its
     /// own `<br>` — would have made wrong.
     pub fn cell_line_break(&mut self) -> bool {
-        if !self.caret_in_table() {
+        if self.read_only || !self.caret_in_table() {
             return false;
         }
         self.record_caret();
@@ -13185,6 +13236,48 @@ mod tests {
         assert_eq!(d.source, before, "no door moved a byte");
         d.set_read_only(false);
         d.undo();
+        assert_ne!(d.source, before, "off again, the same doors work");
+    }
+
+    /// The doors that go to twig's own verbs rather than through the splice.
+    /// Typed text in the rendered view under the default markup mode is the
+    /// everyday one — it is what a keystroke in leaf-web or the Apple views
+    /// becomes — and it walked straight past the gate.
+    #[test]
+    fn a_read_only_document_refuses_the_doors_around_the_splice() {
+        let mut d = wysiwyg_doc(
+            "readonly-doors",
+            "one two three\n\n| a | b |\n|---|---|\n| c | d |\n",
+        );
+        d.set_markup_mode(MarkupMode::None);
+        d.set_read_only(true);
+        let before = d.source.clone();
+        d.place_caret(3, false);
+        d.insert("y");
+        d.insert_link("https://example.com");
+        d.insert_image("a.png", "alt");
+        d.insert_thematic_break();
+        d.insert_footnote();
+        d.place_caret(0, false);
+        d.place_caret(3, true);
+        d.toggle(InlineKind::Strong);
+        d.toggle_heading(2);
+        d.set_block(BlockKind::Paragraph);
+        d.toggle_list(false);
+        d.toggle_blockquote();
+        d.toggle_task_item();
+        d.newline();
+        d.indent();
+        d.set_code_language("rust");
+        let in_cell = d.source.find("| c").unwrap() + 2;
+        d.place_caret(in_cell, false);
+        assert!(d.caret_in_table(), "the caret is in the grid");
+        assert!(!d.cell_line_break(), "the cell break reports the refusal");
+        assert_eq!(d.source, before, "no door moved a byte");
+        assert!(!d.dirty, "nothing to save");
+        d.set_read_only(false);
+        d.place_caret(3, false);
+        d.insert("y");
         assert_ne!(d.source, before, "off again, the same doors work");
     }
 
