@@ -17,6 +17,7 @@
 mod ci;
 mod swift;
 mod util;
+mod versions;
 mod web;
 
 use anyhow::Result;
@@ -42,6 +43,10 @@ enum Task {
 
     /// Run the checks a release has to pass — all of them, or one by id.
     Ci(ci::Args),
+
+    /// Write the workspace version into the files no manifest parser reaches
+    /// (packages/leaf-web/package.json). The release bump runs this.
+    SyncVersions,
 }
 
 fn main() -> Result<()> {
@@ -49,5 +54,6 @@ fn main() -> Result<()> {
         Task::Swift(args) => swift::run_task(args),
         Task::Web(args) => web::run_task(args),
         Task::Ci(args) => ci::run_task(args),
+        Task::SyncVersions => versions::run_task(),
     }
 }

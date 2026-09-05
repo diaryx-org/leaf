@@ -31,6 +31,12 @@ pub struct Job {
 /// The whole of CI, in the order [`run_all`] runs it.
 pub const JOBS: &[Job] = &[
     Job {
+        id: "versions",
+        name: "Versions",
+        about: "the npm package states the workspace version",
+        run: crate::versions::check,
+    },
+    Job {
         id: "fmt",
         name: "Format",
         about: "rustfmt, in check mode",

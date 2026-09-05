@@ -8,6 +8,13 @@ release_branch = "main"
 # What to run before cutting. Each repo owns its own CI; this names it.
 verify = "cargo xtask ci"
 
+# The npm package's manifest follows the workspace version, and no manifest
+# parser in the tooling reaches it — so the bump runs the task that writes it,
+# and the file is staged with the release commit. `cargo xtask ci` checks
+# they agree, which is what caught it three releases behind.
+post_bump = "cargo xtask sync-versions"
+extra_version_files = ["packages/leaf-web/package.json"]
+
 # What pushing the tag sets off, most consequential first. The warning printed
 # before the push is handed back to you is composed from these.
 #

@@ -98,10 +98,7 @@ pub fn run_ignoring_failure(cmd: &mut Command) {
     let _ = cmd.status();
 }
 
-/// Read a repo file, named by its path from the root. Test-only since releasing
-/// moved out: the isolation test reads the workspace manifest, and nothing the
-/// binary does touches a file directly.
-#[cfg(test)]
+/// Read a repo file, named by its path from the root.
 pub fn read(path: impl AsRef<Path>) -> Result<String> {
     let path = root().join(path);
     std::fs::read_to_string(&path).with_context(|| format!("could not read {}", path.display()))
