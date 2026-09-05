@@ -1699,6 +1699,11 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// left Edit ▸ Undo permanently disabled.
     public override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard event.modifierFlags.contains(.command) else { return super.performKeyEquivalent(with: event) }
+        // The menu bar first. A host whose Format menu carries Bold at ⌘B (the
+        // `LeafEditorCommands` bundle does) should see that item flash and own
+        // the chord; the cases below are the fallback for a window with no such
+        // item, not a claim over one that has it.
+        if NSApp.mainMenu?.performKeyEquivalent(with: event) == true { return true }
         let shift = event.modifierFlags.contains(.shift)
         switch event.charactersIgnoringModifiers?.lowercased() {
         case "b": render(doc.toggleBold()); return true

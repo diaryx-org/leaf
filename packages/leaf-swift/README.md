@@ -131,6 +131,16 @@ document as a move (⌥ to copy) — and a dropped file or image goes to the hos
 `onDrop` hook, the drag-and-drop peer of `onPaste`, before the editor decides
 there was nothing to insert. File ▸ Print lays the document onto the printer's
 paper at the print panel's margins, one page per sheet, whatever the screen shows.
+
+**The menu bar.** `LeafEditor` publishes its model as the scene's focused editor
+(`@FocusedValue(\.leafEditor)`), and `LeafEditorCommands` builds the standard
+menus from it — add `.commands { LeafEditorCommands() }` to the scene and Format
+carries Bold ⌘B, Italic ⌘I, Underline ⌘U, Code ⇧⌘C, Highlight ⇧⌘M, Paragraph and
+Heading 1–6 (⌃0–⌃6), the lists (⇧⌘8, ⇧⌘7), Block Quote ⇧⌘9, Indent/Outdent
+(⌘], ⌘[), footnote and rule; View gains Source View ⌘E. Items tick to follow the
+caret and disable without an editor or on a reader. The editor lets the menu bar
+take a chord first, so an item flashes when its key is pressed, and handles ⌘B/I/U/E
+itself only in a window with no such item.
 Customize fonts, colours, and page layout via `EditorTheme`.
 
 **A measured text column.** `EditorTheme.measure` caps the text at a number of

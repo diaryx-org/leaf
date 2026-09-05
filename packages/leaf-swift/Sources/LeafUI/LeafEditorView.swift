@@ -486,14 +486,13 @@ public final class LeafEditorModel: ObservableObject {
 #if canImport(AppKit) && !targetEnvironment(macCatalyst)
 import AppKit
 
-/// Hosts the `LeafTextView` in a scrolling viewport (macOS) and wires its state
-/// back to the model.
-public struct LeafEditor: NSViewRepresentable {
-    @ObservedObject private var model: LeafEditorModel
-    private let theme: EditorTheme
-    private let placeholder: String?
-    private let page: PageSetup?
-    private let zoom: CGFloat
+/// The editing surface, for a SwiftUI host. Hosts the `LeafTextView` in a
+/// scrolling viewport and wires its state back to the model; and publishes the
+/// model as the scene's focused editor, which is what lets a menu bar built
+/// from `LeafEditorCommands` aim Format ▸ Bold at *this* document.
+public struct LeafEditor: View {
+    private let model: LeafEditorModel
+    private let surface: LeafEditorSurface
 
     /// `placeholder` is the cue shown while the document is empty, drawn where
     /// its first character will go — see `LeafTextView.placeholder` for why the
@@ -506,6 +505,26 @@ public struct LeafEditor: NSViewRepresentable {
     public init(model: LeafEditorModel, theme: EditorTheme = .default,
                 placeholder: String? = nil,
                 page: PageSetup? = nil, zoom: CGFloat = 1) {
+        self.model = model
+        self.surface = LeafEditorSurface(model: model, theme: theme, placeholder: placeholder,
+                                         page: page, zoom: zoom)
+    }
+
+    public var body: some View {
+        surface.focusedSceneValue(\.leafEditor, model)
+    }
+}
+
+/// The `NSViewRepresentable` under `LeafEditor`.
+struct LeafEditorSurface: NSViewRepresentable {
+    @ObservedObject private var model: LeafEditorModel
+    private let theme: EditorTheme
+    private let placeholder: String?
+    private let page: PageSetup?
+    private let zoom: CGFloat
+
+    init(model: LeafEditorModel, theme: EditorTheme, placeholder: String?,
+         page: PageSetup?, zoom: CGFloat) {
         self.model = model; self.theme = theme; self.placeholder = placeholder
         self.page = page; self.zoom = zoom
     }
@@ -634,23 +653,20 @@ public struct LeafEditor: NSViewRepresentable {
 #elseif canImport(UIKit)
 import UIKit
 
-/// Hosts the `LeafTextView` in a scrolling viewport (iOS) and wires its state
-/// back to the model.
-public struct LeafEditor: UIViewRepresentable {
-    @ObservedObject private var model: LeafEditorModel
-    private let theme: EditorTheme
-    private let placeholder: String?
-    /// Type-erased so `LeafEditor` itself stays a concrete, non-generic type —
-    /// existing call sites that don't need an accessory (macOS's peer, every
-    /// call before this existed) keep compiling untouched.
-    private let accessory: AnyView?
+/// The editing surface, for a SwiftUI host. Hosts the `LeafTextView` in a
+/// scrolling viewport and wires its state back to the model; and publishes the
+/// model as the scene's focused editor, so a menu bar (an iPad's, under a
+/// hardware keyboard) built from `LeafEditorCommands` reaches *this* document.
+public struct LeafEditor: View {
+    private let model: LeafEditorModel
+    private let surface: LeafEditorSurface
 
     /// `placeholder` is the cue shown while the document is empty, drawn where
     /// its first character will go — see `LeafTextView.placeholder`.
     public init(model: LeafEditorModel, theme: EditorTheme = .default,
                 placeholder: String? = nil) {
-        self.model = model; self.theme = theme; self.placeholder = placeholder
-        self.accessory = nil
+        self.model = model
+        self.surface = LeafEditorSurface(model: model, theme: theme, placeholder: placeholder, accessory: nil)
     }
 
     /// With a custom view shown above the system keyboard while this editor is
@@ -662,8 +678,27 @@ public struct LeafEditor: UIViewRepresentable {
         placeholder: String? = nil,
         @ViewBuilder accessory: () -> Accessory
     ) {
+        self.model = model
+        self.surface = LeafEditorSurface(model: model, theme: theme, placeholder: placeholder,
+                                         accessory: AnyView(accessory()))
+    }
+
+    public var body: some View {
+        surface.focusedSceneValue(\.leafEditor, model)
+    }
+}
+
+/// The `UIViewRepresentable` under `LeafEditor`.
+struct LeafEditorSurface: UIViewRepresentable {
+    @ObservedObject private var model: LeafEditorModel
+    private let theme: EditorTheme
+    private let placeholder: String?
+    /// Type-erased so the surface stays a concrete, non-generic type.
+    private let accessory: AnyView?
+
+    init(model: LeafEditorModel, theme: EditorTheme, placeholder: String?, accessory: AnyView?) {
         self.model = model; self.theme = theme; self.placeholder = placeholder
-        self.accessory = AnyView(accessory())
+        self.accessory = accessory
     }
 
     public func makeCoordinator() -> Coordinator { Coordinator() }
