@@ -33,7 +33,252 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
-_No commits since the last tag._
+### Added
+
+- **tui** — take a terminal paste whole, through bracketed paste ([`7dd4274`](https://github.com/diaryx-org/leaf/commit/7dd42746efb3bad02d0854bb9a76f4fc1d609011))
+- **tui** — watch the file for changes made outside leaf ([`946cc67`](https://github.com/diaryx-org/leaf/commit/946cc67da3992787dc66f8bb624a70a889f17ffd))
+- **tui** — open a document for reading with --read-only ([`62336de`](https://github.com/diaryx-org/leaf/commit/62336de24c7a925db996ca38f955662c97d76797))
+- **tui** — find and replace, painted with core's highlights ([`231131f`](https://github.com/diaryx-org/leaf/commit/231131feb5958a3f38bc728a247ebffb034010ac))
+- **tui** — add configurable centered document width ([`77267e9`](https://github.com/diaryx-org/leaf/commit/77267e92abcdb342a893f37162c26fcbec3209bf))
+- **core** — style the source view's markup from the AST it already has ([`18776df`](https://github.com/diaryx-org/leaf/commit/18776df7fac6218923e26e0d5c7d094b8126c864))
+- **ratatui** — keep oversized headings rasterized while they are edited ([`b04a700`](https://github.com/diaryx-org/leaf/commit/b04a7008b8ff9652b2a5949922226bb1c125b600))
+- **tui** — drop the heading color ramp where the terminal can draw big text ([`8d79efe`](https://github.com/diaryx-org/leaf/commit/8d79efeeffcfc5c9206409641fe37ac3dc35eb40))
+- **ratatui** — paint plain headings in the terminal's own ink ([`1036a69`](https://github.com/diaryx-org/leaf/commit/1036a690e5dd91990a44cb7c8199d3da88857c55))
+- **leaf-swift** — undo through the responder chain, and an Edit menu that validates ([`8778b40`](https://github.com/diaryx-org/leaf/commit/8778b401b07296449174726c1aae8a564e85fa55))
+- **leaf-swift** — input traits that follow the view, and a VoiceOver-readable iOS surface ([`1d1ebc5`](https://github.com/diaryx-org/leaf/commit/1d1ebc59a14d2742ab933c68b83b92c2f403fe27))
+- **leaf-swift** — the system's type and the system's caret by default ([`257a762`](https://github.com/diaryx-org/leaf/commit/257a7620ae69d1985a7e2fdaf4f601d7922b2c3f))
+- **leaf-swift** — the system find bar on macOS ([`0596875`](https://github.com/diaryx-org/leaf/commit/0596875bd503f282a01eb883d3f6e61e96442fab))
+- **leaf-swift** — drag the selection out, drop it elsewhere, and hand files to the host ([`36e2ffe`](https://github.com/diaryx-org/leaf/commit/36e2ffe8ec02ca6a20a1dd7d02e1f37cb361a41a))
+- **leaf-swift** — File ▸ Print, the document on the printer's paper ([`fed4ba7`](https://github.com/diaryx-org/leaf/commit/fed4ba7f706cac7d5cb1f936042ade3b6fb817b6))
+- **leaf-swift** — a menu bar for the editor — Format and View commands aimed at the focused document ([`535f69f`](https://github.com/diaryx-org/leaf/commit/535f69f95f475c24bc365b9207fe7bf644b4ea9c))
+- **wasm** — mirror the UTF-16 offset mapping and the undo depth ([`b0e34dd`](https://github.com/diaryx-org/leaf/commit/b0e34dd6fb668300dfd162b5e1aa782db663590e))
+- **xtask** — run the web editor tests in a headless browser ([`503a7dd`](https://github.com/diaryx-org/leaf/commit/503a7dd536f3ed932d9372ce932ed4be6cc34a43))
+- **web** — reuse the rows a frame did not change ([`ff75883`](https://github.com/diaryx-org/leaf/commit/ff758831d9a627da7b05de1094ba463d741c42be))
+- **web** — paint the host's highlights, and say which one was clicked ([`fe248d7`](https://github.com/diaryx-org/leaf/commit/fe248d77caa70a6471a1559134046aca87467be5))
+- **web** — a read-only gate, the history state, and the selection as text ([`81bc20e`](https://github.com/diaryx-org/leaf/commit/81bc20e0eb628c90bd27c91f8eca67acfe07abc7))
+- **web** — land on a locator, follow a footnote both ways, and show a link's destination ([`f7d6b49`](https://github.com/diaryx-org/leaf/commit/f7d6b494fad1a4485e2b4c030886e3044847842d))
+- **web** — the shortcuts leaf-gpui binds, and paste as plain text ([`8c8536a`](https://github.com/diaryx-org/leaf/commit/8c8536a99580d4b17507d7874c8f61795265e21c))
+- **web** — drop text and files onto the surface, and drag a selection within it ([`541e860`](https://github.com/diaryx-org/leaf/commit/541e860de5e51fef6893d1b68041496ad494ee0e))
+- **web** — load another document into the same editor, and an autofocus option ([`0d0b363`](https://github.com/diaryx-org/leaf/commit/0d0b3635eb0437a51b91ba1f61008ddfa24c7346))
+- **web** — ⌘-click in a footnote's note goes back up to its reference ([`543bea2`](https://github.com/diaryx-org/leaf/commit/543bea24f0dddaa81c4e7e8b30c5145b488b5fd4))
+- **xtask** — keep the npm package's version level with the workspace ([`ef17783`](https://github.com/diaryx-org/leaf/commit/ef177834ee098f41030b6dc0724ac8404251919d))
+- **demo** — find-as-you-type highlights, a read-only switch, history buttons that dim, and dropped files ([`d6eb197`](https://github.com/diaryx-org/leaf/commit/d6eb1974f30630a4ef3c17e0e8fde3257df03684))
+- **core** — take twig 3.3 and render Markdown's ==highlights==, in the colour they were written ([`a24b666`](https://github.com/diaryx-org/leaf/commit/a24b66690d6142f9b9222aec3ffa8653d2f51c85))
+
+### Fixed
+
+- **render** — give a host-coloured highlight an ink that reads on it ([`2837baf`](https://github.com/diaryx-org/leaf/commit/2837bafa48e0380d496b32216ae1e145d5437e16))
+- **core** — select a range as given, without snapping it to a visible stop ([`e3868ef`](https://github.com/diaryx-org/leaf/commit/e3868efbed58723b26a7479244f977133d85baf9))
+- **tui** — keep the find bar honest about what it found and what it owns ([`0606754`](https://github.com/diaryx-org/leaf/commit/060675454164acf74ddf33b7be081c5633438001))
+- **tui** — scroll the find field under its cursor, and dim what a reader can't run ([`ce4ad70`](https://github.com/diaryx-org/leaf/commit/ce4ad708957a0c4a0ec0791005e2ace920108ac1))
+- **core** — make a reload one undo step instead of the end of the history ([`3b9f821`](https://github.com/diaryx-org/leaf/commit/3b9f821599b07f5b877dbfbf58665775b7ca9dc8))
+- **tui** — build the App with its line width instead of reassigning it ([`65c1d5a`](https://github.com/diaryx-org/leaf/commit/65c1d5a18540b63f528237fa3d6e40b413879075))
+- **ratatui** — keep oversized headings as text without a graphics protocol ([`c1c3ec1`](https://github.com/diaryx-org/leaf/commit/c1c3ec17c10c86865fd485ea7944393d3630c8ab))
+- **core** — close a directive container past its fence, not at its last child ([`c5c5402`](https://github.com/diaryx-org/leaf/commit/c5c5402e3e5f027ab545c696109519d80120e961))
+- **core** — let a block boundary name the picture it falls against ([`d08952e`](https://github.com/diaryx-org/leaf/commit/d08952e560a07761d1a1f3396768626d48a2452a))
+- **core** — stop mapping glyphs onto a source span that ran out ([`75df745`](https://github.com/diaryx-org/leaf/commit/75df745ccf66facf6adaaa855a927788ff03106e))
+- **bench** — re-parse the editor the timed edit loop grew ([`7f7b60b`](https://github.com/diaryx-org/leaf/commit/7f7b60bfd0550fb626605591149ec2ddf3559a6c))
+- **ratatui** — give each heading-layout fixture its own file ([`a7dbcdb`](https://github.com/diaryx-org/leaf/commit/a7dbcdb2ed79528cab7ac9f69bc8738c7132d039))
+- **core** — rebuild whole when the map handed back is not the one core built ([`d274ba1`](https://github.com/diaryx-org/leaf/commit/d274ba1b608d3dbe6b41d8900535a2b542751a15))
+- **ratatui** — restore core's map before it rebuilds from it, not after ([`b5b9f40`](https://github.com/diaryx-org/leaf/commit/b5b9f406ef354c7ffab6345760cafab7d497194b))
+- **tui** — clear what the terminal printed of the graphics query ([`77b217d`](https://github.com/diaryx-org/leaf/commit/77b217d148095b48afeb18f56badd66a1a3f345a))
+- **leaf-swift** — build the test fixture's Run with the highlight fields it grew ([`3ab5d65`](https://github.com/diaryx-org/leaf/commit/3ab5d65457df8292a6c7f023469cb969cf1f0087))
+- **leaf-swift** — speak UTF-16 to AppKit's text system, not source bytes ([`9c33242`](https://github.com/diaryx-org/leaf/commit/9c332420ae9b7233f7629cc905905d009e2d2dd1))
+- **leaf-swift** — kern a quote's gutter on its bars, so the caret starts where the text does ([`51e81ad`](https://github.com/diaryx-org/leaf/commit/51e81ad3dfde8dd47a55963a87d3e96a1688a1a6))
+- **leaf-swift** — let the find bar see its view, and give the Edit menu Find ([`d159559`](https://github.com/diaryx-org/leaf/commit/d15955910ca5486ff4ea7fb4d4b46fd844e06503))
+- **web** — keep the viewport still when typing in a table cell ([`e8e6259`](https://github.com/diaryx-org/leaf/commit/e8e6259f1cf8ebf95322d2a21144df91bfca7ac6))
+- **web** — replace the word an autocorrect names, not append to it ([`e244587`](https://github.com/diaryx-org/leaf/commit/e244587e874bf7a38f2b5a84c037db005fb823cb))
+- **web** — take shortcuts from the platform's modifier only ([`cd49c4f`](https://github.com/diaryx-org/leaf/commit/cd49c4f1bd27ed0f29fdfd2e5641a0489933dbbc))
+- **web** — delete to the line's start on ⌘⌫, not one word ([`4be82af`](https://github.com/diaryx-org/leaf/commit/4be82afdf85e51423ca794bc414a53bb56bee5e7))
+- **core** — close the read-only gate on every door, not only the splice ([`24bce5a`](https://github.com/diaryx-org/leaf/commit/24bce5a5370f97e7449c9703008a2a190a6ce0d7))
+- **web** — stop a repaint pulling focus into the editor ([`0c98e4f`](https://github.com/diaryx-org/leaf/commit/0c98e4f1dcda30a6a57fc2d8504aeb8c03921c21))
+
+### Uncategorised — triage before release
+
+- Render oversized headings in leaf-tui ([`752862d`](https://github.com/diaryx-org/leaf/commit/752862dfb39ad671a34016c1a0aae7b5675c91ba))
+
+### Behavioural changes
+
+- leaf-tui now enables bracketed paste on the terminal it
+  runs in, and disables it on exit. A paste into the editing surface is a
+  single `Doc::paste` (one undo step, no autoformat, CRLF normalized to LF)
+  instead of a run of per-character `Doc::insert` calls; a paste into the
+  command palette or a text prompt now goes into that field instead of being
+  typed into the document behind it. Terminals without bracketed paste are
+  unaffected — they go on sending key presses, which are handled exactly as
+  before.
+
+- leaf-tui's event loop no longer blocks in `event::read`; it
+  polls on a 500ms timeout and redraws on each turn. A document with no unsaved
+  changes now reloads itself when its file changes on disk, which discards the
+  undo history for that document (`Doc::reload` always has) — previously the
+  change went unnoticed until the next save. A dirty document is unaffected
+  apart from a one-time status message.
+
+- `leaf_ratatui::handle_key` now returns `Outcome::Continue`
+  and sets a "read-only" status for any editing key when `Doc::read_only()` is
+  set, instead of forwarding `Outcome::Paste`/`LinkPrompt`/`ImagePrompt` and
+  friends to the host; a host that implemented its own read-only suppression
+  will find the widget has already done it. `leaf_ratatui::handle_mouse` no
+  longer toggles a task checkbox on a read-only document, placing the caret
+  instead. `leaf-tui` accepts `-r`/`--read-only`, reads flags from anywhere on
+  the command line rather than only the first argument, and now exits non-zero
+  on an unknown option that it previously would have opened as a file.
+
+- `leaf_ratatui::Outcome` gains `Find` and `Replace`; a host
+  matching it exhaustively must handle them.
+  `leaf_ratatui::style::wysiwyg_lines` takes a `&[Highlight]` argument between
+  `sel` and `theme` — pass `&[]` for the previous behaviour.
+  `leaf_ratatui::render` now paints `Doc::highlights()`, which it previously
+  ignored, so a host that was already calling `Doc::set_highlights` will start
+  seeing those ranges washed. `leaf_ratatui::Theme` gains `highlight_bg` and
+  `highlight_fg` (it is `#[non_exhaustive]`, so this breaks no construction).
+  ^F and ^H are newly bound in the widget and no longer fall through to the
+  host as unhandled keys.
+
+- A `leaf_core::Highlight` carrying a `color` is now drawn
+  with an ink chosen for contrast against that colour rather than with the
+  theme's `highlight_fg`. A host that was relying on the theme ink over its own
+  ground — pale text on a pale wash — will see the ink flip to dark. A
+  `Highlight` with no `color` is unchanged.
+
+- `leaf_core::Doc` gains `select_range(start, end)`; the two
+  frontend bindings gain `LeafDoc.select_range` alongside the existing
+  `set_selection_offsets`, which is unchanged and still snaps (it is what a drag
+  handle wants).
+
+- In the WYSIWYG view, `^f`/`^h` no longer step to or replace
+  a match that lies entirely in text the view does not draw — hidden
+  frontmatter, a link destination, a delimiter. Those are reported in the
+  caption ("2 of 3, 1 hidden") instead. Switch to the source view (`⌥w`) to
+  reach them. The source view is unchanged: every match counts.
+
+- `^q`, `^s`, `^c`, `^a`, `^p`, `⌥h`, `⌥w` and `F1` now act
+  while the find bar is open instead of being ignored. `^a` and `^p` close the
+  bar first.
+
+- `^h` pressed over an already-open find bar in a read-only
+  session is now refused with the "read-only" status, and grows no replacement
+  field. It previously grew one and refused only at the point of replacing.
+
+- `^h` over a selection, or over a find bar that already has a
+  query, now opens with the keyboard in the replacement field rather than in the
+  query.
+
+- leaf-tui's key reference now dims the rows this document
+  can't run — everything that writes, in a `--read-only` session, and everything
+  the format can't spell. No row is added or removed.
+
+- `leaf_core::Doc::reload` now preserves the undo history and
+  records the reload as a single undo step; `undo` after a reload restores the
+  pre-reload source (and marks the document dirty) rather than reporting
+  "nothing to undo". Reloading a file whose bytes match the buffer records no
+  step at all. A reload that twig cannot splice still falls back to a fresh
+  parse and still drops the history.
+
+- leaf-tui's file watch no longer reloads on the tick that
+  first sees the file change; it waits for a tick where the file has stopped
+  moving, so a silent reload now lands one watch interval (~500ms) later than
+  it did.
+
+- On a terminal with no kitty/iTerm2/sixel graphics
+protocol, inactive H1 and H2 headings render as ordinary bold coloured
+text on one row instead of as a half-block raster occupying three (H1) or
+two (H2) rows. A host that measured the row count of the surface around a
+heading will see it shrink there.
+
+- A `:::` directive container followed by a blank line
+now yields one `VRow` with `boundary: Some(..)` between it and the next
+block instead of two. A frontend that sizes its block spacing per boundary
+row will draw half as much space below a fenced div as it did — which is
+the same space it draws below a code block or a quote. Row indices below
+such a container shift up by one, so anything holding a `VisualMap` row
+index across a rebuild (`TableInfo::rows_span` and friends are rebuilt with
+the map and are unaffected) should re-derive it.
+
+- A drawn boundary row adjacent to a block-level image,
+video, or audio now reports `BlockClass::Media` on that side, where it
+previously reported `Paragraph` (an image or `<picture>`) or `Directive` (a
+promoted `<video>`/`<audio>`). A frontend matching on `Directive` to draw a
+fenced-div panel will stop drawing one around a movie's boundary rows; one
+matching on `Paragraph` for its default gap will fall through to whatever
+it does for an unhandled pair unless it adds a `Media` arm. Frontends
+spacing only by `below == Heading` are unaffected.
+
+- `Role::Delimiter` now reaches a frontend outside
+
+- a build whose spans reach past the source it is given
+now renders the affected run short instead of panicking. No consistent
+document can produce that state, so a caller that was not already crashing
+sees no difference.
+
+- leaf_ratatui::Images::paint_heading takes two new
+arguments (caret and selection, as byte offsets into the heading text)
+and now returns whether it painted, so a host calling it directly must
+update; leaf_ratatui::Images::heading_hit and heading_fits are new.
+
+- on a graphics-protocol terminal the active H1/H2
+is now painted as a raster with the caret drawn in its pixels, and the
+real terminal cursor is hidden while the caret stands on a painted
+heading raster.
+
+- an H1/H2 whose text is too long for one raster
+line is no longer rasterized at all — its tail used to be silently cut
+off — and renders as ordinary terminal text with no filler rows.
+
+- `leaf-tui` no longer tints headings on a terminal that
+speaks kitty, iTerm2 or sixel; they render in the terminal's default
+foreground (bold, underlined at level 1). Terminals without a graphics
+protocol are unaffected. Library callers of `leaf-ratatui` see no change
+unless they opt in via the new `Theme::with_plain_headings`.
+
+- an oversized H1/H2 raster whose color is
+
+- `leaf_core::Doc::visual_key` is new. A caller that
+  mutates `Doc::vmap` between builds — adding or removing rows — now gets
+  a correct map from the next `build_visual` where it previously got a
+  corrupted one, at the cost of that rebuild taking the full-rebuild path
+  rather than the single-block splice. A caller that leaves `vmap` alone
+  sees no change.
+
+- `LeafTextView.selectedRange()`, `markedRange()`,
+`characterIndex(for:)`, `firstRect(forCharacterRange:)`, and
+`attributedSubstring(forProposedRange:)` on macOS now take and return
+UTF-16 indices into the visible text, per the `NSTextInputClient`
+contract, where they previously used source byte offsets.
+
+- on macOS, ⌘Z/⇧⌘Z/⌘A/⌘C/⌘X/⌘V now reach `LeafTextView`
+only through the host's Edit menu items (`undo:`, `redo:`, `selectAll:`,
+
+- on iOS, `LeafTextView` now reports
+`autocorrectionType`, `spellCheckingType`, `smartQuotesType`,
+`smartDashesType`, `smartInsertDeleteType`, and `autocapitalizationType`
+as off while the source view is showing, where they previously took UIKit's
+defaults; and the view is now an accessibility element.
+
+- `EditorTheme()`'s default `bodyFontName`,
+`monoFontName`, and `caretColor` changed, so a host relying on the
+defaults sees San Francisco, SF Mono, and the system insertion-point
+colour where it saw Helvetica Neue, Menlo, and the label colour.
+
+- `LeafEditor` is a `View` rather than an
+`NSViewRepresentable`/`UIViewRepresentable`; its initialisers are
+unchanged, but a host that called `makeNSView`/`makeUIView` or named its
+`Coordinator` directly must now go through the surface.
+
+- On macOS, Ctrl+B/I/U/E/Z/Y and Ctrl-click on a link no longer act as editor shortcuts; ⌘ is the modifier. On other platforms the ⌘/Windows key no longer does; Ctrl is.
+
+- Doc::set_read_only(true) now refuses insert, toggle, set_block, toggle_heading, toggle_list, toggle_blockquote, toggle_task_item, toggle_task_at, set_code_language, insert_link, insert_image, insert_thematic_break, insert_footnote, newline and cell_line_break, which previously edited a read-only document.
+
+- A render while the browser's selection is outside the editor no longer moves the selection or focus into it. A host that relied on a repaint to focus the editor should call focus().
+
+- A Markdown document's `==text==` is now parsed as a highlight and drawn as one, where it used to render as the literal characters. `==🔴 text==` draws as a red highlight with the emoji hidden. Nothing in the source changes and no gesture writes either spelling; a host that wants the old rendering has no switch for it, since leaf's parse flags are not configurable.
+
+- `leaf_core::Role::Mark` is now `Role::Mark(Option<MarkColor>)`. Code matching on the role needs `Role::Mark(_)`, or the two arms if it wants the colour.
+
+- The `Run` record crossing both bindings gains `mark_color: Option<String>` — the colour's name for a `mark` run, absent for a plain highlight and for every other role. It rides beside `role` rather than folding into it, so a renderer that only knows `"mark"` still draws the highlight.
+
+- `leaf_ratatui::Theme` gains `mark_colors: [Color; 7]` and `leaf_gpui::EditorStyle` gains `mark_colors: [Hsla; 7]`, both indexed by `MarkColor::index`. `Theme` is `#[non_exhaustive]` and unaffected in practice; a host constructing an `EditorStyle` field by field needs the new one, and `..Default::default()` supplies it.
 
 <!-- git-cliff:end -->
 
