@@ -50,6 +50,31 @@ public struct LeafEditorCommands: Commands {
                 FormatMenuItems.placeholders
             }
         }
+        #if os(macOS)
+        // SwiftUI's default Edit menu stops at Select All: no Find, no Paste and
+        // Match Style. Both are answered by the view, so both get their items.
+        CommandGroup(after: .pasteboard) {
+            Button(loc("menu.pasteAndMatchStyle", "Paste and Match Style")) { editor?.pasteAsPlainText() }
+                .keyboardShortcut("v", modifiers: [.command, .option, .shift])
+                .disabled(editor == nil || editor?.isReadOnly == true)
+            Divider()
+            Menu(loc("menu.find", "Find")) {
+                Button(loc("menu.findEllipsis", "Find…")) { editor?.find(.showFindInterface) }
+                    .keyboardShortcut("f", modifiers: .command)
+                Button(loc("menu.findAndReplace", "Find and Replace…")) { editor?.find(.showReplaceInterface) }
+                    .keyboardShortcut("f", modifiers: [.command, .option])
+                    .disabled(editor?.isReadOnly == true)
+                Button(loc("menu.findNext", "Find Next")) { editor?.find(.nextMatch) }
+                    .keyboardShortcut("g", modifiers: .command)
+                Button(loc("menu.findPrevious", "Find Previous")) { editor?.find(.previousMatch) }
+                    .keyboardShortcut("g", modifiers: [.command, .shift])
+                // ⌘E is leaf's Source View, on every frontend; this one goes by menu.
+                Button(loc("menu.useSelectionForFind", "Use Selection for Find")) { editor?.find(.setSearchString) }
+                Button(loc("menu.hideFindBar", "Hide Find Bar")) { editor?.find(.hideFindInterface) }
+            }
+            .disabled(editor == nil)
+        }
+        #endif
         CommandGroup(after: .toolbar) {
             if let editor {
                 ViewMenuItems(editor: editor)

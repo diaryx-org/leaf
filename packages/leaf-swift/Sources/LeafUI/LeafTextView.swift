@@ -1725,8 +1725,18 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     public override func performTextFinderAction(_ sender: Any?) {
         guard let tag = (sender as? NSMenuItem)?.tag ?? (sender as? NSControl)?.tag,
               let action = NSTextFinder.Action(rawValue: tag) else { return }
+        runFinder(action)
+    }
+
+    private func runFinder(_ action: NSTextFinder.Action) {
         textFinder.performAction(action)
     }
+
+    /// The find bar's actions by name, for a menu built in SwiftUI (which sends
+    /// closures, not tagged `performTextFinderAction:` items) — see
+    /// `LeafEditorModel.find(_:)`.
+    public func performFind(_ action: NSTextFinder.Action) { runFinder(action) }
+    public func canPerformFind(_ action: NSTextFinder.Action) -> Bool { textFinder.validateAction(action) }
 
     /// Edit ▸ Find ▸ Jump to Selection (⌘J): bring the caret's line to the
     /// middle of the viewport.
@@ -1947,7 +1957,13 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         }
     }
 
-    public var contentView: NSView { self }
+    /// The one view the whole string is drawn in — this one. The finder dims it
+    /// during an incremental search and lights the matches it finds within it;
+    /// without this answer it draws neither.
+    public func contentView(at index: Int, effectiveCharacterRange outRange: NSRangePointer) -> NSView {
+        outRange.pointee = NSRange(location: 0, length: (fullText() as NSString).length)
+        return self
+    }
 
     public func rects(forCharacterRange range: NSRange) -> [NSValue]? {
         let (from, to) = byteBounds(range)

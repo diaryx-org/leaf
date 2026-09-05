@@ -432,6 +432,15 @@ public final class LeafEditorModel: ObservableObject {
 
     public func undo() { run { $0.undo() } }
     public func redo() { run { $0.redo() } }
+
+    #if canImport(AppKit) && !targetEnvironment(macCatalyst)
+    /// Drive the system find bar: show it, find next/previous, replace, use the
+    /// selection. What Edit ▸ Find's items do, for a menu built in SwiftUI.
+    public func find(_ action: NSTextFinder.Action) { textView?.performFind(action) }
+    /// Paste the clipboard's plain text as source, ignoring any rich flavour —
+    /// Edit ▸ Paste and Match Style.
+    public func pasteAsPlainText() { textView?.pasteAsPlainText(nil) }
+    #endif
     public func toggleView() { run { $0.toggleView() } }
 
     // ── markup exposure preference ──────────────────────────────────────────
