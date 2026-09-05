@@ -5159,7 +5159,10 @@ mod tests {
         // Inside the emoji's surrogate pair resolves to the emoji.
         let emoji_src = src.find('\u{1F600}').unwrap();
         let emoji_idx = m.visible_utf16_len(0, emoji_src);
-        assert_eq!(m.offset_at_visible_utf16(end, emoji_idx + 1), Some(emoji_src));
+        assert_eq!(
+            m.offset_at_visible_utf16(end, emoji_idx + 1),
+            Some(emoji_src)
+        );
         // At or past the end is nobody's character.
         let total = m.visible_utf16_len(0, end);
         assert_eq!(total, text.encode_utf16().count());
