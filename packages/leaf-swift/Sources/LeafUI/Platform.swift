@@ -45,6 +45,8 @@ public enum Palette {
     public static var selection: LeafColor { UIColor.systemBlue.withAlphaComponent(0.30) }
     public static var inactiveSelection: LeafColor { UIColor.systemGray.withAlphaComponent(0.30) }
     public static var accent: LeafColor { .tintColor }
+    /// The insertion point. UIKit draws the iOS caret itself, in the tint.
+    public static var caret: LeafColor { .tintColor }
     /// The paper a paginated document's sheets are drawn on, and the surface they
     /// sit on. Semantic on both platforms, so a page tracks light/dark like the
     /// rest of the chrome.
@@ -58,6 +60,13 @@ public enum Palette {
     public static var separator: LeafColor { .separatorColor }
     public static var selection: LeafColor { .selectedTextBackgroundColor }
     public static var inactiveSelection: LeafColor { .unemphasizedSelectedTextBackgroundColor }
+    /// The insertion point, as the system paints it in its own text views —
+    /// what a user's accent colour reaches. Named only from macOS 14; before
+    /// that the caret is the label's ink, as `NSTextView`'s was.
+    public static var caret: LeafColor {
+        if #available(macOS 14, *) { return .textInsertionPointColor }
+        return .labelColor
+    }
     public static var accent: LeafColor { .controlAccentColor }
     /// AppKit names both of these outright — `underPageBackgroundColor` is the
     /// surface Preview and Pages set a sheet on — so the paginated view gets the
@@ -109,8 +118,18 @@ func leafColor(hex: String) -> LeafColor? {
 
 /// Build a font by family name + size with optional bold/italic traits — the one
 /// call that papers over `NSFontDescriptor` vs `UIFontDescriptor`.
+///
+/// Two names are not families but requests for the system's own type — see
+/// `EditorTheme.systemFontName` — because the system font has no stable
+/// PostScript name to ask for: `.AppleSystemUIFont` is private, and a font
+/// looked up by it is not the one the OS would pick for this size and weight.
 func makeFont(name: String, size: CGFloat, bold: Bool, italic: Bool) -> LeafFont {
-    let base = LeafFont(name: name, size: size) ?? LeafFont.systemFont(ofSize: size)
+    let base: LeafFont
+    switch name {
+    case EditorTheme.systemFontName: base = LeafFont.systemFont(ofSize: size)
+    case EditorTheme.systemMonospacedFontName: base = LeafFont.monospacedSystemFont(ofSize: size, weight: .regular)
+    default: base = LeafFont(name: name, size: size) ?? LeafFont.systemFont(ofSize: size)
+    }
     #if canImport(UIKit)
     var traits: UIFontDescriptor.SymbolicTraits = []
     if bold { traits.insert(.traitBold) }

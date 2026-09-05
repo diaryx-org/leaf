@@ -32,7 +32,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             // Re-wrap only when the geometry changed; a colour-only (or identical)
             // theme just repaints. Guarding this breaks the relayout⇄state-publish
             // loop that otherwise re-scrolled the view to the caret every frame.
-            guard theme.metricsDiffer(from: oldValue) else { needsDisplay = true; return }
+            guard theme.metricsDiffer(from: oldValue) else { placeSystemCaret(); needsDisplay = true; return }
             shapeCache.removeAll(keepingCapacity: true)   // shaping is theme-dependent
             relayoutForWidth(force: true)
         }
@@ -243,6 +243,14 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     private var caretVisible = true
     private var blinkTimer: Timer?
     private var isFocused = false
+    /// The system's caret, on macOS 14 and later: an `NSTextInsertionIndicator`
+    /// placed over the caret rect. It blinks on the cadence the user set, stops
+    /// under Reduce Motion, wears the accent colour, and dims with the window —
+    /// every one of which the hand-rolled timer below had to guess at. Held as
+    /// `NSView` because the deployment floor predates the class; `nil` there,
+    /// and the timer draws the caret as before.
+    private var insertionIndicator: NSView?
+    private var usesSystemCaret: Bool { insertionIndicator != nil }
     /// The caret offset the view last scrolled to reveal. Only a *move* re-scrolls,
     /// so passive reflows (width/theme relayout, state refreshes) leave the reader's
     /// scroll position alone instead of yanking it back to the caret.
@@ -259,6 +267,13 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         self.layoutEngine = EditorLayout(first, theme: theme, viewWidth: 0, cache: &seed)
         self.shapeCache = seed
         super.init(frame: .zero)
+        if #available(macOS 14, *) {
+            let indicator = NSTextInsertionIndicator(frame: .zero)
+            indicator.displayMode = .hidden
+            indicator.color = theme.caretColor
+            addSubview(indicator)
+            insertionIndicator = indicator
+        }
         autoresizingMask = [.width]
         // A resolved source has a picture to draw, and may be the one the reader
         // tapped while it was still being fetched.
@@ -470,7 +485,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             BlockChrome.drawPlaceholder(placeholder, in: box, theme: theme, in: ctx)
         }
 
-        if active, caretVisible, let rect = layoutEngine.caretRect(docView, theme: theme) {
+        if active, caretVisible, !usesSystemCaret, let rect = layoutEngine.caretRect(docView, theme: theme) {
             ctx.setFillColor(theme.caretColor.cgColor)
             ctx.fill(rect)
         }
@@ -1651,16 +1666,40 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     // MARK: focus + caret blink
 
     public override func becomeFirstResponder() -> Bool { isFocused = true; resetBlink(); needsDisplay = true; return true }
-    public override func resignFirstResponder() -> Bool { isFocused = false; blinkTimer?.invalidate(); needsDisplay = true; return true }
+    public override func resignFirstResponder() -> Bool {
+        isFocused = false
+        blinkTimer?.invalidate()
+        placeSystemCaret()
+        needsDisplay = true
+        return true
+    }
 
     private func resetBlink() {
         blinkTimer?.invalidate()
         caretVisible = true
+        if usesSystemCaret { placeSystemCaret(); return }
         guard isFocused else { return }
         blinkTimer = Timer.scheduledTimer(withTimeInterval: 0.53, repeats: true) { [weak self] _ in
             guard let self else { return }
             self.caretVisible.toggle()
-            if let r = self.layoutEngine.caretRect(self.docView, theme: self.theme) { self.setNeedsDisplay(r) }
+            if let r = self.layoutEngine.caretRect(self.docView, theme: self.theme) {
+                self.setNeedsDisplay(self.viewRect(r))
+            }
+        }
+    }
+
+    /// Put the system caret where the caret is, or take it away: it shows only
+    /// while this view has the text focus and there is a caret (not a selection)
+    /// to show. Moving the frame is what restarts its blink, so this runs
+    /// wherever the timer used to be reset.
+    private func placeSystemCaret() {
+        guard #available(macOS 14, *), let indicator = insertionIndicator as? NSTextInsertionIndicator else { return }
+        indicator.color = theme.caretColor
+        if selectionIsActive, let rect = layoutEngine.caretRect(docView, theme: theme) {
+            indicator.frame = viewRect(rect)
+            indicator.displayMode = .automatic
+        } else {
+            indicator.displayMode = .hidden
         }
     }
 

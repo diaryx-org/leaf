@@ -21,9 +21,11 @@ import AppKit
 #endif
 
 public struct EditorTheme {
-    /// Proportional body family — prose and headings shape with this.
+    /// Proportional body family — prose and headings shape with this. A family
+    /// name, or `systemFontName` for the system's own face (the default).
     public var bodyFontName: String
-    /// Monospace family — inline `code` and fenced blocks.
+    /// Monospace family — inline `code` and fenced blocks. A family name, or
+    /// `systemMonospacedFontName` (the default).
     public var monoFontName: String
     /// Body font size in points. A heading is this scaled by `headingScale`.
     public var fontSize: CGFloat
@@ -132,9 +134,18 @@ public struct EditorTheme {
     public var pageBackdropColor: LeafColor
     public var pageBorderColor: LeafColor
 
+    /// The name that asks for the system's own text face — San Francisco on
+    /// every Apple platform today, and whatever the OS chooses tomorrow, at the
+    /// optical size the OS picks for the point size. The default body face, so a
+    /// document reads in the same type as the window around it. Any real family
+    /// name (`"Helvetica Neue"`, `"Georgia"`) is a fine substitute.
+    public static let systemFontName = "system"
+    /// The system's monospaced face — SF Mono — sized to sit with the body type.
+    public static let systemMonospacedFontName = "system-monospaced"
+
     public init(
-        bodyFontName: String = "Helvetica Neue",
-        monoFontName: String = "Menlo",
+        bodyFontName: String = EditorTheme.systemFontName,
+        monoFontName: String = EditorTheme.systemMonospacedFontName,
         fontSize: CGFloat = 16,
         lineHeight: CGFloat = 24,
         blockGapScale: CGFloat = 0.5,
@@ -165,7 +176,7 @@ public struct EditorTheme {
         placeholderColor: LeafColor = Palette.tertiary,
         selectionColor: LeafColor = Palette.selection,
         inactiveSelectionColor: LeafColor = Palette.inactiveSelection,
-        caretColor: LeafColor = Palette.label,
+        caretColor: LeafColor = Palette.caret,
         handleColor: LeafColor = Palette.accent,
         landingFlashColor: LeafColor = Palette.landingFlash,
         pageColor: LeafColor = Palette.page,
