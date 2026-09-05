@@ -1932,6 +1932,63 @@ impl LeafDoc {
         n * sign
     }
 
+    /// The UTF-16 index at which source offset `off` sits in the visible text —
+    /// the string `text_in_range(0, doc_end_offset())` returns — which is the
+    /// character space AppKit's `NSTextInputClient` and `NSAccessibility` speak.
+    ///
+    /// leaf's own handle is the source byte offset, and the two are not one
+    /// scale apart: WYSIWYG hides delimiters, a block gap is spelled as one
+    /// `\n`, and a character outside the BMP is two UTF-16 units. A frontend
+    /// hands the system an `NSRange` converted with this and turns the ranges
+    /// it gets back through `offset_for_utf16_index`, so Look Up, dictation, and
+    /// VoiceOver all index the same text the frontend drew.
+    pub fn utf16_index_for_offset(&self, off: u32) -> u32 {
+        let mut g = self.lock();
+        g.sync();
+        let off = (off as usize).min(g.doc.source.len());
+        match g.doc.view {
+            View::Wysiwyg => g.doc.vmap.visible_utf16_len(0, off) as u32,
+            View::Source => {
+                let off = g.snap_stop(off);
+                g.doc.source[..off].encode_utf16().count() as u32
+            }
+        }
+    }
+
+    /// The inverse of `utf16_index_for_offset`: the source offset of the
+    /// visible character at UTF-16 `index`, or the document's end stop at or
+    /// past the end of the text. An index inside a surrogate pair resolves to
+    /// the character that owns it, and one on the `\n` a block gap is spelled
+    /// with to the stop at the end of the block before it. Always a caret stop.
+    pub fn offset_for_utf16_index(&self, index: u32) -> u32 {
+        let mut g = self.lock();
+        g.sync();
+        let len = g.doc.source.len();
+        let end = g.snap_stop(len);
+        let index = index as usize;
+        match g.doc.view {
+            // A block separator resolves to the gap offset, which is no stop;
+            // snapping lands it on the row end before it, the stop a caret
+            // standing "after the last character" already means.
+            View::Wysiwyg => g
+                .doc
+                .vmap
+                .offset_at_visible_utf16(end, index)
+                .map_or(end, |o| g.snap_stop(o)) as u32,
+            View::Source => {
+                let mut seen = 0usize;
+                for (i, ch) in g.doc.source.char_indices() {
+                    let n = ch.len_utf16();
+                    if index < seen + n {
+                        return i as u32;
+                    }
+                    seen += n;
+                }
+                end as u32
+            }
+        }
+    }
+
     /// The offset one navigable row up/down from `off`, keeping its column —
     /// `position(from:in: .up/.down)`. `None` at the top/bottom edge.
     pub fn vertical_offset(&self, off: u32, down: bool) -> Option<u32> {
@@ -3121,6 +3178,44 @@ mod tests {
             .find(|r| r.text.contains("claim"))
             .expect("the prose");
         assert!(!prose.sup && !prose.sub);
+    }
+
+    #[test]
+    fn utf16_indices_round_trip_through_the_visible_text_in_both_views() {
+        // Hidden delimiters, an emoji outside the BMP, and a block gap: the
+        // three ways an `NSRange` into the visible text and a source byte
+        // offset part company.
+        let d = doc("a **b\u{1F600}** c\n\nd\n");
+        let end = d.doc_end_offset();
+        let text = d.text_in_range(0, end);
+        assert_eq!(text, "a b\u{1F600} c\nd");
+        let total = text.encode_utf16().count() as u32;
+        assert_eq!(d.utf16_index_for_offset(end), total);
+        assert_eq!(d.offset_for_utf16_index(total), end);
+        // Walk every stop: index it, and come back to the same stop.
+        let mut off = 0u32;
+        loop {
+            let idx = d.utf16_index_for_offset(off);
+            assert_eq!(d.offset_for_utf16_index(idx), off, "stop {off} via index {idx}");
+            let next = d.step_offset(off, 1);
+            if next == off {
+                break;
+            }
+            off = next;
+        }
+        // The 'c' comes after the hidden `**` and the two-unit emoji.
+        let c = "a **b\u{1F600}** c".find(" c").unwrap() as u32 + 1;
+        assert_eq!(d.utf16_index_for_offset(c), "a b\u{1F600} ".encode_utf16().count() as u32);
+
+        // Source view: the text is the raw source, so the index is the plain
+        // UTF-16 count of the bytes before the offset — delimiters included.
+        d.toggle_view();
+        assert_eq!(d.text_in_range(0, d.doc_end_offset()), "a **b\u{1F600}** c\n\nd\n");
+        assert_eq!(d.utf16_index_for_offset(c), "a **b\u{1F600}** ".encode_utf16().count() as u32);
+        assert_eq!(d.offset_for_utf16_index(d.utf16_index_for_offset(c)), c);
+        // Inside the emoji's surrogate pair resolves to the emoji itself.
+        let emoji = "a **b".len() as u32;
+        assert_eq!(d.offset_for_utf16_index(d.utf16_index_for_offset(emoji) + 1), emoji);
     }
 
     #[test]

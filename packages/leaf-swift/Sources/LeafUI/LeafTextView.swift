@@ -1297,6 +1297,14 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             render(doc.replaceRange(from: UInt32(m.location), to: UInt32(m.location + m.length), text: text))
             return
         }
+        // A range the system names — dictation correcting a word it already
+        // spoke, a text service rewriting a span — replaces exactly that, in the
+        // system's UTF-16 units. Everything else types over the selection.
+        if replacementRange.location != NSNotFound {
+            let (from, to) = byteBounds(replacementRange)
+            render(doc.replaceRange(from: UInt32(from), to: UInt32(to), text: text))
+            return
+        }
         guard !text.isEmpty else { return }
         render(doc.insert(text: text))
     }
@@ -1575,17 +1583,16 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     }
 
     public override func accessibilitySelectedTextRange() -> NSRange {
-        let loc = (doc.textInRange(from: 0, to: UInt32(selLowByte)) as NSString).length
-        let len = ((accessibilitySelectedText() ?? "") as NSString).length
-        return NSRange(location: loc, length: len)
+        utf16Range(fromByte: selLowByte, toByte: selHighByte)
     }
 
     public override func setAccessibilitySelectedTextRange(_ range: NSRange) {
-        let full = fullText() as NSString
-        guard range.location >= 0, range.location + range.length <= full.length else { return }
-        let fromByte = full.substring(to: range.location).utf8.count
-        let toByte = full.substring(to: range.location + range.length).utf8.count
-        render(doc.setSelectionOffsets(anchor: UInt32(fromByte), focus: UInt32(toByte)))
+        // The range is UTF-16 into the *visible* text; a byte count of that
+        // text's prefix is not a source offset once any markup is hidden, so it
+        // goes through core's mapping like every other system range.
+        guard range.location >= 0 else { return }
+        let (from, to) = byteBounds(range)
+        render(doc.setSelectionOffsets(anchor: UInt32(from), focus: UInt32(to)))
     }
 
     public override func accessibilityString(for range: NSRange) -> String? {
@@ -1648,10 +1655,17 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     // MARK: selection offsets
     //
-    // The character-index space shared by `NSTextInputClient`, Services, and
-    // accessibility below is leaf-core's **byte offset** — the same handle the iOS
-    // `UITextInput` peer uses. Core owns the offset⇄position mapping (`posForOffset` /
-    // `offsetForPos`), so these only have to stay self-consistent, which they do.
+    // Two index spaces meet here. leaf-core's handle is the **source byte offset**
+    // — the same one the iOS `UITextInput` peer wraps in its opaque positions. But
+    // an `NSRange` handed to or from `NSTextInputClient` and `NSAccessibility` is,
+    // by AppKit's contract, in **UTF-16 units of the text as the system sees it**:
+    // `fullText()`, the visible text with delimiters hidden. The two are not one
+    // scale apart (hidden markup, block gaps spelled as one `\n`, characters
+    // outside the BMP), and the system does arithmetic in its own units — Look Up
+    // asks for the word around `characterIndex(for:)` by counting UTF-16 code
+    // units, dictation replaces a range it measured off `attributedSubstring` —
+    // so every range crosses through core's `utf16IndexForOffset` /
+    // `offsetForUtf16Index` at the boundary. Inside the view, offsets stay bytes.
 
     private var caretByte: Int { Int(doc.caretOffset()) }
     private var anchorByte: Int { Int(doc.anchorOffset()) }
@@ -1659,8 +1673,22 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     private var selHighByte: Int { max(anchorByte, caretByte) }
     private var hasSelection: Bool { docView.hasSelection }
 
-    /// The document's whole plain text — the buffer those byte offsets count into.
+    /// The document's whole plain text — the string the system's UTF-16 ranges index.
     private func fullText() -> String { doc.textInRange(from: 0, to: doc.docEndOffset()) }
+
+    /// A source byte range as the system's UTF-16 `NSRange` into `fullText()`.
+    private func utf16Range(fromByte: Int, toByte: Int) -> NSRange {
+        let lo = Int(doc.utf16IndexForOffset(off: UInt32(max(0, fromByte))))
+        let hi = Int(doc.utf16IndexForOffset(off: UInt32(max(fromByte, toByte))))
+        return NSRange(location: lo, length: hi - lo)
+    }
+
+    /// The system's UTF-16 `NSRange` as source byte bounds, both ends caret stops.
+    private func byteBounds(_ range: NSRange) -> (from: Int, to: Int) {
+        let from = Int(doc.offsetForUtf16Index(index: UInt32(max(0, range.location))))
+        let to = Int(doc.offsetForUtf16Index(index: UInt32(max(0, range.location + range.length))))
+        return (from, max(from, to))
+    }
 
     // MARK: NSTextInputClient — real selection, geometry, and hit-testing
     //
@@ -1677,7 +1705,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         if let m = markedByteRange {
             start = m.location; end = m.location + m.length
         } else if replacementRange.location != NSNotFound {
-            start = replacementRange.location; end = replacementRange.location + replacementRange.length
+            (start, end) = byteBounds(replacementRange)
         } else {
             start = selLowByte; end = selHighByte
         }
@@ -1697,31 +1725,37 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     public func unmarkText() { markedByteRange = nil; needsDisplay = true }
     public func hasMarkedText() -> Bool { markedByteRange != nil }
-    public func markedRange() -> NSRange { markedByteRange ?? NSRange(location: NSNotFound, length: 0) }
+    public func markedRange() -> NSRange {
+        guard let m = markedByteRange else { return NSRange(location: NSNotFound, length: 0) }
+        return utf16Range(fromByte: m.location, toByte: m.location + m.length)
+    }
     public func validAttributesForMarkedText() -> [NSAttributedString.Key] { [] }
 
     public func selectedRange() -> NSRange {
-        NSRange(location: selLowByte, length: selHighByte - selLowByte)
+        utf16Range(fromByte: selLowByte, toByte: selHighByte)
     }
 
     public func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?) -> NSAttributedString? {
-        let from = max(0, range.location)
-        let to = max(from, range.location + range.length)
-        actualRange?.pointee = NSRange(location: from, length: to - from)
-        return NSAttributedString(string: doc.textInRange(from: UInt32(from), to: UInt32(to)))
+        let (from, to) = byteBounds(range)
+        let text = doc.textInRange(from: UInt32(from), to: UInt32(to))
+        // Report the range actually served in the system's units — the proposed
+        // one may have started inside a surrogate pair or run past the end.
+        actualRange?.pointee = NSRange(location: Int(doc.utf16IndexForOffset(off: UInt32(from))),
+                                       length: text.utf16.count)
+        return NSAttributedString(string: text)
     }
 
     public func characterIndex(for point: NSPoint) -> Int {
         guard let window else { return NSNotFound }
         let local = layoutPoint(convert(window.convertPoint(fromScreen: point), from: nil))
         let (row, ch) = layoutEngine.hit(local)
-        return Int(doc.offsetForPos(row: UInt32(row), ch: UInt32(ch)))
+        return Int(doc.utf16IndexForOffset(off: doc.offsetForPos(row: UInt32(row), ch: UInt32(ch))))
     }
 
     public func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
         guard let window else { return .zero }
         actualRange?.pointee = range
-        let rc = doc.posForOffset(off: UInt32(max(0, range.location)))
+        let rc = doc.posForOffset(off: UInt32(byteBounds(range).from))
         guard let rect = layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch)) else { return .zero }
         return window.convertToScreen(convert(viewRect(rect), to: nil))
     }

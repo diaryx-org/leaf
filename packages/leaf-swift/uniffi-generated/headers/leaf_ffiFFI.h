@@ -491,6 +491,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_newline(void*_Nonnull ptr, RustCall
 uint32_t uniffi_leaf_ffi_fn_method_leafdoc_offset_for_pos(void*_Nonnull ptr, uint32_t row, uint32_t ch, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_OFFSET_FOR_UTF16_INDEX
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_OFFSET_FOR_UTF16_INDEX
+uint32_t uniffi_leaf_ffi_fn_method_leafdoc_offset_for_utf16_index(void*_Nonnull ptr, uint32_t index, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_OUTDENT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_OUTDENT
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_outdent(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
@@ -539,6 +544,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_select_all(void*_Nonnull ptr, RustC
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SELECT_BLOCK_CH
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SELECT_BLOCK_CH
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_select_block_ch(void*_Nonnull ptr, uint32_t row, uint32_t ch, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SELECT_RANGE
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SELECT_RANGE
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_select_range(void*_Nonnull ptr, uint32_t start, uint32_t end, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SELECT_WORD_CH
@@ -744,6 +754,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_view(void*_Nonnull ptr, Rust
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_UNDO
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_UNDO
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_undo(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_UTF16_INDEX_FOR_OFFSET
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_UTF16_INDEX_FOR_OFFSET
+uint32_t uniffi_leaf_ffi_fn_method_leafdoc_utf16_index_for_offset(void*_Nonnull ptr, uint32_t off, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_VERTICAL_OFFSET
@@ -1306,6 +1321,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_offset_for_pos(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_OFFSET_FOR_UTF16_INDEX
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_OFFSET_FOR_UTF16_INDEX
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_offset_for_utf16_index(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_OUTDENT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_OUTDENT
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_outdent(void
@@ -1363,6 +1384,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_select_all(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SELECT_BLOCK_CH
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SELECT_BLOCK_CH
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_select_block_ch(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SELECT_RANGE
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SELECT_RANGE
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_select_range(void
     
 );
 #endif
@@ -1609,6 +1636,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_toggle_view(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_UNDO
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_UNDO
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_undo(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_UTF16_INDEX_FOR_OFFSET
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_UTF16_INDEX_FOR_OFFSET
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_utf16_index_for_offset(void
     
 );
 #endif

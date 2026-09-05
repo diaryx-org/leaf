@@ -857,6 +857,53 @@ impl VisualMap {
     /// left as given, so a stop landing exactly on it is still the walk's
     /// last step — the same asymmetry `distance_offset`'s own loop has.
     pub fn visible_text(&self, from: usize, to: usize) -> String {
+        self.visible_items(from, to)
+            .into_iter()
+            .map(|(_, ch)| ch.unwrap_or('\n'))
+            .collect()
+    }
+
+    /// The UTF-16 length of `visible_text(from, to)` — what an `NSRange`
+    /// location into that text is, without building the string.
+    ///
+    /// AppKit's `NSTextInputClient` and `NSAccessibility` speak in UTF-16
+    /// units of *the text as the system sees it*, which for leaf is the visible
+    /// text — delimiters hidden. A frontend reporting its selection to the
+    /// system converts each end with this and gets back an index into the
+    /// string `visible_text(0, end)` returns, which is exactly what the system
+    /// will index into.
+    pub fn visible_utf16_len(&self, from: usize, to: usize) -> usize {
+        self.visible_items(from, to)
+            .into_iter()
+            .map(|(_, ch)| ch.map_or(1, char::len_utf16))
+            .sum()
+    }
+
+    /// The inverse of `visible_utf16_len(0, ·)`: the source offset of the
+    /// visible character a UTF-16 index into `visible_text(0, to)` lands on.
+    ///
+    /// An index inside a surrogate pair resolves to the character that owns
+    /// it; one at or past the end of the text returns `None`, so a caller can
+    /// substitute the document's end stop. A synthetic block separator (the
+    /// `\n` the text spells a boundary with) resolves to the gap offset, which
+    /// is not a stop, so a caller placing a caret there gets it snapped like
+    /// any other hidden offset.
+    pub fn offset_at_visible_utf16(&self, to: usize, index: usize) -> Option<usize> {
+        let mut seen = 0usize;
+        for (src, ch) in self.visible_items(0, to) {
+            let len = ch.map_or(1, char::len_utf16);
+            if index < seen + len {
+                return Some(src);
+            }
+            seen += len;
+        }
+        None
+    }
+
+    /// The items `visible_text` spells, in order: every stop glyph in range
+    /// keyed by its own source offset (`Some(ch)`), and every block boundary
+    /// in range keyed by its gap offset (`None`, drawn as `\n`).
+    fn visible_items(&self, from: usize, to: usize) -> Vec<(usize, Option<char>)> {
         let from = self.nearest_stop(from);
 
         // Real content: every stop glyph in range, keyed by its own source
@@ -896,9 +943,6 @@ impl VisualMap {
         // between two blocks' real content), so tie-breaking never arises.
         items.sort_by_key(|&(src, _)| src);
         items
-            .into_iter()
-            .map(|(_, ch)| ch.unwrap_or('\n'))
-            .collect()
     }
 }
 
@@ -5088,6 +5132,38 @@ mod tests {
         let m = map("hello world\n");
         let (r, c) = m.pos_of_offset(6); // the 'w'
         assert_eq!(m.offset_of_pos(r, c), 6);
+    }
+
+    #[test]
+    fn visible_utf16_indices_count_the_text_the_system_sees() {
+        // Hidden delimiters, a two-unit emoji, and a block gap — every way the
+        // visible text's UTF-16 length parts company with a source byte count.
+        let src = "a **b\u{1F600}** c\n\nd\n";
+        let m = map(src);
+        let end = m.snap_to_stop(src.len());
+        let text = m.visible_text(0, end);
+        assert_eq!(text, "a b\u{1F600} c\nd");
+
+        // Forward: the index of each offset is where that character sits in
+        // the visible string, in UTF-16 units.
+        for (i, (src_off, _)) in m.visible_items(0, end).iter().enumerate() {
+            let expect: usize = text.chars().take(i).map(char::len_utf16).sum();
+            assert_eq!(
+                m.visible_utf16_len(0, *src_off),
+                expect,
+                "utf16 index of source offset {src_off}"
+            );
+            // And back: the index resolves to the offset it came from.
+            assert_eq!(m.offset_at_visible_utf16(end, expect), Some(*src_off));
+        }
+        // Inside the emoji's surrogate pair resolves to the emoji.
+        let emoji_src = src.find('\u{1F600}').unwrap();
+        let emoji_idx = m.visible_utf16_len(0, emoji_src);
+        assert_eq!(m.offset_at_visible_utf16(end, emoji_idx + 1), Some(emoji_src));
+        // At or past the end is nobody's character.
+        let total = m.visible_utf16_len(0, end);
+        assert_eq!(total, text.encode_utf16().count());
+        assert_eq!(m.offset_at_visible_utf16(end, total), None);
     }
 
     #[test]

@@ -787,6 +787,15 @@ public protocol LeafDocProtocol : AnyObject {
     func offsetForPos(row: UInt32, ch: UInt32)  -> UInt32
     
     /**
+     * The inverse of `utf16_index_for_offset`: the source offset of the
+     * visible character at UTF-16 `index`, or the document's end stop at or
+     * past the end of the text. An index inside a surrogate pair resolves to
+     * the character that owns it, and one on the `\n` a block gap is spelled
+     * with to the stop at the end of the block before it. Always a caret stop.
+     */
+    func offsetForUtf16Index(index: UInt32)  -> UInt32
+    
+    /**
      * Shift+Tab away from a table: take one indent level back off the caret's
      * line (or the selected lines), unnesting a list item. The mirror of
      * [`LeafDoc::indent`].
@@ -841,6 +850,18 @@ public protocol LeafDocProtocol : AnyObject {
      * triple-click gesture. Grabs the entire block even where it soft-wraps.
      */
     func selectBlockCh(row: UInt32, ch: UInt32)  -> DocView
+    
+    /**
+     * Select the exact source range `[start, end)`, snapping neither end to a
+     * visible caret stop — for a host painting a range it already knows the
+     * bytes of (a search hit, an annotation) rather than hit-testing a touch.
+     *
+     * `set_selection_offsets` above is the *other* verb: it goes through
+     * `place_caret`, which snaps, and is what a drag handle wants. This one
+     * takes the range as given, so a selection over `**needle**`'s inner word
+     * is the word and not one byte short of it.
+     */
+    func selectRange(start: UInt32, end: UInt32)  -> DocView
     
     /**
      * Select the word under a click (row, `ch`) — the double-click gesture.
@@ -1084,6 +1105,20 @@ public protocol LeafDocProtocol : AnyObject {
     func toggleView()  -> DocView
     
     func undo()  -> DocView
+    
+    /**
+     * The UTF-16 index at which source offset `off` sits in the visible text —
+     * the string `text_in_range(0, doc_end_offset())` returns — which is the
+     * character space AppKit's `NSTextInputClient` and `NSAccessibility` speak.
+     *
+     * leaf's own handle is the source byte offset, and the two are not one
+     * scale apart: WYSIWYG hides delimiters, a block gap is spelled as one
+     * `\n`, and a character outside the BMP is two UTF-16 units. A frontend
+     * hands the system an `NSRange` converted with this and turns the ranges
+     * it gets back through `offset_for_utf16_index`, so Look Up, dictation, and
+     * VoiceOver all index the same text the frontend drew.
+     */
+    func utf16IndexForOffset(off: UInt32)  -> UInt32
     
     /**
      * The offset one navigable row up/down from `off`, keeping its column —
@@ -1673,6 +1708,21 @@ open func offsetForPos(row: UInt32, ch: UInt32) -> UInt32 {
 }
     
     /**
+     * The inverse of `utf16_index_for_offset`: the source offset of the
+     * visible character at UTF-16 `index`, or the document's end stop at or
+     * past the end of the text. An index inside a surrogate pair resolves to
+     * the character that owns it, and one on the `\n` a block gap is spelled
+     * with to the stop at the end of the block before it. Always a caret stop.
+     */
+open func offsetForUtf16Index(index: UInt32) -> UInt32 {
+    return try!  FfiConverterUInt32.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_offset_for_utf16_index(self.uniffiClonePointer(),
+        FfiConverterUInt32.lower(index),$0
+    )
+})
+}
+    
+    /**
      * Shift+Tab away from a table: take one indent level back off the caret's
      * line (or the selected lines), unnesting a list item. The mirror of
      * [`LeafDoc::indent`].
@@ -1785,6 +1835,25 @@ open func selectBlockCh(row: UInt32, ch: UInt32) -> DocView {
     uniffi_leaf_ffi_fn_method_leafdoc_select_block_ch(self.uniffiClonePointer(),
         FfiConverterUInt32.lower(row),
         FfiConverterUInt32.lower(ch),$0
+    )
+})
+}
+    
+    /**
+     * Select the exact source range `[start, end)`, snapping neither end to a
+     * visible caret stop — for a host painting a range it already knows the
+     * bytes of (a search hit, an annotation) rather than hit-testing a touch.
+     *
+     * `set_selection_offsets` above is the *other* verb: it goes through
+     * `place_caret`, which snaps, and is what a drag handle wants. This one
+     * takes the range as given, so a selection over `**needle**`'s inner word
+     * is the word and not one byte short of it.
+     */
+open func selectRange(start: UInt32, end: UInt32) -> DocView {
+    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_select_range(self.uniffiClonePointer(),
+        FfiConverterUInt32.lower(start),
+        FfiConverterUInt32.lower(end),$0
     )
 })
 }
@@ -2262,6 +2331,26 @@ open func toggleView() -> DocView {
 open func undo() -> DocView {
     return try!  FfiConverterTypeDocView.lift(try! rustCall() {
     uniffi_leaf_ffi_fn_method_leafdoc_undo(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+    /**
+     * The UTF-16 index at which source offset `off` sits in the visible text —
+     * the string `text_in_range(0, doc_end_offset())` returns — which is the
+     * character space AppKit's `NSTextInputClient` and `NSAccessibility` speak.
+     *
+     * leaf's own handle is the source byte offset, and the two are not one
+     * scale apart: WYSIWYG hides delimiters, a block gap is spelled as one
+     * `\n`, and a character outside the BMP is two UTF-16 units. A frontend
+     * hands the system an `NSRange` converted with this and turns the ranges
+     * it gets back through `offset_for_utf16_index`, so Look Up, dictation, and
+     * VoiceOver all index the same text the frontend drew.
+     */
+open func utf16IndexForOffset(off: UInt32) -> UInt32 {
+    return try!  FfiConverterUInt32.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_utf16_index_for_offset(self.uniffiClonePointer(),
+        FfiConverterUInt32.lower(off),$0
     )
 })
 }
@@ -6299,6 +6388,9 @@ private var initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_offset_for_pos() != 39143) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_offset_for_utf16_index() != 13094) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_outdent() != 21680) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -6327,6 +6419,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_select_block_ch() != 21951) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_select_range() != 8760) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_select_word_ch() != 21830) {
@@ -6450,6 +6545,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_undo() != 43486) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_utf16_index_for_offset() != 5751) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_vertical_offset() != 6159) {
