@@ -1,0 +1,40 @@
+<!doctype html><html><head><meta charset="utf-8"><title>scratch</title>
+<style>#mount{width:700px;height:400px;overflow:auto}</style></head><body>
+<div id="mount"></div>
+<pre id="out"></pre>
+<script type="module">
+import { LeafEditor } from "../src/index.js";
+await LeafEditor.init();
+const out = [];
+const mount = document.getElementById("mount");
+// 1. perf on a big doc
+let src = "";
+for (let i = 0; i < 400; i++) src += `## Section ${i}\n\nSome **bold** and *italic* prose with \`code\` and a [link](https://x.y/${i}) in paragraph ${i}. ` + "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ".repeat(3) + "\n\n- item a\n- item b\n\n";
+let ed = new LeafEditor(mount, { source: src });
+out.push("rows=" + ed._lastView.rows.length);
+let t0 = performance.now(); let v; for (let i = 0; i < 20; i++) v = ed.doc.view(); let t1 = performance.now();
+out.push("view() ms=" + ((t1 - t0) / 20).toFixed(2));
+t0 = performance.now(); for (let i = 0; i < 20; i++) ed.render(v); t1 = performance.now();
+out.push("render() ms=" + ((t1 - t0) / 20).toFixed(2));
+t0 = performance.now(); for (let i = 0; i < 20; i++) ed.render(ed.doc.insert("x")); t1 = performance.now();
+out.push("keystroke insert+render ms=" + ((t1 - t0) / 20).toFixed(2));
+ed.render(ed.doc.move_doc_start(false));
+t0 = performance.now(); for (let i = 0; i < 20; i++) ed.render(ed.doc.insert("x")); t1 = performance.now();
+out.push("keystroke at doc start ms=" + ((t1 - t0) / 20).toFixed(2));
+ed.destroy();
+// 2. table scroll bug
+src = "";
+for (let i = 0; i < 80; i++) src += `para ${i}\n\n`;
+src += "| a | b |\n|---|---|\n| leaf-web | x |\n\nafter\n";
+mount.innerHTML = "";
+ed = new LeafEditor(mount, { source: src });
+const line = ed.cellLines.find((l) => l.el.textContent.includes("leaf-web"));
+const r = document.createRange(); r.setStart(line.el.querySelector(".leaf-run").firstChild, 2); r.collapse(true);
+const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+ed._syncFromDom();
+mount.scrollTop = 10000; const before = mount.scrollTop;
+ed.contentEl.dispatchEvent(new InputEvent("beforeinput", { inputType: "insertText", data: "Z", bubbles: true, cancelable: true }));
+out.push("scrollTop before=" + before + " after typing in cell=" + mount.scrollTop + " tableTop=" + ed.contentEl.querySelector("table").offsetTop);
+document.getElementById("out").textContent = out.join("\n");
+document.title = "DONE";
+</script></body></html>

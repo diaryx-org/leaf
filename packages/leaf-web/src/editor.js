@@ -252,6 +252,39 @@ export class LeafEditor {
   }
 
   /**
+   * Replace the host-painted ranges wholesale and repaint — search hits, a
+   * reviewer's annotations, whatever the host wants washed over a span of the
+   * source. Each is `{start, end, id, color?}`: byte offsets, the host's own
+   * name for it (handed back by `onActivateHighlight`), and an optional
+   * `#RRGGBB` for the wash in place of the theme's. The whole set every time,
+   * as core takes it; there is no add-one.
+   * @param {{start: number, end: number, id: string, color?: string, marker?: string}[]} highlights
+   */
+  setHighlights(highlights) {
+    this.render(this.doc.set_highlights(highlights));
+  }
+
+  /** The highlights as last set, sorted by start. */
+  highlights() {
+    return this.doc.highlights();
+  }
+
+  /** The id of the highlight covering source `offset`, or null. */
+  highlightAt(offset) {
+    return this.doc.highlight_at(offset) ?? null;
+  }
+
+  /**
+   * What to do when the reader clicks a highlight — open the annotation it
+   * stands for, step to the search hit. Called with the highlight's id. The
+   * click still places the caret; this rides alongside.
+   */
+  onActivateHighlight(cb) {
+    this._onActivateHighlight = cb;
+    return this;
+  }
+
+  /**
    * Recompute the wrap width from the current viewport and repaint. Called
    * automatically on container resize; expose it for hosts that resize the
    * editor programmatically.
@@ -753,6 +786,11 @@ export class LeafEditor {
     if (run.strike) cls += " leaf-s";
     if (run.sup) cls += " leaf-sup";
     if (run.sub) cls += " leaf-sub";
+    if (run.hl) {
+      cls += " leaf-hl";
+      span.dataset.hl = run.hl;
+      if (run.hl_color) span.style.setProperty("--leaf-hl", run.hl_color);
+    }
     span.className = cls;
     span._src = run.src;
     span.textContent = run.text;
@@ -1237,6 +1275,12 @@ export class LeafEditor {
     if (!runEl) return;
     const src = runEl._src;
     if (!Number.isFinite(src)) return;
+
+    // A highlight is the host's; say which one was hit and let the click go
+    // on to place the caret as it would anywhere else.
+    if (runEl.classList.contains("leaf-hl") && this._onActivateHighlight) {
+      this._onActivateHighlight(runEl.dataset.hl);
+    }
 
     // A task marker is core's `☐ `/`☑ ` drawn in the list marker's place.
     if (runEl.classList.contains("leaf-r-list") && /^[☐☑]/.test(runEl.textContent)) {
@@ -1841,6 +1885,7 @@ const EDITOR_CSS = `
   --leaf-code-fg: #b5305f;
   --leaf-code-bg: #f1f2f4;
   --leaf-code-border: #dfe2e8;
+  --leaf-hl-bg: #ffe08a;
 
   position: relative;
   overflow: auto;
@@ -1862,6 +1907,7 @@ const EDITOR_CSS = `
     --leaf-code-fg: #e59ac0;
     --leaf-code-bg: #2a2f3a;
     --leaf-code-border: #3a4150;
+    --leaf-hl-bg: #6b5a1e;
   }
 }
 /* The editable surface: the browser draws the caret (themed) and selection. */
@@ -1891,6 +1937,17 @@ const EDITOR_CSS = `
    No backticks in here: this comment is inside EDITOR_CSS, a template literal,
    and one would close it. */
 .leaf-r-delimiter { color: var(--leaf-muted); }
+
+/* A host-painted highlight. The wash is the theme's unless the highlight
+   brought a colour, which is mixed down so the text stays readable over it. */
+.leaf-hl {
+  background: var(--leaf-hl-bg);
+  border-radius: 2px;
+  cursor: pointer;
+}
+.leaf-hl[style*="--leaf-hl"] {
+  background: color-mix(in srgb, var(--leaf-hl) 35%, transparent);
+}
 
 /* Inline code (a run outside a fenced block): a monospace pill. */
 .leaf-row:not(.code) .leaf-r-code {

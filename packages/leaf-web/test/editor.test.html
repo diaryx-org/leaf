@@ -432,6 +432,27 @@ await test("shortcuts answer to the platform's modifier only", () => {
   return ed;
 });
 
+// ── host highlights ───────────────────────────────────────────────────────
+
+await test("a host highlight washes exactly its bytes and answers a click", () => {
+  const ed = editor("the quick brown fox\n");
+  let hit = null;
+  ed.onActivateHighlight((id) => { hit = id; });
+  ed.setHighlights([{ start: 4, end: 9, id: "h1", color: "#ff0000" }]);
+  const washed = [...ed.contentEl.querySelectorAll(".leaf-hl")];
+  eq(washed.map((e) => e.textContent), ["quick"], "the wash covers the wrong text");
+  eq(washed[0].dataset.hl, "h1");
+  eq(washed[0].style.getPropertyValue("--leaf-hl"), "#ff0000", "the colour hint was dropped");
+  eq(ed.highlightAt(6), "h1");
+  eq(ed.highlightAt(1), null);
+  washed[0].dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  eq(hit, "h1", "the click did not name the highlight");
+  // Replacing the set with nothing clears it.
+  ed.setHighlights([]);
+  eq(ed.contentEl.querySelectorAll(".leaf-hl").length, 0, "the wash outlived its highlight");
+  return ed;
+});
+
 // ── what the format can spell ─────────────────────────────────────────────
 
 await test("capabilities answer for the format, not for the editor", () => {
