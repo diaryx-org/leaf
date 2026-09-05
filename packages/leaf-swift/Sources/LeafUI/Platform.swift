@@ -81,6 +81,30 @@ public enum Palette {
     /// competing with prose for attention the way a solid tint would.
     public static var directiveBorderColor: LeafColor { separator }
     public static var markBackground: LeafColor { LeafColor.systemYellow.withAlphaComponent(0.28) }
+    /// The wash behind a highlight that named its own colour (`==🔴 text==`),
+    /// keyed by the name twig records — `red`, `orange`, `yellow`, `green`,
+    /// `blue`, `purple`, `brown` — and nil for anything outside that vocabulary,
+    /// which then falls back to `markBackground`.
+    ///
+    /// The system colours at `markBackground`'s own alpha, not hand-picked
+    /// hexes: a wash over the page has to stay a wash in both appearances, and
+    /// the system's reds are the ones already tuned for that. Yellow is
+    /// `markBackground` exactly — a document that says yellow and one that says
+    /// nothing both mean a yellow highlighter.
+    public static func markBackground(named name: String) -> LeafColor? {
+        let base: LeafColor
+        switch name {
+        case "red": base = .systemRed
+        case "orange": base = .systemOrange
+        case "yellow": base = .systemYellow
+        case "green": base = .systemGreen
+        case "blue": base = .systemBlue
+        case "purple": base = .systemPurple
+        case "brown": base = .systemBrown
+        default: return nil
+        }
+        return base.withAlphaComponent(0.28)
+    }
     /// The wash behind a host-painted highlight (`LeafEditorModel.setHighlights`)
     /// — an annotation's footprint, a search hit. The same yellow family as
     /// `markBackground` (both mean "someone marked this"), a step stronger so a

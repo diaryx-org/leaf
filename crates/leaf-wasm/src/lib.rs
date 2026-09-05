@@ -102,6 +102,17 @@ pub struct Run {
     /// That highlight's rendering hint (`#RRGGBB`, or `None` for the theme's
     /// default wash), carried beside the id so a renderer needs no lookup.
     hl_color: Option<String>,
+    /// The colour the author named on a `mark` run — `"red"`, `"orange"`,
+    /// `"yellow"`, `"green"`, `"blue"`, `"purple"`, `"brown"` — or absent for a
+    /// plain `==highlight==` and for every other role.
+    ///
+    /// A *name*, unlike [`hl_color`](Self::hl_color)'s `#RRGGBB`, and that is
+    /// the difference between the two: a host highlight's colour is the host's
+    /// own choice and arrives as a value to paint, while this one is the
+    /// document's word for it and the renderer picks the wash. It rides beside
+    /// `role` rather than folding into it (`"mark-red"`) so a renderer that
+    /// knows nothing about colours still draws the run as the highlight it is.
+    mark_color: Option<String>,
 }
 
 /// A selection cited out of the source — the text, a little of what
@@ -634,7 +645,9 @@ fn role_name(r: Role) -> String {
         Role::Heading(level) => format!("h{}", level.clamp(1, 6)),
         Role::Code => "code".into(),
         Role::Link => "link".into(),
-        Role::Mark => "mark".into(),
+        // The colour rides `Run::mark_color`, not the class id: a renderer that
+        // styles `mark` and nothing else still draws a coloured highlight.
+        Role::Mark(_) => "mark".into(),
         Role::ListMarker => "list".into(),
         Role::QuoteGutter => "quote".into(),
         Role::Rule => "rule".into(),
@@ -2009,6 +2022,17 @@ fn make_run(text: String, style: LStyle, sel: bool, hl: Option<&CoreHighlight>, 
         sel,
         hl: hl.map(|h| h.id.clone()),
         hl_color: hl.and_then(|h| h.color.clone()),
+        mark_color: mark_color_name(style.role),
+    }
+}
+
+/// The name of a `mark` role's colour, for [`Run::mark_color`]. `None` for a
+/// plain highlight and for every other role — the same answer, because neither
+/// has a colour to name.
+fn mark_color_name(role: Role) -> Option<String> {
+    match role {
+        Role::Mark(c) => c.map(|c| c.name().to_string()),
+        _ => None,
     }
 }
 
@@ -2249,6 +2273,29 @@ mod tests {
                 .flat_map(|r| runs_of(&r.glyphs, usize::MAX, usize::MAX, &[]))
                 .all(|r| !(r.sup && r.sub)),
             "a run cannot be both raised and lowered"
+        );
+    }
+
+    /// The colour rides beside the role rather than inside it, so the
+    /// stylesheet's `.leaf-r-mark` rule still catches a coloured highlight and
+    /// `.leaf-mk-red` only swaps the wash on top of it.
+    #[test]
+    fn a_coloured_highlight_crosses_as_a_name_beside_the_mark_role() {
+        let doc = wysiwyg("a ==\u{1F534} red== and ==plain== b\n");
+        let marks: Vec<(String, Option<String>)> = doc
+            .vmap
+            .rows
+            .iter()
+            .flat_map(|r| runs_of(&r.glyphs, usize::MAX, usize::MAX, &[]))
+            .filter(|r| r.role == "mark")
+            .map(|r| (r.text.clone(), r.mark_color.clone()))
+            .collect();
+        assert_eq!(
+            marks,
+            [
+                ("red".to_string(), Some("red".to_string())),
+                ("plain".to_string(), None),
+            ]
         );
     }
 

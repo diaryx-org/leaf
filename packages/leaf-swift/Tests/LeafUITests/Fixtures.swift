@@ -23,10 +23,14 @@ func mkRun(
     sel: Bool = false,
     // A host highlight over the run: its id and `#RRGGBB` hint, or neither.
     hl: String? = nil,
-    hlColor: String? = nil
+    hlColor: String? = nil,
+    // The colour an author named on a `==mark==`, by name — nil for a plain
+    // highlight and for every other role.
+    markColor: String? = nil
 ) -> Run {
     Run(text: text, role: role, bold: bold, italic: italic, underline: underline,
-        strike: strike, sup: sup, sub: sub, src: src, sel: sel, hl: hl, hlColor: hlColor)
+        strike: strike, sup: sup, sub: sub, src: src, sel: sel, hl: hl, hlColor: hlColor,
+        markColor: markColor)
 }
 
 func row(

@@ -58,7 +58,7 @@ use std::ops::Range;
 
 use twig::{FlatNode, Kind};
 
-use crate::style::{Baseline, Role, Style};
+use crate::style::{Baseline, MarkColor, Role, Style};
 
 /// A run of source bytes that share one style. Ranges are source byte offsets,
 /// like the caret and [`crate::Highlight`], so nothing has to be converted to
@@ -286,7 +286,7 @@ fn style_of(node: &FlatNode, base: Style) -> Style {
         // The inline marks, matched to `wysiwyg`'s arms one for one.
         Kind::Emph => base.italic(),
         Kind::Strong => base.bold(),
-        Kind::Mark => base.role(Role::Mark),
+        Kind::Mark => base.role(Role::Mark(MarkColor::from_attrs(&node.attrs))),
         Kind::Insert => base.underline(),
         Kind::Delete => base.strikethrough(),
         Kind::Superscript => base.baseline(Baseline::Super),
@@ -396,6 +396,34 @@ mod tests {
         let style = m.style_at(b);
         assert_eq!(style.role, Role::Heading(2), "still heading text");
         assert!(style.italic, "and italic");
+    }
+
+    #[test]
+    fn a_coloured_highlights_emoji_is_markup_and_its_words_are_the_mark() {
+        // The source view's answer to the same question the rendered one gets:
+        // `==🔴 ` is the delimiter, `red` is the mark, and the mark knows
+        // which colour it was written in. Parsed with `parse_extensions` — the
+        // flags leaf actually opens documents with — because `==…==` is a
+        // Markdown *extension*, and a map built without them would show the
+        // literal text this test would then be asserting nothing about.
+        let src = "a ==🔴 red== b\n";
+        let mut ed = twig::Editor::new_ext(
+            src.as_bytes(),
+            Format::Markdown,
+            crate::doc::parse_extensions(),
+        )
+        .unwrap();
+        let m = build(&ed.nodes().unwrap(), src);
+        assert_eq!(
+            where_style(&m, src, |s| s.role == Role::Mark(Some(MarkColor::Red))),
+            "red",
+            "the words carry the mark and its colour"
+        );
+        assert_eq!(
+            where_style(&m, src, |s| s.role == Role::Delimiter),
+            "==🔴 ==",
+            "the fences and the emoji between them are its markup"
+        );
     }
 
     /// The delimiter role sits *on top of* the run's own emphasis rather than

@@ -32,8 +32,11 @@ pub enum Role {
     Code,
     /// A hyperlink's visible text (or bare URL/email).
     Link,
-    /// Highlighted / marked text (`==mark==`).
-    Mark,
+    /// Highlighted / marked text (`==mark==`), carrying the colour the author
+    /// named if they named one. `None` is a plain highlight — the only kind
+    /// there was before twig grew Obsidian's `==🔴 red==` spelling, and
+    /// still the only kind a format without the colour extension can produce.
+    Mark(Option<MarkColor>),
     /// A list item's bullet or number — synthetic decoration, not authored text.
     ListMarker,
     /// A block quote's gutter (`│`), drawn down its left edge.
@@ -59,6 +62,102 @@ pub enum Role {
     /// real picture in its place — the same skip-the-picture contract
     /// [`Role::Rule`] table borders use.
     Image,
+}
+
+/// The colour an author named on a highlight — the closed vocabulary twig
+/// records as a `mark` node's `data-color`, one variant per circle emoji the
+/// `==🔴 text==` spelling recognises.
+///
+/// A *name*, not a paint value, which is why this lives in core at all when
+/// [`Style`] otherwise holds no colour: `red` here is what the author wrote,
+/// and each frontend still decides which red draws it — a terminal picks an
+/// ANSI hue, a GUI an `Hsla`, the web a CSS custom property. The distinction is
+/// the same one [`Role::Heading`] makes by carrying a level rather than a size.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MarkColor {
+    Red,
+    Orange,
+    Yellow,
+    Green,
+    Blue,
+    Purple,
+    Brown,
+}
+
+impl MarkColor {
+    /// The colour a `mark` node's attributes name, if any — twig records it
+    /// under `data-color`, having stripped the emoji that spelled it out of the
+    /// node's content.
+    ///
+    /// Takes the attribute list rather than the node so this module stays free
+    /// of twig as well as of any toolkit; the pairs are plain `String`s, and
+    /// both the WYSIWYG and source builders hand over the same `node.attrs`.
+    pub fn from_attrs(attrs: &[(String, Option<String>)]) -> Option<Self> {
+        attrs
+            .iter()
+            .find(|(k, _)| k == "data-color")
+            .and_then(|(_, v)| v.as_deref())
+            .and_then(Self::from_attr)
+    }
+
+    /// Read a `data-color` attribute value. `None` for a name outside the
+    /// vocabulary, which a frontend then draws as a plain highlight rather than
+    /// guessing at a hue.
+    pub fn from_attr(value: &str) -> Option<Self> {
+        Some(match value {
+            "red" => Self::Red,
+            "orange" => Self::Orange,
+            "yellow" => Self::Yellow,
+            "green" => Self::Green,
+            "blue" => Self::Blue,
+            "purple" => Self::Purple,
+            "brown" => Self::Brown,
+            _ => return None,
+        })
+    }
+
+    /// The name twig spells it with, and what [`from_attr`](Self::from_attr)
+    /// reads back — also the suffix the web and Swift frontends build a class
+    /// id out of.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Red => "red",
+            Self::Orange => "orange",
+            Self::Yellow => "yellow",
+            Self::Green => "green",
+            Self::Blue => "blue",
+            Self::Purple => "purple",
+            Self::Brown => "brown",
+        }
+    }
+
+    /// This colour's position in [`ALL`](Self::ALL) — the index a frontend's
+    /// own palette array is keyed by, the way [`Role::Heading`]'s level keys a
+    /// heading ramp.
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Red => 0,
+            Self::Orange => 1,
+            Self::Yellow => 2,
+            Self::Green => 3,
+            Self::Blue => 4,
+            Self::Purple => 5,
+            Self::Brown => 6,
+        }
+    }
+
+    /// Every colour, in the order twig's own enum declares them. The frontends
+    /// iterate this to build their palettes, so a colour added here is one a
+    /// palette test immediately demands an entry for.
+    pub const ALL: [Self; 7] = [
+        Self::Red,
+        Self::Orange,
+        Self::Yellow,
+        Self::Green,
+        Self::Blue,
+        Self::Purple,
+        Self::Brown,
+    ];
 }
 
 /// Which line a glyph sits on relative to the text around it.
@@ -129,5 +228,44 @@ impl Style {
     pub const fn baseline(mut self, b: Baseline) -> Self {
         self.baseline = b;
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// [`MarkColor`] carries three hand-written tables — `ALL`, `index`, and the
+    /// `name`/`from_attr` pair — and nothing but this makes them agree. The
+    /// frontends index their palettes by `index` and look colours up by `name`,
+    /// so a variant added to one table and missed in another draws the wrong
+    /// wash rather than failing to compile.
+    #[test]
+    fn the_colour_tables_agree_with_each_other() {
+        for (i, c) in MarkColor::ALL.into_iter().enumerate() {
+            assert_eq!(c.index(), i, "{} is not where ALL puts it", c.name());
+            assert_eq!(MarkColor::from_attr(c.name()), Some(c), "name round-trip");
+        }
+        assert_eq!(MarkColor::from_attr("chartreuse"), None);
+        assert_eq!(MarkColor::from_attr(""), None);
+    }
+
+    /// The attribute twig actually writes, read off the shape a `FlatNode`
+    /// hands over — a `mark` with no colour, one with the colour, and one
+    /// carrying some other attribute entirely.
+    #[test]
+    fn a_colour_is_read_out_of_the_data_color_attribute_and_nothing_else() {
+        let attr = |k: &str, v: &str| vec![(k.to_string(), Some(v.to_string()))];
+        assert_eq!(
+            MarkColor::from_attrs(&attr("data-color", "green")),
+            Some(MarkColor::Green)
+        );
+        assert_eq!(MarkColor::from_attrs(&[]), None);
+        assert_eq!(MarkColor::from_attrs(&attr("id", "red")), None);
+        // A bare attribute has no value to read a colour out of.
+        assert_eq!(
+            MarkColor::from_attrs(&[("data-color".to_string(), None)]),
+            None
+        );
     }
 }

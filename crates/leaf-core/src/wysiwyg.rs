@@ -28,7 +28,7 @@ use twig::{Alignment, ContainerOrigin, DirectiveForm, Editor, FlatNode, Kind, Qu
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::style::{Baseline, Role, Style};
+use crate::style::{Baseline, MarkColor, Role, Style};
 
 /// One rendered character plus the source byte offset it originates from.
 /// Synthetic glyphs (a list bullet, a quote gutter) point at their block's
@@ -3429,7 +3429,16 @@ impl Builder<'_> {
             }
             "emph" => self.inline_delimited(id, base.italic(), out),
             "strong" => self.inline_delimited(id, base.bold(), out),
-            "mark" => self.inline_delimited(id, base.role(Role::Mark), out),
+            // A coloured highlight's emoji is spelling, not content: twig strips
+            // it and records the colour on the node, so the glyphs are the
+            // author's words and the colour rides the role. Revealed markup
+            // still shows the emoji, because `delims` reads the source bytes
+            // between the span and the content span — which is exactly the
+            // `==🔴 ` the author typed.
+            "mark" => {
+                let color = MarkColor::from_attrs(&node.attrs);
+                self.inline_delimited(id, base.role(Role::Mark(color)), out)
+            }
             "insert" => self.inline_delimited(id, base.underline(), out),
             "delete" => self.inline_delimited(id, base.strikethrough(), out),
             // The one pair whose whole meaning is *where the glyphs sit*. Drawn
@@ -6184,6 +6193,49 @@ mod tests {
             .unwrap();
         assert_eq!(label.style.role, Role::Link);
         assert_eq!(label.style.baseline, Baseline::Super);
+    }
+
+    /// The [`Role`] of the first glyph spelling `ch` — how a test reads one
+    /// run's styling off a map without caring which row it landed on.
+    fn role_of(m: &VisualMap, ch: char) -> Role {
+        m.rows
+            .iter()
+            .flat_map(|r| r.glyphs.iter())
+            .find(|g| g.ch == ch)
+            .unwrap_or_else(|| panic!("no glyph spelling {ch:?}"))
+            .style
+            .role
+    }
+
+    #[test]
+    fn a_markdown_highlight_is_a_mark_and_a_coloured_one_names_its_colour() {
+        // twig 3.3's `highlight`/`highlight_colors`, which `parse_extensions`
+        // turns on for every leaf document: `==text==` is a `mark` in Markdown
+        // and not the literal `==` it used to be, and `==🔴 text==` is one
+        // carrying a colour.
+        //
+        // `doc_built` rather than `map`, deliberately — the extensions are
+        // leaf's choice, not twig's default, so a test that parsed bare
+        // Markdown here would be testing a document leaf never builds.
+        let doc = doc_built("Plain ==yes== and ==🔴 red== ok\n");
+        assert_eq!(role_of(&doc.vmap, 'y'), Role::Mark(None));
+        assert_eq!(
+            role_of(&doc.vmap, 'r'),
+            Role::Mark(Some(MarkColor::Red)),
+            "the `data-color` twig stripped the emoji into"
+        );
+        assert_eq!(role_of(&doc.vmap, 'P'), Role::Body);
+    }
+
+    #[test]
+    fn the_emoji_that_named_a_highlight_is_markup_and_never_drawn() {
+        // The colour is *spelling*: twig strips the emoji out of the mark's
+        // content, so the reader sees the words and the wash, never the circle.
+        // Drawing it would put a character in the rendered text that the author
+        // wrote as syntax — the same mistake as drawing an emphasis's `*`.
+        let doc = doc_built("Plain ==yes== and ==🔴 red== ok\n");
+        let drawn: String = doc.vmap.rows[0].glyphs.iter().map(|g| g.ch).collect();
+        assert_eq!(drawn, "Plain yes and red ok");
     }
 
     #[test]

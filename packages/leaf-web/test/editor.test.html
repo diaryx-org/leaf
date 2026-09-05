@@ -453,6 +453,21 @@ await test("a host highlight washes exactly its bytes and answers a click", () =
   return ed;
 });
 
+// ── author highlights ─────────────────────────────────────────────────────
+
+await test("a coloured highlight keeps the mark class and swaps only the wash", () => {
+  const ed = editor("a ==\u{1F534} red== and ==plain== b\n");
+  const marks = [...ed.contentEl.querySelectorAll(".leaf-r-mark")];
+  eq(marks.map((e) => e.textContent), ["red", "plain"],
+     "the emoji that named the colour was drawn as text");
+  assert(marks[0].classList.contains("leaf-mk-red"), "the red wash was not asked for");
+  assert(!marks[1].classList.contains("leaf-mk-red"), "a plain highlight took a colour");
+  // Both are still `leaf-r-mark`, which is what makes the colour additive: a
+  // stylesheet that knows nothing of `leaf-mk-*` still draws the highlight.
+  assert(marks.every((e) => e.classList.contains("leaf-r-mark")), "the mark role was lost");
+  return ed;
+});
+
 // ── what the host is told ─────────────────────────────────────────────────
 
 await test("read-only refuses the edit and drops the editing chrome", () => {
@@ -704,7 +719,9 @@ await test("capabilities answer for the format, not for the editor", () => {
   const md = editor("hello\n");
   const caps = md.capabilities();
   eq(caps.bold, true, "markdown has bold");
-  eq(caps.mark, false, "markdown has no highlight syntax");
+  // Markdown *reads* `==mark==` since twig 3.3 — what it has no spelling for
+  // is authoring one, which is the question `capabilities` answers.
+  eq(caps.mark, false, "markdown cannot author a highlight");
   assert(md.isAuthorable(), "markdown is authorable");
   md.destroy();
 

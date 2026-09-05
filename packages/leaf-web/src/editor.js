@@ -940,6 +940,11 @@ export class LeafEditor {
       span.dataset.hl = run.hl;
       if (run.hl_color) span.style.setProperty("--leaf-hl", run.hl_color);
     }
+    // A highlight the author coloured (`==🔴 text==`). A class rather than an
+    // inline custom property, unlike `--leaf-hl` above: the name comes from a
+    // closed vocabulary the stylesheet already has a rule for, where a host
+    // highlight's colour is an arbitrary value only the host knows.
+    if (run.mark_color) cls += " leaf-mk-" + run.mark_color;
     span.className = cls;
     span._src = run.src;
     span.textContent = run.text;
@@ -1915,7 +1920,8 @@ function sameStyle(a, b) {
     a.sup === b.sup &&
     a.sub === b.sub &&
     a.hl === b.hl &&
-    a.hl_color === b.hl_color
+    a.hl_color === b.hl_color &&
+    a.mark_color === b.mark_color
   );
 }
 
@@ -1930,6 +1936,7 @@ function runKey(run) {
     (run.sup ? "^" : "") +
     (run.sub ? "_" : "") +
     (run.hl ? "#" + run.hl + ":" + (run.hl_color || "") : "") +
+    (run.mark_color ? "=" + run.mark_color : "") +
     "\u0001" +
     run.text +
     "\u0002"
@@ -2208,6 +2215,17 @@ const EDITOR_CSS = `
   --leaf-link: #1d68c7;
   --leaf-mark-bg: #f4e59a;
   --leaf-mark-fg: #23262c;
+  /* The seven washes a coloured highlight can name. Pale enough that
+     --leaf-mark-fg still reads over them, so the colour is the pen and the ink
+     is unchanged. Yellow is --leaf-mark-bg itself: a document that says yellow
+     and one that says nothing both mean a yellow highlighter. */
+  --leaf-mk-red: #f8c9c9;
+  --leaf-mk-orange: #fbdcb4;
+  --leaf-mk-yellow: #f4e59a;
+  --leaf-mk-green: #c6ecc6;
+  --leaf-mk-blue: #c4dcf7;
+  --leaf-mk-purple: #e0cdf7;
+  --leaf-mk-brown: #e4d2b2;
   --leaf-code-fg: #b5305f;
   --leaf-code-bg: #f1f2f4;
   --leaf-code-border: #dfe2e8;
@@ -2230,6 +2248,16 @@ const EDITOR_CSS = `
     --leaf-link: #6fb3ff;
     --leaf-mark-bg: #d8c56a;
     --leaf-mark-fg: #1c1f26;
+    /* Deeper on a dark page, for the reason --leaf-mark-bg is: the ink stays
+       dark, so a wash that reads as pale against white reads as a glare
+       against near-black. */
+    --leaf-mk-red: #d89b9b;
+    --leaf-mk-orange: #d9b384;
+    --leaf-mk-yellow: #d8c56a;
+    --leaf-mk-green: #9cd09c;
+    --leaf-mk-blue: #93b8dd;
+    --leaf-mk-purple: #bda3dc;
+    --leaf-mk-brown: #c0a87e;
     --leaf-code-fg: #e59ac0;
     --leaf-code-bg: #2a2f3a;
     --leaf-code-border: #3a4150;
@@ -2254,6 +2282,14 @@ const EDITOR_CSS = `
    (set on the row) do the distinguishing, as in leaf-gpui. */
 .leaf-r-link { color: var(--leaf-link); text-decoration: underline; }
 .leaf-r-mark { background: var(--leaf-mark-bg); color: var(--leaf-mark-fg); border-radius: 2px; }
+/* A highlight that named its colour swaps the wash and keeps the ink. */
+.leaf-r-mark.leaf-mk-red { background: var(--leaf-mk-red); }
+.leaf-r-mark.leaf-mk-orange { background: var(--leaf-mk-orange); }
+.leaf-r-mark.leaf-mk-yellow { background: var(--leaf-mk-yellow); }
+.leaf-r-mark.leaf-mk-green { background: var(--leaf-mk-green); }
+.leaf-r-mark.leaf-mk-blue { background: var(--leaf-mk-blue); }
+.leaf-r-mark.leaf-mk-purple { background: var(--leaf-mk-purple); }
+.leaf-r-mark.leaf-mk-brown { background: var(--leaf-mk-brown); }
 .leaf-r-list { color: var(--leaf-muted); }
 .leaf-r-quote { color: var(--leaf-muted); }
 .leaf-r-rule { color: var(--leaf-muted); }

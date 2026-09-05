@@ -38,6 +38,26 @@ pub const CODE_INSET: usize = 1;
 /// `COLORFGBG` — over a bare SSH session, say — and gets guessed wrong.
 pub const THEME_ENV: &str = "LEAF_THEME";
 
+/// The seven highlighter washes, indexed by
+/// [`MarkColor::index`](leaf_core::MarkColor::index): pale red, orange, yellow,
+/// green, blue, purple, brown, each from the light end of the 256-colour cube
+/// so black ink reads on it.
+///
+/// 256-indexed rather than ANSI-named, unlike most of the dark palette: the
+/// author asked for *red*, not for "whatever the terminal theme calls red",
+/// and a user whose red is a dark maroon would get unreadable ink over it.
+/// A named colour is right where the terminal's own taste should win (a
+/// heading's hue); it is wrong where the document named the colour itself.
+const MARK_WASHES: [Color; 7] = [
+    Color::Indexed(217), // red     — (255, 175, 175)
+    Color::Indexed(223), // orange  — (255, 215, 175)
+    Color::Indexed(228), // yellow  — (255, 255, 135)
+    Color::Indexed(157), // green   — (175, 255, 175)
+    Color::Indexed(153), // blue    — (175, 215, 255)
+    Color::Indexed(183), // purple  — (215, 175, 255)
+    Color::Indexed(180), // brown   — (215, 175, 135)
+];
+
 /// The terminal's palette, keyed on a glyph's semantic [`Role`]. This is the
 /// presentation the core used to bake in and no longer does: a terminal can
 /// usually only tell a heading from body text by *color*, so the choice of
@@ -79,6 +99,16 @@ pub struct Theme {
     pub mark_fg: Color,
     /// The highlighter wash behind marked text.
     pub mark_bg: Color,
+    /// The washes behind a *coloured* highlight — `==🔴 text==` and its six
+    /// siblings — indexed by [`MarkColor::index`](leaf_core::MarkColor::index),
+    /// so `[0]` is red.
+    ///
+    /// The same row in both schemes, and deliberately: a highlighter pen is a
+    /// pale wash under dark ink whatever colour the page is, so these are the
+    /// pale end of the cube and [`mark_fg`](Self::mark_fg) — black in either
+    /// scheme — reads on every one of them. The alternative was a fg/bg pair
+    /// per colour, fourteen fields to say what one row of washes says.
+    pub mark_colors: [Color; 7],
     /// A list item's bullet or number.
     pub list_marker: Color,
     /// A block quote's `│` gutter.
@@ -173,6 +203,7 @@ impl Theme {
             link: Color::Cyan,
             mark_fg: Color::Black,
             mark_bg: Color::Yellow,
+            mark_colors: MARK_WASHES,
             list_marker: Color::Yellow,
             quote_gutter: Color::Green,
             rule: Color::DarkGray,
@@ -232,6 +263,7 @@ impl Theme {
             link: Color::Indexed(26),
             mark_fg: Color::Black,
             mark_bg: Color::Indexed(220),
+            mark_colors: MARK_WASHES,
             list_marker: Color::Indexed(94),
             quote_gutter: Color::Indexed(22),
             rule: Color::Indexed(243),
@@ -309,7 +341,14 @@ impl Theme {
             // pill, in a fenced block the box's fill matches so the two blend.
             Role::Code => s.fg(self.code_fg).bg(self.code_bg),
             Role::Link => s.fg(self.link).add_modifier(Modifier::UNDERLINED),
-            Role::Mark => s.fg(self.mark_fg).bg(self.mark_bg),
+            // A highlight the author gave no colour takes the theme's own
+            // highlighter; one that names a colour takes that wash instead. The
+            // ink is the same dark either way — the colour is the pen, not the
+            // writing.
+            Role::Mark(color) => s.fg(self.mark_fg).bg(match color {
+                Some(c) => self.mark_colors[c.index()],
+                None => self.mark_bg,
+            }),
             Role::ListMarker => s.fg(self.list_marker),
             Role::QuoteGutter => s.fg(self.quote_gutter),
             // Thematic breaks and table rules are quiet grey.
@@ -595,6 +634,7 @@ fn char_cols(ch: char) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use leaf_core::MarkColor;
 
     #[test]
     fn colorfgbg_reads_the_trailing_background_index() {
@@ -830,6 +870,33 @@ mod tests {
         assert_eq!(color(9), t.heading[5]);
         // Level 0 is not a thing, but a malformed AST must not index out of range.
         assert_eq!(color(0), t.heading[0]);
+    }
+
+    /// A highlight the author coloured takes its own wash and keeps the ink —
+    /// so the seven of them are seven distinct backgrounds over one foreground,
+    /// which is what a highlighter pen is.
+    #[test]
+    fn each_named_highlight_colour_gets_its_own_wash() {
+        for scheme in [ColorScheme::Dark, ColorScheme::Light] {
+            let t = Theme::for_scheme(scheme);
+            let mut seen = Vec::new();
+            for c in MarkColor::ALL {
+                let s = t.role_style(Role::Mark(Some(c)));
+                assert_eq!(s.fg, Some(t.mark_fg), "{} keeps the ink", c.name());
+                let bg = s.bg.expect("a wash");
+                assert!(
+                    !seen.contains(&bg),
+                    "{} repeats a wash already used in {scheme:?}",
+                    c.name()
+                );
+                seen.push(bg);
+            }
+            // And a highlight that named nothing still gets the theme's own
+            // highlighter, which is what every `==mark==` had before colours.
+            let plain = t.role_style(Role::Mark(None));
+            assert_eq!(plain.bg, Some(t.mark_bg));
+            assert_eq!(plain.fg, Some(t.mark_fg));
+        }
     }
 
     /// The plain-heading variant drops the ramp and nothing else: every level

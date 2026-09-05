@@ -40,7 +40,7 @@ readme = "README.md"
 
 [workspace.dependencies]
 # The document AST + offset-addressed span-splice editor.
-twig-doc = "3.2"
+twig-doc = "3.3"
 anyhow = "1"
 # Frontend-neutral core: the caret/selection model + AST→glyph map, styled with
 # a toolkit-agnostic Style. Each frontend crate maps that to its own styling.

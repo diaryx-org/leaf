@@ -146,7 +146,8 @@ Two views, toggled with `⌥w`:
 
 - **source** — the raw document with the caret in source bytes.
 - **wysiwyg** — the markup *resolved*: headings coloured, `**bold**` as real
-  bold, the `#` / `**` / `` ` `` delimiters hidden. The caret still works because
+  bold, `==🔴 text==` as a red highlighter wash, the `#` / `**` / `` ` ``
+  delimiters hidden. The caret still works because
   every rendered glyph is tied back to the source byte it came from, so cursor
   motion, clicks, and selection ride the *visible* text and step right over the
   hidden delimiters. Because it reads the AST, Markdown and Djot that parse alike
@@ -272,9 +273,15 @@ Return; `table` finds the whole grid family, `ir` finds Insert Row Above.
 The palette, the context menu, and the key reference are all generated from one
 command table (`apps/leaf-tui/src/commands.rs`), so a command cannot gain a key
 without gaining a menu row and a line in the help. Every one of those surfaces
-also **dims what the document's format cannot spell** — `==highlight==` in a
-Markdown file, a footnote in an HTML one — rather than hiding it, so what a
-format can't do stays legible instead of merely absent.
+also **dims what the document's format cannot spell** — a footnote in an HTML
+file, `==highlight==` in a Markdown one — rather than hiding it, so what a
+format can't do stays legible instead of merely absent. The highlight is the
+subtle case, and worth stating outright: leaf *renders* `==text==` and
+`==🔴 text==` in Markdown (twig 3.3's `highlight` extensions, which every leaf
+document is parsed with), so a highlight written by hand or converted in from
+Djot reads and paints. What twig will not do is author one, because the reader
+on the other end may have the extension off — so the button dims over a document
+that renders highlights perfectly well.
 
 ## Status
 

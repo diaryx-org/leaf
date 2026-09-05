@@ -112,10 +112,13 @@ pub struct EditorStyle {
     /// code, and body text all read in [`Self::text`]; only these three roles
     /// take a color of their own. `link` is a hyperlink; `muted` is quiet
     /// decoration (bullets, quote/code gutters, rules); `mark_background` is the
-    /// highlight behind `==marked==` text.
+    /// highlight behind `==marked==` text, and `mark_colors` the seven washes a
+    /// highlight that named its own colour (`==🔴 text==`) takes instead,
+    /// indexed by [`MarkColor::index`](leaf_core::MarkColor::index).
     pub link: Hsla,
     pub muted: Hsla,
     pub mark_background: Hsla,
+    pub mark_colors: [Hsla; 7],
     /// Body font family.
     pub font_family: SharedString,
     /// The monospace family code (inline `` `verbatim` `` and fenced blocks) is
@@ -156,6 +159,20 @@ impl Default for EditorStyle {
             link: rgb(0x1e66f5).into(),
             muted: rgb(0x9a9a9a).into(),
             mark_background: rgb(0xfaf0a0).into(),
+            // Red, orange, yellow, green, blue, purple, brown — highlighter
+            // washes, each pale enough that `text` still reads over it. Yellow
+            // is `mark_background` exactly, and that is the honest answer rather
+            // than a missing distinction: a document that *says* yellow and one
+            // that says nothing both mean a yellow highlighter.
+            mark_colors: [
+                rgb(0xffd2d2).into(),
+                rgb(0xffe2c2).into(),
+                rgb(0xfaf0a0).into(),
+                rgb(0xccf0cc).into(),
+                rgb(0xcce2ff).into(),
+                rgb(0xe8d2ff).into(),
+                rgb(0xead8b8).into(),
+            ],
             font_family: "Helvetica".into(),
             mono_font_family: "Menlo".into(),
             font_size: px(16.0),
@@ -2401,13 +2418,17 @@ fn style_bits(s: CoreStyle) -> u16 {
         Role::Body => 0u16,
         Role::Code => 1,
         Role::Link => 2,
-        Role::Mark => 3,
+        Role::Mark(None) => 3,
         Role::ListMarker => 4,
         Role::QuoteGutter => 5,
         Role::Image => 6,
         Role::Rule => 7,
         Role::Delimiter => 8,
         Role::Heading(l) => 9 + l.min(7) as u16, // 9..=16
+        // A coloured highlight's wash reaches the run's background, so two marks
+        // that differ only in colour are two different shapes — they cannot
+        // share a key with each other or with the uncoloured `3`.
+        Role::Mark(Some(c)) => 17 + c.index() as u16, // 17..=23
     };
     (s.bold as u16)
         | ((s.italic as u16) << 1)
@@ -3864,6 +3885,7 @@ impl Element for TextElement {
                     link: style.link,
                     muted: style.muted,
                     mark_bg: style.mark_background,
+                    mark_colors: style.mark_colors,
                     code_bg: style.code_background,
                 };
                 let line_ratio = (f32::from(line_height) / f32::from(font_size).max(1.0)).max(1.0);
@@ -4492,6 +4514,7 @@ fn test_run_style(body: Font) -> RunStyle {
         link: theme.link,
         muted: theme.muted,
         mark_bg: theme.mark_background,
+        mark_colors: theme.mark_colors,
         code_bg: theme.code_background,
     }
 }
@@ -5595,9 +5618,26 @@ mod table_layout_tests {
         assert_eq!(link.color, theme.link, "a link takes the link color");
         assert!(link.underline.is_some(), "a link is underlined");
         assert_eq!(
-            run(Role::Mark).background_color,
+            run(Role::Mark(None)).background_color,
             Some(theme.mark_background),
             "mark is highlighted"
+        );
+        // A colour the author named picks its own wash out of the ramp, and
+        // still reads in the default ink — the wash is the pen, not the writing.
+        let red = run(Role::Mark(Some(leaf_core::MarkColor::Red)));
+        assert_eq!(
+            red.background_color,
+            Some(theme.mark_colors[0]),
+            "a red highlight takes the red wash"
+        );
+        assert_eq!(
+            red.color, theme.text,
+            "coloured or not, the ink is the same"
+        );
+        assert_ne!(
+            style_bits(CoreStyle::default().role(Role::Mark(Some(leaf_core::MarkColor::Red)))),
+            style_bits(CoreStyle::default().role(Role::Mark(Some(leaf_core::MarkColor::Blue)))),
+            "two colours are two shapes — a shared key would paint one wash twice"
         );
         assert_eq!(
             run(Role::QuoteGutter).color,

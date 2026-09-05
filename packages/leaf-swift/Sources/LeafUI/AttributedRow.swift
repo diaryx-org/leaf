@@ -142,7 +142,7 @@ enum AttributedRow {
         if run.role == "code" && !codeRow {
             attrs[.backgroundColor] = theme.codeBackground
         } else if run.role == "mark" {
-            attrs[.backgroundColor] = theme.markBackground
+            attrs[.backgroundColor] = theme.markBackground(run.markColor)
         }
         // A host highlight washes over whatever role background the run had —
         // it is the newer statement about these bytes, and a wash that lost to

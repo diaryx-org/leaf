@@ -4381,9 +4381,11 @@ mod tests {
             lvl.items[lvl.selected].label()
         };
         // Up from Paragraph wraps to the last row this *Markdown* document can
-        // actually run — Code, because Markdown spells three of the eight inline
-        // marks and highlight, strikethrough and underline are not among them —
-        // never landing on the "Inline" header on the way.
+        // actually run — Code, because Markdown *authors* three of the eight
+        // inline marks and highlight, strikethrough and underline are not among
+        // them — never landing on the "Inline" header on the way. Authors, not
+        // reads: leaf renders a Markdown `==highlight==` since twig 3.3, and the
+        // row is still dim, because writing one is the gesture twig refuses.
         handle_key(&mut doc, keyp(KeyCode::Up), &mut app);
         assert_eq!(row(&app), "Code");
         // Down from there wraps past the "Block" header back to Paragraph.

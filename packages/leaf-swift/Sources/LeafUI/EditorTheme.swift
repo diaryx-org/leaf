@@ -288,6 +288,21 @@ public struct EditorTheme {
         return color.withAlphaComponent(0.32)
     }
 
+    /// The wash behind one `==mark==`: the colour the author named, or the
+    /// theme's own highlighter when they named none.
+    ///
+    /// A *name* from a closed vocabulary, unlike `highlightBackground(_:)`'s
+    /// `#RRGGBB` — the document said "red" and the theme decides which red, the
+    /// same division of labour a role and a palette already have. A name the
+    /// theme doesn't know falls back rather than guessing, so a colour twig
+    /// grows later draws as a plain highlight until this list catches up.
+    func markBackground(_ name: String?) -> LeafColor {
+        guard let name, let color = Palette.markBackground(named: name) else {
+            return markBackground
+        }
+        return color
+    }
+
     func headingSize(_ level: Int) -> CGFloat {
         let i = min(max(level, 1), 6) - 1
         return fontSize * headingScale[i]

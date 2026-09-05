@@ -30,7 +30,7 @@ pub use doc::{
     InlineMarks, Landing, LineFlow, MarkupMode, Quote, View, VisualKey,
 };
 pub use source::{SourceMap, StyledRun};
-pub use style::{Baseline, Role, Style};
+pub use style::{Baseline, MarkColor, Role, Style};
 pub use wysiwyg::{
     BlockClass, Boundary, CodeBlockInfo, ColorScheme, Glyph, MediaInfo, MediaKind, MediaSource,
     TableCell, TableInfo, TableRow, VRow, VisualMap,

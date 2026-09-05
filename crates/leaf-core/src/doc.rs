@@ -685,22 +685,37 @@ pub struct Doc {
     pub drawn_caret: Option<usize>,
 }
 
-/// The Markdown extensions every leaf document is parsed with. `html_elements`
-/// and `directives` depart from twig's defaults. `html_elements` promotes
-/// embedded raw HTML (`<img>`, `<picture>`, `<source>`, …) into semantic AST
-/// nodes, so a picture becomes a real `image` node the frontends can frame and
-/// rasterize instead of opaque `raw_block` text. `directives` turns on generic
-/// `:::name{.class}` fenced-div containers (`directive` nodes), which a host
-/// app uses for its own semantics (diaryx's `:::vis{.audience}` visibility
-/// blocks) — core renders any directive as a plain tinted container, agnostic
-/// of `name`. Both flags are inert for non-Markdown formats, so it's safe to
-/// pass them unconditionally. Threading this through every constructor (not
-/// just `open`) keeps `from_source`, `blank`, and `reload` parsing the same
-/// document the same way — twig reparses with these same flags after each edit.
-fn parse_extensions() -> MarkdownExtensions {
+/// The Markdown extensions every leaf document is parsed with — four of them,
+/// each departing from twig's defaults for a reason leaf can state.
+///
+/// `html_elements` promotes embedded raw HTML (`<img>`, `<picture>`,
+/// `<source>`, …) into semantic AST nodes, so a picture becomes a real `image`
+/// node the frontends can frame and rasterize instead of opaque `raw_block`
+/// text. `directives` turns on generic `:::name{.class}` fenced-div containers
+/// (`directive` nodes), which a host app uses for its own semantics (diaryx's
+/// `:::vis{.audience}` visibility blocks) — core renders any directive as a
+/// plain tinted container, agnostic of `name`.
+///
+/// `highlight` and `highlight_colors` are the pair that makes Markdown read
+/// `==text==` as a `mark` node, and `==🔴 text==` as one carrying a
+/// `data-color`. leaf already had somewhere to put both: the
+/// [`Mark`](crate::Role::Mark) role and the ⌘⇧M highlight button predate them,
+/// and until twig 3.3 a Markdown document could only ever *receive* a highlight
+/// from a Djot one it was converted from — the button wrote `==…==` and the
+/// reparse read it straight back as text.
+/// They are on together because a colour is inert without the highlight itself,
+/// and a document that writes `==🔴 x==` means the colour by it.
+///
+/// Every flag is inert for non-Markdown formats, so it's safe to pass them
+/// unconditionally. Threading this through every constructor (not just `open`)
+/// keeps `from_source`, `blank`, and `reload` parsing the same document the same
+/// way — twig reparses with these same flags after each edit.
+pub(crate) fn parse_extensions() -> MarkdownExtensions {
     MarkdownExtensions {
         html_elements: true,
         directives: true,
+        highlight: true,
+        highlight_colors: true,
         ..Default::default()
     }
 }
@@ -10871,6 +10886,42 @@ mod tests {
     }
 
     #[test]
+    fn revealing_a_coloured_highlight_shows_the_emoji_that_spelled_it() {
+        // The emoji is a delimiter, not content — so `MarkupMode::Full` owes it
+        // the same treatment as an emphasis's `*`: hidden while the caret is
+        // elsewhere, shown in full where the caret lands. That falls out of
+        // `delims` reading the bytes between the mark's span and its content
+        // span, which is exactly `==🔴 ` and `==`, rather than from a table
+        // of spellings — so the no-space form `==🟢green==` reveals right too.
+        let mut d = doc_in(
+            View::Wysiwyg,
+            "reveal_coloured_mark",
+            "a ==🔴 red== one\n\nb ==plain== two\n",
+        );
+        d.set_markup_mode(MarkupMode::Full);
+
+        caret_at(&mut d, "red");
+        let rows = drawn_rows(&d);
+        assert!(
+            rows.iter().any(|r| r == "a ==🔴 red== one"),
+            "the caret's line shows the colour it was written with: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|r| r == "b plain two"),
+            "and every other line stays resolved: {rows:?}"
+        );
+
+        // Away from it, the emoji goes back to being markup — the reader sees
+        // the words and the wash.
+        caret_at(&mut d, "two");
+        let rows = drawn_rows(&d);
+        assert!(
+            rows.iter().any(|r| r == "a red one"),
+            "resolved again: {rows:?}"
+        );
+    }
+
+    #[test]
     fn hidden_modes_never_reveal_wherever_the_caret_is() {
         // The two rungs below `Full` share a rendering: delimiters stay hidden
         // even under the caret. `Shortcuts` differing from `None` only in what
@@ -11295,9 +11346,16 @@ mod tests {
     fn a_mark_the_format_cannot_spell_arms_nothing() {
         // `toggle` with a collapsed caret doesn't reach twig at all — it arms a
         // sticky mark for the next text typed. Guarding only the twig call
-        // leaves that path live, promising a highlight Markdown will never spell
-        // and then swallowing the error inside `insert`. Markdown carries the
-        // case now that HTML spells `<mark>`: `==mark==` is djot's alone.
+        // leaves that path live, promising a highlight the gesture will not
+        // write and then swallowing the error inside `insert`.
+        //
+        // Markdown is still the case that carries this, and the reason is finer
+        // than it was: since twig 3.3 leaf *parses* `==mark==` in Markdown, so a
+        // highlight reads back and paints. What twig will not do is author one —
+        // its Markdown syntax table spells the mark but marks it unauthorable,
+        // because the reader on the other end may have the extension off. So the
+        // button stays disabled over a Markdown document that renders highlights
+        // perfectly well, and this test is what says so.
         let mut d = doc_with("mark", "Hello world\n");
         d.view = View::Wysiwyg;
         d.build_visual(80);

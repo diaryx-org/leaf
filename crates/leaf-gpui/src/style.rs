@@ -29,6 +29,11 @@ pub struct RunStyle {
     pub muted: Hsla,
     /// The highlight behind marked (`==mark==`) text.
     pub mark_bg: Hsla,
+    /// The washes behind a coloured highlight — `==🔴 text==` — indexed by
+    /// [`MarkColor::index`](leaf_core::MarkColor::index), so `[0]` is red. Pale,
+    /// like [`mark_bg`](Self::mark_bg): the text over them keeps reading in
+    /// [`text`](Self::text), so each has to be a wash rather than a fill.
+    pub mark_colors: [Hsla; 7],
     /// The tint behind an inline `` `code` `` run — the pill that sets it apart
     /// mid-sentence. A fenced block gets a drawn border box instead (geometry the
     /// element paints), but an inline run can only carry a background color.
@@ -82,7 +87,11 @@ pub fn text_run(len: usize, s: LStyle, rs: &RunStyle) -> TextRun {
     // code block's rows get the same tint from a quad the element paints behind
     // them, so the per-run background here reads the same either way.
     let background_color = match s.role {
-        Role::Mark => Some(rs.mark_bg),
+        // A highlight the author coloured takes that wash; one they didn't takes
+        // the theme's highlighter. The ink is `rs.text` either way, which is why
+        // both are pale.
+        Role::Mark(Some(c)) => Some(rs.mark_colors[c.index()]),
+        Role::Mark(None) => Some(rs.mark_bg),
         Role::Code => Some(rs.code_bg),
         _ => None,
     };

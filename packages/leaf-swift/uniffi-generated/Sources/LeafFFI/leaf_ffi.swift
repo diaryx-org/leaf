@@ -4507,6 +4507,19 @@ public struct Run {
      * default wash), carried beside the id so a renderer needs no lookup.
      */
     public var hlColor: String?
+    /**
+     * The colour the author named on a `mark` run — `"red"`, `"orange"`,
+     * `"yellow"`, `"green"`, `"blue"`, `"purple"`, `"brown"` — or absent for a
+     * plain `==highlight==` and for every other role.
+     *
+     * A *name*, unlike [`hl_color`](Self::hl_color)'s `#RRGGBB`, and that is
+     * the difference between the two: a host highlight's colour is the host's
+     * own choice and arrives as a value to paint, while this one is the
+     * document's word for it and the renderer picks the wash. It rides beside
+     * `role` rather than folding into it (`"mark-red"`) so a renderer that
+     * knows nothing about colours still draws the run as the highlight it is.
+     */
+    public var markColor: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -4558,7 +4571,19 @@ public struct Run {
         /**
          * That highlight's rendering hint (`#RRGGBB`, or `None` for the theme's
          * default wash), carried beside the id so a renderer needs no lookup.
-         */hlColor: String?) {
+         */hlColor: String?, 
+        /**
+         * The colour the author named on a `mark` run — `"red"`, `"orange"`,
+         * `"yellow"`, `"green"`, `"blue"`, `"purple"`, `"brown"` — or absent for a
+         * plain `==highlight==` and for every other role.
+         *
+         * A *name*, unlike [`hl_color`](Self::hl_color)'s `#RRGGBB`, and that is
+         * the difference between the two: a host highlight's colour is the host's
+         * own choice and arrives as a value to paint, while this one is the
+         * document's word for it and the renderer picks the wash. It rides beside
+         * `role` rather than folding into it (`"mark-red"`) so a renderer that
+         * knows nothing about colours still draws the run as the highlight it is.
+         */markColor: String?) {
         self.text = text
         self.role = role
         self.bold = bold
@@ -4571,6 +4596,7 @@ public struct Run {
         self.sel = sel
         self.hl = hl
         self.hlColor = hlColor
+        self.markColor = markColor
     }
 }
 
@@ -4614,6 +4640,9 @@ extension Run: Equatable, Hashable {
         if lhs.hlColor != rhs.hlColor {
             return false
         }
+        if lhs.markColor != rhs.markColor {
+            return false
+        }
         return true
     }
 
@@ -4630,6 +4659,7 @@ extension Run: Equatable, Hashable {
         hasher.combine(sel)
         hasher.combine(hl)
         hasher.combine(hlColor)
+        hasher.combine(markColor)
     }
 }
 
@@ -4652,7 +4682,8 @@ public struct FfiConverterTypeRun: FfiConverterRustBuffer {
                 src: FfiConverterUInt32.read(from: &buf), 
                 sel: FfiConverterBool.read(from: &buf), 
                 hl: FfiConverterOptionString.read(from: &buf), 
-                hlColor: FfiConverterOptionString.read(from: &buf)
+                hlColor: FfiConverterOptionString.read(from: &buf), 
+                markColor: FfiConverterOptionString.read(from: &buf)
         )
     }
 
@@ -4669,6 +4700,7 @@ public struct FfiConverterTypeRun: FfiConverterRustBuffer {
         FfiConverterBool.write(value.sel, into: &buf)
         FfiConverterOptionString.write(value.hl, into: &buf)
         FfiConverterOptionString.write(value.hlColor, into: &buf)
+        FfiConverterOptionString.write(value.markColor, into: &buf)
     }
 }
 

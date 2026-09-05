@@ -2782,7 +2782,7 @@ dependencies = [
 
 [[package]]
 name = "leaf-core"
-version = "0.1.2"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "twig-doc",
@@ -5467,18 +5467,18 @@ dependencies = [
 
 [[package]]
 name = "twig-doc"
-version = "3.2.1"
+version = "3.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e8351d2ad28da01599038b70d227550e58d6b08bba530e2344aeb4df05631ca"
+checksum = "7387cb2f612d8d0ea3a666697a4d8f0d1e4e5f040e5a9db29077f2536fee3b81"
 dependencies = [
  "twig-sys",
 ]
 
 [[package]]
 name = "twig-sys"
-version = "3.2.1"
+version = "3.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4feb15e47e16e6529e24b7b37b0a37d134054fab41d03247705ace6ecdc48df"
+checksum = "32eaaac7a827a2e9a261c26747cfcf2151c025072a6d56d56ad552d9ae325ee3"
 dependencies = [
  "twig-sys-linux-arm64-gnu",
  "twig-sys-linux-x64-gnu",
@@ -5489,33 +5489,33 @@ dependencies = [
 
 [[package]]
 name = "twig-sys-linux-arm64-gnu"
-version = "3.2.1"
+version = "3.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c2a5cf04ebd8c0e7fa9fd7f943585a89818c5aee58d490d479b68f4004e41a8"
+checksum = "96bd3f01fdca2f98f9be928439c923a22d68222a8aafa63433094edac672dfba"
 
 [[package]]
 name = "twig-sys-linux-x64-gnu"
-version = "3.2.1"
+version = "3.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f85254b9d01c2f97d2577189239315d560d17899ccdb16c1b6b332f00b4013a1"
+checksum = "c053f73a3080832d59b9140c2aa3666257463580f323c1210fce5c50f6d16317"
 
 [[package]]
 name = "twig-sys-macos-arm64"
-version = "3.2.1"
+version = "3.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "26b9355652253e057119c62f4d858af3356dcf8a4096fc1bcd9c3876b051ffdf"
+checksum = "9e402e5a636e76ec5f42eacbbbaba0bc154f3d31cd39f4e9c6db8eda9dae8372"
 
 [[package]]
 name = "twig-sys-wasm32"
-version = "3.2.1"
+version = "3.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4246465bd7a2c158a291a5dc96ef0bfeaa570218c6c56ce065a26515212b08e2"
+checksum = "514c5de08bb6dbdfa5649e69b7d39a881c5b94e6e3def7005adac3242488728d"
 
 [[package]]
 name = "twig-sys-windows-x64-msvc"
-version = "3.2.1"
+version = "3.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85f8626563c4d7b50438b8d9539249e3f49002b31087abc9231ab7538f15f76c"
+checksum = "d84ee6978ff4a5945217da5c2409156e9ce9d7403bb2ed98d0bac4a829d48fc0"
 
 [[package]]
 name = "typeid"
@@ -7039,3 +7039,15 @@ dependencies = [
  "syn 3.0.4",
  "winnow 1.0.4",
 ]
+
+[[patch.unused]]
+name = "historica"
+version = "1.0.0-rc.3"
+
+[[patch.unused]]
+name = "historica-minisign"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "historica-remark"
+version = "0.1.1"

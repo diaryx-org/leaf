@@ -149,6 +149,17 @@ pub struct Run {
     /// That highlight's rendering hint (`#RRGGBB`, or `None` for the theme's
     /// default wash), carried beside the id so a renderer needs no lookup.
     pub hl_color: Option<String>,
+    /// The colour the author named on a `mark` run — `"red"`, `"orange"`,
+    /// `"yellow"`, `"green"`, `"blue"`, `"purple"`, `"brown"` — or absent for a
+    /// plain `==highlight==` and for every other role.
+    ///
+    /// A *name*, unlike [`hl_color`](Self::hl_color)'s `#RRGGBB`, and that is
+    /// the difference between the two: a host highlight's colour is the host's
+    /// own choice and arrives as a value to paint, while this one is the
+    /// document's word for it and the renderer picks the wash. It rides beside
+    /// `role` rather than folding into it (`"mark-red"`) so a renderer that
+    /// knows nothing about colours still draws the run as the highlight it is.
+    pub mark_color: Option<String>,
 }
 
 /// Where a locator lands — what [`LeafDoc::locate`] answers with, and the FFI
@@ -2141,7 +2152,9 @@ fn role_name(r: Role) -> String {
         Role::Heading(level) => format!("h{}", level.clamp(1, 6)),
         Role::Code => "code".into(),
         Role::Link => "link".into(),
-        Role::Mark => "mark".into(),
+        // The colour rides `Run::mark_color`, not the class id: a renderer that
+        // styles `mark` and nothing else still draws a coloured highlight.
+        Role::Mark(_) => "mark".into(),
         Role::ListMarker => "list".into(),
         Role::QuoteGutter => "quote".into(),
         Role::Rule => "rule".into(),
@@ -2452,6 +2465,17 @@ fn make_run(
         sel,
         hl: hl.map(|h| h.id.clone()),
         hl_color: hl.and_then(|h| h.color.clone()),
+        mark_color: mark_color_name(style.role),
+    }
+}
+
+/// The name of a `mark` role's colour, for [`Run::mark_color`]. `None` for a
+/// plain highlight and for every other role — the same answer, because neither
+/// has a colour to name.
+fn mark_color_name(role: Role) -> Option<String> {
+    match role {
+        Role::Mark(c) => c.map(|c| c.name().to_string()),
+        _ => None,
     }
 }
 
@@ -3372,6 +3396,27 @@ mod tests {
             d.distance_offset(5, p2 as u32),
             1,
             "one Right crosses the whole gap"
+        );
+    }
+
+    #[test]
+    fn a_coloured_highlight_rides_out_as_a_name_beside_the_mark_role() {
+        // The host draws the wash, so the colour has to reach it. It rides
+        // `mark_color` rather than folding into `role` (`"mark-red"`) on
+        // purpose: a renderer that only knows `"mark"` — every version of the
+        // Swift one before this field existed — still draws the highlight.
+        let d = doc("a ==\u{1F534} red== and ==plain== b\n");
+        let runs = &d.view().rows[0].runs;
+        let marks: Vec<(&str, Option<&str>)> = runs
+            .iter()
+            .filter(|r| r.role == "mark")
+            .map(|r| (r.text.as_str(), r.mark_color.as_deref()))
+            .collect();
+        assert_eq!(marks, [("red", Some("red")), ("plain", None)]);
+        assert!(
+            runs.iter()
+                .all(|r| r.role == "mark" || r.mark_color.is_none()),
+            "nothing but a mark names a colour"
         );
     }
 

@@ -56,6 +56,20 @@ final class AttributedRowTests: XCTestCase {
         XCTAssertEqual(attrs(mkRun("x", role: "mark"))[.backgroundColor] as? LeafColor, theme.markBackground)
     }
 
+    func testColouredMarkTakesItsOwnWash() {
+        // `==🔴 text==`: the name picks the wash, the ink is unchanged, and a
+        // name the theme doesn't know falls back rather than drawing nothing.
+        let red = attrs(mkRun("x", role: "mark", markColor: "red"))
+        XCTAssertEqual(red[.backgroundColor] as? LeafColor, Palette.markBackground(named: "red"))
+        XCTAssertNotEqual(red[.backgroundColor] as? LeafColor, theme.markBackground)
+        XCTAssertEqual(red[.foregroundColor] as? LeafColor, theme.textColor)
+        XCTAssertEqual(
+            attrs(mkRun("x", role: "mark", markColor: "chartreuse"))[.backgroundColor] as? LeafColor,
+            theme.markBackground,
+            "an unknown colour is a plain highlight, not a guess"
+        )
+    }
+
     func testStrikeGetsStrikethrough() {
         XCTAssertEqual(attrs(mkRun("x", strike: true))[.strikethroughStyle] as? Int, NSUnderlineStyle.single.rawValue)
     }
