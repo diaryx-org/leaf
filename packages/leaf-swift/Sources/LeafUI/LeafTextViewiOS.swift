@@ -120,6 +120,63 @@ public final class LeafTextView: UIView, UITextInput {
         redo: { [weak self] in self?.command { $0.redo() } })
     public override var undoManager: UndoManager? { historyManager }
 
+    // MARK: UITextInputTraits — what the keyboard may do to the text
+    //
+    // A `UITextInput` view inherits the traits' defaults, and the defaults are
+    // for prose: smart quotes turn `"` into `“`, smart dashes turn `--` into `—`,
+    // autocorrect rewrites a word it doesn't know. In the WYSIWYG view that is
+    // right — the text *is* prose, and core spells the markup. In the source view
+    // every one of those is a rewrite of the markup itself: a straight quote is
+    // an attribute delimiter, `--` is what the reader typed, and `**bold**` is
+    // not a misspelling. So the substitutions follow the view, read afresh by
+    // UIKit each time the keyboard comes up (`render` reloads it on a view
+    // change). What a host sets here is the WYSIWYG value; the source view
+    // answers `.no` regardless.
+    private var isSourceView: Bool { docView.view == "source" }
+    private var hostAutocorrection: UITextAutocorrectionType = .default
+    private var hostSpellChecking: UITextSpellCheckingType = .default
+    private var hostSmartQuotes: UITextSmartQuotesType = .default
+    private var hostSmartDashes: UITextSmartDashesType = .default
+    private var hostSmartInsertDelete: UITextSmartInsertDeleteType = .default
+    public var autocorrectionType: UITextAutocorrectionType {
+        get { isSourceView ? .no : hostAutocorrection }
+        set { hostAutocorrection = newValue }
+    }
+    public var spellCheckingType: UITextSpellCheckingType {
+        get { isSourceView ? .no : hostSpellChecking }
+        set { hostSpellChecking = newValue }
+    }
+    public var smartQuotesType: UITextSmartQuotesType {
+        get { isSourceView ? .no : hostSmartQuotes }
+        set { hostSmartQuotes = newValue }
+    }
+    public var smartDashesType: UITextSmartDashesType {
+        get { isSourceView ? .no : hostSmartDashes }
+        set { hostSmartDashes = newValue }
+    }
+    public var smartInsertDeleteType: UITextSmartInsertDeleteType {
+        get { isSourceView ? .no : hostSmartInsertDelete }
+        set { hostSmartInsertDelete = newValue }
+    }
+    /// Sentences in prose; nothing in source, where a line may open with `#`,
+    /// `-`, or `[` and the word after it is not a sentence's first.
+    private var hostAutocapitalization: UITextAutocapitalizationType = .sentences
+    public var autocapitalizationType: UITextAutocapitalizationType {
+        get { isSourceView ? .none : hostAutocapitalization }
+        set { hostAutocapitalization = newValue }
+    }
+    public var keyboardType: UIKeyboardType = .default
+    public var returnKeyType: UIReturnKeyType = .default
+
+    // Accessibility state — the answers live in the extension below; the
+    // storage has to be here, since an extension cannot add a stored property.
+    /// A host's `accessibilityLabel`, if it set one.
+    private var hostAccessibilityLabel: String?
+    /// The visual lines VoiceOver reads, with their frames in the view's
+    /// coordinates. Dropped on every `render`, since that is when the layout
+    /// moved; rebuilt on the next question.
+    private var readingLines: [(text: String, frame: CGRect)]?
+
     // UITextInput plumbing.
     public weak var inputDelegate: UITextInputDelegate?
     public lazy var tokenizer: UITextInputTokenizer = UITextInputStringTokenizer(textInput: self)
@@ -698,7 +755,12 @@ public final class LeafTextView: UIView, UITextInput {
         // rebuilt — an edit reflowed the line it points at, or a relayout moved
         // the reference out from under it.
         footnotePeek.hide()
+        let viewFlipped = view.view != docView.view
         docView = view
+        readingLines = nil
+        // The input traits answer differently per view (see `isSourceView`), and
+        // UIKit reads them when the keyboard is set up — so set it up again.
+        if viewFlipped, isFirstResponder { reloadInputViews() }
         layoutEngine = EditorLayout(view, theme: renderTheme, viewWidth: viewWidth, cache: &shapeCache,
                                     media: mediaStore)
         // Installed players follow their boxes; media edited out of the document
@@ -1371,6 +1433,98 @@ public final class LeafTextView: UIView, UITextInput {
 }
 
 // MARK: - Gesture coexistence
+
+// MARK: - Accessibility — the document as VoiceOver reads it
+//
+// A `UIView` is invisible to VoiceOver until it says otherwise, and conforming
+// to `UITextInput` does not say it. This is the AppKit peer's `NSAccessibility`
+// text area, reached the UIKit way: the view is one element whose value is the
+// visible text, and `UIAccessibilityReadingContent` lets VoiceOver read it a
+// visual line at a time — the Read Page rotor, swipe-to-next-line, and the
+// touch-to-hear-this-line exploration all come from these four answers.
+extension LeafTextView: UIAccessibilityReadingContent {
+    public override var isAccessibilityElement: Bool {
+        get { true }
+        set {}
+    }
+
+    /// A host's label if it set one, else what the surface is.
+    public override var accessibilityLabel: String? {
+        get { hostAccessibilityLabel ?? loc("a11y.document", "Document") }
+        set { hostAccessibilityLabel = newValue }
+    }
+
+    /// The visible text — what a sighted reader sees, delimiters hidden.
+    public override var accessibilityValue: String? {
+        get { doc.textInRange(from: 0, to: doc.docEndOffset()) }
+        set {}
+    }
+
+    public override var accessibilityTraits: UIAccessibilityTraits {
+        get { isReadOnly ? .staticText : super.accessibilityTraits }
+        set { super.accessibilityTraits = newValue }
+    }
+
+    /// A double-tap puts the caret in the document, as it does in a text field.
+    public override func accessibilityActivate() -> Bool {
+        guard !isReadOnly else { return false }
+        return becomeFirstResponder()
+    }
+
+    /// The visual lines, top to bottom — see `readingLines`.
+    private func currentReadingLines() -> [(text: String, frame: CGRect)] {
+        if let cached = readingLines { return cached }
+        var lines: [(text: String, frame: CGRect)] = []
+        for rl in layoutEngine.rows {
+            if rl.row.isBlockGap { continue }
+            // A table or a media block is one thing to a reader, spoken once
+            // from the row that carries its box.
+            if rl.table != nil || rl.media != nil {
+                guard rl.tableFirst || rl.mediaFirst, let box = rl.lineBoxes.first else { continue }
+                let text = rl.attributed.string.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty { lines.append((text, box)) }
+                continue
+            }
+            let boxes = rl.lineBoxes
+            for (i, wl) in rl.wrapped.enumerated() where boxes.indices.contains(i) {
+                let text = wl.attributed.string.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty { lines.append((text, boxes[i])) }
+            }
+        }
+        readingLines = lines
+        return lines
+    }
+
+    public func accessibilityLineNumber(for point: CGPoint) -> Int {
+        // `point` is in screen coordinates; the lines are in the view's.
+        let inView = screenPointToView(point)
+        let lines = currentReadingLines()
+        if let i = lines.firstIndex(where: { $0.frame.minY <= inView.y && inView.y < $0.frame.maxY }) {
+            return i
+        }
+        return NSNotFound
+    }
+
+    /// Screen coordinates to this view's: the inverse of what
+    /// `UIAccessibility.convertToScreenCoordinates` does for a frame.
+    private func screenPointToView(_ p: CGPoint) -> CGPoint {
+        guard let window else { return p }
+        return convert(window.convert(p, from: window.screen.coordinateSpace), from: window)
+    }
+
+    public func accessibilityContent(forLineNumber lineNumber: Int) -> String? {
+        let lines = currentReadingLines()
+        return lines.indices.contains(lineNumber) ? lines[lineNumber].text : nil
+    }
+
+    public func accessibilityFrame(forLineNumber lineNumber: Int) -> CGRect {
+        let lines = currentReadingLines()
+        guard lines.indices.contains(lineNumber) else { return .null }
+        return UIAccessibility.convertToScreenCoordinates(lines[lineNumber].frame, in: self)
+    }
+
+    public func accessibilityPageContent() -> String? { accessibilityValue }
+}
 
 extension LeafTextView: UIGestureRecognizerDelegate {
     /// `mediaTap` never competes with `textInteraction`'s own recognisers — the
