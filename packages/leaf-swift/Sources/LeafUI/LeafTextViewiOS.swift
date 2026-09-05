@@ -107,6 +107,19 @@ public final class LeafTextView: UIView, UITextInput {
     /// changed row(s). Cleared when the theme geometry changes (see `theme`).
     private var shapeCache: [Row: ShapedRow] = [:]
 
+    /// The history, as the responder chain asks for it: the three-finger
+    /// swipe, the shake, and the edit menu's own Undo/Redo all reach for the
+    /// first responder's undo manager, and get twig's history through this —
+    /// see `UndoBridge.swift`. The hardware ⌘Z below is only a shortcut to it.
+    private lazy var historyManager = LeafUndoManager(
+        state: { [weak self] in
+            guard let self else { return (false, false) }
+            return (self.docView.canUndo, self.docView.canRedo)
+        },
+        undo: { [weak self] in self?.command { $0.undo() } },
+        redo: { [weak self] in self?.command { $0.redo() } })
+    public override var undoManager: UndoManager? { historyManager }
+
     // UITextInput plumbing.
     public weak var inputDelegate: UITextInputDelegate?
     public lazy var tokenizer: UITextInputTokenizer = UITextInputStringTokenizer(textInput: self)
@@ -1044,8 +1057,8 @@ public final class LeafTextView: UIView, UITextInput {
         case ("u", _): command { $0.toggleUnderline() }
         case ("\t", true): command { $0.cellTab(forward: false) ?? $0.outdent() }
         case ("\r", true): command { $0.cellLineBreak() ?? $0.newline() }
-        case ("z", false): command { $0.undo() }
-        case ("z", true): command { $0.redo() }
+        case ("z", false): historyManager.undo()
+        case ("z", true): historyManager.redo()
         // ⇧⌘V — plain-flavor escape hatch: paste as leaf source, ignoring rich HTML.
         case ("v", true):
             let text = UIPasteboard.general.string ?? ""

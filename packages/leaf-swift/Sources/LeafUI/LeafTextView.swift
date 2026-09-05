@@ -24,7 +24,8 @@
 import AppKit
 import LeafFFI
 
-public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuRequestor, FootnotePeekDelegate {
+public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuRequestor, NSUserInterfaceValidations,
+                                 FootnotePeekDelegate {
     let doc: LeafDoc
     public var theme: EditorTheme {
         didSet {
@@ -108,6 +109,18 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// `NSWorkspace` is at best wrong and at worst opens the raw markdown in
     /// another app. Nil (or a `false` return) keeps the system behaviour.
     public var onOpenLink: ((String) -> Bool)?
+
+    /// The history, as the responder chain asks for it. Edit ▸ Undo/Redo, and
+    /// anything else that reaches for the first responder's undo manager, gets
+    /// twig's history through this — see `UndoBridge.swift`.
+    private lazy var historyManager = LeafUndoManager(
+        state: { [weak self] in
+            guard let self else { return (false, false) }
+            return (self.docView.canUndo, self.docView.canRedo)
+        },
+        undo: { [weak self] in self?.command { $0.undo() } },
+        redo: { [weak self] in self?.command { $0.redo() } })
+    public override var undoManager: UndoManager? { historyManager }
 
     /// Whether this surface is a reader — see the iOS peer for the full
     /// contract. The *document* is the enforcement (leaf-core's gate refuses
@@ -1412,6 +1425,13 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         render(doc.clickCh(row: UInt32(row), ch: UInt32(target), extend: extend))
     }
 
+    /// The chords with no standard menu item to fire them. Undo, Redo, Select
+    /// All, Cut, Copy, and Paste are deliberately *not* here: every Edit menu
+    /// carries them as `undo:`/`redo:`/`selectAll:`/`cut:`/`copy:`/`paste:`
+    /// aimed at the first responder, and this view answers each of those — so
+    /// the menu item flashes, its title is the system's, and a host that
+    /// rebinds or removes one is obeyed. Catching the key here instead was what
+    /// left Edit ▸ Undo permanently disabled.
     public override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard event.modifierFlags.contains(.command) else { return super.performKeyEquivalent(with: event) }
         let shift = event.modifierFlags.contains(.shift)
@@ -1420,12 +1440,39 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         case "i": render(doc.toggleItalic()); return true
         case "u": render(doc.toggleUnderline()); return true
         case "e": render(doc.toggleView()); return true
-        case "z": render(shift ? doc.redo() : doc.undo()); return true
-        case "a": render(doc.selectAll()); return true
-        case "c": copy(nil); return true
-        case "x": cut(nil); return true
-        case "v": if shift { pasteAsPlainText(nil) } else { paste(nil) }; return true
+        case "v" where shift: pasteAsPlainText(nil); return true
         default:  return super.performKeyEquivalent(with: event)
+        }
+    }
+
+    // MARK: Edit menu — history, and what the menu may enable
+
+    @objc public func undo(_ sender: Any?) { historyManager.undo() }
+    @objc public func redo(_ sender: Any?) { historyManager.redo() }
+
+    /// What the Edit menu (and any other `NSValidatedUserInterfaceItem`) asks
+    /// before enabling an item aimed at this view. Without this every item is
+    /// live — Cut with nothing selected, Paste over an empty clipboard — which
+    /// is the one thing a native text view never does.
+    public func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        switch item.action {
+        case #selector(undo(_:)): return docView.canUndo
+        case #selector(redo(_:)): return docView.canRedo
+        case #selector(copy(_:)): return hasSelection
+        case #selector(cut(_:)): return hasSelection && !isReadOnly
+        case #selector(paste(_:)):
+            guard !isReadOnly else { return false }
+            let pb = NSPasteboard.general
+            // A host that claims pastes makes an image-only clipboard pasteable;
+            // see `paste(_:)`.
+            return pb.string(forType: .string) != nil || pb.string(forType: .html) != nil
+                || (onPaste != nil && pb.canReadObject(forClasses: [NSImage.self, NSURL.self]))
+        case #selector(pasteAsPlainText(_:)):
+            return !isReadOnly && NSPasteboard.general.string(forType: .string) != nil
+        case #selector(selectAll(_:)): return true
+        // Anything else is enabled by whether the view answers it at all — what
+        // AppKit does for a responder with no validation of its own.
+        default: return item.action.map { responds(to: $0) } ?? false
         }
     }
 

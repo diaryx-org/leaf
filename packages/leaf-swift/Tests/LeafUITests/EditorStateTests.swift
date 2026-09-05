@@ -18,6 +18,20 @@ final class EditorStateTests: XCTestCase {
         XCTAssertEqual(s.heading, 2)
         XCTAssertEqual(s.active, ["bold", "italic"])
         XCTAssertEqual(s.link, "https://x.dev")
+        XCTAssertFalse(s.canUndo)
+        XCTAssertFalse(s.canRedo)
+    }
+
+    /// The history buttons enable by these, so an undo that leaves nothing
+    /// else on the state different still has to republish.
+    func testHistoryDepthIsPartOfTheState() {
+        let fresh = EditorState(docView([row([mkRun("x")])]))
+        let edited = EditorState(docView([row([mkRun("x")])], canUndo: true))
+        let undone = EditorState(docView([row([mkRun("x")])], canRedo: true))
+        XCTAssertTrue(edited.canUndo && !edited.canRedo)
+        XCTAssertTrue(undone.canRedo && !undone.canUndo)
+        XCTAssertNotEqual(fresh, edited)
+        XCTAssertNotEqual(edited, undone)
     }
 
     func testEquatable() {

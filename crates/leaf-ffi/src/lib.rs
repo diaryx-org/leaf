@@ -522,6 +522,11 @@ pub struct DocView {
     /// Whether the buffer differs from the last saved bytes — for a "● modified"
     /// affordance.
     pub dirty: bool,
+    /// Whether there is a step to undo, and one to redo — what a native Edit
+    /// menu or an undo manager enables its items by. Both false on a read-only
+    /// document. See [`leaf_core::Doc::can_undo`] for the bound this is.
+    pub can_undo: bool,
+    pub can_redo: bool,
     /// `"wysiwyg"` or `"source"`, for a view-toggle affordance.
     pub view: String,
     /// The heading level at the caret, if any — a toolbar lights H1…H6 from it.
@@ -1020,6 +1025,8 @@ impl Inner {
             anchor_row: anchor_row as u32,
             anchor_ch: anchor_ch as u32,
             dirty: self.doc.dirty,
+            can_undo: self.doc.can_undo(),
+            can_redo: self.doc.can_redo(),
             view: self.doc.view_name().to_string(),
             heading,
             active,
@@ -3196,7 +3203,11 @@ mod tests {
         let mut off = 0u32;
         loop {
             let idx = d.utf16_index_for_offset(off);
-            assert_eq!(d.offset_for_utf16_index(idx), off, "stop {off} via index {idx}");
+            assert_eq!(
+                d.offset_for_utf16_index(idx),
+                off,
+                "stop {off} via index {idx}"
+            );
             let next = d.step_offset(off, 1);
             if next == off {
                 break;
@@ -3205,17 +3216,29 @@ mod tests {
         }
         // The 'c' comes after the hidden `**` and the two-unit emoji.
         let c = "a **b\u{1F600}** c".find(" c").unwrap() as u32 + 1;
-        assert_eq!(d.utf16_index_for_offset(c), "a b\u{1F600} ".encode_utf16().count() as u32);
+        assert_eq!(
+            d.utf16_index_for_offset(c),
+            "a b\u{1F600} ".encode_utf16().count() as u32
+        );
 
         // Source view: the text is the raw source, so the index is the plain
         // UTF-16 count of the bytes before the offset — delimiters included.
         d.toggle_view();
-        assert_eq!(d.text_in_range(0, d.doc_end_offset()), "a **b\u{1F600}** c\n\nd\n");
-        assert_eq!(d.utf16_index_for_offset(c), "a **b\u{1F600}** ".encode_utf16().count() as u32);
+        assert_eq!(
+            d.text_in_range(0, d.doc_end_offset()),
+            "a **b\u{1F600}** c\n\nd\n"
+        );
+        assert_eq!(
+            d.utf16_index_for_offset(c),
+            "a **b\u{1F600}** ".encode_utf16().count() as u32
+        );
         assert_eq!(d.offset_for_utf16_index(d.utf16_index_for_offset(c)), c);
         // Inside the emoji's surrogate pair resolves to the emoji itself.
         let emoji = "a **b".len() as u32;
-        assert_eq!(d.offset_for_utf16_index(d.utf16_index_for_offset(emoji) + 1), emoji);
+        assert_eq!(
+            d.offset_for_utf16_index(d.utf16_index_for_offset(emoji) + 1),
+            emoji
+        );
     }
 
     #[test]

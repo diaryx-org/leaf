@@ -29,17 +29,25 @@ public struct EditorState: Equatable {
     /// told the caret had stepped out of a link — no mark, heading, or dirty flag
     /// moves with it. Nil for a wikilink, which has no node to repoint.
     public var link: String?
+    /// Whether there is a step to undo, and one to redo — for a toolbar's
+    /// history buttons to enable by, as the Edit menu's items already do
+    /// through the view's `undoManager`. Both false on a read-only document.
+    public var canUndo: Bool
+    public var canRedo: Bool
 
     /// `link` defaults so a host that built a state by hand before there was one
     /// still compiles; the frame-projecting initializer below is the real path.
-    public init(view: String, dirty: Bool, heading: UInt32?, active: [String], link: String? = nil) {
+    public init(view: String, dirty: Bool, heading: UInt32?, active: [String], link: String? = nil,
+                canUndo: Bool = false, canRedo: Bool = false) {
         self.view = view; self.dirty = dirty; self.heading = heading
         self.active = active; self.link = link
+        self.canUndo = canUndo; self.canRedo = canRedo
     }
 
     /// Project a full `DocView` down to the chrome-facing state.
     public init(_ v: DocView) {
-        self.init(view: v.view, dirty: v.dirty, heading: v.heading, active: v.active, link: v.link)
+        self.init(view: v.view, dirty: v.dirty, heading: v.heading, active: v.active, link: v.link,
+                  canUndo: v.canUndo, canRedo: v.canRedo)
     }
 }
 

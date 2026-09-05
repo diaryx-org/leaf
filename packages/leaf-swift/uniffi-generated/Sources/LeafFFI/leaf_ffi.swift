@@ -3039,6 +3039,13 @@ public struct DocView {
      */
     public var dirty: Bool
     /**
+     * Whether there is a step to undo, and one to redo — what a native Edit
+     * menu or an undo manager enables its items by. Both false on a read-only
+     * document. See [`leaf_core::Doc::can_undo`] for the bound this is.
+     */
+    public var canUndo: Bool
+    public var canRedo: Bool
+    /**
      * `"wysiwyg"` or `"source"`, for a view-toggle affordance.
      */
     public var view: String
@@ -3120,6 +3127,11 @@ public struct DocView {
          * affordance.
          */dirty: Bool, 
         /**
+         * Whether there is a step to undo, and one to redo — what a native Edit
+         * menu or an undo manager enables its items by. Both false on a read-only
+         * document. See [`leaf_core::Doc::can_undo`] for the bound this is.
+         */canUndo: Bool, canRedo: Bool, 
+        /**
          * `"wysiwyg"` or `"source"`, for a view-toggle affordance.
          */view: String, 
         /**
@@ -3155,6 +3167,8 @@ public struct DocView {
         self.anchorRow = anchorRow
         self.anchorCh = anchorCh
         self.dirty = dirty
+        self.canUndo = canUndo
+        self.canRedo = canRedo
         self.view = view
         self.heading = heading
         self.active = active
@@ -3202,6 +3216,12 @@ extension DocView: Equatable, Hashable {
         if lhs.dirty != rhs.dirty {
             return false
         }
+        if lhs.canUndo != rhs.canUndo {
+            return false
+        }
+        if lhs.canRedo != rhs.canRedo {
+            return false
+        }
         if lhs.view != rhs.view {
             return false
         }
@@ -3230,6 +3250,8 @@ extension DocView: Equatable, Hashable {
         hasher.combine(anchorRow)
         hasher.combine(anchorCh)
         hasher.combine(dirty)
+        hasher.combine(canUndo)
+        hasher.combine(canRedo)
         hasher.combine(view)
         hasher.combine(heading)
         hasher.combine(active)
@@ -3257,6 +3279,8 @@ public struct FfiConverterTypeDocView: FfiConverterRustBuffer {
                 anchorRow: FfiConverterUInt32.read(from: &buf), 
                 anchorCh: FfiConverterUInt32.read(from: &buf), 
                 dirty: FfiConverterBool.read(from: &buf), 
+                canUndo: FfiConverterBool.read(from: &buf), 
+                canRedo: FfiConverterBool.read(from: &buf), 
                 view: FfiConverterString.read(from: &buf), 
                 heading: FfiConverterOptionUInt32.read(from: &buf), 
                 active: FfiConverterSequenceString.read(from: &buf), 
@@ -3277,6 +3301,8 @@ public struct FfiConverterTypeDocView: FfiConverterRustBuffer {
         FfiConverterUInt32.write(value.anchorRow, into: &buf)
         FfiConverterUInt32.write(value.anchorCh, into: &buf)
         FfiConverterBool.write(value.dirty, into: &buf)
+        FfiConverterBool.write(value.canUndo, into: &buf)
+        FfiConverterBool.write(value.canRedo, into: &buf)
         FfiConverterString.write(value.view, into: &buf)
         FfiConverterOptionUInt32.write(value.heading, into: &buf)
         FfiConverterSequenceString.write(value.active, into: &buf)

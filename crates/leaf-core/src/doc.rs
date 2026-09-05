@@ -626,6 +626,19 @@ pub struct Doc {
     /// document's text changes, and never by a motion, a selection, or a save.
     /// A frontend can hold work against it — see [`Doc::revision`].
     revision: u64,
+    /// How many history steps stand behind the caret, and how many ahead of
+    /// it — the answer to a native Edit menu's "may Undo be enabled?", which
+    /// twig's history does not ask itself. Counted at [`refresh`](Self::refresh),
+    /// the funnel every edit comes through, and moved back and forth by
+    /// [`undo`](Self::undo)/[`redo`](Self::redo). An upper bound rather than
+    /// an exact depth: a coalesced run of typing is one of twig's steps but
+    /// several of these, and twig's own cap on history is not mirrored here.
+    /// Neither error can make `can_undo` false while a step remains, which is
+    /// the only property a menu needs; the one place the bound can be wrong the
+    /// other way — the cap has retired every step — is reconciled the moment
+    /// twig reports nothing to undo.
+    undo_steps: usize,
+    redo_steps: usize,
     /// What `vmap` was built from, or `None` before the first build. The map is
     /// a pure function of `(revision, wrap, reveal line)`, so when those haven't
     /// moved, rebuilding it produces the identical map — see
@@ -978,6 +991,8 @@ impl Doc {
             // No map yet — the first `build_source` always builds.
             smap_key: None,
             revision: 0,
+            undo_steps: 0,
+            redo_steps: 0,
             // No map yet — the first `build_visual` always builds.
             vmap_key: None,
             block_cache: wysiwyg::BlockCache::default(),
@@ -4693,9 +4708,18 @@ impl Doc {
         if self.read_only {
             return;
         }
+        let (undone, redoable) = (self.undo_steps, self.redo_steps);
         match self.editor.undo() {
-            Ok(Some(change)) => self.after_history(change),
-            Ok(None) => self.status = Some("nothing to undo".into()),
+            Ok(Some(change)) => {
+                self.after_history(change);
+                // `refresh` counted the restore as an edit; it was a step back.
+                self.undo_steps = undone.saturating_sub(1);
+                self.redo_steps = redoable + 1;
+            }
+            Ok(None) => {
+                self.undo_steps = 0;
+                self.status = Some("nothing to undo".into());
+            }
             Err(e) => self.status = Some(format!("undo: {e}")),
         }
     }
@@ -4706,9 +4730,18 @@ impl Doc {
         if self.read_only {
             return;
         }
+        let (undone, redoable) = (self.undo_steps, self.redo_steps);
         match self.editor.redo() {
-            Ok(Some(change)) => self.after_history(change),
-            Ok(None) => self.status = Some("nothing to redo".into()),
+            Ok(Some(change)) => {
+                self.after_history(change);
+                // `refresh` counted the restore as an edit; it was a step forward.
+                self.undo_steps = undone + 1;
+                self.redo_steps = redoable.saturating_sub(1);
+            }
+            Ok(None) => {
+                self.redo_steps = 0;
+                self.status = Some("nothing to redo".into());
+            }
             Err(e) => self.status = Some(format!("redo: {e}")),
         }
     }
@@ -4963,7 +4996,23 @@ impl Doc {
             self.source = s;
         }
         self.revision += 1;
+        // An edit is a step onto the history and the end of anything undone;
+        // `undo`/`redo` come through here too and correct this after.
+        self.undo_steps += 1;
+        self.redo_steps = 0;
         self.clamp_caret();
+    }
+
+    /// Whether [`undo`](Self::undo) has a step to take back — for a native
+    /// Edit menu to enable its item by. See the note on `undo_steps` for what
+    /// "has" means here.
+    pub fn can_undo(&self) -> bool {
+        !self.read_only && self.undo_steps > 0
+    }
+
+    /// Whether [`redo`](Self::redo) has an undone step to restore.
+    pub fn can_redo(&self) -> bool {
+        !self.read_only && self.redo_steps > 0
     }
 
     // ── caret movement ─────────────────────────────────────────────────────────
@@ -10347,6 +10396,44 @@ mod tests {
         d.insert("b"); // diverges — the redo of "a" is now gone
         d.redo();
         assert_eq!(d.source, "b\n");
+    }
+
+    #[test]
+    fn can_undo_and_can_redo_follow_the_history_a_menu_would_enable_by() {
+        let mut d = doc_with("can_undo", "hello\n");
+        assert!(
+            !d.can_undo() && !d.can_redo(),
+            "a fresh document has no history"
+        );
+        d.caret = 5;
+        d.insert("!");
+        assert!(
+            d.can_undo() && !d.can_redo(),
+            "an edit is a step to take back"
+        );
+        d.undo();
+        assert!(!d.can_undo() && d.can_redo(), "undone: only redo remains");
+        d.redo();
+        assert!(d.can_undo() && !d.can_redo(), "redone: back to undoable");
+        d.undo();
+        d.insert("?");
+        assert!(
+            d.can_undo() && !d.can_redo(),
+            "a fresh edit ends the redo chain"
+        );
+        // A coalesced run over-counts steps — the bound is what a menu needs,
+        // and it reconciles the moment twig reports the history empty.
+        d.insert("a");
+        d.insert("b");
+        while d.can_undo() {
+            d.undo();
+        }
+        assert_eq!(d.source, "hello\n");
+        assert!(!d.can_undo());
+        // A reading surface has nothing to undo, whatever the history holds.
+        d.redo();
+        d.set_read_only(true);
+        assert!(!d.can_undo() && !d.can_redo());
     }
 
     #[test]

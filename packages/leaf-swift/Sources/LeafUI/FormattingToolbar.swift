@@ -159,10 +159,13 @@ public struct LeafFormattingToolbar: View {
         }
     }
 
+    /// Enabled by the history's depth, the way the Edit menu's items are: a
+    /// button that does nothing when pressed says the document is broken, where
+    /// a dimmed one says there is nothing to take back.
     private var historyTools: some View {
         Group {
-            tool("arrow.uturn.backward", "Undo") { editor.undo() }
-            tool("arrow.uturn.forward", "Redo") { editor.redo() }
+            tool("arrow.uturn.backward", "Undo", enabled: editor.state.canUndo) { editor.undo() }
+            tool("arrow.uturn.forward", "Redo", enabled: editor.state.canRedo) { editor.redo() }
         }
     }
 
@@ -317,9 +320,10 @@ public struct LeafFormattingToolbar: View {
         _ systemImage: String,
         _ label: String,
         active: Bool = false,
+        enabled: Bool = true,
         action: @escaping () -> Void
     ) -> some View {
-        button(active: active, label: label, action: action) {
+        button(active: active, enabled: enabled, label: label, action: action) {
             Image(systemName: systemImage)
                 .font(.system(size: metrics.glyphSize))
         }
@@ -341,6 +345,7 @@ public struct LeafFormattingToolbar: View {
     /// tinted pill when the mark is active under the caret.
     private func button<Glyph: View>(
         active: Bool,
+        enabled: Bool = true,
         label: String,
         action: @escaping () -> Void,
         @ViewBuilder glyph: () -> Glyph
@@ -348,7 +353,9 @@ public struct LeafFormattingToolbar: View {
         Button(action: action) {
             glyph()
                 .frame(width: metrics.buttonWidth, height: metrics.buttonHeight)
-                .foregroundStyle(active ? Color.accentColor : Color.primary)
+                // `.plain` leaves a disabled button looking pressed-and-ignored;
+                // the tertiary label is what the system's own bars dim to.
+                .foregroundStyle(!enabled ? Color(Palette.tertiary) : active ? Color.accentColor : Color.primary)
                 .background(
                     RoundedRectangle(cornerRadius: metrics.cornerRadius)
                         .fill(active ? Color.accentColor.opacity(0.15) : Color.clear)
@@ -356,6 +363,7 @@ public struct LeafFormattingToolbar: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(!enabled)
         .accessibilityLabel(label)
         // A pointer can hover; a fingertip can't. On iOS `.help` lands as an
         // accessibility hint, which duplicates the label above — so the tooltip

@@ -113,10 +113,16 @@ title the prompt for both.
 
 `LeafEditorModel` exposes every formatting command (`toggleBold`, `setHeading`,
 `toggleList`, `insertLink`, `undo`, …), `source()` / `markSaved()` for
-persistence, and a `@Published state` (active marks, heading, dirty, view, and
-the caret link's destination) for toolbar binding. Keyboard (typing, arrows/word/line/doc motion with shift-select,
-delete/word-delete, ⌘B/I/U/E, ⌘Z/⇧⌘Z, ⌘C/X/V/A, ⇧⌘V), mouse (click, shift-click,
+persistence, and a `@Published state` (active marks, heading, dirty, view, the
+caret link's destination, and whether there is anything to undo or redo) for
+toolbar binding. Keyboard (typing, arrows/word/line/doc motion with shift-select,
+delete/word-delete, ⌘B/I/U/E, ⇧⌘V), mouse (click, shift-click,
 double/triple-click select), and the rich HTML clipboard all work out of the box.
+Undo, Redo, Cut, Copy, Paste, and Select All are the Edit menu's: the view
+answers the standard `undo:`/`cut:`/`copy:`/`paste:`/`selectAll:` actions,
+validates each (Undo dims with nothing to undo, Cut with nothing selected), and
+hands the responder chain an `undoManager` over the document's own history, so
+the menu, ⌘Z, and iOS's three-finger swipe all reach the same steps.
 Customize fonts, colours, and page layout via `EditorTheme`.
 
 **A measured text column.** `EditorTheme.measure` caps the text at a number of
