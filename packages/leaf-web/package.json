@@ -1,6 +1,6 @@
 {
   "name": "leaf-web",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "description": "Framework-agnostic rich-text editor for the web: a proportional WYSIWYG surface over leaf-core's caret model, compiled to WebAssembly.",
   "type": "module",

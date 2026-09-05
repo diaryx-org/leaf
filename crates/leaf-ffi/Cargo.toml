@@ -31,7 +31,7 @@ path = "uniffi-bindgen.rs"
 # sandboxed embed has no path to read and persists bytes its own way, so `fs` is
 # off and the host drives `Doc::from_source` + the public `source` field +
 # `mark_saved`.
-leaf-core = { path = "../leaf-core", version = "0.1.5", default-features = false }
+leaf-core = { path = "../leaf-core", version = "0.1.6", default-features = false }
 
 # The FFI machinery: `proc-macro` mode (no .udl file) — the view structs derive
 # `Record`, the handle derives `Object`, and `setup_scaffolding!()` emits the C

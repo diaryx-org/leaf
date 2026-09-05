@@ -33,6 +33,12 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
+_No commits since the last tag._
+
+<!-- git-cliff:end -->
+
+## v0.1.6 — 2026-09-05
+
 ### Added
 
 - **tui** — take a terminal paste whole, through bracketed paste ([`7dd4274`](https://github.com/diaryx-org/leaf/commit/7dd42746efb3bad02d0854bb9a76f4fc1d609011))
@@ -280,7 +286,6 @@ unchanged, but a host that called `makeNSView`/`makeUIView` or named its
 
 - `leaf_ratatui::Theme` gains `mark_colors: [Color; 7]` and `leaf_gpui::EditorStyle` gains `mark_colors: [Hsla; 7]`, both indexed by `MarkColor::index`. `Theme` is `#[non_exhaustive]` and unaffected in practice; a host constructing an `EditorStyle` field by field needs the new one, and `..Default::default()` supplies it.
 
-<!-- git-cliff:end -->
 
 ## v0.1.5 — 2026-08-29
 
