@@ -339,6 +339,15 @@ await test("an autocorrect replaces the word it names, not the caret", () => {
   return ed;
 });
 
+await test("delete-to-line-start takes the line, not a word", () => {
+  const ed = editor("one two three\nnext\n");
+  place(firstText(ed.rowEls[0]), 13);
+  ed._syncFromDom();
+  input(ed, "deleteSoftLineBackward");
+  eq(ed.source(), "\nnext\n", "⌘⌫ did not clear back to the line start");
+  return ed;
+});
+
 await test("shortcuts answer to the platform's modifier only", () => {
   const ed = editor("word\n");
   ed.selectAll();

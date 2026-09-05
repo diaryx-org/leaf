@@ -1202,7 +1202,17 @@ export class LeafEditor {
         break;
       case "deleteSoftLineBackward":
       case "deleteHardLineBackward":
-        view = d.delete_word_back();
+        // ⌘⌫: everything back to the start of the line. Core has no single
+        // verb for it, but it has the two halves — and at a line's start the
+        // selection is empty and Backspace joins the lines, which is what the
+        // key does in a native field too.
+        d.move_home(true);
+        view = d.backspace();
+        break;
+      case "deleteSoftLineForward":
+      case "deleteHardLineForward":
+        d.move_end(true);
+        view = d.delete_forward();
         break;
       case "historyUndo":
         view = d.undo();
