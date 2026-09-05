@@ -145,6 +145,13 @@ export class LeafEditor {
     /** @type {[number, number][]} the `rows` spans a drawn grid stands in for,
      *  so a caret row can be recognised as belonging to a table. */
     this.tableSpans = [];
+    /** @type {{key: string, el: HTMLElement}[]} what the surface holds, in
+     *  order, each under the key it was built from — the previous frame, for
+     *  the next one to reuse from. See `render`. */
+    this._keyed = [];
+    /** Set when the DOM may have been touched by something other than
+     *  `render` — an IME composition — so the next frame trusts nothing. */
+    this._rebuildAll = false;
     this._composing = false;
     /** Guard so our own selection restores don't echo back through selectionchange. */
     this._settingSelection = false;
@@ -373,12 +380,32 @@ export class LeafEditor {
     if (!view) return; // an unhandled key returns undefined; nothing to repaint
     this._lastView = view;
 
-    // Clear the whole surface, not just the tracked rows: a drawn table is one
-    // element standing in for a span of rows and so is not in `rowEls`, and
-    // removing only the rows left every repaint appending another grid under the
-    // last one. `contentEl` holds nothing else — the width probe is a sibling,
-    // on the container.
-    this.contentEl.replaceChildren();
+    // The previous frame's elements, pooled under the key each was built from.
+    // A row whose key comes up again is reused as it stands, moved if it has to
+    // be; only a row that is new to the frame is built. Rebuilding everything
+    // on every keystroke was the simple thing and cost the whole document each
+    // time — forty milliseconds of node creation for a few thousand rows, on a
+    // key that changed one of them. A key spells everything the row's DOM is
+    // made from (its text and styles, its block kind, its neighbours' where
+    // the CSS looks at them) and nothing else — not the source offsets, which
+    // every row after an edit shifts by, and which are carried as a property
+    // on each run instead so they can be refreshed in place.
+    const force = this._rebuildAll;
+    this._rebuildAll = false;
+    const pool = new Map();
+    if (!force) {
+      for (const { key, el } of this._keyed) {
+        let q = pool.get(key);
+        if (!q) pool.set(key, (q = []));
+        q.push(el);
+      }
+    }
+    const take = (key) => {
+      const q = pool.get(key);
+      return q && q.length ? q.shift() : null;
+    };
+    /** @type {{key: string, el: HTMLElement}[]} */
+    const keyed = [];
     this.rowEls = [];
     this.cellLines = [];
     this.tableSpans = [];
@@ -403,7 +430,6 @@ export class LeafEditor {
       this.tableSpans.push([t.start_row, t.end_row]);
       for (let r = t.start_row + 1; r < t.end_row; r++) covered.add(r);
     }
-    const frag = document.createDocumentFragment();
     for (let i = 0; i < view.rows.length; i++) {
       // A filler row core reserved under the media: the element built on the
       // first row already occupies that height in the flow, so drawing these
@@ -424,12 +450,28 @@ export class LeafEditor {
         // goes in the document. A caret inside the table is placed by source
         // offset instead; see `_restoreSelection`.
         this._rowEl(view.rows[i], i, view.rows, null, true);
-        frag.appendChild(this._tableEl(table));
+        const key = tableKey(table);
+        let el = take(key);
+        if (el) this._adoptTable(el, table);
+        else el = this._tableEl(table);
+        keyed.push({ key, el });
         continue;
       }
-      frag.appendChild(this._rowEl(view.rows[i], i, view.rows, mediaAt.get(i) || null));
+      const row = view.rows[i];
+      const media = mediaAt.get(i) || null;
+      const runs = canonicalRuns(row.runs);
+      const key = media ? mediaKey(media, row) : rowKey(row, runs, i, view.rows);
+      let el = take(key);
+      if (el) {
+        this._adoptRow(el, runs);
+        this.rowEls.push(el);
+      } else {
+        el = this._rowEl(row, i, view.rows, media, false, runs);
+      }
+      keyed.push({ key, el });
     }
-    this.contentEl.appendChild(frag);
+    this._reconcile(keyed);
+    this._keyed = keyed;
 
     this._restoreSelection(view);
     this._scrollCaretIntoView(view);
@@ -438,20 +480,75 @@ export class LeafEditor {
   }
 
   /**
+   * Put the surface's children in the order `keyed` gives, touching only what
+   * moved: a child already in place is stepped over, one that belongs earlier
+   * is moved up, a new one is inserted, and whatever the previous frame had
+   * that this one doesn't is removed off the end.
+   *
+   * Everything before the cursor has been placed, so an element the frame
+   * still wants is always at or after it — which is why what is left past the
+   * last placed child is exactly the set to discard.
+   */
+  _reconcile(keyed) {
+    const parent = this.contentEl;
+    let cursor = parent.firstChild;
+    for (const { el } of keyed) {
+      if (el === cursor) {
+        cursor = cursor.nextSibling;
+        continue;
+      }
+      parent.insertBefore(el, cursor);
+    }
+    while (cursor) {
+      const next = cursor.nextSibling;
+      cursor.remove();
+      cursor = next;
+    }
+  }
+
+  /** Refresh what a reused row carries that its key leaves out: the source
+   *  offset of each run, which every row past an edit shifts by. */
+  _adoptRow(rowEl, runs) {
+    const spans = rowEl._leafRuns;
+    if (!spans) return; // a media row: no runs of its own
+    for (let i = 0; i < spans.length; i++) spans[i]._src = runs[i].src;
+  }
+
+  /** `_adoptRow` for a reused grid: re-register its cell lines under the source
+   *  ranges this frame gives them, and refresh each run's offset. The key
+   *  guarantees the grid's shape — rows, cells, lines, runs — is unchanged, so
+   *  the two walks stay in step. */
+  _adoptTable(table, t) {
+    const lines = table._leafLines;
+    let n = 0;
+    for (const row of t.grid) {
+      for (const cell of row.cells) {
+        for (const line of cell.lines) {
+          const lineEl = lines[n++];
+          this._adoptRow(lineEl, canonicalRuns(line.runs));
+          this.cellLines.push({ start: line.start, end: line.end, el: lineEl });
+        }
+      }
+    }
+  }
+
+  /**
    * Build one row element from a `Row`.
    *
    * `media` is the `MediaView` whose placeholder starts on this row, if any —
    * the row then carries a real element instead of core's label glyphs.
    * `detached` marks a filler row that is tracked but never inserted (see
-   * `render`).
+   * `render`). `runs` is the row's runs with selection splits merged back
+   * (`canonicalRuns`), passed in when the caller has already done it.
    */
-  _rowEl(row, i, rows, media = null, detached = false) {
+  _rowEl(row, i, rows, media = null, detached = false, runs = null) {
     const div = el("div", "leaf-row");
     if (detached) {
       this.rowEls.push(div);
       return div;
     }
     if (media) return this._mediaRowEl(div, media, row);
+    runs ??= canonicalRuns(row.runs);
     // A block-boundary gap row holds no caret. Left editable, the browser's own
     // ArrowUp/ArrowDown lands in its short line box on the way between blocks, so
     // a step from a paragraph into the list or code block below it moves only
@@ -491,12 +588,12 @@ export class LeafEditor {
       }
     }
 
-    for (const run of row.runs) div.appendChild(this._runEl(run));
+    div._leafRuns = runs.map((run) => div.appendChild(this._runEl(run)));
 
     // A contenteditable block needs a placeholder to hold a caret when it has no
     // text of its own (an empty paragraph) — but a non-editable gap row holds no
     // caret, so it needs none.
-    if (row.runs.length === 0 && !gap) div.appendChild(document.createElement("br"));
+    if (runs.length === 0 && !gap) div.appendChild(document.createElement("br"));
 
     this.rowEls.push(div);
     return div;
@@ -606,6 +703,9 @@ export class LeafEditor {
     // restructuring anything else here — every `beforeinput` is prevented and
     // translated into a core edit.
     const body = document.createElement("tbody");
+    // Every cell line in grid order, for `_adoptTable` to walk when the grid
+    // is reused by a later frame.
+    table._leafLines = [];
 
     for (const row of t.grid) {
       const tr = document.createElement("tr");
@@ -615,10 +715,12 @@ export class LeafEditor {
         if (cell.align && cell.align !== "default") td.style.textAlign = cell.align;
         for (const line of cell.lines) {
           const lineEl = el("div", "leaf-cell-line");
-          for (const run of line.runs) lineEl.appendChild(this._runEl(run));
+          const runs = canonicalRuns(line.runs);
+          lineEl._leafRuns = runs.map((run) => lineEl.appendChild(this._runEl(run)));
           // An empty cell still needs somewhere for the caret to sit.
-          if (line.runs.length === 0) lineEl.appendChild(document.createElement("br"));
+          if (runs.length === 0) lineEl.appendChild(document.createElement("br"));
           this.cellLines.push({ start: line.start, end: line.end, el: lineEl });
+          table._leafLines.push(lineEl);
           td.appendChild(lineEl);
         }
         tr.appendChild(td);
@@ -629,12 +731,22 @@ export class LeafEditor {
     return table;
   }
 
-  /** One styled span for a run, carrying the source offset its first glyph came
-   *  from — what makes a rendered link or footnote marker followable, and what
-   *  the cell-offset mapping counts from. */
+  /**
+   * One styled span for a run, carrying the source offset its first glyph came
+   * from as the `_src` property — what makes a rendered link or footnote marker
+   * followable, and what the cell-offset mapping counts from.
+   *
+   * A property rather than a `data-` attribute on purpose. The offset is the
+   * one thing about a run that changes without the run changing: type a
+   * character at the top and every run below it moves by one byte. Rows are
+   * reused across frames (see `render`), so the offset is refreshed on each,
+   * and a property write is nothing where an attribute write is a DOM mutation
+   * — thousands of them on a keystroke, for the document to end up looking the
+   * same.
+   */
   _runEl(run) {
     const span = document.createElement("span");
-    let cls = "leaf-r-" + run.role;
+    let cls = "leaf-run leaf-r-" + run.role;
     if (run.bold) cls += " leaf-b";
     if (run.italic) cls += " leaf-i";
     if (run.underline) cls += " leaf-u";
@@ -642,7 +754,7 @@ export class LeafEditor {
     if (run.sup) cls += " leaf-sup";
     if (run.sub) cls += " leaf-sub";
     span.className = cls;
-    span.dataset.src = String(run.src);
+    span._src = run.src;
     span.textContent = run.text;
     return span;
   }
@@ -1015,7 +1127,10 @@ export class LeafEditor {
       this._composing = false;
       const data = e.data || "";
       // Rebuild from core (with the composed text inserted), replacing whatever
-      // the browser left in the DOM during composition.
+      // the browser left in the DOM during composition — all of it: the browser
+      // has been writing into the projection, so no row can be taken as still
+      // matching the key it was built from.
+      this._rebuildAll = true;
       this.render(data ? this.doc.insert(data) : this.doc.view());
     });
 
@@ -1118,9 +1233,9 @@ export class LeafEditor {
    * the caret in it, not navigate away from the document.
    */
   _onClick(e) {
-    const runEl = e.target.closest?.("[data-src]");
+    const runEl = e.target.closest?.(".leaf-run");
     if (!runEl) return;
-    const src = Number(runEl.dataset.src);
+    const src = runEl._src;
     if (!Number.isFinite(src)) return;
 
     // A task marker is core's `☐ `/`☑ ` drawn in the list marker's place.
@@ -1393,6 +1508,110 @@ function gapScale(row) {
 }
 
 /**
+ * A row's runs with the splits that are not style merged back together.
+ *
+ * Core splits a run where the selection or a highlight begins and ends, so a
+ * renderer painting its own selection can. This one lets the browser paint it,
+ * so to the DOM those are one span — and if they were built as two, moving the
+ * selection would change every row it crossed and cost each its element. Two
+ * neighbours merge when they look the same and are contiguous in the source
+ * (the second starts where the first's bytes end). The source view's runs all
+ * report offset 0 and merge on looks alone.
+ */
+function canonicalRuns(runs) {
+  const out = [];
+  for (const run of runs) {
+    const prev = out[out.length - 1];
+    if (
+      prev &&
+      sameStyle(prev, run) &&
+      (run.src === prev.src + utf8Length(prev.text) || (prev.src === 0 && run.src === 0))
+    ) {
+      out[out.length - 1] = { ...prev, text: prev.text + run.text };
+    } else {
+      out.push(run);
+    }
+  }
+  return out;
+}
+
+function sameStyle(a, b) {
+  return (
+    a.role === b.role &&
+    a.bold === b.bold &&
+    a.italic === b.italic &&
+    a.underline === b.underline &&
+    a.strike === b.strike &&
+    a.sup === b.sup &&
+    a.sub === b.sub &&
+    a.hl === b.hl &&
+    a.hl_color === b.hl_color
+  );
+}
+
+/** What a run's DOM is made from, for a key. Not `src` — see `_runEl`. */
+function runKey(run) {
+  return (
+    run.role +
+    (run.bold ? "b" : "") +
+    (run.italic ? "i" : "") +
+    (run.underline ? "u" : "") +
+    (run.strike ? "s" : "") +
+    (run.sup ? "^" : "") +
+    (run.sub ? "_" : "") +
+    (run.hl ? "#" + run.hl + ":" + (run.hl_color || "") : "") +
+    "\u0001" +
+    run.text +
+    "\u0002"
+  );
+}
+
+/**
+ * Everything `_rowEl` reads when it builds a row — so two rows with the same
+ * key produce the same element, and a row can be reused under it.
+ */
+function rowKey(row, runs, i, rows) {
+  const b = row.boundary;
+  let key =
+    "r" +
+    (row.heading || 0) +
+    (row.code ? "c" : "") +
+    (row.code && i > 0 && rows[i - 1].code ? "" : "F") +
+    (row.code && i < rows.length - 1 && rows[i + 1].code ? "" : "L") +
+    "|" +
+    (row.code_lang || "") +
+    "|" +
+    (b ? (b.above || "") + "/" + (b.below || "") : "") +
+    "|";
+  for (const run of runs) key += runKey(run);
+  return key;
+}
+
+/** `rowKey` for a media row: the element built and the row core addresses. */
+function mediaKey(media, row) {
+  const len = (row?.runs || []).reduce((n, r) => n + r.text.length, 0);
+  return "m" + len + "|" + JSON.stringify([media.kind, media.src, media.poster, media.alt, media.sources]);
+}
+
+/** `rowKey` for a drawn grid: its shape, alignment, and every cell's runs. */
+function tableKey(t) {
+  let key = "t";
+  for (const row of t.grid) {
+    key += row.head ? "H" : "R";
+    for (const cell of row.cells) {
+      key += "|" + (cell.align || "") + "[";
+      for (const line of cell.lines) {
+        key += "\u0003";
+        for (const run of canonicalRuns(line.runs)) key += runKey(run);
+      }
+      key += "]";
+    }
+    key += "\n";
+  }
+  return key;
+}
+
+/**
  * A TreeWalker over a row's editable text nodes — everything except the code
  * block's language label, which is chrome, not document text, and must never
  * count toward an offset.
@@ -1495,8 +1714,8 @@ function offsetTo(rowEl, node, offset) {
  */
 function utf16InLine(lineEl, src, lineStart) {
   let acc = 0;
-  for (const runEl of lineEl.querySelectorAll("[data-src]")) {
-    const base = Number(runEl.dataset.src);
+  for (const runEl of lineEl._leafRuns || []) {
+    const base = runEl._src;
     const text = runEl.textContent;
     const bytes = utf8Length(text);
     if (src < base) return acc;
@@ -1522,7 +1741,7 @@ function utf16InLine(lineEl, src, lineStart) {
  */
 function srcInLine(lineEl, node, offset, lineStart, lineEnd) {
   const clamp = (v) => Math.min(Math.max(v, lineStart), lineEnd);
-  const runEl = (node.nodeType === 1 ? node : node.parentElement)?.closest("[data-src]");
+  const runEl = (node.nodeType === 1 ? node : node.parentElement)?.closest(".leaf-run");
   if (!runEl) {
     // An element endpoint: a child index into the line, so sum what precedes it.
     if (node === lineEl) {
@@ -1534,7 +1753,7 @@ function srcInLine(lineEl, node, offset, lineStart, lineEnd) {
     }
     return clamp(lineStart);
   }
-  const base = Number(runEl.dataset.src);
+  const base = runEl._src;
   const text = node.nodeType === 3 ? node.textContent : runEl.textContent;
   let b = base;
   let u = 0;

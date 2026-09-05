@@ -94,7 +94,7 @@ function place(node, offset) {
 
 /** The first text node inside a run of `el`. */
 function firstText(el) {
-  const t = el.querySelector("[data-src]");
+  const t = el.querySelector(".leaf-run");
   assert(t, "no run inside the element");
   return t.firstChild;
 }
@@ -149,6 +149,75 @@ await test("a repaint replaces the grid rather than stacking another under it", 
   ed.render(ed.doc.view());
   ed.render(ed.doc.view());
   eq(ed.contentEl.querySelectorAll("table").length, 1, "after three paints");
+  return ed;
+});
+
+// ── reuse across frames ───────────────────────────────────────────────────
+
+await test("an edit rebuilds the rows it touched and keeps the rest", () => {
+  const ed = editor("first paragraph\n\nsecond paragraph\n\nthird paragraph\n");
+  const rows = ed._lastView.rows;
+  const first = ed.rowEls[0];
+  const lastIdx = rows.length - 1;
+  const last = ed.rowEls[lastIdx];
+  const midIdx = rows.findIndex((r) => r.runs.some((x) => x.text.includes("second")));
+  const mid = ed.rowEls[midIdx];
+  place(firstText(mid), 6);
+  ed._syncFromDom();
+  input(ed, "insertText", "X");
+  assert(ed.source().includes("secondX"), "the edit did not land");
+  assert(ed.rowEls[0] === first, "the untouched first row was rebuilt");
+  assert(ed.rowEls[lastIdx] === last, "the untouched last row was rebuilt");
+  assert(ed.rowEls[midIdx] !== mid, "the edited row was not rebuilt");
+  eq(ed.rowEls[midIdx].textContent, "secondX paragraph");
+  // The reused row's runs still know where they come from, one byte on.
+  const span = last.querySelector(".leaf-run");
+  eq(ed.source().slice(span._src, span._src + 5), "third", "a reused run's offset went stale");
+  return ed;
+});
+
+await test("moving the selection changes no row", () => {
+  const ed = editor("one **two** three\n\nfour\n");
+  const before = [...ed.rowEls];
+  ed.selectAll();
+  assert(ed._lastView.has_selection, "select-all did not select");
+  ed.render(ed.doc.view());
+  assert(before.every((el, i) => ed.rowEls[i] === el), "a selection split rebuilt a row");
+  // And the selection is still one run to the DOM, not the halves core cut.
+  eq(ed.rowEls[0].querySelectorAll(".leaf-run").length, 3, "runs: body, bold, body");
+  return ed;
+});
+
+await test("a picture survives an edit above it", () => {
+  const ed = editor("before\n\n![a leaf](leaf.svg)\n\nafter\n");
+  const img = ed.contentEl.querySelector("img.leaf-media");
+  assert(img, "no image was built");
+  place(firstText(ed.rowEls[0]), 3);
+  ed._syncFromDom();
+  input(ed, "insertText", "Z");
+  assert(ed.contentEl.querySelector("img.leaf-media") === img, "the image was rebuilt");
+  return ed;
+});
+
+await test("a code block's edges follow the block as it shrinks", () => {
+  const ed = editor("prose\n\n```\nalpha\nbeta\n```\n\nafter\n");
+  const rows = ed._lastView.rows;
+  const alphaIdx = rows.findIndex((r) => r.code && r.runs.some((x) => x.text === "alpha"));
+  const betaIdx = rows.findIndex((r) => r.code && r.runs.some((x) => x.text === "beta"));
+  assert(alphaIdx > 0 && betaIdx > alphaIdx, "the code rows were not found");
+  const alpha = ed.rowEls[alphaIdx];
+  assert(!alpha.classList.contains("code-last"), "alpha was already the last line");
+  // Select from the end of alpha to the end of beta and delete: alpha becomes
+  // the block's last line, so its bottom edge has to move onto it — a row
+  // whose own text did not change, only what stands next to it.
+  ed.render(ed.doc.set_selection(alphaIdx, 5, betaIdx, 4));
+  input(ed, "deleteContentBackward");
+  assert(/```\nalpha\n```/.test(ed.source()), `beta was not removed: ${ed.source()}`);
+  const firsts = ed.contentEl.querySelectorAll(".code-first");
+  const lasts = ed.contentEl.querySelectorAll(".code-last");
+  eq(firsts.length, 1, "one first edge");
+  eq(lasts.length, 1, "one last edge");
+  assert(lasts[0].textContent === "alpha", "the last edge did not move up to alpha");
   return ed;
 });
 
