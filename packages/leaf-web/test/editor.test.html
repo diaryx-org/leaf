@@ -317,6 +317,28 @@ await test("a link follows only with the platform modifier held", () => {
   return ed;
 });
 
+// ── input intents ─────────────────────────────────────────────────────────
+
+await test("an autocorrect replaces the word it names, not the caret", () => {
+  const ed = editor("teh quick fox\n");
+  const node = firstText(ed.rowEls[0]);
+  // The caret sits after the word, as it does when autocorrect fires on the
+  // space; the word itself is named only by the event's target range.
+  place(node, 3);
+  ed._syncFromDom();
+  const range = new StaticRange({
+    startContainer: node, startOffset: 0, endContainer: node, endOffset: 3,
+  });
+  ed.contentEl.dispatchEvent(
+    new InputEvent("beforeinput", {
+      inputType: "insertReplacementText", data: "the", targetRanges: [range],
+      bubbles: true, cancelable: true,
+    })
+  );
+  eq(ed.source(), "the quick fox\n", "the replaced word was left in place");
+  return ed;
+});
+
 // ── what the format can spell ─────────────────────────────────────────────
 
 await test("capabilities answer for the format, not for the editor", () => {

@@ -735,10 +735,16 @@ export class LeafEditor {
    * offsets, the coordinate the two descriptions of a table share.
    */
   _selectionToCore(sel) {
-    const ac = this._cellPoint(sel.anchorNode, sel.anchorOffset);
-    const fc = this._cellPoint(sel.focusNode, sel.focusOffset);
-    const a = this._domPoint(sel.anchorNode, sel.anchorOffset);
-    const f = this._domPoint(sel.focusNode, sel.focusOffset);
+    return this._pointsToCore(sel.anchorNode, sel.anchorOffset, sel.focusNode, sel.focusOffset);
+  }
+
+  /** `_selectionToCore` for any two DOM points — a `StaticRange`'s ends as
+   *  much as a `Selection`'s. */
+  _pointsToCore(anchorNode, anchorOffset, focusNode, focusOffset) {
+    const ac = this._cellPoint(anchorNode, anchorOffset);
+    const fc = this._cellPoint(focusNode, focusOffset);
+    const a = this._domPoint(anchorNode, anchorOffset);
+    const f = this._domPoint(focusNode, focusOffset);
 
     if (ac != null || fc != null) {
       const anchor = ac != null ? ac : a && this.doc.offset_for_pos(a.row, a.ch);
@@ -1157,10 +1163,16 @@ export class LeafEditor {
     let view;
     switch (e.inputType) {
       case "insertText":
+        this._selectTargetRange(e);
         view = d.insert(e.data ?? "");
         break;
       case "insertReplacementText": {
         // Autocorrect / dictation replacement — the text rides the dataTransfer.
+        // What it replaces is not the selection: the caret sits after the word
+        // the browser is correcting, and the word itself is named only by the
+        // event's target range. Inserting at the caret alone left the misspelt
+        // word in place with the correction appended to it.
+        this._selectTargetRange(e);
         const rep = (e.dataTransfer && e.dataTransfer.getData("text/plain")) || e.data || "";
         view = d.insert(rep);
         break;
@@ -1224,6 +1236,22 @@ export class LeafEditor {
     }
     e.preventDefault();
     if (view) this.render(view);
+  }
+
+  /**
+   * Put core's selection over the range a `beforeinput` says it is about to
+   * replace, when that is more than the caret. The browser hands one over for
+   * an autocorrect, a dictation edit, or a keyboard's word suggestion — the
+   * cases where what is replaced is a word behind the caret, not the selection.
+   */
+  _selectTargetRange(e) {
+    const range = e.getTargetRanges?.()[0];
+    if (!range || range.collapsed) return;
+    if (!this.contentEl.contains(range.startContainer)) return;
+    const view = this._pointsToCore(
+      range.startContainer, range.startOffset, range.endContainer, range.endOffset
+    );
+    if (view) this._lastView = view;
   }
 
   /**
