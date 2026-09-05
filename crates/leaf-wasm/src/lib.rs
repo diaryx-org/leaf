@@ -556,6 +556,10 @@ pub struct DocView {
     /// Whether the buffer differs from the last saved bytes — for a "● modified"
     /// affordance.
     dirty: bool,
+    /// Whether there is a step to undo, and one to redo — what a toolbar's
+    /// history buttons enable by. Both false on a read-only document.
+    can_undo: bool,
+    can_redo: bool,
     /// `"wysiwyg"` or `"source"`, for a view-toggle affordance.
     view: String,
     /// The heading level at the caret, if any — a toolbar lights H1…H6 from it.
@@ -944,6 +948,8 @@ impl LeafDoc {
             anchor_row,
             anchor_ch,
             dirty: self.doc.dirty,
+            can_undo: self.doc.can_undo(),
+            can_redo: self.doc.can_redo(),
             view: self.doc.view_name().to_string(),
             heading,
             active,
@@ -1610,6 +1616,48 @@ impl LeafDoc {
             self.nav_above(row)
         };
         target.map(|r| self.offset_of_col(r, col))
+    }
+
+    /// The UTF-16 index at which source offset `off` sits in the visible text
+    /// (`text_in_range(0, doc_end_offset())`) — the unit a DOM `Range` and the
+    /// Apple text systems count in. See `leaf-ffi`'s method of the same name.
+    pub fn utf16_index_for_offset(&mut self, off: usize) -> usize {
+        self.sync();
+        let off = off.min(self.doc.source.len());
+        match self.doc.view {
+            View::Wysiwyg => self.doc.vmap.visible_utf16_len(0, off),
+            View::Source => {
+                let off = self.snap_stop(off);
+                self.doc.source[..off].encode_utf16().count()
+            }
+        }
+    }
+
+    /// The inverse of `utf16_index_for_offset`: the source offset (a caret stop)
+    /// of the visible character at UTF-16 `index`, or the document's end stop at
+    /// or past the end of the text.
+    pub fn offset_for_utf16_index(&mut self, index: usize) -> usize {
+        self.sync();
+        let len = self.doc.source.len();
+        let end = self.snap_stop(len);
+        match self.doc.view {
+            View::Wysiwyg => self
+                .doc
+                .vmap
+                .offset_at_visible_utf16(end, index)
+                .map_or(end, |o| self.snap_stop(o)),
+            View::Source => {
+                let mut seen = 0usize;
+                for (i, ch) in self.doc.source.char_indices() {
+                    let n = ch.len_utf16();
+                    if index < seen + n {
+                        return i;
+                    }
+                    seen += n;
+                }
+                end
+            }
+        }
     }
 
     /// The visible text between two offsets. In the WYSIWYG view this is *not*
