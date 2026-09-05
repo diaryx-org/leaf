@@ -1373,30 +1373,10 @@ public final class LeafTextView: UIView, UITextInput {
         guard let r = range as? LeafTextRange else { return [] }
         let s = doc.posForOffset(off: UInt32(r.from.offset))
         let e = doc.posForOffset(off: UInt32(r.to.offset))
-        let sRow = Int(s.row), sCh = Int(s.ch)
-        let eRow = Int(e.row), eCh = Int(e.ch)
-        guard eRow >= sRow else { return [] }
-
-        var rects: [UITextSelectionRect] = []
-        for row in sRow...eRow where layoutEngine.rows.indices.contains(row) {
-            let rl = layoutEngine.rows[row]
-            let rowFrom = (row == sRow) ? sCh : 0
-            let rowTo = (row == eRow) ? min(eCh, rl.attributed.length) : rl.attributed.length
-            // One rect per visual line the selection touches in this block.
-            for (i, wl) in rl.wrapped.enumerated() {
-                let lineStart = wl.start, lineEnd = wl.start + wl.length
-                let cs = max(rowFrom, lineStart), ce = min(rowTo, lineEnd)
-                guard cs < ce else { continue }
-                let x0 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(cs - lineStart), nil)
-                let x1 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(ce - lineStart), nil)
-                let rect = CGRect(x: layoutEngine.originX + wl.indent + x0,
-                                  y: rl.top + rl.labelInset + CGFloat(i) * rl.lineHeight,
-                                  width: x1 - x0, height: rl.lineHeight)
-                rects.append(LeafSelectionRect(rect: rect,
-                                               containsStart: row == sRow && cs == sCh,
-                                               containsEnd: row == eRow && ce == eCh))
-            }
-        }
+        // One rect per visual line the selection touches in each block.
+        var rects: [UITextSelectionRect] = layoutEngine
+            .rangeRects(from: (Int(s.row), Int(s.ch)), to: (Int(e.row), Int(e.ch)))
+            .map { LeafSelectionRect(rect: $0.rect, containsStart: $0.containsStart, containsEnd: $0.containsEnd) }
         // Tables carry no `wrapped` lines, so the row walk above skips them; add
         // the highlight over any table cells the range covers, keyed by source
         // offset (the coordinate a cell is laid out by).

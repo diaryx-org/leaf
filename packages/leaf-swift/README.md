@@ -122,7 +122,10 @@ Undo, Redo, Cut, Copy, Paste, and Select All are the Edit menu's: the view
 answers the standard `undo:`/`cut:`/`copy:`/`paste:`/`selectAll:` actions,
 validates each (Undo dims with nothing to undo, Cut with nothing selected), and
 hands the responder chain an `undoManager` over the document's own history, so
-the menu, ⌘Z, and iOS's three-finger swipe all reach the same steps.
+the menu, ⌘Z, and iOS's three-finger swipe all reach the same steps. Edit ▸ Find
+is the system find bar (`NSTextFinder`): ⌘F slides it in over the scroll view,
+matches light up incrementally as the pattern is typed, Find Next/Previous and
+Find and Replace work, and ⌘J jumps to the selection.
 Customize fonts, colours, and page layout via `EditorTheme`.
 
 **A measured text column.** `EditorTheme.measure` caps the text at a number of

@@ -25,7 +25,7 @@ import AppKit
 import LeafFFI
 
 public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuRequestor, NSUserInterfaceValidations,
-                                 FootnotePeekDelegate {
+                                 NSTextFinderClient, FootnotePeekDelegate {
     let doc: LeafDoc
     public var theme: EditorTheme {
         didSet {
@@ -121,6 +121,19 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         undo: { [weak self] in self?.command { $0.undo() } },
         redo: { [weak self] in self?.command { $0.redo() } })
     public override var undoManager: UndoManager? { historyManager }
+
+    /// The system find bar. Edit ▸ Find's items send `performTextFinderAction:`
+    /// down the responder chain; this answers them, and the bar itself is the
+    /// enclosing scroll view's (set when the view lands in one). Incremental,
+    /// so matches light up as the pattern is typed, with the rest dimmed — the
+    /// `NSTextFinderClient` conformance below is what it reads and draws from.
+    private lazy var textFinder: NSTextFinder = {
+        let finder = NSTextFinder()
+        finder.client = self
+        finder.isIncrementalSearchingEnabled = true
+        finder.incrementalSearchingShouldDimContentView = true
+        return finder
+    }()
 
     /// Whether this surface is a reader — see the iOS peer for the full
     /// contract. The *document* is the enforcement (leaf-core's gate refuses
@@ -366,6 +379,12 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // somewhere else. It is chrome about a position, and the positions are
         // being rebuilt.
         dismissFootnotePeek()
+        // The find bar caches the string and its matches; an edit — or a view
+        // toggle, which changes what the visible text *is* — invalidates both.
+        // Rows compare cheaply, and a motion or a selection leaves them equal.
+        if view.view != docView.view || view.rows != docView.rows {
+            textFinder.noteClientStringWillChange()
+        }
         docView = view
         layoutEngine = EditorLayout(view, theme: theme, viewWidth: viewWidth, page: pageSetup,
                                     cache: &shapeCache, media: mediaStore)
@@ -1465,6 +1484,20 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     @objc public func undo(_ sender: Any?) { historyManager.undo() }
     @objc public func redo(_ sender: Any?) { historyManager.redo() }
 
+    /// Edit ▸ Find ▸ Find…, Find Next, Find Previous, Use Selection for Find,
+    /// Find and Replace…: each item's tag is an `NSTextFinder.Action`.
+    public override func performTextFinderAction(_ sender: Any?) {
+        guard let tag = (sender as? NSMenuItem)?.tag ?? (sender as? NSControl)?.tag,
+              let action = NSTextFinder.Action(rawValue: tag) else { return }
+        textFinder.performAction(action)
+    }
+
+    /// Edit ▸ Find ▸ Jump to Selection (⌘J): bring the caret's line to the
+    /// middle of the viewport.
+    public override func centerSelectionInVisibleArea(_ sender: Any?) {
+        scrollRangeToVisible(utf16Range(fromByte: selLowByte, toByte: selHighByte))
+    }
+
     /// What the Edit menu (and any other `NSValidatedUserInterfaceItem`) asks
     /// before enabling an item aimed at this view. Without this every item is
     /// live — Cut with nothing selected, Paste over an empty clipboard — which
@@ -1485,6 +1518,10 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         case #selector(pasteAsPlainText(_:)):
             return !isReadOnly && NSPasteboard.general.string(forType: .string) != nil
         case #selector(selectAll(_:)): return true
+        case #selector(performTextFinderAction(_:)):
+            guard let tag = (item as? NSMenuItem)?.tag, let action = NSTextFinder.Action(rawValue: tag) else { return false }
+            return textFinder.validateAction(action)
+        case #selector(centerSelectionInVisibleArea(_:)): return true
         // Anything else is enabled by whether the view answers it at all — what
         // AppKit does for a responder with no validation of its own.
         default: return item.action.map { responds(to: $0) } ?? false
@@ -1632,6 +1669,112 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         return true
     }
 
+    // MARK: NSTextFinderClient — what the find bar searches, selects, and draws
+    //
+    // The finder's string is `fullText()`, and every range it hands back is an
+    // `NSRange` into it — the same UTF-16 space `NSTextInputClient` speaks, so
+    // the same two conversions carry it to and from core's byte offsets.
+
+    public var string: String { fullText() }
+    public var isSelectable: Bool { true }
+    public var allowsMultipleSelection: Bool { false }
+    public var isEditable: Bool { !isReadOnly }
+
+    public var firstSelectedRange: NSRange { utf16Range(fromByte: selLowByte, toByte: selHighByte) }
+
+    public var selectedRanges: [NSValue] {
+        get { [NSValue(range: firstSelectedRange)] }
+        set {
+            guard let range = newValue.first?.rangeValue else { return }
+            let (from, to) = byteBounds(range)
+            // The exact bytes, snapping neither end: a match inside `**word**`
+            // is the word, not one stop short of it.
+            render(doc.selectRange(start: UInt32(from), end: UInt32(to)))
+        }
+    }
+
+    public func scrollRangeToVisible(_ range: NSRange) {
+        let (from, to) = byteBounds(range)
+        let boxes = rangeRects(fromByte: from, toByte: to)
+        guard let first = boxes.first else { return }
+        let union = boxes.dropFirst().reduce(first) { $0.union($1) }
+        // Centre the match rather than just bringing it to the edge — where a
+        // reader's eye goes when the bar says "1 of 12".
+        if let clip = enclosingScrollView?.contentView {
+            let target = viewRect(union)
+            let y = max(0, min(target.midY - clip.bounds.height / 2, bounds.height - clip.bounds.height))
+            clip.scroll(to: CGPoint(x: clip.bounds.origin.x, y: y))
+            enclosingScrollView?.reflectScrolledClipView(clip)
+        } else {
+            scrollToVisible(viewRect(union))
+        }
+    }
+
+    public var contentView: NSView { self }
+
+    public func rects(forCharacterRange range: NSRange) -> [NSValue]? {
+        let (from, to) = byteBounds(range)
+        return rangeRects(fromByte: from, toByte: to).map { NSValue(rect: viewRect($0)) }
+    }
+
+    public var visibleCharacterRanges: [NSValue] {
+        let visible = layoutRect(enclosingScrollView?.contentView.bounds ?? bounds)
+        let top = layoutEngine.hit(CGPoint(x: visible.minX, y: visible.minY))
+        let bottom = layoutEngine.hit(CGPoint(x: visible.maxX, y: visible.maxY))
+        let from = Int(doc.offsetForPos(row: UInt32(top.row), ch: UInt32(top.ch)))
+        let to = Int(doc.offsetForPos(row: UInt32(bottom.row), ch: UInt32(bottom.ch)))
+        return [NSValue(range: utf16Range(fromByte: min(from, to), toByte: max(from, to)))]
+    }
+
+    /// The matched text, drawn on the finder's overlay above the dimmed page:
+    /// the rows' own lines, clipped to the match's boxes, under the same zoom the
+    /// page is drawn at.
+    public func drawCharacters(in range: NSRange, forContentView view: NSView) {
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        let (from, to) = byteBounds(range)
+        let boxes = rangeRects(fromByte: from, toByte: to)
+        guard !boxes.isEmpty else { return }
+        ctx.saveGState()
+        defer { ctx.restoreGState() }
+        ctx.scaleBy(x: zoom, y: zoom)
+        ctx.clip(to: boxes)
+        let s = doc.posForOffset(off: UInt32(from)), e = doc.posForOffset(off: UInt32(to))
+        for row in Int(s.row)...max(Int(s.row), Int(e.row)) where layoutEngine.rows.indices.contains(row) {
+            let rl = layoutEngine.rows[row]
+            for (i, wl) in rl.wrapped.enumerated() {
+                let o = rl.lineOrigin(i)
+                wl.attributed.draw(with: CGRect(x: o.x + wl.indent, y: o.y,
+                                                width: rl.columnWidth - wl.indent, height: rl.lineHeight),
+                                   options: [.usesLineFragmentOrigin])
+            }
+        }
+    }
+
+    public func shouldReplaceCharacters(inRanges ranges: [NSValue], with strings: [String]) -> Bool {
+        !isReadOnly
+    }
+
+    public func replaceCharacters(in range: NSRange, with string: String) {
+        let (from, to) = byteBounds(range)
+        render(doc.replaceRange(from: UInt32(from), to: UInt32(to), text: string))
+    }
+
+    public func didReplaceCharacters() {}
+
+    /// The boxes a byte range occupies, in layout coordinates — the layout's
+    /// `rangeRects` over core's positions for the two ends, plus any table
+    /// cells the range crosses.
+    private func rangeRects(fromByte from: Int, toByte to: Int) -> [CGRect] {
+        guard to > from else {
+            let p = doc.posForOffset(off: UInt32(from))
+            return layoutEngine.rect(row: Int(p.row), ch: Int(p.ch)).map { [$0] } ?? []
+        }
+        let s = doc.posForOffset(off: UInt32(from)), e = doc.posForOffset(off: UInt32(to))
+        let lines = layoutEngine.rangeRects(from: (Int(s.row), Int(s.ch)), to: (Int(e.row), Int(e.ch))).map(\.rect)
+        let cells = layoutEngine.tableSelectionRects(from: from, to: to).map(\.rect)
+        return lines + cells
+    }
+
     // MARK: accessibility — expose the document as a native text area
 
     public override func isAccessibilityElement() -> Bool { true }
@@ -1722,6 +1865,9 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             nc.addObserver(self, selector: #selector(viewportResized),
                            name: NSView.frameDidChangeNotification, object: clip)
         }
+        // The find bar slides in at the top of the scroll view, as it does over
+        // every scrolling text view on the platform.
+        textFinder.findBarContainer = enclosingScrollView
         // Advertise the selection to the app-wide Services menu (Edit ▸ Services).
         NSApp.registerServicesMenuSendTypes([.string], returnTypes: [.string])
         // Accept text/rich content dropped into the editor.

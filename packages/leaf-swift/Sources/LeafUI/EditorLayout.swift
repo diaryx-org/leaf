@@ -921,6 +921,38 @@ struct EditorLayout {
     /// row-based selection walk skips right over them and the system (iOS) or the
     /// caller would otherwise draw no highlight over a table. `from`/`to` are
     /// source byte offsets; each rect flags whether it holds an endpoint.
+    /// The boxes a range of text occupies, one per visual line it touches, in
+    /// layout coordinates — what a selection overlay, a find-bar match, or a
+    /// dictation highlight is drawn from. `from`/`to` are core positions
+    /// (`posForOffset`); each box says whether it holds the range's start or end,
+    /// which is where a touch surface puts its handles. Tables carry no wrapped
+    /// lines, so a range over one comes from `tableSelectionRects` instead.
+    func rangeRects(from s: (row: Int, ch: Int), to e: (row: Int, ch: Int))
+        -> [(rect: CGRect, containsStart: Bool, containsEnd: Bool)]
+    {
+        guard e.row >= s.row else { return [] }
+        var rects: [(rect: CGRect, containsStart: Bool, containsEnd: Bool)] = []
+        for row in s.row...e.row where rows.indices.contains(row) {
+            let rl = rows[row]
+            let rowFrom = (row == s.row) ? s.ch : 0
+            let rowTo = (row == e.row) ? min(e.ch, rl.attributed.length) : rl.attributed.length
+            for (i, wl) in rl.wrapped.enumerated() {
+                let lineStart = wl.start, lineEnd = wl.start + wl.length
+                let cs = max(rowFrom, lineStart), ce = min(rowTo, lineEnd)
+                guard cs < ce else { continue }
+                let x0 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(cs - lineStart), nil)
+                let x1 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(ce - lineStart), nil)
+                // `lineOrigin` is the one accessor both flows go through: the
+                // continuous stack's formula, or where pagination placed the line.
+                let o = rl.lineOrigin(i)
+                rects.append((CGRect(x: o.x + wl.indent + x0, y: o.y, width: x1 - x0, height: rl.lineHeight),
+                              row == s.row && cs == s.ch,
+                              row == e.row && ce == e.ch))
+            }
+        }
+        return rects
+    }
+
     func tableSelectionRects(from: Int, to: Int)
         -> [(rect: CGRect, containsStart: Bool, containsEnd: Bool)]
     {

@@ -503,4 +503,56 @@ final class EditorLayoutTests: XCTestCase {
         XCTAssertEqual(layout.rows[1].height, theme.blockGap, accuracy: 0.5)
         XCTAssertEqual(layout.rows[3].height, theme.blockGap * theme.headingGapScale, accuracy: 0.5)
     }
+
+    // MARK: range rects — what a selection overlay or a find match is drawn from
+
+    func testARangeInsideOneLineIsOneBoxWithBothEnds() throws {
+        let dv = docView([row([mkRun("hello world")])])
+        let layout = EditorLayout(dv, theme: theme, wrapWidth: 400)
+        let boxes = layout.rangeRects(from: (0, 6), to: (0, 11))   // "world"
+        XCTAssertEqual(boxes.count, 1)
+        let box = try XCTUnwrap(boxes.first)
+        XCTAssertTrue(box.containsStart && box.containsEnd)
+        let start = try XCTUnwrap(layout.rect(row: 0, ch: 6))
+        let end = try XCTUnwrap(layout.rect(row: 0, ch: 11))
+        XCTAssertEqual(box.rect.minX, start.minX, accuracy: 0.5)
+        XCTAssertEqual(box.rect.maxX, end.minX, accuracy: 0.5)
+        XCTAssertEqual(box.rect.height, layout.rows[0].lineHeight, accuracy: 0.5)
+    }
+
+    func testARangeAcrossAWrapIsOneBoxPerVisualLine() {
+        let long = "the quick brown fox jumps over the lazy dog and then keeps on running"
+        let dv = docView([row([mkRun(long)])])
+        let layout = EditorLayout(dv, theme: theme, wrapWidth: 160)
+        let rl = layout.rows[0]
+        XCTAssertGreaterThan(rl.wrapped.count, 1, "the fixture must wrap")
+        let secondLine = rl.wrapped[1]
+        // From two characters before the wrap to two characters into the next line.
+        let boxes = layout.rangeRects(from: (0, secondLine.start - 2), to: (0, secondLine.start + 2))
+        XCTAssertEqual(boxes.count, 2)
+        XCTAssertTrue(boxes[0].containsStart && !boxes[0].containsEnd)
+        XCTAssertTrue(!boxes[1].containsStart && boxes[1].containsEnd)
+        XCTAssertEqual(boxes[0].rect.minY, rl.lineTop(0), accuracy: 0.5)
+        XCTAssertEqual(boxes[1].rect.minY, rl.lineTop(1), accuracy: 0.5)
+        XCTAssertEqual(boxes[1].rect.minX, rl.lineOrigin(1).x + secondLine.indent, accuracy: 0.5,
+                       "the second box starts at the continuation line's own left edge")
+    }
+
+    func testARangeAcrossRowsCoversTheTailAndTheHead() {
+        let dv = docView([row([mkRun("first row")]), row([mkRun("second row")])])
+        let layout = EditorLayout(dv, theme: theme, wrapWidth: 400)
+        let boxes = layout.rangeRects(from: (0, 6), to: (1, 6))   // "row" … "second"
+        XCTAssertEqual(boxes.count, 2)
+        XCTAssertEqual(boxes[0].rect.minY, layout.rows[0].top, accuracy: 0.5)
+        XCTAssertEqual(boxes[1].rect.minY, layout.rows[1].top, accuracy: 0.5)
+        XCTAssertEqual(boxes[1].rect.minX, layout.rows[1].originX, accuracy: 0.5, "the head starts at the margin")
+        XCTAssertTrue(boxes[0].containsStart && boxes[1].containsEnd)
+    }
+
+    func testAnEmptyOrInvertedRangeHasNoBoxes() {
+        let dv = docView([row([mkRun("hello")])])
+        let layout = EditorLayout(dv, theme: theme, wrapWidth: 400)
+        XCTAssertTrue(layout.rangeRects(from: (0, 2), to: (0, 2)).isEmpty)
+        XCTAssertTrue(layout.rangeRects(from: (1, 0), to: (0, 2)).isEmpty)
+    }
 }
