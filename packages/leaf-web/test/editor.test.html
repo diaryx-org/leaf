@@ -584,6 +584,61 @@ await test("⌘⇧V pastes the plain flavour, and only for that paste", () => {
   return ed;
 });
 
+// ── drag and drop ─────────────────────────────────────────────────────────
+
+/** A point just inside the start of a row's text, for a drop to land on. */
+function pointIn(el) {
+  const r = el.querySelector(".leaf-run").getBoundingClientRect();
+  return { clientX: r.left + 2, clientY: r.top + r.height / 2 };
+}
+function drag(ed, type, dt, at = {}) {
+  return ed.contentEl.dispatchEvent(new DragEvent(type, { dataTransfer: dt, bubbles: true, cancelable: true, ...at }));
+}
+
+await test("text dropped from outside lands under the pointer", () => {
+  const ed = editor("alpha\n\nbeta\n");
+  const dt = new DataTransfer();
+  dt.setData("text/plain", "X");
+  const beta = ed.rowEls.find((r) => r.textContent === "beta");
+  drag(ed, "drop", dt, pointIn(beta));
+  eq(ed.source(), "alpha\n\nXbeta\n", "the drop did not land at the point");
+  return ed;
+});
+
+await test("a selection dragged within the surface moves, and copies with ⌥", () => {
+  const ed = editor("alpha\n\nbeta\n");
+  ed.render(ed.doc.select_range(0, 5));
+  const dt = new DataTransfer();
+  drag(ed, "dragstart", dt);
+  eq(dt.getData("text/plain"), "alpha", "the drag did not carry the source");
+  const beta = ed.rowEls.find((r) => r.textContent === "beta");
+  drag(ed, "drop", dt, pointIn(beta));
+  eq(ed.source(), "\n\nalphabeta\n", "the selection was not moved");
+
+  const ed2 = editor("alpha\n\nbeta\n");
+  ed2.render(ed2.doc.select_range(0, 5));
+  const dt2 = new DataTransfer();
+  drag(ed2, "dragstart", dt2);
+  const beta2 = ed2.rowEls.find((r) => r.textContent === "beta");
+  drag(ed2, "drop", dt2, { ...pointIn(beta2), altKey: true });
+  eq(ed2.source(), "alpha\n\nalphabeta\n", "⌥ did not copy");
+  ed.destroy();
+  return ed2;
+});
+
+await test("dropped files go to the host with the offset under the pointer", () => {
+  const ed = editor("alpha\n\nbeta\n");
+  let got = null;
+  ed.onDropFiles((files, at) => { got = { names: files.map((f) => f.name), at }; });
+  const dt = new DataTransfer();
+  dt.items.add(new File(["x"], "leaf.png", { type: "image/png" }));
+  const beta = ed.rowEls.find((r) => r.textContent === "beta");
+  drag(ed, "drop", dt, pointIn(beta));
+  eq(got, { names: ["leaf.png"], at: 7 });
+  eq(ed.source(), "alpha\n\nbeta\n", "a file drop edited the document");
+  return ed;
+});
+
 // ── what the format can spell ─────────────────────────────────────────────
 
 await test("capabilities answer for the format, not for the editor", () => {

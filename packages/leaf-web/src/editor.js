@@ -1382,6 +1382,33 @@ export class LeafEditor {
       e.preventDefault();
     });
 
+    // Drag and drop. The intents the browser would raise for these
+    // (insertFromDrop, deleteByDrag) are blocked with everything else in
+    // beforeinput, so the gesture is taken over here: text dropped from
+    // outside is inserted at the point, a selection dragged within the surface
+    // is moved there (copied with ⌥ held), and files go to the host.
+    on(ce, "dragstart", (e) => {
+      const text = this.doc.selected_text();
+      if (text == null) return;
+      // What is dragged is the selected *source*, not the projection the
+      // browser would serialise, so a drop within the surface moves the markup
+      // as it stands and a drop elsewhere gets the same two flavours a copy
+      // writes.
+      e.dataTransfer.setData("text/plain", text);
+      const html = this.doc.selection_html();
+      if (html != null) e.dataTransfer.setData("text/html", html);
+      e.dataTransfer.effectAllowed = "copyMove";
+      this._dragging = { start: this.doc.anchor_offset(), end: this.doc.caret_offset() };
+    });
+    on(ce, "dragend", () => {
+      this._dragging = null;
+    });
+    on(ce, "dragover", (e) => {
+      e.preventDefault(); // "yes, a drop is welcome here"
+      e.dataTransfer.dropEffect = this._dragging && !e.altKey ? "move" : "copy";
+    });
+    on(ce, "drop", (e) => this._onDrop(e));
+
     // Reflow on viewport change.
     if (typeof ResizeObserver !== "undefined") {
       this._resizeObs = new ResizeObserver(() => this._scheduleRefit());
@@ -1445,6 +1472,58 @@ export class LeafEditor {
       if (dest.startsWith("#") && this.goTo(dest.slice(1))) return;
       this._onFollowLink ? this._onFollowLink(dest) : window.open(dest, "_blank", "noopener");
     }
+  }
+
+  /**
+   * A drop on the surface — see the drag listeners in `_bindEvents`.
+   *
+   * A move is a delete and an insert, in that order, with the target adjusted
+   * by the bytes that left in front of it. Dropping a selection onto itself is
+   * nothing at all. The point under the pointer is hit-tested the way a click
+   * is; a drop into a drawn grid has no row to name and is declined, which
+   * leaves the document as it was rather than guessing a cell.
+   */
+  _onDrop(e) {
+    const drag = this._dragging;
+    this._dragging = null;
+    const dt = e.dataTransfer;
+    if (!dt) return;
+    e.preventDefault();
+    const hit = this._hitTest(e.clientX, e.clientY);
+    const at = hit ? this.doc.offset_for_pos(hit.row, hit.ch) : null;
+
+    if (dt.files && dt.files.length) {
+      if (this._onDropFiles) this._onDropFiles([...dt.files], at ?? this.doc.caret_offset());
+      return;
+    }
+    if (at == null) return;
+    const html = dt.getData("text/html");
+    const text = dt.getData("text/plain");
+    if (!html && !text) return;
+
+    let target = at;
+    if (drag && !e.altKey) {
+      const s = Math.min(drag.start, drag.end);
+      const en = Math.max(drag.start, drag.end);
+      if (target >= s && target <= en) return; // onto itself
+      this.doc.select_range(s, en);
+      this.doc.backspace();
+      if (target > en) target -= en - s;
+    }
+    this.doc.set_selection_offsets(target, target);
+    // Within the surface the plain flavour *is* the source, and goes back in
+    // verbatim; from outside, the rich flavour is preferred as a paste does.
+    this.render(drag ? this.doc.paste(text) : this.doc.paste_rich(html || undefined, text || ""));
+  }
+
+  /**
+   * What to do with files dropped on the surface — upload them and insert the
+   * media, say. Called with the `File`s and the source offset under the
+   * pointer. Without a handler, dropped files are ignored.
+   */
+  onDropFiles(cb) {
+    this._onDropFiles = cb;
+    return this;
   }
 
   /**
