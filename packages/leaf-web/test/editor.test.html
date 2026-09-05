@@ -339,6 +339,21 @@ await test("an autocorrect replaces the word it names, not the caret", () => {
   return ed;
 });
 
+await test("shortcuts answer to the platform's modifier only", () => {
+  const ed = editor("word\n");
+  ed.selectAll();
+  const key = (init) =>
+    ed.contentEl.dispatchEvent(new KeyboardEvent("keydown", { key: "b", bubbles: true, cancelable: true, ...init }));
+  const mac = /Mac/.test(navigator.platform);
+  // The other platform's modifier is the system's own — on a Mac, Ctrl+B is
+  // "caret left" — and must pass through untouched.
+  key(mac ? { ctrlKey: true } : { metaKey: true });
+  eq(ed.source(), "word\n", "the wrong modifier toggled bold");
+  key(mac ? { metaKey: true } : { ctrlKey: true });
+  eq(ed.source(), "**word**\n", "the platform modifier did not toggle bold");
+  return ed;
+});
+
 // ── what the format can spell ─────────────────────────────────────────────
 
 await test("capabilities answer for the format, not for the editor", () => {

@@ -1130,7 +1130,7 @@ export class LeafEditor {
       return;
     }
 
-    if (runEl.classList.contains("leaf-r-link") && (e.metaKey || e.ctrlKey)) {
+    if (runEl.classList.contains("leaf-r-link") && primaryModifier(e)) {
       const dest = this.doc.link_destination_at(src);
       if (dest) {
         e.preventDefault();
@@ -1262,10 +1262,9 @@ export class LeafEditor {
    */
   _onKeyDown(e) {
     if (this._composing || e.isComposing || e.keyCode === 229) return;
-    const mod = e.metaKey || e.ctrlKey;
     const d = this.doc;
 
-    if (mod) {
+    if (primaryModifier(e)) {
       let op;
       switch (e.key.toLowerCase()) {
         case "b": op = () => d.toggle_bold(); break;
@@ -1327,6 +1326,24 @@ export class LeafEditor {
  */
 
 // ── module-private helpers ────────────────────────────────────────────────────
+
+/** Whether this is a Mac, where the command key is the shortcut modifier and
+ *  Control belongs to the system's own text bindings. */
+const IS_MAC =
+  typeof navigator !== "undefined" &&
+  /mac|iphone|ipad|ipod/i.test(navigator.userAgentData?.platform || navigator.platform || "");
+
+/**
+ * Whether the platform's shortcut modifier is held: ⌘ on a Mac, Ctrl elsewhere.
+ *
+ * Not "either". On a Mac, Control is the system's: Ctrl+B/F step the caret,
+ * Ctrl+E/A go to the line's ends, Ctrl+Y yanks — every native text field
+ * honours them, and a contenteditable does too. Taking them for bold, toggle
+ * view and redo broke the editor for anyone who types that way.
+ */
+function primaryModifier(e) {
+  return IS_MAC ? e.metaKey : e.ctrlKey;
+}
 
 function el(tag, cls) {
   const e = document.createElement(tag);
