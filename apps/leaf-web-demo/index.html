@@ -23,6 +23,11 @@
     border-bottom: 1px solid var(--border); font-size: 13px; }
   header .brand { color: var(--accent); font-weight: 700; }
   header .dot { color: var(--h3); }
+  header input { font: inherit; font-size: 13px; padding: 3px 8px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--panel); color: var(--text); width: 160px; }
+  header button { font: inherit; font-size: 12px; padding: 3px 8px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--panel); color: var(--text); cursor: pointer; }
+  header button.on { background: var(--accent); color: var(--bg); border-color: var(--accent); }
   #toolbar { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 12px;
     border-bottom: 1px solid var(--border); }
   #toolbar button { font: inherit; font-size: 13px; padding: 4px 9px; border-radius: 6px;
@@ -53,6 +58,9 @@
     <span id="fmt">[markdown]</span>
     <span id="dirty"></span>
     <span style="flex:1"></span>
+    <input id="find" type="search" placeholder="find — highlights as you type" />
+    <span id="found"></span>
+    <button id="readonly" title="a reading surface: the same rendering, selection and navigation, refusing every edit">read-only</button>
     <span id="viewname">wysiwyg</span>
   </header>
   <div id="toolbar">
@@ -76,8 +84,8 @@
     <button data-cmd="tableInsertColumn" data-arg="true" data-cap="table" data-in-table>+ col</button>
     <button data-cmd="tableDeleteRow" data-cap="table" data-in-table>− row</button>
     <div class="sep"></div>
-    <button data-cmd="undo">↶</button>
-    <button data-cmd="redo">↷</button>
+    <button data-cmd="undo" id="b-undo">↶</button>
+    <button data-cmd="redo" id="b-redo">↷</button>
     <div style="flex:1"></div>
     <button data-cmd="toggleView">⌥ source</button>
   </div>
@@ -85,8 +93,13 @@
   <footer>
     <span><span class="k">type</span> to edit</span>
     <span><span class="k">⌘B/I</span> bold·italic</span>
+    <span><span class="k">⌘⇧C</span> code</span>
+    <span><span class="k">⌘⌥1–6</span> heading</span>
+    <span><span class="k">⌘⇧7/8</span> list</span>
     <span><span class="k">⌘E</span> toggle view</span>
     <span><span class="k">⌘Z</span> undo</span>
+    <span><span class="k">⌘-click</span> follow a link or footnote</span>
+    <span><span class="k">drop</span> a picture on the page</span>
     <span id="marks"></span>
     <span id="link" class="k"></span>
   </footer>
@@ -130,6 +143,9 @@ picture cannot do.
 | leaf-web | its own grid | ✓ |
 
 Put the caret in a cell and the grid controls light up; Tab walks the cells.
+Type in the find box up top and every hit is a highlight the host painted[^1].
+
+[^1]: ⌘-click the reference to come here, and the note's label to go back.
 
 - [ ] click a checkbox to tick it
 - [x] this one is already done
@@ -155,21 +171,48 @@ paints the real element over it.
 
 // Dim the controls this document's format has no syntax for. The answer depends
 // only on the format, so it is asked once — but the grid controls also need a
-// caret inside a table, which changes as you move, so those are asked per frame.
-function applyCapabilities(editor) {
+// caret inside a table, which changes as you move, so those are asked per frame;
+// and a read-only document dims everything that would edit it.
+function applyCapabilities(editor, state) {
   const caps = editor.capabilities();
   const inTable = editor.caretInTable();
+  const readOnly = state?.readOnly ?? editor.isReadOnly();
   for (const btn of document.querySelectorAll("#toolbar button")) {
     const cap = btn.dataset.cap;
+    const cmd = btn.dataset.cmd;
     const needsTable = btn.hasAttribute("data-in-table");
     const spellable = cap == null ? true : !!caps[cap];
-    btn.disabled = !spellable || (needsTable && !inTable);
+    const edits = cmd !== "toggleView";
+    btn.disabled = !spellable || (needsTable && !inTable) || (readOnly && edits);
     btn.title = !spellable
       ? "this format has no syntax for that"
       : needsTable && !inTable
         ? "put the caret in a table first"
         : "";
   }
+  // History buttons enable by what the frame says there is to undo or redo.
+  if (state) {
+    document.getElementById("b-undo").disabled = !state.canUndo;
+    document.getElementById("b-redo").disabled = !state.canRedo;
+  }
+  document.getElementById("readonly").classList.toggle("on", readOnly);
+}
+
+// Every hit of the find box as a host-painted highlight. The editor speaks
+// source *byte* offsets, and a JS string is counted in UTF-16 units, so each
+// hit is located in the encoded bytes rather than in the string.
+function findAll(editor, query) {
+  if (!query) { editor.setHighlights([]); return 0; }
+  const bytes = new TextEncoder().encode(editor.source());
+  const needle = new TextEncoder().encode(query);
+  const hits = [];
+  outer: for (let i = 0; i + needle.length <= bytes.length; i++) {
+    for (let j = 0; j < needle.length; j++) if (bytes[i + j] !== needle[j]) continue outer;
+    hits.push({ start: i, end: i + needle.length, id: "hit-" + hits.length });
+    i += needle.length - 1;
+  }
+  editor.setHighlights(hits);
+  return hits.length;
 }
 
 // Reflect editor state onto the app chrome (toolbar lights, dirty flag, footer).
@@ -193,7 +236,7 @@ function syncChrome(state) {
   // The link under the caret rides the frame, so the footer can name it without
   // asking — and without keeping a stale answer when the caret walks out of one.
   document.getElementById("link").textContent = state.link ? "→ " + state.link : "";
-  if (window.leafEditor) applyCapabilities(window.leafEditor);
+  if (window.leafEditor) applyCapabilities(window.leafEditor, state);
 }
 
 async function main() {
@@ -217,6 +260,33 @@ async function main() {
       editor.focus();
     });
   }
+
+  // The find box paints every hit as a highlight; a click on one lands there.
+  const find = document.getElementById("find");
+  find.addEventListener("input", () => {
+    const n = findAll(editor, find.value);
+    document.getElementById("found").textContent = find.value ? `${n} hit${n === 1 ? "" : "s"}` : "";
+  });
+  editor.onActivateHighlight((id) => {
+    const hit = editor.highlights().find((h) => h.id === id);
+    if (hit) editor.reveal(hit.start, hit.end);
+  });
+
+  // A reading surface over the same document.
+  document.getElementById("readonly").addEventListener("click", () => {
+    editor.setReadOnly(!editor.isReadOnly());
+    editor.focus();
+  });
+
+  // A dropped picture, movie, or recording becomes block media where it fell;
+  // a real host would upload the file and insert the URL it came back with.
+  editor.onDropFiles((files, offset) => {
+    for (const file of files) {
+      const kind = file.type.startsWith("video/") ? "video" : file.type.startsWith("audio/") ? "audio" : "image";
+      editor.reveal(offset);
+      editor.insertMedia(kind, URL.createObjectURL(file), file.name);
+    }
+  });
 
   window._leaf = editor; // handy for console poking / automated checks
 }
