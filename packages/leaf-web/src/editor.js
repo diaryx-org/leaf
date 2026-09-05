@@ -432,7 +432,7 @@ export class LeafEditor {
     this.contentEl.appendChild(frag);
 
     this._restoreSelection(view);
-    this._scrollCaretIntoView(view.caret_row);
+    this._scrollCaretIntoView(view);
     this._emitChange(view);
     this._checkFit();
   }
@@ -693,10 +693,16 @@ export class LeafEditor {
    * source and carry the offset the first of them came from.
    */
   _rangeForSrc(src) {
+    const line = this._cellLineForSrc(src);
+    return line ? rangeAtOffset(line.el, utf16InLine(line.el, src, line.start)) : null;
+  }
+
+  /** The drawn cell line whose source range covers `src`, or null — the
+   *  ordinary answer, meaning the offset is in prose and has a row. */
+  _cellLineForSrc(src) {
     if (src == null) return null;
     for (const line of this.cellLines) {
-      if (src < line.start || src > line.end || !line.el.isConnected) continue;
-      return rangeAtOffset(line.el, utf16InLine(line.el, src, line.start));
+      if (src >= line.start && src <= line.end && line.el.isConnected) return line;
     }
     return null;
   }
@@ -784,12 +790,32 @@ export class LeafEditor {
     return { row: this.rowEls.indexOf(rowEl), ch: offsetTo(rowEl, node, offset) };
   }
 
-  _scrollCaretIntoView(row) {
-    const rowEl = this.rowEls[row];
-    if (!rowEl) return;
+  /**
+   * Keep the caret's line inside the viewport.
+   *
+   * The caret's row is the ordinary case. A caret inside a drawn grid has no
+   * row in the document — the picture row it belongs to was replaced by the
+   * `<table>`, and its element is tracked but never inserted — so its
+   * `offsetTop` reads as zero, and scrolling to that sent the viewport to the
+   * top of the document on every keystroke in a cell. The cell line the caret
+   * is actually in is what to measure there.
+   */
+  _scrollCaretIntoView(view) {
     const c = this.container;
-    const top = rowEl.offsetTop;
-    const bottom = top + rowEl.offsetHeight;
+    let top, bottom;
+    const rowEl = this.rowEls[view.caret_row];
+    if (rowEl && rowEl.isConnected) {
+      top = rowEl.offsetTop;
+      bottom = top + rowEl.offsetHeight;
+    } else {
+      const line = this._cellLineForSrc(view.caret_src);
+      if (!line) return;
+      // Measured against the viewport rather than `offsetTop`, whose reference
+      // inside a table is the cell, not the scrolling container.
+      const r = line.el.getBoundingClientRect();
+      top = r.top - c.getBoundingClientRect().top + c.scrollTop;
+      bottom = top + r.height;
+    }
     if (top < c.scrollTop) c.scrollTop = top;
     else if (bottom > c.scrollTop + c.clientHeight) c.scrollTop = bottom - c.clientHeight;
   }

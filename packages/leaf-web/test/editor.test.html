@@ -216,6 +216,25 @@ await test("Tab in a grid walks the cells; outside it indents", () => {
   return ed;
 });
 
+await test("typing in a cell far down the document keeps the viewport where it was", () => {
+  let src = "";
+  for (let i = 0; i < 80; i++) src += `paragraph ${i}\n\n`;
+  const ed = editor(src + "| a | b |\n|---|---|\n| leaf-web | x |\n\nafter\n");
+  const mount = document.getElementById("mount");
+  const line = ed.cellLines.find((l) => l.el.textContent.includes("leaf-web"));
+  place(firstText(line.el), 2);
+  ed._syncFromDom();
+  mount.scrollTop = mount.scrollHeight;
+  const before = mount.scrollTop;
+  assert(before > 0, "the mount did not scroll");
+  input(ed, "insertText", "Z");
+  assert(ed.source().includes("leZaf-web"), "the edit did not land");
+  // The row core names for the caret is the picture row, which is not in the
+  // document; scrolling to its (zero) offset sent the viewport to the top.
+  assert(mount.scrollTop > before * 0.5, `the viewport jumped to ${mount.scrollTop} from ${before}`);
+  return ed;
+});
+
 // ── media rows ────────────────────────────────────────────────────────────
 
 await test("a media row has a caret stop on each side of the picture", () => {
