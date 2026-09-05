@@ -533,6 +533,13 @@ await test("a footnote goes down to its note and back up to its reference", () =
   assert(def && def.offset != null, "the note does not know its reference");
   assert(ed.followFootnote(), "there was nothing to follow back");
   eq(ed._lastView.caret_src, def.offset, "the return leg did not land on the reference");
+  // And by ⌘-click in the note's text, as a reader would.
+  const noteRow = ed.rowEls.find((r) => r.isConnected && r.textContent.includes("the note"));
+  assert(noteRow, "the note's row was not found");
+  const noteText = [...noteRow.querySelectorAll(".leaf-run")].find((r) => r.textContent.includes("note"));
+  place(noteText.firstChild, 2);
+  noteText.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, metaKey: true }));
+  eq(ed._lastView.caret_src, def.offset, "the ⌘-click in the note did not go back up");
   return ed;
 });
 

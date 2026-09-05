@@ -1511,6 +1511,17 @@ export class LeafEditor {
       // hand the host an address it would only send back.
       if (dest.startsWith("#") && this.goTo(dest.slice(1))) return;
       this._onFollowLink ? this._onFollowLink(dest) : window.open(dest, "_blank", "noopener");
+      return;
+    }
+
+    // In a note, the return leg: back up to what cites it. The mousedown has
+    // already put the browser's caret where the click fell, so the question
+    // is asked of the caret rather than of the run.
+    this._syncFromDom();
+    const def = this.doc.footnote_definition_at_caret();
+    if (def && def.offset != null) {
+      e.preventDefault();
+      this.reveal(def.offset);
     }
   }
 
