@@ -639,6 +639,26 @@ await test("dropped files go to the host with the offset under the pointer", () 
   return ed;
 });
 
+await test("a repaint does not pull focus out of the host's own field", () => {
+  const ed = editor("some text\n");
+  const field = document.createElement("input");
+  document.body.appendChild(field);
+  try {
+    field.focus();
+    assert(document.activeElement === field, "the field did not take focus");
+    ed.setHighlights([{ start: 0, end: 4, id: "h" }]);
+    assert(document.activeElement === field, "the repaint stole focus from the field");
+    // Back in the editor, the caret is restored as ever.
+    ed.focus();
+    ed.render(ed.doc.set_selection_offsets(5, 5));
+    const sel = window.getSelection();
+    assert(ed.contentEl.contains(sel.focusNode), "the caret was not restored once focused");
+  } finally {
+    field.remove();
+  }
+  return ed;
+});
+
 // ── what the format can spell ─────────────────────────────────────────────
 
 await test("capabilities answer for the format, not for the editor", () => {

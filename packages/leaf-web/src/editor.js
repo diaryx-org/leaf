@@ -304,6 +304,9 @@ export class LeafEditor {
    * flashed, so the reader is told which words they were sent to.
    */
   reveal(offset, end = null) {
+    // Landing the reader somewhere means the editor is where they are going;
+    // the caret is only restored into a focused surface.
+    this.focus();
     this.render(this.doc.set_selection_offsets(offset, offset));
     if (end == null || end <= offset) return;
     const rows = this.doc.row_range_for(offset, end);
@@ -921,6 +924,18 @@ export class LeafEditor {
 
   /** Paint the model's caret/selection onto the browser's native selection. */
   _restoreSelection(view) {
+    const sel = window.getSelection();
+    if (!sel) return;
+    // Only where the selection already lives here. Putting a range into a
+    // contenteditable focuses it, so restoring the caret on every repaint
+    // would pull focus out of whatever the reader was typing in — a search
+    // box, a toolbar's URL field — the moment the host repainted, which a
+    // setHighlights does. An editor that was told not to autofocus stays
+    // unfocused for the same reason.
+    const inside =
+      document.activeElement === this.contentEl ||
+      (sel.anchorNode != null && this.contentEl.contains(sel.anchorNode));
+    if (!inside) return;
     // A caret inside a table sits on a row that isn't in the document — the
     // box-drawn picture was replaced by a grid — so `(row, ch)` addresses
     // nothing to put a range in. The source offset does, and both descriptions
@@ -930,7 +945,6 @@ export class LeafEditor {
       ? this._rangeForSrc(this._anchorSrc(view)) || this._rangeForRow(view.anchor_row, view.anchor_ch)
       : f;
     if (!f || !a) return;
-    const sel = window.getSelection();
     this._settingSelection = true;
     try {
       // base/extent (not start/end) keeps the model's selection direction.
