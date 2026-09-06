@@ -36,6 +36,7 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 ### Added
 
 - **core** — take twig 3.3.1, and write the highlight and the strikethrough Markdown already read ([`893a297`](https://github.com/diaryx-org/leaf/commit/893a2974867edf9de38086723c86cd0945f9adc1))
+- **swift** — colour a highlight from the toolbar, and everything under it that had to exist first ([`e685372`](https://github.com/diaryx-org/leaf/commit/e685372bdb9d5e8dfaf2f6062461299b2d3cd80b))
 
 ### Behavioural changes
 
@@ -52,6 +53,16 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
   options. Only the two flags above differ today, but a caller reading these as
   a fact about the bare format is reading them wrong: they are a fact about the
   document leaf actually builds.
+
+- `leaf_core::Capabilities` gains `mark_color`, and
+  `leaf_ffi::Capabilities` / leaf-wasm's `CapabilitiesView` gain the same field.
+  Rust code constructing a `Capabilities` literal must add it; the two bindings
+  hand out records, so a frontend only sees a new field.
+
+- `DocView` gains `mark_color` in both bindings — a
+  `MarkColor?` in Swift, a colour name or `null` in JS. A Swift host building a
+  `DocView` or a `LeafUI.EditorState` by hand gets a defaulted parameter and
+  compiles unchanged.
 
 <!-- git-cliff:end -->
 
