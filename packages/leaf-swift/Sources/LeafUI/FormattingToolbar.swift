@@ -37,6 +37,7 @@
 //  ready-made toolbar whose Link button does nothing until you wire a callback
 //  isn't ready-made.
 
+import LeafFFI
 import SwiftUI
 
 /// A ready-made formatting bar over a `LeafEditorModel`.
@@ -115,8 +116,46 @@ public struct LeafFormattingToolbar: View {
             tool("underline", "Underline", active: editor.isActive("underline")) { editor.toggleUnderline() }
             tool("strikethrough", "Strikethrough", active: editor.isActive("strike")) { editor.toggleStrike() }
             tool("chevron.left.forwardslash.chevron.right", "Code", active: editor.isActive("code")) { editor.toggleCode() }
+            highlightTool
             linkTool
         }
+    }
+
+    /// Highlight, and the seven colours a highlight can be — the one tool here
+    /// with a menu behind it.
+    ///
+    /// A press marks (or unmarks) the selection, exactly like the buttons beside
+    /// it; the colour lives in the menu, because a colour is a property of a
+    /// highlight rather than a mark of its own, and seven more buttons in a row
+    /// this size would be a palette pretending to be formatting. `primaryAction`
+    /// is what keeps both on one target: tap to highlight, press-and-hold — or
+    /// right-click, on the desktop — for the colours.
+    private var highlightTool: some View {
+        Menu {
+            HighlightColourRows(editor: editor)
+        } label: {
+            Image(systemName: "highlighter")
+                .font(.system(size: metrics.glyphSize))
+        } primaryAction: {
+            editor.toggleMark()
+        }
+        // `.buttonStyle(.plain)` rather than `.menuStyle(.button)`: the latter is
+        // macOS 13, this package is macOS 12, and a plain button style reaches
+        // the menu's own label the same way — a bare glyph on the bar's
+        // material, like every tool beside it.
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .frame(width: metrics.buttonWidth, height: metrics.buttonHeight)
+        .foregroundStyle(editor.isActive("mark") ? Color.accentColor : Color.primary)
+        .background(
+            RoundedRectangle(cornerRadius: metrics.cornerRadius)
+                .fill(editor.isActive("mark") ? Color.accentColor.opacity(0.15) : Color.clear)
+        )
+        .contentShape(Rectangle())
+        .accessibilityLabel(loc("menu.highlight", "Highlight"))
+        #if !canImport(UIKit)
+        .help(loc("menu.highlight", "Highlight"))
+        #endif
     }
 
     /// Link, among the inline marks rather than beside the rule and the footnote:
@@ -371,5 +410,47 @@ public struct LeafFormattingToolbar: View {
         #if !canImport(UIKit)
         .help(label)
         #endif
+    }
+}
+
+/// The colours of a highlight, as menu rows: the seven the document can spell,
+/// each ticked while it is the caret's, and "No Colour" to take one off.
+///
+/// Its own `View` rather than a `@ViewBuilder` on the bar because both surfaces
+/// show the same rows — this bar's Highlight menu and the app's Format menu —
+/// and because a `Toggle` per colour inside a `ForEach` inside a `Menu` is more
+/// type inference than the compiler will do in one expression.
+///
+/// The rows tick from `editor.markColor`, which rides the frame: walking the
+/// caret from a red highlight into a blue one moves the tick, and nothing else
+/// in the published state would have told the menu to redraw.
+struct HighlightColourRows: View {
+    @ObservedObject var editor: LeafEditorModel
+
+    var body: some View {
+        Group {
+            ForEach(MarkColor.palette, id: \.self) { color in
+                row(color.menuTitle, on: editor.markColor == color) { editor.highlight(color) }
+            }
+            Divider()
+            // Ticked only inside an *uncoloured* highlight: `markColor` is nil
+            // outside a highlight too, and a ticked row there would claim the
+            // caret was standing in something it isn't.
+            row(loc("menu.highlight.noColour", "No Colour"),
+                on: editor.caretInMark && editor.markColor == nil) {
+                editor.highlight(nil)
+            }
+        }
+        // A colour needs a highlight to belong to — one the caret is in, or one
+        // this press would make out of the selection — and a format that spells
+        // one (djot writes the highlight and no colour on it). The Highlight
+        // button itself stays live either way: it is the way *to* a highlight.
+        .disabled(!editor.canColourHighlight)
+    }
+
+    /// One row: ticked while it is the caret's colour, and choosing it applies
+    /// that colour. A `Toggle`, the way every mark in the Format menu is.
+    private func row(_ title: String, on: Bool, _ apply: @escaping () -> Void) -> some View {
+        Toggle(title, isOn: Binding(get: { on }, set: { _ in apply() }))
     }
 }

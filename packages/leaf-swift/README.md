@@ -100,6 +100,22 @@ editor on macOS, a 44pt keyboard accessory on iOS:
 LeafEditor(model: editor) { LeafFormattingToolbar(editor: editor) }
 ```
 
+**Colouring a highlight.** Highlight is the one tool with a menu behind it: a
+press marks the selection, and a press-and-hold (right-click on the desktop)
+drops down the seven colours a highlight can be — `==🔴 text==`, the spelling
+core reads and writes. The rows tick from `state.markColor`, so walking the caret
+from a red highlight into a blue one moves the tick, and they dim through
+`canColourHighlight`: a colour needs a format that spells one (Markdown does;
+Djot writes the highlight and no colour on it) *and* a highlight to belong to —
+one the caret is in, or one the press would make out of the selection. The button
+itself stays live either way, because it is the way to a highlight.
+
+`model.highlight(_:)` is that one press: it colours the highlight at the caret,
+or marks the selection first and then colours it. The second case is two edits
+and so two steps of undo — core keeps one gesture to one splice, and
+`setMarkColor(_:)` is that exact gesture if you want it unwrapped. Format ▸
+Highlight Colour carries the same rows in the menu bar.
+
 **Authoring a link.** Link is among the inline marks, and it's the one tool that
 has to ask a question: the selection says what to link, never where to. It reads
 `state.link` — the destination of the link the caret stands in — so the button
@@ -114,8 +130,8 @@ title the prompt for both.
 `LeafEditorModel` exposes every formatting command (`toggleBold`, `setHeading`,
 `toggleList`, `insertLink`, `undo`, …), `source()` / `markSaved()` for
 persistence, and a `@Published state` (active marks, heading, dirty, view, the
-caret link's destination, and whether there is anything to undo or redo) for
-toolbar binding. Keyboard (typing, arrows/word/line/doc motion with shift-select,
+caret link's destination, the caret highlight's colour, and whether there is
+anything to undo or redo) for toolbar binding. Keyboard (typing, arrows/word/line/doc motion with shift-select,
 delete/word-delete, ⌘B/I/U/E, ⇧⌘V), mouse (click, shift-click,
 double/triple-click select), and the rich HTML clipboard all work out of the box.
 Undo, Redo, Cut, Copy, Paste, and Select All are the Edit menu's: the view
@@ -135,7 +151,8 @@ paper at the print panel's margins, one page per sheet, whatever the screen show
 **The menu bar.** `LeafEditor` publishes its model as the scene's focused editor
 (`@FocusedValue(\.leafEditor)`), and `LeafEditorCommands` builds the standard
 menus from it — add `.commands { LeafEditorCommands() }` to the scene and Format
-carries Bold ⌘B, Italic ⌘I, Underline ⌘U, Code ⇧⌘C, Highlight ⇧⌘M, Paragraph and
+carries Bold ⌘B, Italic ⌘I, Underline ⌘U, Code ⇧⌘C, Highlight ⇧⌘M (with the
+Highlight Colour submenu), Paragraph and
 Heading 1–6 (⌃0–⌃6), the lists (⇧⌘8, ⇧⌘7), Block Quote ⇧⌘9, Indent/Outdent
 (⌘], ⌘[), footnote and rule; View gains Source View ⌘E. Items tick to follow the
 caret and disable without an editor or on a reader. The editor lets the menu bar
@@ -296,6 +313,7 @@ Core hands you *what* to draw; you own *how*. The map to build on the Swift side
 | `hasSelection` / `anchorRow` / `anchorCh` | selection range + direction |
 | `dirty`, `view`, `heading`, `active` | chrome: modified dot, view toggle, toolbar |
 | `link` | the caret link's destination: lights a Link button, seeds its prompt |
+| `markColor` | the caret highlight's colour: ticks the row in a colour menu |
 
 Feed input back through the command methods (`insert`, `newline`, `backspace`,
 `move*`, `toggle*`, `clickCh`, `setSelection`, …). `packages/leaf-web/src/editor.js`

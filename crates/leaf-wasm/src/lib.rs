@@ -43,7 +43,7 @@
 //! [`Row::heading`] level so the whole line can be sized as one unit, mirroring
 //! how gpui shapes a heading's line at a single larger size.
 
-use leaf_core::style::{Baseline, Role, Style as LStyle};
+use leaf_core::style::{Baseline, MarkColor as CoreMarkColor, Role, Style as LStyle};
 use leaf_core::wysiwyg::text_width;
 use leaf_core::{
     Alignment, BlockClass, BlockKind, ColorScheme, Doc, Format, Glyph, Highlight as CoreHighlight,
@@ -471,6 +471,10 @@ pub struct CapabilitiesView {
     /// rendered box.
     task: bool,
     link: bool,
+    /// The highlight *palette* — `setMarkColor`. Narrower than `mark`: Markdown
+    /// spells a colour on a highlight (`==🔴 text==`) and djot spells only the
+    /// highlight. Gate the swatches on this *and* `caretInMark`.
+    mark_color: bool,
     /// Covers `insertMedia` too.
     image: bool,
     thematic_break: bool,
@@ -502,6 +506,7 @@ impl From<leaf_core::Capabilities> for CapabilitiesView {
             ordered_list: c.ordered_list,
             task: c.task,
             link: c.link,
+            mark_color: c.mark_color,
             image: c.image,
             thematic_break: c.thematic_break,
             footnote: c.footnote,
@@ -593,6 +598,18 @@ pub struct DocView {
     /// Link button reading this by a call of its own would keep a stale light
     /// on. Same reason `heading` is here and not asked for.
     link: Option<String>,
+    /// The colour of the highlight the caret stands in (`"red"`, …), or `null`
+    /// — both outside a highlight and inside one that names no colour. Which
+    /// swatch a colour control marks as the current one.
+    ///
+    /// It rides the frame for `link`'s reason, and more sharply: walking from a
+    /// red highlight into a blue one changes no mark, no heading, no dirty flag
+    /// and no link, so a palette asking for itself would never be told to move.
+    ///
+    /// The name rather than a code, matching `Run::mark_color` and the
+    /// `data-color` the document carries — a web renderer keys a CSS custom
+    /// property off exactly this string.
+    mark_color: Option<String>,
     /// Every block-level image, video, and audio in the frame, in row order —
     /// the placeholder rows the renderer replaces with real elements. Empty in
     /// the source view, which shows the markup itself and has no placeholders.
@@ -935,6 +952,7 @@ impl LeafDoc {
         // Read before the frame is assembled: it needs `&mut self`, which the
         // struct literal's other fields are already borrowing out of.
         let link = self.doc.link_destination_at_caret();
+        let mark_color = self.doc.mark_color_at_caret().map(|c| c.name().to_string());
         let active = self
             .doc
             .active_inline_marks()
@@ -968,6 +986,7 @@ impl LeafDoc {
             active,
             caret_src: self.doc.caret,
             link,
+            mark_color,
             // Only the WYSIWYG view has placeholder rows to replace; the source
             // view is the markup itself, where a `<video>` tag *is* the content.
             media: match self.doc.view {
@@ -1384,6 +1403,37 @@ impl LeafDoc {
 
     pub fn toggle_mark(&mut self) -> Result<DocView, JsValue> {
         self.doc.toggle(InlineKind::Mark);
+        self.view()
+    }
+
+    /// Whether the caret stands in a highlight — what a colour control enables
+    /// itself by, since a colour is a property of a highlight that already
+    /// exists. The caret-side half of `capabilities().markColor`.
+    pub fn caret_in_mark(&mut self) -> bool {
+        self.doc.caret_in_mark()
+    }
+
+    /// Colour the highlight at the caret (`"red"`, `"orange"`, `"yellow"`,
+    /// `"green"`, `"blue"`, `"purple"`, `"brown"`), or clear its colour with
+    /// `null`/`undefined`.
+    ///
+    /// The name a `mark` node's `data-color` carries and `Run::mark_color`
+    /// reports, so a renderer that already styles the colours has the vocabulary
+    /// in hand. A name outside the palette is an error rather than a silent
+    /// clearing — the two arguments differ by one typo and mean opposite things.
+    ///
+    /// Markdown only (djot spells the highlight and no colour on it), and only
+    /// where there is a highlight to colour: this does not make one. A coloured
+    /// highlight from bare text is `toggleMark` and then this.
+    pub fn set_mark_color(&mut self, color: Option<String>) -> Result<DocView, JsValue> {
+        let color =
+            match color.as_deref() {
+                None => None,
+                Some(name) => Some(CoreMarkColor::from_attr(name).ok_or_else(|| {
+                    JsValue::from_str(&format!("unknown highlight colour: {name}"))
+                })?),
+            };
+        self.doc.set_mark_color(color);
         self.view()
     }
 

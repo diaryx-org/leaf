@@ -122,7 +122,9 @@ func docView(
     active: [String] = [],
     link: String? = nil,
     canUndo: Bool = false,
-    canRedo: Bool = false
+    canRedo: Bool = false,
+    // The colour of the highlight at the caret — what a colour menu ticks.
+    markColor: MarkColor? = nil
 ) -> DocView {
     DocView(
         rows: rows,
@@ -142,6 +144,7 @@ func docView(
         view: view,
         heading: heading,
         active: active,
-        link: link
+        link: link,
+        markColor: markColor
     )
 }

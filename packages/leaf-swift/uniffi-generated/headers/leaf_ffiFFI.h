@@ -286,6 +286,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_backspace(void*_Nonnull ptr, RustCa
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_capabilities(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_CARET_IN_MARK
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_CARET_IN_MARK
+int8_t uniffi_leaf_ffi_fn_method_leafdoc_caret_in_mark(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_CARET_IN_TABLE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_CARET_IN_TABLE
 int8_t uniffi_leaf_ffi_fn_method_leafdoc_caret_in_table(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
@@ -589,6 +594,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_highlights(void*_Nonnull ptr, R
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_LINE_FLOW
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_LINE_FLOW
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_line_flow(void*_Nonnull ptr, RustBuffer mode, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_MARK_COLOR
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_MARK_COLOR
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_mark_color(void*_Nonnull ptr, RustBuffer color, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_MARKUP_MODE
@@ -1075,6 +1085,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_capabilities(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_CARET_IN_MARK
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_CARET_IN_MARK
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_caret_in_mark(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_CARET_IN_TABLE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_CARET_IN_TABLE
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_caret_in_table(void
@@ -1438,6 +1454,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_highlights(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_LINE_FLOW
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_LINE_FLOW
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_line_flow(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_MARK_COLOR
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_MARK_COLOR
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_mark_color(void
     
 );
 #endif

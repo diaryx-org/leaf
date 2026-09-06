@@ -40,6 +40,7 @@ use unicode_segmentation::GraphemeCursor;
 
 use crate::html;
 use crate::source::{self, SourceMap};
+use crate::style::MarkColor;
 use crate::wysiwyg::{self, MediaKind, MediaStop, VisualMap};
 
 /// Which view the body shows.
@@ -791,6 +792,14 @@ pub struct Capabilities {
     /// Strikethrough — `InlineKind::Delete`. Markdown spells GFM's `~~text~~`
     /// out of the box, since twig parses it out of the box.
     pub strike: bool,
+    /// The highlight *palette* — [`Doc::set_mark_color`]. Narrower than
+    /// [`mark`](Self::mark) and deliberately its own flag: Markdown spells a
+    /// colour on a highlight (`==🔴 text==`) and djot spells only the highlight,
+    /// so a toolbar offering the swatches wherever the button lights would offer
+    /// them in a document that cannot write one. Pair with
+    /// [`Doc::caret_in_mark`], which asks the other question — the palette needs
+    /// a highlight to colour as much as a format that spells one.
+    pub mark_color: bool,
     pub superscript: bool,
     pub subscript: bool,
     /// Heading levels and "make this a paragraph" — [`Doc::set_block`].
@@ -842,6 +851,7 @@ impl Capabilities {
             mark: inline(InlineKind::Mark),
             underline: inline(InlineKind::Insert),
             strike: inline(InlineKind::Delete),
+            mark_color: supports(Gesture::SetMarkColor),
             superscript: inline(InlineKind::Superscript),
             subscript: inline(InlineKind::Subscript),
             heading: supports(Gesture::SetBlock),
@@ -3629,6 +3639,141 @@ impl Doc {
         }
     }
 
+    /// Whether the caret stands in a highlight — what a frontend asks to enable
+    /// or disable its highlight-colour controls, the way
+    /// [`caret_in_table`](Self::caret_in_table) gates the grid ones.
+    ///
+    /// A fact about the *caret*, and the other half of
+    /// [`Capabilities::mark_color`], which is the fact about the format. A
+    /// frontend needs both: djot spells a highlight and no colour for it, so a
+    /// caret standing in `{=word=}` answers `true` here and still has no palette
+    /// to offer.
+    ///
+    /// The rule is [`active_inline_marks`](Self::active_inline_marks)' rule, so
+    /// the palette appears exactly where the Highlight button is lit — with one
+    /// deliberate exception: a mark *armed* at a bare caret and not yet typed
+    /// into lights the button and answers `false` here, because there is no node
+    /// to colour until the text exists.
+    pub fn caret_in_mark(&mut self) -> bool {
+        self.mark_offset().is_some()
+    }
+
+    /// The offset [`set_mark_color`](Self::set_mark_color) speaks for — the one
+    /// standing in the highlight the gesture means — or `None` when neither end
+    /// of what is selected is in one.
+    ///
+    /// The caret first, and the selection's *start* after it, because of what
+    /// [`toggle`](Self::toggle) leaves behind: a fresh `==word==` is selected
+    /// whole, with the caret at its far edge, one past the closing `==` and so
+    /// (by `marks_at`' half-open rule) not in the mark at all. Highlight a word
+    /// and colour it — the two presses a coloured highlight is made of — would
+    /// otherwise refuse on the second, having just written the highlight the
+    /// author is pointing at.
+    fn mark_offset(&mut self) -> Option<usize> {
+        let in_mark = |d: &mut Self, off: usize| {
+            d.marks_at(off)
+                .into_iter()
+                .any(|(k, _)| k == InlineKind::Mark)
+                .then_some(off)
+        };
+        let caret = self.caret.min(self.source.len());
+        in_mark(self, caret).or_else(|| {
+            let start = self.selection()?.0;
+            in_mark(self, start)
+        })
+    }
+
+    /// The colour of the highlight at the caret — `None` both when the caret is
+    /// in no highlight and when the highlight it is in names no colour, which
+    /// are the same answer to "which swatch is lit".
+    ///
+    /// The innermost mark, by span, for the same reason
+    /// [`current_heading_level`](Self::current_heading_level) walks the tree:
+    /// what the caret is *in* is the deepest node containing it. A `data-color`
+    /// naming a colour this build has no variant for reads as `None` — the
+    /// renderer already draws that as a plain highlight rather than guessing,
+    /// and the toolbar agrees with the renderer.
+    pub fn mark_color_at_caret(&mut self) -> Option<MarkColor> {
+        let at = self.mark_offset()?;
+        self.mark_color_at(at)
+    }
+
+    /// [`mark_color_at_caret`](Self::mark_color_at_caret) at a given offset —
+    /// the innermost `mark` covering it, and the colour it names.
+    fn mark_color_at(&mut self, off: usize) -> Option<MarkColor> {
+        self.nodes()
+            .into_iter()
+            .filter(|n| n.kind == Kind::Mark)
+            .filter(|n| n.span.start <= off && off < n.span.end)
+            .min_by_key(|n| n.span.end - n.span.start)
+            .and_then(|n| MarkColor::from_attrs(&n.attrs))
+    }
+
+    /// Colour the highlight at the caret, or clear its colour with `None` — the
+    /// palette behind a toolbar's Highlight button.
+    ///
+    /// Markdown only, and the one gesture whose availability is a fact about the
+    /// *parse extensions* rather than about the format alone: the colour is
+    /// spelled `==🔴 text==`, an emoji twig reads back out of the content and
+    /// records as the mark's `data-color`, and only an editor parsing with
+    /// `highlight_colors` (which [`parse_extensions`] turns on for every leaf
+    /// document) reads it back that way. Djot spells the highlight and no colour
+    /// for it, so this refuses there — see [`Capabilities::mark_color`].
+    ///
+    /// **A colour is a property of a highlight that already exists.** There is
+    /// no "highlight this in red" here, because that is two splices and would be
+    /// two undo steps under one press; a frontend that wants it calls
+    /// [`toggle`](Self::toggle) with [`InlineKind::Mark`] first, which is the
+    /// order the two buttons already sit in. With no highlight at the caret this
+    /// says so in the status line and writes nothing.
+    ///
+    /// The caret keeps its place in the *text*: the splice is entirely in the
+    /// prefix between the opening `==` and the first word, so an offset past it
+    /// rides the emoji's width, and one standing on the prefix itself lands
+    /// where the prefix now ends.
+    pub fn set_mark_color(&mut self, color: Option<MarkColor>) {
+        // The read-only gate — this door reaches twig without the splice.
+        if self.read_only {
+            return;
+        }
+        if self.refuse_unsupported("highlight colour", Gesture::SetMarkColor) {
+            return;
+        }
+        let Some(at) = self.mark_offset() else {
+            self.status = Some("highlight colour: no highlight at the caret".into());
+            return;
+        };
+        // Clearing a colour a highlight hasn't got is twig's one *successful*
+        // no-op, and the `Change` it hands back then describes whatever edit came
+        // before it — a stale span that would drag the caret somewhere it never
+        // was. Answer it here, where the question is cheap, rather than trusting
+        // a change that isn't one.
+        if color.is_none() && self.mark_color_at(at).is_none() {
+            self.status = None;
+            return;
+        }
+        self.record_caret();
+        match self.editor.set_mark_color(at, color.map(twig_mark_color)) {
+            Ok(change) => {
+                // Re-anchored from the offsets as they were, *before* `refresh`
+                // sees the new bytes: the caret it clamps is one standing inside
+                // a prefix that didn't exist a moment ago, and walking it back to
+                // a char boundary of the emoji loses the place this is restoring.
+                let caret = reanchor(self.caret, &change);
+                let anchor = self.anchor.map(|a| reanchor(a, &change));
+                self.last_edit_kind = None; // structural edit is its own undo step
+                self.refresh();
+                self.caret = caret;
+                self.anchor = anchor;
+                self.dirty = self.source != self.clean_source;
+                self.status = None;
+                self.clamp_caret();
+                self.record_caret();
+            }
+            Err(e) => self.status = Some(format!("highlight colour: {e}")),
+        }
+    }
+
     /// Convert the block at the caret to a heading level or paragraph.
     pub fn set_block(&mut self, kind: BlockKind) {
         // The read-only gate — this door reaches twig without the splice.
@@ -6297,6 +6442,46 @@ fn inline_kind(kind: &Kind) -> Option<InlineKind> {
         Kind::Delete => InlineKind::Delete,
         _ => return None,
     })
+}
+
+/// leaf's [`MarkColor`] as twig's — the palette twig writes as the emoji after
+/// a highlight's opening `==`.
+///
+/// Two enums for one closed vocabulary, and the duplication is the boundary
+/// working: core's is what a *frontend* names (`style::MarkColor`, beside the
+/// [`Role`](crate::Role) that carries it into the glyph map) and twig's is what
+/// the editor writes. Spelled as a match rather than routed through the two
+/// crates' name strings so that a colour added on either side is a compile
+/// error here, where the pairing is decided, rather than a runtime `None` that
+/// would read as "clear the colour".
+fn twig_mark_color(color: MarkColor) -> twig::MarkColor {
+    match color {
+        MarkColor::Red => twig::MarkColor::Red,
+        MarkColor::Orange => twig::MarkColor::Orange,
+        MarkColor::Yellow => twig::MarkColor::Yellow,
+        MarkColor::Green => twig::MarkColor::Green,
+        MarkColor::Blue => twig::MarkColor::Blue,
+        MarkColor::Purple => twig::MarkColor::Purple,
+        MarkColor::Brown => twig::MarkColor::Brown,
+    }
+}
+
+/// Where an offset lands after a splice it didn't make — twig's own rule, from
+/// [`Change`]: shift anything at or past the replaced range's end by the length
+/// the replacement gained or lost, and leave anything before it alone.
+///
+/// An offset *inside* the replaced range has no text of its own to ride any
+/// more, and lands at the end of what replaced it: for
+/// [`Doc::set_mark_color`] that is a caret standing on the colour prefix when
+/// the prefix is cleared, which then sits where the highlighted text begins.
+fn reanchor(off: usize, change: &Change) -> usize {
+    if off < change.old.start {
+        return off;
+    }
+    if off < change.old.end {
+        return change.new.end;
+    }
+    (off + change.new.end).saturating_sub(change.old.end)
 }
 
 /// A watermark for a file's contents (see `Doc::disk_hash`).
@@ -11433,6 +11618,186 @@ mod tests {
             .find(|g| g.ch == 'w')
             .expect("the highlighted word");
         assert_eq!(w.style.role, crate::Role::Mark(None));
+    }
+
+    #[test]
+    fn a_highlight_takes_a_colour_changes_it_and_gives_it_back() {
+        // The three states of one gesture, in the order a palette is pressed:
+        // an uncoloured highlight takes the prefix, a coloured one has it
+        // replaced, and `None` takes it away with the space that was part of the
+        // spelling.
+        let mut d = doc_with("mark_colour", "a ==word== b\n");
+        d.caret = d.source.find("word").unwrap();
+        d.set_mark_color(Some(MarkColor::Red));
+        assert_eq!(d.source, "a ==🔴 word== b\n");
+        assert_eq!(d.status, None);
+        assert!(d.dirty);
+
+        d.set_mark_color(Some(MarkColor::Blue));
+        assert_eq!(d.source, "a ==🔵 word== b\n");
+
+        d.set_mark_color(None);
+        assert_eq!(d.source, "a ==word== b\n");
+    }
+
+    #[test]
+    fn the_caret_keeps_its_place_in_the_text_across_a_colour() {
+        // The prefix is written *before* the word, so an offset in the word has
+        // to ride its width — a caret that stayed put would be a caret that
+        // walked backwards through the text it was standing in.
+        let mut d = doc_with("mark_colour_caret", "a ==word== b\n");
+        let word = d.source.find("word").unwrap();
+        d.caret = word + 2; // between `wo` and `rd`
+        d.set_mark_color(Some(MarkColor::Red));
+        assert_eq!(&d.source[d.caret..d.caret + 2], "rd", "still before `rd`");
+
+        // And back the other way when the prefix goes.
+        d.set_mark_color(None);
+        assert_eq!(&d.source[d.caret..d.caret + 2], "rd");
+    }
+
+    #[test]
+    fn the_colour_at_the_caret_is_what_the_palette_lights() {
+        let mut d = doc_with("mark_colour_read", "a ==🔴 red== and ==plain== b\n");
+        d.caret = d.source.find("red").unwrap();
+        assert!(d.caret_in_mark());
+        assert_eq!(d.mark_color_at_caret(), Some(MarkColor::Red));
+
+        d.caret = d.source.find("plain").unwrap();
+        assert!(d.caret_in_mark(), "a highlight with no colour is still one");
+        assert_eq!(d.mark_color_at_caret(), None);
+
+        d.caret = d.source.find(" and ").unwrap() + 2;
+        assert!(!d.caret_in_mark());
+        assert_eq!(d.mark_color_at_caret(), None);
+    }
+
+    #[test]
+    fn a_colour_without_a_highlight_says_so_and_writes_nothing() {
+        // The gesture colours a highlight that exists; it does not make one.
+        // Two presses is the price of a coloured highlight from bare text, and
+        // the reason is undo — one press that spliced twice would take two
+        // presses to take back.
+        let mut d = doc_with("mark_colour_none", "a word b\n");
+        d.caret = d.source.find("word").unwrap();
+        d.set_mark_color(Some(MarkColor::Red));
+        assert_eq!(d.source, "a word b\n");
+        assert!(d.status.is_some(), "it should say why");
+        assert!(!d.dirty);
+
+        // Clearing where there is nothing to clear is the same refusal, not a
+        // quiet success — the caret is in no highlight either way.
+        d.status = None;
+        d.set_mark_color(None);
+        assert_eq!(d.source, "a word b\n");
+        assert!(d.status.is_some());
+    }
+
+    #[test]
+    fn clearing_an_uncoloured_highlight_is_a_quiet_no_op() {
+        // twig answers this one *successfully* with a `Change` describing some
+        // earlier edit, so a caller that trusted the change would jump the caret
+        // to wherever that was. Core answers it before asking.
+        let mut d = doc_with("mark_colour_noop", "a ==word== b\n");
+        d.toggle(InlineKind::Strong); // an earlier edit for a stale change to name
+        d.caret = d.source.find("word").unwrap();
+        let (source, caret) = (d.source.clone(), d.caret);
+        d.set_mark_color(None);
+        assert_eq!(d.source, source);
+        assert_eq!(
+            d.caret, caret,
+            "the caret must not ride a change that isn't one"
+        );
+        assert_eq!(d.status, None, "and it is not an error either");
+    }
+
+    #[test]
+    fn djot_spells_the_highlight_and_not_its_colour() {
+        // The reason the palette is its own capability rather than the Highlight
+        // button's: `{=word=}` is a highlight djot writes happily, and there is
+        // no djot spelling for a colour on it.
+        assert!(Capabilities::of(Format::Djot).mark);
+        assert!(!Capabilities::of(Format::Djot).mark_color);
+        assert!(Capabilities::of(Format::Markdown).mark_color);
+
+        let mut d = Doc::from_source("a {=word=} b\n".into(), Format::Djot).unwrap();
+        d.caret = d.source.find("word").unwrap();
+        assert!(
+            d.caret_in_mark(),
+            "the caret is in a highlight all the same"
+        );
+        d.set_mark_color(Some(MarkColor::Red));
+        assert_eq!(d.source, "a {=word=} b\n");
+        assert!(
+            d.status.as_deref().unwrap_or("").contains("djot"),
+            "and the refusal names the document's format: {:?}",
+            d.status
+        );
+    }
+
+    #[test]
+    fn a_coloured_highlight_is_one_undo_step_and_reads_back_as_its_colour() {
+        // The round trip that matters for a palette: the bytes twig writes are
+        // bytes its own reparse reads back as a colour, so the swatch that was
+        // pressed is the swatch that lights afterwards.
+        let mut d = doc_with("mark_colour_undo", "a word b\n");
+        d.anchor = Some(2);
+        d.caret = 6;
+        d.toggle(InlineKind::Mark);
+        d.caret = d.source.find("word").unwrap();
+        d.set_mark_color(Some(MarkColor::Green));
+        assert_eq!(d.source, "a ==🟢 word== b\n");
+        assert_eq!(d.mark_color_at_caret(), Some(MarkColor::Green));
+
+        // One splice, one step: the colour comes off and the highlight stays.
+        d.undo();
+        assert_eq!(d.source, "a ==word== b\n");
+        d.undo();
+        assert_eq!(d.source, "a word b\n");
+    }
+
+    #[test]
+    fn every_colour_leaf_names_is_one_twig_writes() {
+        // The two enums are one vocabulary, and this is what says so: each of
+        // leaf's colours writes an emoji twig's reparse reads back as *that*
+        // colour, so `twig_mark_color`'s table cannot quietly pair red with
+        // orange.
+        for color in MarkColor::ALL {
+            let mut d = doc_with("mark_colour_all", "a ==word== b\n");
+            d.caret = d.source.find("word").unwrap();
+            d.set_mark_color(Some(color));
+            assert_eq!(d.status, None, "{color:?}");
+            assert_eq!(d.mark_color_at_caret(), Some(color), "{color:?}");
+        }
+    }
+
+    #[test]
+    fn a_fresh_highlight_takes_a_colour_without_moving_the_caret_first() {
+        // The two presses a coloured highlight is made of, in the state the
+        // first one leaves: `toggle` selects the whole `==word==` and puts the
+        // caret one past the closing `==`, which is *not* in the mark. Asking at
+        // the caret alone would refuse to colour the highlight just written —
+        // the selection's start is what answers.
+        let mut d = doc_with("mark_colour_fresh", "a word b\n");
+        d.anchor = Some(2);
+        d.caret = 6;
+        d.toggle(InlineKind::Mark);
+        assert_eq!(d.source, "a ==word== b\n");
+        assert_eq!(d.caret, 10, "the caret twig leaves, past the closing `==`");
+
+        assert!(d.caret_in_mark(), "the selected highlight is the one meant");
+        d.set_mark_color(Some(MarkColor::Yellow));
+        assert_eq!(d.source, "a ==🟡 word== b\n");
+        assert_eq!(d.status, None);
+    }
+
+    #[test]
+    fn a_read_only_document_takes_no_colour() {
+        let mut d = doc_with("mark_colour_ro", "a ==word== b\n");
+        d.caret = d.source.find("word").unwrap();
+        d.set_read_only(true);
+        d.set_mark_color(Some(MarkColor::Red));
+        assert_eq!(d.source, "a ==word== b\n");
     }
 
     #[test]

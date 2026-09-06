@@ -13,6 +13,7 @@
 //  Checkmarks follow `EditorState`: Bold is ticked while the caret stands in
 //  bold text, Source View while the source is showing.
 
+import LeafFFI
 import SwiftUI
 
 /// The editor a scene's menus act on. Published by `LeafEditor`; read by
@@ -101,6 +102,15 @@ private struct FormatMenuItems: View {
         mark("strike", loc("menu.strikethrough", "Strikethrough"), nil, []) { editor.toggleStrike() }
         mark("code", loc("menu.code", "Code"), "c", [.command, .shift]) { editor.toggleCode() }
         mark("mark", loc("menu.highlight", "Highlight"), "m", [.command, .shift]) { editor.toggleMark() }
+        // The colours a highlight can be, under the Highlight item that makes
+        // one. A submenu rather than six more rows in a menu this long, and the
+        // same rows the formatting bar's Highlight button drops down — one
+        // definition, so the two cannot come to disagree about what the palette
+        // is or when it is live.
+        Menu(loc("menu.highlightColour", "Highlight Colour")) {
+            HighlightColourRows(editor: editor)
+        }
+        .disabled(!editable)
         Divider()
         Toggle(loc("menu.paragraph", "Paragraph"), isOn: block(editor.state.heading == nil) { editor.setParagraph() })
             .keyboardShortcut("0", modifiers: .control)
@@ -165,6 +175,13 @@ private struct FormatMenuItems: View {
             Toggle(loc("menu.strikethrough", "Strikethrough"), isOn: .constant(false))
             Toggle(loc("menu.code", "Code"), isOn: .constant(false)).keyboardShortcut("c", modifiers: [.command, .shift])
             Toggle(loc("menu.highlight", "Highlight"), isOn: .constant(false)).keyboardShortcut("m", modifiers: [.command, .shift])
+            Menu(loc("menu.highlightColour", "Highlight Colour")) {
+                ForEach(MarkColor.palette, id: \.self) { color in
+                    Toggle(color.menuTitle, isOn: .constant(false))
+                }
+                Divider()
+                Toggle(loc("menu.highlight.noColour", "No Colour"), isOn: .constant(false))
+            }
             Divider()
             Toggle(loc("menu.paragraph", "Paragraph"), isOn: .constant(false)).keyboardShortcut("0", modifiers: .control)
             Menu(loc("menu.heading", "Heading")) {

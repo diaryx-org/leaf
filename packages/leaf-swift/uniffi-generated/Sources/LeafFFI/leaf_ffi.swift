@@ -569,6 +569,13 @@ public protocol LeafDocProtocol : AnyObject {
     func capabilities()  -> Capabilities
     
     /**
+     * Whether the caret stands in a highlight — what a colour palette enables
+     * itself by, since a colour is a property of a highlight that already
+     * exists. The caret-side half of [`Capabilities::mark_color`].
+     */
+    func caretInMark()  -> Bool
+    
+    /**
      * Whether the caret is inside a table — for enabling the table controls.
      * Pair it with [`Capabilities::table`]: the caret is genuinely inside an
      * HTML `<table>`, and the grid controls still cannot edit one.
@@ -921,6 +928,17 @@ public protocol LeafDocProtocol : AnyObject {
     func setLineFlow(mode: LineFlow)  -> DocView
     
     /**
+     * Colour the highlight at the caret, or clear its colour with `None`.
+     *
+     * Markdown only — `==🔴 text==` is its spelling and djot has none — and
+     * only where there is a highlight to colour: this does not make one, so a
+     * coloured highlight from bare text is [`LeafDoc::toggle_mark`] and then
+     * this, which is the order the button and its palette already sit in. Both
+     * refusals leave the document alone and say so in the status line.
+     */
+    func setMarkColor(color: MarkColor?)  -> DocView
+    
+    /**
      * Set the markup-exposure preference. Returns a fresh view so a frontend
      * can repaint — and under `Full` it must, because the returned view is the
      * first one showing the caret's line raw. Diaryx leaves it at the `None`
@@ -1250,6 +1268,18 @@ open func backspace() -> DocView {
 open func capabilities() -> Capabilities {
     return try!  FfiConverterTypeCapabilities.lift(try! rustCall() {
     uniffi_leaf_ffi_fn_method_leafdoc_capabilities(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+    /**
+     * Whether the caret stands in a highlight — what a colour palette enables
+     * itself by, since a colour is a property of a highlight that already
+     * exists. The caret-side half of [`Capabilities::mark_color`].
+     */
+open func caretInMark() -> Bool {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_caret_in_mark(self.uniffiClonePointer(),$0
     )
 })
 }
@@ -1963,6 +1993,23 @@ open func setLineFlow(mode: LineFlow) -> DocView {
 }
     
     /**
+     * Colour the highlight at the caret, or clear its colour with `None`.
+     *
+     * Markdown only — `==🔴 text==` is its spelling and djot has none — and
+     * only where there is a highlight to colour: this does not make one, so a
+     * coloured highlight from bare text is [`LeafDoc::toggle_mark`] and then
+     * this, which is the order the button and its palette already sit in. Both
+     * refusals leave the document alone and say so in the status line.
+     */
+open func setMarkColor(color: MarkColor?) -> DocView {
+    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_set_mark_color(self.uniffiClonePointer(),
+        FfiConverterOptionTypeMarkColor.lower(color),$0
+    )
+})
+}
+    
+    /**
      * Set the markup-exposure preference. Returns a fresh view so a frontend
      * can repaint — and under `Full` it must, because the returned view is the
      * first one showing the caret's line raw. Diaryx leaves it at the `None`
@@ -2520,6 +2567,14 @@ public struct Capabilities {
     public var mark: Bool
     public var underline: Bool
     public var strike: Bool
+    /**
+     * [`LeafDoc::set_mark_color`] — the highlight *palette*, which Markdown
+     * spells and djot does not, though both spell the highlight itself. Gate
+     * the swatches on this *and* on [`LeafDoc::caret_in_mark`], the way the grid
+     * controls take `table` and `caret_in_table`: one is a fact about the
+     * format, the other about where the caret is standing.
+     */
+    public var markColor: Bool
     public var superscript: Bool
     public var `subscript`: Bool
     /**
@@ -2561,7 +2616,14 @@ public struct Capabilities {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(bold: Bool, italic: Bool, code: Bool, mark: Bool, underline: Bool, strike: Bool, superscript: Bool, `subscript`: Bool, 
+    public init(bold: Bool, italic: Bool, code: Bool, mark: Bool, underline: Bool, strike: Bool, 
+        /**
+         * [`LeafDoc::set_mark_color`] — the highlight *palette*, which Markdown
+         * spells and djot does not, though both spell the highlight itself. Gate
+         * the swatches on this *and* on [`LeafDoc::caret_in_mark`], the way the grid
+         * controls take `table` and `caret_in_table`: one is a fact about the
+         * format, the other about where the caret is standing.
+         */markColor: Bool, superscript: Bool, `subscript`: Bool, 
         /**
          * Both [`LeafDoc::set_heading`] and [`LeafDoc::set_paragraph`] — they are
          * the same gesture in core and stand or fall together.
@@ -2592,6 +2654,7 @@ public struct Capabilities {
         self.mark = mark
         self.underline = underline
         self.strike = strike
+        self.markColor = markColor
         self.superscript = superscript
         self.`subscript` = `subscript`
         self.heading = heading
@@ -2629,6 +2692,9 @@ extension Capabilities: Equatable, Hashable {
             return false
         }
         if lhs.strike != rhs.strike {
+            return false
+        }
+        if lhs.markColor != rhs.markColor {
             return false
         }
         if lhs.superscript != rhs.superscript {
@@ -2683,6 +2749,7 @@ extension Capabilities: Equatable, Hashable {
         hasher.combine(mark)
         hasher.combine(underline)
         hasher.combine(strike)
+        hasher.combine(markColor)
         hasher.combine(superscript)
         hasher.combine(`subscript`)
         hasher.combine(heading)
@@ -2714,6 +2781,7 @@ public struct FfiConverterTypeCapabilities: FfiConverterRustBuffer {
                 mark: FfiConverterBool.read(from: &buf), 
                 underline: FfiConverterBool.read(from: &buf), 
                 strike: FfiConverterBool.read(from: &buf), 
+                markColor: FfiConverterBool.read(from: &buf), 
                 superscript: FfiConverterBool.read(from: &buf), 
                 subscript: FfiConverterBool.read(from: &buf), 
                 heading: FfiConverterBool.read(from: &buf), 
@@ -2738,6 +2806,7 @@ public struct FfiConverterTypeCapabilities: FfiConverterRustBuffer {
         FfiConverterBool.write(value.mark, into: &buf)
         FfiConverterBool.write(value.underline, into: &buf)
         FfiConverterBool.write(value.strike, into: &buf)
+        FfiConverterBool.write(value.markColor, into: &buf)
         FfiConverterBool.write(value.superscript, into: &buf)
         FfiConverterBool.write(value.`subscript`, into: &buf)
         FfiConverterBool.write(value.heading, into: &buf)
@@ -3073,6 +3142,24 @@ public struct DocView {
      * repoint — see `LinkTarget.swift`.
      */
     public var link: String?
+    /**
+     * The colour of the highlight the caret stands in — which swatch a colour
+     * palette draws as the current one, and `None` both outside a highlight and
+     * inside an uncoloured one.
+     *
+     * It rides the frame for `link`'s reason, and more sharply: walking from a
+     * red highlight into a blue one changes no mark, no heading, no dirty flag
+     * and no link, so a palette asking for itself would never be told to move
+     * its checkmark.
+     *
+     * An enum rather than the name string [`Run::mark_color`] carries, because
+     * the two are different questions. A run's colour is a *rendering* hint that
+     * has to survive a name this build has never heard of (a newer twig's
+     * eighth colour draws as a plain highlight rather than not at all); this is
+     * the closed palette a control offers, and a name outside it is not a
+     * swatch anyone can press.
+     */
+    public var markColor: MarkColor?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -3154,7 +3241,24 @@ public struct DocView {
          * Only a *parsed* link answers ([`LeafDoc::link_destination_at_caret`]);
          * a wikilink is literal text with no node behind it, and has nothing to
          * repoint — see `LinkTarget.swift`.
-         */link: String?) {
+         */link: String?, 
+        /**
+         * The colour of the highlight the caret stands in — which swatch a colour
+         * palette draws as the current one, and `None` both outside a highlight and
+         * inside an uncoloured one.
+         *
+         * It rides the frame for `link`'s reason, and more sharply: walking from a
+         * red highlight into a blue one changes no mark, no heading, no dirty flag
+         * and no link, so a palette asking for itself would never be told to move
+         * its checkmark.
+         *
+         * An enum rather than the name string [`Run::mark_color`] carries, because
+         * the two are different questions. A run's colour is a *rendering* hint that
+         * has to survive a name this build has never heard of (a newer twig's
+         * eighth colour draws as a plain highlight rather than not at all); this is
+         * the closed palette a control offers, and a name outside it is not a
+         * swatch anyone can press.
+         */markColor: MarkColor?) {
         self.rows = rows
         self.tables = tables
         self.directives = directives
@@ -3173,6 +3277,7 @@ public struct DocView {
         self.heading = heading
         self.active = active
         self.link = link
+        self.markColor = markColor
     }
 }
 
@@ -3234,6 +3339,9 @@ extension DocView: Equatable, Hashable {
         if lhs.link != rhs.link {
             return false
         }
+        if lhs.markColor != rhs.markColor {
+            return false
+        }
         return true
     }
 
@@ -3256,6 +3364,7 @@ extension DocView: Equatable, Hashable {
         hasher.combine(heading)
         hasher.combine(active)
         hasher.combine(link)
+        hasher.combine(markColor)
     }
 }
 
@@ -3284,7 +3393,8 @@ public struct FfiConverterTypeDocView: FfiConverterRustBuffer {
                 view: FfiConverterString.read(from: &buf), 
                 heading: FfiConverterOptionUInt32.read(from: &buf), 
                 active: FfiConverterSequenceString.read(from: &buf), 
-                link: FfiConverterOptionString.read(from: &buf)
+                link: FfiConverterOptionString.read(from: &buf), 
+                markColor: FfiConverterOptionTypeMarkColor.read(from: &buf)
         )
     }
 
@@ -3307,6 +3417,7 @@ public struct FfiConverterTypeDocView: FfiConverterRustBuffer {
         FfiConverterOptionUInt32.write(value.heading, into: &buf)
         FfiConverterSequenceString.write(value.active, into: &buf)
         FfiConverterOptionString.write(value.link, into: &buf)
+        FfiConverterOptionTypeMarkColor.write(value.markColor, into: &buf)
     }
 }
 
@@ -5493,6 +5604,114 @@ extension LineFlow: Equatable, Hashable {}
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
+ * The colour of a highlight — the closed palette [`LeafDoc::set_mark_color`]
+ * writes and [`DocView::mark_color`] reports.
+ *
+ * Obsidian's spelling, which is twig's: a circle emoji straight after the
+ * opening `==`, so `==🔴 text==` is a highlight of `text` in [`MarkColor::Red`].
+ * The emoji is *spelling* rather than content — it never appears in the text a
+ * reader sees, and never in a [`Run`].
+ */
+
+public enum MarkColor {
+    
+    case red
+    case orange
+    case yellow
+    case green
+    case blue
+    case purple
+    case brown
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMarkColor: FfiConverterRustBuffer {
+    typealias SwiftType = MarkColor
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MarkColor {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .red
+        
+        case 2: return .orange
+        
+        case 3: return .yellow
+        
+        case 4: return .green
+        
+        case 5: return .blue
+        
+        case 6: return .purple
+        
+        case 7: return .brown
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MarkColor, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .red:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .orange:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .yellow:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .green:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .blue:
+            writeInt(&buf, Int32(5))
+        
+        
+        case .purple:
+            writeInt(&buf, Int32(6))
+        
+        
+        case .brown:
+            writeInt(&buf, Int32(7))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMarkColor_lift(_ buf: RustBuffer) throws -> MarkColor {
+    return try FfiConverterTypeMarkColor.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMarkColor_lower(_ value: MarkColor) -> RustBuffer {
+    return FfiConverterTypeMarkColor.lower(value)
+}
+
+
+
+extension MarkColor: Equatable, Hashable {}
+
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
  * How much of the source markup the rich view exposes — the argument to
  * [`LeafDoc::set_markup_mode`]. Mirrors [`leaf_core::MarkupMode`]; `None`
  * is the default (the clean surface Diaryx ships, with typed syntax kept
@@ -5974,6 +6193,30 @@ fileprivate struct FfiConverterOptionTypeSelectionQuote: FfiConverterRustBuffer 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeMarkColor: FfiConverterRustBuffer {
+    typealias SwiftType = MarkColor?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeMarkColor.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeMarkColor.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
     typealias SwiftType = [String]
 
@@ -6323,6 +6566,9 @@ private var initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_capabilities() != 30762) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_caret_in_mark() != 17292) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_caret_in_table() != 18746) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -6504,6 +6750,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_line_flow() != 4051) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_mark_color() != 43839) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_markup_mode() != 44896) {

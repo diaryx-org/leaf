@@ -379,6 +379,70 @@ public final class LeafEditorModel: ObservableObject {
     public func toggleMark()       { run { $0.toggleMark() } }
     public func toggleUnderline()  { run { $0.toggleUnderline() } }
     public func toggleStrike()     { run { $0.toggleStrike() } }
+
+    // ── the highlight's colour ────────────────────────────────────────────────
+    // `==🔴 text==`, Obsidian's spelling and the one core reads and writes. A
+    // colour is a property of a highlight that already exists — core has no
+    // "highlight this in red", because that is two splices and would be one
+    // press a single undo could not take back — so the pair below is the whole
+    // surface: the exact gesture, and the one a toolbar actually presses.
+
+    /// Whether the caret stands in a highlight. What a colour palette enables
+    /// itself by, together with `capabilities().markColor`: djot spells the
+    /// highlight and no colour for it, so the format has to answer as well as
+    /// the caret.
+    ///
+    /// Asked of the document rather than read off `state`, the way
+    /// `caretInTable` is — a menu is built when it opens, so it sees the caret
+    /// where it is now.
+    public var caretInMark: Bool { doc.caretInMark() }
+
+    /// The colour of the highlight at the caret, or nil — the swatch a menu
+    /// ticks. Rides the published state, because moving between two coloured
+    /// highlights changes nothing else about the frame (see `EditorState`).
+    public var markColor: MarkColor? { state.markColor }
+
+    /// Colour the highlight at the caret, or clear its colour with nil. Writes
+    /// nothing where there is no highlight — see `highlight(_:)`, which is what
+    /// a toolbar swatch should call.
+    public func setMarkColor(_ color: MarkColor?) { run { $0.setMarkColor(color: color) } }
+
+    /// Whether a colour swatch would land: this document spells a colour on a
+    /// highlight (Markdown does, djot doesn't), and there is a highlight to
+    /// colour — one the caret is in, or one `highlight(_:)` would make out of the
+    /// selection. What a palette dims itself by.
+    public var canColourHighlight: Bool {
+        capabilities.markColor && (caretInMark || state.hasSelection)
+    }
+
+    /// Which formatting controls this document's format can spell — one flag per
+    /// button, for chrome that dims rather than fails. Read per use rather than
+    /// held: it is a static table lookup per flag, and a document can be handed a
+    /// new source (and so a new format) under the same model.
+    public var capabilities: Capabilities { doc.capabilities() }
+
+    /// One press of a colour swatch: colour the highlight the caret is in, or —
+    /// with a selection and no highlight yet — make one and colour it.
+    ///
+    /// The second case is two edits, and so two steps of undo: the highlight,
+    /// then its colour. Core keeps them apart deliberately (one gesture, one
+    /// splice), and a compound press is the frontend's business, which is why
+    /// this lives here rather than there. The order matters — colouring first
+    /// would have nothing to colour.
+    ///
+    /// A bare caret in no highlight is left alone: `toggleMark` there arms a
+    /// mark for text not yet typed, and a colour cannot be armed with it, so the
+    /// press would leave a promise half made. Gate the control on
+    /// `caretInMark || state.hasSelection`, which is exactly what
+    /// `LeafFormattingToolbar` does.
+    public func highlight(_ color: MarkColor?) {
+        if !caretInMark {
+            guard state.hasSelection else { return }
+            toggleMark()
+        }
+        setMarkColor(color)
+    }
+
     public func setParagraph()     { run { $0.setParagraph() } }
     public func setHeading(_ level: UInt32) { run { $0.setHeading(level: level) } }
     public func toggleBlockquote() { run { $0.toggleBlockquote() } }

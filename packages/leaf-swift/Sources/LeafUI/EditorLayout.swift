@@ -34,20 +34,37 @@ public struct EditorState: Equatable {
     /// through the view's `undoManager`. Both false on a read-only document.
     public var canUndo: Bool
     public var canRedo: Bool
+    /// The colour of the highlight the caret stands in — which swatch a colour
+    /// menu ticks — and nil both outside a highlight and inside an uncoloured
+    /// one.
+    ///
+    /// Here for `link`'s reason, and more sharply: walking from a red highlight
+    /// into a blue one moves no mark, no heading and no dirty flag, so a palette
+    /// that asked core for itself would never be republished, and would keep the
+    /// first colour ticked.
+    public var markColor: MarkColor?
+    /// Whether a (non-empty) selection is live. What tells "colour the highlight
+    /// I'm in" from "highlight what I've chosen, in this colour" — one press
+    /// that means both, in `LeafEditorModel.highlight(_:)`.
+    public var hasSelection: Bool
 
-    /// `link` defaults so a host that built a state by hand before there was one
-    /// still compiles; the frame-projecting initializer below is the real path.
+    /// `link`, `markColor` and `hasSelection` default so a host that built a
+    /// state by hand before any of them existed still compiles; the
+    /// frame-projecting initializer below is the real path.
     public init(view: String, dirty: Bool, heading: UInt32?, active: [String], link: String? = nil,
-                canUndo: Bool = false, canRedo: Bool = false) {
+                canUndo: Bool = false, canRedo: Bool = false,
+                markColor: MarkColor? = nil, hasSelection: Bool = false) {
         self.view = view; self.dirty = dirty; self.heading = heading
         self.active = active; self.link = link
         self.canUndo = canUndo; self.canRedo = canRedo
+        self.markColor = markColor; self.hasSelection = hasSelection
     }
 
     /// Project a full `DocView` down to the chrome-facing state.
     public init(_ v: DocView) {
         self.init(view: v.view, dirty: v.dirty, heading: v.heading, active: v.active, link: v.link,
-                  canUndo: v.canUndo, canRedo: v.canRedo)
+                  canUndo: v.canUndo, canRedo: v.canRedo,
+                  markColor: v.markColor, hasSelection: v.hasSelection)
     }
 }
 

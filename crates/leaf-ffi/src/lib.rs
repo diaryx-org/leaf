@@ -45,8 +45,8 @@ use leaf_core::style::{Baseline, Role, Style as LStyle};
 use leaf_core::wysiwyg::text_width;
 use leaf_core::{
     Alignment, BlockKind, Capabilities as CoreCapabilities, ColorScheme, Doc, Format, InlineKind,
-    LineFlow as CoreLineFlow, MarkupMode as CoreMarkupMode, MediaKind as CoreMediaKind, View,
-    VisualMap,
+    LineFlow as CoreLineFlow, MarkColor as CoreMarkColor, MarkupMode as CoreMarkupMode,
+    MediaKind as CoreMediaKind, View, VisualMap,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -558,6 +558,68 @@ pub struct DocView {
     /// a wikilink is literal text with no node behind it, and has nothing to
     /// repoint — see `LinkTarget.swift`.
     pub link: Option<String>,
+    /// The colour of the highlight the caret stands in — which swatch a colour
+    /// palette draws as the current one, and `None` both outside a highlight and
+    /// inside an uncoloured one.
+    ///
+    /// It rides the frame for `link`'s reason, and more sharply: walking from a
+    /// red highlight into a blue one changes no mark, no heading, no dirty flag
+    /// and no link, so a palette asking for itself would never be told to move
+    /// its checkmark.
+    ///
+    /// An enum rather than the name string [`Run::mark_color`] carries, because
+    /// the two are different questions. A run's colour is a *rendering* hint that
+    /// has to survive a name this build has never heard of (a newer twig's
+    /// eighth colour draws as a plain highlight rather than not at all); this is
+    /// the closed palette a control offers, and a name outside it is not a
+    /// swatch anyone can press.
+    pub mark_color: Option<MarkColor>,
+}
+
+/// The colour of a highlight — the closed palette [`LeafDoc::set_mark_color`]
+/// writes and [`DocView::mark_color`] reports.
+///
+/// Obsidian's spelling, which is twig's: a circle emoji straight after the
+/// opening `==`, so `==🔴 text==` is a highlight of `text` in [`MarkColor::Red`].
+/// The emoji is *spelling* rather than content — it never appears in the text a
+/// reader sees, and never in a [`Run`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum MarkColor {
+    Red,
+    Orange,
+    Yellow,
+    Green,
+    Blue,
+    Purple,
+    Brown,
+}
+
+impl From<CoreMarkColor> for MarkColor {
+    fn from(c: CoreMarkColor) -> Self {
+        match c {
+            CoreMarkColor::Red => MarkColor::Red,
+            CoreMarkColor::Orange => MarkColor::Orange,
+            CoreMarkColor::Yellow => MarkColor::Yellow,
+            CoreMarkColor::Green => MarkColor::Green,
+            CoreMarkColor::Blue => MarkColor::Blue,
+            CoreMarkColor::Purple => MarkColor::Purple,
+            CoreMarkColor::Brown => MarkColor::Brown,
+        }
+    }
+}
+
+impl From<MarkColor> for CoreMarkColor {
+    fn from(c: MarkColor) -> Self {
+        match c {
+            MarkColor::Red => CoreMarkColor::Red,
+            MarkColor::Orange => CoreMarkColor::Orange,
+            MarkColor::Yellow => CoreMarkColor::Yellow,
+            MarkColor::Green => CoreMarkColor::Green,
+            MarkColor::Blue => CoreMarkColor::Blue,
+            MarkColor::Purple => CoreMarkColor::Purple,
+            MarkColor::Brown => CoreMarkColor::Brown,
+        }
+    }
 }
 
 /// A visual position: a row index plus a UTF-16 offset within that row's text —
@@ -602,6 +664,12 @@ pub struct Capabilities {
     pub mark: bool,
     pub underline: bool,
     pub strike: bool,
+    /// [`LeafDoc::set_mark_color`] — the highlight *palette*, which Markdown
+    /// spells and djot does not, though both spell the highlight itself. Gate
+    /// the swatches on this *and* on [`LeafDoc::caret_in_mark`], the way the grid
+    /// controls take `table` and `caret_in_table`: one is a fact about the
+    /// format, the other about where the caret is standing.
+    pub mark_color: bool,
     pub superscript: bool,
     pub subscript: bool,
     /// Both [`LeafDoc::set_heading`] and [`LeafDoc::set_paragraph`] — they are
@@ -639,6 +707,7 @@ impl From<CoreCapabilities> for Capabilities {
             mark: c.mark,
             underline: c.underline,
             strike: c.strike,
+            mark_color: c.mark_color,
             superscript: c.superscript,
             // `subscript` is a Swift keyword; uniffi escapes it in the generated
             // binding (`caps.`subscript``), so the field keeps its real name
@@ -1022,6 +1091,7 @@ impl Inner {
             .map(|k| mark_id(k).to_string())
             .collect();
         let link = self.doc.link_destination_at_caret();
+        let mark_color = self.doc.mark_color_at_caret().map(MarkColor::from);
 
         DocView {
             rows,
@@ -1042,6 +1112,7 @@ impl Inner {
             heading,
             active,
             link,
+            mark_color,
         }
     }
 }
@@ -1536,6 +1607,26 @@ impl LeafDoc {
     pub fn toggle_mark(&self) -> DocView {
         let mut g = self.lock();
         g.doc.toggle(InlineKind::Mark);
+        g.view()
+    }
+
+    /// Whether the caret stands in a highlight — what a colour palette enables
+    /// itself by, since a colour is a property of a highlight that already
+    /// exists. The caret-side half of [`Capabilities::mark_color`].
+    pub fn caret_in_mark(&self) -> bool {
+        self.lock().doc.caret_in_mark()
+    }
+
+    /// Colour the highlight at the caret, or clear its colour with `None`.
+    ///
+    /// Markdown only — `==🔴 text==` is its spelling and djot has none — and
+    /// only where there is a highlight to colour: this does not make one, so a
+    /// coloured highlight from bare text is [`LeafDoc::toggle_mark`] and then
+    /// this, which is the order the button and its palette already sit in. Both
+    /// refusals leave the document alone and say so in the status line.
+    pub fn set_mark_color(&self, color: Option<MarkColor>) -> DocView {
+        let mut g = self.lock();
+        g.doc.set_mark_color(color.map(CoreMarkColor::from));
         g.view()
     }
 
@@ -2917,6 +3008,48 @@ mod tests {
             d.footnote_definition_at_caret().expect("in the note").label,
             "1"
         );
+    }
+
+    #[test]
+    fn a_highlight_is_coloured_at_the_caret_and_the_frame_says_which() {
+        // The whole crossing a colour palette makes: press the swatch, and the
+        // frame that comes back names the colour so the swatch can light.
+        let d = doc("a word b\n");
+        d.set_selection_offsets(2, 6);
+        d.toggle_mark();
+        assert_eq!(d.source(), "a ==word== b\n");
+
+        d.set_selection_offsets(5, 5); // inside the highlight
+        assert!(d.caret_in_mark());
+        let v = d.set_mark_color(Some(MarkColor::Red));
+        assert_eq!(d.source(), "a ==🔴 word== b\n");
+        assert_eq!(v.mark_color, Some(MarkColor::Red));
+
+        // And the way back: no colour, still a highlight.
+        let v = d.set_mark_color(None);
+        assert_eq!(d.source(), "a ==word== b\n");
+        assert_eq!(v.mark_color, None);
+        assert!(d.caret_in_mark());
+    }
+
+    #[test]
+    fn the_palette_has_two_gates_and_they_ask_different_questions() {
+        // `mark_color` is the format's answer and `caret_in_mark` the caret's.
+        // A djot document spells the highlight and no colour for it, so the two
+        // disagree there — which is the case a toolbar gating on either one
+        // alone gets wrong.
+        assert!(doc("x\n").capabilities().mark_color);
+        let dj = LeafDoc::new("a {=word=} b\n".to_string(), "djot".to_string()).unwrap();
+        assert!(dj.capabilities().mark, "djot writes the highlight");
+        assert!(!dj.capabilities().mark_color, "and no colour on it");
+        dj.set_selection_offsets(5, 5);
+        assert!(dj.caret_in_mark(), "the caret is in one all the same");
+
+        let d = doc("a word b\n");
+        d.set_selection_offsets(3, 3);
+        assert!(!d.caret_in_mark(), "no highlight to colour here");
+        assert_eq!(d.set_mark_color(Some(MarkColor::Blue)).mark_color, None);
+        assert_eq!(d.source(), "a word b\n", "and nothing written");
     }
 
     #[test]
