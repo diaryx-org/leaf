@@ -26,7 +26,8 @@
 //! nothing about the document you're in.
 
 use leaf_core::{
-    Alignment, BlockKind, Capabilities, Doc, InlineKind, InlineMarks, LineFlow, MarkupMode, View,
+    Alignment, BlockKind, Capabilities, Doc, InlineKind, InlineMarks, LineFlow, MarkColor,
+    MarkupMode, View,
 };
 use leaf_ratatui::Outcome;
 
@@ -42,6 +43,13 @@ pub struct Ctx {
     /// no table in it can't have a row inserted into one.
     pub in_table: bool,
     pub in_code: bool,
+    /// `Doc::caret_in_mark` — the highlight-colour rows' half of the same pair
+    /// `in_table` forms with `caps.table`: djot spells a highlight and no colour
+    /// on it, and a Markdown document with no highlight under the caret has
+    /// nothing to colour either.
+    pub in_mark: bool,
+    /// The colour of that highlight, for the `✓` on the row naming it.
+    pub mark_color: Option<MarkColor>,
     pub marks: InlineMarks,
     pub heading: Option<u32>,
     pub markup: MarkupMode,
@@ -60,6 +68,8 @@ impl Ctx {
             caps: doc.capabilities(),
             in_table: doc.caret_in_table(),
             in_code: doc.caret_in_fenced_code(),
+            in_mark: doc.caret_in_mark(),
+            mark_color: doc.mark_color_at_caret(),
             marks: doc.active_inline_marks(),
             heading: doc.current_heading_level(),
             markup: doc.markup_mode(),
@@ -96,6 +106,11 @@ pub enum Command {
 
     // ── inline ──
     Inline(InlineKind),
+    /// A highlight's colour — `Some` sets one, `None` takes it off. Its own
+    /// verb rather than an `Inline` variant because it is not a mark: it is a
+    /// property of a highlight that already exists, and the row is dim wherever
+    /// there is no highlight for it to belong to.
+    HighlightColor(Option<MarkColor>),
 
     // ── insert ──
     Link,
@@ -181,6 +196,18 @@ impl Command {
             Inline(InlineKind::Mark) => "Highlight",
             Inline(InlineKind::Delete) => "Strikethrough",
             Inline(_) => "Underline",
+
+            // Named "Highlight …" rather than bare "Red", because the palette
+            // is a flat list of every verb: a row saying only "Red" would be a
+            // riddle there, and reads no worse inside the flyout.
+            HighlightColor(Some(MarkColor::Red)) => "Highlight: Red",
+            HighlightColor(Some(MarkColor::Orange)) => "Highlight: Orange",
+            HighlightColor(Some(MarkColor::Yellow)) => "Highlight: Yellow",
+            HighlightColor(Some(MarkColor::Green)) => "Highlight: Green",
+            HighlightColor(Some(MarkColor::Blue)) => "Highlight: Blue",
+            HighlightColor(Some(MarkColor::Purple)) => "Highlight: Purple",
+            HighlightColor(Some(MarkColor::Brown)) => "Highlight: Brown",
+            HighlightColor(None) => "Highlight: No Colour",
 
             Link => "Link…",
             Image => "Image…",
@@ -329,6 +356,12 @@ impl Command {
             Inline(InlineKind::Insert) => c.underline,
             Inline(_) => false,
 
+            // Both halves again: a format that spells a colour on a highlight
+            // (Markdown does, djot doesn't), and a highlight for it to go on —
+            // one the caret is in, or one this press would make out of the
+            // selection. A bare caret in plain text has neither.
+            HighlightColor(_) => c.mark_color && (ctx.in_mark || ctx.has_selection),
+
             Link => c.link,
             // One control with three kinds behind it — core gates all three on
             // the image gesture, for the reason spelled out in `insert_media`.
@@ -389,6 +422,11 @@ impl Command {
         use Command::*;
         match self {
             Inline(k) => ctx.marks.contains(k),
+            // The colour of the highlight the caret is in — a radio group, like
+            // the heading levels. "No Colour" ticks only *inside* an uncoloured
+            // highlight: outside one there is no colour to be none of.
+            HighlightColor(Some(c)) => ctx.mark_color == Some(c),
+            HighlightColor(None) => ctx.in_mark && ctx.mark_color.is_none(),
             Heading(n) => ctx.heading == Some(n),
             Markup(m) => ctx.markup == m,
             Flow(f) => ctx.flow == f,
@@ -420,6 +458,9 @@ impl Command {
             TaskChecked => doc.toggle_task_checked(),
 
             Inline(k) => doc.toggle(k),
+            // The compound, not the bare gesture: over a selection this both
+            // highlights and colours, as one undo step. See `Doc::highlight`.
+            HighlightColor(c) => doc.highlight(c),
 
             Link => return Outcome::LinkPrompt,
             Image => return Outcome::ImagePrompt,
@@ -518,6 +559,17 @@ const INLINE: &[Command] = &[
     Command::Inline(InlineKind::Emph),
     Command::Inline(InlineKind::Verbatim),
     Command::Inline(InlineKind::Mark),
+    // Under the highlight itself, in the palette as in the flyout — the colours
+    // are the one family here with no key of their own, and the palette is how
+    // they are reached.
+    Command::HighlightColor(Some(MarkColor::Red)),
+    Command::HighlightColor(Some(MarkColor::Orange)),
+    Command::HighlightColor(Some(MarkColor::Yellow)),
+    Command::HighlightColor(Some(MarkColor::Green)),
+    Command::HighlightColor(Some(MarkColor::Blue)),
+    Command::HighlightColor(Some(MarkColor::Purple)),
+    Command::HighlightColor(Some(MarkColor::Brown)),
+    Command::HighlightColor(None),
     Command::Inline(InlineKind::Delete),
     Command::Inline(InlineKind::Insert),
 ];
@@ -628,6 +680,82 @@ mod tests {
             assert!(Command::Inline(InlineKind::Mark).enabled(&ctx), "{fmt:?}");
             assert!(Command::Inline(InlineKind::Delete).enabled(&ctx), "{fmt:?}");
         }
+    }
+
+    /// The highlight's colours: dim with nothing to colour, live inside a
+    /// highlight and over a selection — and gone entirely in a format that
+    /// spells no colour, whatever the caret is standing in.
+    #[test]
+    fn highlight_colours_need_a_highlight_or_a_selection() {
+        let red = Command::HighlightColor(Some(MarkColor::Red));
+
+        let mut md =
+            Doc::from_source("a ==word== b\n".into(), leaf_core::Format::Markdown).unwrap();
+        md.caret = 0;
+        assert!(
+            !red.enabled(&Ctx::read(&mut md)),
+            "no highlight at the caret"
+        );
+
+        md.caret = md.source.find("word").unwrap();
+        assert!(red.enabled(&Ctx::read(&mut md)), "inside the highlight");
+
+        md.caret = 1;
+        md.anchor = Some(0);
+        assert!(
+            red.enabled(&Ctx::read(&mut md)),
+            "a selection is a highlight this press would make"
+        );
+
+        // djot writes `{=word=}` and has no colour for it, so the whole family
+        // is dark there even standing in one.
+        let mut dj = Doc::from_source("a {=word=} b\n".into(), leaf_core::Format::Djot).unwrap();
+        dj.caret = dj.source.find("word").unwrap();
+        let ctx = Ctx::read(&mut dj);
+        assert!(dj.caret_in_mark());
+        assert!(!red.enabled(&ctx));
+    }
+
+    /// The `✓` follows the caret's own highlight, and "No Colour" ticks only
+    /// where there is a highlight to have none.
+    #[test]
+    fn the_ticked_colour_is_the_caret_s_own() {
+        let mut doc = Doc::from_source(
+            "a ==\u{1F534} red== and ==plain== b\n".into(),
+            leaf_core::Format::Markdown,
+        )
+        .unwrap();
+
+        doc.caret = doc.source.find("red=").unwrap();
+        let ctx = Ctx::read(&mut doc);
+        assert!(Command::HighlightColor(Some(MarkColor::Red)).active(&ctx));
+        assert!(!Command::HighlightColor(Some(MarkColor::Blue)).active(&ctx));
+        assert!(!Command::HighlightColor(None).active(&ctx));
+
+        doc.caret = doc.source.find("plain").unwrap();
+        let ctx = Ctx::read(&mut doc);
+        assert!(Command::HighlightColor(None).active(&ctx));
+        assert!(!Command::HighlightColor(Some(MarkColor::Red)).active(&ctx));
+
+        doc.caret = 0;
+        let ctx = Ctx::read(&mut doc);
+        assert!(
+            !Command::HighlightColor(None).active(&ctx),
+            "outside a highlight there is no colour to be none of"
+        );
+    }
+
+    /// One row, one press: over a selection the command both highlights and
+    /// colours, and one undo takes the whole press back.
+    #[test]
+    fn a_colour_row_highlights_and_colours_in_one_press() {
+        let mut doc = Doc::from_source("a word b\n".into(), leaf_core::Format::Markdown).unwrap();
+        doc.anchor = Some(2);
+        doc.caret = 6;
+        Command::HighlightColor(Some(MarkColor::Green)).run(&mut doc);
+        assert_eq!(doc.source, "a ==\u{1F7E2} word== b\n");
+        doc.undo();
+        assert_eq!(doc.source, "a word b\n");
     }
 
     /// Table commands need both halves: a format whose tables are editable and a

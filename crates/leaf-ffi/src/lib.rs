@@ -1630,6 +1630,21 @@ impl LeafDoc {
         g.view()
     }
 
+    /// One press of a colour swatch: colour the highlight at the caret, or —
+    /// over a selection that isn't highlighted yet — highlight it and colour it,
+    /// as **one** undo step.
+    ///
+    /// [`LeafDoc::set_mark_color`] is the exact gesture; this is the compound a
+    /// toolbar presses, and it lives in core so that every frontend answers
+    /// "what does a swatch mean over plain text" the same way. `None` clears the
+    /// colour, and over an unhighlighted selection means simply "highlight
+    /// this". A bare caret in no highlight is left alone.
+    pub fn highlight(&self, color: Option<MarkColor>) -> DocView {
+        let mut g = self.lock();
+        g.doc.highlight(color.map(CoreMarkColor::from));
+        g.view()
+    }
+
     pub fn toggle_underline(&self) -> DocView {
         let mut g = self.lock();
         g.doc.toggle(InlineKind::Insert);
@@ -3030,6 +3045,21 @@ mod tests {
         assert_eq!(d.source(), "a ==word== b\n");
         assert_eq!(v.mark_color, None);
         assert!(d.caret_in_mark());
+    }
+
+    #[test]
+    fn one_press_highlights_and_colours_and_one_undo_takes_it_back() {
+        // What a toolbar swatch calls. The fold is core's, and it is what makes
+        // the press reversible in one step rather than leaving an uncoloured
+        // highlight behind.
+        let d = doc("a word b\n");
+        d.set_selection_offsets(2, 6);
+        let v = d.highlight(Some(MarkColor::Purple));
+        assert_eq!(d.source(), "a ==\u{1F7E3} word== b\n");
+        assert_eq!(v.mark_color, Some(MarkColor::Purple));
+
+        d.undo();
+        assert_eq!(d.source(), "a word b\n");
     }
 
     #[test]

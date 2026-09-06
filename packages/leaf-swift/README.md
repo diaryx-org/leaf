@@ -111,10 +111,11 @@ one the caret is in, or one the press would make out of the selection. The butto
 itself stays live either way, because it is the way to a highlight.
 
 `model.highlight(_:)` is that one press: it colours the highlight at the caret,
-or marks the selection first and then colours it. The second case is two edits
-and so two steps of undo — core keeps one gesture to one splice, and
-`setMarkColor(_:)` is that exact gesture if you want it unwrapped. Format ▸
-Highlight Colour carries the same rows in the menu bar.
+or marks the selection first and then colours it — one undo step either way,
+because core folds the two splices into a single history step rather than
+leaving an uncoloured highlight on the way back. `setMarkColor(_:)` is the exact
+one-splice gesture if you want it unwrapped. Format ▸ Highlight Colour carries
+the same rows in the menu bar.
 
 **Authoring a link.** Link is among the inline marks, and it's the one tool that
 has to ask a question: the selection says what to link, never where to. It reads

@@ -422,26 +422,20 @@ public final class LeafEditorModel: ObservableObject {
     public var capabilities: Capabilities { doc.capabilities() }
 
     /// One press of a colour swatch: colour the highlight the caret is in, or —
-    /// with a selection and no highlight yet — make one and colour it.
+    /// with a selection and no highlight yet — make one and colour it, as **one**
+    /// undo step.
     ///
-    /// The second case is two edits, and so two steps of undo: the highlight,
-    /// then its colour. Core keeps them apart deliberately (one gesture, one
-    /// splice), and a compound press is the frontend's business, which is why
-    /// this lives here rather than there. The order matters — colouring first
-    /// would have nothing to colour.
+    /// Core's own compound (`Doc::highlight`), not two calls from here: what a
+    /// swatch means over plain text is one answer for every frontend, and only
+    /// core can fold the two splices into a single history step. Without that
+    /// fold the way back from a red highlight would pass through an uncoloured
+    /// one the author never asked for.
     ///
-    /// A bare caret in no highlight is left alone: `toggleMark` there arms a
-    /// mark for text not yet typed, and a colour cannot be armed with it, so the
-    /// press would leave a promise half made. Gate the control on
-    /// `caretInMark || state.hasSelection`, which is exactly what
+    /// A bare caret in no highlight is left alone — `toggleMark` there arms a
+    /// mark for text not yet typed, and a colour cannot be armed with it. Gate
+    /// the control on `canColourHighlight`, which is what
     /// `LeafFormattingToolbar` does.
-    public func highlight(_ color: MarkColor?) {
-        if !caretInMark {
-            guard state.hasSelection else { return }
-            toggleMark()
-        }
-        setMarkColor(color)
-    }
+    public func highlight(_ color: MarkColor?) { run { $0.highlight(color: color) } }
 
     public func setParagraph()     { run { $0.setParagraph() } }
     public func setHeading(_ level: UInt32) { run { $0.setHeading(level: level) } }

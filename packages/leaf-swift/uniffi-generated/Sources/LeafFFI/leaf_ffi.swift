@@ -668,6 +668,19 @@ public protocol LeafDocProtocol : AnyObject {
     func footnoteDefinitionAtCaret()  -> FootnoteDefView?
     
     /**
+     * One press of a colour swatch: colour the highlight at the caret, or —
+     * over a selection that isn't highlighted yet — highlight it and colour it,
+     * as **one** undo step.
+     *
+     * [`LeafDoc::set_mark_color`] is the exact gesture; this is the compound a
+     * toolbar presses, and it lives in core so that every frontend answers
+     * "what does a swatch mean over plain text" the same way. `None` clears the
+     * colour, and over an unhighlighted selection means simply "highlight
+     * this". A bare caret in no highlight is left alone.
+     */
+    func highlight(color: MarkColor?)  -> DocView
+    
+    /**
      * The id of the highlight covering source `offset`, if one does — what a
      * frontend asks when the reader activates a spot on the page.
      */
@@ -1457,6 +1470,25 @@ open func footnoteAtCaret() -> FootnoteView? {
 open func footnoteDefinitionAtCaret() -> FootnoteDefView? {
     return try!  FfiConverterOptionTypeFootnoteDefView.lift(try! rustCall() {
     uniffi_leaf_ffi_fn_method_leafdoc_footnote_definition_at_caret(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+    /**
+     * One press of a colour swatch: colour the highlight at the caret, or —
+     * over a selection that isn't highlighted yet — highlight it and colour it,
+     * as **one** undo step.
+     *
+     * [`LeafDoc::set_mark_color`] is the exact gesture; this is the compound a
+     * toolbar presses, and it lives in core so that every frontend answers
+     * "what does a swatch mean over plain text" the same way. `None` clears the
+     * colour, and over an unhighlighted selection means simply "highlight
+     * this". A bare caret in no highlight is left alone.
+     */
+open func highlight(color: MarkColor?) -> DocView {
+    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_highlight(self.uniffiClonePointer(),
+        FfiConverterOptionTypeMarkColor.lower(color),$0
     )
 })
 }
@@ -6612,6 +6644,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_footnote_definition_at_caret() != 43634) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_highlight() != 22834) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_highlight_at() != 39885) {

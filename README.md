@@ -266,9 +266,16 @@ hidden"), and never stepped to, washed, or replaced; `⌥w` into the source view
 where every byte is on screen, is where the whole count is.
 
 Everything the keyboard doesn't reach is in the **command palette** — the three
-media kinds, all fourteen table operations, and the markup/line-flow modes named
-outright rather than cycled. Type a few letters of a command's name and press
-Return; `table` finds the whole grid family, `ir` finds Insert Row Above.
+media kinds, all fourteen table operations, the eight highlight colours, and the
+markup/line-flow modes named outright rather than cycled. Type a few letters of a
+command's name and press Return; `table` finds the whole grid family, `ir` finds
+Insert Row Above, `highlight:` finds the colours.
+
+A **highlight's colour** is `==🔴 text==`, which Markdown spells and djot
+does not. The eight rows — seven colours and No Colour — sit under Format ▸
+Highlight Colour and in the palette, dim wherever there is nothing to colour, and
+tick the one the caret is standing in. Over a selection that isn't highlighted
+yet, one press does both: the highlight and its colour, as a single undo step.
 
 The palette, the context menu, and the key reference are all generated from one
 command table (`apps/leaf-tui/src/commands.rs`), so a command cannot gain a key

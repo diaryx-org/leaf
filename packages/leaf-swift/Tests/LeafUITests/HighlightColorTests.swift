@@ -115,10 +115,25 @@ final class HighlightColorTests: XCTestCase {
         XCTAssertEqual(doc.source(), "a word b\n")
     }
 
-    /// And the sequence a swatch actually performs over a selection: the
-    /// highlight, then its colour — two edits, because core keeps one gesture to
-    /// one splice, and the second finds the highlight the first just made even
-    /// though the caret it left is past the closing `==`.
+    /// What a swatch actually calls: one press over a selection both highlights
+    /// and colours, and one undo takes the whole press back — the fold core
+    /// does, and the reason the model no longer does this in two calls of its
+    /// own.
+    func testOnePressHighlightsAndColoursASelection() throws {
+        let doc = try LeafDoc(source: "a word b\n", format: "markdown")
+        doc.setSelectionOffsets(anchor: 2, focus: 6)
+        let view = doc.highlight(color: .purple)
+        XCTAssertEqual(doc.source(), "a ==\u{1F7E3} word== b\n")
+        XCTAssertEqual(view.markColor, .purple)
+
+        doc.undo()
+        XCTAssertEqual(doc.source(), "a word b\n", "one press, one undo")
+    }
+
+    /// The same thing spelled out in the two exact gestures, which is what a
+    /// host driving core directly would write. Worth pinning apart from the
+    /// compound above: the colour finds the highlight the toggle just made, even
+    /// though the caret that toggle left is past the closing `==`.
     func testHighlightingThenColouringASelection() throws {
         let doc = try LeafDoc(source: "a word b\n", format: "markdown")
         doc.setSelectionOffsets(anchor: 2, focus: 6)

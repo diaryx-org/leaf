@@ -3774,6 +3774,44 @@ impl Doc {
         }
     }
 
+    /// One press of a colour swatch: colour the highlight at the caret, or —
+    /// over a selection that isn't highlighted yet — highlight it and colour it,
+    /// as **one** undo step.
+    ///
+    /// [`set_mark_color`](Self::set_mark_color) is the exact gesture and stays
+    /// one splice; this is the compound every toolbar actually presses, and it
+    /// lives here rather than in each frontend because the rule it encodes —
+    /// what a swatch means when there is no highlight under it yet — is one
+    /// answer, not one per frontend. The two splices are folded into a single
+    /// history step, so the press that made a red highlight is taken back by a
+    /// single undo rather than leaving an uncoloured one behind.
+    ///
+    /// `None` clears the colour, and over an unhighlighted selection means
+    /// simply "highlight this" — the same thing the Highlight button does.
+    /// A bare caret in no highlight is left alone with a status line, because
+    /// [`toggle`](Self::toggle) there arms a mark for text not yet typed and a
+    /// colour cannot be armed with it.
+    pub fn highlight(&mut self, color: Option<MarkColor>) {
+        if self.caret_in_mark() || self.selection().is_none() {
+            self.set_mark_color(color);
+            return;
+        }
+        self.toggle(InlineKind::Mark);
+        // The format may not spell a highlight at all (`toggle` said so), and
+        // there is nothing to colour if it doesn't.
+        if self.status.is_some() {
+            return;
+        }
+        let before = self.revision;
+        self.set_mark_color(color);
+        // Only fold when the colour really spliced. `highlight(None)` over a
+        // fresh highlight is a no-op by design, and coalescing there would eat
+        // the *previous* edit into the toggle instead.
+        if self.revision != before {
+            let _ = self.editor.coalesce_last_undo();
+        }
+    }
+
     /// Convert the block at the caret to a heading level or paragraph.
     pub fn set_block(&mut self, kind: BlockKind) {
         // The read-only gate — this door reaches twig without the splice.
@@ -11789,6 +11827,73 @@ mod tests {
         d.set_mark_color(Some(MarkColor::Yellow));
         assert_eq!(d.source, "a ==🟡 word== b\n");
         assert_eq!(d.status, None);
+    }
+
+    #[test]
+    fn one_press_highlights_a_selection_and_colours_it() {
+        // What a toolbar swatch means over a plain selection, and the undo it
+        // has to have: one press, one step. Two steps would leave an uncoloured
+        // highlight behind on the way back, which is a state the author never
+        // asked for and never saw.
+        let mut d = doc_with("highlight_one", "a word b\n");
+        d.anchor = Some(2);
+        d.caret = 6;
+        d.highlight(Some(MarkColor::Purple));
+        assert_eq!(d.source, "a ==\u{1F7E3} word== b\n");
+        assert_eq!(d.status, None);
+
+        d.undo();
+        assert_eq!(d.source, "a word b\n", "one press, one undo");
+    }
+
+    #[test]
+    fn one_press_on_an_existing_highlight_only_recolours_it() {
+        // The other half: inside a highlight there is nothing to make, so the
+        // compound is the plain gesture and the text is untouched.
+        let mut d = doc_with("highlight_recolour", "a ==\u{1F534} word== b\n");
+        d.caret = d.source.find("word").unwrap();
+        d.highlight(Some(MarkColor::Blue));
+        assert_eq!(d.source, "a ==\u{1F535} word== b\n");
+        d.undo();
+        assert_eq!(d.source, "a ==\u{1F534} word== b\n", "the highlight stays");
+    }
+
+    #[test]
+    fn one_press_with_no_colour_over_a_selection_just_highlights_it() {
+        // `None` means "no colour", and over bare text that is the Highlight
+        // button's own job. The fold must not happen here — there is no second
+        // splice, and folding would take the *previous* edit into this one.
+        let mut d = doc_with("highlight_none", "a word b and more\n");
+        d.caret = d.source.find("more").unwrap() + 4; // after "more"
+        d.insert("!"); // an earlier edit for a wrong fold to swallow
+        d.anchor = Some(2);
+        d.caret = 6;
+        d.highlight(None);
+        assert_eq!(d.source, "a ==word== b and more!\n");
+
+        d.undo();
+        assert_eq!(
+            d.source, "a word b and more!\n",
+            "only the highlight came off"
+        );
+        d.undo();
+        assert_eq!(
+            d.source, "a word b and more\n",
+            "and the edit before it survived"
+        );
+    }
+
+    #[test]
+    fn one_press_at_a_bare_caret_in_no_highlight_writes_nothing() {
+        // `toggle` at a collapsed caret arms a mark for text not yet typed, and
+        // a colour cannot be armed with it — so the compound declines rather
+        // than leaving half a promise.
+        let mut d = doc_with("highlight_bare", "a word b\n");
+        d.caret = 4;
+        d.highlight(Some(MarkColor::Red));
+        assert_eq!(d.source, "a word b\n");
+        assert!(d.pending_marks.is_empty(), "and nothing armed");
+        assert!(d.status.is_some());
     }
 
     #[test]

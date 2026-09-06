@@ -1426,14 +1426,20 @@ impl LeafDoc {
     /// where there is a highlight to colour: this does not make one. A coloured
     /// highlight from bare text is `toggleMark` and then this.
     pub fn set_mark_color(&mut self, color: Option<String>) -> Result<DocView, JsValue> {
-        let color =
-            match color.as_deref() {
-                None => None,
-                Some(name) => Some(CoreMarkColor::from_attr(name).ok_or_else(|| {
-                    JsValue::from_str(&format!("unknown highlight colour: {name}"))
-                })?),
-            };
-        self.doc.set_mark_color(color);
+        self.doc.set_mark_color(mark_color(color.as_deref())?);
+        self.view()
+    }
+
+    /// One press of a colour swatch: colour the highlight at the caret, or —
+    /// over a selection that isn't highlighted yet — highlight it and colour it,
+    /// as **one** undo step.
+    ///
+    /// `setMarkColor` is the exact gesture; this is the compound a toolbar
+    /// presses, and it lives in core so every frontend answers "what does a
+    /// swatch mean over plain text" the same way. `null` clears the colour, and
+    /// over an unhighlighted selection means simply "highlight this".
+    pub fn highlight(&mut self, color: Option<String>) -> Result<DocView, JsValue> {
+        self.doc.highlight(mark_color(color.as_deref())?);
         self.view()
     }
 
@@ -2073,6 +2079,19 @@ fn make_run(text: String, style: LStyle, sel: bool, hl: Option<&CoreHighlight>, 
         hl: hl.map(|h| h.id.clone()),
         hl_color: hl.and_then(|h| h.color.clone()),
         mark_color: mark_color_name(style.role),
+    }
+}
+
+/// A highlight colour by the name a document records it under — the argument
+/// `setMarkColor` and `highlight` take. `None` is no colour; a name outside the
+/// palette is an error rather than a silent clearing, since the two arguments
+/// differ by one typo and mean opposite things.
+fn mark_color(name: Option<&str>) -> Result<Option<CoreMarkColor>, JsValue> {
+    match name {
+        None => Ok(None),
+        Some(name) => CoreMarkColor::from_attr(name)
+            .map(Some)
+            .ok_or_else(|| JsValue::from_str(&format!("unknown highlight colour: {name}"))),
     }
 }
 

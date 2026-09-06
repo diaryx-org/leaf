@@ -16,7 +16,9 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Result, anyhow};
-use leaf_core::{Alignment, DiskState, Doc, InlineKind, LineFlow, MarkupMode, MediaKind, View};
+use leaf_core::{
+    Alignment, DiskState, Doc, InlineKind, LineFlow, MarkColor, MarkupMode, MediaKind, View,
+};
 use leaf_ratatui::{MouseOutcome, Outcome};
 
 use commands::{Command, Ctx};
@@ -369,8 +371,28 @@ pub const FORMAT_MENU: &[MenuEntry] = &[
     MenuEntry::Action(Command::Inline(InlineKind::Emph)),
     MenuEntry::Action(Command::Inline(InlineKind::Verbatim)),
     MenuEntry::Action(Command::Inline(InlineKind::Mark)),
+    MenuEntry::Submenu("Highlight Colour", HIGHLIGHT_MENU),
     MenuEntry::Action(Command::Inline(InlineKind::Delete)),
     MenuEntry::Action(Command::Inline(InlineKind::Insert)),
+];
+
+/// The colours a highlight can be, under the Highlight row that makes one. A
+/// flyout rather than eight more rows in a Format menu that is already the
+/// longest one here — and it dims itself away wholesale, the way the Table
+/// flyout does off a table, because `Submenu::selectable` is "anything inside
+/// is": with no highlight under the caret and nothing selected, nothing is.
+///
+/// "No Colour" last, after the spectrum, because it is the exception to the
+/// list rather than a colour in it.
+pub const HIGHLIGHT_MENU: &[MenuEntry] = &[
+    MenuEntry::Action(Command::HighlightColor(Some(MarkColor::Red))),
+    MenuEntry::Action(Command::HighlightColor(Some(MarkColor::Orange))),
+    MenuEntry::Action(Command::HighlightColor(Some(MarkColor::Yellow))),
+    MenuEntry::Action(Command::HighlightColor(Some(MarkColor::Green))),
+    MenuEntry::Action(Command::HighlightColor(Some(MarkColor::Blue))),
+    MenuEntry::Action(Command::HighlightColor(Some(MarkColor::Purple))),
+    MenuEntry::Action(Command::HighlightColor(Some(MarkColor::Brown))),
+    MenuEntry::Action(Command::HighlightColor(None)),
 ];
 
 /// What can be put *into* the document that isn't a restyling of what's already
@@ -4475,7 +4497,11 @@ mod tests {
         let mut doc = doc_with("submenu_render", "hello\n");
         let mut app = App::default();
         open_format(&mut doc, &mut app);
-        let lines = frame(&mut doc, &mut app, 60, 20);
+        // 90×26, not 60×20: the Format flyout is eighteen rows deep now that the
+        // highlight has its colours under it, and on a screen too small for both
+        // it is nudged up and over the root — the small-screen clamp doing its
+        // job, which is not the layout this test is about.
+        let lines = frame(&mut doc, &mut app, 90, 26);
         let joined = lines.join("\n");
         assert!(
             joined.contains("Format"),
@@ -4503,7 +4529,7 @@ mod tests {
         doc.caret = 7; // inside the bold "hello"
         let mut app = App::default();
         open_format(&mut doc, &mut app);
-        let joined = frame(&mut doc, &mut app, 60, 20).join("\n");
+        let joined = frame(&mut doc, &mut app, 60, 24).join("\n");
         assert!(
             joined.contains("✓ Bold"),
             "active Bold should be checked:\n{joined}"
@@ -4733,6 +4759,35 @@ mod tests {
             "the row landed:\n{}",
             doc.source
         );
+    }
+
+    /// The colours have no key of their own — the palette is how they are
+    /// reached, and one press there both highlights the selection and colours
+    /// it.
+    #[test]
+    fn the_palette_colours_a_selection_in_one_press() {
+        let mut doc = doc_with("palette_colour", "a word b\n");
+        doc.anchor = Some(2);
+        doc.caret = 6; // "word" selected
+        let mut app = App::default();
+        handle_key(&mut doc, alt('p'), &mut app);
+        for c in "highlight: blue".chars() {
+            handle_key(&mut doc, plain(c), &mut app);
+        }
+        let palette = app.palette.as_ref().unwrap();
+        assert!(
+            palette
+                .rows
+                .iter()
+                .any(|r| r.command == Command::HighlightColor(Some(MarkColor::Blue)) && r.enabled),
+            "the row is offered over a selection"
+        );
+        handle_key(&mut doc, keyp(KeyCode::Enter), &mut app);
+        assert_eq!(doc.source, "a ==\u{1F535} word== b\n");
+
+        // And one undo takes the whole press back, not half of it.
+        doc.undo();
+        assert_eq!(doc.source, "a word b\n");
     }
 
     /// The palette owns the keyboard completely: a letter typed into its query
