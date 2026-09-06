@@ -211,7 +211,7 @@ shut — so this is a guarantee rather than a suppressed keyboard.
 | `Shift`+move | extend the selection |
 | click / drag | place / drag the caret |
 | `⌥b` / `⌥i` / `⌥c` | toggle **bold** / *italic* / `code` on the selection |
-| `⌥m` / `⌥d` / `⌥u` | toggle mark/highlight (Djot) / strikethrough / underline |
+| `⌥m` / `⌥d` / `⌥u` | toggle highlight / strikethrough / underline (underline is Djot's alone) |
 | `⌥1`…`⌥6` | make the block at the caret a heading of that level |
 | `⌥0` | make it a paragraph |
 | `⌥7` / `⌥8` / `⌥9` | numbered list / bulleted list / quote |
@@ -274,14 +274,14 @@ The palette, the context menu, and the key reference are all generated from one
 command table (`apps/leaf-tui/src/commands.rs`), so a command cannot gain a key
 without gaining a menu row and a line in the help. Every one of those surfaces
 also **dims what the document's format cannot spell** — a footnote in an HTML
-file, `==highlight==` in a Markdown one — rather than hiding it, so what a
-format can't do stays legible instead of merely absent. The highlight is the
-subtle case, and worth stating outright: leaf *renders* `==text==` and
-`==🔴 text==` in Markdown (twig 3.3's `highlight` extensions, which every leaf
-document is parsed with), so a highlight written by hand or converted in from
-Djot reads and paints. What twig will not do is author one, because the reader
-on the other end may have the extension off — so the button dims over a document
-that renders highlights perfectly well.
+file, `+underline+` in a Markdown one — rather than hiding it, so what a format
+can't do stays legible instead of merely absent. What that line no longer
+separates is the highlight: leaf both renders *and* writes `==text==` in
+Markdown as of twig 3.3.1, and `~~struck~~` with it. The gate is real and worth
+stating, because it is what makes the button honest — twig will only author
+bytes the document's own reparse reads back, and leaf parses every document with
+the `highlight` extension (`==🔴 text==`, colour and all), so `⌥m` writes a
+highlight that is still a highlight when the file is opened again.
 
 ## Status
 

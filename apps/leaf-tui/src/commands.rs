@@ -16,7 +16,7 @@
 //!
 //! # Why capability gating lives here
 //!
-//! The formats are ragged (see [`leaf_core::Capabilities`]): `==highlight==` is
+//! The formats are ragged (see [`leaf_core::Capabilities`]): `+underline+` is
 //! djot-only, HTML spells no heading marker and no task box, and only Markdown
 //! and djot spell a footnote. Core already *refuses* a gesture its format can't
 //! spell and says so in the status line, so the keyboard is safe without any
@@ -602,15 +602,32 @@ mod tests {
     /// The djot-only mark, in the format that spells it and the one that doesn't
     /// — the gating this module exists for, checked against a real document
     /// rather than against a hand-written `Capabilities`.
+    ///
+    /// It is the underline that carries this now. The highlight used to, and
+    /// stopped when twig 3.3.1 made `==x==` authorable for an editor holding the
+    /// `highlight` extension — which every leaf document does, so the row below
+    /// asserts the opposite of what it once did.
     #[test]
-    fn highlight_is_offered_in_djot_and_dimmed_in_markdown() {
-        let highlight = Command::Inline(InlineKind::Mark);
+    fn underline_is_offered_in_djot_and_dimmed_in_markdown() {
+        let underline = Command::Inline(InlineKind::Insert);
 
         let mut dj = Doc::from_source("hello\n".into(), leaf_core::Format::Djot).unwrap();
-        assert!(highlight.enabled(&Ctx::read(&mut dj)));
+        assert!(underline.enabled(&Ctx::read(&mut dj)));
 
         let mut md = Doc::from_source("hello\n".into(), leaf_core::Format::Markdown).unwrap();
-        assert!(!highlight.enabled(&Ctx::read(&mut md)));
+        assert!(!underline.enabled(&Ctx::read(&mut md)));
+    }
+
+    /// The pair twig 3.3.1 added, offered in both lightweight formats — the
+    /// menu row and the palette row for a gesture core will now carry out.
+    #[test]
+    fn highlight_and_strikethrough_are_offered_in_both_markdown_and_djot() {
+        for fmt in [leaf_core::Format::Markdown, leaf_core::Format::Djot] {
+            let mut doc = Doc::from_source("hello\n".into(), fmt).unwrap();
+            let ctx = Ctx::read(&mut doc);
+            assert!(Command::Inline(InlineKind::Mark).enabled(&ctx), "{fmt:?}");
+            assert!(Command::Inline(InlineKind::Delete).enabled(&ctx), "{fmt:?}");
+        }
     }
 
     /// Table commands need both halves: a format whose tables are editable and a

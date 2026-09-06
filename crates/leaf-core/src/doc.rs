@@ -752,10 +752,18 @@ fn spells_pipe_tables(format: Format) -> bool {
 /// spell — one flag per toolbar button, resolved once so a frontend can build
 /// its chrome instead of discovering each refusal on a click.
 ///
-/// Every field but [`table`](Self::table) is `Format::supports` on the gesture
-/// the matching [`Doc`] method calls, so this record cannot drift from what the
-/// ops do; `table` is [`spells_pipe_tables`], the one answer twig doesn't
-/// export.
+/// Every field but [`table`](Self::table) is `Format::supports_with` on the
+/// gesture the matching [`Doc`] method calls, so this record cannot drift from
+/// what the ops do; `table` is [`spells_pipe_tables`], the one answer twig
+/// doesn't export.
+///
+/// `supports_with` rather than `supports` because two of these are facts about
+/// the *parse options* as much as about the format. `Format::supports` answers
+/// for twig's defaults, and leaf never parses with those — it parses with
+/// [`parse_extensions`], and a document's toolbar has to describe the document
+/// it is over. A Markdown editor holding `highlight` authors `==text==`; one
+/// without it would mint bytes its own reparse hands back as plain text, which
+/// is why twig asks before it writes.
 ///
 /// **The formats are ragged, and that is the point.** A single per-document
 /// boolean was enough while the two authorable formats were Markdown and djot
@@ -765,7 +773,7 @@ fn spells_pipe_tables(format: Format) -> bool {
 /// no link — because its versions of those have a different *shape*, not a
 /// different alphabet. So ⌘B works in an HTML document and ⌘1 does not, and no
 /// one flag can say that. Markdown and djot differ from each other too:
-/// `==mark==` is djot-only, and an in-cell `<br>` is Markdown-only.
+/// `^superscript^` is djot-only, and an in-cell `<br>` is Markdown-only.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Capabilities {
     /// ⌘B — `InlineKind::Strong`.
@@ -774,11 +782,14 @@ pub struct Capabilities {
     pub italic: bool,
     /// Inline code — `InlineKind::Verbatim`.
     pub code: bool,
-    /// Highlight — `InlineKind::Mark`. Djot spells it; Markdown does not.
+    /// Highlight — `InlineKind::Mark`. Djot spells it, and so does Markdown
+    /// under the `highlight` extension [`parse_extensions`] turns on: the
+    /// button writes `==text==`, which is what the reparse reads back.
     pub mark: bool,
     /// ⌘U — `InlineKind::Insert`, which every format that marks at all spells.
     pub underline: bool,
-    /// Strikethrough — `InlineKind::Delete`.
+    /// Strikethrough — `InlineKind::Delete`. Markdown spells GFM's `~~text~~`
+    /// out of the box, since twig parses it out of the box.
     pub strike: bool,
     pub superscript: bool,
     pub subscript: bool,
@@ -812,11 +823,18 @@ pub struct Capabilities {
 }
 
 impl Capabilities {
-    /// Resolve every flag for `format`. Pure and cheap — twig computes each from
-    /// a static table — but a frontend that wants to hold them can.
+    /// Resolve every flag for `format`, as leaf parses it. Pure and cheap —
+    /// twig computes each from a static table — but a frontend that wants to
+    /// hold them can.
+    ///
+    /// The extensions are not a parameter because they are not a choice a
+    /// caller makes: every leaf document is parsed with [`parse_extensions`],
+    /// so the format is the whole of what varies.
     pub fn of(format: Format) -> Self {
-        let inline = |k| format.supports(Gesture::ToggleInline(k));
-        let container = |k| format.supports(Gesture::ToggleBlockContainer(k));
+        let exts = parse_extensions();
+        let supports = |g| format.supports_with(exts, g);
+        let inline = |k| supports(Gesture::ToggleInline(k));
+        let container = |k| supports(Gesture::ToggleBlockContainer(k));
         Self {
             bold: inline(InlineKind::Strong),
             italic: inline(InlineKind::Emph),
@@ -826,22 +844,21 @@ impl Capabilities {
             strike: inline(InlineKind::Delete),
             superscript: inline(InlineKind::Superscript),
             subscript: inline(InlineKind::Subscript),
-            heading: format.supports(Gesture::SetBlock),
+            heading: supports(Gesture::SetBlock),
             blockquote: container(BlockContainerKind::BlockQuote),
             bullet_list: container(BlockContainerKind::BulletList),
             ordered_list: container(BlockContainerKind::OrderedList),
             // Both halves of the checkbox story, and leaf offers no control that
             // needs only one: the item gesture mints the box, the checked one
             // ticks it, and a format spelling a `task_marker` spells both.
-            task: format.supports(Gesture::ToggleTaskItem)
-                && format.supports(Gesture::ToggleTaskChecked),
-            link: format.supports(Gesture::InsertLink),
-            image: format.supports(Gesture::InsertImage),
-            thematic_break: format.supports(Gesture::InsertThematicBreak),
-            footnote: format.supports(Gesture::InsertFootnote),
-            code_language: format.supports(Gesture::SetCodeLanguage),
+            task: supports(Gesture::ToggleTaskItem) && supports(Gesture::ToggleTaskChecked),
+            link: supports(Gesture::InsertLink),
+            image: supports(Gesture::InsertImage),
+            thematic_break: supports(Gesture::InsertThematicBreak),
+            footnote: supports(Gesture::InsertFootnote),
+            code_language: supports(Gesture::SetCodeLanguage),
             table: spells_pipe_tables(format),
-            cell_line_break: format.supports(Gesture::InsertLineBreak),
+            cell_line_break: supports(Gesture::InsertLineBreak),
         }
     }
 }
@@ -1344,17 +1361,19 @@ impl Doc {
         self.format.is_authorable()
     }
 
-    /// Whether this document's format can spell `gesture`, which is twig's own
-    /// answer rather than a copy of it: `Format::supports` reads the same
-    /// `Syntax` table the `Editor` method consults before refusing.
+    /// Whether this document can spell `gesture`, which is twig's own answer
+    /// rather than a copy of it: `Format::supports_with` reads the same
+    /// `Syntax` table the `Editor` method consults before refusing, chosen by
+    /// the very [`parse_extensions`] this document's editor reparses with — so
+    /// what the toolbar offers and what the splice will accept are one table.
     ///
-    /// It is a fact about the *format*, not about the caret. `true` does not
+    /// It is a fact about the *document*, not about the caret. `true` does not
     /// promise the gesture succeeds where it is standing — a link over a table
     /// border still fails — only that it will not fail with
     /// `UnsupportedFormat`. Gray out on `false`; don't read `true` as "this
     /// will work here".
     pub fn supports(&self, gesture: Gesture) -> bool {
-        self.format.supports(gesture)
+        self.format.supports_with(parse_extensions(), gesture)
     }
 
     /// Every control's enabled state in one read — what a toolbar builds itself
@@ -3560,8 +3579,9 @@ impl Doc {
         }
         // Ahead of the no-selection branch below: arming a mark for text not yet
         // typed is a promise `insert` cannot keep in a format with no delimiters
-        // to spell it with. Per *kind*, not per format — Markdown spells three
-        // of the eight marks, djot all eight, HTML seven.
+        // to spell it with. Per *kind*, not per format — Markdown spells five
+        // of the eight marks (highlight among them, under the `highlight`
+        // extension leaf parses with), djot all eight, HTML seven.
         if self.refuse_unsupported(&format!("{kind:?}"), Gesture::ToggleInline(kind)) {
             return;
         }
@@ -11224,8 +11244,10 @@ mod tests {
 
     // ── ragged formats ───────────────────────────────────────────────────────
     // No format spells every gesture. HTML writes the inline marks as a tag pair
-    // and no heading, list, quote or link; Markdown spells three of the eight
-    // marks; djot spells all eight and no in-cell break. leaf asks twig per
+    // and no heading, list, quote or link; Markdown spells five of the eight
+    // marks — the highlight only because leaf parses with `highlight`, which is
+    // why the question is asked with the extensions; djot spells all eight and
+    // no in-cell break. leaf asks twig per
     // gesture (`Doc::supports`) and refuses at the door, rather than letting each
     // op discover the fact on its own — one of them didn't.
 
@@ -11346,25 +11368,85 @@ mod tests {
     fn a_mark_the_format_cannot_spell_arms_nothing() {
         // `toggle` with a collapsed caret doesn't reach twig at all — it arms a
         // sticky mark for the next text typed. Guarding only the twig call
-        // leaves that path live, promising a highlight the gesture will not
-        // write and then swallowing the error inside `insert`.
+        // leaves that path live, promising a mark the gesture will not write and
+        // then swallowing the error inside `insert`.
         //
-        // Markdown is still the case that carries this, and the reason is finer
-        // than it was: since twig 3.3 leaf *parses* `==mark==` in Markdown, so a
-        // highlight reads back and paints. What twig will not do is author one —
-        // its Markdown syntax table spells the mark but marks it unauthorable,
-        // because the reader on the other end may have the extension off. So the
-        // button stays disabled over a Markdown document that renders highlights
-        // perfectly well, and this test is what says so.
+        // Markdown carries this, on the superscript now rather than on the
+        // highlight: `^x^` is text there in any configuration, whereas twig
+        // 3.3.1 authors `==x==` for an editor holding the `highlight` extension,
+        // which every leaf document does.
         let mut d = doc_with("mark", "Hello world\n");
         d.view = View::Wysiwyg;
         d.build_visual(80);
         d.caret = d.source.find("world").unwrap();
-        d.toggle(InlineKind::Mark);
+        d.toggle(InlineKind::Superscript);
         assert!(d.pending_marks.is_empty(), "no mark should be armed");
         assert!(d.status.as_deref().unwrap_or("").contains("markdown"));
         d.insert("X");
         assert_eq!(d.source, "Hello Xworld\n");
+    }
+
+    #[test]
+    fn markdown_authors_a_highlight_and_a_strikethrough() {
+        // twig 3.3.1: the two marks Markdown reads and, until it, refused to
+        // write. `==x==` is authorable because leaf's own `parse_extensions`
+        // turns `highlight` on — twig will only mint bytes this editor's reparse
+        // reads back — and `~~x~~` because GFM strikethrough is parsed by
+        // default, so the refusal there was never right for any leaf document.
+        for (kind, marked) in [
+            (InlineKind::Mark, "a ==word== b\n"),
+            (InlineKind::Delete, "a ~~word~~ b\n"),
+        ] {
+            let mut d = doc_with("author_mark", "a word b\n");
+            d.anchor = Some(2);
+            d.caret = 6;
+            d.toggle(kind);
+            assert_eq!(d.source, marked, "{kind:?}");
+            assert_eq!(d.status, None, "{kind:?}: a supported gesture is silent");
+            assert!(d.dirty, "{kind:?}");
+            // The region stays selected, so the second press reverses it — the
+            // property that separates authoring from a one-way trip.
+            d.toggle(kind);
+            assert_eq!(d.source, "a word b\n", "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn an_authored_highlight_reads_back_as_a_mark() {
+        // The round trip the extension gate exists to protect: what the toggle
+        // writes, the reparse must read back as a `mark` rather than as two
+        // literal `=` pairs. A `Role::Mark` glyph is that answer, taken from the
+        // rebuilt map rather than from the source text.
+        let mut d = doc_with("mark_roundtrip", "a word b\n");
+        d.view = View::Wysiwyg;
+        d.build_visual(80);
+        d.anchor = Some(2);
+        d.caret = 6;
+        d.toggle(InlineKind::Mark);
+        assert_eq!(d.source, "a ==word== b\n");
+        d.build_visual(80);
+        let w = d
+            .vmap
+            .rows
+            .iter()
+            .flat_map(|r| r.glyphs.iter())
+            .find(|g| g.ch == 'w')
+            .expect("the highlighted word");
+        assert_eq!(w.style.role, crate::Role::Mark(None));
+    }
+
+    #[test]
+    fn a_sticky_highlight_wraps_the_next_typed_text_in_markdown() {
+        // The other door into `toggle`: no selection, so nothing reaches twig
+        // until `insert` realises the armed mark. It is armed now — the guard
+        // above asks `Doc::supports`, which asks with the extensions — and what
+        // it writes is the same `==…==`.
+        let mut d = doc_with("sticky_mark", "xy\n");
+        d.caret = 1;
+        d.toggle(InlineKind::Mark);
+        assert!(d.pending_marks.contains(InlineKind::Mark));
+        d.insert("Z");
+        assert_eq!(d.source, "x==Z==y\n");
     }
 
     #[test]
@@ -11420,8 +11502,18 @@ mod tests {
                 "{fmt:?}"
             );
         }
-        assert!(Capabilities::of(Format::Djot).mark);
-        assert!(!Capabilities::of(Format::Markdown).mark);
+        // Both spell the highlight and the strikethrough: djot natively, and
+        // Markdown because `Capabilities` asks with `parse_extensions` rather
+        // than with twig's defaults — `==x==` is text under those, and a mark
+        // under the `highlight` leaf always parses with.
+        for fmt in [Format::Markdown, Format::Djot] {
+            let caps = Capabilities::of(fmt);
+            assert!(caps.mark && caps.strike, "{fmt:?}");
+        }
+        // What still separates them, now that the highlight doesn't: djot has
+        // no in-cell break, and Markdown spells neither of the scripts.
+        assert!(Capabilities::of(Format::Djot).superscript);
+        assert!(!Capabilities::of(Format::Markdown).superscript);
         assert!(Capabilities::of(Format::Markdown).cell_line_break);
         assert!(!Capabilities::of(Format::Djot).cell_line_break);
 

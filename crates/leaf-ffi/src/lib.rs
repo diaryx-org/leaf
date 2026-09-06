@@ -1618,7 +1618,7 @@ impl LeafDoc {
     ///
     /// Don't collapse it to one flag. An HTML document takes ⌘B, ⌘I and inline
     /// code (its marks are a tag pair) while refusing every heading, list, quote
-    /// and link, and Markdown refuses the highlight djot spells — so a toolbar
+    /// and link, and Markdown refuses the underline djot spells — so a toolbar
     /// driven by [`Self::authorable`] alone would be wrong in both directions.
     pub fn capabilities(&self) -> Capabilities {
         self.lock().doc.capabilities().into()

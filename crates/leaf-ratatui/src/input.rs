@@ -728,6 +728,23 @@ mod tests {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT)
     }
 
+    /// ⌥m and ⌥d over a Markdown selection, end to end from the key. The two
+    /// marks twig 3.3.1 made authorable there — before it, both keys reached
+    /// core and came back with a status line instead of a mark, which is a
+    /// keyboard that looks broken.
+    #[test]
+    fn alt_m_and_alt_d_mark_the_selection_in_markdown() {
+        for (key, marked) in [('m', "a ==word== b\n"), ('d', "a ~~word~~ b\n")] {
+            let mut d = doc("a word b\n");
+            let mut state = EditorState::new();
+            d.anchor = Some(2);
+            d.caret = 6;
+            handle_key(&mut d, alt(key), &mut state);
+            assert_eq!(d.source, marked, "⌥{key}");
+            assert_eq!(d.status, None, "⌥{key} should have nothing to explain");
+        }
+    }
+
     /// Every key that would change the document is refused *with a reason*.
     /// Core's gate already makes them harmless; what this is checking is that
     /// they don't read as a keyboard that has quietly stopped working.

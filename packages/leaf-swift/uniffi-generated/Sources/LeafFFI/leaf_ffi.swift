@@ -563,7 +563,7 @@ public protocol LeafDocProtocol : AnyObject {
      *
      * Don't collapse it to one flag. An HTML document takes ⌘B, ⌘I and inline
      * code (its marks are a tag pair) while refusing every heading, list, quote
-     * and link, and Markdown refuses the highlight djot spells — so a toolbar
+     * and link, and Markdown refuses the underline djot spells — so a toolbar
      * driven by [`Self::authorable`] alone would be wrong in both directions.
      */
     func capabilities()  -> Capabilities
@@ -1244,7 +1244,7 @@ open func backspace() -> DocView {
      *
      * Don't collapse it to one flag. An HTML document takes ⌘B, ⌘I and inline
      * code (its marks are a tag pair) while refusing every heading, list, quote
-     * and link, and Markdown refuses the highlight djot spells — so a toolbar
+     * and link, and Markdown refuses the underline djot spells — so a toolbar
      * driven by [`Self::authorable`] alone would be wrong in both directions.
      */
 open func capabilities() -> Capabilities {
@@ -6320,7 +6320,7 @@ private var initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_backspace() != 9512) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_capabilities() != 57141) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_capabilities() != 30762) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_caret_in_table() != 18746) {

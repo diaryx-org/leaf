@@ -4381,13 +4381,13 @@ mod tests {
             lvl.items[lvl.selected].label()
         };
         // Up from Paragraph wraps to the last row this *Markdown* document can
-        // actually run — Code, because Markdown *authors* three of the eight
-        // inline marks and highlight, strikethrough and underline are not among
-        // them — never landing on the "Inline" header on the way. Authors, not
-        // reads: leaf renders a Markdown `==highlight==` since twig 3.3, and the
-        // row is still dim, because writing one is the gesture twig refuses.
+        // actually run — Strikethrough, since underline is the one inline row
+        // below it and `+underline+` is djot's alone — never landing on the
+        // "Inline" header on the way. Highlight and strikethrough both moved
+        // onto the near side of that line with twig 3.3.1; before it, the wrap
+        // landed on Code.
         handle_key(&mut doc, keyp(KeyCode::Up), &mut app);
-        assert_eq!(row(&app), "Code");
+        assert_eq!(row(&app), "Strikethrough");
         // Down from there wraps past the "Block" header back to Paragraph.
         handle_key(&mut doc, keyp(KeyCode::Down), &mut app);
         assert_eq!(row(&app), "Paragraph");
@@ -4764,7 +4764,7 @@ mod tests {
         let mut app = App::default();
         let before = doc.source.clone();
         handle_key(&mut doc, alt('p'), &mut app);
-        for c in "highlight".chars() {
+        for c in "underline".chars() {
             handle_key(&mut doc, plain(c), &mut app);
         }
         let palette = app.palette.as_ref().unwrap();
@@ -4772,8 +4772,8 @@ mod tests {
             palette
                 .rows
                 .iter()
-                .any(|r| r.command == Command::Inline(InlineKind::Mark) && !r.enabled),
-            "the djot-only highlight should be listed and dimmed in Markdown"
+                .any(|r| r.command == Command::Inline(InlineKind::Insert) && !r.enabled),
+            "the djot-only underline should be listed and dimmed in Markdown"
         );
         handle_key(&mut doc, keyp(KeyCode::Enter), &mut app);
         assert_eq!(doc.source, before);
@@ -4873,9 +4873,10 @@ mod tests {
 
     #[test]
     fn a_dimmed_row_is_drawn_but_not_run_by_a_click() {
-        // Markdown spells no highlight, so the Format flyout's Highlight row is
+        // Markdown spells no underline, so the Format flyout's Underline row is
         // dimmed — and clicking it must leave both the menu and the document as
-        // they were.
+        // they were. (The Highlight row stood here until twig 3.3.1 made it
+        // authorable in Markdown.)
         let mut doc = doc_with("menu_dimmed_click", "hello\n");
         doc.anchor = Some(0);
         doc.caret = 5;
@@ -4887,7 +4888,7 @@ mod tests {
         let rect = app.context_menu.as_ref().unwrap().levels[1].rect.unwrap();
         let row = FORMAT_MENU
             .iter()
-            .position(|e| e.label() == "Highlight")
+            .position(|e| e.label() == "Underline")
             .unwrap() as u16;
         handle_mouse(&mut doc, left_down(rect.y + row, rect.x + 1), &mut app);
         assert!(
