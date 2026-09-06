@@ -36,7 +36,7 @@
 // Run with `cargo xtask web --test`, which serves this page and opens it. The
 // page reports into `document.title` and `window.__results` as well as on
 // screen, so an automated driver can read the outcome without scraping.
-import { LeafEditor } from "../src/index.js";
+import { LeafEditor, MARK_COLORS } from "../src/index.js";
 
 const results = [];
 const list = document.getElementById("results");
@@ -719,15 +719,98 @@ await test("capabilities answer for the format, not for the editor", () => {
   const md = editor("hello\n");
   const caps = md.capabilities();
   eq(caps.bold, true, "markdown has bold");
-  // Markdown *reads* `==mark==` since twig 3.3 — what it has no spelling for
-  // is authoring one, which is the question `capabilities` answers.
-  eq(caps.mark, false, "markdown cannot author a highlight");
+  // Markdown both reads and writes `==mark==` since twig 3.3.1 — it was the
+  // example of a thing this flag said no to, and the superscript is that
+  // example now.
+  eq(caps.mark, true, "markdown authors a highlight");
+  eq(caps.superscript, false, "and has no spelling for a superscript");
   assert(md.isAuthorable(), "markdown is authorable");
   md.destroy();
 
   const dj = editor("hello\n", { format: "djot" });
   eq(dj.capabilities().mark, true, "djot does have a highlight");
+  // What still separates the two lightweight formats: djot writes `{=word=}`
+  // and has no spelling for a colour on it, so a colour picker is Markdown's
+  // alone even though the button beside it works in both.
+  eq(dj.capabilities().mark_color, false, "djot has no highlight colour");
   return dj;
+});
+
+// ── the highlight's colour ────────────────────────────────────────────────
+
+await test("one press highlights the selection and colours it", () => {
+  const ed = editor("word\n");
+  ed.selectAll();
+  ed.highlight("red");
+  eq(ed.source(), "==\u{1F534} word==\n", "the emoji is the spelling core writes");
+
+  // Painted, not merely written: the run carries the colour's class, which is
+  // what the stylesheet's `--leaf-mk-red` hangs off. The emoji itself is
+  // markup and never reaches the text.
+  const run = ed.contentEl.querySelector(".leaf-r-mark");
+  assert(run, "no mark run was painted");
+  assert(run.classList.contains("leaf-mk-red"), "the run: " + run.className);
+  eq(run.textContent, "word", "the circle is spelling, not text");
+
+  // And one undo takes the whole press back rather than leaving an uncoloured
+  // highlight the author never asked for.
+  ed.undo();
+  eq(ed.source(), "word\n", "one press, one undo");
+  return ed;
+});
+
+await test("the caret's highlight colour rides the frame", () => {
+  let last = null;
+  const ed = editor("word\n", { onChange: (s) => { last = s; } });
+  ed.selectAll();
+  ed.highlight("green");
+  eq(last.markColor, "green", "the state names the colour a picker ticks");
+  assert(ed.caretInMark(), "the caret is in the highlight it just made");
+
+  // Clearing the colour leaves the highlight — the "no colour" row, not a
+  // second press of the swatch.
+  ed.setMarkColor(null);
+  eq(ed.source(), "==word==\n");
+  eq(last.markColor, null);
+  assert(ed.caretInMark(), "still a highlight");
+  return ed;
+});
+
+await test("a colour needs a highlight or a selection", () => {
+  const ed = editor("word here\n");
+  place(firstText(ed.rowEls[0]), 0); // a bare caret in plain text
+  assert(!ed.caretInMark(), "nothing to colour here");
+  ed.setMarkColor("blue");
+  eq(ed.source(), "word here\n", "a colour does not invent a highlight");
+  return ed;
+});
+
+await test("every colour the package offers is one core writes", () => {
+  // `MARK_COLORS` is a hand-written list on this side of the boundary, and
+  // this is what holds it to core's: each name is accepted, written, and read
+  // back as itself.
+  const ed = editor("word\n");
+  for (const name of MARK_COLORS) {
+    ed.load("word\n");
+    ed.selectAll();
+    ed.highlight(name);
+    eq(ed._lastView.mark_color, name, name + " did not read back");
+    assert(ed.contentEl.querySelector(".leaf-mk-" + name), name + " has no class to paint it");
+  }
+  return ed;
+});
+
+await test("a name outside the palette is refused, not read as no colour", () => {
+  // The two arguments are one typo apart and mean opposite things, so an
+  // unknown name must not fall through to "clear the colour".
+  const ed = editor("word\n");
+  ed.selectAll();
+  ed.highlight("purple");
+  let threw = false;
+  try { ed.setMarkColor("chartreuse"); } catch { threw = true; }
+  assert(threw, "an unknown colour was accepted");
+  eq(ed.source(), "==\u{1F7E3} word==\n", "and nothing was written");
+  return ed;
 });
 
 // ── boundaries ────────────────────────────────────────────────────────────

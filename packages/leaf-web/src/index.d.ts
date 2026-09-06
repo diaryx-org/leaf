@@ -2,6 +2,8 @@
 export {
   LeafEditor,
   DEFAULT_THEME,
+  MARK_COLORS,
+  type MarkColor,
   type EditorTheme,
   type EditorOptions,
   type EditorState,

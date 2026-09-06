@@ -29,7 +29,7 @@ clipboard, and file I/O.
 | package | what it is |
 |---------|------------|
 | [`leaf-swift`](packages/leaf-swift) | the Swift Package (manifest at the repo root, so SwiftPM can resolve it by version) — `LeafUI`, the AppKit/UIKit editor view, over the committed UniFFI `leaf-ffi` binding. The Apple peer of `leaf-ratatui`/`leaf-gpui`. |
-| [`leaf-web`](packages/leaf-web) | the npm package (not yet published; private until there is a consumer) — `LeafEditor`, a framework-agnostic web editor, over the `leaf-wasm` binding. Tables draw as a real grid from core's structural `TableView`, not as the box-glyph picture; links, footnotes, task boxes and host highlights are clickable; text and files drop onto it; a frame repaints only the rows it changed; the toolbar dims what the format cannot spell. |
+| [`leaf-web`](packages/leaf-web) | the npm package (not yet published; private until there is a consumer) — `LeafEditor`, a framework-agnostic web editor, over the `leaf-wasm` binding. Tables draw as a real grid from core's structural `TableView`, not as the box-glyph picture; links, footnotes, task boxes and host highlights are clickable; text and files drop onto it; a frame repaints only the rows it changed; a highlight takes one of seven colours; the toolbar dims what the format cannot spell. |
 
 ### `apps/` — runnable frontends
 

@@ -50,9 +50,28 @@ export interface EditorState {
   active: string[];
   /** Destination of the link the caret stands in, or null. */
   link: string | null;
+  /**
+   * Colour of the highlight the caret stands in, or null — both outside a
+   * highlight and inside one that names no colour, which are the same answer to
+   * "which swatch is current".
+   */
+  markColor: MarkColor | null;
+  /** Whether a non-empty selection is live — with `caretInMark()`, what tells a
+   *  colour picker whether it would recolour a highlight or make one. */
+  hasSelection: boolean;
   /** The caret's source byte offset. */
   caretSrc: number;
 }
+
+/** A colour a highlight can be — the closed palette core reads and writes. */
+export type MarkColor = "red" | "orange" | "yellow" | "green" | "blue" | "purple" | "brown";
+
+/**
+ * The colours in the order a picker should show them. Also the suffixes of the
+ * `.leaf-mk-*` classes the renderer paints with, so a picker built from this
+ * and the stylesheet cannot disagree.
+ */
+export const MARK_COLORS: readonly MarkColor[];
 
 /** A source format the model can parse. */
 export type Format = "markdown" | "djot" | "html" | "xml";
@@ -135,6 +154,10 @@ export class LeafEditor {
   isAuthorable(): boolean;
   /** Whether the caret is inside a table — gate the grid commands on this and on `capabilities().table`. */
   caretInTable(): boolean;
+  /** Whether the caret is inside a highlight — gate a colour picker on this and
+   *  on `capabilities().mark_color`, which asks whether the format spells a
+   *  colour at all (djot writes the highlight and no colour on it). */
+  caretInMark(): boolean;
   /** Recompute the wrap width from the viewport and repaint. */
   refit(): void;
 
@@ -190,6 +213,16 @@ export class LeafEditor {
   toggleItalic(): void;
   toggleCode(): void;
   toggleMark(): void;
+  /**
+   * One press of a colour swatch: colour the highlight at the caret, or — over
+   * a selection that isn't highlighted yet — highlight it and colour it, as one
+   * undo step. `null` clears the colour, and over a plain selection means
+   * simply "highlight this".
+   */
+  highlight(color?: MarkColor | null): void;
+  /** The exact gesture behind `highlight`: recolour the highlight the caret is
+   *  already in (or clear it). Writes nothing where there is no highlight. */
+  setMarkColor(color?: MarkColor | null): void;
   toggleUnderline(): void;
   toggleStrike(): void;
   setParagraph(): void;

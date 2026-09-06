@@ -39,6 +39,9 @@
      in and out of a table. */
   #toolbar button:disabled { opacity: 0.32; cursor: default; border-color: var(--border); }
   #toolbar button:disabled:hover { border-color: var(--border); }
+  #toolbar select { font: inherit; font-size: 13px; padding: 3px 6px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--panel); color: var(--text); cursor: pointer; }
+  #toolbar select:disabled { opacity: 0.32; cursor: default; }
   #toolbar .sep { width: 1px; background: var(--border); margin: 2px 4px; }
 
   /* The editor mounts here; LeafEditor injects its own surface styles. */
@@ -68,6 +71,13 @@
     <button data-cmd="toggleItalic" data-cap="italic" id="b-italic"><i>I</i></button>
     <button data-cmd="toggleCode" data-cap="code" id="b-code">&lt;/&gt;</button>
     <button data-cmd="toggleMark" data-cap="mark" id="b-mark">▨</button>
+    <!-- The colours of a highlight. A picker rather than seven more buttons,
+         and it is populated from `MARK_COLORS` so the demo cannot offer a
+         colour the editor would refuse. Choosing one over a plain selection
+         highlights it *and* colours it, in one undo step. -->
+    <select id="mark-color" title="the colour of the highlight at the caret">
+      <option value="">no colour</option>
+    </select>
     <div class="sep"></div>
     <button data-cmd="setParagraph" data-cap="heading">¶</button>
     <button data-cmd="setHeading" data-arg="1" data-cap="heading" id="b-h1">H1</button>
@@ -106,7 +116,7 @@
 </div>
 
 <script type="module">
-import { LeafEditor } from "../../packages/leaf-web/src/index.js";
+import { LeafEditor, MARK_COLORS } from "../../packages/leaf-web/src/index.js";
 
 const SAMPLE = `# leaf on the web 🍃
 
@@ -190,6 +200,16 @@ function applyCapabilities(editor, state) {
         ? "put the caret in a table first"
         : "";
   }
+  // The colour picker takes both gates: a format that spells a colour on a
+  // highlight (Markdown does, djot doesn't), and something for the colour to
+  // belong to — a highlight the caret is in, or a selection the press would
+  // make one out of.
+  const colors = document.getElementById("mark-color");
+  colors.disabled = readOnly || !caps.mark_color
+    || !(editor.caretInMark() || (state?.hasSelection ?? false));
+  // Follows the caret: the picker shows the colour of the highlight it is
+  // standing in, and falls back to "no colour" outside one.
+  if (state) colors.value = state.markColor ?? "";
   // History buttons enable by what the frame says there is to undo or redo.
   if (state) {
     document.getElementById("b-undo").disabled = !state.canUndo;
@@ -260,6 +280,20 @@ async function main() {
       editor.focus();
     });
   }
+
+  // The colours, from the editor's own list — one press both highlights and
+  // colours a selection, and `""` (the first option) clears the colour.
+  const colors = document.getElementById("mark-color");
+  for (const name of MARK_COLORS) {
+    const opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent = name;
+    colors.append(opt);
+  }
+  colors.addEventListener("change", () => {
+    editor.highlight(colors.value || null);
+    editor.focus();
+  });
 
   // The find box paints every hit as a highlight; a click on one lands there.
   const find = document.getElementById("find");

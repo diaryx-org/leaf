@@ -5,5 +5,5 @@
 // re-exported for hosts that want to drive the model directly (e.g. a custom
 // renderer). Call `LeafEditor.init()` (or the model's `init`) once before use.
 
-export { LeafEditor, DEFAULT_THEME } from "./editor.js";
+export { LeafEditor, DEFAULT_THEME, MARK_COLORS } from "./editor.js";
 export { LeafDoc } from "../pkg/leaf_wasm.js";

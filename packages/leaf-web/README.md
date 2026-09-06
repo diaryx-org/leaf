@@ -45,6 +45,15 @@ file.
 - **Clickable things.** A task box ticks; ⌘-click follows a link (or lands in
   the document for a fragment), or a footnote to its note; hovering a link
   shows its destination.
+- **Coloured highlights.** `highlight(color)` is one press of a swatch: it
+  colours the highlight at the caret, or — over a selection that isn't
+  highlighted yet — makes one and colours it, as a single undo step. The
+  palette is `MARK_COLORS`, the names core reads and writes (`==🔴 text==`)
+  and the suffixes of the `.leaf-mk-*` classes the stylesheet already paints
+  with. Dim a picker on `capabilities().mark_color` — Markdown spells a colour
+  and Djot doesn't — together with `caretInMark()` or `state.hasSelection`,
+  which say whether there is anything for the colour to belong to.
+  `setMarkColor` is the exact one-splice gesture underneath.
 - **Host highlights** (`setHighlights`), a **read-only** gate, **drag and
   drop** of text and files, `load()` for the next document, and `goTo` /
   `reveal` for landing a reader somewhere.

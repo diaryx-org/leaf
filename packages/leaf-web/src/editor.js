@@ -110,6 +110,23 @@ const ZWSP = "​";
 
 let wasmReady = null;
 
+
+/**
+ * The colours a highlight can be — the closed palette `setMarkColor` and
+ * `highlight` accept, in the order a picker should show them (the spectrum,
+ * which is the order core's own table is written in).
+ *
+ * These are the names the document records (`==\u{1F534} text==` is `"red"`),
+ * the values `EditorState.markColor` reports, and the suffixes of the
+ * `.leaf-mk-*` classes the renderer already paints with — so a picker built
+ * from this list and the stylesheet cannot come to disagree. A name outside it
+ * is an error rather than a silent clearing, since `null` (clear the colour)
+ * and a typo are one keystroke apart and mean opposite things.
+ */
+export const MARK_COLORS = Object.freeze([
+  "red", "orange", "yellow", "green", "blue", "purple", "brown",
+]);
+
 export class LeafEditor {
   /**
    * Load and instantiate the wasm module. Call once before constructing any
@@ -301,7 +318,10 @@ export class LeafEditor {
    * Read once when a document opens: the answer depends only on the format, so
    * no edit can change it. A toolbar that ignores this stays correct — every
    * gesture refuses on its own — but it offers buttons that do nothing, which is
-   * how the demo shipped a highlight button that Markdown has no syntax for.
+   * how the demo once shipped a superscript button no Markdown document can
+   * spell. (The highlight was that example until core learned to author
+   * `==text==`; `mark_color` is the flag that still separates the two
+   * lightweight formats, since djot writes the highlight and no colour on it.)
    */
   capabilities() {
     return this.doc.capabilities();
@@ -319,6 +339,15 @@ export class LeafEditor {
    *  second. */
   caretInTable() {
     return this.doc.caret_in_table();
+  }
+
+  /** Whether the caret is inside a highlight — gate a colour picker on this
+   *  *and* on `capabilities().mark_color`, which asks whether this format
+   *  spells a colour at all. Djot writes `{=word=}` and answers yes to the
+   *  first and no to the second. A selection is the third case a picker cares
+   *  about: see `highlight`, which makes the highlight it colours. */
+  caretInMark() {
+    return this.doc.caret_in_mark();
   }
 
   // ── navigation ────────────────────────────────────────────────────────────
@@ -453,6 +482,23 @@ export class LeafEditor {
   toggleItalic() { this._command((d) => d.toggle_italic()); }
   toggleCode() { this._command((d) => d.toggle_code()); }
   toggleMark() { this._command((d) => d.toggle_mark()); }
+  /**
+   * One press of a colour swatch: colour the highlight at the caret, or — over
+   * a selection that isn't highlighted yet — highlight it and colour it, as
+   * **one** undo step. `null` clears the colour, and over a plain selection
+   * means simply "highlight this".
+   *
+   * `color` is one of `MARK_COLORS`. A bare caret in no highlight is left
+   * alone, because there is nothing for a colour to belong to — which is what
+   * `caretInMark()` and `EditorState.hasSelection` let a picker dim itself by.
+   */
+  highlight(color = null) { this._command((d) => d.highlight(color ?? undefined)); }
+  /**
+   * The exact gesture behind `highlight`: colour the highlight the caret is
+   * already in, or clear its colour with `null`. Writes nothing where there is
+   * no highlight — it does not make one.
+   */
+  setMarkColor(color = null) { this._command((d) => d.set_mark_color(color ?? undefined)); }
   toggleUnderline() { this._command((d) => d.toggle_underline()); }
   toggleStrike() { this._command((d) => d.toggle_strike()); }
   setParagraph() { this._command((d) => d.set_paragraph()); }
@@ -1807,6 +1853,14 @@ export class LeafEditor {
       // changes no mark, no heading and no dirty flag, so a Link affordance
       // asking on its own would keep a stale answer.
       link: view.link ?? null,
+      // The caret highlight's colour, riding the frame for the same reason and
+      // more sharply: walking from a red highlight into a blue one changes no
+      // mark, no heading and no dirty flag, so a picker asking on its own would
+      // never be told to move.
+      markColor: view.mark_color ?? null,
+      // Whether a colour would *make* a highlight rather than recolour one —
+      // the other half of a picker's enabled state.
+      hasSelection: view.has_selection,
       caretSrc: view.caret_src,
     });
   }
@@ -1822,6 +1876,10 @@ export class LeafEditor {
  * @property {number | null} heading  heading level at the caret, or null
  * @property {string[]} active  inline marks active at the caret
  * @property {string | null} link  destination of the link at the caret, or null
+ * @property {string | null} markColor  colour of the highlight at the caret
+ *   (one of `MARK_COLORS`), or null — both outside a highlight and inside an
+ *   uncoloured one
+ * @property {boolean} hasSelection  a non-empty selection is live
  * @property {number} caretSrc  the caret's source byte offset
  */
 
