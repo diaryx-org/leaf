@@ -33,6 +33,12 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
+_No commits since the last tag._
+
+<!-- git-cliff:end -->
+
+## v0.1.7 — 2026-09-06
+
 ### Added
 
 - **core** — take twig 3.3.1, and write the highlight and the strikethrough Markdown already read ([`893a297`](https://github.com/diaryx-org/leaf/commit/893a2974867edf9de38086723c86cd0945f9adc1))
@@ -77,7 +83,6 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
   `hasSelection`. A host destructuring the state is unaffected; one comparing
   whole state objects will see them differ where they used to match.
 
-<!-- git-cliff:end -->
 
 ## v0.1.6 — 2026-09-05
 

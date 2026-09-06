@@ -860,7 +860,7 @@ dependencies = [
 
 [[package]]
 name = "leaf-core"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "twig-doc",
@@ -870,7 +870,7 @@ dependencies = [
 
 [[package]]
 name = "leaf-ffi"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "leaf-core",
  "thiserror",
@@ -880,7 +880,7 @@ dependencies = [
 
 [[package]]
 name = "leaf-raster"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "cosmic-text",
  "image",
@@ -889,7 +889,7 @@ dependencies = [
 
 [[package]]
 name = "leaf-ratatui"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "leaf-core",
  "leaf-raster",
@@ -900,7 +900,7 @@ dependencies = [
 
 [[package]]
 name = "leaf-tui"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "arboard",
@@ -911,7 +911,7 @@ dependencies = [
 
 [[package]]
 name = "leaf-wasm"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "console_error_panic_hook",
  "leaf-core",
@@ -2613,7 +2613,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "clap",
