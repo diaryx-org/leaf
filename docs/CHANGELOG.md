@@ -38,6 +38,7 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 - **core** — take twig 3.3.1, and write the highlight and the strikethrough Markdown already read ([`893a297`](https://github.com/diaryx-org/leaf/commit/893a2974867edf9de38086723c86cd0945f9adc1))
 - **swift** — colour a highlight from the toolbar, and everything under it that had to exist first ([`e685372`](https://github.com/diaryx-org/leaf/commit/e685372bdb9d5e8dfaf2f6062461299b2d3cd80b))
 - **tui** — the highlight's colours, under Format and in the palette — and the compound moves into core ([`de95804`](https://github.com/diaryx-org/leaf/commit/de95804eff6ead5f37a7c2a6026db783d235ba7f))
+- **web** — a highlight's colour, from the editor's API to the demo's picker ([`f6fe368`](https://github.com/diaryx-org/leaf/commit/f6fe36881dfee68ceda1ef52f5959e2516e011cd))
 
 ### Behavioural changes
 
@@ -71,6 +72,10 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 
 - `leaf_core::Doc` gains `highlight`, and both bindings gain a
   `highlight` method beside `set_mark_color`. Nothing existing changes shape.
+
+- `EditorState` (leaf-web) gains `markColor` and
+  `hasSelection`. A host destructuring the state is unaffected; one comparing
+  whole state objects will see them differ where they used to match.
 
 <!-- git-cliff:end -->
 
