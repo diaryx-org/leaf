@@ -33,7 +33,25 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
-_No commits since the last tag._
+### Added
+
+- **core** — take twig 3.3.1, and write the highlight and the strikethrough Markdown already read ([`893a297`](https://github.com/diaryx-org/leaf/commit/893a2974867edf9de38086723c86cd0945f9adc1))
+
+### Behavioural changes
+
+- `leaf_core::Capabilities` for a Markdown document reports
+  `mark: true` and `strike: true`, where `mark` was false. `Doc::supports` and
+  `Doc::toggle` follow: `InlineKind::Mark` writes `==x==` and
+  `InlineKind::Delete` writes `~~x~~` instead of setting a "not supported in
+  markdown" status. A toolbar driven by the record — the TUI menu and palette,
+  the web `data-cap` attributes, the Swift `Capabilities` struct — un-dims
+  those two buttons with no change of its own.
+
+- `Doc::supports` and `Capabilities::of` now answer for a
+  document parsed with leaf's `parse_extensions`, not for twig's default
+  options. Only the two flags above differ today, but a caller reading these as
+  a fact about the bare format is reading them wrong: they are a fact about the
+  document leaf actually builds.
 
 <!-- git-cliff:end -->
 
