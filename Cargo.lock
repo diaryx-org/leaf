@@ -1968,18 +1968,18 @@ dependencies = [
 
 [[package]]
 name = "twig-doc"
-version = "3.3.1"
+version = "3.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6bfb7d74ae474a1b553108a90da8920dcd3efb97bc28fa3060554086495de468"
+checksum = "1c48ca178a864d2063f60f058e68ef396e7d465cbb0eb15b2e856f7f1847c5e2"
 dependencies = [
  "twig-sys",
 ]
 
 [[package]]
 name = "twig-sys"
-version = "3.3.1"
+version = "3.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "feef19640b2714e9ee55c705d1f1612f9626256b7a1ea5c80e33ffcb2f5dccc4"
+checksum = "4375724d9b9e7b69a5935ab74536129a7a9d650988618b1a01c87d81c5c73d49"
 dependencies = [
  "twig-sys-linux-arm64-gnu",
  "twig-sys-linux-x64-gnu",
@@ -1990,33 +1990,33 @@ dependencies = [
 
 [[package]]
 name = "twig-sys-linux-arm64-gnu"
-version = "3.3.1"
+version = "3.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e53fc74aa8aed4ccf055336622a47e1da87dc61b866b7e0139fa376d3784110a"
+checksum = "5fbbe27a12e5d1d6ec27b4d753d048e86240fad732a90d52fcc699860b425185"
 
 [[package]]
 name = "twig-sys-linux-x64-gnu"
-version = "3.3.1"
+version = "3.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48c37feaa10d879128441b0f3901605b29af50923018a10afb3a5b6bb0c8b403"
+checksum = "adaff781d299a84a8682e638220572cd6161ea688813395cc73232d103b730e5"
 
 [[package]]
 name = "twig-sys-macos-arm64"
-version = "3.3.1"
+version = "3.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "503a940f7ea908526e61e65c7a03b739b6d465cfbfb15c64a918db170fae59d3"
+checksum = "08ce922a895d3cccbdb4cfd0c4932f4d9d6bbe1986375dc9002d1b0e5600ba53"
 
 [[package]]
 name = "twig-sys-wasm32"
-version = "3.3.1"
+version = "3.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6b2f7ad6a9431ceef4a201cb7ef631c263ee0a0be5c57e25ecda9e28776b721"
+checksum = "4b101f2ffe8617103e448fbb3451106e8ceb643882784d81666e243df972163c"
 
 [[package]]
 name = "twig-sys-windows-x64-msvc"
-version = "3.3.1"
+version = "3.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e4bcd5a5564701222c5510e3ad29057cd5df71e146f114cd0d0d194d3a5f9d8"
+checksum = "980555735ca52784ac02fd7e4b97f3d247935b7c61eb7f22b2b04ff5c857ea00"
 
 [[package]]
 name = "unicase"
@@ -2683,15 +2683,3 @@ checksum = "27bc9d5b815bc103f142aa054f561d9187d191692ec7c2d1e2b4737f8dbd7296"
 dependencies = [
  "zune-core",
 ]
-
-[[patch.unused]]
-name = "historica"
-version = "1.0.0-rc.3"
-
-[[patch.unused]]
-name = "historica-minisign"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "historica-remark"
-version = "0.1.1"
