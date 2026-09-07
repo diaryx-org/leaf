@@ -2,7 +2,7 @@
 /.obsidian
 /.claude/
 .playwright-mcp/
-
+.DS_Store
 # wasm-pack output for the web editor package — regenerated from crates/leaf-wasm
 # by `npm run build:wasm` in packages/leaf-web, never committed.
 /packages/leaf-web/pkg/
