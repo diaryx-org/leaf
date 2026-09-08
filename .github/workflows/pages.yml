@@ -1,0 +1,158 @@
+name: Pages
+# Publish the leaf web editor demo to GitHub Pages, as part of cutting a
+# release. The demo in `apps/leaf-web-demo` is a complete host for the
+# `leaf-web` package in one file, and until now the only way to see it was to
+# clone the repo and run `cargo xtask web`. This puts the same page, built from
+# the released tag, at:
+#
+#     https://diaryx-org.github.io/leaf/
+#
+# Fires on the same `v*.*.*` tags homebrew.yml does, so a release ships the
+# demo alongside the formula. It can also be dispatched by hand for any tag
+# (`ref:`), which is how a tag cut *before* this workflow existed gets a demo:
+# the workflow file is read from the branch it is dispatched on, and the site is
+# built from whatever `ref` names. Dispatching with `ref` empty builds the
+# newest `v*.*.*` tag.
+#
+# What is deployed is a mirror of the repo's own directory layout, not a
+# rearrangement of it. The demo page imports
+# `../../packages/leaf-web/src/index.js`, which imports `../pkg/leaf_wasm.js` —
+# both relative, both outside the demo directory. `cargo xtask web` solves that
+# by rooting its server at the repo root and serving the page at
+# `/apps/leaf-web-demo/`; this does the identical thing, so the deployed page is
+# byte-for-byte the page a contributor sees locally, with a one-line redirect at
+# the site root pointing at it. Rewriting the imports to flatten the tree would
+# mean the published demo and the local one were no longer the same file.
+on:
+  push: { tags: [v*.*.*] }
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Tag (or any ref) to build the demo from. Empty = newest v*.*.* tag."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+# One deploy at a time, and never cancel one in flight: a half-finished Pages
+# deployment is a broken site, unlike a cancelled build.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build demo
+    runs-on: ubuntu-latest
+    steps:
+    # Full history, because a hand dispatch has to resolve `v*.*.*` tags that
+    # the shallow default clone would not have fetched.
+    - uses: actions/checkout@v7
+      with: { fetch-depth: 0 }
+
+    # On a tag push the checkout is already the tag. On a dispatch it is the
+    # branch the workflow was launched from, which is where the workflow file
+    # has to live but not what anyone wants published — so move to the tag here,
+    # after the file has been read.
+    - name: Pick the ref to build
+      id: pick
+      env:
+        REQUESTED: ${{ inputs.ref }}
+      run: |
+        set -euo pipefail
+        if [ "${{ github.event_name }}" = "push" ]; then
+          ref="${{ github.ref_name }}"
+        elif [ -n "$REQUESTED" ]; then
+          ref="$REQUESTED"
+        else
+          ref=$(git tag --list 'v*.*.*' --sort=-v:refname | head -n1)
+          if [ -z "$ref" ]; then
+            echo "::error::no v*.*.* tag exists to build from"; exit 1
+          fi
+          echo "newest v*.*.* tag: $ref"
+        fi
+        git checkout --detach "$ref"
+        echo "ref=$ref" >> "$GITHUB_OUTPUT"
+        echo "built from $ref ($(git rev-parse --short HEAD))" >> "$GITHUB_STEP_SUMMARY"
+
+    - uses: actions/configure-pages@v5
+
+    # A bare `rustup target add` from inside the checkout, for the reason
+    # ci.yml's release-build job spells out: rust-toolchain.toml pins the
+    # toolchain and outranks `rustup default`, so the target has to land on the
+    # resolved toolchain rather than on `stable`.
+    - name: Add wasm32 to the pinned toolchain
+      run: rustup target add wasm32-unknown-unknown
+    - uses: Swatinem/rust-cache@v2
+      with: { key: "wasm32-unknown-unknown" }
+    # A prebuilt wasm-pack, rather than ~4 minutes of `cargo install`.
+    - uses: taiki-e/install-action@v2
+      with: { tool: wasm-pack }
+
+    # Exactly what `npm run build:wasm` and `cargo xtask web` run: `--target
+    # web` (an ES module with an explicit `init()`, which src/index.js expects)
+    # into the `pkg/` the package's relative imports point at.
+    - name: Build the wasm
+      run: wasm-pack build crates/leaf-wasm --target web --out-dir ../../packages/leaf-web/pkg
+
+    # The same parse check `cargo xtask web` does before serving: the package is
+    # plain ES modules with no build step, so a syntax error is invisible until
+    # a browser refuses the module — and then the whole editor is simply absent.
+    - name: Parse-check the editor JS
+      run: for f in packages/leaf-web/src/*.js; do node --check "$f"; done
+
+    - name: Assemble the site
+      env:
+        REF: ${{ steps.pick.outputs.ref }}
+      run: |
+        set -euo pipefail
+        mkdir -p _site/apps _site/packages/leaf-web
+        cp -R apps/leaf-web-demo _site/apps/
+        cp -R packages/leaf-web/src packages/leaf-web/pkg _site/packages/leaf-web/
+        # wasm-pack leaves its own .gitignore in pkg/; nothing to publish.
+        rm -f _site/packages/leaf-web/pkg/.gitignore
+        # Pages runs Jekyll over the artifact unless told not to, and Jekyll
+        # drops paths it considers private. Nothing here starts with `_`, but
+        # generated output is not the place to depend on that.
+        touch _site/.nojekyll
+        # The site root. The demo itself stays where its relative imports
+        # expect to be; this is the only file that knows the URL is prettier
+        # than the path.
+        cat > _site/index.html <<HTML
+        <!doctype html>
+        <html lang="en">
+        <head>
+        <meta charset="utf-8" />
+        <title>leaf · web</title>
+        <meta http-equiv="refresh" content="0; url=./apps/leaf-web-demo/" />
+        <link rel="canonical" href="./apps/leaf-web-demo/" />
+        </head>
+        <body>
+        <p>Redirecting to the <a href="./apps/leaf-web-demo/">leaf web editor demo</a> ($REF).</p>
+        <script>location.replace("./apps/leaf-web-demo/");</script>
+        </body>
+        </html>
+        HTML
+        du -sh _site
+        find _site -type f | sort
+
+    - uses: actions/upload-pages-artifact@v4
+      with: { path: _site }
+
+  deploy:
+    name: Deploy to Pages
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write # to publish the deployment
+      id-token: write # to prove to Pages that it came from this workflow
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+    - id: deployment
+      uses: actions/deploy-pages@v4
