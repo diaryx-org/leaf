@@ -14,6 +14,16 @@ name: Pages
 # built from whatever `ref` names. Dispatching with `ref` empty builds the
 # newest `v*.*.*` tag.
 #
+# Pages has to be switched on once by hand: Settings -> Pages -> Source:
+# "GitHub Actions". Nothing here can do it. actions/configure-pages can, but
+# only with a PAT or App token carrying `administration:write` — its own docs
+# say `enablement` "requires a token other than GITHUB_TOKEN" — and a
+# repository-administration secret is a steep price for a one-click setting
+# someone does once. So that action is not used at all: the workflow reads none
+# of its outputs (the demo's URLs are all relative, so there is no base path to
+# inject), and without them it was purely a step that could fail. When Pages is
+# off, actions/deploy-pages says so on its own.
+#
 # What is deployed is a mirror of the repo's own directory layout, not a
 # rearrangement of it. The demo page imports
 # `../../packages/leaf-web/src/index.js`, which imports `../pkg/leaf_wasm.js` —
@@ -79,7 +89,6 @@ jobs:
         echo "ref=$ref" >> "$GITHUB_OUTPUT"
         echo "built from $ref ($(git rev-parse --short HEAD))" >> "$GITHUB_STEP_SUMMARY"
 
-    - uses: actions/configure-pages@v5
 
     # A bare `rustup target add` from inside the checkout, for the reason
     # ci.yml's release-build job spells out: rust-toolchain.toml pins the
