@@ -39,7 +39,7 @@ clipboard, and file I/O.
 | [`leaf`](apps/leaf) | the standalone gpui **application** (binary `leaf-gui`) — a thin host around `leaf-gpui`. A standalone workspace, like `leaf-ios`. |
 | [`leaf-ios`](apps/leaf-ios) | the gpui iOS host (a standalone workspace on the gpui-mobile platform). |
 | [`leaf-editor`](apps/leaf-editor) | the cross-platform (macOS + iOS) AppKit/UIKit/UniFFI demo app, consuming `packages/leaf-swift`. |
-| [`leaf-web-demo`](apps/leaf-web-demo) | the web demo page, consuming `packages/leaf-web`. |
+| [`leaf-web-demo`](apps/leaf-web-demo) | the web demo page, consuming `packages/leaf-web`. Published from each release tag at **<https://diaryx-org.github.io/leaf/>** by [`pages.yml`](.github/workflows/pages.yml). |
 
 ```sh
 cargo run -- path/to/document.md            # the TUI (workspace default)
