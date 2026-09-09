@@ -523,9 +523,15 @@ impl<'a> HighlightCursor<'a> {
 
 /// The identity of a built [`VisualMap`] — see [`Doc::visual_key`]. Opaque on
 /// purpose: the only useful question is whether two of them are the same map,
-/// and the tuple behind it (revision, wrap, reveal line) is core's business.
+/// and what is behind it — which `Doc` built it, and the (revision, wrap,
+/// reveal line) it was built from — is core's business.
+///
+/// The document is part of it because the rest is not unique to one: two
+/// documents opened at the same width are both at revision zero with no reveal
+/// line, and a frontend holding one copy of a map across the two would take
+/// the second's key for the first's and paint the wrong document.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct VisualKey(Option<(u64, Option<usize>, Option<Range<usize>>)>);
+pub struct VisualKey(u64, Option<(u64, Option<usize>, Option<Range<usize>>)>);
 
 pub struct Doc {
     editor: Editor,
@@ -653,6 +659,11 @@ pub struct Doc {
     /// every mode but [`MarkupMode::Full`] — so outside that mode the key is
     /// text and width alone, and a caret motion still rebuilds nothing.
     vmap_key: Option<(u64, Option<usize>, Option<Range<usize>>)>,
+    /// Which `Doc` this is, distinct from every other one built in this
+    /// process. Folded into [`VisualKey`] so that a map stashed by a frontend
+    /// can never be mistaken for another document's — see
+    /// [`Doc::visual_key`]. Nothing else reads it.
+    identity: u64,
     /// Per-block row cache backing the incremental rebuild: when the text
     /// changes, only the top-level blocks whose bytes moved are re-rendered and
     /// the rest are reused shifted (see [`wysiwyg::BlockCache`]). Persists across
@@ -873,6 +884,9 @@ impl Capabilities {
     }
 }
 
+/// The source of [`Doc::identity`], one per document ever built.
+static NEXT_IDENTITY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 impl Doc {
     #[cfg(feature = "fs")]
     pub fn open(path: PathBuf) -> Result<Self> {
@@ -996,6 +1010,10 @@ impl Doc {
 
     /// The fields every constructor agrees on, so `open` and `blank` can't drift
     /// apart in the ones neither of them has an opinion about.
+    // `identity` is taken from a counter rather than from the `Doc`'s address,
+    // which moves — a session that holds one is moved into and out of
+    // containers freely, and an identity that changed with it would defeat the
+    // one comparison it exists for.
     fn from_parts(
         editor: Editor,
         format: Format,
@@ -1041,6 +1059,7 @@ impl Doc {
             redo_steps: 0,
             // No map yet — the first `build_visual` always builds.
             vmap_key: None,
+            identity: NEXT_IDENTITY.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             block_cache: wysiwyg::BlockCache::default(),
             media_rows: HashMap::new(),
             scroll: 0,
@@ -1258,8 +1277,14 @@ impl Doc {
     /// or one somebody else has since rebuilt. Restoring a copy over a newer
     /// map would paint a stale document; restoring nothing hands core's
     /// incremental rebuild a map it never built.
+    ///
+    /// "Somebody else" includes another document. The key names the `Doc`
+    /// as well as the build, so a frontend that draws two documents through
+    /// one stash — a host with several buffers, or one that opens the next
+    /// document where the last one stood — never has the copy it took of one
+    /// accepted by the other, however alike their builds are.
     pub fn visual_key(&self) -> VisualKey {
-        VisualKey(self.vmap_key.clone())
+        VisualKey(self.identity, self.vmap_key.clone())
     }
 
     /// The map, built at most once per `(revision, wrap)`. `clamp_caret` still

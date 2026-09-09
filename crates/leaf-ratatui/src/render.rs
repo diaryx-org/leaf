@@ -1077,6 +1077,44 @@ mod tests {
             .collect()
     }
 
+    /// Two documents drawn through one `EditorState`, turn and turn about — a
+    /// host with several buffers, or one that opens a followed link where the
+    /// document it came from stood. The stash of the first's map used to be
+    /// accepted by the second whenever their builds matched, which two
+    /// unedited documents at one width always do: revision zero, the same
+    /// wrap, no reveal line. The second frame then painted the first document's
+    /// rows under the second document's name. The key now names the `Doc` as
+    /// well as the build, and this asserts that each frame shows its own text.
+    #[cfg(feature = "images")]
+    #[test]
+    fn two_documents_through_one_state_each_paint_their_own_text() {
+        let mut docs = [
+            doc_on_disk("two_docs_first", "# First\n\nThe first body.\n"),
+            doc_on_disk("two_docs_second", "# Second\n\nThe second body.\n"),
+        ];
+        let bodies = ["The first body", "The second body"];
+        let mut state = EditorState::default();
+        state.images.assume_graphics();
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(70, 24)).unwrap();
+
+        // Each document is built by its own first frame, so from the third
+        // frame on both carry the same (revision, wrap, reveal) and only the
+        // identity tells them apart.
+        for (turn, which) in [0, 1, 0, 1].into_iter().enumerate() {
+            let doc = &mut docs[which];
+            term.draw(|f| render(f, f.area(), doc, &mut state)).unwrap();
+            let buf = term.backend().buffer();
+            assert!(
+                !rows_containing(buf, bodies[which]).is_empty(),
+                "turn {turn}: the document's own body"
+            );
+            assert!(
+                rows_containing(buf, bodies[1 - which]).is_empty(),
+                "turn {turn}: the other document's body is on screen"
+            );
+        }
+    }
+
     /// Typing under an oversized heading used to leave a copy of the line behind
     /// on every keystroke, each one row lower than the last, until the document
     /// had marched off the bottom of the screen.
