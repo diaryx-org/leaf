@@ -2,7 +2,7 @@
 title: Tasks
 description: Deferred work on leaf, one file each — a commitment with a done state
 created: 2026-09-04
-updated: 2026-09-04
+updated: 2026-09-09
 contents:
 - '[The find bar covers the first line of a document at its top](find-bar-covers-first-line.md)'
 - '[Spelling and autocorrect in the macOS view](macos-text-checking.md)'
@@ -11,7 +11,6 @@ contents:
 - '[Right-to-left text](right-to-left-text.md)'
 - '[A host hook for directives in the web editor](web-directive-hook.md)'
 - '[The frame crosses the wasm boundary whole on every keystroke](wasm-frame-crosses-whole.md)'
-- '[An empty last line inside a code fence gets no row](empty-last-line-in-a-fence-has-no-row.md)'
 ---
 # Tasks
 

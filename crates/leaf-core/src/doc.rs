@@ -10047,6 +10047,34 @@ mod tests {
     }
 
     #[test]
+    fn wysiwyg_return_on_the_last_code_line_keeps_the_caret_in_the_block() {
+        // Return at the end of the block's last line writes an empty line the
+        // map used to drop, so the caret landed on `after` and the next
+        // keystroke went into the paragraph below instead of into the code.
+        let mut d = wysiwyg_doc("code_return", "prose\n\n```\nalpha\nbeta\n```\n\nafter\n");
+        d.caret = d.source.find("beta").unwrap() + "beta".len();
+        d.build_visual(80);
+        let before = d.caret_pos().0;
+
+        d.newline();
+        d.build_visual(80);
+        assert_eq!(d.source, "prose\n\n```\nalpha\nbeta\n\n```\n\nafter\n");
+
+        let (row, col) = d.caret_pos();
+        assert_eq!(row, before + 1, "the caret moves down one row");
+        assert_eq!(col, 0, "onto the head of the empty line");
+        let span = d.vmap.code_blocks[0].rows_span.clone();
+        assert!(
+            span.contains(&row),
+            "caret row {row} is outside the block's rows {span:?}"
+        );
+
+        // The whole point: what is typed next is code.
+        d.insert("gamma");
+        assert_eq!(d.source, "prose\n\n```\nalpha\nbeta\ngamma\n```\n\nafter\n");
+    }
+
+    #[test]
     fn wysiwyg_hides_frontmatter_from_the_caret_and_copy() {
         let fm = "---\ntitle: hi\n---\n";
         let body = format!("{fm}# leaf\n\nbody\n");

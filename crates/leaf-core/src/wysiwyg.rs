@@ -2651,7 +2651,19 @@ impl Builder<'_> {
             "code_block" => {
                 let style = Style::default().role(Role::Code);
                 let text = node.text.clone().unwrap_or_default();
-                let lines: Vec<&str> = text.trim_end_matches('\n').split('\n').collect();
+                // Cut the block's *terminator*, not every trailing newline. A
+                // block whose last line is empty spells that as a second `\n`,
+                // and `trim_end_matches` ate it along with the terminator: the
+                // Return that made the line got no row, so the caret placed on
+                // it fell through to the paragraph below and typing landed
+                // outside the block. twig's `content_span` is `text` less
+                // exactly this one newline, so cutting one and no more is also
+                // what keeps `code_line_offsets` lined up.
+                let lines: Vec<&str> = text
+                    .strip_suffix('\n')
+                    .unwrap_or(text.as_str())
+                    .split('\n')
+                    .collect();
                 // Each line at its own source offset, so the caret can walk the
                 // code a character at a time like any other text. Where the
                 // lines can't be lined up with the source there's no honest
@@ -5712,6 +5724,53 @@ mod tests {
         assert!(
             m.rows[span].iter().all(|r| r.code),
             "every row in the span is flagged code"
+        );
+    }
+
+    #[test]
+    fn an_empty_last_line_in_a_code_block_is_a_row_of_its_own() {
+        // `trim_end_matches('\n')` cut the block's terminator *and* the newline
+        // that spells a trailing empty line, so the row the Return had just made
+        // never appeared and the caret on it fell through to the block below.
+        // Every empty line is a row, wherever in the block it falls.
+        let src = "prose\n\n```\nalpha\nbeta\n\n```\n\nafter\n";
+        let m = map(src);
+        let span = m.code_blocks[0].rows_span.clone();
+        let rows: Vec<String> = m.rows[span.clone()]
+            .iter()
+            .map(|r| r.glyphs.iter().map(|g| g.ch).collect())
+            .collect();
+        assert_eq!(
+            rows,
+            vec!["alpha".to_string(), "beta".to_string(), String::new()],
+            "the empty last line gets a row"
+        );
+        assert!(
+            m.rows[span.clone()].iter().all(|r| r.code),
+            "the empty row is flagged code like the rest of the block"
+        );
+        // And it is the *source's* empty line, not a coarse fallback to the
+        // block start: the offset the caret resolves to is the one Return made.
+        let empty = span.end - 1;
+        assert_eq!(
+            m.rows[empty].end_src,
+            src.find("beta\n\n").unwrap() + "beta\n".len(),
+            "the empty row maps to the line the Return opened"
+        );
+
+        // Nothing is invented where there is no empty line, and a second one is
+        // a second row.
+        assert_eq!(
+            map("```\nalpha\nbeta\n```\n").code_blocks[0]
+                .rows_span
+                .len(),
+            2,
+            "a block that ends at its last code line keeps two rows"
+        );
+        assert_eq!(
+            map("```\nalpha\n\n\n```\n").code_blocks[0].rows_span.len(),
+            3,
+            "two trailing empty lines are two rows"
         );
     }
 

@@ -221,6 +221,37 @@ await test("a code block's edges follow the block as it shrinks", () => {
   return ed;
 });
 
+await test("a code block's edges follow the block as it grows", () => {
+  // The other direction, and the one that found a core bug: Return at the end
+  // of the block's last line writes an empty line CommonMark keeps as content,
+  // and core used to lay out no row for it — the caret landed on `after` and
+  // the next keystroke went into the paragraph below. The block grows by a row
+  // and its bottom edge moves down onto the empty one.
+  const ed = editor("prose\n\n```\nalpha\nbeta\n```\n\nafter\n");
+  const rows = ed._lastView.rows;
+  const betaIdx = rows.findIndex((r) => r.code && r.runs.some((x) => x.text === "beta"));
+  assert(betaIdx > 0, "the code rows were not found");
+  const codeBefore = rows.filter((r) => r.code).length;
+
+  ed.render(ed.doc.set_selection(betaIdx, 4, betaIdx, 4));
+  input(ed, "insertParagraph");
+  assert(/```\nalpha\nbeta\n\n```/.test(ed.source()), `no empty line was made: ${ed.source()}`);
+  eq(ed._lastView.rows.filter((r) => r.code).length, codeBefore + 1, "the block did not grow");
+
+  const lasts = ed.contentEl.querySelectorAll(".code-last");
+  eq(ed.contentEl.querySelectorAll(".code-first").length, 1, "one first edge");
+  eq(lasts.length, 1, "one last edge");
+  eq(lasts[0].textContent, "", "the last edge did not move down onto the empty line");
+
+  // And the caret is on that row, so what is typed next is code.
+  input(ed, "insertText", "gamma");
+  assert(
+    /```\nalpha\nbeta\ngamma\n```/.test(ed.source()),
+    `typing did not land in the block: ${ed.source()}`
+  );
+  return ed;
+});
+
 // ── the caret, in and out of a grid ───────────────────────────────────────
 
 await test("a point in a cell maps to the source byte under it", () => {
