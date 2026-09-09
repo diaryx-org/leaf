@@ -36,6 +36,7 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 ### Fixed
 
 - **core** — name the document in VisualKey, so one stash cannot serve two documents ([`36ee91d`](https://github.com/diaryx-org/leaf/commit/36ee91da44a13595a7b11b934833d704523b3024))
+- **core** — give a code block's empty last line a row, so Return at its end stays in the block ([`53e456b`](https://github.com/diaryx-org/leaf/commit/53e456b6db28ebc32b964728ecc9eff0cd31fde4))
 
 ### Behavioural changes
 
@@ -43,6 +44,14 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 compare equal, where before they could. A frontend using the key as it is
 documented — "is `vmap` still the map I stashed?" — sees only the fix; one
 comparing keys across documents to detect an identical build sees them differ.
+
+- a fenced or indented code block whose last line is empty
+now lays out one more row than it did. `VisualMap::rows` is longer by one and
+every row index below the block moves down, `code_blocks[].rows_span` grows to
+cover it, and an offset on that empty line resolves to a row instead of to the
+block below. A frontend that had compensated for the missing row — by nudging a
+caret off the end of a code block, or by treating the fence's trailing blank as
+the separator gap — should drop that workaround.
 
 <!-- git-cliff:end -->
 
