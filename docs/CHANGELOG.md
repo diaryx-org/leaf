@@ -33,7 +33,16 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
-_No commits since the last tag._
+### Fixed
+
+- **core** — name the document in VisualKey, so one stash cannot serve two documents ([`36ee91d`](https://github.com/diaryx-org/leaf/commit/36ee91da44a13595a7b11b934833d704523b3024))
+
+### Behavioural changes
+
+- `Doc::visual_key` values from two different `Doc`s never
+compare equal, where before they could. A frontend using the key as it is
+documented — "is `vmap` still the map I stashed?" — sees only the fix; one
+comparing keys across documents to detect an identical build sees them differ.
 
 <!-- git-cliff:end -->
 
