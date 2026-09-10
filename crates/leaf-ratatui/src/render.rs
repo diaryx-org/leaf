@@ -29,7 +29,20 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
     let sel = doc.selection();
     // The palette, copied out up front: the code boxes and image frames below
     // read it while `state` is borrowed mutably for the image cache.
-    let theme = *state.theme();
+    //
+    // Headings lose the level ramp where this terminal can draw big ones. The
+    // ramp exists because a terminal that draws every glyph at one size has
+    // nothing but color to tell an H2 from a paragraph; with a graphics
+    // protocol the surface rasters H1/H2 several times that size, so the size
+    // already says the level and the hue would be a second, gaudier answer to
+    // the same question. Decided here, per frame, rather than by the host
+    // editing the theme: the fact it turns on is one only this surface knows,
+    // and `query_color_scheme` reinstalling a curated palette must not undo it.
+    let theme = if state.supports_graphics() {
+        state.theme().with_plain_headings()
+    } else {
+        *state.theme()
+    };
 
     // Reserve the rightmost column for the scrollbar so it doesn't paint over
     // a line's last visible character; everything below reads `content_area`

@@ -309,9 +309,11 @@ impl Theme {
     /// has nothing else to tell a heading from a paragraph with. Where it *can*
     /// draw another size — a graphics protocol, which is what makes the
     /// oversized H1/H2 rasters possible — the size says it, and the color is a
-    /// second answer to a question already answered. So a host that has probed
-    /// for kitty/iTerm2/sixel and found one installs this variant; one that
-    /// hasn't, or found none, keeps the ramp.
+    /// second answer to a question already answered. The surface makes that
+    /// call itself: [`crate::render`] paints with this variant whenever
+    /// [`EditorState::supports_graphics`](crate::EditorState::supports_graphics)
+    /// is true, whatever palette the host installed. A host only needs it to
+    /// ask for plain headings on a terminal that *cannot* draw big ones.
     ///
     /// [`Color::Reset`] rather than a chosen grey: the point is the terminal's
     /// default ink, whatever the user themed it to. The heading rasters read it

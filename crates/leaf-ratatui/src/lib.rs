@@ -175,8 +175,9 @@ impl EditorState {
     ///
     /// Published because it is a *presentation* fact a host may want to answer
     /// too, not only an internal one: with a graphics protocol the surface
-    /// draws oversized H1/H2 as rasters, so a host can drop the heading color
-    /// ramp ([`Theme::with_plain_headings`]) and let size carry the level.
+    /// draws oversized H1/H2 as rasters and paints every heading in the
+    /// terminal's own ink ([`Theme::with_plain_headings`]) rather than the
+    /// theme's level ramp, and a host's chrome may want to agree with that.
     ///
     /// [`query_graphics`]: EditorState::query_graphics
     pub fn supports_graphics(&self) -> bool {
