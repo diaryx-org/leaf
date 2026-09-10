@@ -33,6 +33,10 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
+### Added
+
+- **ratatui** — paint headings plain wherever the surface can raster them ([`88de970`](https://github.com/diaryx-org/leaf/commit/88de97017a72603d751c08f0a9c453e253571417))
+
 ### Fixed
 
 - **core** — name the document in VisualKey, so one stash cannot serve two documents ([`36ee91d`](https://github.com/diaryx-org/leaf/commit/36ee91da44a13595a7b11b934833d704523b3024))
@@ -52,6 +56,13 @@ cover it, and an offset on that empty line resolves to a row instead of to the
 block below. A frontend that had compensated for the missing row — by nudging a
 caret off the end of a code block, or by treating the fence's trailing blank as
 the separator gap — should drop that workaround.
+
+- on a terminal with a kitty, iTerm2 or sixel graphics
+protocol, leaf-ratatui now draws every heading in the terminal's default
+foreground (`Color::Reset`) regardless of `Theme::heading`. A host that set
+its own heading colors will see them only on terminals without a graphics
+protocol, where the ramp is still the only cue for level. Bold and the
+level-1 underline are unchanged.
 
 <!-- git-cliff:end -->
 
