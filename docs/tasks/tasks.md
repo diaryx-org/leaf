@@ -11,6 +11,7 @@ contents:
 - '[Right-to-left text](right-to-left-text.md)'
 - '[A host hook for directives in the web editor](web-directive-hook.md)'
 - '[The frame crosses the wasm boundary whole on every keystroke](wasm-frame-crosses-whole.md)'
+- '[An empty last line in a fence has no row](empty-last-line-in-a-fence-has-no-row.md)'
 ---
 # Tasks
 
@@ -19,8 +20,9 @@ it is worth doing and will not be done in the commit that noticed it; a fix
 that takes ten minutes gets a commit, not a file. Each carries `status`
 (`open`, `in-progress`, `done`, `dropped`) in its frontmatter — `dx tasks`
 reads the key — and closing one is an edit, naming the commit or release
-that resolved it, never a deletion. What is done stays findable by grep and
-leaves the list above.
+that resolved it, never a deletion. What is done keeps its place in the list
+above — the index is the spine, and what is open is a view of it (`dx tasks`)
+— and stays findable by grep.
 
 What this is not: a commitment to consumers, which goes in the changelog's
 unreleased region; or a description of what shipped, which goes in the
