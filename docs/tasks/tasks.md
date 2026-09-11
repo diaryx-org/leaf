@@ -2,7 +2,7 @@
 title: Tasks
 description: Deferred work on leaf, one file each — a commitment with a done state
 created: 2026-09-04
-updated: 2026-09-09
+updated: 2026-09-11
 contents:
 - '[The find bar covers the first line of a document at its top](find-bar-covers-first-line.md)'
 - '[Spelling and autocorrect in the macOS view](macos-text-checking.md)'

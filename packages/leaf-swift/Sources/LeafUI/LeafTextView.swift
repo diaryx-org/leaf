@@ -1946,10 +1946,15 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         guard let first = boxes.first else { return }
         let union = boxes.dropFirst().reduce(first) { $0.union($1) }
         // Centre the match rather than just bringing it to the edge — where a
-        // reader's eye goes when the bar says "1 of 12".
+        // reader's eye goes when the bar says "1 of 12". Centred in what the
+        // bar leaves visible, which is the clip less its insets: the top inset
+        // is the bar itself, and a match centred against the full clip height
+        // sits a half-bar too high — on the first line, under the bar.
         if let clip = enclosingScrollView?.contentView {
             let target = viewRect(union)
-            let y = max(0, min(target.midY - clip.bounds.height / 2, bounds.height - clip.bounds.height))
+            let insets = clip.contentInsets
+            let visibleHeight = clip.bounds.height - insets.top - insets.bottom
+            let y = clampedScrollY(target.midY - visibleHeight / 2 - insets.top, in: clip)
             clip.scroll(to: CGPoint(x: clip.bounds.origin.x, y: y))
             enclosingScrollView?.reflectScrolledClipView(clip)
         } else {
@@ -2113,10 +2118,15 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // stack centres is decided by exactly that width. Watch the viewport
         // instead. (Continuously this is redundant with the autoresized frame's
         // own `layout()`, and both paths guard on the width actually changing.)
+        clipInsetObservation = nil
         if let clip = enclosingScrollView?.contentView {
             clip.postsFrameChangedNotifications = true
             nc.addObserver(self, selector: #selector(viewportResized),
                            name: NSView.frameDidChangeNotification, object: clip)
+            clipTopInset = clip.contentInsets.top
+            clipInsetObservation = clip.observe(\.contentInsets) { [weak self] clip, _ in
+                self?.clipInsetsChanged(clip)
+            }
         }
         // The find bar slides in at the top of the scroll view, as it does over
         // every scrolling text view on the platform.
@@ -2134,6 +2144,44 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     @objc private func viewportResized() {
         relayoutForWidth(force: false)
         applyContentSize()
+    }
+
+    /// The clip view's top inset as last seen, so a change arrives as a
+    /// difference; and the observation that reports one.
+    private var clipTopInset: CGFloat = 0
+    private var clipInsetObservation: NSKeyValueObservation?
+
+    /// The find bar slides in *over* the top of the scroll view, not above it:
+    /// AppKit leaves the clip view at the scroll view's full height and widens
+    /// the clip's own `contentInsets.top` by the bar's height (the scroll
+    /// view's `contentInsets` stays zero — the automatic inset lands one level
+    /// down). That lets the document scroll up to `-inset`, but nothing
+    /// scrolls it there, so a document at its top keeps its first line where
+    /// it was, under the bar, until the reader scrolls. Shift the content by
+    /// the inset's change instead — what was under the top edge slides down
+    /// with the bar, and back up when it goes — which is where an
+    /// `NSTextView` used to leave it when the bar still made room for itself.
+    /// The finder's dimming overlay tracks the clip's bounds, so it stays over
+    /// the whole visible document; moving the clip's frame or the scroll
+    /// view's insets, both tried, put it a bar's height off.
+    private func clipInsetsChanged(_ clip: NSClipView) {
+        let top = clip.contentInsets.top
+        let delta = top - clipTopInset
+        clipTopInset = top
+        guard abs(delta) > 0.5 else { return }
+        let y = clampedScrollY(clip.bounds.origin.y - delta, in: clip)
+        clip.scroll(to: CGPoint(x: clip.bounds.origin.x, y: y))
+        enclosingScrollView?.reflectScrolledClipView(clip)
+    }
+
+    /// `y` held to the positions the clip view will scroll to: from the top
+    /// inset above the document (the room the find bar takes) to the last
+    /// screenful. A clamp at zero is a scroll under the bar.
+    private func clampedScrollY(_ y: CGFloat, in clip: NSClipView) -> CGFloat {
+        let insets = clip.contentInsets
+        let lowest = -insets.top
+        let highest = max(lowest, bounds.height - clip.bounds.height + insets.bottom)
+        return min(max(lowest, y), highest)
     }
 
     deinit { NotificationCenter.default.removeObserver(self) }

@@ -1,9 +1,22 @@
 ---
-status: open
+status: done
 created: 2026-09-04
-updated: 2026-09-04
+updated: 2026-09-11
 ---
 # The find bar covers the first line of a document at its top
+
+**Status: done.** The plain-window check the task asked for settled it: on
+this macOS an `NSScrollView` leaves the clip view at its full height and
+widens the *clip view's* `contentInsets.top` by the bar's height — the scroll
+view's own `contentInsets`, which is what was logged, stays zero — and
+`NSTextView` in TextEdit now covers its first line exactly the same way. The
+inset lets the document scroll up to `-32`; nothing scrolled it there.
+`LeafTextView` now observes the clip's insets and shifts its scroll position
+by the change, so the content slides down with the bar and back up when it
+goes, at any scroll position; and the finder's `scrollRangeToVisible`
+centres a match within what the bar leaves visible rather than clamping at
+zero, which had put a first-line match back under it. The dimming overlay
+follows the clip's bounds, so it needs nothing.
 
 **Where.** `packages/leaf-swift`, the macOS `LeafTextView` hosted by
 `LeafEditor` in an `NSScrollView`.
