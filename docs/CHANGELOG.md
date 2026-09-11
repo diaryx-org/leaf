@@ -41,6 +41,7 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 
 - **core** — name the document in VisualKey, so one stash cannot serve two documents ([`36ee91d`](https://github.com/diaryx-org/leaf/commit/36ee91da44a13595a7b11b934833d704523b3024))
 - **core** — give a code block's empty last line a row, so Return at its end stays in the block ([`53e456b`](https://github.com/diaryx-org/leaf/commit/53e456b6db28ebc32b964728ecc9eff0cd31fde4))
+- **swift** — slide the document down with the find bar instead of under it ([`e92a8f8`](https://github.com/diaryx-org/leaf/commit/e92a8f867dde97968653773f80abeb3d03f45d69))
 
 ### Behavioural changes
 
