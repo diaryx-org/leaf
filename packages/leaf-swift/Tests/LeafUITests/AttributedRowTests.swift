@@ -12,6 +12,13 @@ import LeafFFI
 
 #if canImport(AppKit)
 import AppKit
+private let boldTrait = NSFontDescriptor.SymbolicTraits.bold
+private let monoTrait = NSFontDescriptor.SymbolicTraits.monoSpace
+#elseif canImport(UIKit)
+import UIKit
+// The same traits, under the names UIKit gives them.
+private let boldTrait = UIFontDescriptor.SymbolicTraits.traitBold
+private let monoTrait = UIFontDescriptor.SymbolicTraits.traitMonoSpace
 #endif
 
 final class AttributedRowTests: XCTestCase {
@@ -31,7 +38,7 @@ final class AttributedRowTests: XCTestCase {
 
     func testBoldRunGetsBoldTrait() {
         let font = attrs(mkRun("x", bold: true))[.font] as! LeafFont
-        XCTAssertTrue(font.fontDescriptor.symbolicTraits.contains(.bold))
+        XCTAssertTrue(font.fontDescriptor.symbolicTraits.contains(boldTrait))
     }
 
     func testLinkRoleColorsAndUnderlines() {
@@ -44,7 +51,7 @@ final class AttributedRowTests: XCTestCase {
         let a = attrs(mkRun("x", role: "code"))
         XCTAssertEqual(a[.backgroundColor] as? LeafColor, theme.codeBackground)
         let font = a[.font] as! LeafFont
-        XCTAssertTrue(font.fontName.contains("Menlo") || font.fontDescriptor.symbolicTraits.contains(.monoSpace))
+        XCTAssertTrue(font.fontName.contains("Menlo") || font.fontDescriptor.symbolicTraits.contains(monoTrait))
     }
 
     func testCodeRowDoesNotDoubleTheBackground() {
@@ -135,7 +142,7 @@ final class AttributedRowTests: XCTestCase {
 
     func testHeadingRowIsBoldAndSized() {
         let font = attrs(mkRun("Title"), heading: 1)[.font] as! LeafFont
-        XCTAssertTrue(font.fontDescriptor.symbolicTraits.contains(.bold), "a heading line is bold as a whole")
+        XCTAssertTrue(font.fontDescriptor.symbolicTraits.contains(boldTrait), "a heading line is bold as a whole")
         XCTAssertEqual(font.pointSize, theme.headingSize(1), accuracy: 0.5)
     }
 }
