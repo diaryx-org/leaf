@@ -9,11 +9,11 @@ name: Homebrew
 # and carry their own lockfiles, so nothing this builds can reach the Zed
 # monorepo.
 #
-# `rust-toolchain: 1.95.0` is not optional and is not cosmetic. leaf carries a
-# `rust-toolchain.toml` pinning 1.95.0 (gpui needs it), and a toolchain file
-# outranks the `rustup default` that dtolnay/rust-toolchain sets. Left at the
-# `stable` default, the action would install the cross-compilation targets onto
-# `stable` and cargo would then build with 1.95.0, which has none of them —
+# `rust-toolchain: 1.98.1` is not optional and is not cosmetic. leaf carries a
+# `rust-toolchain.toml` pinning 1.98.1 (gpui needs 1.95 or later), and a
+# toolchain file outranks the `rustup default` that dtolnay/rust-toolchain sets.
+# Left at the `stable` default, the action would install the cross-compilation
+# targets onto `stable` and cargo would then build with 1.98.1, which has none of them —
 # `can't find crate for std`, on the three cross-compiled legs only, and not
 # until a tag is pushed. Keep this in step with rust-toolchain.toml; ci.yml
 # builds with the file, so a drift shows up there first.
@@ -44,7 +44,7 @@ jobs:
       desc: "Caret-based rich-text terminal editor for Markdown, Djot, HTML, and XML"
       language: rust
       cargo-package: leaf-tui
-      rust-toolchain: "1.95.0"
+      rust-toolchain: "1.98.1"
       needs-zig: true
     secrets:
       TAP_APP_ID: ${{ secrets.TAP_APP_ID }}

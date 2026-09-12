@@ -41,7 +41,7 @@ jobs:
   #     aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu,
   #     x86_64-pc-windows-msvc, and wasm32. `macos-x86_64` is not on that list, so
   #     that leg alone compiles libtwig.a from vendored Zig source.
-  #   - The toolchain. leaf pins 1.95.0 in rust-toolchain.toml, and a toolchain
+  #   - The toolchain. leaf pins 1.98.1 in rust-toolchain.toml, and a toolchain
   #     file outranks whatever `rustup default` was set to — so targets have to be
   #     added to the *resolved* toolchain, not to `stable`.
   #

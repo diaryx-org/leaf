@@ -1,22 +1,27 @@
-# gpui uses library features that stabilized in 1.95, and Zed itself pins this
+# gpui uses library features that stabilized in 1.95, and Zed itself pins that
 # exact channel. Nothing in *this* workspace needs it any more — leaf-gpui and
 # apps/leaf are their own workspaces now — but this file sits at the repository
 # root and rustup resolves it by walking up, so it is what those two get as well.
 # One toolchain for the checkout, chosen by its most demanding corner.
+#
+# Above 1.95.0 itself because macOS 27's dyld refuses some proc-macro dylibs
+# that 1.95's rustc links ("mis-aligned LINKEDIT string pool"; rustc reports it
+# as `can't find crate`). 1.98 links them acceptably. diaryx-org/nix's
+# `versions.rust` explains it at length.
 #
 # It is also the number diaryx-org/nix publishes as `versions.rust` for the whole
 # org, for this reason and named as leaf's. The two are meant to agree; the
 # `toolchain-pin` CI job checks this file against what homebrew.yml passes the
 # shared release workflow, which is the pair that silently breaks the release.
 [toolchain]
-channel = "1.95.0"
+channel = "1.98.1"
 profile = "minimal"
 # `minimal` is rustc, cargo, and rust-std — deliberately, since that is all a
 # build needs. But `cargo xtask ci` is this repo's CI and its first two jobs are
 # rustfmt and clippy, so a toolchain rustup auto-installed from this file could
 # not run the checks a release has to pass:
 #
-#     error: 'cargo-fmt' is not installed for the toolchain '1.95.0-...'
+#     error: 'cargo-fmt' is not installed for the toolchain '1.98.1-...'
 #
 # Naming them here is what makes that self-healing: rustup installs a missing
 # declared component on next use, so a fresh machine, a second RUSTUP_HOME, or a
