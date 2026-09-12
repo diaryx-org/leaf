@@ -244,6 +244,26 @@ per-row shaping cache survives untouched — and the text stays vector-crisp at
 every scale, which resampling a rasterized layer would cost. `LeafTextView.zoomRange`
 is 25%–400%.
 
+**The document as a PDF** (macOS and iOS). `pdfData(theme:page:title:)` on the
+model — or `pdfData(page:title:)` on either text view, in its own theme — is the
+document laid onto `page` by the same layout and painted by the same code the
+editor draws with, one PDF page per sheet, with nothing that only exists on
+screen: no caret, no selection, no backdrop between the sheets. `title` goes into
+the file's metadata. Pass the theme the editor is showing and the file reads as
+the editor does; pass `.usLetter.columned(2)` and it is set in two.
+
+```swift
+let pdf = editor.pdfData(theme: theme, page: .a4, title: "Tuesday")
+```
+
+A sheet is drawn at the theme's stated size (a point is a point on paper — on iOS
+the reader's Dynamic Type setting is about their screen, and is not applied) and
+in light appearance, since a dark theme's ink would print white. A relative
+image resolves against `documentDirectory` as on screen; one only the host can
+fetch (`onResolveMedia`) draws as its labelled chip, because the page is made now
+rather than when the host answers. On iOS the same `pageSetup` is a view mode
+too, for a host that wants the stack on screen.
+
 The iOS surface stays on the continuous flow.
 
 **Smart, rich clipboard** (the same behaviour as leaf-tui / leaf-gpui via
@@ -274,7 +294,9 @@ committed CJK/emoji insert correctly, but the composing overlay isn't drawn yet
 The renderer is validated against the real generated binding with `swiftc`:
 
 ```sh
-scripts/check-swift.sh      # emits LeafFFI.swiftmodule, -typecheck's LeafUI
+scripts/check-swift.sh      # emits LeafFFI.swiftmodule, -typecheck's LeafUI (macOS + iOS)
+scripts/test-swift.sh       # the LeafUITests bundle, on the Mac
+scripts/test-swift-ios.sh   # the same bundle on an iPhone simulator — the UIKit halves
 ```
 
 ## Using `LeafFFI` directly (custom renderer)

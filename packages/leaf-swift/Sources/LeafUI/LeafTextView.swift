@@ -553,21 +553,12 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         let paper = PageSetup(
             size: info.paperSize,
             margins: LeafInsets(top: info.topMargin, left: info.leftMargin,
-                                bottom: info.bottomMargin, right: info.rightMargin),
-            gap: 0, backdrop: 0)
+                                bottom: info.bottomMargin, right: info.rightMargin))
         info.topMargin = 0; info.bottomMargin = 0; info.leftMargin = 0; info.rightMargin = 0
         info.isHorizontallyCentered = false
         info.isVerticallyCentered = false
 
-        let sheet = LeafTextView(doc: doc, theme: theme)
-        // Ink on paper, whatever the screen's appearance: the theme's semantic
-        // colours resolve against the view's, and a dark one would print white.
-        sheet.appearance = NSAppearance(named: .aqua)
-        sheet.frame = NSRect(origin: .zero, size: CGSize(width: info.paperSize.width, height: 0))
-        sheet.documentDirectory = documentDirectory
-        sheet.pageSetup = paper
-
-        let operation = NSPrintOperation(view: sheet, printInfo: info)
+        let operation = NSPrintOperation(view: paperSheet(paper), printInfo: info)
         if let title = window?.title, !title.isEmpty { operation.jobTitle = title }
         return operation
     }
@@ -583,6 +574,10 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         range.pointee = NSRange(location: 1, length: layoutEngine.pages.count)
         return true
     }
+
+    /// Every sheet's frame in layout coordinates, top to bottom. Empty in the
+    /// continuous flow.
+    var pages: [CGRect] { layoutEngine.pages }
 
     public override func rectForPage(_ page: Int) -> NSRect {
         let pages = layoutEngine.pages

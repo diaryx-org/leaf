@@ -94,8 +94,36 @@ public final class LeafTextView: UIView, UITextInput {
     }
     public var onStateChange: ((EditorState) -> Void)?
 
+    /// The sheet this document is laid onto, or `nil` (the default) for the
+    /// continuous scrolling flow — the same mode the AppKit peer offers, and the
+    /// same `PageSetup` describes it. On a phone it is mostly the shape a PDF
+    /// takes (`pdfData(page:)`), but it is a view mode here too: rows break
+    /// across a stack of sheets and wrap to the sheet's margins instead of the
+    /// theme's `measure`. A sheet is a fixed width, so a host that puts one on
+    /// screen gives its scroll view the stack's width rather than the
+    /// viewport's.
+    public var pageSetup: PageSetup? {
+        didSet {
+            guard pageSetup != oldValue else { return }
+            // The column width changed, and the shape cache is only valid at the
+            // width it was built for.
+            shapeCache.removeAll(keepingCapacity: true)
+            relayoutForWidth(force: true)
+        }
+    }
+
+    /// Whether this view is the sheet a PDF is drawn from rather than a surface
+    /// on screen — see `pdfData(page:)`. On paper there is no landing flash, no
+    /// placeholder cue, no marker in the margin, and no picture of a sheet on a
+    /// backdrop: the sheet is the paper. UIKit has no `currentContextDrawingToScreen`
+    /// for `draw` to ask, so the sheet is told.
+    var isPaper = false
+
     private var docView: DocView
     private var layoutEngine: EditorLayout
+    /// Every sheet's frame in layout coordinates, top to bottom — what a PDF
+    /// takes one page from each of. Empty in the continuous flow.
+    var pages: [CGRect] { layoutEngine.pages }
     /// The view width the current layout was built for. The text column inside it
     /// — where it starts, how wide it wraps — is the theme's to decide (see
     /// `EditorTheme.column(in:)`), and the layout carries the answer.
@@ -699,8 +727,11 @@ public final class LeafTextView: UIView, UITextInput {
         // (the common short-document case) gets no extra room, so nothing here makes
         // a short document scrollable; `pin(_:into:)`'s own minimum-height
         // constraint still fills the viewport exactly as before in that case.
+        //
+        // Not in the paginated flow: there the document's height is the stack's,
+        // and the blank paper below the last line is already that room.
         let viewportHeight = enclosingScrollView()?.bounds.height ?? 0
-        let extra = raw > viewportHeight ? viewportHeight * 0.5 : 0
+        let extra = pageSetup == nil && raw > viewportHeight ? viewportHeight * 0.5 : 0
         return CGSize(width: UIView.noIntrinsicMetric, height: raw + extra)
     }
 
@@ -761,8 +792,8 @@ public final class LeafTextView: UIView, UITextInput {
         // The input traits answer differently per view (see `isSourceView`), and
         // UIKit reads them when the keyboard is set up — so set it up again.
         if viewFlipped, isFirstResponder { reloadInputViews() }
-        layoutEngine = EditorLayout(view, theme: renderTheme, viewWidth: viewWidth, cache: &shapeCache,
-                                    media: mediaStore)
+        layoutEngine = EditorLayout(view, theme: renderTheme, viewWidth: viewWidth, page: pageSetup,
+                                    cache: &shapeCache, media: mediaStore)
         // Installed players follow their boxes; media edited out of the document
         // is absent from the rects, which is what stops its playback.
         if !mediaPlayers.isEmpty {
@@ -876,21 +907,24 @@ public final class LeafTextView: UIView, UITextInput {
 
     public override func draw(_ rect: CGRect) {
         guard let ctx = UIGraphicsGetCurrentContext() else { return }
-        let padX = layoutEngine.originX
-        let fullWidth = layoutEngine.columnWidth
 
+        // The paper first: every other thing here paints onto a sheet. Not on
+        // paper itself, where the sheet is the page and the backdrop between two
+        // sheets does not exist.
+        if !isPaper { PageChrome.draw(layoutEngine.pages, theme: renderTheme, clip: rect, in: ctx) }
         // Under every other mark: a light behind the words, not over them.
-        drawLandingFlash(in: ctx)
+        if !isPaper { drawLandingFlash(in: ctx) }
         drawDirectiveBorders(in: ctx, dirtyRect: rect)
         // One pass for the quote bars (a run of quoted rows merges into a single
         // bar), before the rows, exactly as the AppKit surface orders it.
         BlockChrome.drawQuoteBars(layoutEngine.rows, theme: renderTheme, in: ctx)
 
         for rl in layoutEngine.rows {
-            // Rows are laid out top-down, so cull to the dirty band: skip rows above
-            // it, stop once past the bottom — repaint only the visible rows.
-            if rl.top >= rect.maxY { break }
-            if rl.top + rl.height <= rect.minY { continue }
+            // Cull to the dirty band, so a scroll repaints only the visible rows.
+            // Skipped rather than stopped at the first row past the band: rows run
+            // top-down only while a sheet has one column, and a second one starts
+            // back at the top of the same sheet.
+            if rl.top >= rect.maxY || rl.top + rl.height <= rect.minY { continue }
             // A table draws its own grid (once, on its first picture row).
             if let grid = rl.table {
                 if rl.tableFirst { drawTable(grid, tableTop: rl.tableTop, in: ctx) }
@@ -902,19 +936,25 @@ public final class LeafTextView: UIView, UITextInput {
             if let box = rl.media {
                 if rl.mediaFirst {
                     BlockChrome.drawMedia(box,
-                                          at: box.rect(top: rl.mediaTop, left: padX + rl.shaped.prefixWidth),
+                                          at: box.rect(top: rl.mediaTop, left: rl.originX + rl.shaped.prefixWidth),
                                           theme: renderTheme,
                                           playing: mediaPlayers.isPlaying(box.media.src), in: ctx)
                 }
                 continue
             }
-            let rowRect = CGRect(x: padX, y: rl.top, width: fullWidth, height: rl.height)
+            // The row's bands, not one rect over its whole height: a split row has
+            // a sheet edge — or a column gutter — through the middle of it, and a
+            // code fill drawn over that would tile the backdrop or the gutter too.
+            // Each band carries its own column, so this is where the x comes from.
+            let bands = rl.bands
+            let rowRect = bands.first
+                ?? CGRect(x: rl.originX, y: rl.top, width: rl.columnWidth, height: rl.height)
             if rl.row.directive, let label = rl.row.directiveLabel, !label.isEmpty {
                 drawDirectiveLabel(label, in: rowRect)
             }
             if rl.row.code {
                 ctx.setFillColor(renderTheme.codeBackground.cgColor)
-                ctx.fill(rowRect.insetBy(dx: -4, dy: 0))
+                for b in bands { ctx.fill(b.insetBy(dx: -4, dy: 0)) }
                 if let lang = rl.row.codeLang, !lang.isEmpty { drawCodeLang(lang, in: rowRect) }
             }
             // The system paints selection on iOS, so no selection fill here.
@@ -922,14 +962,18 @@ public final class LeafTextView: UIView, UITextInput {
             // Draw each wrapped visual line's substring on its own line box, hung
             // at the row's indent (zero on the first line, the prefix width after).
             for (i, wl) in rl.wrapped.enumerated() {
-                let lineTop = rl.top + rl.labelInset + CGFloat(i) * rl.lineHeight
-                if lineTop >= rect.maxY { break }
-                if lineTop + rl.lineHeight <= rect.minY { continue }
-                wl.attributed.draw(with: CGRect(x: padX + wl.indent, y: lineTop,
-                                                width: fullWidth - wl.indent, height: rl.lineHeight),
+                // `continue`, not `break`: a row's lines run down one column and
+                // then back up to the top of the next, so passing the dirty band
+                // once says nothing about the lines after it.
+                let o = rl.lineOrigin(i)
+                if o.y >= rect.maxY || o.y + rl.lineHeight <= rect.minY { continue }
+                wl.attributed.draw(with: CGRect(x: o.x + wl.indent, y: o.y,
+                                                width: rl.columnWidth - wl.indent, height: rl.lineHeight),
                                    options: [.usesLineFragmentOrigin], context: nil)
             }
         }
+
+        if isPaper { return }
 
         if let placeholder, let box = layoutEngine.placeholderBox {
             BlockChrome.drawPlaceholder(placeholder, in: box, theme: renderTheme, in: ctx)
@@ -1039,26 +1083,40 @@ public final class LeafTextView: UIView, UITextInput {
     /// One dashed outline per maximal run of consecutive `directive` rows — the
     /// UIKit peer of the AppKit `drawDirectiveBorders`.
     private func drawDirectiveBorders(in ctx: CGContext, dirtyRect: CGRect) {
-        let padX = layoutEngine.originX
-        let fullWidth = layoutEngine.columnWidth
         let rows = layoutEngine.rows
         var i = 0
         while i < rows.count {
             guard rows[i].row.directive, rows[i].table == nil else { i += 1; continue }
             let start = i
             while i < rows.count, rows[i].row.directive, rows[i].table == nil { i += 1 }
-            let first = rows[start], last = rows[i - 1]
-            let rect = CGRect(x: padX - 4, y: first.top,
-                              width: fullWidth + 8, height: last.top + last.height - first.top)
-            if rect.maxY < dirtyRect.minY || rect.minY > dirtyRect.maxY { continue }
-            ctx.saveGState()
-            ctx.setStrokeColor(renderTheme.directiveBorderColor.cgColor)
-            ctx.setLineWidth(1)
-            ctx.setLineDash(phase: 0, lengths: [3, 3])
-            ctx.addPath(CGPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5),
-                               cornerWidth: 6, cornerHeight: 6, transform: nil))
-            ctx.strokePath()
-            ctx.restoreGState()
+            // The run's rows reduced to their vertical bands, merged where they
+            // touch. Continuously that always collapses back to a single box.
+            // Paginated, a run crossing a sheet edge — between two of its rows, or
+            // through the middle of one of them — comes out as one box per sheet,
+            // so no outline is ever stroked across the backdrop.
+            var spans: [CGRect] = []
+            for rl in rows[start..<i] {
+                for b in rl.bands {
+                    if let last = spans.last, abs(last.maxY - b.minY) < 0.5,
+                       abs(last.minX - b.minX) < 0.5 {
+                        spans[spans.count - 1].size.height += b.height
+                    } else {
+                        spans.append(b)
+                    }
+                }
+            }
+            for span in spans {
+                let rect = span.insetBy(dx: -4, dy: 0)
+                if rect.maxY < dirtyRect.minY || rect.minY > dirtyRect.maxY { continue }
+                ctx.saveGState()
+                ctx.setStrokeColor(renderTheme.directiveBorderColor.cgColor)
+                ctx.setLineWidth(1)
+                ctx.setLineDash(phase: 0, lengths: [3, 3])
+                ctx.addPath(CGPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5),
+                                   cornerWidth: 6, cornerHeight: 6, transform: nil))
+                ctx.strokePath()
+                ctx.restoreGState()
+            }
         }
     }
 

@@ -56,6 +56,17 @@ public struct PageSetup: Equatable {
         return out
     }
 
+    /// This sheet with no stack around it — no gap below, no backdrop beside —
+    /// which is what a sheet *on paper* is: the printed page is the sheet, edge to
+    /// edge, and the first one's corner is the origin. What printing and
+    /// `pdfData(page:)` lay the document onto, whatever the screen shows.
+    public var paper: PageSetup {
+        var out = self
+        out.gap = 0
+        out.backdrop = 0
+        return out
+    }
+
     /// One inch on every side — the default a word processor opens with.
     public static let inch = LeafInsets(top: 72, left: 72, bottom: 72, right: 72)
 
