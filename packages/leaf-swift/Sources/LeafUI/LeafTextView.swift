@@ -549,11 +549,16 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// `info`'s paper and margins. `info` is edited: the margins are read into
     /// the page setup and then zeroed, so the operation draws each sheet onto
     /// the whole of the paper it stands for rather than inset by them twice.
+    ///
+    /// The paper is the printer's; the columns are the screen's. A document set
+    /// in two on screen prints in two, because the column count is a decision
+    /// about the document and the paper size is a fact about the printer.
     func printOperation(with info: NSPrintInfo) -> NSPrintOperation {
         let paper = PageSetup(
             size: info.paperSize,
             margins: LeafInsets(top: info.topMargin, left: info.leftMargin,
                                 bottom: info.bottomMargin, right: info.rightMargin))
+            .columned(pageSetup?.columns ?? 1, gutter: pageSetup?.columnGutter)
         info.topMargin = 0; info.bottomMargin = 0; info.leftMargin = 0; info.rightMargin = 0
         info.isHorizontallyCentered = false
         info.isVerticallyCentered = false

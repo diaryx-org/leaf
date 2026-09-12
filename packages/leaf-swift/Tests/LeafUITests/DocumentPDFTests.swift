@@ -78,6 +78,19 @@ final class DocumentPDFTests: XCTestCase {
         let big = try document(model.pdfData(theme: large)).numberOfPages
         XCTAssertGreaterThan(big, small)
     }
+
+    func testPrintingKeepsTheScreensColumns() throws {
+        let doc = try LeafDoc(source: long, format: "markdown")
+        let view = LeafTextView(doc: doc, theme: .default)
+        view.frame = NSRect(x: 0, y: 0, width: 800, height: 0)
+        view.pageSetup = PageSetup.a4.columned(2)
+        let info = NSPrintInfo()
+        info.paperSize = CGSize(width: 612, height: 792)
+        let printed = try XCTUnwrap(view.printOperation(with: info).view as? LeafTextView)
+        XCTAssertEqual(printed.pageSetup?.columns, 2)
+        XCTAssertEqual(try XCTUnwrap(printed.pageSetup?.size.width), 612, accuracy: 0.01,
+                       "the paper is the printer's")
+    }
 }
 #elseif canImport(UIKit)
 import UIKit

@@ -147,7 +147,8 @@ picked up and dragged — out to another app as text and HTML, or within the
 document as a move (⌥ to copy) — and a dropped file or image goes to the host's
 `onDrop` hook, the drag-and-drop peer of `onPaste`, before the editor decides
 there was nothing to insert. File ▸ Print lays the document onto the printer's
-paper at the print panel's margins, one page per sheet, whatever the screen shows.
+paper at the print panel's margins — and in the columns the screen is set in —
+one page per sheet, whatever the screen shows.
 
 **The menu bar.** `LeafEditor` publishes its model as the scene's focused editor
 (`@FocusedValue(\.leafEditor)`), and `LeafEditorCommands` builds the standard
