@@ -33,15 +33,23 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
+_No commits since the last tag._
+
+<!-- git-cliff:end -->
+
+## v0.1.9 — 2026-09-12
+
 ### Added
 
 - **ratatui** — paint headings plain wherever the surface can raster them ([`88de970`](https://github.com/diaryx-org/leaf/commit/88de97017a72603d751c08f0a9c453e253571417))
+- **leaf-swift** — the document as a PDF, on both toolkits ([`322f3fd`](https://github.com/diaryx-org/leaf/commit/322f3fd6e4c5b59cd467157e2b27f1245b480195))
 
 ### Fixed
 
 - **core** — name the document in VisualKey, so one stash cannot serve two documents ([`36ee91d`](https://github.com/diaryx-org/leaf/commit/36ee91da44a13595a7b11b934833d704523b3024))
 - **core** — give a code block's empty last line a row, so Return at its end stays in the block ([`53e456b`](https://github.com/diaryx-org/leaf/commit/53e456b6db28ebc32b964728ecc9eff0cd31fde4))
 - **swift** — slide the document down with the find bar instead of under it ([`e92a8f8`](https://github.com/diaryx-org/leaf/commit/e92a8f867dde97968653773f80abeb3d03f45d69))
+- **leaf-swift** — print in the columns the screen is set in ([`50c9fb4`](https://github.com/diaryx-org/leaf/commit/50c9fb4840a380692c72bc05fe6d485ffae48875))
 
 ### Behavioural changes
 
@@ -65,7 +73,10 @@ its own heading colors will see them only on terminals without a graphics
 protocol, where the ramp is still the only cue for level. Bold and the
 level-1 underline are unchanged.
 
-<!-- git-cliff:end -->
+- File ▸ Print over a view whose `pageSetup` has more
+than one column now prints in that many columns, at that gutter. A view
+in the continuous flow, or on a one-column page, prints as before.
+
 
 ## v0.1.8 — 2026-09-07
 
