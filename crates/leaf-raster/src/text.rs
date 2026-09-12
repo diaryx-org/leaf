@@ -307,8 +307,8 @@ fn blend_rect(pixels: &mut image::RgbaImage, x: i32, y: i32, w: u32, h: u32, src
         let buf: &mut [u8] = pixels;
         for py in y0 as usize..y1 as usize {
             let row = &mut buf[py * stride + x0 as usize * 4..py * stride + x1 as usize * 4];
-            for chunk in row.chunks_exact_mut(4) {
-                chunk.copy_from_slice(&src);
+            for chunk in row.as_chunks_mut::<4>().0 {
+                *chunk = src;
             }
         }
         return;
