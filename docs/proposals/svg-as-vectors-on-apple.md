@@ -1,19 +1,20 @@
 ---
 title: SVG as vectors in leaf-swift, through usvg
-status: accepted
+status: implemented
 created: 2026-09-12
-updated: 2026-09-12
+updated: 2026-09-13
 ---
 # SVG as vectors in leaf-swift, through usvg
 
 ## Status
 
-Accepted 2026-09-12. The renderer is scaffolded as its own repository,
-[resvg-swift](https://github.com/diaryx-org/resvg-swift) — a usvg → display
-list crate, a UniFFI binding, and a `CGContext` replayer — because nothing in
-it is leaf's. leaf's part is the task
-[SVG through resvg-swift](../tasks/svg-through-resvg-swift.md), which waits on
-that repo's first release.
+Implemented 2026-09-13, in `feat(leaf-swift): SVG as vectors, through
+resvg-swift`. The renderer is its own repository,
+[resvg-swift](https://github.com/diaryx-org/resvg-swift) 0.1.0 — a usvg →
+display list crate held to resvg's own test suite (1,697 cases, 1,676
+byte-identical), a UniFFI binding, and a `CGContext` replayer — because nothing
+in it is leaf's. leaf's part was the task
+[SVG through resvg-swift](../tasks/svg-through-resvg-swift.md).
 
 ## The picture
 

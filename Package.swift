@@ -39,6 +39,13 @@ let package = Package(
         // The AppKit/SwiftUI renderer built on it: `LeafEditor` + `LeafEditorModel`.
         .library(name: "LeafUI", targets: ["LeafUI"]),
     ],
+    dependencies: [
+        // SVG as vectors: `SVGPicture` parses through usvg and replays into the
+        // same CGContext the text is drawn in. Its Rust half, `resvg-uniffi`,
+        // is a dependency of crates/leaf-ffi so that its symbols are in the one
+        // archive the app force-loads; this package only compiles the Swift.
+        .package(url: "https://github.com/diaryx-org/resvg-swift.git", from: "0.1.0"),
+    ],
     targets: [
         // The C ABI as a clang module (`import leaf_ffiFFI`). No library to link
         // here — the app force-loads the Rust `.a`, so the symbols the generated
@@ -56,7 +63,10 @@ let package = Package(
         // The reusable AppKit/SwiftUI editor surface (committed source).
         .target(
             name: "LeafUI",
-            dependencies: ["LeafFFI"],
+            dependencies: [
+                "LeafFFI",
+                .product(name: "ResvgCoreGraphics", package: "resvg-swift"),
+            ],
             path: "packages/leaf-swift/Sources/LeafUI"
         ),
         // Renderer unit tests. They build `Row`/`DocView` fixtures in pure Swift and

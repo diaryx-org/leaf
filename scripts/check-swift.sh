@@ -3,7 +3,13 @@
 # Type-check the LeafUI renderer against the real generated LeafFFI binding,
 # without an Xcode project — the Swift peer of `cargo check`. Builds the host
 # dylib, generates the UniFFI Swift, emits a LeafFFI .swiftmodule, then
-# `-typecheck`s packages/leaf-swift/Sources/LeafUI against it. macOS only.
+# `-typecheck`s packages/leaf-swift/Sources/LeafUI against it, for the macOS
+# and the iOS-simulator triple.
+#
+# LeafUI also imports the resvg-swift package (ResvgFFI, the committed
+# binding, and ResvgCoreGraphics over it), so those two modules are emitted
+# the same way from wherever SwiftPM resolved the package to — its checkout
+# under .build/, or a local path.
 #
 # Usage: scripts/check-swift.sh
 set -euo pipefail
@@ -24,19 +30,43 @@ cargo run -q -p leaf-ffi --manifest-path "$ROOT/Cargo.toml" --bin uniffi-bindgen
 cp "$WORK/gen/leaf_ffiFFI.h" "$WORK/headers/"
 cp "$WORK/gen/leaf_ffiFFI.modulemap" "$WORK/headers/module.modulemap"
 
-echo "▸ Emitting LeafFFI.swiftmodule…"
+echo "▸ Locating the resvg-swift package…"
+swift package resolve --package-path "$ROOT" >/dev/null
+RESVG="$(swift package show-dependencies --package-path "$ROOT" --format json \
+  | python3 -c 'import json,sys; print(next(d["path"] for d in json.load(sys.stdin)["dependencies"] if d["name"] == "ResvgSwift"))')"
+RESVG_HEADERS="$RESVG/packages/resvg-swift/uniffi-generated/headers"
+[ -f "$RESVG_HEADERS/module.modulemap" ] || { echo "no resvg-swift binding at $RESVG" >&2; exit 1; }
+
+# Emit ResvgFFI and ResvgCoreGraphics for one triple into $1, given the SDK
+# and target flags that follow.
+emit_resvg() {
+  local out="$1"; shift
+  mkdir -p "$out"
+  swiftc -emit-module -module-name ResvgFFI \
+    -emit-module-path "$out/ResvgFFI.swiftmodule" \
+    "$RESVG"/packages/resvg-swift/uniffi-generated/Sources/ResvgFFI/*.swift \
+    "$@" -I "$RESVG_HEADERS" -Xcc -fmodule-map-file="$RESVG_HEADERS/module.modulemap"
+  swiftc -emit-module -module-name ResvgCoreGraphics \
+    -emit-module-path "$out/ResvgCoreGraphics.swiftmodule" \
+    "$RESVG"/packages/resvg-swift/Sources/ResvgCoreGraphics/*.swift \
+    "$@" -I "$out" -I "$RESVG_HEADERS" -Xcc -fmodule-map-file="$RESVG_HEADERS/module.modulemap"
+}
+
+echo "▸ Emitting LeafFFI, ResvgFFI, ResvgCoreGraphics .swiftmodules…"
 swiftc -emit-module -module-name LeafFFI \
   -emit-module-path "$WORK/LeafFFI.swiftmodule" \
   "$WORK/gen/leaf_ffi.swift" \
   -sdk "$SDK" \
   -I "$WORK/headers" -Xcc -fmodule-map-file="$WORK/headers/module.modulemap"
+emit_resvg "$WORK" -sdk "$SDK"
 
 echo "▸ Type-checking LeafUI (macOS / AppKit)…"
 swiftc -typecheck -module-name LeafUI \
   "$ROOT"/packages/leaf-swift/Sources/LeafUI/*.swift \
   -sdk "$SDK" \
   -I "$WORK" \
-  -I "$WORK/headers" -Xcc -fmodule-map-file="$WORK/headers/module.modulemap"
+  -I "$WORK/headers" -Xcc -fmodule-map-file="$WORK/headers/module.modulemap" \
+  -I "$RESVG_HEADERS" -Xcc -fmodule-map-file="$RESVG_HEADERS/module.modulemap"
 echo "  ✓ macOS"
 
 # The generated binding is arch-neutral source, but a .swiftmodule is triple-
@@ -51,11 +81,13 @@ swiftc -emit-module -module-name LeafFFI \
   "$WORK/gen/leaf_ffi.swift" \
   -sdk "$SDK_IOS" -target "$TARGET_IOS" \
   -I "$WORK/headers" -Xcc -fmodule-map-file="$WORK/headers/module.modulemap"
+emit_resvg "$WORK/ios" -sdk "$SDK_IOS" -target "$TARGET_IOS"
 swiftc -typecheck -module-name LeafUI \
   "$ROOT"/packages/leaf-swift/Sources/LeafUI/*.swift \
   -sdk "$SDK_IOS" -target "$TARGET_IOS" \
   -I "$WORK/ios" \
-  -I "$WORK/headers" -Xcc -fmodule-map-file="$WORK/headers/module.modulemap"
+  -I "$WORK/headers" -Xcc -fmodule-map-file="$WORK/headers/module.modulemap" \
+  -I "$RESVG_HEADERS" -Xcc -fmodule-map-file="$RESVG_HEADERS/module.modulemap"
 echo "  ✓ iOS"
 
 echo "✓ LeafUI type-checks against the generated LeafFFI binding (macOS + iOS)."

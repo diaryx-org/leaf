@@ -1,9 +1,15 @@
 ---
-status: open
+status: done
 created: 2026-09-12
-updated: 2026-09-12
+updated: 2026-09-13
 ---
 # SVG through resvg-swift
+
+**Status.** Done, in `feat(leaf-swift): SVG as vectors, through resvg-swift`
+(2026-09-13), against resvg-swift 0.1.0. The steps below went as written, with
+one change: `MediaStill` is an enum over `CGImage` and `SVGPicture` rather than
+a second optional beside `still`, so the box has one thing to measure and one
+to draw. The PDF assertion is `testAnSVGReachesThePageAsPathsAndAPNGAsAnImage`.
 
 **Where.** `packages/leaf-swift`, `MediaStore`/`MediaLayout` in
 `Sources/LeafUI/MediaLayout.swift`; the media box's draw in `LeafTextView` and

@@ -27,12 +27,24 @@
 //  the way a terminal answers in character cells. A proportional GUI doesn't play
 //  that game — like leaf-gpui it lays the box out in points and leaves core's
 //  reservation at one row, so nothing here calls back with a height.
+//
+//  ## Pixels and pictures
+//
+//  A still is one of two things. A raster file — PNG, JPEG, HEIC, whatever
+//  ImageIO reads — decodes to a `CGImage` once and is drawn scaled. An SVG has
+//  no pixels to decode: it is parsed once by usvg (through the resvg-swift
+//  package) and drawn as *paths* at whatever size the box is, so it is crisp on
+//  any display and stays vector in the PDF the document prints to. ImageIO has
+//  no SVG codec at all, which is why the dashed "broken" chip used to be what an
+//  SVG got here. `MediaStill` is the two behind one `draw`.
 
 import CoreGraphics
 import CoreText
 import Foundation
 import ImageIO
 import LeafFFI
+import ResvgCoreGraphics
+import ResvgFFI
 
 #if canImport(AppKit)
 import AppKit
@@ -44,6 +56,49 @@ import UIKit
 import AVFoundation
 #endif
 
+/// What a media box paints: decoded pixels, or a vector picture drawn at
+/// whatever size it is asked for.
+enum MediaStill {
+    /// A raster image, decoded and oriented.
+    case bitmap(CGImage)
+    /// An SVG, parsed; drawn as paths.
+    case vector(SVGPicture)
+
+    /// The size the picture is *meant* to be, in points: a raster's pixel
+    /// dimensions (the size it is at 1×), an SVG's declared canvas. What the box
+    /// fits to.
+    var naturalSize: CGSize {
+        switch self {
+        case .bitmap(let image):
+            return CGSize(width: CGFloat(image.width), height: CGFloat(image.height))
+        case .vector(let picture):
+            return picture.size
+        }
+    }
+
+    /// Draw into `rect` of a **flipped** (y-down) context — which both surfaces
+    /// and the PDF sheet are. A raster is flipped back across the rect, since
+    /// `CGContext.draw(_:in:)` assumes y-up; a picture is drawn as-is, since
+    /// SVG is y-down like the context. `scale` is the context's device pixels
+    /// per point, read off its CTM: the parts of an SVG that have to be
+    /// rasterized (filters, masks) come out at that grid rather than blurry.
+    func draw(in rect: CGRect, ctx: CGContext) {
+        switch self {
+        case .bitmap(let image):
+            ctx.saveGState()
+            ctx.translateBy(x: 0, y: rect.maxY)
+            ctx.scaleBy(x: 1, y: -1)
+            ctx.draw(image, in: CGRect(x: rect.minX, y: 0, width: rect.width, height: rect.height))
+            ctx.restoreGState()
+        case .vector(let picture):
+            // The x basis vector's length is the horizontal scale whatever the
+            // flip or translation — 2 on a Retina view, 1 on a PDF page.
+            let scale = hypot(ctx.ctm.a, ctx.ctm.b)
+            picture.draw(in: ctx, rect: rect, scale: scale)
+        }
+    }
+}
+
 /// The box one block media occupies, and what to paint in it.
 struct MediaLayout {
     /// The media this stands for — kind, URL, alt, poster.
@@ -54,7 +109,7 @@ struct MediaLayout {
     /// poster frame. `nil` when there is nothing to draw — audio, a poster-less
     /// video, or a file that wouldn't load — and the box then shows a labelled
     /// chip instead.
-    let still: CGImage?
+    let still: MediaStill?
     /// Whether the box should carry a play badge (video and audio; never a still
     /// picture), so it reads as something to start rather than something to look
     /// at.
@@ -75,7 +130,7 @@ struct MediaLayout {
     /// looks like a bug — and capped in height so one tall image can't push a
     /// screen of text away. Audio has no aspect ratio at all, so it gets a fixed
     /// control height and the width it needs, whichever is smaller.
-    init(_ media: MediaView, still: CGImage?, contentWidth: CGFloat, theme: EditorTheme) {
+    init(_ media: MediaView, still: MediaStill?, contentWidth: CGFloat, theme: EditorTheme) {
         self.media = media
         self.still = still
 
@@ -85,9 +140,8 @@ struct MediaLayout {
         if media.kind == .audio {
             self.size = CGSize(width: min(maxW, MediaMetrics.audioWidth),
                                height: MediaMetrics.audioHeight)
-        } else if let img = still {
-            let natural = CGSize(width: CGFloat(img.width), height: CGFloat(img.height))
-            self.size = MediaLayout.fit(natural, maxWidth: maxW, maxHeight: maxH)
+        } else if let still {
+            self.size = MediaLayout.fit(still.naturalSize, maxWidth: maxW, maxHeight: maxH)
         } else if media.kind == .video {
             // A video with no poster still *is* a picture — we just haven't been
             // handed one to measure. Reserving a chip would be right for something
@@ -214,7 +268,7 @@ final class MediaStore {
         case pending
         /// Settled. `file` is the local file it lives in, if any (what playback
         /// needs); `still` is the decoded picture, if it is one.
-        case ready(file: URL?, still: CGImage?)
+        case ready(file: URL?, still: MediaStill?)
     }
 
     private var entries: [String: Entry] = [:]
@@ -253,7 +307,7 @@ final class MediaStore {
     /// The still for `media`, or `nil` when there is nothing to draw *yet* —
     /// audio, a poster-less video, a source that failed, or one the host is
     /// still resolving. The box draws its labelled chip meanwhile.
-    func still(for media: MediaView) -> CGImage? {
+    func still(for media: MediaView) -> MediaStill? {
         // An image is its own still; a video's is its poster. Audio has none, and
         // a video without a poster has none either — core already leaves `poster`
         // empty rather than inventing one, and decoding a frame out of the movie
@@ -376,9 +430,9 @@ final class MediaStore {
 
     /// The bytes of a `data:` URI, or `nil` if it isn't one or is malformed.
     ///
-    /// `data:[<mediatype>][;base64],<data>`. The media type is ignored — ImageIO
-    /// sniffs the real format from the bytes, and a document claiming `image/png`
-    /// for a JPEG should still draw.
+    /// `data:[<mediatype>][;base64],<data>`. The media type is ignored — the
+    /// decoders sniff the real format from the bytes, and a document claiming
+    /// `image/png` for a JPEG (or for an SVG) should still draw.
     static func decodeDataURI(_ src: String) -> Data? {
         let trimmed = src.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.lowercased().hasPrefix("data:"),
@@ -394,20 +448,36 @@ final class MediaStore {
         return payload.removingPercentEncoding?.data(using: .utf8)
     }
 
-    /// Decode an image file, or `nil` on any failure — a missing file, or a
-    /// format ImageIO doesn't read.
-    private static func load(_ url: URL) -> CGImage? {
-        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
-              CGImageSourceGetCount(src) > 0 else { return nil }
-        return decode(src)
+    /// Load an image file as a still, or `nil` on any failure — a missing file,
+    /// or a format neither decoder reads.
+    ///
+    /// ImageIO first, since it reads everything raster and is what a photo
+    /// wants; an SVG, which it doesn't read, falls through to usvg. The file's
+    /// directory is handed along so an `<image href="…">` inside the SVG can
+    /// resolve — resvg-swift reads only local files, never the network, the
+    /// same rule this store keeps for the document's own media.
+    private static func load(_ url: URL) -> MediaStill? {
+        if let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+           CGImageSourceGetCount(src) > 0, let image = decode(src) {
+            return .bitmap(image)
+        }
+        return (try? SVGPicture(contentsOf: url, options: svgOptions)).map(MediaStill.vector)
     }
 
-    /// Decode image bytes already in memory — a `data:` URI's payload.
-    private static func decode(_ data: Data) -> CGImage? {
-        guard let src = CGImageSourceCreateWithData(data as CFData, nil),
-              CGImageSourceGetCount(src) > 0 else { return nil }
-        return decode(src)
+    /// Decode image bytes already in memory — a `data:` URI's payload. Same
+    /// order as `load`; an inline SVG has no directory to resolve against.
+    private static func decode(_ data: Data) -> MediaStill? {
+        if let src = CGImageSourceCreateWithData(data as CFData, nil),
+           CGImageSourceGetCount(src) > 0, let image = decode(src) {
+            return .bitmap(image)
+        }
+        return (try? SVGPicture(data: data, options: svgOptions)).map(MediaStill.vector)
     }
+
+    /// How an SVG is parsed. System fonts are loaded so `<text>` in a face the
+    /// document doesn't embed still lays out — a directory walk done once per
+    /// process, on the first SVG.
+    private static var svgOptions: ParseOptions { ParseOptions(loadSystemFonts: true) }
 
     /// The picture a source holds, the way up it says it goes.
     ///

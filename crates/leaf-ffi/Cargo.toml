@@ -43,3 +43,11 @@ thiserror = "1"
 # NSTextView) counts UTF-16 units — the two drift by a cell per wide glyph (CJK,
 # emoji). Same crate/version leaf-core segments with, so cluster boundaries agree.
 unicode-segmentation = "1.13.3"
+
+# SVG as vectors for the Apple views. Nothing here calls it: it is linked so
+# that its UniFFI scaffolding lands in *this* crate's staticlib, which is the
+# one archive the app force-loads — two Rust archives in one executable is a
+# duplicate-`std` link error, so a second binding crate can only ride along
+# inside the first. The Swift side (`ResvgCoreGraphics`, from the resvg-swift
+# package leaf-swift depends on) finds its `resvg_uniffi` symbols there.
+resvg-uniffi = "0.1"

@@ -54,6 +54,15 @@ by version, `.package(url: "https://github.com/diaryx-org/leaf.git", from:
 - **`LeafUI`** — a reusable **AppKit/SwiftUI editor** built on it (`Sources/LeafUI/`,
   committed). Use this unless you're writing your own renderer.
 
+`LeafUI` depends on one other package,
+[resvg-swift](https://github.com/diaryx-org/resvg-swift), which draws an SVG
+as **vector paths** through usvg — ImageIO has no SVG codec, and Apple's own
+CoreSVG is private on iOS. SwiftPM fetches its Swift; its Rust half,
+`resvg-uniffi`, is already inside `libleaf_ffi.a` (it is a dependency of
+`crates/leaf-ffi` for exactly this reason — two Rust archives cannot share an
+executable), so an app that force-loads the leaf archive has nothing else to
+link.
+
 ## Native renderer (`LeafUI`)
 
 A ready macOS editor surface. `LeafTextView` (an `NSView`) owns presentation and
@@ -262,7 +271,8 @@ the reader's Dynamic Type setting is about their screen, and is not applied) and
 in light appearance, since a dark theme's ink would print white. A relative
 image resolves against `documentDirectory` as on screen; one only the host can
 fetch (`onResolveMedia`) draws as its labelled chip, because the page is made now
-rather than when the host answers. On iOS the same `pageSetup` is a view mode
+rather than when the host answers. An SVG is paths on the page, not a picture
+of one — it scales, selects and prints as vectors, the same as on screen. On iOS the same `pageSetup` is a view mode
 too, for a host that wants the stack on screen.
 
 The iOS surface stays on the continuous flow.

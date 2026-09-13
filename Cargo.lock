@@ -873,6 +873,7 @@ name = "leaf-ffi"
 version = "0.1.9"
 dependencies = [
  "leaf-core",
+ "resvg-uniffi",
  "thiserror",
  "unicode-segmentation",
  "uniffi",
@@ -1411,6 +1412,18 @@ dependencies = [
  "tiny-skia",
  "usvg",
  "zune-jpeg",
+]
+
+[[package]]
+name = "resvg-uniffi"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73e6b97787e6dd064159e95aea207a271852783655c996a779f8fde39872e714"
+dependencies = [
+ "thiserror",
+ "uniffi",
+ "usvg",
+ "usvg-flatten",
 ]
 
 [[package]]
@@ -2247,6 +2260,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "usvg-flatten"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "12faaf5d83aea77eb6166fc25aa7bfcf6fe5063ae8d8b25908e8377926c05ed3"
+dependencies = [
+ "gif",
+ "image-webp",
+ "resvg",
+ "usvg",
+ "zune-jpeg",
+]
+
+[[package]]
 name = "utf8parse"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2687,15 +2713,3 @@ dependencies = [
 [[patch.unused]]
 name = "fig"
 version = "4.0.0"
-
-[[patch.unused]]
-name = "plates"
-version = "0.4.0"
-
-[[patch.unused]]
-name = "plates-render"
-version = "0.4.0"
-
-[[patch.unused]]
-name = "provui-core"
-version = "0.1.1"

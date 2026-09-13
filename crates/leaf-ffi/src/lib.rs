@@ -50,6 +50,11 @@ use leaf_core::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
+// Linked, not used: see the dependency's note in Cargo.toml. The `as _` is
+// what makes rustc treat the crate as referenced and carry its objects into
+// the staticlib.
+use resvg_uniffi as _;
+
 uniffi::setup_scaffolding!();
 
 /// A parse failure constructing a document — the only fallible entry point. Every

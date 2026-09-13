@@ -91,6 +91,36 @@ final class DocumentPDFTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(printed.pageSetup?.size.width), 612, accuracy: 0.01,
                        "the paper is the printer's")
     }
+
+    func testAnSVGReachesThePageAsPathsAndAPNGAsAnImage() throws {
+        // The point of drawing SVG through usvg rather than rasterizing it: the
+        // PDF gets vector paths, which scale, select, and print as such. A
+        // raster picture is still an image XObject — Quartz writes that
+        // dictionary uncompressed, so its `/Subtype /Image` is greppable in the
+        // bytes, and a page whose only picture is an SVG must not have one.
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("leaf-pdf-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try Data("""
+            <svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">
+              <rect width="100" height="100" fill="#ff0000"/>
+              <circle cx="150" cy="50" r="40" fill="#0000ff"/>
+            </svg>
+            """.utf8).write(to: dir.appendingPathComponent("shapes.svg"))
+        try XCTUnwrap(Data(base64Encoded:
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="))
+            .write(to: dir.appendingPathComponent("dot.png"))
+
+        func pdf(_ source: String) throws -> Data {
+            let doc = try LeafDoc(source: source, format: "markdown")
+            return LeafTextView.pdf(of: doc, theme: .default, documentDirectory: dir, page: .a4, title: nil)
+        }
+        let image = Data("/Image".utf8)
+        XCTAssertNil(try pdf("![shapes](shapes.svg)\n").range(of: image), "an SVG is paths on the page")
+        XCTAssertNotNil(try pdf("![dot](dot.png)\n").range(of: image), "a PNG is an image on the page")
+        XCTAssertEqual(try document(try pdf("![shapes](shapes.svg)\n")).numberOfPages, 1)
+    }
 }
 #elseif canImport(UIKit)
 import UIKit

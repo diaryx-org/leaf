@@ -334,7 +334,7 @@ final class MediaLayoutTests: XCTestCase {
         let store = MediaStore(baseURL: nil)
         let still = store.still(for: mkMedia(dotDataURI))
         XCTAssertNotNil(still)
-        XCTAssertEqual(still?.width, 1)
+        XCTAssertEqual(still?.bitmap?.width, 1)
     }
 
     func testADataURIIsNeverHandedToTheHost() {
@@ -557,6 +557,82 @@ final class MediaLayoutTests: XCTestCase {
 
     // MARK: the way up a photo says it goes
 
+    // MARK: SVG
+
+    /// A 20×10 picture, its left half red, its right half blue.
+    private let halvesSVG = """
+        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="10">
+          <rect width="10" height="10" fill="#ff0000"/>
+          <rect x="10" width="10" height="10" fill="#0000ff"/>
+        </svg>
+        """
+
+    func testAnSVGFileIsAVectorStillAtItsDeclaredSize() throws {
+        // ImageIO has no SVG codec; this used to be the dashed broken chip. Now
+        // it is a picture, measured by the canvas the SVG declares.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try Data(halvesSVG.utf8).write(to: dir.appendingPathComponent("halves.svg"))
+
+        let still = try XCTUnwrap(MediaStore(baseURL: dir).still(for: mkMedia("halves.svg")))
+        guard case .vector(let picture) = still else { return XCTFail("an SVG is vector, not pixels") }
+        XCTAssertEqual(picture.size, CGSize(width: 20, height: 10))
+        XCTAssertEqual(still.naturalSize, CGSize(width: 20, height: 10))
+
+        let box = MediaLayout(mkMedia("halves.svg"), still: still, contentWidth: 600, theme: theme)
+        XCTAssertFalse(box.isBroken)
+        XCTAssertEqual(box.size, CGSize(width: 20, height: 10), "fit never enlarges, SVG or not")
+    }
+
+    func testAnSVGDataURIDecodesInBothSpellings() throws {
+        let store = MediaStore(baseURL: nil)
+        let base64 = "data:image/svg+xml;base64," + Data(halvesSVG.utf8).base64EncodedString()
+        let percent = "data:image/svg+xml;utf8,"
+            + halvesSVG.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
+        for src in [base64, percent] {
+            let still = store.still(for: mkMedia(src))
+            guard case .vector(let picture)? = still else { return XCTFail("\(src.prefix(30))… is vector") }
+            XCTAssertEqual(picture.size.width, 20)
+        }
+    }
+
+    func testAnSVGDrawsUprightAndUnmirroredIntoTheFlippedBox() throws {
+        // The two things a flipped context gets wrong. Left half red, right
+        // half blue, drawn into a y-down 40×20 context the way the views draw:
+        // red must be on the left, and — with a tall red rect on top only —
+        // top must be top.
+        let svg = """
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="10">
+              <rect width="10" height="10" fill="#ff0000"/>
+              <rect x="10" width="10" height="10" fill="#0000ff"/>
+              <rect width="20" height="3" fill="#00ff00"/>
+            </svg>
+            """
+        let still = try XCTUnwrap(MediaStore(baseURL: nil).still(
+            for: mkMedia("data:image/svg+xml;base64," + Data(svg.utf8).base64EncodedString())))
+
+        let width = 40, height = 20
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        pixels.withUnsafeMutableBytes { raw in
+            let ctx = CGContext(
+                data: raw.baseAddress, width: width, height: height, bitsPerComponent: 8,
+                bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue)!
+            // As the views do: flip so y runs down, then draw the box.
+            ctx.translateBy(x: 0, y: CGFloat(height))
+            ctx.scaleBy(x: 1, y: -1)
+            still.draw(in: CGRect(x: 0, y: 0, width: width, height: height), ctx: ctx)
+        }
+        func px(_ x: Int, _ y: Int) -> (UInt8, UInt8, UInt8) {
+            let i = (y * width + x) * 4
+            return (pixels[i], pixels[i + 1], pixels[i + 2])
+        }
+        XCTAssertEqual(px(10, 15).0, 255, "left is red")
+        XCTAssertEqual(px(30, 15).2, 255, "right is blue")
+        XCTAssertEqual(px(10, 2).1, 255, "the green band is at the top, not the bottom")
+        XCTAssertEqual(px(10, 17).1, 0)
+    }
+
     func testATaggedPhotoIsTurnedTheWayUpItSaysItGoes() throws {
         // A camera stores the sensor's pixels and a tag saying how it was held,
         // so a photo taken upside down is stored upside down. Decoding the
@@ -567,7 +643,7 @@ final class MediaLayoutTests: XCTestCase {
         try cornerMarkedJPEG(width: 32, height: 32, orientation: .down)
             .write(to: dir.appendingPathComponent("photo.jpg"))
 
-        let still = try XCTUnwrap(MediaStore(baseURL: dir).still(for: mkMedia("photo.jpg")))
+        let still = try XCTUnwrap(MediaStore(baseURL: dir).still(for: mkMedia("photo.jpg"))?.bitmap)
         XCTAssertFalse(isRed(still, x: 8, y: 8), "the stored corner is not where it is drawn")
         XCTAssertTrue(isRed(still, x: 24, y: 24), "half a turn puts it opposite")
     }
@@ -583,8 +659,8 @@ final class MediaLayoutTests: XCTestCase {
             .write(to: dir.appendingPathComponent("photo.jpg"))
 
         let still = try XCTUnwrap(MediaStore(baseURL: dir).still(for: mkMedia("photo.jpg")))
-        XCTAssertEqual(still.width, 200)
-        XCTAssertEqual(still.height, 400, "and at its own resolution, not a thumbnail's")
+        XCTAssertEqual(still.bitmap?.width, 200)
+        XCTAssertEqual(still.bitmap?.height, 400, "and at its own resolution, not a thumbnail's")
 
         let box = MediaLayout(mkMedia("photo.jpg"), still: still, contentWidth: 600, theme: theme)
         XCTAssertGreaterThan(box.size.height, box.size.width, "laid out as the portrait it is")
@@ -598,7 +674,7 @@ final class MediaLayoutTests: XCTestCase {
         try cornerMarkedJPEG(width: 32, height: 32, orientation: nil)
             .write(to: dir.appendingPathComponent("shot.jpg"))
 
-        let still = try XCTUnwrap(MediaStore(baseURL: dir).still(for: mkMedia("shot.jpg")))
+        let still = try XCTUnwrap(MediaStore(baseURL: dir).still(for: mkMedia("shot.jpg"))?.bitmap)
         XCTAssertTrue(isRed(still, x: 8, y: 8), "the corner is where it was stored")
     }
 
@@ -684,7 +760,7 @@ final class MediaLayoutTests: XCTestCase {
         let store = MediaStore(baseURL: dir)
         let loaded = store.still(for: mkMedia("dot.png"))
         XCTAssertNotNil(loaded, "a real PNG decodes")
-        XCTAssertEqual(loaded?.width, 1)
+        XCTAssertEqual(loaded?.bitmap?.width, 1)
 
         // A missing file answers nil — and with no host to offer it to, that is
         // cached, so it keeps answering nil without going back to disk on every
@@ -710,5 +786,13 @@ final class MediaLayoutTests: XCTestCase {
         store.flush()
         XCTAssertNil(store.still(for: mkMedia("dot.png")),
                      "flush must drop the cache, not just mark it stale")
+    }
+}
+
+/// The tests that read a still's pixels want the raster; an SVG has none.
+extension MediaStill {
+    var bitmap: CGImage? {
+        if case .bitmap(let image) = self { return image }
+        return nil
     }
 }

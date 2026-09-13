@@ -45,24 +45,19 @@ enum BlockChrome {
         let rounded = CGPath(roundedRect: rect, cornerWidth: MediaMetrics.corner,
                              cornerHeight: MediaMetrics.corner, transform: nil)
 
-        if let img = box.still {
-            // Save/restore around the clip and the flip, so neither leaks into the
-            // frame and badge drawn after this — `resetClip` can't undo a clip and
-            // undoing a transform by re-applying its inverse accumulates error.
+        if let still = box.still {
+            // Save/restore around the clip, so it doesn't leak into the frame and
+            // badge drawn after this — `resetClip` can't undo a clip.
             ctx.saveGState()
             // Clip to the rounded box so the picture's corners match the chrome's
             // rather than poking out square behind it.
             ctx.addPath(rounded)
             ctx.clip()
             // Both surfaces draw into a flipped context (AppKit's `isFlipped`,
-            // UIKit's native top-left origin) so rows can be laid out top-down.
-            // `CGContext.draw` doesn't know that and would render the picture
-            // upside down, so flip back across the box before drawing it — the
-            // text paths avoid this only because NSString/NSAttributedString
-            // drawing compensates internally.
-            ctx.translateBy(x: 0, y: rect.maxY)
-            ctx.scaleBy(x: 1, y: -1)
-            ctx.draw(img, in: CGRect(x: rect.minX, y: 0, width: rect.width, height: rect.height))
+            // UIKit's native top-left origin) so rows can be laid out top-down;
+            // `MediaStill.draw` is written for exactly that, and does the flip a
+            // raster needs itself.
+            still.draw(in: rect, ctx: ctx)
             ctx.restoreGState()
         } else {
             // Nothing to show: a filled chip carrying the media's name, so the row
