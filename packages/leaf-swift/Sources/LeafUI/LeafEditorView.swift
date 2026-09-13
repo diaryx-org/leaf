@@ -615,10 +615,7 @@ struct LeafEditorSurface: NSViewRepresentable {
         let scroll = NSScrollView()
         scroll.documentView = textView
         scroll.hasVerticalScroller = true
-        // A sheet is a fixed width: a window narrower than one scrolls sideways to
-        // it rather than reflowing, which is the whole point of setting a page.
-        scroll.hasHorizontalScroller = true
-        scroll.autohidesScrollers = true
+        Self.configureScrollers(scroll, page: page)
         scroll.drawsBackground = false
         textView.autoresizingMask = page == nil ? [.width] : []
         textView.frame = CGRect(origin: .zero, size: CGSize(width: scroll.contentSize.width, height: 0))
@@ -657,6 +654,7 @@ struct LeafEditorSurface: NSViewRepresentable {
             return
         }
         hosted.theme = theme
+        Self.configureScrollers(scroll, page: page)
         // Both guard themselves against an unchanged value, so re-applying them on
         // every SwiftUI update (which is every state change at all) costs a
         // comparison rather than a relayout.
@@ -673,6 +671,42 @@ struct LeafEditorSurface: NSViewRepresentable {
         hosted.mediaPlayback = model.mediaPlayback
         hosted.onResolveMedia = model.onResolveMedia
         hosted.onLocateMedia = model.onLocateMedia
+    }
+
+    /// The editor fills whatever it is given, so say so rather than have SwiftUI
+    /// measure the scroll view for a size it does not have.
+    ///
+    /// Measuring is not free of side effects: SwiftUI reads an AppKit view's
+    /// size through its constraint engine, every read marks the window's
+    /// constraints dirty, and a window whose constraints stay dirty through one
+    /// display cycle is one AppKit throws in — an uncatchable crash, not a
+    /// warning — which a document of five column-fitted pictures managed. With
+    /// a size proposed on both axes there is nothing to ask the scroll view;
+    /// with either open, SwiftUI's own measure stands, as before.
+    @available(macOS 13.0, *)
+    public func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView,
+                             context: Context) -> CGSize? {
+        guard let width = proposal.width, let height = proposal.height,
+              width.isFinite, height.isFinite else { return nil }
+        return CGSize(width: width, height: height)
+    }
+
+    /// Which scrollers the view has, and whether they may come and go.
+    ///
+    /// A scroller that takes up room — scroll bars set to "Always", or a mouse
+    /// attached — changes the viewport's width when it appears, and the
+    /// continuous flow re-wraps to the viewport's width, which changes the
+    /// document's height, which is what decides whether the scroller appears.
+    /// Near the threshold that is a loop AppKit ends by throwing. So the
+    /// continuous flow keeps its vertical scroller on (an overlay scroller is
+    /// unaffected: it hides itself when idle either way) and has no horizontal
+    /// one, its width being the viewport's by construction. A stack of sheets
+    /// is a fixed width that a narrower window scrolls sideways to, so there
+    /// both scrollers are wanted and neither feeds back into the wrap.
+    private static func configureScrollers(_ scroll: NSScrollView, page: PageSetup?) {
+        let paged = page != nil
+        if scroll.hasHorizontalScroller != paged { scroll.hasHorizontalScroller = paged }
+        if scroll.autohidesScrollers != paged { scroll.autohidesScrollers = paged }
     }
 
     /// Build a `LeafTextView` over `model.doc`, wired the way `makeNSView` and the

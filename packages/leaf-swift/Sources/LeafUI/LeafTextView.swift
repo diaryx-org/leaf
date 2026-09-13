@@ -347,10 +347,40 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         (enclosingScrollView?.contentView.bounds.width ?? bounds.width) / zoom
     }
 
+    /// How many times this turn of the run loop has re-wrapped for a changed
+    /// width, and the most it may. A wrap is not free of consequences for the
+    /// width it was asked at: it sets the frame's height, which can show or
+    /// hide a scroller that takes up room (scroll bars set to "Always", or a
+    /// mouse attached), which changes the width, which asks for a wrap. When
+    /// the document's height sits near the viewport's — five pictures fitted
+    /// to the column will put it anywhere — that is a loop, and AppKit's
+    /// answer to a layout that stays dirty is to throw. So a turn gets a
+    /// handful of width-driven wraps and then keeps the one it has; the next
+    /// turn, if anything is still unsettled, may try again.
+    private var widthRelayoutsThisTurn = 0
+    private static let widthRelayoutCeiling = 6
+
+    private func admitWidthRelayout() -> Bool {
+        if widthRelayoutsThisTurn == 0 {
+            DispatchQueue.main.async { [weak self] in self?.widthRelayoutsThisTurn = 0 }
+        }
+        widthRelayoutsThisTurn += 1
+        if widthRelayoutsThisTurn > Self.widthRelayoutCeiling {
+            // Not silently stale: once the loop has been broken, look once more
+            // at whatever width the viewport settled on.
+            if widthRelayoutsThisTurn == Self.widthRelayoutCeiling + 1 {
+                DispatchQueue.main.async { [weak self] in self?.needsLayout = true }
+            }
+            return false
+        }
+        return true
+    }
+
     private func relayoutForWidth(force: Bool) {
         let w = layoutWidth
         guard w > theme.padding.left + theme.padding.right else { return }
         if force || abs(w - viewWidth) > 0.5 {
+            guard force || admitWidthRelayout() else { return }
             viewWidth = w
             // Re-wrap the current frame at the new pixel width — the unwrapped map is
             // width-independent, so no round trip to core is needed.
