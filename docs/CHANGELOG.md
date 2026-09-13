@@ -37,6 +37,19 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.1.12 — 2026-09-13
+
+### Fixed
+
+- **leaf-swift** — the first layout no longer caches a miss the host was about to answer ([`b51fc5f`](https://github.com/diaryx-org/leaf/commit/b51fc5f30e73c732ef63c27d24b378b2339f1218))
+
+### Behavioural changes
+
+- an image that could not be read and had no
+`onResolveMedia` to ask is re-checked on every layout rather than once;
+setting the hooks after `documentDirectory` now works as setting them before.
+
+
 ## v0.1.11 — 2026-09-13
 
 ### Added
