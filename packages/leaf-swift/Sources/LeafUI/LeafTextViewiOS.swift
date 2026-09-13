@@ -339,6 +339,13 @@ public final class LeafTextView: UIView, UITextInput {
         set { mediaStore.onResolveMedia = newValue }
     }
 
+    /// The host's own reading of a source, answered synchronously and read at
+    /// once if it names a file that is here. See `MediaStore.onLocateMedia`.
+    public var onLocateMedia: ((String) -> URL?)? {
+        get { mediaStore.onLocateMedia }
+        set { mediaStore.onLocateMedia = newValue }
+    }
+
     /// Loads and caches the stills the media boxes draw.
     private let mediaStore = MediaStore()
     /// The AVKit players currently installed over media boxes.
@@ -413,9 +420,11 @@ public final class LeafTextView: UIView, UITextInput {
         super.init(frame: .zero)
         // A resolved source has a picture to draw, and may be the one the reader
         // tapped while it was still being fetched.
+        // Laid out again rather than just repainted: the box keeps the still it
+        // was laid out with, so a repaint alone would leave a chip-height row.
         mediaStore.onLoaded = { [weak self] src in
             guard let self else { return }
-            self.setNeedsDisplay()
+            self.render(self.docView)
             self.playIfAwaited(src)
         }
         backgroundColor = .clear

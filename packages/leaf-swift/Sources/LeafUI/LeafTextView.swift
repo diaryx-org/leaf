@@ -231,6 +231,13 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// hands the source to `onOpenMedia` instead. See `MediaPlaybackMode`.
     public var mediaPlayback: MediaPlaybackMode = .inline
 
+    /// The host's own reading of a source, answered synchronously and read at
+    /// once if it names a file that is here. See `MediaStore.onLocateMedia`.
+    public var onLocateMedia: ((String) -> URL?)? {
+        get { mediaStore.onLocateMedia }
+        set { mediaStore.onLocateMedia = newValue }
+    }
+
     /// Asks the host to resolve a source this view can't read itself — a remote
     /// URL, or a scheme only the host understands — to a local file it can.
     /// See `MediaStore.onResolveMedia`; LeafUI never touches the network.
@@ -299,10 +306,13 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         }
         autoresizingMask = [.width]
         // A resolved source has a picture to draw, and may be the one the reader
-        // tapped while it was still being fetched.
+        // tapped while it was still being fetched. Laid out again rather than
+        // just repainted: every box keeps the still it was laid out with, and a
+        // chip-height row repainted with a picture is still a chip-height row —
+        // the picture used to wait, invisible, for whatever relayout came next.
         mediaStore.onLoaded = { [weak self] src in
             guard let self else { return }
-            self.needsDisplay = true
+            self.render(self.docView, keepVerticalGoal: true)
             self.playIfAwaited(src)
         }
         // Seed with the initial caret so the first reflow opens at the top rather

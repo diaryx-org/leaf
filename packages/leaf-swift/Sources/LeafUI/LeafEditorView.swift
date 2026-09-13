@@ -228,6 +228,19 @@ public final class LeafEditorModel: ObservableObject {
         didSet { textView?.mediaPlayback = mediaPlayback }
     }
 
+    /// The app's own reading of a media source, answered on the spot.
+    ///
+    /// Set this when the app spells a reference in a way the editor would
+    /// misread — a leading `/` that means the app's own root rather than the
+    /// machine's, say. It is asked first, synchronously, with the source as
+    /// written; a readable file it names draws in the same layout pass that
+    /// asked, with no trip through `onResolveMedia`. Answer `nil` to have no
+    /// opinion and leave the editor's own resolution — the document's
+    /// directory for a relative path — in force.
+    public var onLocateMedia: ((String) -> URL?)? {
+        didSet { textView?.onLocateMedia = onLocateMedia }
+    }
+
     /// Asks the app to turn a source the editor can't read itself into a local
     /// file it can — a remote URL, or any scheme only the app understands.
     ///
@@ -659,6 +672,7 @@ struct LeafEditorSurface: NSViewRepresentable {
         hosted.documentDirectory = model.documentDirectory
         hosted.mediaPlayback = model.mediaPlayback
         hosted.onResolveMedia = model.onResolveMedia
+        hosted.onLocateMedia = model.onLocateMedia
     }
 
     /// Build a `LeafTextView` over `model.doc`, wired the way `makeNSView` and the
@@ -696,6 +710,7 @@ struct LeafEditorSurface: NSViewRepresentable {
         textView.documentDirectory = model.documentDirectory
         textView.mediaPlayback = model.mediaPlayback
         textView.onResolveMedia = model.onResolveMedia
+        textView.onLocateMedia = model.onLocateMedia
         // Weak, like `onOpenLink` above: the closure outlives a host that swaps
         // its model, and a strong capture would keep the old one alive.
         textView.onOpenMedia = { [weak model] src in
@@ -868,6 +883,7 @@ struct LeafEditorSurface: UIViewRepresentable {
         hosted.documentDirectory = model.documentDirectory
         hosted.mediaPlayback = model.mediaPlayback
         hosted.onResolveMedia = model.onResolveMedia
+        hosted.onLocateMedia = model.onLocateMedia
         // Refresh the accessory's content in place — its `UIHostingController`
         // persists in the coordinator across updates, so this is a live
         // content swap, not a rebuild (which would drop first-responder focus
@@ -934,6 +950,7 @@ struct LeafEditorSurface: UIViewRepresentable {
         textView.documentDirectory = model.documentDirectory
         textView.mediaPlayback = model.mediaPlayback
         textView.onResolveMedia = model.onResolveMedia
+        textView.onLocateMedia = model.onLocateMedia
         // Weak, like `onOpenLink` above: the closure outlives a host that swaps
         // its model, and a strong capture would keep the old one alive.
         textView.onOpenMedia = { [weak model] src in

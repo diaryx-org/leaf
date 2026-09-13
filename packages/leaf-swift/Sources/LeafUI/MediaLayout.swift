@@ -257,9 +257,22 @@ final class MediaStore {
     /// from any thread.
     var onResolveMedia: ((String, @escaping (URL?) -> Void) -> Void)?
 
+    /// The host's own reading of a source, answered on the spot.
+    ///
+    /// An app may spell a reference in a way no general editor can guess —
+    /// diaryx reads a leading `/` as its vault's root, where this loader reads
+    /// the machine's — and a file that is simply on disk should draw in the
+    /// same layout pass that asked for it. This is asked first, synchronously,
+    /// with the raw `src`; a readable file it names is decoded at once, and
+    /// `onResolveMedia` is reached only for what neither the host nor this
+    /// loader can read now. `nil` means "no opinion", and the loader's own
+    /// resolution stands.
+    var onLocateMedia: ((String) -> URL?)?
+
     /// Fired with a source whose resolution just completed, so the view can
-    /// repaint — and start playing, if that source is what the reader tapped.
-    /// Always called on the main thread.
+    /// lay the box out at the picture's size and repaint — and start playing,
+    /// if that source is what the reader tapped. Always called on the main
+    /// thread.
     var onLoaded: ((String) -> Void)?
 
     /// What is known about one source.
@@ -363,7 +376,8 @@ final class MediaStore {
             return entry
         }
 
-        // A path this loader can read itself — provided the bytes are actually
+        // A path the host or this loader can read itself — the host's spelling
+        // first (see `onLocateMedia`) — provided the bytes are actually
         // here. On a synced vault they often aren't: the file is a placeholder
         // the provider hasn't materialized, and fetching it is something the
         // host can do and this cannot. Treating that as a decoding failure and
@@ -372,7 +386,8 @@ final class MediaStore {
         // loader can't read. Readability, not a failed decode, is the test —
         // a video is a perfectly good local file that `load` will never
         // decode, and its URL is exactly what playback needs.
-        if let url = resolve(source), FileManager.default.isReadableFile(atPath: url.path) {
+        if let url = onLocateMedia?(source) ?? resolve(source),
+           FileManager.default.isReadableFile(atPath: url.path) {
             let entry = Entry.ready(file: url, still: MediaStore.load(url))
             entries[source] = entry
             return entry

@@ -269,9 +269,12 @@ let pdf = editor.pdfData(theme: theme, page: .a4, title: "Tuesday")
 A sheet is drawn at the theme's stated size (a point is a point on paper — on iOS
 the reader's Dynamic Type setting is about their screen, and is not applied) and
 in light appearance, since a dark theme's ink would print white. A relative
-image resolves against `documentDirectory` as on screen; one only the host can
-fetch (`onResolveMedia`) draws as its labelled chip, because the page is made now
-rather than when the host answers. An SVG is paths on the page, not a picture
+image resolves against `documentDirectory` as on screen — or against whatever
+`onLocateMedia` says, for an app whose references mean something the editor
+would misread, such as a leading `/` for the app's own root; that hook is asked
+first and synchronously, so a file that is simply on disk draws in the same
+pass. One only the host can fetch (`onResolveMedia`) draws as its labelled
+chip, because the page is made now rather than when the host answers. An SVG is paths on the page, not a picture
 of one — it scales, selects and prints as vectors, the same as on screen. On iOS the same `pageSetup` is a view mode
 too, for a host that wants the stack on screen.
 

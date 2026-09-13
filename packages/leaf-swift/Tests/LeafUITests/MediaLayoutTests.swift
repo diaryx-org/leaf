@@ -473,6 +473,65 @@ final class MediaLayoutTests: XCTestCase {
         XCTAssertNotNil(store.still(for: mkMedia("img/cat.png")), "and now it has a picture")
     }
 
+    func testTheHostsOwnSpellingIsReadAtOnceWithoutARoundTrip() throws {
+        // A `/`-rooted reference means the app's root, not the machine's. With
+        // the app saying so up front, the file draws in the pass that asked —
+        // no trip through `onResolveMedia`, no second layout for the reader
+        // to watch happen.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("chart.svg")
+        try Data(#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"/>"#.utf8)
+            .write(to: file)
+
+        var asked = 0
+        var announced = 0
+        let store = MediaStore(baseURL: dir)
+        store.onLocateMedia = { src in
+            src.hasPrefix("/") ? dir.appendingPathComponent(String(src.dropFirst())) : nil
+        }
+        store.onResolveMedia = { _, done in asked += 1; done(nil) }
+        store.onLoaded = { _ in announced += 1 }
+
+        let still = store.still(for: mkMedia("/chart.svg"))
+        XCTAssertNotNil(still, "drawn in the same pass")
+        if case .vector(let picture)? = still {
+            XCTAssertEqual(picture.size, CGSize(width: 20, height: 10))
+        } else {
+            XCTFail("an SVG is a vector still")
+        }
+        XCTAssertEqual(asked, 0, "the host's async hook is never reached")
+        XCTAssertEqual(announced, 0, "nothing arrived late, so nothing to announce")
+    }
+
+    func testAHostWithNoOpinionLeavesTheLoadersOwnResolution() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try onePixelPNG().write(to: dir.appendingPathComponent("dot.png"))
+
+        var located: [String] = []
+        let store = MediaStore(baseURL: dir)
+        store.onLocateMedia = { src in located.append(src); return nil }
+        XCTAssertNotNil(store.still(for: mkMedia("dot.png")), "relative to the document, as before")
+        XCTAssertEqual(located, ["dot.png"], "asked first, with the src as written")
+    }
+
+    func testAHostLocationThatIsNotHereYetStillGoesToTheHostToFetch() throws {
+        // The app knew where the file belongs, but the bytes are not on this
+        // device (an iCloud placeholder): that is exactly what `onResolveMedia`
+        // is for, and it is asked with the source as written.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let missing = dir.appendingPathComponent("later.png")
+
+        var asked: [String] = []
+        let store = MediaStore(baseURL: dir)
+        store.onLocateMedia = { _ in missing }
+        store.onResolveMedia = { src, done in asked.append(src); done(nil) }
+        XCTAssertNil(store.still(for: mkMedia("/later.png")))
+        XCTAssertEqual(asked, ["/later.png"])
+    }
+
     func testALocalFileThatIsHereIsNeverOfferedToTheHost() throws {
         // The common case must not acquire a round trip through the app.
         let dir = try makeTempDir()
