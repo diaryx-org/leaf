@@ -860,7 +860,7 @@ dependencies = [
 
 [[package]]
 name = "leaf-core"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "anyhow",
  "twig-doc",
@@ -870,7 +870,7 @@ dependencies = [
 
 [[package]]
 name = "leaf-ffi"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "leaf-core",
  "resvg-uniffi",
@@ -881,7 +881,7 @@ dependencies = [
 
 [[package]]
 name = "leaf-raster"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "cosmic-text",
  "image",
@@ -890,7 +890,7 @@ dependencies = [
 
 [[package]]
 name = "leaf-ratatui"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "leaf-core",
  "leaf-raster",
@@ -901,7 +901,7 @@ dependencies = [
 
 [[package]]
 name = "leaf-tui"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "anyhow",
  "arboard",
@@ -912,7 +912,7 @@ dependencies = [
 
 [[package]]
 name = "leaf-wasm"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "console_error_panic_hook",
  "leaf-core",
@@ -2639,7 +2639,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "anyhow",
  "clap",
@@ -2709,7 +2709,3 @@ checksum = "27bc9d5b815bc103f142aa054f561d9187d191692ec7c2d1e2b4737f8dbd7296"
 dependencies = [
  "zune-core",
 ]
-
-[[patch.unused]]
-name = "fig"
-version = "4.0.0"

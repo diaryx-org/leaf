@@ -37,6 +37,27 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.1.11 — 2026-09-13
+
+### Added
+
+- **leaf-swift** — the host's own reading of a media source, answered at once ([`e565fd8`](https://github.com/diaryx-org/leaf/commit/e565fd8409bdec4804df71b03e8da850d256e45b))
+
+### Fixed
+
+- **leaf-swift** — a layout that will not settle is cut short rather than thrown in ([`63c0e3f`](https://github.com/diaryx-org/leaf/commit/63c0e3f2764584eb9b7d6a78b01beb4578e1d464))
+
+### Behavioural changes
+
+- an image `onResolveMedia` answers now re-lays out the
+document on arrival (the box takes the picture's height at once) where it
+previously only repainted and kept its chip-height row until the next relayout.
+
+- with legacy (space-taking) scroll bars the continuous
+flow's vertical scroller no longer hides on a short document, and the
+continuous flow no longer shows a horizontal scroller at all.
+
+
 ## v0.1.10 — 2026-09-12
 
 ### Added
