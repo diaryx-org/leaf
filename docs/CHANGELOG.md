@@ -37,6 +37,25 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.1.10 — 2026-09-12
+
+### Added
+
+- **leaf-swift** — SVG as vectors, through resvg-swift ([`5a5f780`](https://github.com/diaryx-org/leaf/commit/5a5f780ccfb7730b1b0af585c1838eec3301f406))
+
+### Fixed
+
+- **raster** — fill rows through as_chunks_mut, which clippy 1.98 asks for ([`4af72b9`](https://github.com/diaryx-org/leaf/commit/4af72b9ca31a0d643ca1225eb63273f2845303fd))
+- **toolchain** — Rust 1.98.1, in step with diaryx-org/nix's versions.rust ([`95cbfd0`](https://github.com/diaryx-org/leaf/commit/95cbfd08e67e36809b7db1dd38f87d494159cbb2))
+
+### Behavioural changes
+
+- an image whose source is an SVG (by file, or a `data:`
+URI of either spelling) now renders in LeafUI, on screen and in PDF export,
+where it previously drew the dashed broken-image chip; `MediaLayout.still`
+is a `MediaStill` rather than a `CGImage?`.
+
+
 ## v0.1.9 — 2026-09-12
 
 ### Added
