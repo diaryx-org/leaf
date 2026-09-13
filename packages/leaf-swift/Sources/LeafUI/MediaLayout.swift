@@ -393,12 +393,13 @@ final class MediaStore {
             return entry
         }
 
-        // Anything else is the host's to answer — or, with no host hook, simply
-        // unreadable, which is cached so it isn't re-asked every frame.
+        // Anything else is the host's to answer. With no host hook it is simply
+        // not here — and that is *not* remembered: a hook wired a moment later
+        // (the surface sets the document's directory, which lays out, before
+        // it sets the hooks) must get its look, and the cost of not caching is
+        // one `stat` per layout for a picture that is broken anyway.
         guard let ask = onResolveMedia else {
-            let entry = Entry.ready(file: nil, still: nil)
-            entries[source] = entry
-            return entry
+            return .ready(file: nil, still: nil)
         }
         entries[source] = .pending
         let token = generation

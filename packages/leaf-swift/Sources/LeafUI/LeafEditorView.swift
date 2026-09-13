@@ -667,10 +667,14 @@ struct LeafEditorSurface: NSViewRepresentable {
         hosted.recognizesWikilinks = model.recognizesWikilinks
         hosted.isReadOnly = model.isReadOnly
         hosted.onTapHighlight = model.tapHighlightBridge
-        hosted.documentDirectory = model.documentDirectory
         hosted.mediaPlayback = model.mediaPlayback
         hosted.onResolveMedia = model.onResolveMedia
         hosted.onLocateMedia = model.onLocateMedia
+        // Last, because setting it lays the document out, and that layout asks
+        // for every picture: with the hooks not yet wired, a `/`-rooted
+        // reference missed, and the miss was what the reader saw until they
+        // double-clicked the box.
+        hosted.documentDirectory = model.documentDirectory
     }
 
     /// The editor fills whatever it is given, so say so rather than have SwiftUI
@@ -741,10 +745,14 @@ struct LeafEditorSurface: NSViewRepresentable {
             model?.onDrop?(pasteboard) ?? false
         }
         textView.recognizesWikilinks = model.recognizesWikilinks
-        textView.documentDirectory = model.documentDirectory
         textView.mediaPlayback = model.mediaPlayback
         textView.onResolveMedia = model.onResolveMedia
         textView.onLocateMedia = model.onLocateMedia
+        // Last, because setting it lays the document out, and that layout asks
+        // for every picture: with the hooks not yet wired, a `/`-rooted
+        // reference missed, and the miss was what the reader saw until they
+        // double-clicked the box.
+        textView.documentDirectory = model.documentDirectory
         // Weak, like `onOpenLink` above: the closure outlives a host that swaps
         // its model, and a strong capture would keep the old one alive.
         textView.onOpenMedia = { [weak model] src in
@@ -914,10 +922,14 @@ struct LeafEditorSurface: UIViewRepresentable {
         hosted.isReadOnly = model.isReadOnly
         hosted.selectionMenuActions = model.selectionMenuBridge
         hosted.onTapHighlight = model.tapHighlightBridge
-        hosted.documentDirectory = model.documentDirectory
         hosted.mediaPlayback = model.mediaPlayback
         hosted.onResolveMedia = model.onResolveMedia
         hosted.onLocateMedia = model.onLocateMedia
+        // Last, because setting it lays the document out, and that layout asks
+        // for every picture: with the hooks not yet wired, a `/`-rooted
+        // reference missed, and the miss was what the reader saw until they
+        // double-clicked the box.
+        hosted.documentDirectory = model.documentDirectory
         // Refresh the accessory's content in place — its `UIHostingController`
         // persists in the coordinator across updates, so this is a live
         // content swap, not a rebuild (which would drop first-responder focus
@@ -981,10 +993,14 @@ struct LeafEditorSurface: UIViewRepresentable {
             model?.onPaste?() ?? false
         }
         textView.recognizesWikilinks = model.recognizesWikilinks
-        textView.documentDirectory = model.documentDirectory
         textView.mediaPlayback = model.mediaPlayback
         textView.onResolveMedia = model.onResolveMedia
         textView.onLocateMedia = model.onLocateMedia
+        // Last, because setting it lays the document out, and that layout asks
+        // for every picture: with the hooks not yet wired, a `/`-rooted
+        // reference missed, and the miss was what the reader saw until they
+        // double-clicked the box.
+        textView.documentDirectory = model.documentDirectory
         // Weak, like `onOpenLink` above: the closure outlives a host that swaps
         // its model, and a strong capture would keep the old one alive.
         textView.onOpenMedia = { [weak model] src in

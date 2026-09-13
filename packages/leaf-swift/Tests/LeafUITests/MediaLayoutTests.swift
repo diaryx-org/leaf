@@ -532,6 +532,20 @@ final class MediaLayoutTests: XCTestCase {
         XCTAssertEqual(asked, ["/later.png"])
     }
 
+    func testAMissWithNoHostHookIsNotRememberedAgainstAHookWiredLater() throws {
+        // The surface sets the document's directory — which lays out, and asks
+        // for every picture — before it wires the hooks. That first look must
+        // not poison the cache, or the picture waits for a double-click.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try onePixelPNG().write(to: dir.appendingPathComponent("dot.png"))
+
+        let store = MediaStore(baseURL: dir)
+        XCTAssertNil(store.still(for: mkMedia("/dot.png")), "no host, and no such absolute path")
+        store.onLocateMedia = { src in dir.appendingPathComponent(String(src.dropFirst())) }
+        XCTAssertNotNil(store.still(for: mkMedia("/dot.png")), "the hook gets its look")
+    }
+
     func testALocalFileThatIsHereIsNeverOfferedToTheHost() throws {
         // The common case must not acquire a round trip through the app.
         let dir = try makeTempDir()
