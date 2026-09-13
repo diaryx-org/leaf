@@ -24,7 +24,7 @@ package resolves from a tag.
 
 **Steps, once it can.**
 
-1. `leaf-ffi` takes `resvg-swift` as a dependency, `pub use resvg_swift as _;`
+1. `leaf-ffi` takes `resvg-uniffi` as a dependency, `pub use resvg_uniffi as _;`
    so its UniFFI scaffolding is in the one staticlib the app force-loads. Two
    Rust archives in one executable is a duplicate-`std` link error, so this is
    the only shape that works.

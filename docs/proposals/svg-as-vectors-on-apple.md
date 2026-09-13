@@ -91,6 +91,6 @@ ImageIO refuses — producing an `SVGPicture` rather than a `CGImage`;
 `MediaLayout` takes its intrinsic size from the document; the box draws it
 vector into the view and into the PDF. `leaf-raster::load_svg` stays as the
 terminal's path. The linking constraint is the one thing to get right: two
-Rust staticlibs can't share an executable, so `leaf-ffi` takes `resvg-swift`
+Rust staticlibs can't share an executable, so `leaf-ffi` takes `resvg-uniffi`
 as a Cargo dependency and the app keeps force-loading the one archive it
 already builds.
