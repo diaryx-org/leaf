@@ -179,6 +179,15 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// the caret.
     public var onOpenMedia: ((String) -> Void)?
 
+    /// Host hook for *showing* an attachment — called with a media box's raw
+    /// `src` when the reader asks to go to the attachment itself rather than to
+    /// have it loaded here. See `LeafEditorModel.onShowMedia`, which is where the
+    /// difference from `onOpenMedia` is written down.
+    ///
+    /// Nil leaves the affordances out entirely: no "Show Attachment" in the
+    /// contextual menu, and ⌘-click on a picture goes on placing the caret.
+    public var onShowMedia: ((String) -> Void)?
+
     /// The document's directory, which a relative `src` in the markup resolves
     /// against. Core does no I/O and knows no paths, so the host supplies this;
     /// nil (an untitled buffer) leaves relative paths unresolvable and their
@@ -1015,6 +1024,23 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             onTapHighlight(hit.id)
             return
         }
+        // ⌘-click on a box with something drawn in it — a picture that loaded, or
+        // a video showing its poster — asks the host for the attachment's own
+        // place, mirroring ⌘-click on a link. It is tried before activation
+        // because activation answers a bare `clickCount == 1` and would
+        // otherwise start the video the reader was asking to *go to*. A box with
+        // nothing in it is still "load it anyway" (`onOpenMedia`), since there is
+        // no picture there to have meant.
+        if event.clickCount == 1, event.modifierFlags.contains(.command),
+           let onShowMedia,
+           let hit = layoutEngine.mediaBox(at: p),
+           mediaStore.still(for: hit) != nil, !hit.src.isEmpty
+        {
+            let (row, ch) = hitRowCh(p)
+            render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: false))
+            onShowMedia(hit.src)
+            return
+        }
         // A plain click on a video or audio box starts it — the box's whole point
         // is the play badge drawn on it — and a click on an *empty* picture box
         // asks the host for it. The caret still moves there first, so a host that
@@ -1116,6 +1142,12 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // already kept `.edit` off the menu for one.
         guard let dest = doc.linkDestinationAtCaret() else { return }
         onEditLink?(dest)
+    }
+
+    /// "Show Attachment" — hand the host the `src` the menu item was built for.
+    @objc private func showMedia(_ sender: Any?) {
+        guard let src = (sender as? NSMenuItem)?.representedObject as? String else { return }
+        onShowMedia?(src)
     }
 
     // MARK: footnotes
@@ -1898,7 +1930,24 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
                 menu.addItem(withTitle: loc("menu.copyLink", "Copy Link"), action: #selector(copyLink(_:)), keyEquivalent: "")
             }
         }
-        if !links.isEmpty || !footnotes.isEmpty {
+        // The attachment under the click. Hit-tested rather than read off the
+        // caret alone: a click inside a block box does not necessarily leave the
+        // caret inside the image's span, and a video or audio box has no image
+        // node under it at all. `showableMediaSource` states that order.
+        let point = layoutPoint(convert(event.locationInWindow, from: nil))
+        let media = showableMediaSource(box: layoutEngine.mediaBox(at: point)?.src,
+                                        caret: doc.mediaSourceAtCaret(),
+                                        canShow: onShowMedia != nil)
+        if let media {
+            let item = menu.addItem(withTitle: loc("menu.showMedia", "Show Attachment"),
+                                    action: #selector(showMedia(_:)), keyEquivalent: "")
+            // Which attachment travels on the item rather than in a field of the
+            // view: the menu outlives the event that built it, and the caret can
+            // move under it (a Services item, another window) before it is picked.
+            item.representedObject = media
+            item.target = self
+        }
+        if !links.isEmpty || !footnotes.isEmpty || media != nil {
             menu.addItem(.separator())
         }
         if hasSelection {

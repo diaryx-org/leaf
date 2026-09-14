@@ -289,6 +289,21 @@ public final class LeafTextView: UIView, UITextInput {
     /// a tap doing nothing but placing the caret.
     public var onOpenMedia: ((String) -> Void)?
 
+    /// Host hook for *showing* an attachment — called with a media box's raw
+    /// `src` when the reader asks to go to the attachment itself rather than to
+    /// have it loaded here. See `LeafEditorModel.onShowMedia`.
+    ///
+    /// Nil leaves the edit menu exactly as it was.
+    public var onShowMedia: ((String) -> Void)?
+
+    /// The media box the long press that is raising the edit menu landed on.
+    ///
+    /// The press, not the caret: a `<video>` has no image node for core to find,
+    /// and a press inside a block box need not leave the caret inside the
+    /// picture's span. Cleared when a press begins, so a menu raised over prose
+    /// can never inherit the last one's attachment.
+    private var pressedMediaSource: String?
+
     /// The document's directory, which a relative `src` in the markup resolves
     /// against. Core does no I/O and knows no paths, so the host supplies this;
     /// nil (an untitled buffer) leaves relative paths unresolvable and their
@@ -453,6 +468,13 @@ public final class LeafTextView: UIView, UITextInput {
     /// Silent when the caret ends up on ordinary prose: an ordinary long press
     /// keeps doing exactly what it did, which is to place a caret.
     @objc private func handleLinkPress(_ gesture: UILongPressGestureRecognizer) {
+        // Where the finger went down is what a media box is judged by — the
+        // loupe spends the press dragging the caret out of it, so by the lift
+        // the caret may be anywhere, but the box the reader pressed is the one
+        // they meant.
+        if gesture.state == .began {
+            pressedMediaSource = layoutEngine.mediaBox(at: gesture.location(in: self))?.src
+        }
         guard gesture.state == .ended else { return }
         // A press that made a selection is the selection's, and the system shows
         // its own menu over one. Presenting a second here would be two menus for
@@ -475,9 +497,18 @@ public final class LeafTextView: UIView, UITextInput {
     /// into a press that opens an empty menu or one that opens none at all.
     private var caretHasMenuActions: Bool {
         !footnoteMenuActions().isEmpty
+            || showableMediaAtPress != nil
             || !doc.linkActionsAtCaret(wikilinks: recognizesWikilinks,
                                        canEdit: onEditLink != nil,
                                        canPeek: onPeekLink != nil).isEmpty
+    }
+
+    /// The attachment the menu about to be raised is about, or nil — the box the
+    /// press landed on, else the image the caret ended in, and only when a host
+    /// is listening. See `showableMediaSource`.
+    private var showableMediaAtPress: String? {
+        showableMediaSource(box: pressedMediaSource, caret: doc.mediaSourceAtCaret(),
+                            canShow: onShowMedia != nil)
     }
 
     // MARK: media activation
@@ -496,6 +527,9 @@ public final class LeafTextView: UIView, UITextInput {
         // just selected. Selecting text was impossible, and the Copy/Paste menu
         // never appeared, because every tap ended as a bare caret.
         guard !docView.hasSelection else { return }
+        // A tap ends whatever the last press was about, so the next menu cannot
+        // inherit its attachment.
+        pressedMediaSource = nil
         let point = gesture.location(in: self)
         // A margin marker outranks everything at its point — it is chrome, and
         // the whole reason it sits in the margin is to be the one tap that
@@ -1603,7 +1637,12 @@ extension LeafTextView: UIEditMenuInteractionDelegate {
         menuFor configuration: UIEditMenuConfiguration,
         suggestedActions: [UIMenuElement]
     ) -> UIMenu? {
-        let actions: [UIAction] = footnoteMenuActions() + doc
+        let media: [UIAction] = showableMediaAtPress.map { src in
+            [UIAction(title: loc("menu.showMedia", "Show Attachment")) { [weak self] _ in
+                self?.onShowMedia?(src)
+            }]
+        } ?? []
+        let actions: [UIAction] = footnoteMenuActions() + media + doc
             .linkActionsAtCaret(wikilinks: recognizesWikilinks, canEdit: onEditLink != nil,
                                 canPeek: onPeekLink != nil)
             .map { action in

@@ -321,6 +321,38 @@ public final class LeafEditorModel: ObservableObject {
     /// surface and leaves what it can't reach to the app around it.
     public var onOpenMedia: ((String) -> Void)?
 
+    /// Called when the reader asks to be taken to an attachment itself, with its
+    /// raw `src` — the contextual menu's "Show Attachment" (macOS) or the edit
+    /// menu's (iOS), and ⌘-click on a picture that has loaded.
+    ///
+    /// The other half of the pair `onOpenMedia` starts. That one means *load it
+    /// anyway*: the box is empty, or the editor cannot play what is in it, and
+    /// the answer is to fetch the bytes and call `reloadMedia(src)` so the
+    /// picture appears here. This one means *go to it*: an app where an
+    /// attachment is a thing in its own right — a node in a vault, a row in a
+    /// file inspector, a page of its own — can show that, and a reader looking
+    /// at the picture in the body is exactly who asks. An app with no such place
+    /// leaves this nil.
+    ///
+    /// Offered for pictures, video, and audio alike: the question is about the
+    /// attachment, not about what the editor can draw of it.
+    ///
+    /// Nil is the default and shows no affordance at all — no menu item, and
+    /// ⌘-click on a picture goes on placing the caret, which is what it did
+    /// before this existed. The rule `onEditLink` follows, for its reason: a
+    /// menu item that calls nobody is worse than no menu item.
+    public var onShowMedia: ((String) -> Void)? {
+        didSet { textView?.onShowMedia = showMediaBridge }
+    }
+
+    /// `onShowMedia` as the views want it: nil while the host has set nothing, so
+    /// `onShowMedia != nil` inside a view is still "is a host listening?" after
+    /// the closure is read through to the model. Same shape as `editBridge`.
+    var showMediaBridge: ((String) -> Void)? {
+        guard onShowMedia != nil else { return nil }
+        return { [weak self] src in self?.onShowMedia?(src) }
+    }
+
     let doc: LeafDoc
     fileprivate weak var textView: LeafTextView?
 
@@ -758,6 +790,9 @@ struct LeafEditorSurface: NSViewRepresentable {
         textView.onOpenMedia = { [weak model] src in
             model?.onOpenMedia?(src)
         }
+        // Through the bridge, not read through: the menu gates on it. See
+        // `showMediaBridge`.
+        textView.onShowMedia = model.showMediaBridge
         textView.isReadOnly = model.isReadOnly
         textView.onTapHighlight = model.tapHighlightBridge
         model.textView = textView
@@ -1006,6 +1041,9 @@ struct LeafEditorSurface: UIViewRepresentable {
         textView.onOpenMedia = { [weak model] src in
             model?.onOpenMedia?(src)
         }
+        // Through the bridge, not read through: the menu gates on it. See
+        // `showMediaBridge`.
+        textView.onShowMedia = model.showMediaBridge
         textView.isReadOnly = model.isReadOnly
         textView.selectionMenuActions = model.selectionMenuBridge
         textView.onTapHighlight = model.tapHighlightBridge

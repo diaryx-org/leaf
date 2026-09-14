@@ -21,6 +21,10 @@
 //  renders the editing surface and leaves windows, files, and system UI to the
 //  host, which *does* have a view controller to present a player from.
 //
+//  `onShowMedia` is the other question a host can answer about a box — not
+//  "load it anyway" but "take me to the attachment" — and `MediaTarget` decides
+//  when either menu offers it.
+//
 //  ## Sizing
 //
 //  Core reserves rows and asks how many it should have been (`set_media_rows`),
