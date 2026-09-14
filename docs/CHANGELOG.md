@@ -37,6 +37,18 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.1.13 — 2026-09-14
+
+### Added
+
+- **leaf-ffi** — the image under the caret is a question both bindings answer ([`6bb2c5b`](https://github.com/diaryx-org/leaf/commit/6bb2c5bda2712825af35fe68a33065f8d2f6ab10))
+- **leaf-swift** — a reader can go to the attachment a picture in the body is ([`fa486a8`](https://github.com/diaryx-org/leaf/commit/fa486a8a9ce6a563c33e774d44e6caae86e61afb))
+
+### Behavioural changes
+
+- ⌘-click on a block picture that has loaded, and on a video showing its poster, now calls `LeafEditorModel.onShowMedia` (and does not start playback) — but only when the host sets that new hook. ⌘-click used to place the caret on a picture and start a video; a host that leaves `onShowMedia` nil still gets exactly that.
+
+
 ## v0.1.12 — 2026-09-13
 
 ### Fixed
