@@ -693,6 +693,23 @@ public protocol LeafDocProtocol : AnyObject {
     func highlights()  -> [Highlight]
     
     /**
+     * The source of the image the caret stands in — the `src` of an
+     * `![](cat.png)` or a `<img>`, exactly as the document spells it. `None`
+     * when the caret is in no image.
+     *
+     * Two hosts ask. An image prompt seeds from it, so editing an existing
+     * picture starts from its current URL rather than blank; and a host that
+     * gives an attachment a place of its own — a node, a page, a file
+     * inspector — asks it to answer "show me *this* one" from a menu raised
+     * over the body. See `LeafEditorModel.onShowMedia` in the Swift package.
+     *
+     * A caret resting just after a block image (its trailing stop) is already
+     * past it and gets `None`, which is the same half-open rule
+     * [`link_destination_at_caret`](Self::link_destination_at_caret) follows.
+     */
+    func imageDestinationAtCaret()  -> String?
+    
+    /**
      * Tab away from a table: indent the caret's line (or the selected lines) one
      * level, nesting a list item under its sibling. The frontend calls this when
      * [`LeafDoc::cell_tab`] declined because the caret isn't in a table.
@@ -1512,6 +1529,28 @@ open func highlightAt(offset: UInt32) -> String? {
 open func highlights() -> [Highlight] {
     return try!  FfiConverterSequenceTypeHighlight.lift(try! rustCall() {
     uniffi_leaf_ffi_fn_method_leafdoc_highlights(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+    /**
+     * The source of the image the caret stands in — the `src` of an
+     * `![](cat.png)` or a `<img>`, exactly as the document spells it. `None`
+     * when the caret is in no image.
+     *
+     * Two hosts ask. An image prompt seeds from it, so editing an existing
+     * picture starts from its current URL rather than blank; and a host that
+     * gives an attachment a place of its own — a node, a page, a file
+     * inspector — asks it to answer "show me *this* one" from a menu raised
+     * over the body. See `LeafEditorModel.onShowMedia` in the Swift package.
+     *
+     * A caret resting just after a block image (its trailing stop) is already
+     * past it and gets `None`, which is the same half-open rule
+     * [`link_destination_at_caret`](Self::link_destination_at_caret) follows.
+     */
+open func imageDestinationAtCaret() -> String? {
+    return try!  FfiConverterOptionString.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_image_destination_at_caret(self.uniffiClonePointer(),$0
     )
 })
 }
@@ -6653,6 +6692,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_highlights() != 31038) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_image_destination_at_caret() != 61472) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_indent() != 12990) {

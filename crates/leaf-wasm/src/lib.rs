@@ -1822,6 +1822,14 @@ impl LeafDoc {
         self.doc.link_destination_at_caret()
     }
 
+    /// The source of the image the caret stands in, or `undefined` — the `src`
+    /// of an `![](cat.png)`, as written. What an image prompt seeds from, and
+    /// what a host that gives an attachment a page of its own asks before
+    /// offering to go there.
+    pub fn image_destination_at_caret(&mut self) -> Option<String> {
+        self.doc.image_destination_at_caret()
+    }
+
     /// Where a locator lands — the span of the block a fragment id names, for
     /// following an in-document link.
     pub fn locate(&mut self, id: &str) -> Option<LandingView> {

@@ -1814,6 +1814,23 @@ impl LeafDoc {
         self.lock().doc.link_destination_at_caret()
     }
 
+    /// The source of the image the caret stands in — the `src` of an
+    /// `![](cat.png)` or a `<img>`, exactly as the document spells it. `None`
+    /// when the caret is in no image.
+    ///
+    /// Two hosts ask. An image prompt seeds from it, so editing an existing
+    /// picture starts from its current URL rather than blank; and a host that
+    /// gives an attachment a place of its own — a node, a page, a file
+    /// inspector — asks it to answer "show me *this* one" from a menu raised
+    /// over the body. See `LeafEditorModel.onShowMedia` in the Swift package.
+    ///
+    /// A caret resting just after a block image (its trailing stop) is already
+    /// past it and gets `None`, which is the same half-open rule
+    /// [`link_destination_at_caret`](Self::link_destination_at_caret) follows.
+    pub fn image_destination_at_caret(&self) -> Option<String> {
+        self.lock().doc.image_destination_at_caret()
+    }
+
     /// The destination of the link at byte offset `off` —
     /// [`link_destination_at_caret`](Self::link_destination_at_caret) for a place
     /// the caret isn't.
@@ -2981,6 +2998,15 @@ mod tests {
         );
         d.set_selection_offsets(0, 0); // caret on plain text
         assert_eq!(d.link_destination_at_caret(), None);
+    }
+
+    #[test]
+    fn image_destination_at_caret_reads_the_image_under_the_caret() {
+        let d = doc("![a](cat.png) after\n");
+        d.set_selection_offsets(3, 3); // caret on the alt text
+        assert_eq!(d.image_destination_at_caret().as_deref(), Some("cat.png"));
+        d.set_selection_offsets(15, 15); // caret past the image, in the prose
+        assert_eq!(d.image_destination_at_caret(), None);
     }
 
     #[test]

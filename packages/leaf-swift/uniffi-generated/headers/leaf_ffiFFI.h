@@ -381,6 +381,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_highlight_at(void*_Nonnull ptr, uin
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_highlights(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_IMAGE_DESTINATION_AT_CARET
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_IMAGE_DESTINATION_AT_CARET
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_image_destination_at_caret(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INDENT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INDENT
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_indent(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
@@ -1201,6 +1206,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_highlight_at(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_HIGHLIGHTS
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_HIGHLIGHTS
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_highlights(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_IMAGE_DESTINATION_AT_CARET
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_IMAGE_DESTINATION_AT_CARET
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_image_destination_at_caret(void
     
 );
 #endif
