@@ -37,6 +37,13 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.1.14 — 2026-09-14
+
+### Fixed
+
+- **leaf-swift** — the editor surface answers every size proposal, not only a full one ([`3f21664`](https://github.com/diaryx-org/leaf/commit/3f216640e270c72dddb7cded6748501db4c06b75))
+
+
 ## v0.1.13 — 2026-09-14
 
 ### Added
