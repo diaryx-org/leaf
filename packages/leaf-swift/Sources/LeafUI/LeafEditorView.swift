@@ -716,15 +716,34 @@ struct LeafEditorSurface: NSViewRepresentable {
     /// size through its constraint engine, every read marks the window's
     /// constraints dirty, and a window whose constraints stay dirty through one
     /// display cycle is one AppKit throws in — an uncatchable crash, not a
-    /// warning — which a document of five column-fitted pictures managed. With
-    /// a size proposed on both axes there is nothing to ask the scroll view;
-    /// with either open, SwiftUI's own measure stands, as before.
+    /// warning — which a document of five column-fitted pictures managed.
+    ///
+    /// Every proposal is answered, not only one with both axes given. The
+    /// hosting view under a split-view column asks for the column's *minimum*
+    /// and *maximum* too, with nothing and with infinity proposed, and an
+    /// unanswered ask is the measurement above: the scroll view's fitting
+    /// size, which is the document's own height at whatever width it last
+    /// wrapped to. That number moves with every re-wrap and every picture that
+    /// arrives, the column reports a new maximum on every constraints pass,
+    /// and the pass never settles — the five-picture crash again, reached
+    /// through the inspector rather than a scroll bar. See `surfaceSize`.
     @available(macOS 13.0, *)
     public func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView,
                              context: Context) -> CGSize? {
-        guard let width = proposal.width, let height = proposal.height,
-              width.isFinite, height.isFinite else { return nil }
-        return CGSize(width: width, height: height)
+        Self.surfaceSize(for: proposal)
+    }
+
+    /// The size the surface reports for `proposal`: the proposal itself, with
+    /// an axis left open taken as zero.
+    ///
+    /// That is the shape of a view with no size of its own — the answer
+    /// `Color` gives — and it is what makes the editor fully flexible to the
+    /// stack it sits in: nothing at the minimum, the whole of what is offered
+    /// at the maximum, and never a number read off the document. Infinity
+    /// passes through, as it does for any fill.
+    @available(macOS 13.0, *)
+    static func surfaceSize(for proposal: ProposedViewSize) -> CGSize {
+        CGSize(width: proposal.width ?? 0, height: proposal.height ?? 0)
     }
 
     /// Which scrollers the view has, and whether they may come and go.
