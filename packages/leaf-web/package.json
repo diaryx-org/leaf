@@ -1,7 +1,6 @@
 {
-  "name": "leaf-web",
+  "name": "@diaryx/leaf",
   "version": "0.1.16",
-  "private": true,
   "description": "Framework-agnostic rich-text editor for the web: a proportional WYSIWYG surface over leaf-core's caret model, compiled to WebAssembly.",
   "type": "module",
   "license": "MIT",
@@ -25,7 +24,8 @@
   ],
   "scripts": {
     "build:wasm": "wasm-pack build ../../crates/leaf-wasm --target web --out-dir ../../packages/leaf-web/pkg",
-    "build:wasm:dev": "wasm-pack build ../../crates/leaf-wasm --dev --target web --out-dir ../../packages/leaf-web/pkg"
+    "build:wasm:dev": "wasm-pack build ../../crates/leaf-wasm --dev --target web --out-dir ../../packages/leaf-web/pkg",
+    "prepack": "node -e \"const p=require('./package.json'),w=require('./pkg/package.json');if(w.version!==p.version)throw new Error('pkg/ is leaf-wasm '+w.version+', not '+p.version+' - run npm run build:wasm')\" && rm -f pkg/.gitignore"
   },
   "keywords": [
     "editor",
