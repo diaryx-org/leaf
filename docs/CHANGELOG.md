@@ -37,6 +37,37 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.1.15 — 2026-09-15
+
+### Added
+
+- syntax-highlight fenced code, as a token per glyph each frontend colours its own way ([`345e2a7`](https://github.com/diaryx-org/leaf/commit/345e2a7d5f070ed324294a5aa297a5f28fef7aa5))
+- **tests** — repro.rs ([`1233635`](https://github.com/diaryx-org/leaf/commit/1233635ab6d9f5ebb8de3befc3b833771101b69d))
+
+### Fixed
+
+- **leaf-core** — a block that draws nothing is stepped over, not spelled as blank rows ([`ed74a76`](https://github.com/diaryx-org/leaf/commit/ed74a7649dde30c4c1bbfb96d3a54e55de41505d))
+- **leaf-core** — a link reference definition is a hidden block, not a run of blank lines ([`42ccf74`](https://github.com/diaryx-org/leaf/commit/42ccf74682b97831dafdeb7c44b1df6d650487ed))
+
+### Behavioural changes
+
+- a top-level block that renders no rows (an HTML
+comment, a raw HTML block) no longer yields blank rows: not one per line
+of the comment, and in the cached build not one per line of the document.
+A `boundary` on the gap after such a block names the drawn block above it
+rather than the comment, and a comment closing the document no longer
+opens a gap and an empty paragraph under the last block.
+
+- A code glyph in a fenced block whose language a grammar
+covers now carries `Style::token` (`Some`), and the FFI and wasm `Run`
+records carry it as `token: Option<String>`. A run that was one span of
+
+- a link reference definition standing on lines of its
+own no longer yields blank rows — none under the last block for a
+closing `[links]` group, and one gap rather than three between blocks.
+`twig-doc` is required at 3.3.3, whose `reference` nodes carry a span.
+
+
 ## v0.1.14 — 2026-09-14
 
 ### Fixed
