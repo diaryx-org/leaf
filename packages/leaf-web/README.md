@@ -2,13 +2,15 @@
 
 The web editor for [leaf](../../README.md): `LeafEditor`, a framework-agnostic
 rich-text editor over `leaf-core`'s document model, compiled to WebAssembly by
-the [`leaf-wasm`](../../crates/leaf-wasm) binding. Not on npm yet — the package
-stays `private` until there is a consumer — but shaped like a package: an
-`exports` map, types, and a `pkg/` of wasm-pack output that `npm run
-build:wasm` regenerates and that is never committed.
+the [`leaf-wasm`](../../crates/leaf-wasm) binding. On npm as
+[`@diaryx/leaf`](https://www.npmjs.com/package/@diaryx/leaf), at the
+workspace's version: an `exports` map, types, and a `pkg/` of wasm-pack output
+that `npm run build:wasm` regenerates and that is never committed. Publishing
+is by hand — `npm run build:wasm && npm publish --access public` — and
+`prepack` refuses a `pkg/` built for another version.
 
 ```js
-import { LeafEditor } from "leaf-web";
+import { LeafEditor } from "@diaryx/leaf";
 
 await LeafEditor.init();                              // load the wasm once
 const editor = new LeafEditor(document.getElementById("editor"), {
