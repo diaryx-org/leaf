@@ -498,7 +498,9 @@ struct EditorLayout {
 
         var i = 0
         while i < docView.rows.count {
-            if let t = tableAt[i], let grid = TableLayout(t, theme: theme) {
+            // Fitted to the text column — its columns squeezed and its cells
+            // wrapped until the grid is no wider than the prose around it.
+            if let t = tableAt[i], let grid = TableLayout(t, theme: theme, availableWidth: wrapWidth) {
                 // A grid is atomic: it draws itself in one pass off `tableTop`, so
                 // there is nothing to split it at. It moves whole to the next
                 // sheet, and one too tall for any sheet gets its own.

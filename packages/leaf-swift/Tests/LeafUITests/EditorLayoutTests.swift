@@ -187,6 +187,104 @@ final class EditorLayoutTests: XCTestCase {
         XCTAssertEqual(botBand.maxY, tableTop + tableHeight, accuracy: 0.5, "bottom-row band reaches the table's bottom edge")
         XCTAssertGreaterThan(botBand.maxY + 1, tableTop + tableHeight, "a Down probe clears the whole table")
     }
+    func testFitTakesFromTheWidestColumnDownToTheFloorAndNoFurther() {
+        // Three columns whose content wants 400pt in a 200pt column: the loss
+        // comes off the widest first (the narrow ones are already fine), and the
+        // grid ends up no wider than the budget.
+        var widths: [CGFloat] = [300, 60, 40]
+        TableLayout.fit(&widths, avail: 200)
+        let chrome = 3 * (TableMetrics.border + 2 * TableMetrics.padX) + TableMetrics.border
+        XCTAssertLessThanOrEqual(widths.reduce(0, +), 200 - chrome + 0.5)
+        XCTAssertEqual(widths[2], 40, "a column that already fits is left alone")
+        XCTAssertLessThan(widths[0], widths[1] + 1, "the widest gives until it meets the next")
+
+        // More columns than the surface has room for: every column stops at the
+        // floor and the grid overflows, rather than shredding a column to nothing.
+        var many: [CGFloat] = [100, 100, 100, 100]
+        TableLayout.fit(&many, avail: 60)
+        XCTAssertEqual(many, [CGFloat](repeating: TableMetrics.minColumnWidth, count: 4))
+    }
+
+    func testAWideTableIsSqueezedToTheColumnAndItsLongCellWraps() throws {
+        // One cell holds a sentence far wider than the column; the other a word.
+        // Fitted, the grid is no wider than the column, the sentence wraps into
+        // several lines in its own column, and the row grows to hold them.
+        let sentence = "the quick brown fox jumps over the lazy dog again and again"
+        let grid = mkTable([
+            mkTableRow([mkCell("key", start: 2, end: 5), mkCell(sentence, start: 8, end: 67)]),
+        ], startRow: 0, endRow: 3)
+        let dv = docView(
+            [row([], decoration: true), row([], decoration: true), row([], decoration: true)],
+            tables: [grid], caretRow: 0, caretSrc: 8
+        )
+        let column: CGFloat = 240
+        let layout = EditorLayout(dv, theme: theme, wrapWidth: column)
+        let table = try XCTUnwrap(layout.rows[0].table)
+        XCTAssertLessThanOrEqual(table.width, column + 0.5)
+
+        let cell = table.rows[0].cells[1]
+        XCTAssertGreaterThan(cell.lines.count, 1, "the sentence wrapped")
+        XCTAssertEqual(layout.rows[0].height,
+                       CGFloat(cell.lines.count) * theme.lineHeight + 2 * TableMetrics.padY + 2,
+                       accuracy: 0.5)
+        // The pieces tile the cell's source range: each starts where the last
+        // ended, the first at the cell's home and the last at its end stop.
+        XCTAssertEqual(cell.lines.first?.start, 8)
+        XCTAssertEqual(cell.lines.last?.end, 67)
+        for (a, b) in zip(cell.lines, cell.lines.dropFirst()) {
+            XCTAssertEqual(a.end, b.start)
+            XCTAssertTrue(a.softWrapped)
+        }
+        XCTAssertFalse(try XCTUnwrap(cell.lines.last).softWrapped)
+        // No piece is wider than its column: a line the wrap could not bring
+        // under the column would spill over the next cell's text.
+        for ln in cell.lines {
+            XCTAssertLessThanOrEqual(ln.textX + CGFloat(CTLineGetTypographicBounds(ln.line, nil, nil, nil)),
+                                     cell.colRight + 0.5)
+        }
+
+        // The caret at the cell's home is on the first line; at the offset the
+        // first wrap broke at it is on the second, one line lower and back at
+        // the cell's left edge — the soft-wrap boundary belongs to the line that
+        // follows, as it does in a paragraph.
+        let first = try XCTUnwrap(layout.caretRect(dv, theme: theme))
+        let boundary = try XCTUnwrap(cell.lines.first).end
+        let dv2 = docView(
+            [row([], decoration: true), row([], decoration: true), row([], decoration: true)],
+            tables: [grid], caretRow: 0, caretSrc: UInt32(boundary)
+        )
+        let second = try XCTUnwrap(layout.caretRect(dv2, theme: theme))
+        XCTAssertEqual(second.minY - first.minY, theme.lineHeight, accuracy: 0.5)
+        XCTAssertEqual(second.minX, first.minX, accuracy: 0.5)
+
+        // Unfitted (no column yet), the same table is laid out at its natural
+        // width on a single line, as before.
+        let loose = try XCTUnwrap(EditorLayout(dv, theme: theme).rows[0].table)
+        XCTAssertGreaterThan(loose.width, column)
+        XCTAssertEqual(loose.rows[0].cells[1].lines.count, 1)
+    }
+
+    func testAWrappedCellLineSlicesItsSelectionToEachPiece() throws {
+        // A selected sentence that wraps: each piece carries the part of the
+        // highlight that falls on it, so the fill covers every line rather than
+        // only the first (or spilling one line's range across the others).
+        let sentence = "the quick brown fox jumps over the lazy dog again and again"
+        let grid = mkTable([
+            mkTableRow([mkSelCell(sentence, start: 2, end: 61)]),
+        ], startRow: 0, endRow: 3)
+        let dv = docView(
+            [row([], decoration: true), row([], decoration: true), row([], decoration: true)],
+            tables: [grid]
+        )
+        let layout = EditorLayout(dv, theme: theme, wrapWidth: 160)
+        let cell = try XCTUnwrap(layout.rows[0].table).rows[0].cells[0]
+        XCTAssertGreaterThan(cell.lines.count, 1)
+        for ln in cell.lines {
+            XCTAssertEqual(ln.selRanges.count, 1)
+            XCTAssertEqual(ln.selRanges[0].start, 0)
+            XCTAssertEqual(ln.selRanges[0].end, ln.attributed.length)
+        }
+    }
 
     func testTableSelectionCarriesIntoTheLaidOutLineAndYieldsAHighlightRect() throws {
         // A cell core marks selected carries its selected sub-range into the laid
