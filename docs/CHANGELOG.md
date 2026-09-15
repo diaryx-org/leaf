@@ -37,6 +37,21 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.1.16 — 2026-09-15
+
+### Added
+
+- **leaf-swift** — squeeze a wide table to the text column and wrap its cells ([`2b206b2`](https://github.com/diaryx-org/leaf/commit/2b206b2796d6f01373abe52ebecec3b619e9e8f7))
+
+### Behavioural changes
+
+- In leaf-swift a table wider than the text column is now
+squeezed to fit it and its overlong cells wrap into several lines, so a row
+holding such a cell is taller than one text line and the grid's total height
+grows accordingly; previously the grid kept its natural width and ran past the
+column's right edge.
+
+
 ## v0.1.15 — 2026-09-15
 
 ### Added
