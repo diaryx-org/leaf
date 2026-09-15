@@ -99,9 +99,12 @@ enum AttributedRow {
         // so hit-testing and the caret rect follow on their own.
         let runSize = size * (run.sup || run.sub ? theme.baselineScale : 1)
 
+        // A comment in a highlighted block is italic on top of its colour —
+        // the one token the palette gives a style as well as a hue.
+        let italic = run.italic || (isCode && run.token == "comment")
         var attrs: [NSAttributedString.Key: Any] = [:]
         attrs[.font] = isCode
-            ? theme.monospaceFont(size: runSize, bold: bold, italic: run.italic)
+            ? theme.monospaceFont(size: runSize, bold: bold, italic: italic)
             : theme.proportionalFont(size: runSize, bold: bold, italic: run.italic)
         if run.sup {
             attrs[.baselineOffset] = runSize * theme.baselineSuperShift
@@ -113,7 +116,9 @@ enum AttributedRow {
         // hierarchy is size + weight, never colour.
         switch run.role {
         case "link": attrs[.foregroundColor] = theme.linkColor
-        case "code": attrs[.foregroundColor] = theme.codeColor
+        // A highlighted glyph in a fenced block reads in its token's ink; a
+        // plain one — inline code, a block no grammar covers — in `codeColor`.
+        case "code": attrs[.foregroundColor] = theme.syntaxColor(run.token)
         case "list": attrs[.foregroundColor] = theme.secondaryColor
         // A quote's `│ ` gutter is *not* drawn as text: the view paints a real bar
         // down the block's left edge instead. The glyphs stay in the string (they

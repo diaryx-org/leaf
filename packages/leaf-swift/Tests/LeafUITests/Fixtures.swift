@@ -26,11 +26,14 @@ func mkRun(
     hlColor: String? = nil,
     // The colour an author named on a `==mark==`, by name — nil for a plain
     // highlight and for every other role.
-    markColor: String? = nil
+    markColor: String? = nil,
+    // What a `code` run is to its block's language, by class id — nil for
+    // plain code and for every other role.
+    token: String? = nil
 ) -> Run {
     Run(text: text, role: role, bold: bold, italic: italic, underline: underline,
         strike: strike, sup: sup, sub: sub, src: src, sel: sel, hl: hl, hlColor: hlColor,
-        markColor: markColor)
+        markColor: markColor, token: token)
 }
 
 func row(

@@ -86,6 +86,12 @@ public struct EditorTheme {
     public var linkColor: LeafColor
     public var codeColor: LeafColor
     public var codeBackground: LeafColor
+    /// The ink for a highlighted glyph in a fenced block, keyed by the class
+    /// id its `Run.token` carries — see `Palette.syntax` for the eight ids. A
+    /// run whose token the table has no entry for, and a run with no token —
+    /// an identifier the grammar left plain, a block in a language no grammar
+    /// covers, inline code — reads in `codeColor`. Comments are italic as well.
+    public var syntaxColors: [String: LeafColor]
     /// A directive container's (`:::name{.class}`) dashed outline colour.
     public var directiveBorderColor: LeafColor
     public var markBackground: LeafColor
@@ -162,6 +168,7 @@ public struct EditorTheme {
         linkColor: LeafColor = Palette.link,
         codeColor: LeafColor = Palette.label,
         codeBackground: LeafColor = Palette.codeBackground,
+        syntaxColors: [String: LeafColor] = Palette.syntax,
         directiveBorderColor: LeafColor = Palette.directiveBorderColor,
         markBackground: LeafColor = Palette.markBackground,
         highlightBackground: LeafColor = Palette.hostHighlight,
@@ -201,6 +208,7 @@ public struct EditorTheme {
         self.linkColor = linkColor
         self.codeColor = codeColor
         self.codeBackground = codeBackground
+        self.syntaxColors = syntaxColors
         self.directiveBorderColor = directiveBorderColor
         self.markBackground = markBackground
         self.highlightBackground = highlightBackground
@@ -286,6 +294,15 @@ public struct EditorTheme {
     func highlightBackground(_ hint: String?) -> LeafColor {
         guard let hint, let color = leafColor(hex: hint) else { return highlightBackground }
         return color.withAlphaComponent(0.32)
+    }
+
+    /// The ink for a code run classed `token`: the palette's entry, or
+    /// `codeColor` for no token and for a token the palette doesn't know — so
+    /// a class a newer core emits and this table lacks draws as plain code
+    /// rather than not at all, the same bargain `markBackground(_:)` makes.
+    func syntaxColor(_ token: String?) -> LeafColor {
+        guard let token, let color = syntaxColors[token] else { return codeColor }
+        return color
     }
 
     /// The wash behind one `==mark==`: the colour the author named, or the

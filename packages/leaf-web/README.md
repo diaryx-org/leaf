@@ -54,6 +54,13 @@ file.
   and Djot doesn't — together with `caretInMark()` or `state.hasSelection`,
   which say whether there is anything for the colour to belong to.
   `setMarkColor` is the exact one-splice gesture underneath.
+- **Syntax highlighting** in a fenced block whose language a grammar knows:
+  each run carries a `token` — one of core's eight classes — and arrives as a
+  `.leaf-t-<token>` class beside `.leaf-r-code`, coloured by the
+  `--leaf-syn-<token>` custom properties in both appearances. A stylesheet
+  that knows nothing of them still draws the block as code. The grammars
+  weigh about 0.7 MB of the wasm; build `leaf-wasm` with
+  `--no-default-features` to leave them out.
 - **Host highlights** (`setHighlights`), a **read-only** gate, **drag and
   drop** of text and files, `load()` for the next document, and `goTo` /
   `reveal` for landing a reader somewhere.

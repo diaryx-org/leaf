@@ -165,6 +165,16 @@ pub struct Run {
     /// `role` rather than folding into it (`"mark-red"`) so a renderer that
     /// knows nothing about colours still draws the run as the highlight it is.
     pub mark_color: Option<String>,
+    /// What a `code` run is to the language its fenced block is written in —
+    /// `"punctuation"`, `"keyword"`, `"entity"`, `"support"`, `"constant"`,
+    /// `"string"`, `"comment"`, `"invalid"` — or absent for a run the grammar
+    /// left plain, for every run of a block in a language no grammar covers,
+    /// for inline code, and for every other role.
+    ///
+    /// A class id like `role`, and beside it for the reason `mark_color` is: a
+    /// renderer that knows nothing about tokens still draws the run as the code
+    /// it is, and one that does keys a palette on the name.
+    pub token: Option<String>,
 }
 
 /// Where a locator lands — what [`LeafDoc::locate`] answers with, and the FFI
@@ -2594,6 +2604,7 @@ fn make_run(
         hl: hl.map(|h| h.id.clone()),
         hl_color: hl.and_then(|h| h.color.clone()),
         mark_color: mark_color_name(style.role),
+        token: style.token.map(|t| t.name().to_string()),
     }
 }
 
@@ -2613,6 +2624,34 @@ mod tests {
 
     fn doc(src: &str) -> Arc<LeafDoc> {
         LeafDoc::new(src.to_string(), "markdown".to_string()).unwrap()
+    }
+
+    /// A token splits a run the way a style does — it *is* part of the style
+    /// — and rides across as its class id. A block in a language no grammar
+    /// covers is one plain `code` run with no token, as it always was.
+    #[cfg(feature = "syntax")]
+    #[test]
+    fn a_highlighted_block_splits_its_runs_by_token() {
+        let v = doc("```rust\nlet x = 1;\n```\n").set_unwrapped();
+        let row = v.rows.iter().find(|r| r.code).expect("a code row");
+        let classed: Vec<(&str, Option<&str>)> = row
+            .runs
+            .iter()
+            .map(|r| (r.text.as_str(), r.token.as_deref()))
+            .collect();
+        assert_eq!(classed[0], ("let", Some("keyword")));
+        assert!(row.runs.iter().all(|r| r.role == "code"), "{classed:?}");
+        assert!(
+            classed
+                .iter()
+                .any(|(t, k)| *t == "1" && *k == Some("constant")),
+            "{classed:?}"
+        );
+
+        let v = doc("```text\nlet x = 1;\n```\n").set_unwrapped();
+        let row = v.rows.iter().find(|r| r.code).unwrap();
+        assert_eq!(row.runs.len(), 1);
+        assert_eq!(row.runs[0].token, None);
     }
 
     #[test]

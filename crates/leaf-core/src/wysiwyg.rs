@@ -28,7 +28,7 @@ use twig::{Alignment, ContainerOrigin, DirectiveForm, Editor, FlatNode, Kind, Qu
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::style::{Baseline, MarkColor, Role, Style};
+use crate::style::{Baseline, MarkColor, Role, Style, Token};
 
 /// One rendered character plus the source byte offset it originates from.
 /// Synthetic glyphs (a list bullet, a quote gutter) point at their block's
@@ -2751,6 +2751,13 @@ impl Builder<'_> {
                 // its language label (`None` for an indented block or a bare
                 // fence). Kept on the row so it rides the block cache.
                 let lang = code_language(self.source, node.span.start);
+                // The block's syntax highlighting, a token per byte range of
+                // each line — `None` unless the fence names a language the
+                // grammars know (and unless the `syntax` feature is on). Done
+                // here, once per build of the block, because the rows it
+                // colours ride the block cache: an edit elsewhere in the
+                // document reuses them, tokens and all.
+                let tokens = lang.as_deref().and_then(|l| code_tokens(l, &lines));
                 for (i, raw) in lines.iter().enumerate() {
                     let at = offs.as_ref().map_or(node.span.start, |o| o[i]);
                     // No gutter glyph: the block is set apart by the border and
@@ -2758,7 +2765,10 @@ impl Builder<'_> {
                     // not by a per-line mark. Just the block prefix (a list
                     // indent, a quote gutter) and the code text.
                     let mut glyphs: Vec<Glyph> = pf.to_vec();
-                    push_text(&mut glyphs, raw, at, style);
+                    match tokens.as_ref().and_then(|t| t.get(i)) {
+                        Some(spans) => push_code_text(&mut glyphs, raw, at, style, spans),
+                        None => push_text(&mut glyphs, raw, at, style),
+                    }
                     // Explicitly past the line's *text*: a blank code line has no
                     // glyph, and any prefix's offset would put the row's end
                     // inside the next line.
@@ -4632,6 +4642,64 @@ fn push_text(out: &mut Vec<Glyph>, text: &str, base_src: usize, style: Style) {
             });
         }
     }
+}
+
+/// [`push_text`] for one line of a highlighted code block: the same glyphs at
+/// the same offsets, each additionally carrying the [`Token`] of the span it
+/// falls in — `spans` being the line's entry from [`code_tokens`], ascending
+/// byte ranges *into `text`*. A byte between spans keeps `style` as it is.
+///
+/// Offsets are what matters here: a token changes how a glyph is painted and
+/// nothing about where it is or which source byte it stands on, so a caret
+/// walks a highlighted block exactly as it walks an unhighlighted one.
+fn push_code_text(
+    out: &mut Vec<Glyph>,
+    text: &str,
+    base_src: usize,
+    style: Style,
+    spans: &[(Range<usize>, Token)],
+) {
+    let mut spans = spans.iter().peekable();
+    for (gi, cluster) in text.grapheme_indices(true) {
+        // Spans are ascending, so the one covering this cluster's first byte
+        // is at or after the one that covered the last; step past those ended.
+        while spans.peek().is_some_and(|(r, _)| r.end <= gi) {
+            spans.next();
+        }
+        let token = spans
+            .peek()
+            .filter(|(r, _)| r.contains(&gi))
+            .map(|(_, t)| *t);
+        // A cluster is classed whole, by its first byte: a grammar that split
+        // an emoji's scalars between two tokens would otherwise split the
+        // glyph, and no grammar means to.
+        let style = style.token(token);
+        for (ci, ch) in cluster.char_indices() {
+            out.push(Glyph {
+                ch,
+                style,
+                src: base_src + gi + ci,
+                stop: ci == 0,
+            });
+        }
+    }
+}
+
+/// One line's highlighting — `crate::syntax::LineTokens`, spelled here so the
+/// shape exists whether or not the feature that fills it does.
+type LineTokens = Vec<(Range<usize>, Token)>;
+
+/// The syntax highlighting for a code block's lines, or `None` when the fence's
+/// language is not one the grammars know. Without the `syntax` feature nothing
+/// is known, and every code glyph draws in the plain code colour.
+#[cfg(feature = "syntax")]
+fn code_tokens(lang: &str, lines: &[&str]) -> Option<Vec<LineTokens>> {
+    crate::syntax::highlight(lang, lines)
+}
+
+#[cfg(not(feature = "syntax"))]
+fn code_tokens(_lang: &str, _lines: &[&str]) -> Option<Vec<LineTokens>> {
+    None
 }
 
 /// Emit an inline `str`/`smart_punctuation` run, mapping every visible char back
@@ -6577,6 +6645,83 @@ mod tests {
         );
         assert_eq!(map("```\nplain\n```\n").code_blocks[0].lang, None);
         assert_eq!(map("    indented\n").code_blocks[0].lang, None);
+    }
+
+    /// The token every glyph spelling `ch` carries, in row order — how a test
+    /// reads a block's highlighting off the map.
+    fn tokens_of(m: &VisualMap, ch: char) -> Vec<Option<Token>> {
+        m.rows
+            .iter()
+            .flat_map(|r| r.glyphs.iter())
+            .filter(|g| g.ch == ch)
+            .map(|g| g.style.token)
+            .collect()
+    }
+
+    #[cfg(feature = "syntax")]
+    #[test]
+    fn a_fenced_block_in_a_known_language_carries_tokens() {
+        // `let` is a keyword, the string literal a string, and the plain
+        // identifier `x` nothing at all — it draws in the code colour. Every
+        // glyph is still `Role::Code`: a token is beside the role, not instead.
+        let m = map("```rust\nlet x = \"s\";\n```\n");
+        assert_eq!(tokens_of(&m, 'l'), vec![Some(Token::Keyword)]);
+        assert_eq!(tokens_of(&m, 'x'), vec![None]);
+        assert_eq!(tokens_of(&m, '"'), vec![Some(Token::String); 2]);
+        assert!(
+            m.rows
+                .iter()
+                .filter(|r| r.code)
+                .flat_map(|r| r.glyphs.iter())
+                .all(|g| g.style.role == Role::Code),
+            "a token replaced the code role"
+        );
+    }
+
+    #[cfg(feature = "syntax")]
+    #[test]
+    fn a_token_changes_nothing_about_where_a_glyph_is() {
+        // The same block with and without a language it can be highlighted in
+        // lays out identically: same rows, same offsets, same stops. Only the
+        // token differs, so the caret walks a highlighted block as it walked an
+        // unhighlighted one.
+        let hl = map("```rust\nlet x = 1; // c\nfn f() {}\n```\n");
+        let plain = map("```text\nlet x = 1; // c\nfn f() {}\n```\n");
+        assert_eq!(hl.rows.len(), plain.rows.len());
+        for (a, b) in hl.rows.iter().zip(&plain.rows) {
+            assert_eq!(a.end_src, b.end_src);
+            assert_eq!(a.glyphs.len(), b.glyphs.len());
+            for (ga, gb) in a.glyphs.iter().zip(&b.glyphs) {
+                assert_eq!((ga.ch, ga.src, ga.stop), (gb.ch, gb.src, gb.stop));
+                assert_eq!(ga.style.token(None), gb.style);
+            }
+        }
+        assert!(tokens_of(&hl, 'l').iter().any(Option::is_some));
+        assert!(tokens_of(&plain, 'l').iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn a_block_with_no_language_to_highlight_in_carries_no_tokens() {
+        // A bare fence, an indented block, a fence in a language no grammar
+        // covers, and inline code all draw as plain code — and so does a
+        // `rust` fence when the `syntax` feature is off.
+        for src in [
+            "```\nlet x = 1;\n```\n",
+            "    let x = 1;\n",
+            "```no-such-language\nlet x = 1;\n```\n",
+            "a `let x` b\n",
+        ] {
+            assert!(
+                tokens_of(&map(src), 'l').iter().all(Option::is_none),
+                "{src:?} was highlighted"
+            );
+        }
+        #[cfg(not(feature = "syntax"))]
+        assert!(
+            tokens_of(&map("```rust\nlet x = 1;\n```\n"), 'l')
+                .iter()
+                .all(Option::is_none)
+        );
     }
 
     #[test]

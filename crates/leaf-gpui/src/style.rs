@@ -10,7 +10,7 @@
 //! roles produce a native-feeling document rather than a colored-terminal echo.
 
 use gpui::{Font, FontStyle, FontWeight, Hsla, TextRun, UnderlineStyle, px};
-use leaf_core::style::{Role, Style as LStyle};
+use leaf_core::style::{Role, Style as LStyle, Token};
 
 /// The GUI's presentation of a glyph: the two font families it shapes with plus
 /// the handful of role colors, resolved once per paint from the theme and handed
@@ -38,6 +38,10 @@ pub struct RunStyle {
     /// mid-sentence. A fenced block gets a drawn border box instead (geometry the
     /// element paints), but an inline run can only carry a background color.
     pub code_bg: Hsla,
+    /// The syntax-highlighting palette, indexed by
+    /// [`Token::index`](leaf_core::Token::index) — see
+    /// [`EditorStyle::syntax`](crate::EditorStyle::syntax).
+    pub syntax: [Hsla; 8],
 }
 
 /// How much larger than the body a heading of `level` (1-based) is drawn, given
@@ -71,16 +75,22 @@ pub fn text_run(len: usize, s: LStyle, rs: &RunStyle) -> TextRun {
     if s.bold || heading {
         font.weight = FontWeight::BOLD;
     }
-    if s.italic {
+    // A comment in a highlighted block is italic on top of its colour — the
+    // one token the palette gives a style as well as a hue.
+    if s.italic || (s.role == Role::Code && s.token == Some(Token::Comment)) {
         font.style = FontStyle::Italic;
     }
-    let color = match s.role {
-        Role::Link => rs.link,
+    let color = match (s.role, s.token) {
+        // A highlighted code glyph reads in its token's colour; one without a
+        // token — or a token on a non-code role, which core never produces —
+        // falls through to the role's colour.
+        (Role::Code, Some(token)) => rs.syntax[token.index()],
+        (Role::Link, _) => rs.link,
         // Revealed raw markup is muted for the same reason the list bullets and
         // quote gutters are: it's the scaffolding around the prose, and the
         // caret's line should still read as a line of text.
-        Role::ListMarker | Role::QuoteGutter | Role::Rule | Role::Delimiter => rs.muted,
-        // Body, Heading, Code, Mark all read in the default text color.
+        (Role::ListMarker | Role::QuoteGutter | Role::Rule | Role::Delimiter, _) => rs.muted,
+        // Body, Heading, plain Code, Mark all read in the default text color.
         _ => rs.text,
     };
     // Marked text gets its highlight; inline code gets its pill tint. A fenced

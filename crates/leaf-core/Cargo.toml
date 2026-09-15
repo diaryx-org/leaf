@@ -14,8 +14,15 @@ description = "Frontend-neutral core of leaf: a byte-offset caret/selection mode
 # with `--no-default-features` and drives the model through the in-memory
 # constructors (`Doc::from_source`, the public `source` field, `mark_saved`)
 # instead, since it has no path to read and its own way to persist bytes.
-default = ["fs"]
+default = ["fs", "syntax"]
 fs = []
+# Syntax highlighting inside fenced code blocks: each code glyph is classed with
+# a `Token` by the language the fence names. Default-on, since every frontend
+# paints it, but a feature because of what it weighs — the grammars travel as an
+# embedded binary dump of about a megabyte, which a host that has decided a
+# wasm bundle or an app binary cannot afford it can leave out. Without it every
+# glyph's `token` is `None` and code draws in one colour, as it always did.
+syntax = ["dep:syntect", "dep:two-face"]
 
 [dependencies]
 twig-doc.workspace = true
@@ -24,3 +31,19 @@ unicode-segmentation = "1.13.3"
 # Display width: a column is a terminal cell, and a `col` counted in characters
 # drifts from the glyph it names by one cell per wide character on the line.
 unicode-width = "0.2.0"
+# `regex-fancy`, never the default `regex-onig`: oniguruma is a C library, and
+# this crate has to keep compiling for `wasm32-unknown-unknown` (leaf-wasm) and
+# as a staticlib for iOS (leaf-ffi). `parsing` alone — no `html`, no themes:
+# the output is a `Token` per glyph, and the colours are the frontends' own.
+syntect = { version = "5.3", default-features = false, features = [
+    "parsing",
+    "regex-fancy",
+], optional = true }
+# The grammars themselves, as bat packages them, and the same set `plates`
+# publishes with. syntect's own bundle is 75 syntaxes and has no Zig, Swift,
+# TOML or TypeScript — the first two being what half this organisation is
+# written in. two-face carries 213, including all four. `syntect-fancy` rather
+# than any `-onig` spelling, for the reason above.
+two-face = { version = "0.5", default-features = false, features = [
+    "syntect-fancy",
+], optional = true }

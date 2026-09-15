@@ -119,6 +119,14 @@ pub struct EditorStyle {
     pub muted: Hsla,
     pub mark_background: Hsla,
     pub mark_colors: [Hsla; 7],
+    /// The syntax-highlighting palette inside a fenced block, indexed by
+    /// [`Token::index`](leaf_core::Token::index): punctuation, keyword, entity,
+    /// support, constant, string, comment, invalid. A code glyph carrying a
+    /// token reads in its entry instead of [`Self::text`]; one carrying none —
+    /// an identifier the grammar left plain, every glyph of a block in a
+    /// language no grammar covers, inline code — keeps `text`. Comments are
+    /// italic as well.
+    pub syntax: [Hsla; 8],
     /// Body font family.
     pub font_family: SharedString,
     /// The monospace family code (inline `` `verbatim` `` and fenced blocks) is
@@ -172,6 +180,20 @@ impl Default for EditorStyle {
                 rgb(0xcce2ff).into(),
                 rgb(0xe8d2ff).into(),
                 rgb(0xead8b8).into(),
+            ],
+            // The palette `plates` publishes a page with in light mode, so a
+            // block reads the same here and on the site. Punctuation and
+            // comments share the quiet grey; the other six are distinct hues
+            // dark enough to read on the code panel's near-white.
+            syntax: [
+                rgb(0x6a7580).into(), // punctuation
+                rgb(0x9526a0).into(), // keyword
+                rgb(0x2b62d9).into(), // entity
+                rgb(0x016a99).into(), // support
+                rgb(0x98590a).into(), // constant
+                rgb(0x0a7040).into(), // string
+                rgb(0x6a7580).into(), // comment
+                rgb(0xc02617).into(), // invalid
             ],
             font_family: "Helvetica".into(),
             mono_font_family: "Menlo".into(),
@@ -3887,6 +3909,7 @@ impl Element for TextElement {
                     mark_bg: style.mark_background,
                     mark_colors: style.mark_colors,
                     code_bg: style.code_background,
+                    syntax: style.syntax,
                 };
                 let line_ratio = (f32::from(line_height) / f32::from(font_size).max(1.0)).max(1.0);
                 let mut shaper = Shaper {
@@ -4516,6 +4539,7 @@ fn test_run_style(body: Font) -> RunStyle {
         mark_bg: theme.mark_background,
         mark_colors: theme.mark_colors,
         code_bg: theme.code_background,
+        syntax: theme.syntax,
     }
 }
 
@@ -5644,6 +5668,46 @@ mod table_layout_tests {
             theme.muted,
             "decoration is muted"
         );
+    }
+
+    /// A token recolours a code glyph and changes nothing else about it: still
+    /// mono, still on the code tint. A comment is italic on top. A token on a
+    /// non-code role — which core never produces — is ignored.
+    #[test]
+    fn a_token_recolours_code_and_nothing_else() {
+        let theme = EditorStyle::default();
+        let styler = test_run_style(gpui::font("Helvetica"));
+        let run = |style| build_runs(&glyphs_of("x", 0, style), &styler, None)[0].clone();
+        let plain = run(CoreStyle::default().role(Role::Code));
+        for token in leaf_core::Token::ALL {
+            let styled = run(CoreStyle::default().role(Role::Code).token(Some(token)));
+            assert_eq!(
+                styled.color,
+                theme.syntax[token.index()],
+                "{}",
+                token.name()
+            );
+            assert_eq!(
+                styled.font.family,
+                plain.font.family,
+                "{} left mono",
+                token.name()
+            );
+            assert_eq!(
+                styled.background_color,
+                plain.background_color,
+                "{}",
+                token.name()
+            );
+            assert_eq!(
+                styled.font.style == gpui::FontStyle::Italic,
+                token == leaf_core::Token::Comment,
+                "{} italic",
+                token.name()
+            );
+        }
+        let prose = run(CoreStyle::default().token(Some(leaf_core::Token::Keyword)));
+        assert_eq!(prose.color, theme.text);
     }
 
     #[test]

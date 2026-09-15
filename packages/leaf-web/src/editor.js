@@ -991,6 +991,10 @@ export class LeafEditor {
     // closed vocabulary the stylesheet already has a rule for, where a host
     // highlight's colour is an arbitrary value only the host knows.
     if (run.mark_color) cls += " leaf-mk-" + run.mark_color;
+    // What a code run is to its block's language — a class from the same
+    // closed vocabulary `plates` styles its pages with, so a stylesheet rule
+    // per token colours it. A run without one is plain code.
+    if (run.token) cls += " leaf-t-" + run.token;
     span.className = cls;
     span._src = run.src;
     span.textContent = run.text;
@@ -1979,7 +1983,8 @@ function sameStyle(a, b) {
     a.sub === b.sub &&
     a.hl === b.hl &&
     a.hl_color === b.hl_color &&
-    a.mark_color === b.mark_color
+    a.mark_color === b.mark_color &&
+    a.token === b.token
   );
 }
 
@@ -1995,6 +2000,7 @@ function runKey(run) {
     (run.sub ? "_" : "") +
     (run.hl ? "#" + run.hl + ":" + (run.hl_color || "") : "") +
     (run.mark_color ? "=" + run.mark_color : "") +
+    (run.token ? "@" + run.token : "") +
     "\u0001" +
     run.text +
     "\u0002"
@@ -2288,6 +2294,18 @@ const EDITOR_CSS = `
   --leaf-code-bg: #f1f2f4;
   --leaf-code-border: #dfe2e8;
   --leaf-hl-bg: #ffe08a;
+  /* The syntax-highlighting palette inside a fenced block, one per token
+     class core emits — the palette plates publishes a page with, so a block
+     reads the same in the editor and on the site. Punctuation and comments
+     share the quiet grey. A run with no token keeps the row's own ink. */
+  --leaf-syn-punctuation: #6a7580;
+  --leaf-syn-keyword: #9526a0;
+  --leaf-syn-entity: #2b62d9;
+  --leaf-syn-support: #016a99;
+  --leaf-syn-constant: #98590a;
+  --leaf-syn-string: #0a7040;
+  --leaf-syn-comment: #6a7580;
+  --leaf-syn-invalid: #c02617;
 
   position: relative;
   overflow: auto;
@@ -2320,6 +2338,14 @@ const EDITOR_CSS = `
     --leaf-code-bg: #2a2f3a;
     --leaf-code-border: #3a4150;
     --leaf-hl-bg: #6b5a1e;
+    --leaf-syn-punctuation: #7f8b99;
+    --leaf-syn-keyword: #c678dd;
+    --leaf-syn-entity: #7aa2f7;
+    --leaf-syn-support: #56b6c2;
+    --leaf-syn-constant: #e0af68;
+    --leaf-syn-string: #9ece6a;
+    --leaf-syn-comment: #7f8b99;
+    --leaf-syn-invalid: #f7768e;
   }
 }
 /* The editable surface: the browser draws the caret (themed) and selection. */
@@ -2407,6 +2433,17 @@ const EDITOR_CSS = `
   border-bottom: 1px solid var(--leaf-code-border);
   border-bottom-left-radius: 6px; border-bottom-right-radius: 6px; margin-bottom: 4px;
 }
+/* Syntax highlighting: a code run's token picks its ink, inside a fenced block
+   only — core puts a token on nothing else, and scoping it keeps that so. A
+   comment is italic on top. */
+.leaf-row.code .leaf-t-punctuation { color: var(--leaf-syn-punctuation); }
+.leaf-row.code .leaf-t-keyword { color: var(--leaf-syn-keyword); }
+.leaf-row.code .leaf-t-entity { color: var(--leaf-syn-entity); }
+.leaf-row.code .leaf-t-support { color: var(--leaf-syn-support); }
+.leaf-row.code .leaf-t-constant { color: var(--leaf-syn-constant); }
+.leaf-row.code .leaf-t-string { color: var(--leaf-syn-string); }
+.leaf-row.code .leaf-t-comment { color: var(--leaf-syn-comment); font-style: italic; }
+.leaf-row.code .leaf-t-invalid { color: var(--leaf-syn-invalid); }
 .leaf-code-lang {
   position: absolute; right: 6px; top: 1px;
   font-size: 11px; color: var(--leaf-muted); font-family: var(--leaf-font);
