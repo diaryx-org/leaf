@@ -1991,7 +1991,17 @@ fn metadata_end_of(nodes: &[FlatNode], doc: usize) -> Option<usize> {
 /// in by `span.start` puts each definition on screen exactly where it was
 /// written, which is what keeps rows, stops, and offsets monotonic.
 ///
-/// Only `footnote` roots are merged. twig also leaves stray orphan `str` nodes
+/// A **link reference definition** (`[foo]: /url`) is a root of the same kind,
+/// and is merged for the opposite reason: it draws *nothing*, and the walk has
+/// to know where it stands to step over it. A definition closing a README —
+/// the `[links]: …` block under the prose — left no block over its lines, so
+/// the separator logic read them as blank lines and drew an empty paragraph
+/// per definition. Merged in, it is a hidden block like a comment, and
+/// [`Builder::block_or_hidden`] moves the walk past it. One with no span
+/// (`0..0`, what twig before 3.3.3 reported for every one) has nowhere to be
+/// merged, and is left out as before.
+///
+/// Only those roots are merged. twig also leaves stray orphan `str` nodes
 /// parented to nothing (the `*` of an emphasis run, for one); those are already
 /// rendered as part of the subtree that owns their bytes, and re-emitting them
 /// here would double them.
@@ -2009,11 +2019,23 @@ fn top_level(nodes: &[FlatNode], doc: usize) -> Vec<usize> {
         nodes
             .iter()
             .enumerate()
-            .filter(|(_, n)| n.kind == Kind::Footnote && n.parent.is_none())
+            .filter(|(_, n)| n.parent.is_none() && is_placed_definition(&n.kind, &n.span))
             .map(|(i, _)| i),
     );
     out.sort_by_key(|&i| nodes[i].span.start);
     out
+}
+
+/// Is a parentless node of `kind` at `span` a definition the top-level walk
+/// merges in — a footnote definition, or a link reference definition that
+/// knows where it stands? Shared by [`top_level`] and [`top_blocks`] so the
+/// two walks cannot disagree about what the top-level blocks are.
+fn is_placed_definition(kind: &Kind, span: &Range<usize>) -> bool {
+    match *kind {
+        Kind::Footnote => true,
+        Kind::Reference => span.end > span.start,
+        _ => false,
+    }
 }
 
 /// The top-level blocks to hand [`build_cached`] / [`build_spliced`] — the
@@ -2030,20 +2052,22 @@ fn top_level(nodes: &[FlatNode], doc: usize) -> Vec<usize> {
 /// instead. twig 3.0's `definitions()` asks the library the question directly,
 /// so both the marshal and the gate are gone.
 ///
-/// Filtered to [`Kind::Footnote`]: `definitions()` also reports the *link*
-/// reference definitions (`[foo]: /url`), which leaf has never rendered as
-/// blocks and which are not this change's business to start rendering.
+/// The link reference definitions `definitions()` also reports are merged on
+/// the same terms as [`top_level`] merges them — see [`is_placed_definition`].
 ///
 /// This is the one part of the render that needs an [`Editor`] rather than a
 /// marshalled node array. The builders themselves stay editor-free; this only
 /// prepares their input.
 pub(crate) fn top_blocks(editor: &mut Editor) -> Vec<QueryMatch> {
     let mut top = editor.child_spans(None).unwrap_or_default();
-    let notes = footnote_definitions(editor);
-    if notes.is_empty() {
+    let defs: Vec<QueryMatch> = definitions(editor)
+        .into_iter()
+        .filter(|m| is_placed_definition(&m.kind, &m.span))
+        .collect();
+    if defs.is_empty() {
         return top;
     }
-    top.extend(notes);
+    top.extend(defs);
     // Source order — what every offset-keyed thing downstream (rows, stops, the
     // splice path's block-for-block match) is built to assume.
     top.sort_by_key(|m| m.span.start);
@@ -2054,22 +2078,28 @@ pub(crate) fn top_blocks(editor: &mut Editor) -> Vec<QueryMatch> {
 /// reports them.
 ///
 /// Filtered to [`Kind::Footnote`]: `definitions()` also reports the *link*
-/// reference definitions (`[foo]: /url`), which leaf has never rendered as
-/// blocks and which are not this function's business.
+/// reference definitions (`[foo]: /url`), which are [`top_blocks`]'s business
+/// and not [`crate::Doc::footnote_at_caret`]'s.
 ///
 /// Empty when the document can't be walked, which leaves [`top_blocks`] with
 /// the ordinary top-level children and [`crate::Doc::footnote_at_caret`] with an
 /// undefined reference — in both cases the same answer as a document that has
 /// no definitions, which is the right way to degrade.
 pub(crate) fn footnote_definitions(editor: &mut Editor) -> Vec<QueryMatch> {
-    let Ok(mut doc) = editor.document() else {
-        return Vec::new();
-    };
-    doc.definitions()
-        .unwrap_or_default()
+    definitions(editor)
         .into_iter()
         .filter(|m| m.kind == Kind::Footnote)
         .collect()
+}
+
+/// Every definition twig resolves by label rather than by position — footnote
+/// and link reference definitions both — or nothing when the document can't be
+/// walked.
+fn definitions(editor: &mut Editor) -> Vec<QueryMatch> {
+    let Ok(mut doc) = editor.document() else {
+        return Vec::new();
+    };
+    doc.definitions().unwrap_or_default()
 }
 
 /// The label of the footnote definition starting at `start` — the `1` in
@@ -2721,6 +2751,12 @@ impl Builder<'_> {
                     self.blocks(id, &f, &c, false);
                 }
             }
+            // A link reference definition (`[foo]: /url`): resolved by label
+            // into the links that use it, and drawn nowhere — the rich view has
+            // no more use for its line than for a comment's. It is walked at all
+            // (see [`top_level`]) so [`Builder::block_or_hidden`] can step the
+            // walk past its bytes rather than count them as blank lines.
+            "reference" => {}
             "table" => self.table(id, pf, pc),
             "code_block" => {
                 let style = Style::default().role(Role::Code);
@@ -5191,6 +5227,11 @@ mod tests {
             // document as a blank row. One at the start, one between blocks,
             // one at the end, so each position is covered.
             "<!-- lead -->\n\npara\n\n<!-- exec -->\n```\ncode\n```\n\nafter\n\n<!-- trail -->\n",
+            // Link reference definitions: roots beside `doc` like footnotes,
+            // but drawing nothing. Alone between blocks, glued under a
+            // paragraph, and closing the file under a comment — the README
+            // shape.
+            "see [a] and [b]\n\n[a]: /a\n\nmid\n[b]: /b \"bee\"\n\nend [c]\n\n<!-- links -->\n[c]: /c\n",
         ];
         for wrap in [None, Some(80usize), Some(20)] {
             for src in docs {
@@ -7604,6 +7645,52 @@ mod tests {
         assert_maps_eq(&plain, &cached, "comment then 200 paragraphs");
         // intro, then 200 × (gap, paragraph): 401 rows and not a row more.
         assert_eq!(cached.rows.len(), 401);
+    }
+
+    #[test]
+    fn a_link_reference_definition_is_stepped_over_like_a_comment() {
+        // `[a]: /a` is a root beside `doc` with no rows of its own. Merged into
+        // the walk it is a hidden block: the blocks either side meet across one
+        // boundary, and its line is not a blank row.
+        let m = map("see [a]\n\n[a]: /a\n\nafter\n");
+        assert_eq!(row_texts(&m), ["see a", "", "after"]);
+        assert_eq!(
+            boundaries(&m),
+            vec![(BlockClass::Paragraph, BlockClass::Paragraph)]
+        );
+    }
+
+    #[test]
+    fn link_reference_definitions_closing_the_document_are_not_trailing_blank_lines() {
+        // The README shape: prose, then a `[links]` block nobody reads. Its
+        // lines used to be counted as blank ones, an empty paragraph per
+        // definition under the last real block.
+        let m = map("see [a] and [b]\n\n<!-- links -->\n[a]: /a\n[b]: /b \"bee\"\n");
+        assert_eq!(row_texts(&m), ["see a and b"]);
+    }
+
+    #[test]
+    fn a_definition_glued_under_a_paragraph_stays_inside_it() {
+        // `[a]: /a` at the front of a paragraph's lines is stripped from the
+        // paragraph's text, but the paragraph's span still starts on its line.
+        // Both blocks start at the same offset; the definition, sorted first,
+        // is stepped over, and the paragraph draws as it always did — one gap
+        // above it, none inside.
+        let m = map("intro\n\n[a]: /a\ntext [a]\n");
+        assert_eq!(row_texts(&m), ["intro", "", "text a"]);
+    }
+
+    #[test]
+    fn a_definition_with_no_span_is_left_out_of_the_walk() {
+        // twig before 3.3.3 reported `0..0` for every link reference
+        // definition. One of those has nowhere to be merged: sorted first by
+        // its zero start it would open the document with a phantom block, and
+        // the walk would step back to offset 0. It is simply not a block. A
+        // footnote definition is always placed; it has a body to draw.
+        assert!(!is_placed_definition(&Kind::Reference, &(0..0)));
+        assert!(is_placed_definition(&Kind::Reference, &(7..14)));
+        assert!(is_placed_definition(&Kind::Footnote, &(0..0)));
+        assert!(!is_placed_definition(&Kind::Str, &(7..14)));
     }
 
     #[test]

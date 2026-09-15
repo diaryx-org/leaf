@@ -9755,6 +9755,10 @@ mod tests {
             // into the blocks around it (a splice past a hidden block), and
             // break the comment open into prose and back (a structural change).
             "intro\n\n<!-- exec -->\n```\ncode\n```\n\nafter the comment\n\n<!-- trail -->\n",
+            // Link reference definitions: a hidden block that an edit can turn
+            // into a paragraph (a deleted `:`) and back, and whose own bytes an
+            // edit can land in.
+            "see [a] and [b]\n\n[a]: /a\n\nmid text\n\n[b]: /b\n",
         ];
         // A deterministic mix: mostly single characters (which stay inside one
         // block → splice), plus edits that reshape structure (a paragraph break,
