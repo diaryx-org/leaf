@@ -9750,6 +9750,11 @@ mod tests {
             // back into a paragraph, and vice versa), which is exactly the
             // structural churn the splice path has to notice and bail out of.
             "text[^1] here\n\n[^1]: the note\n\nmore text[^b]\n\n[^b]: second\n",
+            // A comment is a top-level block that draws no rows — a layout entry
+            // at zero rows either side of blocks that do. The edits below type
+            // into the blocks around it (a splice past a hidden block), and
+            // break the comment open into prose and back (a structural change).
+            "intro\n\n<!-- exec -->\n```\ncode\n```\n\nafter the comment\n\n<!-- trail -->\n",
         ];
         // A deterministic mix: mostly single characters (which stay inside one
         // block → splice), plus edits that reshape structure (a paragraph break,

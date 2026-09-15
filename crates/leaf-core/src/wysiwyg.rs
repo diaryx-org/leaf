@@ -1175,22 +1175,18 @@ pub fn build(
         rows: Vec::new(),
         tables: Vec::new(),
         last_off: 0,
+        stepped_over: 0,
         media_rows,
         break_glyph: Cell::new(' '),
         preserve_soft,
         reveal: reveal.clone(),
     };
-    b.top_blocks(&top);
+    let last_drawn = b.top_blocks(&top);
     // The hidden frontmatter's end is the baseline for both the trailing blank
     // rows and the caret floor — see [`hidden_prefix_end`]. `top_level` has
     // already dropped every `metadata` child, so read it off the arena.
     let hidden_end = hidden_prefix_end(source, metadata_end_of(nodes, doc));
-    b.emit_trailing_blank_lines(
-        top.last().map_or(BlockClass::Paragraph, |&i| {
-            BlockClass::from_node_kind(&nodes[i].kind)
-        }),
-        hidden_end,
-    );
+    b.emit_trailing_blank_lines(last_drawn.unwrap_or(BlockClass::Paragraph), hidden_end);
     let content_start = top.first().map_or(hidden_end, |&i| nodes[i].span.start);
     let stops = collect_stops(&b.rows);
     label_media_boundaries(&mut b.rows);
@@ -1259,6 +1255,7 @@ pub fn build_cached(
         rows: Vec::new(),
         tables: Vec::new(),
         last_off: 0,
+        stepped_over: 0,
         media_rows,
         break_glyph: Cell::new(' '),
         preserve_soft,
@@ -1269,10 +1266,15 @@ pub fn build_cached(
     // [`build_spliced`] can patch one block without rebuilding the map.
     let mut layout_blocks: Vec<BlockLayout> = Vec::with_capacity(blocks.len());
     let mut all_shift_safe = true;
-    for (i, block) in blocks.iter().enumerate() {
+    // The class of the last block that drew anything: what the next separator
+    // closes, and what the trailing blank lines close at the end. A hidden block
+    // (a comment) never becomes it — see [`Builder::block_or_hidden`], whose
+    // step-over this loop repeats for the incremental walk.
+    let mut above: Option<BlockClass> = None;
+    for block in &blocks {
         let start = block.span.start;
         let before_sep = b.rows.len();
-        if i > 0 {
+        if let Some(above) = above {
             // This walker has no node arena at all (see the `nodes: &[]` above),
             // but a top-level query match carries its kind — the same string
             // `BlockClass::from_node_kind` classifies for the whole-arena walk, so
@@ -1282,12 +1284,11 @@ pub fn build_cached(
                 &[],
                 true,
                 Boundary {
-                    above: BlockClass::from_node_kind(&blocks[i - 1].kind),
+                    above,
                     below: BlockClass::from_node_kind(&block.kind),
                 },
             );
         }
-        let sep_rows = b.rows.len() - before_sep;
         let after_sep = b.rows.len();
         let bytes = block_bytes(source, &block.span);
         let hash = block_hash(bytes);
@@ -1318,13 +1319,23 @@ pub fn build_cached(
                     rows: Vec::new(),
                     tables: Vec::new(),
                     last_off: 0,
+                    stepped_over: 0,
                     media_rows,
                     break_glyph: Cell::new(' '),
                     preserve_soft,
                     reveal: reveal.clone(),
                 };
                 sub.block(0, &[], &[]);
-                let last_off = sub.last_off;
+                // A block that drew nothing is stepped over, not stood on: its
+                // `last_off` is its own end, so the separator after it counts
+                // from there. The sub-builder started at 0 and never moved, and
+                // 0 is where the next separator would otherwise count from —
+                // every line of the document, as a blank row each.
+                let last_off = if sub.rows.is_empty() {
+                    block.span.end
+                } else {
+                    sub.last_off
+                };
                 // Cache only a block that is table-free AND renders inside its own
                 // span: those two are the conditions for reuse-by-shift to be
                 // correct. A block failing either is re-rendered every build (a
@@ -1348,7 +1359,22 @@ pub fn build_cached(
             }
         }
         let content_rows = b.rows.len() - after_sep;
-        all_shift_safe &= rows_within(&b.rows[after_sep..], &block.span);
+        let sep_rows = if content_rows == 0 {
+            // Hidden: take back the separator drawn for it, so what stands
+            // either side meets across one boundary. Its layout entry stays, at
+            // no rows, so the splice arithmetic still counts one entry per block.
+            b.rows.truncate(before_sep);
+            // A cache hit restored the stored `last_off` above; an empty subtree
+            // (twig couldn't hand it back) restored nothing. Either way the walk
+            // stands past the block.
+            b.last_off = b.last_off.max(block.span.end);
+            b.stepped_over = b.stepped_over.max(block.span.end);
+            0
+        } else {
+            above = Some(BlockClass::from_node_kind(&block.kind));
+            all_shift_safe &= rows_within(&b.rows[after_sep..], &block.span);
+            after_sep - before_sep
+        };
         layout_blocks.push(BlockLayout {
             span: block.span.clone(),
             kind: block.kind.clone(),
@@ -1365,12 +1391,7 @@ pub fn build_cached(
             .map(|m| m.span.end)
             .next_back(),
     );
-    b.emit_trailing_blank_lines(
-        blocks.last().map_or(BlockClass::Paragraph, |m| {
-            BlockClass::from_node_kind(&m.kind)
-        }),
-        hidden_end,
-    );
+    b.emit_trailing_blank_lines(above.unwrap_or(BlockClass::Paragraph), hidden_end);
     let trailing_rows = b.rows.len() - before_trailing;
 
     // Evict every entry no block reused this build, so the cache tracks the
@@ -1549,6 +1570,7 @@ pub fn build_spliced(
         rows: Vec::new(),
         tables: Vec::new(),
         last_off: 0,
+        stepped_over: 0,
         media_rows,
         break_glyph: Cell::new(' '),
         preserve_soft,
@@ -2150,6 +2172,12 @@ struct Builder<'a> {
     /// The end offset of the last content emitted — the anchor for blank
     /// separator rows so the caret never snaps onto one.
     last_off: usize,
+    /// The end of the last block the walk stepped over without drawing — a
+    /// comment, which the rich view hides. `last_off` moves past it too, for the
+    /// separators; this is kept apart so the trailing blank lines can be counted
+    /// from it without also being counted from a code block's closing fence,
+    /// which `last_off` likewise ends after. `0` until a hidden block is met.
+    stepped_over: usize,
     /// How many rows each block image reserves, keyed by its destination — the
     /// frontend's per-image height, threaded in from [`crate::Doc::set_media_rows`]
     /// so [`Builder::block_media`] can size the placeholder without core doing any
@@ -2301,8 +2329,9 @@ impl Builder<'_> {
             .filter(|&c| self.nodes[c].kind != Kind::Metadata)
             .collect();
         let mut above: Option<BlockClass> = None;
-        for (i, child) in kids.into_iter().enumerate() {
+        for child in kids {
             let below = BlockClass::from_node_kind(&self.nodes[child].kind);
+            let before_sep = self.rows.len();
             if let Some(above) = above {
                 self.emit_separators_before(
                     self.nodes[child].span.start,
@@ -2311,10 +2340,48 @@ impl Builder<'_> {
                     Boundary { above, below },
                 );
             }
-            let first = if i == 0 { pf } else { pc };
-            self.block(child, first, pc);
-            above = Some(below);
+            // The first *drawn* child wears the first-row prefix (a bullet, a
+            // footnote label), not the first child: a comment opening a list
+            // item draws nothing, and the bullet belongs to what follows it.
+            let first = if above.is_none() { pf } else { pc };
+            if self.block_or_hidden(child, before_sep, first, pc) {
+                above = Some(below);
+            }
         }
+    }
+
+    /// Render `child` after the separator [`Builder::emit_separators_before`]
+    /// spelled for it from row `before_sep` on, and say whether it drew
+    /// anything.
+    ///
+    /// A block that draws no rows — an HTML comment, which the rich view hides
+    /// the way it hides frontmatter — is still *there* in the source, and the
+    /// walk has to step over it: `last_off` moves past it so the next separator
+    /// counts the blank lines from its end, not from wherever the last drawn
+    /// block stopped. Left where it was, the separator counted every line of the
+    /// comment as a blank row; and the cached path, whose per-block builder
+    /// starts at offset 0, handed back a `last_off` of 0 and counted every line
+    /// of the *document* — one phantom blank row per source line, once per
+    /// comment. The separator drawn for it is taken back too, so a hidden block
+    /// leaves no gap of its own: what stands either side of it meets across one
+    /// boundary, as if the comment were not there.
+    fn block_or_hidden(
+        &mut self,
+        child: usize,
+        before_sep: usize,
+        pf: &[Glyph],
+        pc: &[Glyph],
+    ) -> bool {
+        let after_sep = self.rows.len();
+        self.block(child, pf, pc);
+        if self.rows.len() > after_sep {
+            return true;
+        }
+        self.rows.truncate(before_sep);
+        let end = self.nodes[child].span.end;
+        self.last_off = self.last_off.max(end);
+        self.stepped_over = self.stepped_over.max(end);
+        false
     }
 
     /// Render an explicit, ordered list of top-level blocks — [`Builder::blocks`]
@@ -2326,11 +2393,15 @@ impl Builder<'_> {
     /// [`Builder::emit_separators_before`] the incremental top-level walk in
     /// [`build_cached`] uses, so the two paths can't drift on how a boundary
     /// looks.
-    fn top_blocks(&mut self, ids: &[usize]) {
-        for (i, &child) in ids.iter().enumerate() {
+    ///
+    /// Returns the class of the last block that drew anything — what the
+    /// trailing blank lines close — or `None` when nothing did.
+    fn top_blocks(&mut self, ids: &[usize]) -> Option<BlockClass> {
+        let mut above: Option<BlockClass> = None;
+        for &child in ids {
             let below = BlockClass::from_node_kind(&self.nodes[child].kind);
-            if i > 0 {
-                let above = BlockClass::from_node_kind(&self.nodes[ids[i - 1]].kind);
+            let before_sep = self.rows.len();
+            if let Some(above) = above {
                 self.emit_separators_before(
                     self.nodes[child].span.start,
                     &[],
@@ -2338,8 +2409,11 @@ impl Builder<'_> {
                     Boundary { above, below },
                 );
             }
-            self.block(child, &[], &[]);
+            if self.block_or_hidden(child, before_sep, &[], &[]) {
+                above = Some(below);
+            }
         }
+        above
     }
 
     /// Emit the blank separator row(s) that sit between a block ending at the
@@ -3919,7 +3993,14 @@ impl Builder<'_> {
         // With no rows at all the count starts past any hidden frontmatter, not
         // at 0: its newlines are not trailing blank lines, and counting them
         // opened phantom rows *inside* the metadata for a frontmatter-only file.
-        let last_end = self.rows.last().map_or(hidden_end, |r| r.end_src);
+        //
+        // Or past the last hidden block, if that is later: a closing comment
+        // draws no row, and its lines are not blank lines the author opened.
+        let last_end = self
+            .rows
+            .last()
+            .map_or(hidden_end, |r| r.end_src)
+            .max(self.stepped_over);
         if last_end >= self.source.len() {
             return;
         }
@@ -5036,6 +5117,12 @@ mod tests {
             // see [`block_bytes`].
             "# Title\n\nThe quick brown fox.\n\nA tail with no newline",
             "A claim[^1] and another[^src].\n\n[^1]: First note.\n[^src]: Second, ending the file.",
+            // Comments draw nothing. The per-block builder the cached path
+            // renders one with starts at offset 0 and, drawing nothing, never
+            // moved — so the walk went on from 0 and spelled every line of the
+            // document as a blank row. One at the start, one between blocks,
+            // one at the end, so each position is covered.
+            "<!-- lead -->\n\npara\n\n<!-- exec -->\n```\ncode\n```\n\nafter\n\n<!-- trail -->\n",
         ];
         for wrap in [None, Some(80usize), Some(20)] {
             for src in docs {
@@ -7281,6 +7368,97 @@ mod tests {
             ],
             "each gap names the pair it falls between, in document order"
         );
+    }
+
+    // ── hidden blocks ────────────────────────────────────────────────────────
+
+    /// The row texts of `m`, one string per row.
+    fn row_texts(m: &VisualMap) -> Vec<String> {
+        m.rows
+            .iter()
+            .map(|r| r.glyphs.iter().map(|g| g.ch).collect())
+            .collect()
+    }
+
+    #[test]
+    fn a_comment_between_two_blocks_is_stepped_over_not_drawn_as_a_gap() {
+        // `<!-- exec -->` is a top-level block that draws no rows. The blocks
+        // either side of it meet across the one boundary a paragraph and a code
+        // block always meet across — not that boundary *plus* one blank row per
+        // line of the comment, which is what counting the separator from the
+        // paragraph's end used to spell.
+        let m = map("para one\n\n<!-- exec -->\n```\ncode\n```\n\nafter\n");
+        assert_eq!(row_texts(&m), ["para one", "", "code", "", "after"]);
+        assert_eq!(
+            boundaries(&m),
+            vec![
+                (BlockClass::Paragraph, BlockClass::Code),
+                (BlockClass::Code, BlockClass::Paragraph),
+            ],
+            "the boundary names the drawn blocks either side, not the comment"
+        );
+        // The gap stands past the comment, so the caret's row lookup never
+        // resolves inside it.
+        assert_eq!(
+            m.rows[1].end_src, 23,
+            "the gap row ends at the comment's end"
+        );
+    }
+
+    #[test]
+    fn a_comment_opening_the_document_draws_no_leading_gap() {
+        let m = map("<!-- lead -->\n\npara\n");
+        assert_eq!(row_texts(&m), ["para"]);
+        assert_eq!(m.content_start, 0, "the comment is still the first block");
+    }
+
+    #[test]
+    fn a_comment_closing_the_document_is_not_trailing_blank_lines() {
+        // Its lines are not blank lines the author opened with Enter, so no
+        // gap-plus-empty-paragraph is fabricated under the last drawn block.
+        let m = map("para\n\n<!-- trail -->\n");
+        assert_eq!(row_texts(&m), ["para"]);
+        // Enter at the end of the document still opens the empty paragraph the
+        // caret rests on: the newlines *after* the comment count as they would
+        // after any block.
+        let m = map("para\n\n<!-- trail -->\n\n");
+        assert_eq!(row_texts(&m), ["para", "", ""]);
+    }
+
+    #[test]
+    fn a_comment_in_a_list_item_leaves_the_bullet_to_what_follows_it() {
+        // The first *drawn* child wears the item's marker; a hidden first child
+        // would otherwise take it and leave the text without one.
+        let m = map("- <!-- note -->\n\n  text\n- two\n");
+        let texts = row_texts(&m);
+        assert!(
+            texts.iter().any(|t| t == "• text"),
+            "the text wears the bullet: {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|t| t == "• "),
+            "no empty bullet row for the comment: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn the_cached_build_does_not_spell_the_document_out_as_blank_rows_after_a_comment() {
+        // The bug as seen: a 200-line document with one comment in it rendered
+        // ~200 blank rows after the comment, one per source line, because the
+        // comment's per-block builder handed back a `last_off` of 0. Parity with
+        // `build` alone would not catch a *shared* wrong answer, so the count is
+        // pinned outright.
+        let body = (0..200)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let src = format!("intro\n\n<!-- exec -->\n{body}\n");
+        let mut ed = Editor::new_str(&src, Format::Markdown).unwrap();
+        let mut cache = BlockCache::default();
+        let (plain, cached) = render_both(&mut ed, &src, Some(80), &mut cache);
+        assert_maps_eq(&plain, &cached, "comment then 200 paragraphs");
+        // intro, then 200 × (gap, paragraph): 401 rows and not a row more.
+        assert_eq!(cached.rows.len(), 401);
     }
 
     #[test]
