@@ -2,7 +2,7 @@
 title: Tasks
 description: Deferred work on leaf, one file each — a commitment with a done state
 created: 2026-09-04
-updated: 2026-09-12
+updated: 2026-09-15
 contents:
 - '[The find bar covers the first line of a document at its top](find-bar-covers-first-line.md)'
 - '[Spelling and autocorrect in the macOS view](macos-text-checking.md)'
@@ -13,6 +13,7 @@ contents:
 - '[The frame crosses the wasm boundary whole on every keystroke](wasm-frame-crosses-whole.md)'
 - '[An empty last line in a fence has no row](empty-last-line-in-a-fence-has-no-row.md)'
 - '[SVG through resvg-swift](svg-through-resvg-swift.md)'
+- '[A link reference definition''s lines are drawn as blank rows](link-definitions-are-blank-rows.md)'
 ---
 # Tasks
 
