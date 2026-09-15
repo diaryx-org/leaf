@@ -1,25 +1,20 @@
 ---
-status: in-progress
+status: done
 created: 2026-09-15
 updated: 2026-09-15
 ---
 # A link reference definition's lines are drawn as blank rows
 
-**Status: in-progress.** The fix is written and verified on both sides, and
-waits on a twig release. twig `dc0106f` gives a `reference` node the span of
-its own bytes (it reported `0..0` for every one); leaf's branch
-`link-definitions` merges a definition that has a span into the top-level walk
-as a hidden block, stepped over the way `ed74a76` steps over a comment. Against
-the published `twig-doc 3.3.1` the merge is a no-op and two of its tests fail
-— `a_link_reference_definition_is_stepped_over_like_a_comment` and
+**Status: done.** twig 3.3.3 (`dc0106f`) gives a `reference` node the span of
+its own bytes, where it reported `0..0` for every one; leaf's `top_level` and
+`top_blocks` merge a definition that has a span into the top-level walk as a
+hidden block, stepped over the way `ed74a76` steps over a comment, through one
+shared predicate (`is_placed_definition`) so the two walks cannot disagree.
+Pinned by `a_link_reference_definition_is_stepped_over_like_a_comment`,
 `link_reference_definitions_closing_the_document_are_not_trailing_blank_lines`
-— so the branch is not on `main`. Verified green with `cargo xtask ci` under
-`[patch.crates-io] twig-doc` at the checkout and `TWIG_SYS_FORCE_SOURCE=1`.
-
-**Remaining.** Release twig with the fix (the version is Adam's to name), then
-in leaf: bump `twig-doc` in `Cargo.toml` to that release, fast-forward `main`
-onto `link-definitions` (or cherry-pick it), run `cargo xtask ci` against the
-published crate, and close this task in the same commit.
+and `a_definition_glued_under_a_paragraph_stays_inside_it` in `wysiwyg`, and by
+a definition-bearing fixture in the incremental-build parity test and the
+Doc-driven splice test. Landed with the pin moved to `twig-doc 3.3.3`.
 
 **Where.** `crates/leaf-core`, the visual map's top-level walk
 (`top_level` / `top_blocks` in `wysiwyg.rs`); and twig's Markdown block
