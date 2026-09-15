@@ -4702,6 +4702,18 @@ public struct Run {
      * knows nothing about colours still draws the run as the highlight it is.
      */
     public var markColor: String?
+    /**
+     * What a `code` run is to the language its fenced block is written in —
+     * `"punctuation"`, `"keyword"`, `"entity"`, `"support"`, `"constant"`,
+     * `"string"`, `"comment"`, `"invalid"` — or absent for a run the grammar
+     * left plain, for every run of a block in a language no grammar covers,
+     * for inline code, and for every other role.
+     *
+     * A class id like `role`, and beside it for the reason `mark_color` is: a
+     * renderer that knows nothing about tokens still draws the run as the code
+     * it is, and one that does keys a palette on the name.
+     */
+    public var token: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -4765,7 +4777,18 @@ public struct Run {
          * document's word for it and the renderer picks the wash. It rides beside
          * `role` rather than folding into it (`"mark-red"`) so a renderer that
          * knows nothing about colours still draws the run as the highlight it is.
-         */markColor: String?) {
+         */markColor: String?, 
+        /**
+         * What a `code` run is to the language its fenced block is written in —
+         * `"punctuation"`, `"keyword"`, `"entity"`, `"support"`, `"constant"`,
+         * `"string"`, `"comment"`, `"invalid"` — or absent for a run the grammar
+         * left plain, for every run of a block in a language no grammar covers,
+         * for inline code, and for every other role.
+         *
+         * A class id like `role`, and beside it for the reason `mark_color` is: a
+         * renderer that knows nothing about tokens still draws the run as the code
+         * it is, and one that does keys a palette on the name.
+         */token: String?) {
         self.text = text
         self.role = role
         self.bold = bold
@@ -4779,6 +4802,7 @@ public struct Run {
         self.hl = hl
         self.hlColor = hlColor
         self.markColor = markColor
+        self.token = token
     }
 }
 
@@ -4825,6 +4849,9 @@ extension Run: Equatable, Hashable {
         if lhs.markColor != rhs.markColor {
             return false
         }
+        if lhs.token != rhs.token {
+            return false
+        }
         return true
     }
 
@@ -4842,6 +4869,7 @@ extension Run: Equatable, Hashable {
         hasher.combine(hl)
         hasher.combine(hlColor)
         hasher.combine(markColor)
+        hasher.combine(token)
     }
 }
 
@@ -4865,7 +4893,8 @@ public struct FfiConverterTypeRun: FfiConverterRustBuffer {
                 sel: FfiConverterBool.read(from: &buf), 
                 hl: FfiConverterOptionString.read(from: &buf), 
                 hlColor: FfiConverterOptionString.read(from: &buf), 
-                markColor: FfiConverterOptionString.read(from: &buf)
+                markColor: FfiConverterOptionString.read(from: &buf), 
+                token: FfiConverterOptionString.read(from: &buf)
         )
     }
 
@@ -4883,6 +4912,7 @@ public struct FfiConverterTypeRun: FfiConverterRustBuffer {
         FfiConverterOptionString.write(value.hl, into: &buf)
         FfiConverterOptionString.write(value.hlColor, into: &buf)
         FfiConverterOptionString.write(value.markColor, into: &buf)
+        FfiConverterOptionString.write(value.token, into: &buf)
     }
 }
 

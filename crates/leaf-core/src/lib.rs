@@ -23,6 +23,8 @@ pub mod doc;
 mod html;
 pub mod source;
 pub mod style;
+#[cfg(feature = "syntax")]
+pub mod syntax;
 pub mod wysiwyg;
 
 pub use doc::{
@@ -30,7 +32,7 @@ pub use doc::{
     InlineMarks, Landing, LineFlow, MarkupMode, Quote, View, VisualKey,
 };
 pub use source::{SourceMap, StyledRun};
-pub use style::{Baseline, MarkColor, Role, Style};
+pub use style::{Baseline, MarkColor, Role, Style, Token};
 pub use wysiwyg::{
     BlockClass, Boundary, CodeBlockInfo, ColorScheme, Glyph, MediaInfo, MediaKind, MediaSource,
     TableCell, TableInfo, TableRow, VRow, VisualMap,

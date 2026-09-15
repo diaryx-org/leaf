@@ -18,7 +18,7 @@
 //! This mirrors `leaf-gpui`'s `RunStyle`, which is likewise a palette passed in
 //! per paint rather than baked into the mapping function.
 
-use leaf_core::style::{Role, Style as LStyle};
+use leaf_core::style::{Role, Style as LStyle, Token};
 use leaf_core::{Highlight, HighlightCursor, VisualMap};
 use ratatui::{
     style::{Color, Modifier, Style},
@@ -93,6 +93,14 @@ pub struct Theme {
     pub code_border: Color,
     /// The language label riding a fenced block's top border.
     pub code_label: Color,
+    /// The syntax-highlighting palette inside a fenced block, indexed by
+    /// [`Token::index`]: punctuation, keyword, entity, support, constant,
+    /// string, comment, invalid. A code glyph carrying a token takes its entry
+    /// in place of [`code_fg`](Self::code_fg); one carrying none — an
+    /// identifier the grammar left plain, and every glyph of a block in a
+    /// language no grammar covers — keeps `code_fg`. Comments are drawn italic
+    /// as well, where the terminal can.
+    pub syntax: [Color; 8],
     /// A hyperlink's visible text (drawn underlined).
     pub link: Color,
     /// Marked (`==mark==`) text: dark ink on a highlighter wash.
@@ -200,6 +208,21 @@ impl Theme {
             code_bg: Color::Indexed(235),
             code_border: Color::Indexed(240),
             code_label: Color::Gray,
+            // ANSI names where the terminal's own theme has a say, as the
+            // headings do; indexed where no ANSI name fits. Punctuation and
+            // comments share the quiet grey, as they do on a published page.
+            // Strings are yellow rather than the green plain code reads in,
+            // or a literal would vanish into the identifiers around it.
+            syntax: [
+                Color::Indexed(245), // punctuation — quiet
+                Color::Magenta,      // keyword
+                Color::Blue,         // entity
+                Color::Cyan,         // support
+                Color::Indexed(215), // constant — orange; no ANSI name for it
+                Color::Yellow,       // string
+                Color::Indexed(245), // comment — quiet, and italic
+                Color::Red,          // invalid
+            ],
             link: Color::Cyan,
             mark_fg: Color::Black,
             mark_bg: Color::Yellow,
@@ -260,6 +283,19 @@ impl Theme {
             code_bg: Color::Indexed(253),
             code_border: Color::Indexed(246),
             code_label: Color::Indexed(240),
+            // The dark half of the cube, for the reason the headings are:
+            // ANSI magenta and yellow are tuned for a dark page. Amber stands
+            // in for the string's yellow, as it does everywhere in this theme.
+            syntax: [
+                Color::Indexed(243), // punctuation
+                Color::Indexed(90),  // keyword — dark magenta
+                Color::Indexed(26),  // entity — blue
+                Color::Indexed(23),  // support — dark cyan
+                Color::Indexed(130), // constant — dark orange
+                Color::Indexed(94),  // string — amber
+                Color::Indexed(243), // comment
+                Color::Indexed(124), // invalid — dark red
+            ],
             link: Color::Indexed(26),
             mark_fg: Color::Black,
             mark_bg: Color::Indexed(220),
@@ -373,6 +409,16 @@ impl Theme {
     /// palette, then the author's own emphasis flags layer on top.
     pub fn to_ratatui(&self, s: LStyle) -> Style {
         let mut out = self.role_style(s.role);
+        // A highlighted code glyph takes its token's ink over the code tint;
+        // the tint stays, so the block's box is still one panel. Only beside
+        // `Role::Code` — a token on any other role is a contradiction core
+        // doesn't produce, and is ignored rather than trusted.
+        if let (Role::Code, Some(token)) = (s.role, s.token) {
+            out = out.fg(self.syntax[token.index()]);
+            if token == Token::Comment {
+                out = out.add_modifier(Modifier::ITALIC);
+            }
+        }
         if s.bold {
             out = out.add_modifier(Modifier::BOLD);
         }
@@ -898,6 +944,31 @@ mod tests {
             let plain = t.role_style(Role::Mark(None));
             assert_eq!(plain.bg, Some(t.mark_bg));
             assert_eq!(plain.fg, Some(t.mark_fg));
+        }
+    }
+
+    /// A token picks the ink and leaves the tint: the block is still one
+    /// panel with differently coloured words in it. A comment is italic on
+    /// top. And a token on a glyph that is not code is ignored — core never
+    /// produces one, and a palette that trusted it would colour prose.
+    #[test]
+    fn a_token_recolours_code_over_the_same_tint() {
+        for scheme in [ColorScheme::Dark, ColorScheme::Light] {
+            let t = Theme::for_scheme(scheme);
+            let plain = t.to_ratatui(LStyle::default().role(Role::Code));
+            for token in Token::ALL {
+                let s = t.to_ratatui(LStyle::default().role(Role::Code).token(Some(token)));
+                assert_eq!(s.fg, Some(t.syntax[token.index()]), "{}", token.name());
+                assert_eq!(s.bg, plain.bg, "{} moved off the code tint", token.name());
+                assert_eq!(
+                    s.add_modifier.contains(Modifier::ITALIC),
+                    token == Token::Comment,
+                    "{} italic",
+                    token.name()
+                );
+            }
+            let prose = t.to_ratatui(LStyle::default().token(Some(Token::Keyword)));
+            assert_eq!(prose, t.to_ratatui(LStyle::default()));
         }
     }
 

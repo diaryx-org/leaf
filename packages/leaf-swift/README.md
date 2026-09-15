@@ -169,7 +169,10 @@ Heading 1–6 (⌃0–⌃6), the lists (⇧⌘8, ⇧⌘7), Block Quote ⇧⌘9, 
 caret and disable without an editor or on a reader. The editor lets the menu bar
 take a chord first, so an item flashes when its key is pressed, and handles ⌘B/I/U/E
 itself only in a window with no such item.
-Customize fonts, colours, and page layout via `EditorTheme`.
+Customize fonts, colours, and page layout via `EditorTheme`. Fenced code is
+syntax-highlighted by core; `EditorTheme.syntaxColors` is the ink per token
+class (`keyword`, `string`, `comment`, …), dynamic across light and dark, and a
+class it has no entry for draws in `codeColor`.
 
 **A measured text column.** `EditorTheme.measure` caps the text at a number of
 *characters* of the body font (68 by default — the comfortable range for prose is

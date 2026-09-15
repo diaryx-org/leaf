@@ -14,11 +14,13 @@ import LeafFFI
 import AppKit
 private let boldTrait = NSFontDescriptor.SymbolicTraits.bold
 private let monoTrait = NSFontDescriptor.SymbolicTraits.monoSpace
+private let italicTrait = NSFontDescriptor.SymbolicTraits.italic
 #elseif canImport(UIKit)
 import UIKit
 // The same traits, under the names UIKit gives them.
 private let boldTrait = UIFontDescriptor.SymbolicTraits.traitBold
 private let monoTrait = UIFontDescriptor.SymbolicTraits.traitMonoSpace
+private let italicTrait = UIFontDescriptor.SymbolicTraits.traitItalic
 #endif
 
 final class AttributedRowTests: XCTestCase {
@@ -75,6 +77,35 @@ final class AttributedRowTests: XCTestCase {
             theme.markBackground,
             "an unknown colour is a plain highlight, not a guess"
         )
+    }
+
+    func testTokenPicksTheInkAndLeavesTheRestOfCodeAlone() {
+        // A keyword in a fenced block reads in the palette's ink, still in the
+        // mono face; an unknown class id — one a newer core might emit — and no
+        // token at all both fall back to `codeColor`. A token on prose is
+        // ignored: core never produces one, and prose must not take code's ink.
+        let keyword = attrs(mkRun("let", role: "code", token: "keyword"), code: true)
+        XCTAssertEqual(keyword[.foregroundColor] as? LeafColor, theme.syntaxColors["keyword"])
+        XCTAssertNotEqual(keyword[.foregroundColor] as? LeafColor, theme.codeColor)
+        let font = keyword[.font] as! LeafFont
+        XCTAssertTrue(font.fontName.contains("Menlo") || font.fontDescriptor.symbolicTraits.contains(monoTrait))
+        XCTAssertNil(keyword[.backgroundColor], "a code row's panel is the view's, not the run's")
+
+        XCTAssertEqual(
+            attrs(mkRun("x", role: "code", token: "meta"), code: true)[.foregroundColor] as? LeafColor,
+            theme.codeColor
+        )
+        XCTAssertEqual(attrs(mkRun("x", role: "code"), code: true)[.foregroundColor] as? LeafColor, theme.codeColor)
+        XCTAssertEqual(attrs(mkRun("x", token: "keyword"))[.foregroundColor] as? LeafColor, theme.textColor)
+    }
+
+    func testCommentIsItalicOnTopOfItsColour() {
+        let comment = attrs(mkRun("// c", role: "code", token: "comment"), code: true)
+        let font = comment[.font] as! LeafFont
+        XCTAssertTrue(font.fontDescriptor.symbolicTraits.contains(italicTrait))
+        XCTAssertEqual(comment[.foregroundColor] as? LeafColor, theme.syntaxColors["comment"])
+        let string = attrs(mkRun("s", role: "code", token: "string"), code: true)
+        XCTAssertFalse((string[.font] as! LeafFont).fontDescriptor.symbolicTraits.contains(italicTrait))
     }
 
     func testStrikeGetsStrikethrough() {

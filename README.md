@@ -17,7 +17,7 @@ clipboard, and file I/O.
 
 | crate                                 | what it is                                                                                                                                                                                                                                                         |
 | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| [`leaf-core`](crates/leaf-core)       | the document model — a `twig::Editor` with a byte-offset caret + selection, and the WYSIWYG `VisualMap`. Glyphs carry a **toolkit-agnostic `Style`**; no UI dependency.                                                                                            |
+| [`leaf-core`](crates/leaf-core)       | the document model — a `twig::Editor` with a byte-offset caret + selection, and the WYSIWYG `VisualMap`. Glyphs carry a **toolkit-agnostic `Style`**; no UI dependency. Fenced code is syntax-highlighted here too (syntect, two-face's grammars — the set `plates` publishes with), as an eight-way `Token` per glyph that each frontend colours its own way; the `syntax` feature carries the grammars and can be left out. |
 | [`leaf-raster`](crates/leaf-raster)   | the **shared CPU rasterization layer**: image decode (SVG included), path resolution and aspect-fit policy, and oversized-heading rasters with the caret and selection painted into the pixels — how a terminal heading stays editable when cells can't draw over a graphics-protocol image.                    |
 | [`leaf-ratatui`](crates/leaf-ratatui) | the **embeddable terminal widget** (ratatui + crossterm): renders the editing surface into a `Rect` and turns key/mouse events into `Doc` edits, returning an `Outcome` for what the host owns (quit, save, clipboard, dialogs). The terminal peer of `leaf-gpui`. |
 | [`leaf-gpui`](crates/leaf-gpui)       | the **embeddable GUI widget** on [gpui](https://github.com/zed-industries/zed): the `Editor` view plus its input, pixel-wrapping renderer, and `register_keybindings`. Renders only the editing surface and leaves window chrome, file I/O, and quit to the host.  |
@@ -146,8 +146,9 @@ Two views, toggled with `⌥w`:
 
 - **source** — the raw document with the caret in source bytes.
 - **wysiwyg** — the markup *resolved*: headings coloured, `**bold**` as real
-  bold, `==🔴 text==` as a red highlighter wash, the `#` / `**` / `` ` ``
-  delimiters hidden. The caret still works because
+  bold, `==🔴 text==` as a red highlighter wash, a `` ```rust `` fence
+  syntax-highlighted, the `#` / `**` / `` ` `` delimiters hidden. The caret
+  still works because
   every rendered glyph is tied back to the source byte it came from, so cursor
   motion, clicks, and selection ride the *visible* text and step right over the
   hidden delimiters. Because it reads the AST, Markdown and Djot that parse alike

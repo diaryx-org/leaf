@@ -23,8 +23,12 @@
 <body>
 <h1>leaf-web · editor tests</h1>
 <div id="summary">running…</div>
-<ul id="results"></ul>
+<!-- The mount sits above the results, not below them: the list grows a line
+     per test, and a mount under it drifts down the page until — some forty
+     tests in — its rows are below the headless window, where a test that
+     drops or clicks at a point finds nothing there. -->
 <div id="mount"></div>
+<ul id="results"></ul>
 
 <script type="module">
 // Tests for the half of leaf-web that Rust cannot reach: the DOM projection and
@@ -496,6 +500,31 @@ await test("a coloured highlight keeps the mark class and swaps only the wash", 
   // Both are still `leaf-r-mark`, which is what makes the colour additive: a
   // stylesheet that knows nothing of `leaf-mk-*` still draws the highlight.
   assert(marks.every((e) => e.classList.contains("leaf-r-mark")), "the mark role was lost");
+  return ed;
+});
+
+// ── syntax highlighting ───────────────────────────────────────────────────
+
+await test("a fenced block in a known language is classed by token", () => {
+  const ed = editor("```rust\nlet x = \"s\"; // c\n```\n\n```text\nlet y\n```\n");
+  const rows = [...ed.contentEl.querySelectorAll(".leaf-row.code")];
+  eq(rows.length, 2, "two code rows");
+  const keyword = rows[0].querySelector(".leaf-t-keyword");
+  assert(keyword && keyword.textContent === "let", "`let` is a keyword");
+  const string = rows[0].querySelector(".leaf-t-string");
+  assert(string && string.textContent === '"s"', "the literal, quotes included, is a string");
+  const comment = rows[0].querySelector(".leaf-t-comment");
+  assert(comment && getComputedStyle(comment).fontStyle === "italic", "a comment is italic");
+  assert(
+    getComputedStyle(keyword).color !== getComputedStyle(string).color,
+    "a keyword and a string draw in different inks"
+  );
+  // Every run is still `leaf-r-code`: the token is additive, and a stylesheet
+  // that knows nothing of `leaf-t-*` still draws the block as code.
+  assert([...rows[0].querySelectorAll(".leaf-run")].every((e) => e.classList.contains("leaf-r-code")),
+         "the code role was lost");
+  // A language no grammar covers is one plain run, as it always was.
+  eq([...rows[1].querySelectorAll("[class*=leaf-t-]")].length, 0, "`text` was highlighted");
   return ed;
 });
 

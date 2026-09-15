@@ -26,11 +26,19 @@ crate-type = ["staticlib", "cdylib", "lib"]
 name = "uniffi-bindgen"
 path = "uniffi-bindgen.rs"
 
+[features]
+# Syntax highlighting in fenced code blocks — leaf-core's own `syntax`, passed
+# through so an app that has decided its binary cannot carry the grammars
+# (about a megabyte) can build the binding without them. On by default: the
+# Swift package paints every `Run::token`, and a run without one is plain code.
+default = ["syntax"]
+syntax = ["leaf-core/syntax"]
+
 [dependencies]
 # The document model, filesystem-free — same contract leaf-wasm builds against: a
 # sandboxed embed has no path to read and persists bytes its own way, so `fs` is
 # off and the host drives `Doc::from_source` + the public `source` field +
-# `mark_saved`.
+# `mark_saved`. `syntax` comes back in through the feature above.
 leaf-core = { path = "../leaf-core", version = "0.1.14", default-features = false }
 
 # The FFI machinery: `proc-macro` mode (no .udl file) — the view structs derive

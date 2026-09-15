@@ -8,10 +8,20 @@ publish = false
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Syntax highlighting in fenced code blocks — leaf-core's own `syntax`, passed
+# through so a page that has decided its bundle cannot carry the grammars can
+# build without them. On by default: `leaf-web` styles every `Run.token`, and
+# a run without one is plain code. What it weighs on the wire is measured in
+# `packages/leaf-web/README.md`.
+default = ["syntax"]
+syntax = ["leaf-core/syntax"]
+
 [dependencies]
 # The document model, filesystem-free: a browser has no path to read and its own
 # way to persist bytes, so `fs` is off and the host drives `Doc::from_source` +
-# the public `source` field + `mark_saved`.
+# the public `source` field + `mark_saved`. `syntax` comes back in through the
+# feature above.
 leaf-core = { path = "../leaf-core", default-features = false }
 
 wasm-bindgen = "0.2"

@@ -121,6 +121,46 @@ public enum Palette {
     public static var tableBorder: LeafColor { separator }
     public static var tableHeader: LeafColor { secondary.withAlphaComponent(0.12) }
     public static var tableStripe: LeafColor { secondary.withAlphaComponent(0.05) }
+    /// The syntax-highlighting palette inside a fenced block, keyed by the
+    /// class id a `Run.token` carries — the eight `leaf-core` classes a glyph
+    /// can be: `punctuation`, `keyword`, `entity`, `support`, `constant`,
+    /// `string`, `comment`, `invalid`.
+    ///
+    /// Hand-picked pairs rather than the system colours the rest of this
+    /// palette leans on: `systemGreen` is a control tint, and a string literal
+    /// in it is unreadable on a white page. These are the hues `plates`
+    /// publishes a page with in each appearance, so a block reads the same in
+    /// the app and on the site — and each is dynamic, resolving against the
+    /// appearance it is drawn in, so a PDF rendered under `.aqua` gets the
+    /// light half whatever the window is showing.
+    public static var syntax: [String: LeafColor] {
+        [
+            "punctuation": dynamic(light: "#6a7580", dark: "#7f8b99"),
+            "keyword": dynamic(light: "#9526a0", dark: "#c678dd"),
+            "entity": dynamic(light: "#2b62d9", dark: "#7aa2f7"),
+            "support": dynamic(light: "#016a99", dark: "#56b6c2"),
+            "constant": dynamic(light: "#98590a", dark: "#e0af68"),
+            "string": dynamic(light: "#0a7040", dark: "#9ece6a"),
+            "comment": dynamic(light: "#6a7580", dark: "#7f8b99"),
+            "invalid": dynamic(light: "#c02617", dark: "#f7768e"),
+        ]
+    }
+
+    /// A colour that is `light` in a light appearance and `dark` in a dark one,
+    /// from two `#RRGGBB` strings — the toolkit-neutral spelling of a dynamic
+    /// colour. Either half that fails to parse is the label colour, so a typo
+    /// in a table above draws readable text rather than nothing.
+    static func dynamic(light: String, dark: String) -> LeafColor {
+        let l = leafColor(hex: light) ?? label
+        let d = leafColor(hex: dark) ?? label
+        #if canImport(UIKit)
+        return UIColor { traits in traits.userInterfaceStyle == .dark ? d : l }
+        #elseif canImport(AppKit)
+        return NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? d : l
+        }
+        #endif
+    }
 }
 
 /// Parse a `#RRGGBB` hex string into a colour, or nil for anything else — the
