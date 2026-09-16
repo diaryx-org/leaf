@@ -2176,26 +2176,16 @@ impl LeafDoc {
 
     /// The visible text between two offsets — `text(in:)`. In the WYSIWYG
     /// view this is *not* the raw source slice: a hidden inline-mark
-    /// delimiter (`**`, `` ` ``, `_`) contributes nothing, matching what
-    /// `distance_offset`/`step_offset` already count in this same offset
-    /// space — while a genuine gap between blocks the range spans contributes
-    /// one inserted `'\n'` that
-    /// `distance_offset`/`step_offset` do *not* count (a block boundary costs
-    /// caret motion zero stops there, by design — see
-    /// `the_caret_skips_the_gap_between_two_paragraphs` in `leaf-core`'s
-    /// `doc.rs`). So the relationship is
-    /// `text_in_range(a, b).chars().count() >= distance_offset(a, b)`, not
-    /// strict equality: the two agree exactly when `(a, b)` spans no block
-    /// boundary, and `text_in_range` is never shorter, only ever as long or
-    /// longer, when it does. That inequality is still what
-    /// `UITextInput`'s own word/line tokenizer needs (see
-    /// [`leaf_core::wysiwyg::VisualMap::visible_text`] for why): it only reads
-    /// this string to find a boundary and converts the result back to a
-    /// position via `position(from:offset:)`, which walks stops — the
-    /// inserted character is never hit as one, it only keeps the tokenizer
-    /// from reading two paragraphs' last/first words as a single run of
-    /// letters. The source view has nothing hidden to begin with, so there
-    /// this is still exactly the raw slice.
+    /// delimiter (`**`, `` ` ``, `_`) contributes nothing, and a stop that
+    /// draws no glyph — a row's end, a table cell's end — is spelled `'\n'`.
+    /// Exactly one character per caret stop, so that for any two stops
+    /// `text_in_range(a, b).chars().count() == distance_offset(a, b)`. That
+    /// equality is what `UITextInput`'s word tokenizer relies on: it reads a
+    /// window of this text, indexes into it by `offset(from:to:)`, and hands
+    /// a character delta back through `position(from:offset:)` — see
+    /// [`leaf_core::wysiwyg::VisualMap::visible_text`] for the rule and what
+    /// a one-character drift did to a double-tapped word. The source view has
+    /// nothing hidden to begin with, so there this is exactly the raw slice.
     pub fn text_in_range(&self, from: u32, to: u32) -> String {
         let mut g = self.lock();
         g.sync();
@@ -3609,29 +3599,23 @@ mod tests {
             "exactly one separator opens the second paragraph's head"
         );
 
-        // A window that is nothing but the bare gap itself (no glyph on the
-        // left, since it starts exactly at the end of paragraph 1's own last
-        // row) must still carry the break — this is the case a naive
-        // "insert a separator only between two real hits" fix undercounts,
-        // since there is no earlier hit to anchor it to.
+        // A window that is nothing but paragraph 1's end stop (no glyph in
+        // it: it starts exactly at the end of paragraph 1's own last row)
+        // is that stop's one character, the break itself.
         let gap_only = d.text_in_range(5, p2 as u32);
-        assert!(
-            gap_only.chars().count() as i32 >= d.distance_offset(5, p2 as u32),
-            "text_in_range must never be shorter than distance_offset: {gap_only:?}"
-        );
+        assert_eq!(gap_only, "\n");
 
-        // The invariant the two existing tests above assert (strict
-        // equality) no longer holds once the range spans a paragraph
-        // boundary — see `text_in_range`'s doc comment — but it must never
-        // *undercount* relative to `distance_offset`, which is what would let
-        // a tokenizer's `position(from:offset:)` walk past where the text it
-        // was handed actually put a boundary.
+        // The break is the end stop's own character, not one inserted beside
+        // it, so the equality the test above asserts holds across a
+        // paragraph boundary too — the tokenizer's `position(from:offset:)`
+        // walk lands exactly where the text it was handed put a boundary.
         for (a, b) in [(0u32, src.len() as u32), (3, p2 as u32 + 2), (5, p2 as u32)] {
             let text = d.text_in_range(a, b);
             let dist = d.distance_offset(a, b);
-            assert!(
-                text.chars().count() as i32 >= dist,
-                "text_in_range({a}, {b}) = {text:?} ({} chars) is shorter than distance_offset {dist}",
+            assert_eq!(
+                text.chars().count() as i32,
+                dist,
+                "text_in_range({a}, {b}) = {text:?} ({} chars) vs distance_offset {dist}",
                 text.chars().count()
             );
         }
@@ -3648,11 +3632,16 @@ mod tests {
     }
 
     #[test]
-    fn text_in_range_does_not_split_table_cells_at_decoration_rows() {
+    fn text_in_range_ends_a_line_at_each_table_cell_and_splits_none_inside() {
+        // A cell's end reads as a line end — the tokenizer keeps `Status` and
+        // `Tables` apart, and a tap past `Feature`'s last letter has no space
+        // to step over into `Status` — and a table's rule rows, decoration
+        // *inside* the one block, put nothing inside a cell (`Feature` once
+        // came back as `F\neature`).
         let d = doc("| Feature | Status |\n| --- | --- |\n| Tables | editable |\n");
         assert_eq!(
             d.text_in_range(0, d.doc_end_offset()),
-            "Feature Status Tables editable"
+            "Feature\nStatus\nTables\neditable"
         );
     }
 

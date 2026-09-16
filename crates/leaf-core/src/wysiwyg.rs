@@ -906,58 +906,44 @@ impl VisualMap {
     /// *this* view. A hidden inline-mark delimiter (`**`, `` ` ``, `_`, an
     /// escape backslash) never got a glyph in the first place — see
     /// [`push_text`]/[`synth`] — so it contributes nothing; what's left is
-    /// exactly what's drawn on screen for that span.
+    /// what's drawn on screen for that span, one character per caret stop.
     ///
-    /// Built from the same stop glyphs [`stop_after`](Self::stop_after) steps
-    /// across (every glyph with [`Glyph::stop`] set, i.e. one per grapheme
-    /// cluster, decoration excluded) — **plus one inserted `'\n'` for every
-    /// genuine block boundary strictly inside `[from, to)`**: a run of whole
-    /// [`decoration`] rows sitting between two content rows — a paragraph
-    /// gap, a table rule, an image's reserved filler rows — never an ordinary
-    /// soft wrap, which puts no decoration *row* between the two halves of
-    /// its one paragraph (only inline decoration glyphs, e.g. a table's `│`,
-    /// live inside a single content row, and never split one).
+    /// **Exactly one character per stop** is the contract, and it is the
+    /// system text input's, not a nicety: `UITextInput`'s tokenizer reads a
+    /// window of this text around a tap, indexes into it by the integer
+    /// `offset(from:to:)` reports (`distance_offset` in `leaf-ffi`, a count of
+    /// [`stop_after`](Self::stop_after) hops), finds a word boundary at some
+    /// character index, and hands the delta back through
+    /// `position(from:offset:)`, which hops stops again. If the text ever
+    /// spends a character on something that is not a stop, or a stop on
+    /// nothing, every index past that point is off by one and the word the
+    /// reader double-tapped comes back shifted — into the header row of a
+    /// table, or one letter short. So a stop that draws a glyph is spelled
+    /// as that glyph, and a stop that draws none is spelled `'\n'`:
     ///
-    /// [`decoration`]: VRow::decoration
+    /// - a row's own end stop ([`VRow::end_src`]) — the caret home past a
+    ///   paragraph's, heading's, list item's, or code line's last glyph. This
+    ///   is also what keeps two blocks' words apart: without it the last word
+    ///   of one paragraph and the first of the next read as one run of
+    ///   letters (`"…edb\n\nhello\n"` came back as `"edbhello"`), and the
+    ///   tokenizer selected across the boundary. A list item's end is a
+    ///   row end like any other, though no blank gap row follows it.
+    /// - a table cell's end, which [`push_table_row`] draws as the gutter
+    ///   space before the next `│` so the caret has somewhere to stand past
+    ///   the cell's last character. To a reader of *this* text a cell ends a
+    ///   line: spelled as a space, a touch surface that lands a tap at a
+    ///   word's end past the space that follows it stepped into the next
+    ///   cell — or the next row, from the last column.
     ///
-    /// Without that inserted break, two blocks abutting in this string were
-    /// indistinguishable from one run of text: [`collect_stops`] gives a
-    /// block boundary *zero* stops of its own (crossing one is a single,
-    /// free hop — see `the_caret_skips_the_gap_between_two_paragraphs` in
-    /// `doc.rs`'s tests, which pins that as intentional caret behaviour, a
-    /// paragraph gap costing no extra Right presses, not a bug to fix here).
-    /// So the last word of one paragraph and the first word of the next used
-    /// to land directly adjacent with *nothing* between them in this string
-    /// (`"...edb\n\nhello\n"` read back as `"edbhello"`), and `UITextInput`'s
-    /// default word tokenizer then saw one unbroken run of letters and
-    /// selected across the boundary — reported as double-tapping the last
-    /// word on a line expanding the selection into the following
-    /// paragraph(s).
+    /// A hidden mark's content end ([`mark_ends`](Self::mark_ends)) is a place
+    /// the caret rests but not a stop the walks above count, so it has no
+    /// character here either; `from` is snapped to the glyph stop drawn at
+    /// the same spot first, exactly as [`snap_to_glyph_stop`] does for those
+    /// walks. `to` is left as given, so a stop landing exactly on it is still
+    /// excluded — the same half-open range `distance_offset`'s loop counts.
     ///
-    /// This means the once-strict equality with `distance_offset`/
-    /// `step_offset` (`leaf-ffi`) no longer always holds: those intentionally
-    /// keep costing a block boundary *zero* stops, while this text now
-    /// spends one *character* on it that is never itself a stop. So the
-    /// relationship is `visible_text(a, b).chars().count() >=
-    /// distance_offset(a, b)`, equality holding whenever `(a, b)` spans no
-    /// block boundary (the common case, and the only case the previous
-    /// equality was ever tested against). It can only ever be *greater*,
-    /// never less: every character this function omits relative to a plain
-    /// stop count is a stop with no glyph of its own (a hidden delimiter, or
-    /// a block's own trailing "end of row" stop), and every such omission at
-    /// a block's end is exactly paired with the one inserted separator that
-    /// follows it, so nothing this function returns is ever short of what a
-    /// consumer walking stops one at a time would need. That inequality is
-    /// still exactly what `UITextInput`'s tokenizer needs: it only ever reads
-    /// this string to find a boundary and converts the character index it
-    /// finds back to a position with `position(from:offset:)`, which walks
-    /// stops — an inserted separator is never handed back as one, it only
-    /// keeps two paragraphs' words apart for the tokenizer's letter-run scan.
-    ///
-    /// `from` is snapped to its nearest stop first, exactly as a caret asked
-    /// to stand at a hidden offset is drawn at the next stop instead; `to` is
-    /// left as given, so a stop landing exactly on it is still the walk's
-    /// last step — the same asymmetry `distance_offset`'s own loop has.
+    /// [`push_table_row`]: Builder::push_table_row
+    /// [`snap_to_glyph_stop`]: Self::snap_to_glyph_stop
     pub fn visible_text(&self, from: usize, to: usize) -> String {
         self.visible_items(from, to)
             .into_iter()
@@ -986,10 +972,9 @@ impl VisualMap {
     ///
     /// An index inside a surrogate pair resolves to the character that owns
     /// it; one at or past the end of the text returns `None`, so a caller can
-    /// substitute the document's end stop. A synthetic block separator (the
-    /// `\n` the text spells a boundary with) resolves to the gap offset, which
-    /// is not a stop, so a caller placing a caret there gets it snapped like
-    /// any other hidden offset.
+    /// substitute the document's end stop. The `\n` a row's or a cell's end
+    /// is spelled with resolves to that end stop — a caret home, so a caller
+    /// placing a caret there needs no snap.
     pub fn offset_at_visible_utf16(&self, to: usize, index: usize) -> Option<usize> {
         let mut seen = 0usize;
         for (src, ch) in self.visible_items(0, to) {
@@ -1002,52 +987,65 @@ impl VisualMap {
         None
     }
 
-    /// The items `visible_text` spells, in order: every stop glyph in range
-    /// keyed by its own source offset (`Some(ch)`), and every block boundary
-    /// in range keyed by its gap offset (`None`, drawn as `\n`).
+    /// The items `visible_text` spells, in order — one per caret stop in
+    /// `[from, to)`, keyed by the stop's source offset: the glyph it draws
+    /// (`Some`), or `None` for a stop with no character of its own, which the
+    /// text spells `'\n'`. See [`visible_text`](Self::visible_text) for which
+    /// stops those are and why.
     fn visible_items(&self, from: usize, to: usize) -> Vec<(usize, Option<char>)> {
         let from = self.snap_to_glyph_stop(from);
+        let lo = self.stops.partition_point(|&s| s < from);
+        // The document's last stop is the end of the text, not a character in
+        // it: `distance_offset` has no hop past it to pair one with.
+        let last = self.stops.len().saturating_sub(1);
+        let hi = self.stops.partition_point(|&s| s < to).min(last).max(lo);
+        let stops = &self.stops[lo..hi];
 
-        // Real content: every stop glyph in range, keyed by its own source
-        // offset (`None` tags it as a genuine character, versus the
-        // synthetic separators below).
-        let mut items: Vec<(usize, Option<char>)> = self
+        // The glyph each stop draws — the first at its offset in row order,
+        // since a media row's label glyphs all share the media's offset and a
+        // wrapped line's end is the next line's first glyph. Sorted because
+        // row order only follows source order outside a table's wrapped
+        // cells (see `pos_of_offset`); the sort is stable, so "first" holds.
+        let mut glyphs: Vec<(usize, char)> = self
             .rows
             .iter()
             .filter(|r| !r.decoration)
             .flat_map(|r| r.glyphs.iter())
             .filter(|g| g.stop && g.src >= from && g.src < to)
-            .map(|g| (g.src, Some(g.ch)))
+            .map(|g| (g.src, g.ch))
             .collect();
+        glyphs.sort_by_key(|&(src, _)| src);
+        glyphs.dedup_by_key(|&mut (src, _)| src);
 
-        // Every structural boundary row contributes a separator; its `end_src`
-        // is the gap offset itself (never a stop — see
-        // `place_caret_snaps_out_of_the_blank_gap_between_paragraphs` in
-        // `doc.rs`) — a source offset like any glyph's, so it merges into the
-        // same ordering. `None` marks it a synthetic separator rather than a
-        // real character, tagged distinctly so a query landing exactly on the
-        // gap offset still opens with its break even with no glyph on either
-        // side to anchor it to (a range spanning nothing but a bare gap).
-        let mut boundaries: Vec<usize> = self
-            .rows
+        // A cell's end stop has a glyph (the gutter space) but is spelled as
+        // a line end; the structural grid is where the cells' offsets live.
+        let mut cell_ends: Vec<usize> = self
+            .tables
             .iter()
-            // A table rule is also a decoration row, but it is chrome *inside*
-            // one block. Treating it as a block boundary inserts newlines into
-            // table cells (for example "Feature" became "F\neature").
-            .filter(|r| r.boundary.is_some())
-            .map(|r| r.end_src)
-            .filter(|&src| src >= from && src < to)
+            .flat_map(|t| t.grid.iter())
+            .flat_map(|r| r.cells.iter())
+            .map(|c| c.end)
+            .filter(|&e| e >= from && e < to)
             .collect();
-        boundaries.sort_unstable();
-        boundaries.dedup();
-        items.extend(boundaries.into_iter().map(|src| (src, None)));
+        cell_ends.sort_unstable();
+        cell_ends.dedup();
 
-        // Row order matches source order except across a table's wrapped
-        // cells (see `pos_of_offset`), so sort rather than trust it here too.
-        // A boundary can't share an offset with a glyph (it's the undrawn gap
-        // between two blocks' real content), so tie-breaking never arises.
-        items.sort_by_key(|&(src, _)| src);
-        items
+        let mut gi = 0;
+        stops
+            .iter()
+            .map(|&s| {
+                while gi < glyphs.len() && glyphs[gi].0 < s {
+                    gi += 1;
+                }
+                let ch = match glyphs.get(gi) {
+                    Some(&(src, ch)) if src == s && cell_ends.binary_search(&s).is_err() => {
+                        Some(ch)
+                    }
+                    _ => None,
+                };
+                (s, ch)
+            })
+            .collect()
     }
 }
 
@@ -5586,6 +5584,35 @@ mod tests {
         let total = m.visible_utf16_len(0, end);
         assert_eq!(total, text.encode_utf16().count());
         assert_eq!(m.offset_at_visible_utf16(end, total), None);
+    }
+
+    #[test]
+    fn visible_text_spends_exactly_one_character_on_every_stop() {
+        // A list (whose items' ends no gap row follows), a table (whose cells'
+        // ends draw a gutter space), and a code block (one row per line):
+        // every place the text used to part company with the stop count, in
+        // both directions. `UITextInput`'s tokenizer indexes this text by
+        // that count, so the two must agree exactly between any two stops.
+        let src = "- one\n- two\n\n| a | b |\n| - | - |\n| c | d |\n\n```\nx\ny\n```\n\nend\n";
+        let m = map(src);
+        let end = m.snap_to_stop(src.len());
+        assert_eq!(m.visible_text(0, end), "one\ntwo\na\nb\nc\nd\nx\ny\nend");
+        // Between any two stops, one character per hop.
+        let first = m.snap_to_glyph_stop(0);
+        let stops: Vec<usize> = std::iter::successors(Some(first), |&o| m.stop_after(o)).collect();
+        for (i, &a) in stops.iter().enumerate() {
+            for (j, &b) in stops.iter().enumerate().skip(i) {
+                assert_eq!(
+                    m.visible_text(a, b).chars().count(),
+                    j - i,
+                    "text between stops {a} and {b}"
+                );
+            }
+        }
+        // A cell's end is spelled as a line end, not the space it draws, so a
+        // tap landing past `a`'s last letter has nothing to step over into `b`.
+        let a_end = src.find("a |").unwrap() + 1;
+        assert_eq!(m.visible_text(a_end, a_end + 1), "\n");
     }
 
     #[test]
