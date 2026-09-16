@@ -23,6 +23,7 @@ contents:
 - '[A link reference definition''s lines are drawn as blank rows](link-definitions-are-blank-rows.md)'
 - '[The heading the caret is under is a question `Doc` cannot answer](heading-at-offset.md)'
 - '[`can_undo` counts edits, and twig counts steps](can-undo-counts-edits-not-steps.md)'
+- '[Backspace at the start of a table cell eats the column separator](backspace-at-cell-start-eats-the-separator.md)'
 part_of: '[leaf](/README.md)'
 ---
 # Tasks
