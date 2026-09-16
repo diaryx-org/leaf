@@ -1,10 +1,20 @@
 ---
+part_of: id:org/kv2bv2m
+title: leaf
 contents:
 - '[Sample](sample.md)'
+- '[leaf on diaryx.org](/www/index.md)'
+- '[Audiences](/vocab/audiences.md)'
+- '[Proposals](/docs/proposals/proposals.md)'
+- '[Tasks](/docs/tasks/tasks.md)'
+- '[leaf-web](/packages/leaf-web/README.md)'
+config: .config/prov.yaml
+registry: registry.yaml
+id: 6h2bs8f
 ---
 # leaf (Work in progress!!)
 
-A caret-based rich-text editor for documents, built on [`twig`](../twig).
+A caret-based rich-text editor for documents, built on [`twig`](https://github.com/diaryx-org/twig).
 
 ## Workspace layout
 
@@ -135,7 +145,7 @@ cargo run --manifest-path apps/leaf/Cargo.toml -- document.md wysiwyg
   Toolchain** component is required (`xcodebuild -downloadComponent
   MetalToolchain`). The pinned toolchain lives in `rust-toolchain.toml`.
 
-Sibling to [`bough`](../bough): **same backend, opposite model.** Where bough
+Sibling to [`bough`](https://github.com/diaryx-org/bough): **same backend, opposite model.** Where bough
 moves a selection through the document's AST and edits the *tree*, leaf gives you
 an ordinary text **caret**, mouse, selection, and a formatting toolbar — and
 turns every keystroke into one of twig's offset-addressed edits. The document

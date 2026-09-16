@@ -1,0 +1,31 @@
+title: prov config
+spec: 1
+content_format: markdown
+metadata:
+  format: yaml
+  embed: delimited
+references:
+  notation: markdown
+  path_style: root
+  target: path
+  label: false
+id_storage: both
+updated: ''
+identity: lazy
+fixity: attachments
+recycle_bin: false
+history: off
+about: off
+workspace_id: leaf
+root: README.md
+fields:
+  audience:
+    values: closed
+    vocabulary: '[Audiences](/vocab/audiences.md)'
+    reify: true
+exports:
+  www:
+    label: leaf on diaryx.org
+    gate:
+      field: audience
+      value: public

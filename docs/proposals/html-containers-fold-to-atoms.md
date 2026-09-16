@@ -3,6 +3,7 @@ title: HTML containers leaf does not author fold to atoms
 status: draft
 created: 2026-09-09
 updated: 2026-09-09
+part_of: '[Proposals](/docs/proposals/proposals.md)'
 ---
 # HTML containers leaf does not author fold to atoms
 

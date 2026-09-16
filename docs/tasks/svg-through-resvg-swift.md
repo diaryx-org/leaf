@@ -2,6 +2,7 @@
 status: done
 created: 2026-09-12
 updated: 2026-09-13
+part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 # SVG through resvg-swift
 

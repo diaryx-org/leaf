@@ -3,6 +3,7 @@ title: SVG as vectors in leaf-swift, through usvg
 status: implemented
 created: 2026-09-12
 updated: 2026-09-13
+part_of: '[Proposals](/docs/proposals/proposals.md)'
 ---
 # SVG as vectors in leaf-swift, through usvg
 
