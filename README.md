@@ -67,7 +67,7 @@ wasm build behind a static server. Both are one word through the task runner in
 
 ```sh
 cargo xtask swift        # build + launch apps/leaf-editor on macOS
-cargo xtask swift --ios  # …in the iOS Simulator instead (--device to pick one)
+cargo xtask swift --ios  # …on its own `iPhone 17 (leaf)` simulator (--device for another)
 cargo xtask web            # build the wasm, serve apps/leaf-web-demo, open it
 cargo xtask web --test     # …serve the leaf-web editor tests instead
 cargo xtask web --headless # …run those tests in Chrome and exit with the outcome

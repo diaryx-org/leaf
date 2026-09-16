@@ -98,6 +98,23 @@ pub fn run_ignoring_failure(cmd: &mut Command) {
     let _ = cmd.status();
 }
 
+/// Run a command for what it prints — `simctl list`, `simctl create` — failing
+/// loudly on a non-zero exit like [`run`], but keeping stdout instead of
+/// letting it through to the terminal.
+pub fn stdout(cmd: &mut Command) -> Result<String> {
+    println!("▸ {}", render(cmd));
+    let out = cmd
+        .output()
+        .with_context(|| format!("could not spawn `{}`", name(cmd)))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let stderr = stderr.trim_end();
+        let sep = if stderr.is_empty() { "" } else { ": " };
+        bail!("`{}` failed ({}){sep}{stderr}", name(cmd), out.status);
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
 /// Read a repo file, named by its path from the root.
 pub fn read(path: impl AsRef<Path>) -> Result<String> {
     let path = root().join(path);
