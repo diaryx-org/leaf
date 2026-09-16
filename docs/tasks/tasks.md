@@ -4,6 +4,9 @@ description: Deferred work on leaf, one file each — a commitment with a done s
 created: 2026-09-04
 updated: 2026-09-16
 contents:
+- '[Clicks left of a table jump to its last cell](table-left-margin-hit-testing.md)'
+- '[Table clicks lose inline markup source offsets](table-inline-markup-hit-testing.md)'
+- '[Table caret and selection drift after Unicode](table-unicode-geometry.md)'
 - '[The find bar covers the first line of a document at its top](find-bar-covers-first-line.md)'
 - '[Spelling and autocorrect in the macOS view](macos-text-checking.md)'
 - '[Writing Tools in the Apple views](writing-tools.md)'
