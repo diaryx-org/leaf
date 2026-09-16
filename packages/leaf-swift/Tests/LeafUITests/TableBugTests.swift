@@ -3,8 +3,7 @@ import CoreText
 import LeafFFI
 @testable import LeafUI
 
-/// Reproductions from the table audit. Expected failures stay strict so fixes
-/// require removing the annotation rather than silently leaving stale repros.
+/// Reproductions from the table audit, kept as regression tests.
 final class TableBugTests: XCTestCase {
     private let theme = EditorTheme.default
 
@@ -22,13 +21,9 @@ final class TableBugTests: XCTestCase {
         let expectedX = rl.originX + location.line.textX
             + CTLineGetOffsetForStringIndex(location.line.line, 4, nil)
         let caret = try XCTUnwrap(layout.caretRect(selected, theme: theme))
-        XCTExpectFailure("Table caret confuses UTF-8 bytes with UTF-16 indices") {
-            XCTAssertEqual(caret.minX, expectedX, accuracy: 0.1)
-        }
+        XCTAssertEqual(caret.minX, expectedX, accuracy: 0.1)
         let rect = try XCTUnwrap(layout.tableSelectionRects(from: Int(offset), to: Int(offset + 1)).first)
-        XCTExpectFailure("Table selection confuses UTF-8 bytes with UTF-16 indices") {
-            XCTAssertEqual(rect.rect.minX, expectedX, accuracy: 0.1)
-        }
+        XCTAssertEqual(rect.rect.minX, expectedX, accuracy: 0.1)
     }
 
     func testClickAfterInlineMarkupResolvesToVisibleCharacter() throws {
@@ -45,9 +40,7 @@ final class TableBugTests: XCTestCase {
                             y: rl.tableTop + row.top + TableMetrics.padY + 1)
         let hit = try XCTUnwrap(layout.tableHitOffset(point))
         let expected = "| Name |\n| --- |\n| **bold** ".utf8.count
-        XCTExpectFailure("Table hit testing loses hidden inline delimiters") {
-            XCTAssertEqual(model.doc.snapOffset(off: UInt32(hit)), UInt32(expected))
-        }
+        XCTAssertEqual(model.doc.snapOffset(off: UInt32(hit)), UInt32(expected))
     }
 
     func testClickLeftOfGridUsesFirstCell() throws {
@@ -55,8 +48,6 @@ final class TableBugTests: XCTestCase {
             mkTableRow([mkCell("first", start: 2, end: 7), mkCell("last", start: 10, end: 14)])
         ]), theme: theme))
         let hit = try XCTUnwrap(grid.locate(atX: -1, y: grid.rows[0].top + TableMetrics.padY))
-        XCTExpectFailure("Left-margin clicks fall back to the last column") {
-            XCTAssertEqual(hit.cell.start, 2)
-        }
+        XCTAssertEqual(hit.cell.start, 2)
     }
 }

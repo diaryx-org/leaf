@@ -905,18 +905,15 @@ struct EditorLayout {
     private func tableCaretRect(_ grid: TableLayout, tableTop: CGFloat, originX: CGFloat,
                                 caretSrc: Int, theme: EditorTheme) -> CGRect? {
         guard let (row, _, line, lineIndex) = grid.locate(src: caretSrc) else { return nil }
-        // Byte offset within the line ≈ UTF-16 index (exact for ASCII text). The
-        // line carries no break, so this holds even across an in-cell `<br>`.
-        let idx = max(0, min(caretSrc - line.start, line.attributed.length))
-        let dx = CTLineGetOffsetForStringIndex(line.line, CFIndex(idx), nil)
+        let dx = CTLineGetOffsetForStringIndex(line.line, CFIndex(line.utf16Index(forSrc: caretSrc)), nil)
         return CGRect(x: originX + line.textX + dx,
                       y: tableTop + row.top + TableMetrics.padY + CGFloat(lineIndex) * grid.lineHeight,
                       width: 1.5, height: theme.lineHeight)
     }
 
     /// The source offset a click at `point` resolves to when it lands in a table,
-    /// else `nil` (the caller falls back to the row/ch hit path). The offset is
-    /// approximate for a cell with inline markup; core snaps it to a real stop.
+    /// else `nil` (the caller falls back to the row/ch hit path). Core snaps it
+    /// to a real stop.
     func tableHitOffset(_ point: CGPoint) -> Int? {
         for rl in rows {
             guard let grid = rl.table, rl.tableFirst else { continue }
@@ -926,9 +923,7 @@ struct EditorLayout {
             guard let (_, _, line, _) = grid.locate(atX: xInTable, y: yInTable) else { return nil }
             let rel = CTLineGetStringIndexForPosition(
                 line.line, CGPoint(x: max(0, xInTable - line.textX), y: 0))
-            let clamped = max(0, min(rel, line.attributed.length))
-            let prefix = (line.attributed.string as NSString).substring(to: clamped)
-            return line.start + prefix.utf8.count
+            return line.src(forUTF16: max(0, min(rel, line.attributed.length)))
         }
         return nil
     }
@@ -984,10 +979,8 @@ struct EditorLayout {
                     for (i, line) in cell.lines.enumerated() {
                         let cs = max(from, line.start), ce = min(to, line.end)
                         guard cs < ce else { continue }
-                        // Byte offset within the line ≈ UTF-16 index (exact for
-                        // ASCII), the same approximation the table caret rides.
-                        let sIdx = max(0, min(cs - line.start, line.attributed.length))
-                        let eIdx = max(0, min(ce - line.start, line.attributed.length))
+                        let sIdx = line.utf16Index(forSrc: cs)
+                        let eIdx = line.utf16Index(forSrc: ce)
                         let x0 = CTLineGetOffsetForStringIndex(line.line, CFIndex(sIdx), nil)
                         let x1 = CTLineGetOffsetForStringIndex(line.line, CFIndex(eIdx), nil)
                         let y = rl.tableTop + row.top + TableMetrics.padY
