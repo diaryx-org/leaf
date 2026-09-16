@@ -37,6 +37,36 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.1.18 — 2026-09-16
+
+### Added
+
+- **core** — the content end of a hidden inline mark is a caret home ([`3431dd2`](https://github.com/diaryx-org/leaf/commit/3431dd2e588755f55b0cac16f44402142b472125))
+- **web** — export the wasm binary as `@diaryx/leaf/wasm` ([`f25a7fe`](https://github.com/diaryx-org/leaf/commit/f25a7fec5059232044156a002ffadb6720c1a2db))
+
+### Fixed
+
+- **swift** — map table cell geometry through each character's source offset ([`1a63427`](https://github.com/diaryx-org/leaf/commit/1a634278173d4151bb993090236b38834b86a101))
+- **core** — read an empty cell's home from either shape of cell span ([`eb6711e`](https://github.com/diaryx-org/leaf/commit/eb6711e1260cbcb94a34660ce041fd4f73022598))
+- **core** — bump twig-doc to 3.4.0, which reaches the marks in every table cell ([`7611222`](https://github.com/diaryx-org/leaf/commit/761122283de5eab33ee7c2e6abcae3fda763c30e))
+
+### Behavioural changes
+
+- with markup hidden, the offset where an inline mark's
+content ends (`**bold|**`) is now a caret stop. `place_caret` and
+`snap_offset` leave an offset there rather than snapping it back a
+character; `is_stop` reports it; Right from the last character of a marked
+run first lands on it (the mark still active) and only then past the
+delimiter, and Left the reverse — two presses across what draws as one
+position. `stop_after`/`stop_before`, word motion, and the FFI's
+`step_offset`/`distance_offset` do not visit it.
+
+- `Capabilities::heading` is `true` for an HTML document
+  (twig-doc 3.4.0 spells a heading as its tag pair), and `set_block` /
+  `toggle_heading` edit an HTML document where they refused with a status.
+  The quote, list, task, link, and image gestures still refuse.
+
+
 ## v0.1.17 — 2026-09-15
 
 ### Added
