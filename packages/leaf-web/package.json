@@ -12,7 +12,8 @@
     "./editor": {
       "types": "./src/editor.d.ts",
       "default": "./src/editor.js"
-    }
+    },
+    "./wasm": "./pkg/leaf_wasm_bg.wasm"
   },
   "types": "./src/index.d.ts",
   "files": [

@@ -100,7 +100,13 @@ export type Highlight = HighlightIn;
  * `LeafEditor.init()` must resolve before the first construction.
  */
 export class LeafEditor {
-  /** Load and instantiate the wasm module once. `wasmUrl` overrides its location. */
+  /**
+   * Load and instantiate the wasm module once. `wasmUrl` overrides its
+   * location: by default the binary is fetched relative to the package's own
+   * module, which a bundler has moved, so a bundled host passes the URL it
+   * emitted for `@diaryx/leaf/wasm` (in Vite, `import url from
+   * "@diaryx/leaf/wasm?url"`).
+   */
   static init(wasmUrl?: string | URL): Promise<void>;
 
   constructor(container: HTMLElement, opts?: EditorOptions);

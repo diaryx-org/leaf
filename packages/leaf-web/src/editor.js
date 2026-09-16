@@ -135,6 +135,13 @@ export class LeafEditor {
    * @param {string | URL} [wasmUrl]
    * @returns {Promise<void>}
    */
+  /**
+   * Load and instantiate the wasm module once. `wasmUrl` overrides where it is
+   * fetched from — a bundled host passes the URL it emitted for
+   * `@diaryx/leaf/wasm`, since the default is relative to this module and a
+   * bundler has moved it.
+   * @param {string | URL} [wasmUrl]
+   */
   static init(wasmUrl) {
     if (!wasmReady) wasmReady = init(wasmUrl ? { module_or_path: wasmUrl } : undefined);
     return wasmReady.then(() => undefined);

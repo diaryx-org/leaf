@@ -31,6 +31,18 @@ format can spell, `onChange` lights them, and the demo in
 [`apps/leaf-web-demo`](../../apps/leaf-web-demo) is a complete host in one
 file.
 
+`init()` with no argument fetches the wasm relative to the package's own
+module, which is right when the page loads it unbundled. A bundler moves the
+module and not the binary, so a bundled host asks it for the binary's URL —
+the package exports it as `@diaryx/leaf/wasm` — and hands that to `init`:
+
+```js
+import { LeafEditor } from "@diaryx/leaf";
+import wasmUrl from "@diaryx/leaf/wasm?url";        // Vite; other bundlers have their own spelling
+
+await LeafEditor.init(wasmUrl);
+```
+
 ## What it does
 
 - **Proportional rendering.** A real body font, headings by size, code in a
