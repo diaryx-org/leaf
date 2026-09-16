@@ -22,6 +22,7 @@ contents:
 - '[SVG through resvg-swift](svg-through-resvg-swift.md)'
 - '[A link reference definition''s lines are drawn as blank rows](link-definitions-are-blank-rows.md)'
 - '[The heading the caret is under is a question `Doc` cannot answer](heading-at-offset.md)'
+- '[`can_undo` counts edits, and twig counts steps](can-undo-counts-edits-not-steps.md)'
 part_of: '[leaf](/README.md)'
 ---
 # Tasks
