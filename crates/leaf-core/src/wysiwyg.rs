@@ -3176,14 +3176,15 @@ impl Builder<'_> {
                 } else {
                     Style::default()
                 };
-                // A cell's own `span` is the whole row; only `content_span` bounds
-                // its text. An EMPTY cell has no `content_span` at all — twig
-                // records no interior for it — so both offsets would fall back to
-                // the row's start (before its first `│`), where every empty cell
-                // in the row collapses onto the same spot and a click or caret
-                // there types *before* the table. Derive the cell's own interior
-                // from the row source and this cell's column instead, so each
-                // empty cell has a distinct, editable caret home.
+                // Only `content_span` bounds a cell's text, and an EMPTY cell
+                // has none at all — twig records no interior for it — so both
+                // offsets would fall back to the cell's `span.start`: on the
+                // pipe that opens it, or (under a twig that gave every cell
+                // the whole row's span) the row's start, where every empty
+                // cell collapses onto one spot before the first `│` and a
+                // caret there types *before* the table. Derive the interior
+                // from the span's own pipes and this cell's column instead,
+                // so each empty cell has a distinct, editable caret home.
                 let span = n.content_span.clone().unwrap_or_else(|| {
                     let off = empty_cell_offset(
                         &self.source[n.span.start.min(self.source.len())
@@ -4404,22 +4405,36 @@ impl VRow {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-/// The caret home inside an *empty* table cell (`col`, 0-based) of a row whose
-/// source is `row_src` starting at byte `row_start`. twig gives an empty cell no
-/// `content_span`, so its interior is read from the pipes: cell `col` lies
-/// between the `col`-th and `col+1`-th unescaped `│`/`|`, and the home is one
-/// space past the opening one — mimicking the `| ` padding a filled cell has,
-/// and never at or past the closing pipe. So `|  |  |` gives the two cells
-/// distinct, editable homes instead of both collapsing onto the row's start.
-fn empty_cell_offset(row_src: &str, row_start: usize, col: usize) -> usize {
-    let bytes = row_src.as_bytes();
+/// The caret home inside an *empty* table cell (`col`, 0-based) whose node
+/// `span` is `src` starting at byte `start`. twig gives an empty cell no
+/// `content_span`, so its interior is read from the pipes: the home is one
+/// space past the pipe that opens the cell — mimicking the `| ` padding a
+/// filled cell has — and never at or past the pipe that closes it. So
+/// `|  |  |` gives the two cells distinct, editable homes instead of both
+/// collapsing onto the row's start.
+///
+/// Two shapes of span are read. A twig from 3.3.3 gave every cell of a row
+/// the *row's* span, so the cell's own pipes are the `col`-th and
+/// `col+1`-th unescaped `|` in it; a later twig spans a cell from the pipe
+/// that opens it to the one that closes it, exclusive, so the span holds at
+/// most that one pipe, at its start, and the closing one is the byte past
+/// its end. The two are told apart by the pipes the span holds — a row's
+/// span has several, or one that is not at its start.
+fn empty_cell_offset(src: &str, start: usize, col: usize) -> usize {
+    let bytes = src.as_bytes();
     let mut pipes = Vec::new();
     for (i, &b) in bytes.iter().enumerate() {
         if b == b'|' && (i == 0 || bytes[i - 1] != b'\\') {
             pipes.push(i);
         }
     }
-    match (pipes.get(col).copied(), pipes.get(col + 1).copied()) {
+    let whole_row = pipes.len() > 1 || pipes.first().is_some_and(|&i| i != 0);
+    let (open, close) = if whole_row {
+        (pipes.get(col).copied(), pipes.get(col + 1).copied())
+    } else {
+        (pipes.first().copied(), Some(src.len()))
+    };
+    match (open, close) {
         (Some(open), Some(close)) => {
             let lo = open + 1; // just inside the opening pipe
             let hi = close.saturating_sub(1); // just inside the closing pipe
@@ -4428,10 +4443,10 @@ fn empty_cell_offset(row_src: &str, row_start: usize, col: usize) -> usize {
             } else {
                 (open + 2).clamp(lo, hi)
             };
-            row_start + inside
+            start + inside
         }
-        (Some(open), None) => row_start + open + 1,
-        _ => row_start,
+        (Some(open), None) => start + open + 1,
+        _ => start,
     }
 }
 
@@ -7026,6 +7041,21 @@ mod tests {
             "🖼 beach.jpg"
         );
         assert_eq!(m.media[0].alt, "");
+    }
+
+    #[test]
+    fn an_empty_cells_home_is_read_from_either_shape_of_span() {
+        // A whole-row span: the cell's pipes are the `col`-th and next.
+        let row = "|  |  |";
+        assert_eq!(empty_cell_offset(row, 10, 0), 12);
+        assert_eq!(empty_cell_offset(row, 10, 1), 15);
+        // A cell's own span, opening pipe to closing pipe exclusive: the same
+        // homes, each read from its own span.
+        assert_eq!(empty_cell_offset("|  ", 10, 0), 12);
+        assert_eq!(empty_cell_offset("|  ", 13, 1), 15);
+        // Nothing to stand in: just inside the pipe, never past the span.
+        assert_eq!(empty_cell_offset("|", 10, 0), 11);
+        assert_eq!(empty_cell_offset("", 10, 1), 10);
     }
 
     #[test]
