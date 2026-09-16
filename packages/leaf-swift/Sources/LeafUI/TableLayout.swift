@@ -47,11 +47,43 @@ struct TableCellLineLayout {
     /// Source offsets bounding this line — its caret home and its end stop.
     let start: Int
     let end: Int
+    /// Where each visible character of the line came from — the ruler between
+    /// the shaped string's UTF-16 indices and the source's byte offsets. See
+    /// `CellChar`.
+    let chars: [CellChar]
     /// Whether this line ends at a soft wrap rather than at the cell's end or an
     /// in-cell `<br>`. Its `end` is then the next line's `start`, and an offset
     /// there belongs to the *following* line — the rule a paragraph's wrapped
     /// lines follow too (`EditorLayout.rect(row:ch:)`).
     var softWrapped: Bool = false
+
+    /// The UTF-16 index in this line's shaped string that source offset `src`
+    /// is drawn at — the first character at or past it, or the line's end when
+    /// none is. An offset inside a hidden delimiter (`**bold**`'s closing `**`
+    /// is bytes with no glyph) therefore lands after the last glyph before it,
+    /// which is where the caret standing there belongs.
+    func utf16Index(forSrc src: Int) -> Int {
+        chars.first { $0.src >= src }?.utf16 ?? attributed.length
+    }
+
+    /// The source offset the caret at UTF-16 index `idx` of the shaped string
+    /// stands at: the character there, or the line's `end` past its last one —
+    /// the cell's end stop, past whatever hidden markup closes the cell, which
+    /// is where core's own picture puts a click past the last glyph.
+    func src(forUTF16 idx: Int) -> Int {
+        chars.first { $0.utf16 >= idx }?.src ?? end
+    }
+}
+
+/// One visible character of a cell line: where it sits in the shaped string
+/// (a UTF-16 index) and where it came from in the source (a byte offset). The
+/// two advance at different rates — `é` is one unit and two bytes, `🙂` two
+/// units and four bytes — and a hidden delimiter leaves a gap in `src` with no
+/// glyph to show for it. Each run of a `TableCellLineView` carries the offset
+/// of its first glyph (`Run.src`); its characters are counted from there.
+struct CellChar {
+    let utf16: Int
+    let src: Int
 }
 
 /// One laid-out cell: its shaped lines, the column's box, and the source offsets
@@ -107,7 +139,8 @@ struct TableLayout {
         // second pass to find out that it doesn't wrap).
         struct Shaped {
             let line: CTLine; let attr: NSAttributedString; let width: CGFloat
-            let sel: [(Int, Int)]; let start: Int; let end: Int; var soft = false
+            let sel: [(Int, Int)]; let start: Int; let end: Int
+            let chars: [CellChar]; var soft = false
         }
         let unwrapped: [[[Shaped]]] = table.grid.map { row in
             row.cells.map { cell in
@@ -116,7 +149,8 @@ struct TableLayout {
                     let line = CTLineCreateWithAttributedString(attr as CFAttributedString)
                     let w = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
                     return Shaped(line: line, attr: attr, width: w,
-                                  sel: Self.selectedRanges(ln.runs), start: Int(ln.start), end: Int(ln.end))
+                                  sel: Self.selectedRanges(ln.runs), start: Int(ln.start), end: Int(ln.end),
+                                  chars: Self.sourceChars(ln.runs))
                 }
             }
         }
@@ -138,11 +172,13 @@ struct TableLayout {
                 cell.flatMap { s -> [Shaped] in
                     guard s.width > colW[c] else { return [s] }
                     let pieces = EditorLayout.wrap(s.attr, width: colW[c])
-                    // Where each piece starts in the source: the line's start plus
-                    // the bytes of the text before it — the same byte ≈ UTF-16
-                    // reading the caret and hit paths make of a cell line.
-                    let text = s.attr.string as NSString
-                    let starts = pieces.map { s.start + text.substring(to: $0.start).utf8.count }
+                    // Where each piece starts in the source: the offset of its
+                    // first character. The first piece keeps the line's own
+                    // start, which may precede its first glyph by a hidden
+                    // opening delimiter.
+                    let starts = pieces.enumerated().map { i, wl in
+                        i == 0 ? s.start : s.chars.first { $0.utf16 >= wl.start }?.src ?? s.end
+                    }
                     return pieces.enumerated().map { i, wl in
                         let last = i == pieces.count - 1
                         let a = wl.start, b = wl.start + wl.length
@@ -150,9 +186,13 @@ struct TableLayout {
                             let cs = max(r.0, a), ce = min(r.1, b)
                             return cs < ce ? (cs - a, ce - a) : nil
                         }
+                        // The piece's characters, re-based to its own string.
+                        let chars = s.chars
+                            .filter { $0.utf16 >= a && $0.utf16 < b }
+                            .map { CellChar(utf16: $0.utf16 - a, src: $0.src) }
                         return Shaped(line: wl.line, attr: wl.attributed, width: wl.width, sel: sel,
                                       start: starts[i], end: last ? s.end : starts[i + 1],
-                                      soft: !last)
+                                      chars: chars, soft: !last)
                     }
                 }
             }
@@ -195,7 +235,7 @@ struct TableLayout {
                     return TableCellLineLayout(
                         line: s.line, attributed: s.attr,
                         textX: contentLeft + alignShift, selRanges: s.sel, start: s.start, end: s.end,
-                        softWrapped: s.soft
+                        chars: s.chars, softWrapped: s.soft
                     )
                 }
                 cells.append(TableCellLayout(
@@ -241,6 +281,31 @@ struct TableLayout {
             // column at 24.5 would step straight through a 24.0 floor.
             widths[i] = max(floor, widths[i] - 1)
         }
+    }
+
+    /// The source offset of every character in a cell line's runs, alongside
+    /// its UTF-16 index in the string `AttributedRow.makeCellLine` shapes from
+    /// the same runs. Each run's `src` is where its first glyph came from, and
+    /// the characters after it are counted in source bytes — so a run that
+    /// follows a hidden delimiter starts where its own text does, not where
+    /// the previous run's text ran out.
+    ///
+    /// Exact for text that reads as it is written. A character the source
+    /// spells with more bytes than it shows — an escaped `\*`, an entity — is
+    /// counted at its shown width, so the offsets after it within the same
+    /// run drift short by the difference, up to the next run.
+    private static func sourceChars(_ runs: [Run]) -> [CellChar] {
+        var chars: [CellChar] = []
+        var utf16 = 0
+        for run in runs {
+            var src = Int(run.src)
+            for ch in run.text {
+                chars.append(CellChar(utf16: utf16, src: src))
+                utf16 += ch.utf16.count
+                src += ch.utf8.count
+            }
+        }
+        return chars
     }
 
     /// Coalesce a cell line's runs into the UTF-16 ranges the active selection
@@ -298,7 +363,13 @@ struct TableLayout {
                 let (c, l, i) = pick(cell)
                 return (row, c, l, i)
             }
-            if let last = row.cells.last { // past the last column → its last cell
+            // Off the grid to either side: the nearest edge's cell — the left
+            // margin is the first column's, the right margin the last's.
+            if let first = row.cells.first, x < first.colLeft {
+                let (c, l, i) = pick(first)
+                return (row, c, l, i)
+            }
+            if let last = row.cells.last {
                 let (c, l, i) = pick(last)
                 return (row, c, l, i)
             }
