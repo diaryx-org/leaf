@@ -20,7 +20,7 @@
 //! the verbatim source slice), so a Markdown and a Djot file that parse alike
 //! render — and map — identically.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ops::Range;
 
@@ -166,6 +166,16 @@ pub struct VRow {
     /// to emit this row, so it says so once here and each frontend multiplies by
     /// its own spacing.
     pub boundary: Option<Boundary>,
+    /// The offsets on this row where an inline mark's *content* ends under a
+    /// hidden closing delimiter — the end of the `d` in `**bold**`, one byte
+    /// before the `**` that draws nothing. Each is a caret stop with no glyph
+    /// of its own: the caret standing there is drawn where the next glyph is,
+    /// but typing there extends the mark, where typing past the delimiter
+    /// leaves it. See [`VisualMap::mark_ends`] for the rule.
+    ///
+    /// Source offsets, so [`shift_row`] moves them with the glyphs; empty on
+    /// decoration rows and on every row no mark closes on.
+    pub mark_ends: Vec<usize>,
 }
 
 /// What a drawn block boundary separates: the kinds of the blocks it falls
@@ -428,6 +438,32 @@ pub struct VisualMap {
     /// a caret means — and on every row that *is* in order the two agree anyway,
     /// so nothing else has to change.
     stops: Vec<usize>,
+    /// The caret's second home at the end of every hidden inline mark: the
+    /// offset where the mark's content ends, one byte before its closing
+    /// delimiter — ascending and deduplicated, from every row's
+    /// [`VRow::mark_ends`].
+    ///
+    /// With delimiters hidden, `**bold** tail` draws one spot after the `d`
+    /// and the source has two offsets for it: the content end (inside the
+    /// mark, where typing extends the bold) and the byte past the `**` (where
+    /// typing leaves it). Only the second is a glyph's offset, so only it was
+    /// a stop, and a caret asked to rest at the first was snapped a whole
+    /// character back onto the `d` — a drag over `bold` came back one letter
+    /// short. The delete and backspace paths already settle the caret on the
+    /// content end as its natural home there
+    /// ([`crate::Doc::settle_inside_close_delims`]); this makes it one the
+    /// caret can be placed at and step onto too.
+    ///
+    /// Kept apart from [`stops`](Self::stops) rather than merged in, because
+    /// the two lists answer different questions. A stop with no glyph is
+    /// invisible to a walk that pairs stops with characters — a system text
+    /// input counting `position(from:offset:)` steps against the text it was
+    /// shown would drift a character at every mark — and to word motion, which
+    /// classifies a stop by the source byte under it (a `*`). So
+    /// [`stop_after`](Self::stop_after) and its kin walk the glyph stops alone,
+    /// and only the places a caret *rests* — snapping, resting checks, and
+    /// Left/Right — read both.
+    mark_ends: Vec<usize>,
     /// Every table in the document, in order, described structurally rather than
     /// drawn — see [`TableInfo`] for why both exist.
     pub tables: Vec<TableInfo>,
@@ -700,17 +736,82 @@ impl VisualMap {
 
     /// The caret stop nearest `off`, preferring the one before it when `off`
     /// falls exactly between two. Returns `off` unchanged if there are no stops
-    /// at all (an empty document).
+    /// at all (an empty document). A mark's content end counts: it is a place
+    /// the caret rests, and the one a drag ending on a marked word means.
     fn nearest_stop(&self, off: usize) -> usize {
-        let i = self.stops.partition_point(|&s| s < off);
-        let after = self.stops.get(i).copied();
-        let before = i.checked_sub(1).map(|j| self.stops[j]);
+        let before = Self::last_at_or_before(&self.stops, off)
+            .max(Self::last_at_or_before(&self.mark_ends, off));
+        let after = match (
+            Self::first_at_or_after(&self.stops, off),
+            Self::first_at_or_after(&self.mark_ends, off),
+        ) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
         match (before, after) {
             (Some(b), Some(a)) if off - b <= a - off => b,
             (_, Some(a)) => a,
             (Some(b), None) => b,
             (None, None) => off,
         }
+    }
+
+    /// The glyph stop nearest `off` — [`nearest_stop`](Self::nearest_stop)
+    /// for a walk that pairs stops with characters, which a mark's content
+    /// end has none of. A caret resting on one resolves to the glyph stop
+    /// drawn at the same spot, the one just past the hidden delimiter, so the
+    /// text a system input is shown from there and the steps it counts agree.
+    pub fn snap_to_glyph_stop(&self, off: usize) -> usize {
+        if self.mark_ends.binary_search(&off).is_ok()
+            && let Some(next) = Self::first_at_or_after(&self.stops, off)
+        {
+            return next;
+        }
+        let before = Self::last_at_or_before(&self.stops, off);
+        let after = Self::first_at_or_after(&self.stops, off);
+        match (before, after) {
+            (Some(b), Some(a)) if off - b <= a - off => b,
+            (_, Some(a)) => a,
+            (Some(b), None) => b,
+            (None, None) => off,
+        }
+    }
+
+    /// The last of `sorted` at or before `off`, if any.
+    fn last_at_or_before(sorted: &[usize], off: usize) -> Option<usize> {
+        let i = sorted.partition_point(|&s| s <= off);
+        i.checked_sub(1).map(|i| sorted[i])
+    }
+
+    /// The first of `sorted` at or after `off`, if any.
+    fn first_at_or_after(sorted: &[usize], off: usize) -> Option<usize> {
+        let i = sorted.partition_point(|&s| s < off);
+        sorted.get(i).copied()
+    }
+
+    /// The next place the caret rests past `off` — the next glyph stop or the
+    /// next mark's content end, whichever comes first. What Right walks:
+    /// leaving `**bold**` from the `d` is two presses, one onto the end of the
+    /// bold (still bold, the toolbar lit) and one past its delimiter, at the
+    /// same spot on screen. [`stop_after`](Self::stop_after) is the walk that
+    /// skips the first, for every caller that pairs stops with characters.
+    pub fn caret_stop_after(&self, off: usize) -> Option<usize> {
+        match (
+            self.stop_after(off),
+            Self::first_at_or_after(&self.mark_ends, off + 1),
+        ) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// The previous place the caret rests before `off` — the mirror of
+    /// [`caret_stop_after`](Self::caret_stop_after), what Left walks.
+    pub fn caret_stop_before(&self, off: usize) -> Option<usize> {
+        self.stop_before(off).max(
+            off.checked_sub(1)
+                .and_then(|o| Self::last_at_or_before(&self.mark_ends, o)),
+        )
     }
 
     /// Whether the caret can occupy `row` at all: decoration rows (a table's
@@ -794,9 +895,10 @@ impl VisualMap {
     }
 
     /// Whether the caret may rest at `off` — the invariant every motion in this
-    /// view has to leave standing.
+    /// view has to leave standing. A glyph stop, a row's end, or a hidden
+    /// mark's content end ([`mark_ends`](Self::mark_ends)).
     pub fn is_stop(&self, off: usize) -> bool {
-        self.stops.binary_search(&off).is_ok()
+        self.stops.binary_search(&off).is_ok() || self.mark_ends.binary_search(&off).is_ok()
     }
 
     /// The visible text a caret crosses walking rightward from `from` up to
@@ -904,7 +1006,7 @@ impl VisualMap {
     /// keyed by its own source offset (`Some(ch)`), and every block boundary
     /// in range keyed by its gap offset (`None`, drawn as `\n`).
     fn visible_items(&self, from: usize, to: usize) -> Vec<(usize, Option<char>)> {
-        let from = self.nearest_stop(from);
+        let from = self.snap_to_glyph_stop(from);
 
         // Real content: every stop glyph in range, keyed by its own source
         // offset (`None` tags it as a genuine character, versus the
@@ -969,6 +1071,21 @@ fn collect_stops(rows: &[VRow]) -> Vec<usize> {
     stops.sort_unstable();
     stops.dedup();
     stops
+}
+
+/// Collect every row's [`VRow::mark_ends`] into one ascending, deduplicated
+/// table — the peer of [`collect_stops`] for the caret's second home at the
+/// end of a hidden mark. A mark that closes at a row's end coincides with the
+/// row's own end stop; that offset is in both tables, and harmlessly so.
+fn collect_mark_ends(rows: &[VRow]) -> Vec<usize> {
+    let mut ends: Vec<usize> = rows
+        .iter()
+        .filter(|r| !r.decoration)
+        .flat_map(|r| r.mark_ends.iter().copied())
+        .collect();
+    ends.sort_unstable();
+    ends.dedup();
+    ends
 }
 
 /// Group the rows tagged [`VRow::code`] into one [`CodeBlockInfo`] per maximal
@@ -1183,6 +1300,7 @@ pub fn build(
         break_glyph: Cell::new(' '),
         preserve_soft,
         reveal: reveal.clone(),
+        pending_mark_ends: RefCell::new(Vec::new()),
     };
     let last_drawn = b.top_blocks(&top);
     // The hidden frontmatter's end is the baseline for both the trailing blank
@@ -1192,6 +1310,7 @@ pub fn build(
     b.emit_trailing_blank_lines(last_drawn.unwrap_or(BlockClass::Paragraph), hidden_end);
     let content_start = top.first().map_or(hidden_end, |&i| nodes[i].span.start);
     let stops = collect_stops(&b.rows);
+    let mark_ends = collect_mark_ends(&b.rows);
     label_media_boundaries(&mut b.rows);
     let code_blocks = code_block_spans(&b.rows);
     let media = media_spans(&b.rows);
@@ -1200,6 +1319,7 @@ pub fn build(
         rows: b.rows,
         content_start,
         stops,
+        mark_ends,
         tables: b.tables,
         code_blocks,
         media,
@@ -1263,6 +1383,7 @@ pub fn build_cached(
         break_glyph: Cell::new(' '),
         preserve_soft,
         reveal: reveal.clone(),
+        pending_mark_ends: RefCell::new(Vec::new()),
     };
 
     // Record the per-block row decomposition as we go, so a later
@@ -1327,6 +1448,7 @@ pub fn build_cached(
                     break_glyph: Cell::new(' '),
                     preserve_soft,
                     reveal: reveal.clone(),
+                    pending_mark_ends: RefCell::new(Vec::new()),
                 };
                 sub.block(0, &[], &[]);
                 // A block that drew nothing is stepped over, not stood on: its
@@ -1420,6 +1542,7 @@ pub fn build_cached(
     // document ([`hidden_prefix_end`]).
     let content_start = blocks.first().map_or(hidden_end, |m| m.span.start);
     let stops = collect_stops(&b.rows);
+    let mark_ends = collect_mark_ends(&b.rows);
     label_media_boundaries(&mut b.rows);
     let code_blocks = code_block_spans(&b.rows);
     let media = media_spans(&b.rows);
@@ -1428,6 +1551,7 @@ pub fn build_cached(
         rows: b.rows,
         content_start,
         stops,
+        mark_ends,
         tables: b.tables,
         code_blocks,
         media,
@@ -1578,6 +1702,7 @@ pub fn build_spliced(
         break_glyph: Cell::new(' '),
         preserve_soft,
         reveal: reveal.clone(),
+        pending_mark_ends: RefCell::new(Vec::new()),
     };
     sub.block(0, &[], &[]);
     // A table, or content that renders outside the block's span (a degenerate
@@ -1588,6 +1713,7 @@ pub fn build_spliced(
     let new_content = sub.rows;
     let new_content_len = new_content.len();
     let new_stops = collect_stops(&new_content);
+    let new_mark_ends = collect_mark_ends(&new_content);
 
     // Row span of the dirty block's CONTENT. Its leading separator stays in the
     // prefix: the gap before block k is unchanged, since k's start didn't move.
@@ -1622,6 +1748,16 @@ pub fn build_spliced(
     for &s in &prev.stops[p2..] {
         stops.push((s as isize + delta) as usize);
     }
+    // The mark ends splice the same way: they are offsets in the same
+    // coordinates, cut at the same block.
+    let m1 = prev.mark_ends.partition_point(|&s| s < pk_start);
+    let m2 = prev.mark_ends.partition_point(|&s| s <= pk_end);
+    let mut mark_ends = Vec::with_capacity(m1 + new_mark_ends.len() + (prev.mark_ends.len() - m2));
+    mark_ends.extend_from_slice(&prev.mark_ends[..m1]);
+    mark_ends.extend(new_mark_ends);
+    for &s in &prev.mark_ends[m2..] {
+        mark_ends.push((s as isize + delta) as usize);
+    }
 
     // Record the patched layout for the next splice: spans move to the new
     // coordinates, and the dirty block takes its new content-row count.
@@ -1650,6 +1786,7 @@ pub fn build_spliced(
         rows,
         content_start: blocks[0].span.start,
         stops,
+        mark_ends,
         tables: Vec::new(),
         code_blocks,
         media,
@@ -1911,6 +2048,7 @@ fn shift_row(row: &VRow, delta: isize) -> VRow {
         // Structure, not offsets: a reused block's rows divide the same blocks
         // wherever the edit above moved them to.
         boundary: row.boundary,
+        mark_ends: row.mark_ends.iter().map(|&o| shift(o)).collect(),
     }
 }
 
@@ -1922,6 +2060,9 @@ fn shift_row_in_place(row: &mut VRow, delta: isize) {
         g.src = (g.src as isize + delta) as usize;
     }
     row.end_src = (row.end_src as isize + delta) as usize;
+    for o in &mut row.mark_ends {
+        *o = (*o as isize + delta) as usize;
+    }
 }
 
 /// Whether every source offset a block's rows carry falls inside the block's own
@@ -2244,9 +2385,39 @@ struct Builder<'a> {
     /// when its span meets this line, so `*em*` shows both its asterisks even
     /// with the caret at one end of it.
     reveal: Option<Range<usize>>,
+    /// The content ends of the hidden marks rendered since the last row was
+    /// pushed — recorded as the inline walk meets each mark, and drained onto
+    /// the rows as they are emitted (see [`Builder::take_mark_ends`]). A cell
+    /// rather than a `&mut`, for the reason `break_glyph` is: the inline walk
+    /// borrows the builder shared.
+    pending_mark_ends: RefCell<Vec<usize>>,
 }
 
 impl Builder<'_> {
+    /// Note that the mark `id` closes with a hidden delimiter, so its content
+    /// end is a caret home — unless the mark is empty, where the end is the
+    /// start and there is nothing to extend.
+    fn note_mark_end(&self, id: usize) {
+        let node = &self.nodes[id];
+        if let Some(content) = &node.content_span
+            && content.end < node.span.end
+            && !content.is_empty()
+        {
+            self.pending_mark_ends.borrow_mut().push(content.end);
+        }
+    }
+
+    /// The pending mark ends at or before `end_src`, for the row ending there
+    /// — every mark rendered so far that closes on it. A mark's end never
+    /// exceeds the end of the row its last glyph is on, so the leftovers are
+    /// those of rows still to come.
+    fn take_mark_ends(&self, end_src: usize) -> Vec<usize> {
+        let mut pending = self.pending_mark_ends.borrow_mut();
+        let (taken, kept): (Vec<usize>, Vec<usize>) =
+            pending.drain(..).partition(|&o| o <= end_src);
+        *pending = kept;
+        taken
+    }
     /// Whether `span` belongs to the line that is showing its raw markup. True
     /// only when a reveal line is set (`MarkupMode::Full`) and the two ranges
     /// actually meet.
@@ -2332,8 +2503,11 @@ impl Builder<'_> {
             self.push_delim(out, open, style);
         }
         self.recurse(id, style, out);
-        if let Some((_, close)) = &show {
-            self.push_delim(out, close, style);
+        match &show {
+            Some((_, close)) => self.push_delim(out, close, style),
+            // Hidden, so the content's end has no glyph after it: give the
+            // caret its home there.
+            None => self.note_mark_end(id),
         }
     }
 
@@ -2527,6 +2701,7 @@ impl Builder<'_> {
                 leaf_directive: None,
                 heading: None,
                 boundary: drawn.then_some(boundary),
+                mark_ends: Vec::new(),
             });
         }
     }
@@ -3046,6 +3221,7 @@ impl Builder<'_> {
             leaf_directive: None,
             heading: None,
             boundary: None,
+            mark_ends: Vec::new(),
         });
     }
 
@@ -3127,6 +3303,7 @@ impl Builder<'_> {
                 .rev()
                 .find(|g| g.stop)
                 .map_or(fallback, |g| g.src);
+            let mark_ends = self.take_mark_ends(end_src);
             self.rows.push(VRow {
                 glyphs,
                 end_src,
@@ -3140,6 +3317,7 @@ impl Builder<'_> {
                 leaf_directive: None,
                 heading: None,
                 boundary: None,
+                mark_ends,
             });
         }
     }
@@ -3250,6 +3428,7 @@ impl Builder<'_> {
                 leaf_directive: None,
                 heading: None,
                 boundary: None,
+                mark_ends: Vec::new(),
             });
         }
         self.last_off = end;
@@ -3600,8 +3779,9 @@ impl Builder<'_> {
                     self.push_delim(out, open, style);
                 }
                 push_text(out, node.text.as_deref().unwrap_or(""), at, style);
-                if let Some((_, close)) = &show {
-                    self.push_delim(out, close, style);
+                match &show {
+                    Some((_, close)) => self.push_delim(out, close, style),
+                    None => self.note_mark_end(id),
                 }
             }
             // A text directive (`:name[label]{…}`) — the inline form of a generic
@@ -3923,6 +4103,7 @@ impl Builder<'_> {
     /// extent better than its last glyph does.
     fn push_row_at(&mut self, glyphs: Vec<Glyph>, end_src: usize) {
         self.last_off = end_src;
+        let mark_ends = self.take_mark_ends(end_src);
         self.rows.push(VRow {
             glyphs,
             end_src,
@@ -3936,6 +4117,7 @@ impl Builder<'_> {
             leaf_directive: None,
             heading: None,
             boundary: None,
+            mark_ends,
         });
     }
 
@@ -4093,6 +4275,7 @@ impl Builder<'_> {
                     above,
                     below: BlockClass::Paragraph,
                 }),
+                mark_ends: Vec::new(),
             });
         }
     }
@@ -5005,6 +5188,7 @@ pub(crate) fn assert_maps_eq(a: &VisualMap, b: &VisualMap, ctx: &str) {
     }
     assert_eq!(a.content_start, b.content_start, "content_start ({ctx})");
     assert_eq!(a.stops, b.stops, "stops ({ctx})");
+    assert_eq!(a.mark_ends, b.mark_ends, "mark_ends ({ctx})");
     assert_eq!(a.tables.len(), b.tables.len(), "table count ({ctx})");
     for (i, (ta, tb)) in a.tables.iter().zip(&b.tables).enumerate() {
         assert_eq!(ta.rows_span, tb.rows_span, "table {i} rows_span ({ctx})");
@@ -6842,6 +7026,71 @@ mod tests {
             "🖼 beach.jpg"
         );
         assert_eq!(m.media[0].alt, "");
+    }
+
+    #[test]
+    fn a_hidden_marks_content_end_is_a_caret_home_but_not_a_glyph_stop() {
+        // `a **bold** b`: the `d` is at 7, the content ends at 8, the closing
+        // `**` draws nothing, and the space after it is at 10. Two homes at one
+        // spot on screen: 8 (inside the bold) and 10 (past it).
+        let m = map("a **bold** b\n");
+        assert!(
+            !m.stops.contains(&8),
+            "8 has no glyph, so it is no glyph stop"
+        );
+        assert_eq!(m.mark_ends, vec![8]);
+        assert!(m.is_stop(8), "but the caret may rest there");
+        assert_eq!(m.snap_to_stop(8), 8, "and is left there when placed there");
+        // Left/Right take both homes; the character-pairing walk takes one.
+        assert_eq!(m.caret_stop_after(7), Some(8));
+        assert_eq!(m.caret_stop_after(8), Some(10));
+        assert_eq!(m.caret_stop_before(10), Some(8));
+        assert_eq!(m.caret_stop_before(8), Some(7));
+        assert_eq!(m.stop_after(7), Some(10));
+        assert_eq!(m.stop_before(10), Some(7));
+        // Drawn where the next glyph is: after the `d`, not on it.
+        assert_eq!(m.pos_of_offset(8), m.pos_of_offset(10));
+    }
+
+    #[test]
+    fn every_hidden_inline_mark_gives_its_content_end_a_home() {
+        // One end per mark, whatever it is spelled with; nested marks closing
+        // together share the outer's end and the inner's alike.
+        assert_eq!(
+            map("*em* `code` [link](u) ~~del~~\n").mark_ends,
+            vec![3, 10, 17, 27]
+        );
+        assert_eq!(map("***both***\n").mark_ends, vec![7]);
+        // A mark that closes at its row's end coincides with the row's own end
+        // stop — one offset, in both tables.
+        let m = map("**bold**\n");
+        assert_eq!(m.mark_ends, vec![6]);
+        assert!(m.stops.contains(&6));
+        // Revealed, the delimiter is glyphs of its own and the end is an
+        // ordinary glyph stop: nothing to add.
+        let mut ed = Editor::new_str("a **bold** b\n", Format::Markdown).unwrap();
+        let src = "a **bold** b\n";
+        let revealed = build(
+            &ed.nodes().unwrap(),
+            src,
+            Some(80),
+            false,
+            &HashMap::new(),
+            Some(0..src.len()),
+        );
+        assert!(revealed.mark_ends.is_empty());
+        assert!(revealed.stops.contains(&8));
+    }
+
+    #[test]
+    fn a_marks_content_end_is_a_home_inside_a_table_cell() {
+        let src = "| A | B |\n| --- | --- |\n| **bold** | other |\n";
+        let m = map(src);
+        let end = src.find("bold").unwrap() + 4; // 32, before the closing `**`
+        assert_eq!(m.mark_ends, vec![end]);
+        assert_eq!(m.snap_to_stop(end), end);
+        // Drawn after the `d`, in this cell — where the cell's own end stop is.
+        assert_eq!(m.pos_of_offset(end), m.pos_of_offset(end + 2));
     }
 
     #[test]

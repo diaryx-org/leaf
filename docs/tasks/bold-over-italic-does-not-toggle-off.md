@@ -7,6 +7,15 @@ part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 # Bold over italic does not toggle off
 
+**Diagnosis.** twig: `***word***` parses as `emph > strong`, so the selected
+range is the emph's span and `Splicer.inlineNodeCovering` — which asks for a
+`strong` whose span or content span *equals* the range — finds none and
+wraps again. The same rule turns a drag that ends past a hidden closing
+delimiter (`[2,8)` of `**bold** plain`, interior plus `**`) into
+`****bold****`. Fixed in twig by matching a mark whose content the range
+covers and whose span covers the range, through single-child marks nested
+around it; closes with the twig-doc pin that carries it.
+
 Select the complete source span `*word*`, including its delimiters, through
 `selectRange`. Toggle Bold twice. The first command produces `***word***`;
 the second produces `*****word*****` instead of returning to `*word*`.

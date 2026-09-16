@@ -1030,6 +1030,21 @@ impl Inner {
         }
     }
 
+    /// [`snap_stop`](Self::snap_stop) for the walks that pair stops with
+    /// characters — `step_offset` and `distance_offset`, which a system text
+    /// input counts against the text it was shown. The caret's home at the
+    /// end of a hidden mark (`VisualMap::mark_ends`) has no character of its
+    /// own, so those walks start from the glyph stop drawn at the same spot.
+    fn snap_glyph_stop(&self, off: usize) -> usize {
+        match self.doc.view {
+            View::Wysiwyg => self
+                .doc
+                .vmap
+                .snap_to_glyph_stop(off.min(self.doc.source.len())),
+            View::Source => self.snap_stop(off),
+        }
+    }
+
     /// The navigable visual row above `row`, if any.
     fn nav_above(&self, row: usize) -> Option<usize> {
         match self.doc.view {
@@ -2045,7 +2060,7 @@ impl LeafDoc {
     pub fn step_offset(&self, off: u32, delta: i32) -> u32 {
         let mut g = self.lock();
         g.sync();
-        let mut o = g.snap_stop(off as usize);
+        let mut o = g.snap_glyph_stop(off as usize);
         if delta >= 0 {
             for _ in 0..delta {
                 match g.stop_after(o) {
@@ -2074,7 +2089,7 @@ impl LeafDoc {
         } else {
             (to, from, -1i32)
         };
-        a = g.snap_stop(a);
+        a = g.snap_glyph_stop(a);
         let mut n = 0i32;
         while a < b {
             match g.stop_after(a) {

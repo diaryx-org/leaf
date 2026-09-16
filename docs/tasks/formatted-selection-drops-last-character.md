@@ -1,11 +1,20 @@
 ---
 title: Selecting a formatted word drops its final character
-status: open
+status: done
 created: 2026-09-16
 updated: 2026-09-16
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 # Selecting a formatted word drops its final character
+
+**Status: done.** The content end of a hidden inline mark is now a caret home
+(`VisualMap::mark_ends`): `place_caret` leaves a focus there rather than
+snapping it a character back, and Left/Right step onto it — so the end of
+`**bold**` has two homes at one spot on screen, inside the mark and past it,
+which is what the delete paths (`settle_inside_close_delims`) and
+`active_inline_marks`'s documentation already assumed. The walks a system
+text input counts characters against (`step_offset`, `distance_offset`)
+skip it, so `text(in:)` and `offset(from:to:)` still agree.
 
 In a Markdown table body cell containing `**bold**`, request the visible
 word's four-byte range through `LeafDoc.setSelectionOffsets`. The focus snaps
