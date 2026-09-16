@@ -57,6 +57,89 @@ final class LeafSelectionRect: UITextSelectionRect {
     override var isVertical: Bool { false }
 }
 
+// MARK: - Tokenizer
+
+/// What the system asks about text units. `UITextInputStringTokenizer` answers
+/// characters, words, sentences and paragraphs by reading `text(in:)`, and by
+/// its own documentation cannot answer *lines*: a line is a fact about layout,
+/// which the base class has none of, so it says "no" to every line question.
+///
+/// That silence moved carets. `UITextInteraction` places a tap that lands at a
+/// word's end one position further on — past the space that follows the word,
+/// which is where the stock text view puts it too — *unless* the tokenizer says
+/// the position is a line end. With no line ends anywhere, every paragraph's
+/// last word and every table cell's last word were word ends and nothing more,
+/// so a tap past "iOS." landed at the start of the next heading, and a tap past
+/// "editable" landed in the next row's first cell. This answers lines from the
+/// layout, so those taps stay where they landed.
+final class LeafTokenizer: UITextInputStringTokenizer {
+    private unowned let view: LeafTextView
+
+    init(view: LeafTextView) {
+        self.view = view
+        super.init(textInput: view)
+    }
+
+    /// `UITextDirection` is a storage direction (`.forward`/`.backward`) or a
+    /// layout one (`.right`/`.left`/`.up`/`.down`) behind one raw value; reading
+    /// on is forward, right, or down.
+    private func reads(on direction: UITextDirection) -> Bool {
+        switch direction.rawValue {
+        case UITextStorageDirection.forward.rawValue,
+             UITextLayoutDirection.right.rawValue,
+             UITextLayoutDirection.down.rawValue:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func line(at position: UITextPosition) -> (start: Int, end: Int, continues: Bool)? {
+        guard let o = (position as? LeafTextPosition)?.offset else { return nil }
+        return view.visualLineBounds(at: o)
+    }
+
+    override func isPosition(_ position: UITextPosition, atBoundary granularity: UITextGranularity,
+                             inDirection direction: UITextDirection) -> Bool {
+        guard granularity == .line else {
+            return super.isPosition(position, atBoundary: granularity, inDirection: direction)
+        }
+        guard let o = (position as? LeafTextPosition)?.offset, let line = line(at: position) else { return false }
+        // A soft wrap is one offset that ends a line and starts the next; it is a
+        // boundary read either way.
+        return reads(on: direction)
+            ? o == line.end || (o == line.start && line.continues)
+            : o == line.start
+    }
+
+    override func position(from position: UITextPosition, toBoundary granularity: UITextGranularity,
+                           inDirection direction: UITextDirection) -> UITextPosition? {
+        guard granularity == .line else {
+            return super.position(from: position, toBoundary: granularity, inDirection: direction)
+        }
+        guard let line = line(at: position) else { return nil }
+        return LeafTextPosition(reads(on: direction) ? line.end : line.start)
+    }
+
+    override func rangeEnclosingPosition(_ position: UITextPosition, with granularity: UITextGranularity,
+                                         inDirection direction: UITextDirection) -> UITextRange? {
+        guard granularity == .line else {
+            return super.rangeEnclosingPosition(position, with: granularity, inDirection: direction)
+        }
+        guard let line = line(at: position) else { return nil }
+        return LeafTextRange(LeafTextPosition(line.start), LeafTextPosition(line.end))
+    }
+
+    override func isPosition(_ position: UITextPosition, withinTextUnit granularity: UITextGranularity,
+                             inDirection direction: UITextDirection) -> Bool {
+        guard granularity == .line else {
+            return super.isPosition(position, withinTextUnit: granularity, inDirection: direction)
+        }
+        guard let o = (position as? LeafTextPosition)?.offset, let line = line(at: position) else { return false }
+        return reads(on: direction) ? o < line.end : o > line.start
+    }
+}
+
 // MARK: - The view
 
 public final class LeafTextView: UIView, UITextInput {
@@ -207,7 +290,7 @@ public final class LeafTextView: UIView, UITextInput {
 
     // UITextInput plumbing.
     public weak var inputDelegate: UITextInputDelegate?
-    public lazy var tokenizer: UITextInputTokenizer = UITextInputStringTokenizer(textInput: self)
+    public lazy var tokenizer: UITextInputTokenizer = LeafTokenizer(view: self)
     public var markedTextStyle: [NSAttributedString.Key: Any]?
     private var marked: LeafTextRange?
     private lazy var textInteraction: UITextInteraction = {
@@ -803,6 +886,20 @@ public final class LeafTextView: UIView, UITextInput {
 
     private func off(_ p: UITextPosition) -> Int { (p as? LeafTextPosition)?.offset ?? 0 }
 
+    /// The source offsets bounding the visual line offset `o` sits on — a cell's
+    /// line inside a table, a wrapped line of the block elsewhere — and whether
+    /// that line continues one above it across a soft wrap, in which case its
+    /// `start` is also the line above's `end`. What `LeafTokenizer` answers line
+    /// questions from.
+    func visualLineBounds(at o: Int) -> (start: Int, end: Int, continues: Bool)? {
+        if let cell = layoutEngine.tableLineBounds(src: o) { return cell }
+        let rc = doc.posForOffset(off: UInt32(o))
+        guard let line = layoutEngine.visualLine(row: Int(rc.row), ch: Int(rc.ch)) else { return nil }
+        return (Int(doc.offsetForPos(row: rc.row, ch: UInt32(line.start))),
+                Int(doc.offsetForPos(row: rc.row, ch: UInt32(line.end))),
+                line.index > 0)
+    }
+
     // MARK: layout / wrap
 
     public override func layoutSubviews() {
@@ -1397,7 +1494,8 @@ public final class LeafTextView: UIView, UITextInput {
         var cur = o
         for _ in 0..<max(0, times) {
             let rc = doc.posForOffset(off: UInt32(cur))
-            guard let caret = layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch)) else { break }
+            guard let caret = layoutEngine.caretRect(src: cur, row: Int(rc.row), ch: Int(rc.ch),
+                                                     theme: renderTheme) else { break }
             // Probe from the caret's full line band (a table cell's padding is
             // cleared) and resolve the table-aware way, or a probe into a table
             // teleports to its top-left cell. See the AppKit peer's `moveVertical`.
@@ -1466,8 +1564,11 @@ public final class LeafTextView: UIView, UITextInput {
     // MARK: UITextInput — geometry
 
     public func caretRect(for position: UITextPosition) -> CGRect {
-        let rc = doc.posForOffset(off: UInt32(off(position)))
-        return layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch)) ?? .zero
+        let o = off(position)
+        let rc = doc.posForOffset(off: UInt32(o))
+        // Through the table-aware path: a position in a cell is drawn in that
+        // cell, not at the grid's top-left (see `EditorLayout.caretRect(src:)`).
+        return layoutEngine.caretRect(src: o, row: Int(rc.row), ch: Int(rc.ch), theme: renderTheme) ?? .zero
     }
 
     public func selectionRects(for range: UITextRange) -> [UITextSelectionRect] {

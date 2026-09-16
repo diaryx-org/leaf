@@ -43,6 +43,34 @@ final class TableBugTests: XCTestCase {
         XCTAssertEqual(model.doc.snapOffset(off: UInt32(hit)), UInt32(expected))
     }
 
+    /// The iOS view answers `caretRect(for:)` for *any* position, not just the
+    /// caret's, and it used to answer through the picture-row path alone — so
+    /// every position inside a table came back as the grid's top-left corner:
+    /// the system drew the caret there, anchored the edit menu there, and
+    /// scrolled there. The position-general `caretRect(src:row:ch:theme:)`
+    /// must agree with the caret's own table-aware rect.
+    func testCaretRectForAPositionInACellRidesTheGrid() throws {
+        let model = try LeafEditorModel(source: "| Name |\n| --- |\n| Tables | editable |\n")
+        let frame = model.doc.setUnwrapped()
+        let layout = EditorLayout(frame, theme: theme)
+        let rl = try XCTUnwrap(layout.rows.first { $0.tableFirst })
+        let grid = try XCTUnwrap(rl.table)
+        let cell = try XCTUnwrap(grid.rows.last?.cells.last)
+        let end = cell.end
+        let rc = model.doc.posForOffset(off: UInt32(end))
+        let general = try XCTUnwrap(layout.caretRect(src: end, row: Int(rc.row), ch: Int(rc.ch), theme: theme))
+        let placed = model.doc.setSelectionOffsets(anchor: UInt32(end), focus: UInt32(end))
+        let own = try XCTUnwrap(layout.caretRect(placed, theme: theme))
+        XCTAssertEqual(general, own)
+        // And it is the cell's, not the picture row's: past the cell's text,
+        // on the body row's band.
+        let line = try XCTUnwrap(cell.lines.first)
+        let textEnd = rl.originX + line.textX
+            + CTLineGetOffsetForStringIndex(line.line, line.attributed.length, nil)
+        XCTAssertEqual(general.minX, textEnd, accuracy: 0.1)
+        XCTAssertGreaterThan(general.minY, rl.tableTop + grid.rows[0].height)
+    }
+
     func testClickLeftOfGridUsesFirstCell() throws {
         let grid = try XCTUnwrap(TableLayout(mkTable([
             mkTableRow([mkCell("first", start: 2, end: 7), mkCell("last", start: 10, end: 14)])
