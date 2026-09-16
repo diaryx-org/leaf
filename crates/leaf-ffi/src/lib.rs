@@ -2163,8 +2163,8 @@ impl LeafDoc {
     /// view this is *not* the raw source slice: a hidden inline-mark
     /// delimiter (`**`, `` ` ``, `_`) contributes nothing, matching what
     /// `distance_offset`/`step_offset` already count in this same offset
-    /// space — while a genuine block boundary the range spans (a paragraph
-    /// gap, a table rule, …) contributes one inserted `'\n'` that
+    /// space — while a genuine gap between blocks the range spans contributes
+    /// one inserted `'\n'` that
     /// `distance_offset`/`step_offset` do *not* count (a block boundary costs
     /// caret motion zero stops there, by design — see
     /// `the_caret_skips_the_gap_between_two_paragraphs` in `leaf-core`'s
@@ -3629,6 +3629,15 @@ mod tests {
             d.distance_offset(5, p2 as u32),
             1,
             "one Right crosses the whole gap"
+        );
+    }
+
+    #[test]
+    fn text_in_range_does_not_split_table_cells_at_decoration_rows() {
+        let d = doc("| Feature | Status |\n| --- | --- |\n| Tables | editable |\n");
+        assert_eq!(
+            d.text_in_range(0, d.doc_end_offset()),
+            "Feature Status Tables editable"
         );
     }
 

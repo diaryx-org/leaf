@@ -918,8 +918,8 @@ impl VisualMap {
             .map(|g| (g.src, Some(g.ch)))
             .collect();
 
-        // Every whole decoration row is a candidate block boundary; its
-        // `end_src` is the gap offset itself (never a stop — see
+        // Every structural boundary row contributes a separator; its `end_src`
+        // is the gap offset itself (never a stop — see
         // `place_caret_snaps_out_of_the_blank_gap_between_paragraphs` in
         // `doc.rs`) — a source offset like any glyph's, so it merges into the
         // same ordering. `None` marks it a synthetic separator rather than a
@@ -929,7 +929,10 @@ impl VisualMap {
         let mut boundaries: Vec<usize> = self
             .rows
             .iter()
-            .filter(|r| r.decoration)
+            // A table rule is also a decoration row, but it is chrome *inside*
+            // one block. Treating it as a block boundary inserts newlines into
+            // table cells (for example "Feature" became "F\neature").
+            .filter(|r| r.boundary.is_some())
             .map(|r| r.end_src)
             .filter(|&src| src >= from && src < to)
             .collect();

@@ -13,6 +13,9 @@
 # scripts/gen-bindings.sh; CI diffs it against crates/leaf-ffi.
 /.build/
 /.swiftpm/
+# This repository publishes the root SwiftPM package as a library. Consumers
+# resolve its declared version range themselves; local build pins are not source.
+/Package.resolved
 packages/leaf-swift/.build/
 # Xcode's own build directory for the package (distinct from SwiftPM's `.build`),
 # left behind when apps/leaf-editor is built against it as a local package.
