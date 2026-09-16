@@ -4,6 +4,10 @@ description: Deferred work on leaf, one file each — a commitment with a done s
 created: 2026-09-04
 updated: 2026-09-16
 contents:
+- '[Bold inside code inserts visible delimiters](bold-inside-code-inserts-delimiters.md)'
+- '[Bold over italic does not toggle off](bold-over-italic-does-not-toggle-off.md)'
+- '[Table cells omit active formatting from the toolbar](table-active-formatting-missing.md)'
+- '[Selecting a formatted word drops its final character](formatted-selection-drops-last-character.md)'
 - '[Clicks left of a table jump to its last cell](table-left-margin-hit-testing.md)'
 - '[Table clicks lose inline markup source offsets](table-inline-markup-hit-testing.md)'
 - '[Table caret and selection drift after Unicode](table-unicode-geometry.md)'
