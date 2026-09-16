@@ -37,6 +37,27 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.1.19 — 2026-09-16
+
+### Added
+
+- **xtask** — run `swift --ios` on leaf's own simulator, made on first use ([`e36559d`](https://github.com/diaryx-org/leaf/commit/e36559d530f9cd90c9f288390365af2b6439b1a6))
+- **swift** — a header laid above the first line, inside the iOS editor's scroll ([`0da0e82`](https://github.com/diaryx-org/leaf/commit/0da0e821d1fa5cd9b9d5870501dcdb47c6eef99f))
+
+### Fixed
+
+- **core** — spell the visible text one character per caret stop ([`c095d5e`](https://github.com/diaryx-org/leaf/commit/c095d5eaf8b05b2c7ac5bcc8a562cdc8a96b7dd5))
+- **swift** — keep an iOS tap where it lands at a line's or a cell's end ([`dd88f8a`](https://github.com/diaryx-org/leaf/commit/dd88f8a6ad9cb098004c88d6a4bda3e0c4c9238d))
+
+### Behavioural changes
+
+- `text_in_range` (FFI and wasm) now ends every list item
+and code line with `\n` where it ran them together, and spells a table
+cell's end as `\n` rather than a space; `utf16_index_for_offset` and
+`offset_for_utf16_index` shift with it, and for any two stops
+`text_in_range(a, b).chars().count() == distance_offset(a, b)`.
+
+
 ## v0.1.18 — 2026-09-16
 
 ### Added
