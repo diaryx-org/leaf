@@ -780,11 +780,12 @@ fn spells_pipe_tables(format: Format) -> bool {
 /// **The formats are ragged, and that is the point.** A single per-document
 /// boolean was enough while the two authorable formats were Markdown and djot
 /// and everything else spelled nothing. HTML is neither: it writes seven of the
-/// eight inline marks as a tag pair, plus `<code>`, `<hr>` and an in-cell
-/// `<br>`, and spells no heading marker, no line prefix, no fence, no task box,
-/// no link — because its versions of those have a different *shape*, not a
-/// different alphabet. So ⌘B works in an HTML document and ⌘1 does not, and no
-/// one flag can say that. Markdown and djot differ from each other too:
+/// eight inline marks as a tag pair, plus `<code>`, `<hr>`, an in-cell
+/// `<br>`, and — since twig 3.4 — a heading or paragraph rebuilt as its tag
+/// pair; it spells no line prefix, no fence, no task box, no link — because
+/// its versions of those have a different *shape*, not a different alphabet.
+/// So ⌘B and ⌘1 work in an HTML document and the quote button does not, and
+/// no one flag can say that. Markdown and djot differ from each other too:
 /// `^superscript^` is djot-only, and an in-cell `<br>` is Markdown-only.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Capabilities {
@@ -11638,18 +11639,13 @@ mod tests {
 
     #[test]
     fn the_block_gestures_html_cannot_spell_are_refused_with_a_reason() {
-        // A heading is a wrapping tag pair carrying its level in both ends, a
-        // quote wraps a range rather than prefixing each line, a link's
+        // A quote wraps a range rather than prefixing each line, a link's
         // destination lives in an attribute — different *shapes*, not a
         // different alphabet, so twig spells none of them and neither does leaf.
         let src = "<h1>Title</h1>\n<p>Hello world</p>\n<ul><li>one</li></ul>\n";
         // A table of named operations, which is what it looks like.
         #[allow(clippy::type_complexity)]
-        let ops: [(&str, &dyn Fn(&mut Doc)); 9] = [
-            ("heading", &|d: &mut Doc| d.toggle_heading(2)),
-            ("paragraph", &|d: &mut Doc| {
-                d.set_block(BlockKind::Paragraph)
-            }),
+        let ops: [(&str, &dyn Fn(&mut Doc)); 7] = [
             ("quote", &|d: &mut Doc| d.toggle_blockquote()),
             ("list", &|d: &mut Doc| d.toggle_list(false)),
             ("task item", &|d: &mut Doc| d.toggle_task_item()),
@@ -11677,6 +11673,22 @@ mod tests {
                 "{name}: the refusal should name the format, got {status:?}"
             );
         }
+    }
+
+    #[test]
+    fn html_spells_a_heading_as_its_tag_pair() {
+        // twig 3.4 rebuilds a heading or paragraph as its tag pair, attributes
+        // along — the one block gesture whose HTML shape it can write. So ⌘2
+        // in an HTML document is a real edit, and ⌘0 takes it back.
+        let src = "<h1>Title</h1>\n<p>Hello world</p>\n";
+        let mut d = html_doc(src);
+        d.caret = d.source.find("Hello").unwrap();
+        d.toggle_heading(2);
+        assert_eq!(d.source, "<h1>Title</h1>\n<h2>Hello world</h2>\n");
+        assert!(d.dirty);
+        assert_eq!(d.status, None, "a supported gesture reports nothing");
+        d.toggle_heading(2);
+        assert_eq!(d.source, src, "the same level again is back to a paragraph");
     }
 
     #[test]
@@ -12071,7 +12083,10 @@ mod tests {
         let caps = html.capabilities();
         assert!(caps.bold && caps.italic && caps.code && caps.mark);
         assert!(caps.thematic_break && caps.cell_line_break);
-        assert!(!caps.heading && !caps.blockquote && !caps.bullet_list);
+        // A heading is a tag pair twig rebuilds (3.4); a quote or a list
+        // prefixes lines, which HTML has no spelling for.
+        assert!(caps.heading);
+        assert!(!caps.blockquote && !caps.bullet_list);
         assert!(!caps.task && !caps.link && !caps.image && !caps.code_language);
         // The one flag that isn't twig's answer: an HTML `<table>` is a grid
         // twig's table editor would happily re-emit as `| a | b |`.

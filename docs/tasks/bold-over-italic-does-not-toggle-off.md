@@ -1,13 +1,13 @@
 ---
 title: Bold over italic does not toggle off
-status: in-progress
+status: done
 created: 2026-09-16
 updated: 2026-09-16
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 # Bold over italic does not toggle off
 
-**Diagnosis.** twig: `***word***` parses as `emph > strong`, so the selected
+**Status: done** with twig-doc 3.4.0. **Diagnosis.** twig: `***word***` parses as `emph > strong`, so the selected
 range is the emph's span and `Splicer.inlineNodeCovering` — which asks for a
 `strong` whose span or content span *equals* the range — finds none and
 wraps again. The same rule turns a drag that ends past a hidden closing

@@ -1,13 +1,13 @@
 ---
 title: Table cells omit active formatting from the toolbar
-status: in-progress
+status: done
 created: 2026-09-16
 updated: 2026-09-16
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 # Table cells omit active formatting from the toolbar
 
-**Diagnosis.** twig: the Markdown parser gives every `cell` in a row the
+**Status: done** with twig-doc 3.4.0. **Diagnosis.** twig: the Markdown parser gives every `cell` in a row the
 *row's* span (only `content_span` is the cell's — see the note on
 `holdsInlinesDirectly` in twig's `locate.zig`), and `nodes_at` descends into
 the *last* child whose span holds the offset, so in any row of two or more
