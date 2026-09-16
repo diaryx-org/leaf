@@ -543,6 +543,19 @@ public final class LeafEditorModel: ObservableObject {
     /// Paste the clipboard's plain text as source, ignoring any rich flavour —
     /// Edit ▸ Paste and Match Style.
     public func pasteAsPlainText() { textView?.pasteAsPlainText(nil) }
+
+    /// Whether the macOS editor checks prose with the system dictionaries as it
+    /// is typed.
+    public var isContinuousSpellCheckingEnabled: Bool {
+        textView?.isContinuousSpellCheckingEnabled ?? true
+    }
+
+    public func toggleContinuousSpellChecking() {
+        textView?.toggleContinuousSpellChecking(nil)
+        objectWillChange.send()
+    }
+
+    public func checkSpelling() { textView?.checkSpelling(nil) }
     #endif
     public func toggleView() { run { $0.toggleView() } }
 

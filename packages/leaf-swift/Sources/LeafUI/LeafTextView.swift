@@ -279,6 +279,37 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// composing underline. Nil when not composing. Committed text clears it.
     private var markedByteRange: NSRange?
 
+    // MARK: spelling
+
+    /// Whether prose is checked with the user's macOS dictionaries while it is
+    /// edited. Source view is deliberately exempt: markup delimiters, destinations,
+    /// and code are source, not prose (the same rule as the UIKit peer's
+    /// `spellCheckingType`).
+    public var isContinuousSpellCheckingEnabled = true {
+        didSet {
+            guard isContinuousSpellCheckingEnabled != oldValue else { return }
+            scheduleSpellCheck()
+        }
+    }
+    private let spellDocumentTag = NSSpellChecker.uniqueSpellDocumentTag()
+    private var misspelledRanges: [NSRange] = []
+    private var spellCheckWork: DispatchWorkItem?
+    private var spellCheckGeneration = 0
+
+    /// One correction captured when its menu is built. Keeping the original word
+    /// lets the action reject a range made stale while the menu was open.
+    private final class SpellCorrection: NSObject {
+        let range: NSRange
+        let original: String
+        let replacement: String
+
+        init(range: NSRange, original: String, replacement: String) {
+            self.range = range
+            self.original = original
+            self.replacement = replacement
+        }
+    }
+
     private var caretVisible = true
     private var blinkTimer: Timer?
     private var isFocused = false
@@ -327,6 +358,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // Seed with the initial caret so the first reflow opens at the top rather
         // than scrolling to wherever the caret happens to start.
         lastCaretOffset = doc.caretOffset()
+        scheduleSpellCheck()
     }
 
     @available(*, unavailable)
@@ -441,7 +473,8 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // The find bar caches the string and its matches; an edit — or a view
         // toggle, which changes what the visible text *is* — invalidates both.
         // Rows compare cheaply, and a motion or a selection leaves them equal.
-        if view.view != docView.view || view.rows != docView.rows {
+        let textChanged = view.view != docView.view || view.rows != docView.rows
+        if textChanged {
             textFinder.noteClientStringWillChange()
         }
         docView = view
@@ -464,6 +497,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             lastCaretOffset = caret
             scrollCaretToVisible()
         }
+        if textChanged { scheduleSpellCheck() }
         onStateChange?(EditorState(view))
     }
 
@@ -558,6 +592,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         }
 
         if printing { return }
+        drawMisspellings(in: ctx)
         if markedByteRange != nil { drawMarkedUnderline(in: ctx) }
 
         // Before the caret, never after: the caret stands at the cue's first
@@ -573,6 +608,35 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         }
 
         drawHighlightMarkers()
+    }
+
+    /// Paint the familiar red wave under each range the system checker reported.
+    /// The ranges stay in AppKit's UTF-16 space until this boundary, then use the
+    /// same source-offset mapping as Find, accessibility, and text input.
+    private func drawMisspellings(in ctx: CGContext) {
+        guard isContinuousSpellCheckingEnabled, docView.view != "source" else { return }
+        ctx.saveGState()
+        defer { ctx.restoreGState() }
+        ctx.setStrokeColor(NSColor.systemRed.cgColor)
+        ctx.setLineWidth(0.8)
+        ctx.setLineCap(.round)
+        for range in misspelledRanges {
+            let (from, to) = byteBounds(range)
+            for rect in rangeRects(fromByte: from, toByte: to) where rect.width > 0 {
+                let y = rect.maxY - 1.5
+                let path = CGMutablePath()
+                path.move(to: CGPoint(x: rect.minX, y: y))
+                var x = rect.minX
+                var high = true
+                while x < rect.maxX {
+                    x = min(x + 2, rect.maxX)
+                    path.addLine(to: CGPoint(x: x, y: y + (high ? -1 : 1)))
+                    high.toggle()
+                }
+                ctx.addPath(path)
+            }
+        }
+        ctx.strokePath()
     }
 
     // MARK: printing — the document on the printer's paper
@@ -1898,6 +1962,14 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         }
 
         let menu = NSMenu()
+        let point = layoutPoint(convert(event.locationInWindow, from: nil))
+        let hit = layoutEngine.hit(point)
+        let clickOffset = doc.offsetForPos(row: UInt32(hit.row), ch: UInt32(hit.ch))
+        let clickUTF16 = Int(doc.utf16IndexForOffset(off: clickOffset))
+        if docView.view != "source", let misspelling = misspelling(at: clickUTF16) {
+            addSpellingItems(for: misspelling, to: menu)
+            menu.addItem(.separator())
+        }
         // A footnote under the click leads the menu, for the reason a link does:
         // since a plain click no longer follows anything, the menu and ⌘-click
         // are the only ways to get there. At most one entry, and never alongside
@@ -1934,7 +2006,6 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // caret alone: a click inside a block box does not necessarily leave the
         // caret inside the image's span, and a video or audio box has no image
         // node under it at all. `showableMediaSource` states that order.
-        let point = layoutPoint(convert(event.locationInWindow, from: nil))
         let media = showableMediaSource(box: layoutEngine.mediaBox(at: point)?.src,
                                         caret: doc.mediaSourceAtCaret(),
                                         canShow: onShowMedia != nil)
@@ -1965,6 +2036,73 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             menu.addItem(withTitle: loc("menu.share", "Share…"), action: #selector(shareSelection(_:)), keyEquivalent: "")
         }
         return menu
+    }
+
+    /// Add the system dictionary's guesses and its per-user/per-document actions,
+    /// in the same leading position they occupy in an `NSTextView` menu.
+    private func addSpellingItems(for range: NSRange, to menu: NSMenu) {
+        let text = fullText()
+        let ns = text as NSString
+        guard range.location >= 0, NSMaxRange(range) <= ns.length else { return }
+        let word = ns.substring(with: range)
+        let guesses = NSSpellChecker.shared.guesses(
+            forWordRange: range, in: text, language: nil,
+            inSpellDocumentWithTag: spellDocumentTag) ?? []
+        if guesses.isEmpty {
+            let none = menu.addItem(withTitle: loc("menu.noGuesses", "No Guesses Found"),
+                                    action: nil, keyEquivalent: "")
+            none.isEnabled = false
+        } else {
+            for guess in guesses.prefix(6) {
+                let item = menu.addItem(withTitle: guess,
+                                        action: #selector(replaceMisspelling(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = SpellCorrection(
+                    range: range, original: word, replacement: guess)
+            }
+        }
+        menu.addItem(.separator())
+        let ignore = menu.addItem(withTitle: loc("menu.ignoreSpelling", "Ignore Spelling"),
+                                  action: #selector(ignoreMisspelling(_:)), keyEquivalent: "")
+        ignore.target = self
+        ignore.representedObject = SpellCorrection(range: range, original: word, replacement: "")
+        let learn = menu.addItem(withTitle: loc("menu.learnSpelling", "Learn Spelling"),
+                                 action: #selector(learnMisspelling(_:)), keyEquivalent: "")
+        learn.target = self
+        learn.representedObject = SpellCorrection(range: range, original: word, replacement: "")
+    }
+
+    @objc private func replaceMisspelling(_ sender: NSMenuItem) {
+        guard !isReadOnly,
+              let correction = sender.representedObject as? SpellCorrection,
+              spellingStillMatches(correction)
+        else { return }
+        let (from, to) = byteBounds(correction.range)
+        render(doc.replaceRange(from: UInt32(from), to: UInt32(to), text: correction.replacement))
+    }
+
+    @objc private func ignoreMisspelling(_ sender: NSMenuItem) {
+        guard let correction = sender.representedObject as? SpellCorrection,
+              spellingStillMatches(correction)
+        else { return }
+        NSSpellChecker.shared.ignoreWord(
+            correction.original, inSpellDocumentWithTag: spellDocumentTag)
+        scheduleSpellCheck()
+    }
+
+    @objc private func learnMisspelling(_ sender: NSMenuItem) {
+        guard let correction = sender.representedObject as? SpellCorrection,
+              spellingStillMatches(correction)
+        else { return }
+        NSSpellChecker.shared.learnWord(correction.original)
+        scheduleSpellCheck()
+    }
+
+    private func spellingStillMatches(_ correction: SpellCorrection) -> Bool {
+        let text = fullText() as NSString
+        return correction.range.location >= 0
+            && NSMaxRange(correction.range) <= text.length
+            && text.substring(with: correction.range) == correction.original
     }
 
     @objc private func lookUpSelection(_ sender: Any?) {
@@ -2273,7 +2411,11 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         return min(max(lowest, y), highest)
     }
 
-    deinit { NotificationCenter.default.removeObserver(self) }
+    deinit {
+        spellCheckWork?.cancel()
+        NSSpellChecker.shared.closeSpellDocument(withTag: spellDocumentTag)
+        NotificationCenter.default.removeObserver(self)
+    }
 
     // MARK: selection offsets
     //
@@ -2310,6 +2452,190 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         let from = Int(doc.offsetForUtf16Index(index: UInt32(max(0, range.location))))
         let to = Int(doc.offsetForUtf16Index(index: UInt32(max(0, range.location + range.length))))
         return (from, max(from, to))
+    }
+
+    // MARK: NSSpellChecker
+
+    /// Debounce edits and let the system checker do its work out of process. A
+    /// generation makes an older callback harmless after another edit or a switch
+    /// to source view.
+    private func scheduleSpellCheck() {
+        spellCheckWork?.cancel()
+        spellCheckGeneration += 1
+        misspelledRanges.removeAll()
+        needsDisplay = true
+        guard isContinuousSpellCheckingEnabled, docView.view != "source" else { return }
+        let generation = spellCheckGeneration
+        let work = DispatchWorkItem { [weak self] in
+            self?.requestSpellCheck(generation: generation)
+        }
+        spellCheckWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
+    }
+
+    private func requestSpellCheck(generation: Int) {
+        let text = spellCheckingText()
+        let range = NSRange(location: 0, length: (text as NSString).length)
+        guard range.length > 0 else { return }
+        NSSpellChecker.shared.requestChecking(
+            of: text,
+            range: range,
+            types: NSTextCheckingResult.CheckingType.spelling.rawValue,
+            options: nil,
+            inSpellDocumentWithTag: spellDocumentTag
+        ) { [weak self] _, results, _, _ in
+            DispatchQueue.main.async {
+                guard let self,
+                      generation == self.spellCheckGeneration,
+                      self.isContinuousSpellCheckingEnabled,
+                      self.docView.view != "source"
+                else { return }
+                self.misspelledRanges = results
+                    .filter { $0.resultType.contains(.spelling) }
+                    .map(\.range)
+                    .filter { !self.isHyphenatedCompound($0, in: text) }
+                self.needsDisplay = true
+            }
+        }
+    }
+
+    /// Return the reported misspelling under a contextual click. If the debounced
+    /// pass has not returned yet, synchronously ask for only as many words as it
+    /// takes to reach the click so a freshly typed word still gets suggestions.
+    private func misspelling(at utf16Index: Int) -> NSRange? {
+        if let range = misspelledRanges.first(where: {
+            utf16Index >= $0.location && utf16Index <= NSMaxRange($0)
+        }) {
+            return range
+        }
+        let text = spellCheckingText()
+        let length = (text as NSString).length
+        guard length > 0 else { return nil }
+        var start = 0
+        while start < length {
+            let range = nextMisspelling(in: text, startingAt: start)
+            guard range.location != NSNotFound else { return nil }
+            if utf16Index >= range.location && utf16Index <= NSMaxRange(range) {
+                return range
+            }
+            if range.location > utf16Index { return nil }
+            start = max(start + 1, NSMaxRange(range))
+        }
+        return nil
+    }
+
+    /// Standard Edit-menu action: enable/disable checking while typing.
+    @objc public func toggleContinuousSpellChecking(_ sender: Any?) {
+        isContinuousSpellCheckingEnabled.toggle()
+    }
+
+    /// Standard Edit-menu action: select the next misspelling, wrapping once.
+    @objc public func checkSpelling(_ sender: Any?) {
+        let text = spellCheckingText()
+        let length = (text as NSString).length
+        guard docView.view != "source", length > 0 else { return }
+        var range = nextMisspelling(
+            in: text, startingAt: min(NSMaxRange(selectedRange()), length))
+        if range.location == NSNotFound {
+            range = nextMisspelling(in: text, startingAt: 0)
+        }
+        guard range.location != NSNotFound else { NSSound.beep(); return }
+        let (from, to) = byteBounds(range)
+        render(doc.selectRange(start: UInt32(from), end: UInt32(to)))
+        NSSpellChecker.shared.updateSpellingPanel(
+            withMisspelledWord: (fullText() as NSString).substring(with: range))
+    }
+
+    /// Build the string handed to `NSSpellChecker` in the same UTF-16 coordinate
+    /// space as `fullText()`, but with non-prose glyphs replaced by spaces. Runs
+    /// give us the semantic distinction the flattened plain text has lost:
+    /// fenced and inline code never reach the checker, nor do list/quote chrome.
+    /// Structural table cells are copied over their box-picture rows so their
+    /// words retain the source offsets used for drawing corrections.
+    internal func spellCheckingText() -> String {
+        let visible = fullText() as NSString
+        let masked = NSMutableString(
+            string: String(repeating: " ", count: visible.length))
+
+        func insert(_ run: Run) {
+            guard run.role != "code",
+                  run.role != "list",
+                  run.role != "quote",
+                  run.role != "rule"
+            else { return }
+            let location = Int(doc.utf16IndexForOffset(off: run.src))
+            let length = (run.text as NSString).length
+            guard length > 0, location >= 0, location + length <= masked.length else { return }
+            masked.replaceCharacters(
+                in: NSRange(location: location, length: length),
+                with: run.text)
+        }
+
+        var replacedRows = IndexSet()
+        for table in docView.tables {
+            replacedRows.insert(integersIn: Int(table.startRow)..<Int(table.endRow))
+            for row in table.grid {
+                for cell in row.cells {
+                    for line in cell.lines {
+                        for run in line.runs { insert(run) }
+                    }
+                }
+            }
+        }
+        for directive in docView.directives {
+            replacedRows.insert(integersIn: Int(directive.startRow)..<Int(directive.endRow))
+        }
+        for media in docView.media {
+            replacedRows.insert(integersIn: Int(media.startRow)..<Int(media.endRow))
+        }
+        for (index, row) in docView.rows.enumerated()
+            where !replacedRows.contains(index) && !row.code && !row.decoration {
+            for run in row.runs { insert(run) }
+        }
+        return masked as String
+    }
+
+    /// Apple's checker treats some ordinary editorial compounds (for example
+    /// “round-trippable”) as misspellings. A hyphen joins the token deliberately,
+    /// so do not underline either the whole compound or one component of it.
+    internal func isHyphenatedCompound(_ range: NSRange, in text: String) -> Bool {
+        let ns = text as NSString
+        guard range.location != NSNotFound, NSMaxRange(range) <= ns.length else { return false }
+        let tokenCharacters = CharacterSet.letters
+            .union(.init(charactersIn: "-‐‑‒–—'’"))
+        var start = range.location
+        var end = NSMaxRange(range)
+        while start > 0,
+              ns.substring(with: NSRange(location: start - 1, length: 1))
+                .rangeOfCharacter(from: tokenCharacters) != nil {
+            start -= 1
+        }
+        while end < ns.length,
+              ns.substring(with: NSRange(location: end, length: 1))
+                .rangeOfCharacter(from: tokenCharacters) != nil {
+            end += 1
+        }
+        return ns.substring(with: NSRange(location: start, length: end - start))
+            .rangeOfCharacter(from: .init(charactersIn: "-‐‑‒–—")) != nil
+    }
+
+    /// The synchronous checker powers “Check Document Now” and a contextual
+    /// click before the debounced pass completes. Apply the same compound-word
+    /// policy as the asynchronous pass instead of letting those entry points
+    /// disagree about what is misspelled.
+    private func nextMisspelling(in text: String, startingAt initialStart: Int) -> NSRange {
+        let length = (text as NSString).length
+        var start = initialStart
+        while start < length {
+            var wordCount = 0
+            let range = NSSpellChecker.shared.checkSpelling(
+                of: text, startingAt: start, language: nil, wrap: false,
+                inSpellDocumentWithTag: spellDocumentTag, wordCount: &wordCount)
+            guard range.location != NSNotFound else { return range }
+            if !isHyphenatedCompound(range, in: text) { return range }
+            start = max(start + 1, NSMaxRange(range))
+        }
+        return NSRange(location: NSNotFound, length: 0)
     }
 
     // MARK: NSTextInputClient — real selection, geometry, and hit-testing

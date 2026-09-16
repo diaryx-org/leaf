@@ -1093,8 +1093,8 @@ public protocol LeafDocProtocol : AnyObject {
      * view this is *not* the raw source slice: a hidden inline-mark
      * delimiter (`**`, `` ` ``, `_`) contributes nothing, matching what
      * `distance_offset`/`step_offset` already count in this same offset
-     * space — while a genuine block boundary the range spans (a paragraph
-     * gap, a table rule, …) contributes one inserted `'\n'` that
+     * space — while a genuine gap between blocks the range spans contributes
+     * one inserted `'\n'` that
      * `distance_offset`/`step_offset` do *not* count (a block boundary costs
      * caret motion zero stops there, by design — see
      * `the_caret_skips_the_gap_between_two_paragraphs` in `leaf-core`'s
@@ -2318,8 +2318,8 @@ open func taskCheckedAtCaret() -> Bool? {
      * view this is *not* the raw source slice: a hidden inline-mark
      * delimiter (`**`, `` ` ``, `_`) contributes nothing, matching what
      * `distance_offset`/`step_offset` already count in this same offset
-     * space — while a genuine block boundary the range spans (a paragraph
-     * gap, a table rule, …) contributes one inserted `'\n'` that
+     * space — while a genuine gap between blocks the range spans contributes
+     * one inserted `'\n'` that
      * `distance_offset`/`step_offset` do *not* count (a block boundary costs
      * caret motion zero stops there, by design — see
      * `the_caret_skips_the_gap_between_two_paragraphs` in `leaf-core`'s
@@ -6919,7 +6919,7 @@ private var initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_task_checked_at_caret() != 58214) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_text_in_range() != 52115) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_text_in_range() != 6318) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_toggle_blockquote() != 28367) {

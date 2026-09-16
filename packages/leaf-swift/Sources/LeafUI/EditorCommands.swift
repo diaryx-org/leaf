@@ -74,6 +74,17 @@ public struct LeafEditorCommands: Commands {
                 Button(loc("menu.hideFindBar", "Hide Find Bar")) { editor?.find(.hideFindInterface) }
             }
             .disabled(editor == nil)
+            Menu(loc("menu.spellingAndGrammar", "Spelling and Grammar")) {
+                Button(loc("menu.checkDocumentNow", "Check Document Now")) {
+                    editor?.checkSpelling()
+                }
+                Toggle(
+                    loc("menu.checkSpellingWhileTyping", "Check Spelling While Typing"),
+                    isOn: Binding(
+                        get: { editor?.isContinuousSpellCheckingEnabled ?? true },
+                        set: { _ in editor?.toggleContinuousSpellChecking() }))
+            }
+            .disabled(editor == nil)
         }
         #endif
         CommandGroup(after: .toolbar) {
