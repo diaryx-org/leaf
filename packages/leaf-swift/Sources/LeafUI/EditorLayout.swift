@@ -874,12 +874,24 @@ struct EditorLayout {
     /// table the caret rides the grid (by its source offset), not the collapsed
     /// picture row `caret_row` names.
     func caretRect(_ docView: DocView, theme: EditorTheme) -> CGRect? {
-        let cr = Int(docView.caretRow)
-        if rows.indices.contains(cr), let grid = rows[cr].table {
-            return tableCaretRect(grid, tableTop: rows[cr].tableTop, originX: rows[cr].originX,
-                                  caretSrc: Int(docView.caretSrc), theme: theme)
+        caretRect(src: Int(docView.caretSrc), row: Int(docView.caretRow), ch: Int(docView.caretCh),
+                  theme: theme)
+    }
+
+    /// The frame a caret standing at source offset `src` would have, given the
+    /// picture-row position `(row, ch)` core maps it to (`posForOffset`) — the
+    /// same answer as `caretRect(_:theme:)` for any position, not just the
+    /// caret's. What `UITextInput.caretRect(for:)` is asked for: the system
+    /// draws its caret there, anchors the edit menu and the loupe on it, and
+    /// scrolls it into view, so a position inside a table has to answer with
+    /// its cell, not with the collapsed picture row the table's grid replaces
+    /// — which put every caret in a table at the grid's top-left corner.
+    func caretRect(src: Int, row: Int, ch: Int, theme: EditorTheme) -> CGRect? {
+        if rows.indices.contains(row), let grid = rows[row].table {
+            return tableCaretRect(grid, tableTop: rows[row].tableTop, originX: rows[row].originX,
+                                  caretSrc: src, theme: theme)
         }
-        return rect(row: cr, ch: Int(docView.caretCh))
+        return rect(row: row, ch: ch)
     }
 
     /// The line box a placeholder cue draws in — exactly the box the document's
@@ -995,6 +1007,20 @@ struct EditorLayout {
             }
         }
         return out
+    }
+
+    /// The source offsets bounding the cell line that holds `src`, and whether
+    /// that line continues the one above across a soft wrap (so its `start` is
+    /// the line above's `end`). `nil` outside every table.
+    func tableLineBounds(src: Int) -> (start: Int, end: Int, continues: Bool)? {
+        for rl in rows {
+            guard let grid = rl.table, rl.tableFirst,
+                  let (_, cell, line, lineIndex) = grid.locate(src: src)
+            else { continue }
+            let continues = lineIndex > 0 && cell.lines[lineIndex - 1].softWrapped
+            return (line.start, line.end, continues)
+        }
+        return nil
     }
 
     /// The vertical band of the cell line holding source offset `src` — a full
