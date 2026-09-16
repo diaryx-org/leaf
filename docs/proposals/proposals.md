@@ -7,6 +7,7 @@ contents:
 - '[HTML containers leaf does not author fold to atoms](html-containers-fold-to-atoms.md)'
 - '[Math in leaf](math-rendering.md)'
 - '[SVG as vectors in leaf-swift, through usvg](svg-as-vectors-on-apple.md)'
+part_of: '[leaf](/README.md)'
 ---
 # Proposals
 

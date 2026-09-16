@@ -2,6 +2,7 @@
 status: done
 created: 2026-09-04
 updated: 2026-09-11
+part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 # The find bar covers the first line of a document at its top
 
