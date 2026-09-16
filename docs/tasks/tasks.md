@@ -2,7 +2,7 @@
 title: Tasks
 description: Deferred work on leaf, one file each — a commitment with a done state
 created: 2026-09-04
-updated: 2026-09-15
+updated: 2026-09-16
 contents:
 - '[The find bar covers the first line of a document at its top](find-bar-covers-first-line.md)'
 - '[Spelling and autocorrect in the macOS view](macos-text-checking.md)'
@@ -14,6 +14,7 @@ contents:
 - '[An empty last line in a fence has no row](empty-last-line-in-a-fence-has-no-row.md)'
 - '[SVG through resvg-swift](svg-through-resvg-swift.md)'
 - '[A link reference definition''s lines are drawn as blank rows](link-definitions-are-blank-rows.md)'
+- '[The heading the caret is under is a question `Doc` cannot answer](heading-at-offset.md)'
 part_of: '[leaf](/README.md)'
 ---
 # Tasks
