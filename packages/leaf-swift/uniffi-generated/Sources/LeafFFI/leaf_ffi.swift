@@ -1091,26 +1091,16 @@ public protocol LeafDocProtocol : AnyObject {
     /**
      * The visible text between two offsets — `text(in:)`. In the WYSIWYG
      * view this is *not* the raw source slice: a hidden inline-mark
-     * delimiter (`**`, `` ` ``, `_`) contributes nothing, matching what
-     * `distance_offset`/`step_offset` already count in this same offset
-     * space — while a genuine gap between blocks the range spans contributes
-     * one inserted `'\n'` that
-     * `distance_offset`/`step_offset` do *not* count (a block boundary costs
-     * caret motion zero stops there, by design — see
-     * `the_caret_skips_the_gap_between_two_paragraphs` in `leaf-core`'s
-     * `doc.rs`). So the relationship is
-     * `text_in_range(a, b).chars().count() >= distance_offset(a, b)`, not
-     * strict equality: the two agree exactly when `(a, b)` spans no block
-     * boundary, and `text_in_range` is never shorter, only ever as long or
-     * longer, when it does. That inequality is still what
-     * `UITextInput`'s own word/line tokenizer needs (see
-     * [`leaf_core::wysiwyg::VisualMap::visible_text`] for why): it only reads
-     * this string to find a boundary and converts the result back to a
-     * position via `position(from:offset:)`, which walks stops — the
-     * inserted character is never hit as one, it only keeps the tokenizer
-     * from reading two paragraphs' last/first words as a single run of
-     * letters. The source view has nothing hidden to begin with, so there
-     * this is still exactly the raw slice.
+     * delimiter (`**`, `` ` ``, `_`) contributes nothing, and a stop that
+     * draws no glyph — a row's end, a table cell's end — is spelled `'\n'`.
+     * Exactly one character per caret stop, so that for any two stops
+     * `text_in_range(a, b).chars().count() == distance_offset(a, b)`. That
+     * equality is what `UITextInput`'s word tokenizer relies on: it reads a
+     * window of this text, indexes into it by `offset(from:to:)`, and hands
+     * a character delta back through `position(from:offset:)` — see
+     * [`leaf_core::wysiwyg::VisualMap::visible_text`] for the rule and what
+     * a one-character drift did to a double-tapped word. The source view has
+     * nothing hidden to begin with, so there this is exactly the raw slice.
      */
     func textInRange(from: UInt32, to: UInt32)  -> String
     
@@ -2316,26 +2306,16 @@ open func taskCheckedAtCaret() -> Bool? {
     /**
      * The visible text between two offsets — `text(in:)`. In the WYSIWYG
      * view this is *not* the raw source slice: a hidden inline-mark
-     * delimiter (`**`, `` ` ``, `_`) contributes nothing, matching what
-     * `distance_offset`/`step_offset` already count in this same offset
-     * space — while a genuine gap between blocks the range spans contributes
-     * one inserted `'\n'` that
-     * `distance_offset`/`step_offset` do *not* count (a block boundary costs
-     * caret motion zero stops there, by design — see
-     * `the_caret_skips_the_gap_between_two_paragraphs` in `leaf-core`'s
-     * `doc.rs`). So the relationship is
-     * `text_in_range(a, b).chars().count() >= distance_offset(a, b)`, not
-     * strict equality: the two agree exactly when `(a, b)` spans no block
-     * boundary, and `text_in_range` is never shorter, only ever as long or
-     * longer, when it does. That inequality is still what
-     * `UITextInput`'s own word/line tokenizer needs (see
-     * [`leaf_core::wysiwyg::VisualMap::visible_text`] for why): it only reads
-     * this string to find a boundary and converts the result back to a
-     * position via `position(from:offset:)`, which walks stops — the
-     * inserted character is never hit as one, it only keeps the tokenizer
-     * from reading two paragraphs' last/first words as a single run of
-     * letters. The source view has nothing hidden to begin with, so there
-     * this is still exactly the raw slice.
+     * delimiter (`**`, `` ` ``, `_`) contributes nothing, and a stop that
+     * draws no glyph — a row's end, a table cell's end — is spelled `'\n'`.
+     * Exactly one character per caret stop, so that for any two stops
+     * `text_in_range(a, b).chars().count() == distance_offset(a, b)`. That
+     * equality is what `UITextInput`'s word tokenizer relies on: it reads a
+     * window of this text, indexes into it by `offset(from:to:)`, and hands
+     * a character delta back through `position(from:offset:)` — see
+     * [`leaf_core::wysiwyg::VisualMap::visible_text`] for the rule and what
+     * a one-character drift did to a double-tapped word. The source view has
+     * nothing hidden to begin with, so there this is exactly the raw slice.
      */
 open func textInRange(from: UInt32, to: UInt32) -> String {
     return try!  FfiConverterString.lift(try! rustCall() {
@@ -6919,7 +6899,7 @@ private var initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_task_checked_at_caret() != 58214) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_text_in_range() != 6318) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_text_in_range() != 21460) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_toggle_blockquote() != 28367) {
