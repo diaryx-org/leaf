@@ -3,7 +3,6 @@ import LeafFFI
 @testable import LeafUI
 
 /// Exercises the public commands used by LeafUI, including actual Rust parsing.
-/// Strict expected failures record bugs without making the suite permanently red.
 final class TableFormattingTests: XCTestCase {
     private let prefix = "| A | B |\n| --- | --- |\n| "
     private let suffix = " | other |\n"
@@ -106,9 +105,7 @@ final class TableFormattingTests: XCTestCase {
             let frame = doc.setSelectionOffsets(anchor: offset, focus: offset)
             let runs = try XCTUnwrap(frame.tables.first?.grid.last?.cells.first).lines.flatMap(\.runs)
             XCTAssertTrue(runs.contains { styled($0, style) })
-            XCTExpectFailure("Table text is styled but the toolbar's active marks omit \(style)") {
-                XCTAssertTrue(frame.active.contains(style))
-            }
+            XCTAssertTrue(frame.active.contains(style), style)
         }
     }
 
@@ -123,9 +120,7 @@ final class TableFormattingTests: XCTestCase {
             _ = doc.toggleBold()
             XCTAssertEqual(doc.source(), before + "***word***" + after)
             _ = doc.toggleBold()
-            XCTExpectFailure("The second toggle adds delimiters to nested emphasis instead of removing bold") {
-                XCTAssertEqual(doc.source(), source)
-            }
+            XCTAssertEqual(doc.source(), source)
         }
     }
 
@@ -143,14 +138,11 @@ final class TableFormattingTests: XCTestCase {
             } else {
                 runs = doc.view().rows.flatMap(\.runs)
             }
-            XCTExpectFailure("Bold inserts literal ** into inline code instead of formatting or declining") {
-                XCTAssertEqual(runs.map(\.text).joined(), "word")
-            }
-            let firstToggle = doc.source()
+            XCTAssertEqual(runs.map(\.text).joined(), "word")
+            // Bold closed around the code, and comes off again.
+            XCTAssertEqual(doc.source(), before + "**`word`**" + after)
             _ = doc.toggleBold()
-            XCTExpectFailure("Repeated bold commands keep adding literal asterisks to code") {
-                XCTAssertFalse(doc.source().contains("****word****"), firstToggle)
-            }
+            XCTAssertEqual(doc.source(), before + "`word`" + after)
         }
     }
 }
