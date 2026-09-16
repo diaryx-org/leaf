@@ -37,6 +37,13 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.1.17 — 2026-09-15
+
+### Added
+
+- **swift** — use Apple system spell checking ([`9322b88`](https://github.com/diaryx-org/leaf/commit/9322b8802925d18c6d2956080f7e665f202cea5f))
+
+
 ## v0.1.16 — 2026-09-15
 
 ### Added
