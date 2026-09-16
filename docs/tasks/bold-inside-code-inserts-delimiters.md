@@ -1,6 +1,6 @@
 ---
 title: Bold inside code inserts visible delimiters
-status: open
+status: in-progress
 created: 2026-09-16
 updated: 2026-09-16
 part_of: '[Tasks](/docs/tasks/tasks.md)'
