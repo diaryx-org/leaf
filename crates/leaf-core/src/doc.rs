@@ -5502,8 +5502,14 @@ impl Doc {
             }
             // Walks caret *stops*, not columns: decoration (a table border, a
             // cell's padding) is stepped over in one press, and a hidden
-            // delimiter never holds the caret up.
-            View::Wysiwyg => self.vmap.stop_before(self.caret).unwrap_or(self.caret),
+            // delimiter never holds the caret up — though the end of a mark's
+            // content is a stop of its own (`VisualMap::mark_ends`), so
+            // leaving `**bold**` from past its `**` is a press onto the end of
+            // the bold and another onto the `d`.
+            View::Wysiwyg => self
+                .vmap
+                .caret_stop_before(self.caret)
+                .unwrap_or(self.caret),
         };
         let before = self.caret;
         self.move_to(target, extend);
@@ -5524,7 +5530,7 @@ impl Doc {
                     self.caret
                 }
             }
-            View::Wysiwyg => self.vmap.stop_after(self.caret).unwrap_or(self.caret),
+            View::Wysiwyg => self.vmap.caret_stop_after(self.caret).unwrap_or(self.caret),
         };
         let before = self.caret;
         self.move_to(target, extend);
@@ -9670,6 +9676,57 @@ mod tests {
         assert!(d.vmap.is_stop(empty));
         d.place_caret(empty, false);
         assert_eq!(d.caret, empty);
+    }
+
+    // The content end of a hidden mark is a home too (`VisualMap::mark_ends`):
+    // a drag over the word `bold` ends there, and a caret placed there stays.
+    #[test]
+    fn place_caret_rests_at_the_end_of_a_hidden_marks_content() {
+        let src = "| A | B |\n| --- | --- |\n| **bold** | other |\n";
+        let mut d = wysiwyg_doc("place_mark_end", src);
+        let start = src.find("bold").unwrap();
+        d.place_caret(start, false);
+        d.place_caret(start + 4, true);
+        assert_eq!(d.selection(), Some((start, start + 4)), "the whole word");
+        d.toggle(InlineKind::Strong);
+        assert_eq!(d.source, src.replace("**bold**", "bold"));
+    }
+
+    #[test]
+    fn right_steps_onto_the_end_of_a_mark_and_then_past_its_delimiter() {
+        let mut d = wysiwyg_doc("right_mark_end", "a **bold** b");
+        d.caret = 7; // before the `d`
+        d.move_right(false);
+        assert_eq!(d.caret, 8, "onto the end of the bold");
+        assert!(d.active_inline_marks().contains(InlineKind::Strong));
+        d.move_right(false);
+        assert_eq!(d.caret, 10, "past the closing `**`");
+        assert!(!d.active_inline_marks().contains(InlineKind::Strong));
+        d.move_left(false);
+        assert_eq!(d.caret, 8);
+        d.move_left(false);
+        assert_eq!(d.caret, 7);
+        // Typing at the inner home extends the bold.
+        d.caret = 8;
+        d.insert("!");
+        assert_eq!(d.source, "a **bold!** b");
+    }
+
+    #[test]
+    fn a_marks_end_home_follows_an_edit_through_the_incremental_map() {
+        // The splice path shifts the home with the block it is in, and the
+        // re-rendered block finds its own again.
+        let mut d = wysiwyg_doc("mark_end_splice", "x\n\na **bold** b\n\ny\n");
+        d.build_visual_unwrapped();
+        d.edit(0, 0, "zz");
+        d.build_visual_unwrapped();
+        wysiwyg::assert_maps_eq(&d.vmap, &reference_map(&d.source), "after a shift");
+        assert!(d.vmap.is_stop(d.source.find("bold").unwrap() + 4));
+        let at = d.source.find("bold").unwrap();
+        d.edit(at, at, "very ");
+        d.build_visual_unwrapped();
+        wysiwyg::assert_maps_eq(&d.vmap, &reference_map(&d.source), "after a re-render");
+        assert!(d.vmap.is_stop(d.source.find("bold").unwrap() + 4));
     }
 
     fn wysiwyg_doc(name: &str, body: &str) -> Doc {

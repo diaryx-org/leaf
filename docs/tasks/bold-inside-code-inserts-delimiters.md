@@ -7,6 +7,12 @@ part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 # Bold inside code inserts visible delimiters
 
+**Diagnosis.** twig: `locate.inlineHostPieces` treats a verbatim's interior
+as an inline host, so `applyInline` writes `**` inside the backticks, where
+it is text. Fixed in twig by widening a piece inside a code span to the
+whole span, so the mark closes around the code (`` **`word`** ``, which
+toggles off again); closes with the twig-doc pin that carries it.
+
 Select the inner letters of `` `word` `` and invoke Bold. The source becomes
 `` `**word**` `` and the visible code text becomes `**word**`; no bold styling
 is applied. Pressing Bold again produces `` `****word****` `` and adds more

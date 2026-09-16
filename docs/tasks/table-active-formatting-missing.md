@@ -7,6 +7,16 @@ part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 # Table cells omit active formatting from the toolbar
 
+**Diagnosis.** twig: the Markdown parser gives every `cell` in a row the
+*row's* span (only `content_span` is the cell's — see the note on
+`holdsInlinesDirectly` in twig's `locate.zig`), and `nodes_at` descends into
+the *last* child whose span holds the offset, so in any row of two or more
+columns the chain ends at the last cell and never reaches the mark in the
+first. Djot cells carry their own spans and answer correctly; so does a
+one-column Markdown table. `marks_at` is `ancestors_at` and inherits the
+fault. Fixed in twig by giving a Markdown cell its own span; closes with the
+twig-doc pin that carries it.
+
 Place the caret inside `**word**`, `*word*`, `~~word~~`, `==word==`, or
 `` `word` `` in a Markdown table body cell. Structural cell runs correctly
 carry the corresponding style, but `DocView.active` is empty. The same

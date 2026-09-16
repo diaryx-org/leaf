@@ -86,13 +86,9 @@ final class TableFormattingTests: XCTestCase {
         let doc = try makeDoc(prefix + "**bold**" + suffix)
         let start = UInt32(prefix.utf8.count + 2)
         _ = doc.setSelectionOffsets(anchor: start, focus: start + 4)
-        XCTExpectFailure("Visible selection snaps the end of bold back one character") {
-            XCTAssertEqual(doc.caretOffset(), start + 4)
-        }
+        XCTAssertEqual(doc.caretOffset(), start + 4)
         _ = doc.toggleBold()
-        XCTExpectFailure("Removing bold instead wraps only bol, producing ****bol**d**") {
-            XCTAssertEqual(doc.source(), prefix + "bold" + suffix)
-        }
+        XCTAssertEqual(doc.source(), prefix + "bold" + suffix)
     }
 
     func testTableCaretReportsExistingStylesToToolbar() throws {
