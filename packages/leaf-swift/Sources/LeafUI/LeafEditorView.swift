@@ -850,14 +850,17 @@ import UIKit
 /// hardware keyboard) built from `LeafEditorCommands` reaches *this* document.
 public struct LeafEditor: View {
     private let model: LeafEditorModel
-    private let surface: LeafEditorSurface
+    private let theme: EditorTheme
+    private let placeholder: String?
+    private let accessory: AnyView?
+    private var header: AnyView?
 
     /// `placeholder` is the cue shown while the document is empty, drawn where
     /// its first character will go — see `LeafTextView.placeholder`.
     public init(model: LeafEditorModel, theme: EditorTheme = .default,
                 placeholder: String? = nil) {
-        self.model = model
-        self.surface = LeafEditorSurface(model: model, theme: theme, placeholder: placeholder, accessory: nil)
+        self.model = model; self.theme = theme; self.placeholder = placeholder
+        self.accessory = nil
     }
 
     /// With a custom view shown above the system keyboard while this editor is
@@ -869,27 +872,69 @@ public struct LeafEditor: View {
         placeholder: String? = nil,
         @ViewBuilder accessory: () -> Accessory
     ) {
-        self.model = model
-        self.surface = LeafEditorSurface(model: model, theme: theme, placeholder: placeholder,
-                                         accessory: AnyView(accessory()))
+        self.model = model; self.theme = theme; self.placeholder = placeholder
+        self.accessory = AnyView(accessory())
+    }
+
+    /// With a view laid above the first line, *inside* the scroll: a row of
+    /// chips about the document, a title, a byline — anything that belongs to
+    /// the top of the document rather than to the screen. It scrolls away with
+    /// the prose and, where the host lets the editor run under a bar, goes
+    /// under it the same way.
+    ///
+    /// A modifier rather than a fourth initializer because the header and the
+    /// accessory are independent, and every combination as an `init` is a
+    /// grid. Stacking the editor under the header in the host's own `VStack`
+    /// is not the same thing: then the editor's top edge is a hard line the
+    /// text vanishes behind, and a `safeAreaInset` does not reach the scroll
+    /// view — SwiftUI's safe area stops at the platform view, so the text
+    /// would rest under the chips rather than below them.
+    ///
+    /// Whether there *is* a header is decided when the surface is made; the
+    /// view inside it is live, and a header whose content has nothing to say
+    /// can lay out to zero height.
+    public func header<Header: View>(@ViewBuilder _ content: () -> Header) -> LeafEditor {
+        var copy = self
+        copy.header = AnyView(content())
+        return copy
     }
 
     public var body: some View {
-        surface.focusedSceneValue(\.leafEditor, model)
+        LeafEditorSurface(model: model, theme: theme, placeholder: placeholder,
+                          accessory: accessory, header: header)
+            .focusedSceneValue(\.leafEditor, model)
     }
 }
 
-/// The `UIViewRepresentable` under `LeafEditor`.
-struct LeafEditorSurface: UIViewRepresentable {
+/// The controller under `LeafEditorSurface`: the scroll view is its view, and
+/// the header's `UIHostingController`, when there is one, is its child.
+///
+/// A controller rather than the bare scroll view because of the header. Its
+/// content is SwiftUI, and SwiftUI content presents — a chip opens a sheet —
+/// which needs a controller in the hierarchy to present from, and takes
+/// appearance callbacks, which UIKit forwards only down a parent chain. A
+/// hosting controller whose view is simply added to the scroll view is in
+/// the window but nobody's child, and gets neither. Made a child here, it
+/// gets both the ordinary way.
+final class LeafEditorController: UIViewController {
+    let scroll = UIScrollView()
+    override func loadView() { view = scroll }
+}
+
+/// The `UIViewControllerRepresentable` under `LeafEditor`.
+struct LeafEditorSurface: UIViewControllerRepresentable {
     @ObservedObject private var model: LeafEditorModel
     private let theme: EditorTheme
     private let placeholder: String?
     /// Type-erased so the surface stays a concrete, non-generic type.
     private let accessory: AnyView?
+    /// The view above the first line, inside the scroll — see `LeafEditor.header`.
+    private let header: AnyView?
 
-    init(model: LeafEditorModel, theme: EditorTheme, placeholder: String?, accessory: AnyView?) {
+    init(model: LeafEditorModel, theme: EditorTheme, placeholder: String?, accessory: AnyView?,
+         header: AnyView?) {
         self.model = model; self.theme = theme; self.placeholder = placeholder
-        self.accessory = accessory
+        self.accessory = accessory; self.header = header
     }
 
     public func makeCoordinator() -> Coordinator { Coordinator() }
@@ -900,6 +945,11 @@ struct LeafEditorSurface: UIViewRepresentable {
     /// than being torn down and rebuilt each time.
     public final class Coordinator {
         var hosting: UIHostingController<AnyView>?
+        /// The header's, kept for the same reason `hosting` is: its `rootView`
+        /// is refreshed in place on each update rather than rebuilt, which
+        /// would drop whatever the header had in flight — a sheet it presents,
+        /// a field mid-edit.
+        var headerHosting: UIHostingController<AnyView>?
         /// The view the accessory hangs off, so a resize can ask *it* to re-read
         /// its input views — `reloadInputViews()` is the first responder's call,
         /// and the hosting controller isn't one.
@@ -908,7 +958,7 @@ struct LeafEditorSurface: UIViewRepresentable {
 
         /// Re-measure the accessory whenever the reader changes their text size.
         ///
-        /// The notification rather than `updateUIView`, because SwiftUI never
+        /// The notification rather than `updateUIViewController`, because SwiftUI never
         /// promises to call that here: the accessory is an `AnyView` built once
         /// in `LeafEditor.init`, so a content-size change re-runs the *toolbar's*
         /// body inside its own hosting environment without re-running the body
@@ -942,25 +992,27 @@ struct LeafEditorSurface: UIViewRepresentable {
         }
     }
 
-    public func makeUIView(context: Context) -> UIScrollView {
+    public func makeUIViewController(context: Context) -> LeafEditorController {
         let textView = makeTextView()
         attachAccessory(to: textView, context: context)
 
-        let scroll = UIScrollView()
+        let controller = LeafEditorController()
+        let scroll = controller.scroll
         scroll.alwaysBounceVertical = true
         scroll.keyboardDismissMode = .interactive
-        pin(textView, into: scroll)
+        pin(textView, into: controller, header: makeHeader(context: context))
 
         // A reader is opened to be read — see the AppKit peer.
         if !model.isReadOnly {
             DispatchQueue.main.async { _ = textView.becomeFirstResponder() }
         }
-        return scroll
+        return controller
     }
 
-    public func updateUIView(_ scroll: UIScrollView, context: Context) {
+    public func updateUIViewController(_ controller: LeafEditorController, context: Context) {
+        let scroll = controller.scroll
         guard let hosted = scroll.subviews.first(where: { $0 is LeafTextView }) as? LeafTextView else { return }
-        // A freshly-swapped model has never been through `makeUIView`, so its
+        // A freshly-swapped model has never been through `makeUIViewController`, so its
         // `textView` is still nil — that mismatch (rather than comparing docs
         // directly, which `LeafTextView` doesn't expose) is the stale-binding
         // signal. SwiftUI keeps this view's identity across the swap, so without
@@ -968,9 +1020,14 @@ struct LeafEditorSurface: UIViewRepresentable {
         // forever (the bug this fixes; hosts no longer need `.id(...)`).
         guard model.textView === hosted else {
             hosted.removeFromSuperview() // also tears down its own constraints
+            if let header = context.coordinator.headerHosting {
+                header.willMove(toParent: nil)
+                header.view.removeFromSuperview()
+                header.removeFromParent()
+            }
             let textView = makeTextView()
             attachAccessory(to: textView, context: context)
-            pin(textView, into: scroll)
+            pin(textView, into: controller, header: makeHeader(context: context))
             // `doc.view()` is a read-only snapshot — routing it through `command`
             // forces an immediate render → `onStateChange`, rather than waiting on
             // whatever layout pass happens to come next.
@@ -1007,6 +1064,25 @@ struct LeafEditorSurface: UIViewRepresentable {
             // change can — a host that shows a taller set of tools for a table, say.
             context.coordinator.resizeAccessory()
         }
+        // The header's height is its content's (`sizingOptions`), so a swap that
+        // changes it re-lays the scroll's content out by itself.
+        if let header { context.coordinator.headerHosting?.rootView = header }
+    }
+
+    /// The header as a controller to pin over the text, or nil when the host
+    /// set none.
+    ///
+    /// Sized by its SwiftUI content through `intrinsicContentSize`, so the text
+    /// view's top follows the chips' bottom without anyone measuring the strip —
+    /// unlike the accessory, whose frame a keyboard reads and which therefore
+    /// has to be measured by hand.
+    private func makeHeader(context: Context) -> UIHostingController<AnyView>? {
+        guard let header else { return nil }
+        let hosting = UIHostingController(rootView: header)
+        hosting.view.backgroundColor = .clear
+        hosting.sizingOptions = .intrinsicContentSize
+        context.coordinator.headerHosting = hosting
+        return hosting
     }
 
     /// Wire the accessory (if any) into `textView.accessoryView` as a
@@ -1033,8 +1109,8 @@ struct LeafEditorSurface: UIViewRepresentable {
         textView.accessoryView = hosting.view
     }
 
-    /// Build a `LeafTextView` over `model.doc`, wired the way `makeUIView` and the
-    /// stale-binding rebuild in `updateUIView` both need it.
+    /// Build a `LeafTextView` over `model.doc`, wired the way `makeUIViewController` and the
+    /// stale-binding rebuild in `updateUIViewController` both need it.
     private func makeTextView() -> LeafTextView {
         let textView = LeafTextView(doc: model.doc, theme: theme)
         textView.placeholder = placeholder
@@ -1090,27 +1166,49 @@ struct LeafEditorSurface: UIViewRepresentable {
         return textView
     }
 
-    /// Add `textView` to `scroll` and pin it to the content/frame layout guides —
-    /// the same constraint set `makeUIView` and the stale-binding rebuild both need.
-    private func pin(_ textView: LeafTextView, into scroll: UIScrollView) {
+    /// Add `textView` to the controller's scroll view, under `header` when there
+    /// is one, and pin them to the content/frame layout guides — the same
+    /// constraint set `makeUIViewController` and the stale-binding rebuild both
+    /// need. The header joins as a child controller, for the reasons on
+    /// `LeafEditorController`.
+    private func pin(_ textView: LeafTextView, into controller: LeafEditorController,
+                     header: UIHostingController<AnyView>?) {
+        let scroll = controller.scroll
         scroll.addSubview(textView)
         textView.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
+        var constraints = [
             textView.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
             textView.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
-            textView.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
             textView.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
             textView.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor),
-            // Without this, the text view's height is purely its intrinsic content
+            // Without this, the content's height is purely the text view's intrinsic
             // height — for a short or empty document that's a sliver at the top, and
             // UIKit only routes touches to a view under them, so tapping anywhere in
             // the rest of the visible editor pane hit nothing (no caret, no focus,
             // typing impossible). `EditorLayout.hit` already clamps a point below the
             // last row to it, so filling the viewport just makes that reachable —
             // clicking below the text lands the caret at the document's end, same as
-            // most text editors.
-            textView.heightAnchor.constraint(greaterThanOrEqualTo: scroll.frameLayoutGuide.heightAnchor),
-        ])
+            // most text editors. On the content guide rather than the text view so
+            // that a header counts toward the fill: with it on the text view a short
+            // document scrolled by exactly the header's height into blank paper.
+            scroll.contentLayoutGuide.heightAnchor.constraint(
+                greaterThanOrEqualTo: scroll.frameLayoutGuide.heightAnchor),
+        ]
+        if let header {
+            controller.addChild(header)
+            scroll.addSubview(header.view)
+            header.didMove(toParent: controller)
+            header.view.translatesAutoresizingMaskIntoConstraints = false
+            constraints += [
+                header.view.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+                header.view.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+                header.view.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+                textView.topAnchor.constraint(equalTo: header.view.bottomAnchor),
+            ]
+        } else {
+            constraints.append(textView.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor))
+        }
+        NSLayoutConstraint.activate(constraints)
     }
 }
 #endif
