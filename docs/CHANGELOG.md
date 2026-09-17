@@ -37,6 +37,22 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.1.20 — 2026-09-16
+
+### Fixed
+
+- **swift** — the iOS header hugs its content, so a short document's slack is the text view's ([`2c908ba`](https://github.com/diaryx-org/leaf/commit/2c908ba83b9fd365b70bed54d496cf8594e5e6d2))
+- **swift** — the iOS editor keeps the keyboard off the prose itself, by content inset ([`c6bd271`](https://github.com/diaryx-org/leaf/commit/c6bd271f3f95ab29d434bcf352456bb7334fc1ff))
+
+### Behavioural changes
+
+- with `LeafEditor.header`, a document shorter than the viewport lays its header at the top and gives the remaining height to the text view; previously the header stretched and centred its content in the space.
+
+- on iOS, `LeafEditor` insets its own scroll view by the keyboard's overlap with it and scrolls the caret into view when the keyboard rises; a host that lets the editor run under the keyboard no longer needs to avoid it, and a host that already avoids it sees no change.
+
+- on iOS, a document shorter than the visible area fills exactly that area — the frame less the bars and the keyboard — rather than the frame's full height.
+
+
 ## v0.1.19 — 2026-09-16
 
 ### Added
