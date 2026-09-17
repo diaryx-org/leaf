@@ -856,7 +856,19 @@ public final class LeafTextView: UIView, UITextInput {
         //
         // Not in the paginated flow: there the document's height is the stack's,
         // and the blank paper below the last line is already that room.
-        let viewportHeight = enclosingScrollView()?.bounds.height ?? 0
+        //
+        // The frame less the bars it runs under, not less the keyboard too. The
+        // keyboard is a content inset (`LeafEditorController`), and measuring it
+        // here would resize this view on every rise and fall without a render
+        // between — and measured, such a resize of a view this tall (2755pt to
+        // 2577pt on an iPhone 18 Pro Max: across 8192px at 3×) left the caret's
+        // row unpainted until the next scroll, whether made during the keyboard
+        // animation or after it, with `draw` handed the whole bounds each time.
+        // The compositor's, then, and not worth provoking: the bars change
+        // with nothing, the keyboard with every tap.
+        let viewportHeight = enclosingScrollView().map {
+            $0.bounds.height - $0.safeAreaInsets.top - $0.safeAreaInsets.bottom
+        } ?? 0
         let extra = pageSetup == nil && raw > viewportHeight ? viewportHeight * 0.5 : 0
         return CGSize(width: UIView.noIntrinsicMetric, height: raw + extra)
     }
@@ -1036,6 +1048,10 @@ public final class LeafTextView: UIView, UITextInput {
               let scroll = enclosingScrollView() else { return }
         scroll.scrollRectToVisible(convert(caret.insetBy(dx: 0, dy: -renderTheme.lineHeight), to: scroll), animated: false)
     }
+
+    /// Bring the caret's line back into the visible part of the scroll view —
+    /// for the controller, when the keyboard has just covered it.
+    func revealCaret() { scrollCaretToVisible() }
 
     private func enclosingScrollView() -> UIScrollView? {
         var v: UIView? = superview
