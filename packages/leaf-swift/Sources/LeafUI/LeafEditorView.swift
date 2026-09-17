@@ -916,9 +916,86 @@ public struct LeafEditor: View {
 /// hosting controller whose view is simply added to the scroll view is in
 /// the window but nobody's child, and gets neither. Made a child here, it
 /// gets both the ordinary way.
+///
+/// It also keeps the keyboard off the prose itself, by content inset, rather
+/// than leaving that to the host's layout. Left to SwiftUI, the keyboard is
+/// safe area: the host's frame for the editor shrinks to the keyboard's top,
+/// or should — measured on iOS 27 with a hosted accessory bar, it lands at
+/// the keyboard's top plus or minus the accessory's height, changing sign
+/// between layout passes and settling on a band of blank paper the height
+/// of the bar above it. Insetting by the keyboard's real overlap with the
+/// scroll view works in either host: one that runs the editor under the
+/// keyboard (`.ignoresSafeArea(.keyboard)`) gets the full inset, and one
+/// that still shrinks the frame gets an overlap of zero and nothing changes.
 final class LeafEditorController: UIViewController {
     let scroll = UIScrollView()
+    /// `content.height >= frame.height - insets`, the fill `pin(_:into:header:)`
+    /// installs. The constant is the adjusted insets, so a short document fills
+    /// what is *visible* — under a bar, above a keyboard — and no further: at
+    /// the frame's full height it could be pulled up into blank paper by the
+    /// height of whatever covers the edges.
+    var fill: NSLayoutConstraint?
+    private var keyboardObserver: Any?
+
     override func loadView() { view = scroll }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        // One notification covers a rise, a drop, a height change (predictions,
+        // a different layout) and every frame of an interactive dismissal.
+        keyboardObserver = NotificationCenter.default.addObserver(
+            forName: UIResponder.keyboardWillChangeFrameNotification, object: nil, queue: .main
+        ) { [weak self] note in self?.keyboardWillChangeFrame(note) }
+    }
+
+    deinit {
+        if let keyboardObserver { NotificationCenter.default.removeObserver(keyboardObserver) }
+    }
+
+    override func viewSafeAreaInsetsDidChange() {
+        super.viewSafeAreaInsetsDidChange()
+        updateFill()
+    }
+
+    private func keyboardWillChangeFrame(_ note: Notification) {
+        guard let info = note.userInfo, let window = view.window,
+              let end = (info[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue
+        else { return }
+        // A keyboard raised in another scene of this app is not over this one.
+        if let local = info[UIResponder.keyboardIsLocalUserInfoKey] as? Bool, !local { return }
+        // Screen coordinates, to the window's, to the scroll view's. A hidden
+        // keyboard's frame sits below the screen, so its overlap is nothing.
+        let inView = view.convert(window.convert(end, from: nil), from: window)
+        let overlap = max(0, view.bounds.maxY - inView.minY)
+        // The safe area under the frame is already an inset (`adjustedContentInset`
+        // adds it); the keyboard covers that band too, so count it once.
+        let inset = max(0, overlap - view.safeAreaInsets.bottom)
+        guard abs(scroll.contentInset.bottom - inset) > 0.5 else { return }
+        let duration = info[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double ?? 0.25
+        let curve = info[UIResponder.keyboardAnimationCurveUserInfoKey] as? UInt ?? 7
+        UIView.animate(withDuration: duration, delay: 0,
+                       options: UIView.AnimationOptions(rawValue: curve << 16)) {
+            self.scroll.contentInset.bottom = inset
+            self.scroll.verticalScrollIndicatorInsets.bottom = inset
+            self.updateFill()
+            self.scroll.layoutIfNeeded()
+        }
+        // The keyboard rose over the caret, or the room above it changed: bring
+        // the caret back into what is visible, as a text view would. Nothing
+        // here resizes the text view — see `LeafTextView.intrinsicContentSize`
+        // for why its tail deliberately does not follow the keyboard.
+        if inset > 0, let textView = scroll.subviews.first(where: { $0 is LeafTextView }) as? LeafTextView,
+           textView.isFirstResponder {
+            textView.revealCaret()
+        }
+    }
+
+    private func updateFill() {
+        guard let fill else { return }
+        let insets = scroll.adjustedContentInset
+        let constant = -(insets.top + insets.bottom)
+        if abs(fill.constant - constant) > 0.5 { fill.constant = constant }
+    }
 }
 
 /// The `UIViewControllerRepresentable` under `LeafEditor`.
@@ -1176,23 +1253,27 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
         let scroll = controller.scroll
         scroll.addSubview(textView)
         textView.translatesAutoresizingMaskIntoConstraints = false
+        // Without this, the content's height is purely the text view's intrinsic
+        // height — for a short or empty document that's a sliver at the top, and
+        // UIKit only routes touches to a view under them, so tapping anywhere in
+        // the rest of the visible editor pane hit nothing (no caret, no focus,
+        // typing impossible). `EditorLayout.hit` already clamps a point below the
+        // last row to it, so filling the viewport just makes that reachable —
+        // clicking below the text lands the caret at the document's end, same as
+        // most text editors. On the content guide rather than the text view so
+        // that a header counts toward the fill: with it on the text view a short
+        // document scrolled by exactly the header's height into blank paper. The
+        // constant is the controller's to keep — the visible height, not the
+        // frame's, see `LeafEditorController.fill`.
+        let fill = scroll.contentLayoutGuide.heightAnchor.constraint(
+            greaterThanOrEqualTo: scroll.frameLayoutGuide.heightAnchor)
+        controller.fill = fill
         var constraints = [
             textView.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
             textView.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
             textView.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
             textView.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor),
-            // Without this, the content's height is purely the text view's intrinsic
-            // height — for a short or empty document that's a sliver at the top, and
-            // UIKit only routes touches to a view under them, so tapping anywhere in
-            // the rest of the visible editor pane hit nothing (no caret, no focus,
-            // typing impossible). `EditorLayout.hit` already clamps a point below the
-            // last row to it, so filling the viewport just makes that reachable —
-            // clicking below the text lands the caret at the document's end, same as
-            // most text editors. On the content guide rather than the text view so
-            // that a header counts toward the fill: with it on the text view a short
-            // document scrolled by exactly the header's height into blank paper.
-            scroll.contentLayoutGuide.heightAnchor.constraint(
-                greaterThanOrEqualTo: scroll.frameLayoutGuide.heightAnchor),
+            fill,
         ]
         if let header {
             controller.addChild(header)
