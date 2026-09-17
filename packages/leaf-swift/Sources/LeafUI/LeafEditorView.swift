@@ -1199,6 +1199,15 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
             scroll.addSubview(header.view)
             header.didMove(toParent: controller)
             header.view.translatesAutoresizingMaskIntoConstraints = false
+            // The fill above has to go to one of the two, and with both at the
+            // default hugging it went to the header: a short document put the
+            // chips halfway down a tall blank strip, the first line at the
+            // bottom of the screen, and a tap in the strip landed on the
+            // header's view, not the text — no caret. The header hugs its
+            // content, so the slack is the text view's, where a tap below the
+            // last row lands the caret at the end as it does without a header.
+            header.view.setContentHuggingPriority(.required, for: .vertical)
+            textView.setContentHuggingPriority(.defaultLow, for: .vertical)
             constraints += [
                 header.view.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
                 header.view.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
