@@ -506,8 +506,15 @@ struct HighlightColourRows: View {
 /// `caretInTable`, which `editor.state` re-reads on every caret move, so a
 /// menu opened over prose has them dimmed and one opened in a table has them
 /// live.
-struct TableRows: View {
+///
+/// Public because a host app's own menus — `apps/leaf-editor`'s toolbar, a
+/// consumer's Format menu — put the same rows behind their own button.
+public struct TableRows: View {
     @ObservedObject var editor: LeafEditorModel
+
+    public init(editor: LeafEditorModel) {
+        self.editor = editor
+    }
 
     /// Body rows under the header of a table this inserts.
     static let defaultRows = 2
@@ -515,7 +522,7 @@ struct TableRows: View {
     static let defaultColumns = 2
     static let widths = 3...5
 
-    var body: some View {
+    public var body: some View {
         Group {
             Button(loc("menu.insertTable", "Insert Table")) {
                 editor.insertTable(rows: Self.defaultRows, cols: Self.defaultColumns)
