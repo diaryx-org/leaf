@@ -4491,13 +4491,18 @@ impl Doc {
     /// the offset `split_block` returns puts the rule after the *second* half
     /// instead, which is a rule in the right document and the wrong place.
     ///
-    /// Only a plain paragraph is split. Everywhere else the rule simply lands
-    /// after the block, which is both twig's own answer and the better one:
-    /// splitting a fenced code block would leave two fences with a rule between
-    /// them, and splitting a list item would mint an item nobody asked for on the
-    /// way to a rule that lands after the list regardless. A table and a setext
-    /// heading refuse the split outright, so they take the same path by
-    /// themselves.
+    /// Only a plain paragraph is split, and only where there is something to
+    /// part: at the paragraph's end the split has no second half to mint and
+    /// would write the separator anyway — a blank line and the empty slot Enter
+    /// leaves for the next paragraph, which the rule then lands above and
+    /// nothing fills — so there the rule goes straight after the paragraph,
+    /// which is where the split-and-aim was sending it regardless. Everywhere
+    /// else the rule simply lands after the block, which is both twig's own
+    /// answer and the better one: splitting a fenced code block would leave two
+    /// fences with a rule between them, and splitting a list item would mint an
+    /// item nobody asked for on the way to a rule that lands after the list
+    /// regardless. A table and a setext heading refuse the split outright, so
+    /// they take the same path by themselves.
     pub fn insert_thematic_break(&mut self) {
         if self.read_only || self.refuse_unsupported("thematic break", Gesture::InsertThematicBreak)
         {
@@ -4512,7 +4517,7 @@ impl Doc {
         self.anchor = None;
         self.record_caret();
         let at = self.caret;
-        if self.caret_in_bare_paragraph() {
+        if self.caret_parts_bare_paragraph() {
             // A failure here is not fatal: the rule still lands after the block,
             // which is exactly what this call was trying to improve on.
             let _ = self.editor.split_block(at);
@@ -4561,7 +4566,7 @@ impl Doc {
         self.anchor = None;
         self.record_caret();
         let at = self.caret;
-        if self.caret_in_bare_paragraph() {
+        if self.caret_parts_bare_paragraph() {
             let _ = self.editor.split_block(at);
         }
         match self.editor.insert_table(at, rows, cols) {
@@ -4593,19 +4598,32 @@ impl Doc {
     }
 
     /// Whether the caret sits in a paragraph and nothing else — no list item, no
-    /// quote, no fence, no table. The one shape where parting the block around
-    /// the caret is unambiguously what a rule button means; see
+    /// quote, no fence, no table — with paragraph text still ahead of it. The
+    /// one shape where parting the block around the caret is unambiguously what
+    /// a rule button means; see
     /// [`insert_thematic_break`](Self::insert_thematic_break) for why every other
     /// container is left to take the rule after itself.
-    fn caret_in_bare_paragraph(&mut self) -> bool {
+    ///
+    /// The "text ahead" half is what keeps `split_block` from running where it
+    /// has nothing to part. At a paragraph's end twig cannot mint the empty
+    /// second half (no format spells an empty paragraph), so it writes only the
+    /// separator — a blank line and the slot Enter leaves for the paragraph to
+    /// come — and a block then aimed at the first half lands above a slot that
+    /// nothing fills: `para\n` with the caret at 4 came out as
+    /// `para\n\n* * *\n\n\n`. Trailing whitespace counts as nothing ahead, since
+    /// the split would shed it as the second half's leading indent and leave the
+    /// same slot. Which end of the newline a paragraph's span stops at differs
+    /// between the formats (Markdown before it, djot after), which is why this
+    /// reads the remaining bytes rather than comparing offsets.
+    fn caret_parts_bare_paragraph(&mut self) -> bool {
         let caret = self.caret.min(self.source.len());
         let Ok(chain) = self.editor.ancestors_at(caret) else {
             return false;
         };
-        let mut in_para = false;
+        let mut para_end = None;
         for m in chain {
             match m.kind {
-                Kind::Para => in_para = true,
+                Kind::Para => para_end = Some(m.span.end.min(self.source.len())),
                 Kind::ListItem
                 | Kind::TaskListItem
                 | Kind::BlockQuote
@@ -4614,7 +4632,10 @@ impl Doc {
                 _ => {}
             }
         }
-        in_para
+        match para_end {
+            Some(end) if end > caret => !self.source[caret..end].trim().is_empty(),
+            _ => false,
+        }
     }
 
     /// The destination of the link under the caret — what a Link prompt shows so
@@ -8433,6 +8454,52 @@ mod tests {
             kind_at(&mut d, "before \n\n".len()),
             Some(Kind::ThematicBreak)
         );
+    }
+
+    #[test]
+    fn insert_thematic_break_at_a_paragraph_s_end_splits_nothing() {
+        // At the end there is nothing to part, and a split there writes the
+        // separator anyway — a blank line and the empty slot the next paragraph
+        // would fill — which the rule then landed above: `para\n\n* * *\n\n\n`,
+        // two blank lines nothing fills. Now the rule lands after the paragraph,
+        // where the split-and-aim was sending it regardless. Both formats, and
+        // both shapes of a last line — terminated, and still being typed —
+        // because the two reach the split through different doors: Markdown's
+        // paragraph span stops before its newline, so `para\n` at 4 never split
+        // there, but `para` at 4 did.
+        for (fmt, rule) in [(Format::Markdown, "---"), (Format::Djot, "* * *")] {
+            for src in ["para\n", "para"] {
+                let mut d = Doc::from_source(src.into(), fmt).unwrap();
+                d.caret = 4;
+                d.insert_thematic_break();
+                assert_eq!(d.source, format!("para\n\n{rule}\n"), "{fmt:?} {src:?}");
+                assert_eq!(d.caret, d.source.len());
+            }
+            // Mid-document the slot sat between the rule and the next block.
+            let mut d = Doc::from_source("para\n\nnext\n".into(), fmt).unwrap();
+            d.caret = 4;
+            d.insert_thematic_break();
+            assert_eq!(d.source, format!("para\n\n{rule}\n\nnext\n"), "{fmt:?}");
+            // Trailing whitespace is nothing to part either.
+            let mut d = Doc::from_source("para  \n".into(), fmt).unwrap();
+            d.caret = 4;
+            d.insert_thematic_break();
+            assert_eq!(d.source, format!("para  \n\n{rule}\n"), "{fmt:?}");
+        }
+    }
+
+    #[test]
+    fn insert_table_at_a_paragraph_s_end_splits_nothing() {
+        // The same door as the rule's, through the placement they share.
+        let mut d = Doc::from_source("para\n".into(), Format::Djot).unwrap();
+        d.caret = 4;
+        d.insert_table(1, 1);
+        assert_eq!(d.source, "para\n\n|  |\n|---|\n|  |\n");
+        let mut d = doc_with("table_end_typed", "para");
+        d.caret = 4;
+        d.insert_table(1, 1);
+        assert_eq!(d.source, "para\n\n|  |\n| --- |\n|  |\n");
+        assert!(d.caret_in_table());
     }
 
     #[test]
