@@ -37,6 +37,28 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.1.21 — 2026-09-18
+
+### Added
+
+- **core** — HTML spells a quote, a list, a link and an image through twig 3.5 ([`450761e`](https://github.com/diaryx-org/leaf/commit/450761e474f9745830219e71d84354043ba964e5))
+- **editor** — a Table tool — a fresh table at the caret, and the grid ops behind one menu ([`6484ad5`](https://github.com/diaryx-org/leaf/commit/6484ad5c7abd3af212b145526fa182290fed0235))
+
+### Fixed
+
+- **core** — the rule and table buttons at a paragraph's end no longer split it ([`cdfa82c`](https://github.com/diaryx-org/leaf/commit/cdfa82c80adfb438405222c68ab842d38ece1017))
+- **core** — the rule and table buttons at a paragraph's start land before it cleanly ([`20b426d`](https://github.com/diaryx-org/leaf/commit/20b426da690d1341e55fa9f21e91f51b4a1c08cf))
+
+### Behavioural changes
+
+- In an HTML document, `Doc::toggle_blockquote`,
+`toggle_list`, `insert_link`, `insert_image`, `insert_media` and
+`set_code_language` now edit the document instead of setting a
+"not supported in html" status, and `Capabilities::blockquote`,
+`bullet_list`, `ordered_list`, `link`, `image` and `code_language` are true
+for `Format::Html`. Task and footnote are unchanged.
+
+
 ## v0.1.20 — 2026-09-16
 
 ### Fixed
