@@ -782,10 +782,12 @@ fn spells_pipe_tables(format: Format) -> bool {
 /// and everything else spelled nothing. HTML is neither: it writes seven of the
 /// eight inline marks as a tag pair, plus `<code>`, `<hr>`, an in-cell
 /// `<br>`, and — since twig 3.4 — a heading or paragraph rebuilt as its tag
-/// pair; it spells no line prefix, no fence, no task box, no link — because
-/// its versions of those have a different *shape*, not a different alphabet.
-/// So ⌘B and ⌘1 work in an HTML document and the quote button does not, and
-/// no one flag can say that. Markdown and djot differ from each other too:
+/// pair, and since 3.5 a quote, a list, a code block, a link and an image
+/// printed as fresh nodes; it spells no task box (a form control there) and
+/// no footnote, and its `<table>` is one twig reads but will not write. So
+/// ⌘B, ⌘1 and the quote button work in an HTML document and the task and
+/// table buttons do not, and no one flag can say that. Markdown and djot
+/// differ from each other too:
 /// `^superscript^` is djot-only, and an in-cell `<br>` is Markdown-only.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Capabilities {
@@ -11639,22 +11641,17 @@ mod tests {
 
     #[test]
     fn the_block_gestures_html_cannot_spell_are_refused_with_a_reason() {
-        // A quote wraps a range rather than prefixing each line, a link's
-        // destination lives in an attribute — different *shapes*, not a
-        // different alphabet, so twig spells none of them and neither does leaf.
+        // A task box is a form control in HTML and a footnote has no native
+        // spelling at all — the two gestures twig 3.5 still spells nothing
+        // for, now that a quote, a list, a link and an image print through
+        // its renderer (see the test below).
         let src = "<h1>Title</h1>\n<p>Hello world</p>\n<ul><li>one</li></ul>\n";
         // A table of named operations, which is what it looks like.
         #[allow(clippy::type_complexity)]
-        let ops: [(&str, &dyn Fn(&mut Doc)); 7] = [
-            ("quote", &|d: &mut Doc| d.toggle_blockquote()),
-            ("list", &|d: &mut Doc| d.toggle_list(false)),
+        let ops: [(&str, &dyn Fn(&mut Doc)); 3] = [
             ("task item", &|d: &mut Doc| d.toggle_task_item()),
             ("task tick", &|d: &mut Doc| d.toggle_task_checked()),
-            ("link", &|d: &mut Doc| d.insert_link("https://example.dev")),
-            ("image", &|d: &mut Doc| d.insert_image("pic.png", "alt")),
-            ("video", &|d: &mut Doc| {
-                d.insert_media(MediaKind::Video, "clip.mp4", "")
-            }),
+            ("footnote", &|d: &mut Doc| d.insert_footnote()),
         ];
         for (name, op) in ops {
             let mut d = html_doc(src);
@@ -11671,6 +11668,53 @@ mod tests {
             assert!(
                 status.contains("html"),
                 "{name}: the refusal should name the format, got {status:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn html_spells_a_quote_a_list_a_link_and_an_image_through_the_renderer() {
+        // twig 3.5: where HTML has no marker alphabet it prints the fresh
+        // node — a `<blockquote>` around the paragraph, a `<ul>`/`<ol>` with
+        // the paragraph as its item, an `<a>` or `<img>` over the selection.
+        // Until then every one of these was a refusal; now each is a real
+        // edit, which is what the toolbar's capability flags say too.
+        let src = "<h1>Title</h1>\n<p>Hello world</p>\n<ul><li>one</li></ul>\n";
+        #[allow(clippy::type_complexity)]
+        let ops: [(&str, &dyn Fn(&mut Doc), &str); 5] = [
+            (
+                "quote",
+                &|d: &mut Doc| d.toggle_blockquote(),
+                "<blockquote>",
+            ),
+            ("list", &|d: &mut Doc| d.toggle_list(false), "<ul>\n<li>"),
+            (
+                "ordered list",
+                &|d: &mut Doc| d.toggle_list(true),
+                "<ol>\n<li>",
+            ),
+            (
+                "link",
+                &|d: &mut Doc| d.insert_link("https://example.dev"),
+                "<a href=\"https://example.dev\">Hello</a>",
+            ),
+            (
+                "image",
+                &|d: &mut Doc| d.insert_image("pic.png", "alt"),
+                "<img alt=\"Hello\" src=\"pic.png\">",
+            ),
+        ];
+        for (name, op, expect) in ops {
+            let mut d = html_doc(src);
+            let at = d.source.find("Hello").unwrap();
+            d.caret = at;
+            d.anchor = Some(at + 5);
+            op(&mut d);
+            assert!(d.source.contains(expect), "{name}: got {:?}", d.source);
+            assert!(d.dirty, "{name}: a real edit");
+            assert_eq!(
+                d.status, None,
+                "{name}: a supported gesture reports nothing"
             );
         }
     }
@@ -12083,11 +12127,14 @@ mod tests {
         let caps = html.capabilities();
         assert!(caps.bold && caps.italic && caps.code && caps.mark);
         assert!(caps.thematic_break && caps.cell_line_break);
-        // A heading is a tag pair twig rebuilds (3.4); a quote or a list
-        // prefixes lines, which HTML has no spelling for.
-        assert!(caps.heading);
-        assert!(!caps.blockquote && !caps.bullet_list);
-        assert!(!caps.task && !caps.link && !caps.image && !caps.code_language);
+        // A heading is a tag pair twig rebuilds (3.4), and since 3.5 so are a
+        // quote, a list, a code block's language, a link and an image — each
+        // printed as a fresh node where HTML has no marker to rewrite. A task
+        // box is a form control and a footnote has no spelling, so those two
+        // are what keeps the record ragged.
+        assert!(caps.heading && caps.blockquote && caps.bullet_list);
+        assert!(caps.link && caps.image && caps.code_language);
+        assert!(!caps.task && !caps.footnote);
         // The one flag that isn't twig's answer: an HTML `<table>` is a grid
         // twig's table editor would happily re-emit as `| a | b |`.
         assert!(!caps.table);
@@ -12131,15 +12178,13 @@ mod tests {
     fn a_refused_gesture_says_so_where_twig_would_have_said_it() {
         // The guard exists to name the *document's* format rather than twig's
         // internals, so the message has to survive being one leaf writes itself.
-        // Checked against the gesture twig also refuses, since that is the pair
-        // most at risk of drifting apart.
+        // Checked against a gesture twig also refuses, since that is the pair
+        // most at risk of drifting apart — the task box, once the code
+        // language stopped being one (twig 3.5).
         let mut d = html_doc("<p>Hello</p>\n");
         d.caret = d.source.find("Hello").unwrap();
-        d.set_code_language("zig");
-        assert_eq!(
-            d.status.as_deref(),
-            Some("code language: not supported in html")
-        );
+        d.toggle_task_item();
+        assert_eq!(d.status.as_deref(), Some("task: not supported in html"));
         assert!(!d.dirty);
     }
 
