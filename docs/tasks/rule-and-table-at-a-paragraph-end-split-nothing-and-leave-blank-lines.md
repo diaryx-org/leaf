@@ -10,7 +10,10 @@ part_of: '[Tasks](/docs/tasks/tasks.md)'
 **Status: done** with twig-doc 3.5.1, in the commit that closes this.
 `caret_in_bare_paragraph` became `caret_parts_bare_paragraph`: it also asks
 whether any paragraph text is still ahead of the caret, and where none is,
-neither gesture splits. The paragraph-start case below is left as it was.
+neither gesture splits. The paragraph-start case below was then twig's,
+and is: its `953fa2a` (3.5.2) writes a block aimed at a blank line on that
+line, and adds a blank above only where the line above is not one, so the
+split at the start composes as it was meant to with no change here.
 
 **Where.** `crates/leaf-core`, `Doc::insert_thematic_break` and
 `Doc::insert_table`. Every frontend inherits it.
