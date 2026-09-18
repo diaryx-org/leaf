@@ -1826,6 +1826,18 @@ impl LeafDoc {
         g.view()
     }
 
+    /// Insert a fresh table at the caret — one header row, `rows` empty body
+    /// rows, `cols` columns — and leave the caret in its first header cell.
+    /// The one table verb that needs no table under the caret; gate it on
+    /// [`Capabilities::table`] alone. See [`leaf_core::Doc::insert_table`] for
+    /// the placement (a paragraph is parted around the caret, as for the rule)
+    /// and for what a zero shape does.
+    pub fn insert_table(&self, rows: u32, cols: u32) -> DocView {
+        let mut g = self.lock();
+        g.doc.insert_table(rows as usize, cols as usize);
+        g.view()
+    }
+
     pub fn insert_link(&self, destination: String) -> DocView {
         let mut g = self.lock();
         g.doc.insert_link(&destination);

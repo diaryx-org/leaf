@@ -128,31 +128,13 @@ struct ContentView: View {
         .background(.bar)
     }
 
-    /// The table controls — rows, columns, alignment, and moves. Enabled only
-    /// when the caret is in a table (the ops are no-ops otherwise, but a disabled
-    /// control says so up front). `editor.state` drives the re-render on caret
-    /// moves, so `caretInTable` is re-read as the caret enters or leaves a table.
+    /// The table controls — a fresh table, then rows, columns, alignment, and
+    /// moves over the caret's — as the package's own `TableRows`, the rows the
+    /// formatting bar and the Format menu share. Lit while the caret is in a
+    /// table; dark where the format spells none.
     private var tableMenu: some View {
         Menu {
-            Button("Insert Row Above") { editor.tableInsertRow(below: false) }
-            Button("Insert Row Below") { editor.tableInsertRow(below: true) }
-            Button("Delete Row") { editor.tableDeleteRow() }
-            Divider()
-            Button("Insert Column Left") { editor.tableInsertColumn(right: false) }
-            Button("Insert Column Right") { editor.tableInsertColumn(right: true) }
-            Button("Delete Column") { editor.tableDeleteColumn() }
-            Divider()
-            Menu("Align Column") {
-                Button("Left") { editor.tableSetAlignment(.left) }
-                Button("Center") { editor.tableSetAlignment(.center) }
-                Button("Right") { editor.tableSetAlignment(.right) }
-                Button("Default") { editor.tableSetAlignment(.default) }
-            }
-            Divider()
-            Button("Move Row Up") { editor.tableMoveRow(down: false) }
-            Button("Move Row Down") { editor.tableMoveRow(down: true) }
-            Button("Move Column Left") { editor.tableMoveColumn(right: false) }
-            Button("Move Column Right") { editor.tableMoveColumn(right: true) }
+            TableRows(editor: editor)
         } label: {
             Image(systemName: "tablecells")
                 .font(.system(size: 17))
@@ -161,7 +143,7 @@ struct ContentView: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .disabled(!editor.caretInTable)
+        .disabled(!editor.capabilities.table)
         .accessibilityLabel("table")
     }
 

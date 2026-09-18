@@ -411,6 +411,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_insert_link(void*_Nonnull ptr, Rust
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_insert_media(void*_Nonnull ptr, RustBuffer kind, RustBuffer destination, RustBuffer alt, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INSERT_TABLE
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INSERT_TABLE
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_insert_table(void*_Nonnull ptr, uint32_t rows, uint32_t cols, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INSERT_THEMATIC_BREAK
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INSERT_THEMATIC_BREAK
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_insert_thematic_break(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
@@ -1242,6 +1247,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_insert_link(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_INSERT_MEDIA
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_INSERT_MEDIA
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_insert_media(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_INSERT_TABLE
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_INSERT_TABLE
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_insert_table(void
     
 );
 #endif

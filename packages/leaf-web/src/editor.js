@@ -532,6 +532,8 @@ export class LeafEditor {
   tableMoveColumn(right = true) { this._command((d) => d.table_move_column(right)); }
   /** `"left"`, `"right"`, `"center"`, or `"default"`. */
   tableSetAlignment(align) { this._command((d) => d.table_set_alignment(align)); }
+  /** A fresh table at the caret: `rows` body rows under a header, `cols` wide. */
+  insertTable(rows = 2, cols = 2) { this._command((d) => d.insert_table(rows, cols)); }
   /** The line-wrapping preference: `"fold"` or `"preserve"`. */
   lineFlow() { return this.doc.line_flow(); }
   setLineFlow(mode) { this._command((d) => d.set_line_flow(String(mode))); }

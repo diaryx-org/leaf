@@ -251,6 +251,10 @@ export class LeafEditor {
   tableMoveRow(down?: boolean): void;
   tableMoveColumn(right?: boolean): void;
   tableSetAlignment(align: "left" | "right" | "center" | "default"): void;
+  /** A fresh table at the caret — `rows` body rows under a header, `cols`
+   *  wide — with the caret left in its first header cell. Needs no table
+   *  under the caret; `capabilities().table` is the whole gate. */
+  insertTable(rows?: number, cols?: number): void;
   /** The line-wrapping preference. */
   lineFlow(): "fold" | "preserve";
   setLineFlow(mode: "fold" | "preserve"): void;

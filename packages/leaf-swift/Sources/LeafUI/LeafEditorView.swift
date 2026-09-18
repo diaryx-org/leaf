@@ -532,6 +532,12 @@ public final class LeafEditorModel: ObservableObject {
     public func tableSetAlignment(_ alignment: TableAlignment) { run { $0.tableSetAlignment(alignment: alignment) } }
     public func tableMoveRow(down: Bool) { run { $0.tableMoveRow(down: down) } }
     public func tableMoveColumn(right: Bool) { run { $0.tableMoveColumn(right: right) } }
+    /// A fresh table at the caret — `rows` body rows under a header, `cols`
+    /// wide — with the caret left in its first header cell. Needs no table
+    /// under the caret; `capabilities.table` is the whole gate.
+    public func insertTable(rows: Int = 2, cols: Int = 2) {
+        run { $0.insertTable(rows: UInt32(max(rows, 1)), cols: UInt32(max(cols, 1))) }
+    }
 
     public func undo() { run { $0.undo() } }
     public func redo() { run { $0.redo() } }
