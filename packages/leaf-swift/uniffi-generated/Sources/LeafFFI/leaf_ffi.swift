@@ -737,6 +737,16 @@ public protocol LeafDocProtocol : AnyObject {
     func insertMedia(kind: MediaKind, destination: String, alt: String)  -> DocView
     
     /**
+     * Insert a fresh table at the caret — one header row, `rows` empty body
+     * rows, `cols` columns — and leave the caret in its first header cell.
+     * The one table verb that needs no table under the caret; gate it on
+     * [`Capabilities::table`] alone. See [`leaf_core::Doc::insert_table`] for
+     * the placement (a paragraph is parted around the caret, as for the rule)
+     * and for what a zero shape does.
+     */
+    func insertTable(rows: UInt32, cols: UInt32)  -> DocView
+    
+    /**
      * Insert a thematic break (`---`) at the caret — the toolbar's Horizontal
      * Rule button. See [`leaf_core::Doc::insert_thematic_break`] for how it
      * handles a selection, a blank line, and the caret sitting mid-paragraph,
@@ -1598,6 +1608,23 @@ open func insertMedia(kind: MediaKind, destination: String, alt: String) -> DocV
         FfiConverterTypeMediaKind.lower(kind),
         FfiConverterString.lower(destination),
         FfiConverterString.lower(alt),$0
+    )
+})
+}
+    
+    /**
+     * Insert a fresh table at the caret — one header row, `rows` empty body
+     * rows, `cols` columns — and leave the caret in its first header cell.
+     * The one table verb that needs no table under the caret; gate it on
+     * [`Capabilities::table`] alone. See [`leaf_core::Doc::insert_table`] for
+     * the placement (a paragraph is parted around the caret, as for the rule)
+     * and for what a zero shape does.
+     */
+open func insertTable(rows: UInt32, cols: UInt32) -> DocView {
+    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_insert_table(self.uniffiClonePointer(),
+        FfiConverterUInt32.lower(rows),
+        FfiConverterUInt32.lower(cols),$0
     )
 })
 }
@@ -6720,6 +6747,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_insert_media() != 15569) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_insert_table() != 45407) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_insert_thematic_break() != 49135) {

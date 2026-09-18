@@ -1923,6 +1923,14 @@ impl LeafDoc {
         self.view()
     }
 
+    /// Insert a fresh table at the caret — one header row, `rows` empty body
+    /// rows, `cols` columns — and leave the caret in its first header cell.
+    /// Needs no table under the caret; gate it on `capabilities().table`.
+    pub fn insert_table(&mut self, rows: u32, cols: u32) -> Result<DocView, JsValue> {
+        self.doc.insert_table(rows as usize, cols as usize);
+        self.view()
+    }
+
     /// Set the caret's column alignment — `"left"`, `"right"`, `"center"`, or
     /// `"default"`. Anything else is left alone.
     pub fn table_set_alignment(&mut self, alignment: &str) -> Result<DocView, JsValue> {

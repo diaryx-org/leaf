@@ -4532,6 +4532,66 @@ impl Doc {
         }
     }
 
+    /// Insert a fresh table at the caret — the toolbar's Table button. One
+    /// header row, `rows` empty body rows, `cols` columns, spelled by twig in
+    /// the document's own dialect and placed the way its thematic break is:
+    /// after the caret's block, blank-separated. A bare paragraph is parted
+    /// around the caret first, exactly as
+    /// [`insert_thematic_break`](Self::insert_thematic_break) parts it, so the
+    /// table lands *at* the caret rather than after everything the caret's
+    /// paragraph says.
+    ///
+    /// The caret ends in the first header cell, selected the way Tab selects
+    /// a cell — the natural next act is to type the heading, and Tab then
+    /// walks the grid. That cell is read back from the rebuilt table map
+    /// rather than computed from the splice, because twig's blank line and
+    /// quote prefix put the first bar at an offset only the reparse knows.
+    ///
+    /// The shape is the caller's: a menu offers a few, a dialog asks. Zero
+    /// rows or columns is twig's refusal (a header with nothing under it is
+    /// what its row delete refuses to leave), reported through `status`.
+    pub fn insert_table(&mut self, rows: usize, cols: usize) {
+        if self.read_only || self.refuse_unsupported("table", Gesture::InsertTable) {
+            return;
+        }
+        self.caret = self.skip_trailing_close_delims(self.caret);
+        if let Some((s, e)) = self.selection() {
+            self.splice(s, e, "", EditKind::Other);
+        }
+        self.anchor = None;
+        self.record_caret();
+        let at = self.caret;
+        if self.caret_in_bare_paragraph() {
+            let _ = self.editor.split_block(at);
+        }
+        match self.editor.insert_table(at, rows, cols) {
+            Ok(change) => {
+                self.last_edit_kind = None;
+                self.refresh();
+                self.anchor = None;
+                self.caret = change.new.end;
+                self.dirty = self.source != self.clean_source;
+                self.status = None;
+                self.clamp_caret();
+                // Into the first header cell of the table just written: the
+                // first table whose grid begins inside the splice.
+                self.rebuild_map();
+                let first_cell = self
+                    .vmap
+                    .tables
+                    .iter()
+                    .filter_map(|t| t.grid.first().and_then(|row| row.cells.first()))
+                    .find(|cell| cell.start >= change.new.start && cell.start < change.new.end)
+                    .map(|cell| (cell.start, cell.end));
+                if let Some((start, end)) = first_cell {
+                    self.select_cell(start, end);
+                }
+                self.record_caret();
+            }
+            Err(e) => self.status = Some(format!("table: {e}")),
+        }
+    }
+
     /// Whether the caret sits in a paragraph and nothing else — no list item, no
     /// quote, no fence, no table. The one shape where parting the block around
     /// the caret is unambiguously what a rule button means; see
@@ -8388,6 +8448,65 @@ mod tests {
         dj.caret = 2;
         dj.insert_thematic_break();
         assert_eq!(dj.source, "pa\n\n* * *\n\nra\n");
+    }
+
+    #[test]
+    fn insert_table_parts_the_paragraph_and_lands_in_the_first_header_cell() {
+        // The table goes *at* the caret the way the rule does: the paragraph is
+        // parted first, and twig writes the grid after its first half. The
+        // caret then sits in the first header cell — selected, as Tab would
+        // leave it — so the next keystroke is the heading.
+        let mut d = doc_with("table_mid", "before after\n");
+        d.caret = 7;
+        d.insert_table(2, 3);
+        assert_eq!(
+            d.source,
+            "before \n\n|  |  |  |\n| --- | --- | --- |\n|  |  |  |\n|  |  |  |\n\nafter\n"
+        );
+        assert!(d.caret_in_table());
+        let first_bar = d.source.find('|').unwrap();
+        assert!(
+            d.caret > first_bar && d.caret < d.source.find("| ---").unwrap(),
+            "caret {} is not in the header row",
+            d.caret
+        );
+        d.insert("Name");
+        assert!(d.source.starts_with("before \n\n| Name |  |  |\n"));
+        // And the grid the table was written into is one the table keys walk
+        // (over the map a frontend rebuilds after every edit).
+        d.build_visual(80);
+        assert!(d.cell_tab(true));
+        d.insert("Qty");
+        assert!(d.source.starts_with("before \n\n| Name | Qty |  |\n"));
+    }
+
+    #[test]
+    fn insert_table_spells_the_grid_the_format_s_own_way() {
+        // Djot's delimiter row is unpadded, and leaf never has to know that.
+        let mut dj = Doc::from_source("para\n".into(), Format::Djot).unwrap();
+        dj.caret = 2;
+        dj.insert_table(1, 2);
+        assert_eq!(dj.source, "pa\n\n|  |  |\n|---|---|\n|  |  |\n\nra\n");
+        assert!(dj.caret_in_table());
+    }
+
+    #[test]
+    fn insert_table_refuses_where_the_format_spells_no_table() {
+        let mut d = Doc::from_source("<p>ab</p>\n".into(), Format::Html).unwrap();
+        d.caret = 4;
+        d.insert_table(1, 1);
+        assert_eq!(d.source, "<p>ab</p>\n");
+        assert!(d.status.as_deref().unwrap_or("").contains("not supported"));
+        assert!(!d.capabilities().table);
+    }
+
+    #[test]
+    fn insert_table_reports_a_zero_shape_and_writes_nothing() {
+        let mut d = doc_with("table_zero", "para\n");
+        d.caret = 2;
+        d.insert_table(0, 2);
+        assert_eq!(d.source, "para\n");
+        assert!(d.status.as_deref().unwrap_or("").starts_with("table:"));
     }
 
     #[test]

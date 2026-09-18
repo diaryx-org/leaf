@@ -28,6 +28,14 @@
 //  accent-tinted pill behind the glyph, which a bordered button's tint could
 //  barely express.
 //
+//  Table is the other tool with a menu behind it, and unlike Highlight it has
+//  no primary action: a press opens the rows. Inserting a table is one thing
+//  the button does and editing the one the caret is in is the other, and a
+//  tap that inserted a table while the caret stood in a table would be a
+//  gesture nobody asked for. The rows are `TableRows`, shared with the Format
+//  menu the way `HighlightColourRows` is, so the two surfaces cannot disagree
+//  about what a table can do or when.
+//
 //  Link is the one tool that can't be a bare command: every other button here
 //  knows everything it needs from the selection, and a link needs a destination
 //  from outside it. `LeafEditorModel.onEditLink` is where a host answers that
@@ -188,7 +196,38 @@ public struct LeafFormattingToolbar: View {
             // inline marks ever grow a Superscript button of their own, that one
             // takes this symbol and this takes `asterisk`.
             tool("textformat.superscript", "Footnote") { editor.insertFootnote() }
+            tableTool
         }
+    }
+
+    /// Table: a fresh one at the caret, and the grid ops over the one the
+    /// caret is in, as one menu (see the file's note on why it has no primary
+    /// action). Lit while the caret stands in a table, the way Link is lit
+    /// inside a link; dark where the format spells no table at all
+    /// (`Capabilities.table`), which is the whole gate for inserting one — the
+    /// grid rows gate themselves on the caret.
+    private var tableTool: some View {
+        Menu {
+            TableRows(editor: editor)
+        } label: {
+            Image(systemName: "tablecells")
+                .font(.system(size: metrics.glyphSize))
+        }
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .frame(width: metrics.buttonWidth, height: metrics.buttonHeight)
+        .foregroundStyle(!editor.capabilities.table ? Color(Palette.tertiary)
+                         : editor.caretInTable ? Color.accentColor : Color.primary)
+        .background(
+            RoundedRectangle(cornerRadius: metrics.cornerRadius)
+                .fill(editor.caretInTable ? Color.accentColor.opacity(0.15) : Color.clear)
+        )
+        .contentShape(Rectangle())
+        .disabled(!editor.capabilities.table)
+        .accessibilityLabel(loc("menu.table", "Table"))
+        #if !canImport(UIKit)
+        .help(loc("menu.table", "Table"))
+        #endif
     }
 
     private var indentTools: some View {
@@ -452,5 +491,66 @@ struct HighlightColourRows: View {
     /// that colour. A `Toggle`, the way every mark in the Format menu is.
     private func row(_ title: String, on: Bool, _ apply: @escaping () -> Void) -> some View {
         Toggle(title, isOn: Binding(get: { on }, set: { _ in apply() }))
+    }
+}
+
+/// The table rows: a fresh table, then the grid ops over the table the caret
+/// is in. Its own `View` for the reason `HighlightColourRows` is — the bar's
+/// Table menu and the app's Format ▸ Table submenu show the same rows, and one
+/// definition is what keeps them agreeing.
+///
+/// A new table is two columns and two body rows under its header, or wider
+/// from the submenu. Only the width is offered, because a row is the cheap
+/// dimension — Tab past the last cell and Return on the last row both grow
+/// one — while a column takes a menu trip. The grid rows enable on
+/// `caretInTable`, which `editor.state` re-reads on every caret move, so a
+/// menu opened over prose has them dimmed and one opened in a table has them
+/// live.
+struct TableRows: View {
+    @ObservedObject var editor: LeafEditorModel
+
+    /// Body rows under the header of a table this inserts.
+    static let defaultRows = 2
+    /// Columns of the plain "Insert Table" row; the submenu offers wider.
+    static let defaultColumns = 2
+    static let widths = 3...5
+
+    var body: some View {
+        Group {
+            Button(loc("menu.insertTable", "Insert Table")) {
+                editor.insertTable(rows: Self.defaultRows, cols: Self.defaultColumns)
+            }
+            Menu(loc("menu.insertTableWith", "Insert Table With")) {
+                ForEach(Self.widths, id: \.self) { n in
+                    Button(String(format: loc("menu.insertTableColumns", "%d Columns"), n)) {
+                        editor.insertTable(rows: Self.defaultRows, cols: n)
+                    }
+                }
+            }
+            Divider()
+            Group {
+                Button(loc("menu.table.insertRowAbove", "Insert Row Above")) { editor.tableInsertRow(below: false) }
+                Button(loc("menu.table.insertRowBelow", "Insert Row Below")) { editor.tableInsertRow(below: true) }
+                Button(loc("menu.table.deleteRow", "Delete Row")) { editor.tableDeleteRow() }
+                Divider()
+                Button(loc("menu.table.insertColumnLeft", "Insert Column Left")) { editor.tableInsertColumn(right: false) }
+                Button(loc("menu.table.insertColumnRight", "Insert Column Right")) { editor.tableInsertColumn(right: true) }
+                Button(loc("menu.table.deleteColumn", "Delete Column")) { editor.tableDeleteColumn() }
+                Divider()
+                Menu(loc("menu.table.alignColumn", "Align Column")) {
+                    Button(loc("menu.table.align.left", "Left")) { editor.tableSetAlignment(.left) }
+                    Button(loc("menu.table.align.center", "Center")) { editor.tableSetAlignment(.center) }
+                    Button(loc("menu.table.align.right", "Right")) { editor.tableSetAlignment(.right) }
+                    Button(loc("menu.table.align.default", "Default")) { editor.tableSetAlignment(.default) }
+                }
+                Divider()
+                Button(loc("menu.table.moveRowUp", "Move Row Up")) { editor.tableMoveRow(down: false) }
+                Button(loc("menu.table.moveRowDown", "Move Row Down")) { editor.tableMoveRow(down: true) }
+                Button(loc("menu.table.moveColumnLeft", "Move Column Left")) { editor.tableMoveColumn(right: false) }
+                Button(loc("menu.table.moveColumnRight", "Move Column Right")) { editor.tableMoveColumn(right: true) }
+            }
+            .disabled(!editor.caretInTable)
+        }
+        .disabled(!editor.capabilities.table)
     }
 }

@@ -155,6 +155,12 @@ private struct FormatMenuItems: View {
             .disabled(!editable)
         Button(loc("menu.rule", "Insert Horizontal Rule")) { editor.insertThematicBreak() }
             .disabled(!editable)
+        // The same rows the formatting bar's Table button drops — one
+        // definition, as with the highlight colours above.
+        Menu(loc("menu.table", "Table")) {
+            TableRows(editor: editor)
+        }
+        .disabled(!editable)
     }
 
     /// An inline mark: ticked while active at the caret.
@@ -210,6 +216,9 @@ private struct FormatMenuItems: View {
             Divider()
             Button(loc("menu.footnote", "Insert Footnote")) {}
             Button(loc("menu.rule", "Insert Horizontal Rule")) {}
+            Menu(loc("menu.table", "Table")) {
+                Button(loc("menu.insertTable", "Insert Table")) {}
+            }
         }
         .disabled(true)
     }
