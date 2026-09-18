@@ -2,7 +2,7 @@
 title: Tasks
 description: Deferred work on leaf, one file each — a commitment with a done state
 created: 2026-09-04
-updated: 2026-09-16
+updated: 2026-09-18
 contents:
 - '[Bold inside code inserts visible delimiters](bold-inside-code-inserts-delimiters.md)'
 - '[Bold over italic does not toggle off](bold-over-italic-does-not-toggle-off.md)'
@@ -24,6 +24,7 @@ contents:
 - '[The heading the caret is under is a question `Doc` cannot answer](heading-at-offset.md)'
 - '[`can_undo` counts edits, and twig counts steps](can-undo-counts-edits-not-steps.md)'
 - '[Backspace at the start of a table cell eats the column separator](backspace-at-cell-start-eats-the-separator.md)'
+- '[The rule and table buttons at a paragraph''s end split nothing and leave blank lines behind](rule-and-table-at-a-paragraph-end-split-nothing-and-leave-blank-lines.md)'
 part_of: '[leaf](/README.md)'
 ---
 # Tasks
