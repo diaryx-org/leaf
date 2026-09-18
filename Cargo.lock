@@ -2088,18 +2088,18 @@ dependencies = [
 
 [[package]]
 name = "twig-doc"
-version = "3.5.1"
+version = "3.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1207c97a738b171d65066a576422eda869cd1ad3bc8cb680af214aff9ef4132c"
+checksum = "ddb164b73b24e27bfb43bbf18e9552f87cc9b4631e4d5a666e1aa3275e6df4eb"
 dependencies = [
  "twig-sys",
 ]
 
 [[package]]
 name = "twig-sys"
-version = "3.5.1"
+version = "3.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac3e4accd7cfcbb9d218324064dd7686ab23ca34bd38f7771972bd2567ac59f8"
+checksum = "d7240e416764cdc8e9b620c6e3d57c8446ed4807f7397d59ee8e5bb4b2af4a81"
 dependencies = [
  "twig-sys-linux-arm64-gnu",
  "twig-sys-linux-x64-gnu",
@@ -2110,33 +2110,33 @@ dependencies = [
 
 [[package]]
 name = "twig-sys-linux-arm64-gnu"
-version = "3.5.1"
+version = "3.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a46d904dcd05bd4514776174625542a6692f3c73713650897e9b38f210a6ab3"
+checksum = "de779f50aec7dc481fb9610dd52658dfd058950510c62f895f3405eab3cd398c"
 
 [[package]]
 name = "twig-sys-linux-x64-gnu"
-version = "3.5.1"
+version = "3.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b506bd1e4ee5171333e2b8d654ae89611039039ffd8d67e80014c9d16215037f"
+checksum = "b644d6a31833c06abfc20f028aad9f3611c93119a434808c84c8c9d4d66ca0c0"
 
 [[package]]
 name = "twig-sys-macos-arm64"
-version = "3.5.1"
+version = "3.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d9abd7dd8c5631c63cffbedc781a71dc178d65a449d8ab5aa0060b5a86e788c"
+checksum = "651f8eaf392019a811733591a0478c15ff478356fdbca70ff85f0d856314fa63"
 
 [[package]]
 name = "twig-sys-wasm32"
-version = "3.5.1"
+version = "3.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8772c712ea47d6b5f5361e091e81e1087961cd50a0647adbcc2916d0628e07a1"
+checksum = "fc55dd66c0dee1c1f0f19fccc5a057311c53ef2c9e752ce65869c795437148d9"
 
 [[package]]
 name = "twig-sys-windows-x64-msvc"
-version = "3.5.1"
+version = "3.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2f5dd2e84174dec2330a7d1b71368095754d8dcb90fea3981f571c2726852d7"
+checksum = "79b5f4d066fb77cb1d6826b2ba0e823e2eba624c48c79bde13019bc4242ccae2"
 
 [[package]]
 name = "two-face"

@@ -4496,7 +4496,12 @@ impl Doc {
     /// would write the separator anyway — a blank line and the empty slot Enter
     /// leaves for the next paragraph, which the rule then lands above and
     /// nothing fills — so there the rule goes straight after the paragraph,
-    /// which is where the split-and-aim was sending it regardless. Everywhere
+    /// which is where the split-and-aim was sending it regardless. At the
+    /// paragraph's *start* the split is kept, though it parts nothing either:
+    /// `|para` becomes `\npara` with the caret on the new blank line, and a
+    /// rule aimed at a blank line is written on it (twig ≥ 3.5.2), which is how
+    /// "before the paragraph" is said through a gesture that only knows
+    /// "after" — `---\n\npara`, and `prev\n\n---\n\npara` mid-document. Everywhere
     /// else the rule simply lands after the block, which is both twig's own
     /// answer and the better one: splitting a fenced code block would leave two
     /// fences with a rule between them, and splitting a list item would mint an
@@ -4604,17 +4609,21 @@ impl Doc {
     /// [`insert_thematic_break`](Self::insert_thematic_break) for why every other
     /// container is left to take the rule after itself.
     ///
-    /// The "text ahead" half is what keeps `split_block` from running where it
-    /// has nothing to part. At a paragraph's end twig cannot mint the empty
-    /// second half (no format spells an empty paragraph), so it writes only the
-    /// separator — a blank line and the slot Enter leaves for the paragraph to
-    /// come — and a block then aimed at the first half lands above a slot that
-    /// nothing fills: `para\n` with the caret at 4 came out as
-    /// `para\n\n* * *\n\n\n`. Trailing whitespace counts as nothing ahead, since
-    /// the split would shed it as the second half's leading indent and leave the
-    /// same slot. Which end of the newline a paragraph's span stops at differs
-    /// between the formats (Markdown before it, djot after), which is why this
-    /// reads the remaining bytes rather than comparing offsets.
+    /// The "text ahead" half is what keeps `split_block` from running at the
+    /// one edge where its output composes badly. At a paragraph's end twig
+    /// cannot mint the empty second half (no format spells an empty
+    /// paragraph), so it writes only the separator — a blank line and the
+    /// slot Enter leaves for the paragraph to come — and a block then aimed at
+    /// the first half lands above a slot that nothing fills: `para\n` with the
+    /// caret at 4 came out as `para\n\n* * *\n\n\n`. Trailing whitespace counts
+    /// as nothing ahead, since the split would shed it as the second half's
+    /// leading indent and leave the same slot. Which end of the newline a
+    /// paragraph's span stops at differs between the formats (Markdown before
+    /// it, djot after), which is why this reads the remaining bytes rather
+    /// than comparing offsets. The paragraph's
+    /// start is deliberately not the same case — see
+    /// [`insert_thematic_break`](Self::insert_thematic_break) for why that
+    /// split is kept.
     fn caret_parts_bare_paragraph(&mut self) -> bool {
         let caret = self.caret.min(self.source.len());
         let Ok(chain) = self.editor.ancestors_at(caret) else {
@@ -8486,6 +8495,35 @@ mod tests {
             d.insert_thematic_break();
             assert_eq!(d.source, format!("para  \n\n{rule}\n"), "{fmt:?}");
         }
+    }
+
+    #[test]
+    fn insert_thematic_break_at_a_paragraph_s_start_lands_before_it() {
+        // The split at the start parts nothing, but it is kept on purpose:
+        // `|para` becomes `\npara` with the caret on a blank line, and twig
+        // (3.5.2) writes a rule aimed at a blank line ON that line — the only
+        // way "before the paragraph" is reachable through a gesture that only
+        // places after. Before 3.5.2 this came out as `\n\n---\n\npara`.
+        for (fmt, rule) in [(Format::Markdown, "---"), (Format::Djot, "* * *")] {
+            let mut d = Doc::from_source("para\n".into(), fmt).unwrap();
+            d.caret = 0;
+            d.insert_thematic_break();
+            assert_eq!(d.source, format!("{rule}\n\npara\n"), "{fmt:?}");
+            let mut d = Doc::from_source("prev\n\npara\n".into(), fmt).unwrap();
+            d.caret = 6;
+            d.insert_thematic_break();
+            assert_eq!(d.source, format!("prev\n\n{rule}\n\npara\n"), "{fmt:?}");
+        }
+    }
+
+    #[test]
+    fn insert_thematic_break_on_a_blank_line_takes_that_line() {
+        // The gap between two blocks is where a click lands the caret; the
+        // rule goes on the blank, one blank each side.
+        let mut d = doc_with("hr_gap", "a\n\nb\n");
+        d.caret = 2;
+        d.insert_thematic_break();
+        assert_eq!(d.source, "a\n\n---\n\nb\n");
     }
 
     #[test]
