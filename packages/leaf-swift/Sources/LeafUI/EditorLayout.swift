@@ -166,6 +166,11 @@ struct RowLayout {
     var tableTop: CGFloat = 0
     /// The one picture row that carries the grid's height and paints it.
     var tableFirst: Bool = false
+    /// The table's bottom border row — the picture row whose end core makes
+    /// the table's trailing caret stop, the one home past the last cell. A
+    /// click under the grid resolves to this row's end, and the caret standing
+    /// there draws at the grid's trailing edge (`caretRect(src:row:ch:)`).
+    var tableLast: Bool = false
     /// The media box, on every placeholder row of a block image/video/audio;
     /// `nil` for an ordinary row. Collapsed exactly as a table's rows are — see
     /// `mediaFirst`.
@@ -515,6 +520,7 @@ struct EditorLayout {
                         row: docView.rows[r], shaped: emptyShape, top: tableTop,
                         originX: tableX, columnWidth: wrapWidth,
                         table: grid, tableTop: tableTop, tableFirst: r == Int(t.startRow),
+                        tableLast: r == Int(t.endRow) - 1,
                         page: flow.index
                     ))
                 }
@@ -888,8 +894,20 @@ struct EditorLayout {
     /// — which put every caret in a table at the grid's top-left corner.
     func caretRect(src: Int, row: Int, ch: Int, theme: EditorTheme) -> CGRect? {
         if rows.indices.contains(row), let grid = rows[row].table {
-            return tableCaretRect(grid, tableTop: rows[row].tableTop, originX: rows[row].originX,
-                                  caretSrc: src, theme: theme)
+            let rl = rows[row]
+            if let inCell = tableCaretRect(grid, tableTop: rl.tableTop, originX: rl.originX,
+                                           caretSrc: src, theme: theme) {
+                return inCell
+            }
+            // Not in any cell: the table's trailing stop, which core maps onto
+            // the bottom border row. Drawn just past the grid's trailing edge on
+            // its last row — where the plain surface's caret sits after `┘`, and
+            // what a word processor's caret beside a figure says: past the block,
+            // not inside it. Under the grid would overlap the block below.
+            guard rl.tableLast, let last = grid.rows.last else { return nil }
+            return CGRect(x: rl.originX + grid.width + TableMetrics.padX,
+                          y: rl.tableTop + last.top + TableMetrics.padY,
+                          width: 1.5, height: theme.lineHeight)
         }
         return rect(row: row, ch: ch)
     }
@@ -1115,6 +1133,19 @@ struct EditorLayout {
         if let box = rl.media {
             let r = box.rect(top: rl.mediaTop, left: rl.originX + rl.shaped.prefixWidth)
             return (row, point.y < r.midY ? 0 : rl.attributed.length)
+        }
+        // A table's picture rows are collapsed onto its grid, and only the first
+        // has a box for `locate` to find — so every point the grid's own hit
+        // test (`tableHitOffset`) declined lands here on that row, whose glyphs
+        // core maps to the first cell. Right for a point *above* the grid; a
+        // point under it wants the table's trailing stop, which is the bottom
+        // border row's end. Without this a click in the blank space under a
+        // document's last table put the caret in its top-left cell.
+        if let grid = rl.table {
+            guard point.y >= rl.tableTop + grid.height,
+                  let last = rows[row...].firstIndex(where: { $0.tableLast })
+            else { return (row, 0) }
+            return (last, rows[last].row.runs.reduce(0) { $0 + $1.text.utf16.count })
         }
         guard rl.wrapped.indices.contains(li) else { return (row, 0) }
         let wl = rl.wrapped[li]

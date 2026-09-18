@@ -720,6 +720,20 @@ impl VisualMap {
         None
     }
 
+    /// Whether `off` is a table's trailing caret stop — the one home past a
+    /// table's last cell, at the block's own end ([`TableInfo::end_src`]).
+    ///
+    /// The table's peer of [`block_media_stop`](Self::block_media_stop)'s
+    /// `After`: text inserted at that offset joins the table's last source
+    /// line, and a line glued under a table is a row of it (`| 1 | 2 |x`), so
+    /// a caller about to insert there opens a paragraph first — see
+    /// [`Doc::insert`](crate::Doc::insert). Nothing else about the offset is
+    /// special: it is where Down from the last row lands and where a click in
+    /// the blank space under a trailing table lands.
+    pub fn table_end_stop(&self, off: usize) -> bool {
+        self.tables.iter().any(|t| t.end_src == off)
+    }
+
     /// Snap `off` to the nearest caret stop — the funnel a frontend that
     /// hit-tests pixels straight to a source offset must run its result through.
     /// A click or drag can land in the blank gap a paragraph break is drawn with,
@@ -3134,7 +3148,18 @@ impl Builder<'_> {
                 self.push_rule(&rule_text(&widths, '├', '┼', '┤'), next, pc);
             }
         }
-        self.push_rule(&rule_text(&widths, '└', '┴', '┘'), node_end, pc);
+        // The bottom border is the one rule the caret can rest on: its end is
+        // the table's trailing stop, the caret home just past the block — the
+        // peer of a block picture's second stop, and of a rule's row end. Without
+        // it a document ending in a table ended *inside* it: nothing after the
+        // last cell was a stop, so Right could not leave the table, and a click
+        // in the blank space under it snapped back into the last cell — or, on a
+        // surface that resolved the click onto the border row, to the table's
+        // first cell, since a decoration row's only stop is the nearest one.
+        // Typing at the stop opens a paragraph first, as at a picture's — see
+        // `Doc::open_paragraph_at_block_edge`. The glyphs stay non-stops at
+        // `node_end`, so a click anywhere on the border lands past the table.
+        self.push_rule_with_home(&rule_text(&widths, '└', '┴', '┘'), node_end, pc);
 
         // The same cells the picture above was drawn from, published unwrapped
         // and unpadded for a frontend that lays them out in pixels.
@@ -3206,11 +3231,21 @@ impl Builder<'_> {
 
     /// A horizontal rule between/around rows — entirely decoration.
     fn push_rule(&mut self, text: &str, src: usize, prefix: &[Glyph]) {
+        self.push_rule_row(text, src, prefix, true);
+    }
+
+    /// A table's bottom border: drawn like the other rules, but a row the caret
+    /// can rest on, its end (`src`) being the table's trailing stop.
+    fn push_rule_with_home(&mut self, text: &str, src: usize, prefix: &[Glyph]) {
+        self.push_rule_row(text, src, prefix, false);
+    }
+
+    fn push_rule_row(&mut self, text: &str, src: usize, prefix: &[Glyph], decoration: bool) {
         let glyphs = concat(prefix, &synth(text, Role::Rule, src));
         self.rows.push(VRow {
             glyphs,
             end_src: src,
-            decoration: true,
+            decoration,
             code: false,
             code_lang: None,
             directive: false,
@@ -4489,8 +4524,10 @@ pub struct TableInfo {
     /// The `VisualMap::rows` this table's picture occupies, borders included —
     /// what a frontend drawing its own table skips over.
     pub rows_span: Range<usize>,
-    /// The source span of the table node, and the offset its trailing caret
-    /// stop sits at.
+    /// The end of the table node's source span, and the offset its trailing
+    /// caret stop sits at — the one caret home past the last cell, held by the
+    /// bottom border row's end. Typing there opens a paragraph under the table
+    /// rather than joining the block; see `Doc::open_paragraph_at_block_edge`.
     pub end_src: usize,
     /// The block prefix every row of this table carries — a blockquote's `│ `
     /// gutter, a list item's indent. Empty for a table at the top level.
@@ -5596,7 +5633,10 @@ mod tests {
         let src = "- one\n- two\n\n| a | b |\n| - | - |\n| c | d |\n\n```\nx\ny\n```\n\nend\n";
         let m = map(src);
         let end = m.snap_to_stop(src.len());
-        assert_eq!(m.visible_text(0, end), "one\ntwo\na\nb\nc\nd\nx\ny\nend");
+        // The table's trailing stop draws no glyph, so it is spelled as a line
+        // end too: to the system the table ends on a blank line, which is
+        // where the caret past it stands.
+        assert_eq!(m.visible_text(0, end), "one\ntwo\na\nb\nc\nd\n\nx\ny\nend");
         // Between any two stops, one character per hop.
         let first = m.snap_to_glyph_stop(0);
         let stops: Vec<usize> = std::iter::successors(Some(first), |&o| m.stop_after(o)).collect();
@@ -5983,14 +6023,37 @@ mod tests {
     #[test]
     fn table_borders_are_decoration_the_caret_never_lands_on() {
         let m = map(TABLE);
-        // The rules are whole decoration rows.
-        for r in [0, 2, 5] {
+        // The top and header rules are whole decoration rows.
+        for r in [0, 2] {
             assert!(m.rows[r].decoration, "row {r} should be a decoration rule");
             assert!(
                 !m.rows[r].glyphs.iter().any(|g| g.stop),
                 "row {r} has a stop"
             );
         }
+        // The bottom border is the exception: no glyph of it is a stop, but
+        // its end is the table's trailing caret home — the one place the caret
+        // can stand past the last cell.
+        let bottom = &m.rows[5];
+        assert!(
+            !bottom.decoration,
+            "the bottom border holds the trailing stop"
+        );
+        assert!(
+            !bottom.glyphs.iter().any(|g| g.stop),
+            "the bottom border's glyphs are not stops"
+        );
+        assert!(m.is_stop(bottom.end_src), "the trailing stop is a stop");
+        assert!(m.table_end_stop(bottom.end_src));
+        assert_eq!(
+            bottom.end_src,
+            TABLE.trim_end_matches('\n').len(),
+            "the trailing stop is the table's own end, before its newline"
+        );
+        assert!(
+            !m.table_end_stop(TABLE.rfind("12").unwrap() + 2),
+            "a cell's end is not the trailing stop"
+        );
         // A content row's `│` and padding are decoration; only the cell text
         // and each cell's one end-stop are stops.
         let header = &m.rows[1];

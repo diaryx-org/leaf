@@ -3649,11 +3649,14 @@ mod tests {
         // `Tables` apart, and a tap past `Feature`'s last letter has no space
         // to step over into `Status` — and a table's rule rows, decoration
         // *inside* the one block, put nothing inside a cell (`Feature` once
-        // came back as `F\neature`).
+        // came back as `F\neature`). The table's trailing stop — the caret
+        // home past the last cell — draws no glyph either, so the document's
+        // end is one more line end, the blank line under the table where the
+        // caret past it stands.
         let d = doc("| Feature | Status |\n| --- | --- |\n| Tables | editable |\n");
         assert_eq!(
             d.text_in_range(0, d.doc_end_offset()),
-            "Feature\nStatus\nTables\neditable"
+            "Feature\nStatus\nTables\neditable\n"
         );
     }
 

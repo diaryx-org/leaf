@@ -1581,10 +1581,11 @@ impl Doc {
         if self.read_only {
             return;
         }
-        // Typing against a block picture would dissolve it — see
-        // `open_paragraph_at_block_media`. Give the text a paragraph first, so
-        // what the caret was standing beside stays a picture.
-        self.open_paragraph_at_block_media(text);
+        // Typing against a block picture would dissolve it, and typing past a
+        // table would grow it a row — see `open_paragraph_at_block_edge`. Give
+        // the text a paragraph first, so what the caret was standing beside
+        // stays what it was.
+        self.open_paragraph_at_block_edge(text);
         // Armed sticky marks (⌘b with no selection) turn the next typed text
         // bold/italic/… and then retire — see `insert_with_marks`. Whitespace is
         // the exception: it takes no mark of its own and keeps the delta armed
@@ -1632,7 +1633,8 @@ impl Doc {
     }
 
     /// Open a paragraph for text about to be inserted at one of a block media's
-    /// two caret stops, and leave the caret standing in it.
+    /// two caret stops, or at a table's trailing stop, and leave the caret
+    /// standing in it.
     ///
     /// A block image is a paragraph whose entire content is the picture, and the
     /// caret's only homes on it are in front of it and just past it (see
@@ -1654,9 +1656,15 @@ impl Doc {
     /// continuation [`newline`](Self::newline) writes stays in the same
     /// *paragraph*, which is the thing being prevented.
     ///
+    /// A table's trailing stop ([`VisualMap::table_end_stop`]) is the same
+    /// accident from the other side of a different block: the stop sits at the
+    /// end of the table's last source line, and a line glued under a table is
+    /// a row of it — `| 1 | 2 |x` is a three-cell row, not a paragraph. So the
+    /// break goes in there too, and the text lands under the table.
+    ///
     /// Only in the rendered view. Source view is for typing raw markup, where
     /// putting a character against an image is exactly what it looks like.
-    fn open_paragraph_at_block_media(&mut self, text: &str) {
+    fn open_paragraph_at_block_edge(&mut self, text: &str) {
         if self.view != View::Wysiwyg || text.is_empty() || text == "\n" {
             return;
         }
@@ -1669,8 +1677,10 @@ impl Doc {
         // is whenever a frontend drew a frame between keystrokes.
         self.rebuild_map();
         let at = self.caret;
-        let Some((side, _)) = self.vmap.block_media_stop(at) else {
-            return;
+        let side = match self.vmap.block_media_stop(at) {
+            Some((side, _)) => side,
+            None if self.vmap.table_end_stop(at) => MediaStop::After,
+            None => return,
         };
         if !self.splice(at, at, "\n\n", EditKind::Other) {
             return;
@@ -1700,7 +1710,7 @@ impl Doc {
     /// for: Backspace at the stop past `![](p.png)` removes the closing paren, and
     /// a photo becomes the literal text `![](p.png`. That is how a picture goes
     /// missing from a document with nobody having touched it — the same
-    /// dissolution [`open_paragraph_at_block_media`](Self::open_paragraph_at_block_media)
+    /// dissolution [`open_paragraph_at_block_edge`](Self::open_paragraph_at_block_edge)
     /// prevents from the typing side, and it cost this repository's own test vault
     /// a photo before it was found.
     ///
@@ -1717,7 +1727,7 @@ impl Doc {
     /// the picture with it on the first).
     fn delete_around_block_media(&mut self, forward: bool) -> bool {
         // The map answers about offsets, so it has to be this revision's — see
-        // the same call in `open_paragraph_at_block_media`.
+        // the same call in `open_paragraph_at_block_edge`.
         self.rebuild_map();
         let Some((side, span)) = self.vmap.block_media_stop(self.caret) else {
             return false;
@@ -2090,9 +2100,10 @@ impl Doc {
     /// apart — `⌘V` of `x` and typing `x` are the same string — so the door the
     /// caller comes through is what says which happened.
     pub fn paste(&mut self, text: &str) {
-        // Pasting against a block picture dissolves it exactly as typing does,
-        // and for the same reason — see `open_paragraph_at_block_media`.
-        self.open_paragraph_at_block_media(text);
+        // Pasting against a block picture or a table's end joins the block
+        // exactly as typing does, and for the same reason — see
+        // `open_paragraph_at_block_edge`.
+        self.open_paragraph_at_block_edge(text);
         let (s, e) = self.selection().unwrap_or((self.caret, self.caret));
         self.splice(s, e, text, EditKind::Other);
     }
@@ -2786,6 +2797,13 @@ impl Doc {
         if self.view != View::Source && self.delete_around_block_media(false) {
             return;
         }
+        // WYSIWYG: Backspace at a table's trailing stop steps back into its last
+        // cell rather than taking the byte behind the caret — the row's closing
+        // `|`, which the rich view never drew, so the key would have looked like
+        // it did nothing. The stop before is the last cell's end.
+        if self.view != View::Source && self.backspace_at_table_end() {
+            return;
+        }
         // WYSIWYG: Backspace on a *blank line* deletes back to the previous caret
         // stop, not a single newline. On a line with no text of its own, the byte
         // before the caret is a `\n` that spells part of a block boundary — the gap
@@ -2854,6 +2872,29 @@ impl Doc {
                 self.splice(prev, end, "", EditKind::Delete);
             }
         }
+    }
+
+    /// Backspace at a table's trailing stop: move onto the stop before it (the
+    /// last cell's end) and consume the key. `false` anywhere else. See
+    /// [`VisualMap::table_end_stop`] for why the byte behind the caret there is
+    /// not one to delete.
+    fn backspace_at_table_end(&mut self) -> bool {
+        // The map answers about offsets, so it has to be this revision's — see
+        // `open_paragraph_at_block_edge`.
+        self.rebuild_map();
+        if !self.vmap.table_end_stop(self.caret) {
+            return false;
+        }
+        if let Some(off) = self
+            .vmap
+            .stop_before(self.caret)
+            .filter(|&o| o >= self.caret_floor())
+        {
+            self.caret = off;
+            self.anchor = None;
+            self.goal_col = None;
+        }
+        true
     }
 
     /// Whether the caret's own source line holds nothing but whitespace — an
@@ -10663,6 +10704,84 @@ mod tests {
             !d.cell_line_break(),
             "no table: the frontend breaks the line"
         );
+    }
+
+    #[test]
+    fn a_click_under_a_trailing_table_lands_past_it_and_enter_opens_a_line() {
+        // A document that ends in a table used to end *inside* it: nothing
+        // past the last cell was a caret stop, so a click in the blank space
+        // under the grid snapped back into the table and there was no way to
+        // write a line after it. The bottom border's end is that stop now.
+        let mut d = wysiwyg_doc("tbl_trail", TABLE);
+        let rows = d.vmap.num_rows();
+        d.click(rows + 3, 0, false);
+        let end = TABLE.trim_end_matches('\n').len();
+        assert_eq!(d.caret, end, "the caret stands just past the table");
+        assert!(!d.caret_in_table(), "past the table is outside it");
+        assert!(!d.cell_return(), "Return there is the frontend's newline");
+        d.newline();
+        d.insert("after");
+        assert_eq!(
+            d.source,
+            format!("{TABLE}\nafter\n"),
+            "Enter opens a paragraph under the table"
+        );
+    }
+
+    #[test]
+    fn typing_at_a_table_s_trailing_stop_opens_a_paragraph_first() {
+        // The stop sits at the end of the table's last source line, and a
+        // line glued under a table is a row of it — `| Fig | 12 |x` would be a
+        // three-cell row. So the text gets a paragraph of its own, as it does
+        // beside a block picture.
+        let mut d = wysiwyg_doc("tbl_type", TABLE);
+        d.caret = TABLE.trim_end_matches('\n').len();
+        d.insert("x");
+        assert_eq!(d.source, format!("{TABLE}\nx\n"));
+        assert_eq!(d.caret, TABLE.len() + 2, "the caret follows the text");
+        // And a paste, which joins the block exactly as typing would.
+        let mut d = wysiwyg_doc("tbl_paste", TABLE);
+        d.caret = TABLE.trim_end_matches('\n').len();
+        d.paste("pasted");
+        assert_eq!(d.source, format!("{TABLE}\npasted\n"));
+    }
+
+    #[test]
+    fn right_leaves_a_table_by_its_trailing_stop_and_backspace_steps_back_in() {
+        let mut d = wysiwyg_doc("tbl_edge", TABLE);
+        let last_cell_end = TABLE.rfind("12").unwrap() + 2;
+        let end = TABLE.trim_end_matches('\n').len();
+        d.caret = last_cell_end;
+        d.move_right(false);
+        assert_eq!(d.caret, end, "Right from the last cell leaves the table");
+        // Backspace there takes no byte: the one behind the caret is the row's
+        // closing `|`, which the rich view never drew. It steps back instead.
+        d.backspace();
+        assert_eq!(d.source, TABLE, "nothing deleted");
+        assert_eq!(d.caret, last_cell_end, "back into the last cell");
+        // Down from the last row lands on the same stop, and Up returns.
+        d.move_down(false);
+        assert_eq!(d.caret, end, "Down from the last row leaves the table");
+        d.move_up(false);
+        assert_eq!(d.caret, last_cell_end);
+    }
+
+    #[test]
+    fn a_table_s_trailing_stop_sits_between_it_and_the_text_below() {
+        // With prose under the table, the stop is one hop between the last
+        // cell and the paragraph — the shape a block picture's second stop has.
+        let src = format!("{TABLE}\nafter\n");
+        let mut d = wysiwyg_doc("tbl_mid", &src);
+        d.caret = TABLE.rfind("12").unwrap() + 2;
+        d.move_right(false);
+        assert_eq!(d.caret, TABLE.trim_end_matches('\n').len());
+        d.move_right(false);
+        assert_eq!(d.caret, src.find("after").unwrap());
+        // Typing at the stop still opens a paragraph, and the text below keeps
+        // its own.
+        d.move_left(false);
+        d.insert("x");
+        assert_eq!(d.source, format!("{TABLE}\nx\n\nafter\n"));
     }
 
     #[test]
