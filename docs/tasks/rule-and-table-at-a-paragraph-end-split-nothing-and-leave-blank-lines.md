@@ -1,11 +1,16 @@
 ---
 title: The rule and table buttons at a paragraph's end split nothing and leave blank lines behind
-status: open
+status: done
 created: 2026-09-18
 updated: 2026-09-18
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 # The rule and table buttons at a paragraph's end split nothing and leave blank lines behind
+
+**Status: done** with twig-doc 3.5.1, in the commit that closes this.
+`caret_in_bare_paragraph` became `caret_parts_bare_paragraph`: it also asks
+whether any paragraph text is still ahead of the caret, and where none is,
+neither gesture splits. The paragraph-start case below is left as it was.
 
 **Where.** `crates/leaf-core`, `Doc::insert_thematic_break` and
 `Doc::insert_table`. Every frontend inherits it.
