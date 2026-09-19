@@ -579,6 +579,19 @@ await test("the selection can be read as text and as a quote", () => {
   return ed;
 });
 
+await test("the document and the selection say how much is written, without the markup", () => {
+  const ed = editor("a **bold** word\n\n- item\n");
+  const c = ed.counts();
+  // Four words and fifteen characters is the sentence a reader sees; the four
+  // asterisks and the list's dash are spelling, not writing.
+  eq([c.words, c.characters, c.characters_without_spaces, c.paragraphs], [4, 15, 13, 2]);
+  eq(ed.selectionCounts(), null, "nothing selected, and yet counts came back");
+  ed.render(ed.doc.select_range(11, 15));
+  const s = ed.selectionCounts();
+  eq([s.words, s.characters, s.characters_without_spaces, s.paragraphs], [1, 4, 4, 1]);
+  return ed;
+});
+
 // ── navigation ────────────────────────────────────────────────────────────
 
 await test("a locator lands on the block it names, and a fragment link follows it", () => {
