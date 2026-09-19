@@ -100,7 +100,10 @@
          there is none. Every control is built from the editor's own token
          lists, so the demo cannot offer a name the document could not carry,
          and each reflects its `…AtCaret()` query as the caret moves. There is
-         no `left` token — absence is left — so the first button clears. -->
+         no `left` token — absence is left — so the first button clears. Each
+         menu ends in *Other…*, which asks for the exact value the names
+         cannot spell (`14pt`, `Garamond`, `#c03030`, `1.3`) and is the one
+         place this demo's chrome is more than a list of tokens. -->
     <button data-align="" data-cap="alignment" id="b-align-">⇤ left</button>
     <button data-align="center" data-cap="alignment" id="b-align-center">↔ centre</button>
     <button data-align="right" data-cap="alignment" id="b-align-right">⇥ right</button>
@@ -292,16 +295,42 @@ function applyCapabilities(editor, state) {
   for (const btn of document.querySelectorAll("#toolbar button[data-align]")) {
     btn.classList.toggle("on", btn.dataset.align === (align ?? ""));
   }
-  document.getElementById("line-spacing").value = editor.lineSpacingAtCaret() ?? "";
-  document.getElementById("font-size").value = editor.fontSizeAtCaret() ?? "";
-  document.getElementById("font-family").value = editor.fontFamilyAtCaret() ?? "";
-  document.getElementById("text-color").value = editor.textColorAtCaret() ?? "";
+  present("line-spacing", editor.lineSpacingAtCaret());
+  present("font-size", editor.fontSizeAtCaret());
+  present("font-family", editor.fontFamilyAtCaret());
+  present("text-color", editor.textColorAtCaret());
   // History buttons enable by what the frame says there is to undo or redo.
   if (state) {
     document.getElementById("b-undo").disabled = !state.canUndo;
     document.getElementById("b-redo").disabled = !state.canRedo;
   }
   document.getElementById("readonly").classList.toggle("on", readOnly);
+}
+
+/** The value of the *Other…* row — a string no token can be, so picking it is
+ *  never mistaken for a value the document could carry. */
+const OTHER = " other";
+
+/**
+ * Show a presentation menu what is in force at the caret. A name is one of the
+ * menu's own rows and just gets selected; an exact value — `14pt`, `Garamond`,
+ * `#c03030`, `1.3` — is not, so it is given a row of its own, kept just above
+ * *Other…* and rewritten as the caret moves, and taken away again when the
+ * caret stands on a name or on nothing. A menu that could not show a value
+ * would say the property was the theme's while the document said otherwise.
+ */
+function present(id, token) {
+  const menu = document.getElementById(id);
+  const exact = menu.querySelector("option.exact");
+  const named = [...menu.options].some((o) => !o.classList.contains("exact") && o.value === token);
+  if (token != null && !named) {
+    const opt = exact ?? menu.insertBefore(document.createElement("option"), menu.lastElementChild);
+    opt.className = "exact";
+    opt.value = opt.textContent = token;
+  } else if (exact) {
+    exact.remove();
+  }
+  menu.value = token ?? "";
 }
 
 // Every hit of the find box as a host-painted highlight. The editor speaks
@@ -389,11 +418,19 @@ async function main() {
   // one the document cannot carry. The empty first option is the vocabulary's
   // absent value — `null`, which clears the key and hands the property back to
   // the theme.
-  for (const [id, tokens, method] of [
-    ["line-spacing", LINE_SPACINGS, "setLineSpacing"],
-    ["font-size", SIZE_STEPS, "setFontSize"],
-    ["font-family", FONT_FAMILIES, "setFontFamily"],
-    ["text-color", MARK_COLORS, "setTextColor"],
+  //
+  // Under the names, one more row: *Other…*, which asks for the exact value
+  // the names cannot spell — a point size, a family, a hex triple, a ratio.
+  // A value is exact and not portable, which is the trade the row makes
+  // visible; a demo asks for it with `prompt()`, where the real toolbars open
+  // a field, a font picker or the system colour panel. A refusal is the
+  // grammar's (`14px` is not a size leaf reads), so it is shown rather than
+  // swallowed.
+  for (const [id, tokens, method, ask] of [
+    ["line-spacing", LINE_SPACINGS, "setLineSpacing", "Line spacing, as a ratio — e.g. 1.3"],
+    ["font-size", SIZE_STEPS, "setFontSize", "Size in points — e.g. 14pt"],
+    ["font-family", FONT_FAMILIES, "setFontFamily", "Family name — e.g. Garamond"],
+    ["text-color", MARK_COLORS, "setTextColor", "Colour, as a hex triple — e.g. #c03030"],
   ]) {
     const menu = document.getElementById(id);
     for (const token of tokens) {
@@ -402,9 +439,31 @@ async function main() {
       opt.textContent = token;
       menu.append(opt);
     }
+    const other = document.createElement("option");
+    other.value = OTHER;
+    other.textContent = "Other…";
+    menu.append(other);
     menu.addEventListener("change", () => {
-      editor[method](menu.value || null);
+      if (menu.value !== OTHER) {
+        editor[method](menu.value || null);
+        editor.focus();
+        return;
+      }
+      // The row is a door, not a selection: it is never what the menu shows
+      // afterwards. What the caret carries is.
+      const typed = prompt(ask);
+      menu.value = "";
+      if (typed && typed.trim()) {
+        try {
+          editor[method](typed.trim());
+        } catch (e) {
+          alert(`leaf will not carry that: ${e.message || e}`);
+        }
+      }
       editor.focus();
+      // A prompt cancelled, or a value leaf refused, changes nothing — and no
+      // frame arrives to put the menu back where it was.
+      applyCapabilities(editor);
     });
   }
 

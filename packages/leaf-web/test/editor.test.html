@@ -996,6 +996,58 @@ await test("a large run carries data-size, and the face and colour beside it", (
     "the colour token did not reach the run"
   );
   assert(/serif/i.test(getComputedStyle(run).fontFamily), "the face token did not reach the run");
+  // A name is a rule the stylesheet has. Drawing it inline as well would put
+  // the theme's own ramp out of reach of a page that restyles the token.
+  assert(
+    !run.style.fontSize && !run.style.fontFamily && !run.style.color,
+    `a name was drawn as an inline style: ${run.getAttribute("style")}`
+  );
+  return ed;
+});
+
+await test("an exact value draws inline, beside the token the document carries", () => {
+  const ed = editor(
+    '<div data-line-height="1.3">\n\n' +
+      'a <span data-size="14pt" data-font="Garamond" data-color="#c03030">exact</span> b\n\n' +
+      "</div>\n"
+  );
+  const run = [...ed.contentEl.querySelectorAll(".leaf-run")].find((r) => r.dataset.size);
+  assert(run, "no run carried a size");
+  eq(run.textContent, "exact", "the attributed span is not the run it wraps");
+  // The document's own tokens still ride the element — a published page and
+  // the editor's DOM are spelled the same, whichever form the author used.
+  eq(run.dataset.size, "14pt");
+  eq(run.dataset.font, "Garamond");
+  eq(run.dataset.color, "#c03030");
+  // And the value, which no stylesheet can enumerate, is transcribed inline.
+  eq(run.style.fontSize, "14pt", "the point size was not set inline");
+  assert(/Garamond/.test(run.style.fontFamily), `the family is ${run.style.fontFamily}`);
+  eq(getComputedStyle(run).color, "rgb(192, 48, 48)", "the triple is painted as written");
+  // 14 points is 14/72 of an inch, which CSS counts as 96 dots — the size the
+  // author asked for, not the theme's.
+  const px = parseFloat(getComputedStyle(run).fontSize);
+  assert(Math.abs(px - (14 * 96) / 72) < 0.1, `14pt drew at ${px}px`);
+  // The row's ratio goes through the same arithmetic the three names do: a
+  // multiple of the theme's 24px line height, computed here because only this
+  // editor knows what that is.
+  const row = ed.rowEls.find((r) => r.textContent.includes("exact"));
+  eq(row.dataset.lineHeight, "1.3", "the ratio rides the row");
+  const leading = parseFloat(row.style.lineHeight);
+  assert(Math.abs(leading - 24 * 1.3) < 0.01, `the line box is ${leading}px, not 1.3 of 24px`);
+  return ed;
+});
+
+await test("an exact size replaces a heading's ramp rather than scaling it", () => {
+  const ed = editor('# head <span data-size="14pt">exact</span>\n');
+  const runs = [...ed.contentEl.querySelectorAll(".leaf-run")];
+  const run = runs.find((r) => r.dataset.size);
+  const plain = runs.find((r) => !r.dataset.size && r.textContent.includes("head"));
+  assert(run && plain, "the heading did not render with both runs");
+  // The heading's own size is the row's (16px × 1.625); the run's is 14pt,
+  // which is smaller — the name scales the ramp, the value replaces it.
+  eq(parseFloat(getComputedStyle(plain).fontSize), 26, "the heading is not at its ramp");
+  const px = parseFloat(getComputedStyle(run).fontSize);
+  assert(Math.abs(px - (14 * 96) / 72) < 0.1, `an exact size inside a heading drew at ${px}px`);
   return ed;
 });
 
@@ -1065,6 +1117,32 @@ await test("every presentation token the package offers is one core writes", () 
   let threw = false;
   try { ed.setFontSize("huge"); } catch { threw = true; }
   assert(threw, "an unknown size was read as no size");
+  return ed;
+});
+
+await test("the exact forms go through the API and come back as written", () => {
+  const ed = editor("hello\n");
+  // Each gesture edits one key and keeps the rest, so the four compose on the
+  // same word — and each query answers the value the document now carries.
+  for (const [set, read, value] of [
+    ["setFontSize", "fontSizeAtCaret", "14pt"],
+    ["setFontFamily", "fontFamilyAtCaret", "Garamond"],
+    ["setTextColor", "textColorAtCaret", "#c03030"],
+    ["setLineSpacing", "lineSpacingAtCaret", "1.3"],
+  ]) {
+    caretAt(ed, "hello");
+    ed[set](value);
+    eq(ed[read](), value, `${set}(${value})`);
+  }
+  // The run the four wrote is the run the renderer drew from.
+  const run = [...ed.contentEl.querySelectorAll(".leaf-run")].find((r) => r.dataset.size);
+  assert(run, `no run carried the size: ${JSON.stringify(ed.source())}`);
+  eq(run.style.fontSize, "14pt", "the gesture's value did not reach the surface");
+  // Only `pt` is a size unit — a screen's unit is not a document's, and a
+  // refusal is not the null that clears.
+  let threw = false;
+  try { ed.setFontSize("14px"); } catch { threw = true; }
+  assert(threw, "a px size was accepted");
   return ed;
 });
 
