@@ -486,12 +486,27 @@ impl Theme {
         // The other two run-level properties, `size` and `font`, are read and
         // ignored: a terminal cell has one size and one face, so there is
         // nothing here to honour them with. See `wysiwyg_lines` for the row-level
-        // property in the same position.
-        // The named half of the vocabulary only: a terminal's ink for `red` is
-        // this theme's, and an exact `#c03030` draws in the theme's own ink
-        // until the truecolour cell lands (see the exact-values proposal).
-        if let Some(color) = s.color.and_then(leaf_core::TextColor::named) {
-            out = out.fg(self.text_colors[color.index()]);
+        // property in the same position. Both halves of each are ignored alike —
+        // an exact `24pt` no more reaches a cell than the `xx-large` that names
+        // it, and `line_height`, row-level and open in the same way, likewise.
+        //
+        // Colour is the one property a cell *can* be exact about, so both halves
+        // of it draw. A name is the theme's to pick: `red` resolves through
+        // `text_colors`, which is one ink on a dark terminal and another on a
+        // light one. A triple is painted as written under either scheme — that
+        // is what "exact" means, and the theme gets no say in it.
+        //
+        // No capability gate on the second branch, because there is nothing here
+        // to gate it with and nothing to gain by it: `Color::Rgb` leaves as the
+        // truecolour SGR escape, and a terminal that cannot show one quantises it
+        // to the nearest it has, which is a better answer than any nearest-of-256
+        // this crate could compute blind. It is the bargain `highlight_wash`
+        // already makes for a host-coloured range, in this same file.
+        if let Some(color) = s.color {
+            out = out.fg(match color {
+                leaf_core::TextColor::Named(named) => self.text_colors[named.index()],
+                leaf_core::TextColor::Rgb { r, g, b } => Color::Rgb(r, g, b),
+            });
         }
         if s.bold {
             out = out.add_modifier(Modifier::BOLD);
@@ -1241,6 +1256,71 @@ mod tests {
         // The washes, being a ground under one fixed ink, are the same row in
         // both — the contrast this one is measured against.
         assert_eq!(Theme::dark().mark_colors, Theme::light().mark_colors);
+    }
+
+    /// An exact colour is a truecolour cell, painted as the author wrote it —
+    /// the one place the vocabulary's open half reaches a terminal at all.
+    /// Through a document, because the walk is what a reader sees: a
+    /// `data-color="#c03030"` span draws in that colour and not in the theme's.
+    #[test]
+    fn an_exact_colour_is_the_triple_the_author_wrote() {
+        let theme = Theme::dark();
+        let m = map(
+            "<span data-color=\"#c03030\">brand</span>\n",
+            leaf_core::Format::Markdown,
+            40,
+        );
+        let lines = wysiwyg_lines(&m, None, &[], &theme, 40, |_| None);
+        let run = lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content.contains("brand"))
+            .expect("the coloured run draws");
+        assert_eq!(run.style.fg, Some(Color::Rgb(0xc0, 0x30, 0x30)));
+        assert!(
+            !theme.text_colors.contains(&Color::Rgb(0xc0, 0x30, 0x30)),
+            "and not by landing on a palette entry by accident"
+        );
+    }
+
+    /// And the theme gets no say in it: the same triple under both curated
+    /// palettes, where a *name* deliberately differs between them. That pair of
+    /// assertions is the whole of what "exact" means here, and the reason the
+    /// branch is not routed through [`Theme::text_colors`].
+    #[test]
+    fn an_exact_colour_ignores_the_scheme_and_a_name_does_not() {
+        let exact = LStyle {
+            color: Some(leaf_core::TextColor::Rgb {
+                r: 0x1a,
+                g: 0x9f,
+                b: 0x4b,
+            }),
+            ..LStyle::default()
+        };
+        assert_eq!(
+            Theme::dark().to_ratatui(exact).fg,
+            Theme::light().to_ratatui(exact).fg,
+            "an exact colour is the same ink under either appearance"
+        );
+        assert_eq!(
+            Theme::dark().to_ratatui(exact).fg,
+            Some(Color::Rgb(0x1a, 0x9f, 0x4b))
+        );
+
+        let named = LStyle {
+            color: Some(leaf_core::TextColor::Named(MarkColor::Green)),
+            ..LStyle::default()
+        };
+        assert_eq!(
+            Theme::dark().to_ratatui(named).fg,
+            Some(Theme::dark().text_colors[MarkColor::Green.index()]),
+            "a name still resolves through the palette"
+        );
+        assert_ne!(
+            Theme::dark().to_ratatui(named).fg,
+            Theme::light().to_ratatui(named).fg,
+            "and the palette is the theme's, so the two schemes differ"
+        );
     }
 
     /// Size and face are ignored, silently: a cell has one size and one face,
