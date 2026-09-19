@@ -40,7 +40,7 @@ use unicode_segmentation::GraphemeCursor;
 
 use crate::html;
 use crate::source::{self, SourceMap};
-use crate::style::MarkColor;
+use crate::style::{Align, FontFamily, LineSpacing, MarkColor, SizeStep};
 use crate::wysiwyg::{self, MediaKind, MediaStop, VisualMap};
 
 /// Which view the body shows.
@@ -843,6 +843,39 @@ pub struct Capabilities {
     /// Shift+Return inside a cell. Markdown and HTML spell it; djot has no
     /// idiomatic in-cell break.
     pub cell_line_break: bool,
+    /// The alignment control — [`Doc::set_alignment`], twig's
+    /// `Gesture::SetBlockAttrs`. Every format leaf opens but XML spells a
+    /// block's attributes, Markdown under the `html_elements`
+    /// [`parse_extensions`] turns on (a `<div>` around the block) and AsciiDoc
+    /// through its `[…]` line.
+    pub alignment: bool,
+    /// The line-spacing menu — [`Doc::set_line_spacing`]. The same gesture as
+    /// [`alignment`](Self::alignment) and so the same answer, and its own flag
+    /// because a toolbar dims controls one at a time and the pair may yet
+    /// diverge.
+    pub line_spacing: bool,
+    /// The size menu — [`Doc::set_font_size`], twig's `Gesture::WrapRangeAttrs`
+    /// over a selection. **Narrower than the block pair**: AsciiDoc's
+    /// `[#id.role]#text#` keeps an id and a role and has no slot for a
+    /// `data-` key, so twig refuses the span there and this is `false` while
+    /// [`alignment`](Self::alignment) is `true`. The block-level form of the
+    /// same property — the caret in a paragraph, no selection — goes through
+    /// `SetBlockAttrs` and still works, which is why the flag describes the
+    /// control rather than the caret.
+    pub font_size: bool,
+    /// The face menu — [`Doc::set_font_family`]. `WrapRangeAttrs`, as
+    /// [`font_size`](Self::font_size) is.
+    pub font_family: bool,
+    /// The text-colour swatches — [`Doc::set_text_color`]. `WrapRangeAttrs`,
+    /// and not to be confused with [`mark_color`](Self::mark_color): that is a
+    /// highlight's background and rides the `mark` node twig already owns,
+    /// this is a run's foreground and rides an attributed span.
+    pub text_color: bool,
+    /// The page-break button — [`Doc::insert_page_break`], twig's
+    /// `Gesture::InsertDirective`. Markdown under the `directives` extension
+    /// [`parse_extensions`] turns on (`::page-break`) and djot, which spells
+    /// it as an empty `::: page-break` fence.
+    pub page_break: bool,
 }
 
 impl Capabilities {
@@ -883,6 +916,18 @@ impl Capabilities {
             code_language: supports(Gesture::SetCodeLanguage),
             table: spells_pipe_tables(format),
             cell_line_break: supports(Gesture::InsertLineBreak),
+            // The presentation vocabulary, one gesture per level: the two
+            // line-level properties are a block's attributes and the three
+            // run-level ones a span's. They are asked separately because the
+            // formats answer differently — AsciiDoc spells the block and not
+            // the span — and a toolbar that dimmed all five together would dim
+            // three controls that work.
+            alignment: supports(Gesture::SetBlockAttrs),
+            line_spacing: supports(Gesture::SetBlockAttrs),
+            font_size: supports(Gesture::WrapRangeAttrs),
+            font_family: supports(Gesture::WrapRangeAttrs),
+            text_color: supports(Gesture::WrapRangeAttrs),
+            page_break: supports(Gesture::InsertDirective),
         }
     }
 }
@@ -3881,6 +3926,397 @@ impl Doc {
         }
     }
 
+    // ── the presentation vocabulary ─────────────────────────────────────────
+    //
+    // Six gestures and five queries over twig's two attribute ops. Each gesture
+    // edits **one key and keeps the rest**: it reads the node's attributes,
+    // removes its own key (and, for alignment, its own tokens out of `class`),
+    // adds the new value or nothing, and passes the list back whole — twig's
+    // contract is replace-not-merge, so the read is the caller's job. A
+    // paragraph that came in as `class="lead center" id="intro"
+    // data-line-height="1.5"` and is right-aligned goes out as `class="lead
+    // right" id="intro" data-line-height="1.5"`. Nothing leaf did not write is
+    // touched, which is what lets a document from elsewhere pass through the
+    // editor unharmed.
+    //
+    // Clearing is the same gesture with `None`: the key goes, and an empty list
+    // at the end unwraps the span or the Markdown div, which twig does.
+
+    /// Set — or with `None` clear — the alignment of the block the caret is in.
+    ///
+    /// A block property, so the gesture is `set_block_attrs` on the caret's
+    /// block **whatever is selected**: a line is a block's, and "centre this"
+    /// with three words selected means the paragraph, not the words. The
+    /// vocabulary is [`Align`], written as `class` tokens; other tokens on the
+    /// same `class` are kept.
+    ///
+    /// In Markdown the attributes live on a `<div>` around the block — twig has
+    /// no paragraph attribute syntax to write — and this reads them back off
+    /// that div when the block is its sole child, so a second press rewrites
+    /// the div rather than nesting a second one.
+    pub fn set_alignment(&mut self, align: Option<Align>) {
+        let attrs = self.block_attrs_at_caret();
+        let attrs = with_class_token(
+            &attrs,
+            |t| Align::from_token(t).is_some(),
+            align.map(Align::name),
+        );
+        self.write_block_attrs("alignment", attrs);
+    }
+
+    /// Set — or with `None` clear — the line spacing of the block the caret is
+    /// in. [`set_alignment`](Self::set_alignment)'s peer in every respect but
+    /// the key: [`LineSpacing`] under `data-line-height`.
+    pub fn set_line_spacing(&mut self, spacing: Option<LineSpacing>) {
+        let attrs = self.block_attrs_at_caret();
+        let attrs = with_attr(&attrs, "data-line-height", spacing.map(LineSpacing::name));
+        self.write_block_attrs("line spacing", attrs);
+    }
+
+    /// Set — or with `None` clear — the size of the selected run, or of the
+    /// caret's whole block when nothing is selected.
+    ///
+    /// Size, face and colour are the *run's*, and the block's when no run is
+    /// chosen. With a selection the gesture is `wrap_range_attrs`, which wraps
+    /// the range in an attributed span or re-styles the span it already lies in
+    /// (never nesting a second, and unwrapping it when the last key goes). With
+    /// no selection it is `set_block_attrs` on the caret's block, so that "make
+    /// this paragraph larger" is a click with the caret in it rather than a
+    /// select-all first.
+    ///
+    /// The walker reads the key at both levels with the nearer winning, so a
+    /// span's `data-size` inside a block carrying its own applies to the span.
+    pub fn set_font_size(&mut self, size: Option<SizeStep>) {
+        self.set_run_attr("size", "data-size", size.map(SizeStep::name));
+    }
+
+    /// Set — or with `None` clear — the face of the selected run, or of the
+    /// caret's whole block. [`set_font_size`](Self::set_font_size)'s peer, with
+    /// [`FontFamily`] under `data-font`.
+    pub fn set_font_family(&mut self, font: Option<FontFamily>) {
+        self.set_run_attr("font", "data-font", font.map(FontFamily::name));
+    }
+
+    /// Set — or with `None` clear — the *text* colour of the selected run, or of
+    /// the caret's whole block. [`set_font_size`](Self::set_font_size)'s peer,
+    /// with [`MarkColor`] under `data-color`.
+    ///
+    /// The same key and the same seven names [`set_mark_color`](Self::set_mark_color)
+    /// writes, and a different thing: that one colours a highlight's
+    /// *background* and rides the `mark` node twig owns the spelling of, this
+    /// one colours the letters and rides an attributed span. The two never
+    /// collide, because a `mark` is a `mark` and a span is a span — and they
+    /// share a vocabulary on purpose, so that a frontend with a red for a
+    /// highlight has a red for text and both are *that* red.
+    pub fn set_text_color(&mut self, color: Option<MarkColor>) {
+        self.set_run_attr("text colour", "data-color", color.map(MarkColor::name));
+    }
+
+    /// Insert a page break at the caret — `::page-break`, a leaf directive with
+    /// no label and no attributes, which twig spells in every format that names
+    /// a leaf container (Markdown under the `directives` extension
+    /// [`parse_extensions`] turns on, and djot, where it is an empty `:::
+    /// page-break` fence).
+    ///
+    /// Placed exactly as [`insert_thematic_break`](Self::insert_thematic_break)
+    /// places a rule, and for the same reason: a directive is a block, so twig
+    /// alone has nowhere to put one mid-paragraph and lands it after the
+    /// caret's whole block. A bare paragraph is therefore parted at the caret
+    /// first and the break aimed at the *first* half. See that method for the
+    /// whole of the rule, including why a code block, a list item, a table and
+    /// a setext heading are left unsplit.
+    ///
+    /// The frontends that paginate read the row's
+    /// [`DirectiveMark`](crate::wysiwyg::DirectiveMark) and open a page there;
+    /// the ones that do not draw the `⧉ page-break` placeholder every leaf
+    /// directive gets.
+    pub fn insert_page_break(&mut self) {
+        if self.read_only || self.refuse_unsupported("page break", Gesture::InsertDirective) {
+            return;
+        }
+        self.caret = self.skip_trailing_close_delims(self.caret);
+        // A selection is replaced by the break, as a rule replaces one.
+        if let Some((s, e)) = self.selection() {
+            self.splice(s, e, "", EditKind::Other);
+        }
+        self.anchor = None;
+        self.record_caret();
+        let at = self.caret;
+        if self.caret_parts_bare_paragraph() {
+            // A failure here is not fatal: the break still lands after the
+            // block, which is what this call was trying to improve on.
+            let _ = self.editor.split_block(at);
+        }
+        match self.editor.insert_directive(at, PAGE_BREAK, None, &[]) {
+            Ok(change) => {
+                self.last_edit_kind = None;
+                self.refresh();
+                self.anchor = None;
+                self.caret = change.new.end;
+                self.dirty = self.source != self.clean_source;
+                self.status = None;
+                self.clamp_caret();
+                self.record_caret();
+            }
+            Err(e) => self.status = Some(format!("page break: {e}")),
+        }
+    }
+
+    /// The alignment in force at the caret, or `None` for the theme's default —
+    /// which swatch of an alignment control is lit.
+    ///
+    /// Read off the nearest node that names one: the block the caret is in, and
+    /// the `div`s around it after that. [`mark_color_at_caret`](Self::mark_color_at_caret)'s
+    /// shape, one property along.
+    pub fn alignment_at_caret(&mut self) -> Option<Align> {
+        self.presentation_chain()
+            .iter()
+            .find_map(|attrs| Align::from_attrs(attrs))
+    }
+
+    /// The line spacing in force at the caret, or `None` for the theme's own.
+    /// [`alignment_at_caret`](Self::alignment_at_caret)'s peer.
+    pub fn line_spacing_at_caret(&mut self) -> Option<LineSpacing> {
+        self.presentation_chain()
+            .iter()
+            .find_map(|attrs| LineSpacing::from_attrs(attrs))
+    }
+
+    /// The size in force at the caret, or `None` for the theme's own — the
+    /// entry a size menu shows ticked.
+    ///
+    /// Run-level, so the chain starts one node deeper: the attributed span the
+    /// caret stands in, then its block, then the `div`s around it. The nearest
+    /// wins, which is the rule the walker draws by.
+    pub fn font_size_at_caret(&mut self) -> Option<SizeStep> {
+        self.presentation_chain()
+            .iter()
+            .find_map(|attrs| SizeStep::from_attrs(attrs))
+    }
+
+    /// The face in force at the caret, or `None` for the theme's body face.
+    /// [`font_size_at_caret`](Self::font_size_at_caret)'s peer.
+    pub fn font_family_at_caret(&mut self) -> Option<FontFamily> {
+        self.presentation_chain()
+            .iter()
+            .find_map(|attrs| FontFamily::from_attrs(attrs))
+    }
+
+    /// The *text* colour in force at the caret, or `None` for the theme's.
+    /// [`font_size_at_caret`](Self::font_size_at_caret)'s peer, and not
+    /// [`mark_color_at_caret`](Self::mark_color_at_caret) — that one reads a
+    /// highlight's background off a `mark`, and a `mark` is never in this chain.
+    pub fn text_color_at_caret(&mut self) -> Option<MarkColor> {
+        self.presentation_chain()
+            .iter()
+            .find_map(|attrs| MarkColor::from_attrs(attrs))
+    }
+
+    /// The selection-or-caret half of the three run-level gestures: a span over
+    /// a real selection, the caret's block over none.
+    fn set_run_attr(&mut self, what: &str, key: &str, value: Option<&str>) {
+        match self.selection() {
+            Some((start, end)) => {
+                let attrs = with_attr(&self.run_attrs_over(start, end), key, value);
+                self.write_run_attrs(what, start, end, attrs);
+            }
+            None => {
+                let attrs = with_attr(&self.block_attrs_at_caret(), key, value);
+                self.write_block_attrs(what, attrs);
+            }
+        }
+    }
+
+    /// Hand `attrs` to twig as the caret's block's whole attribute set, with the
+    /// status, undo and caret plumbing [`set_mark_color`](Self::set_mark_color)
+    /// has.
+    ///
+    /// The caret is re-anchored from the offsets as they were, *before*
+    /// `refresh` sees the new bytes: in Markdown the splice is a `<div …>` and
+    /// two blank lines opening in front of the block, and a caret that did not
+    /// ride them would land somewhere it never was.
+    fn write_block_attrs(&mut self, what: &str, attrs: Attrs) {
+        if self.read_only || self.refuse_unsupported(what, Gesture::SetBlockAttrs) {
+            return;
+        }
+        // A blank line has no block to carry an attribute, and twig answers
+        // `NotFound` there — say so in leaf's own words instead.
+        let Some(at) = self.block_offset_for_caret() else {
+            self.status = Some(format!("{what}: no block at the caret"));
+            return;
+        };
+        self.record_caret();
+        let pairs = attr_pairs(&attrs);
+        match self.editor.set_block_attrs(at, &pairs) {
+            Ok(change) => {
+                let caret = reanchor(self.caret, &change);
+                let anchor = self.anchor.map(|a| reanchor(a, &change));
+                self.last_edit_kind = None; // structural edit is its own undo step
+                self.refresh();
+                self.caret = caret;
+                self.anchor = anchor;
+                self.dirty = self.source != self.clean_source;
+                self.status = None;
+                self.clamp_caret();
+                self.record_caret();
+            }
+            Err(e) => self.status = Some(format!("{what}: {e}")),
+        }
+    }
+
+    /// Hand `attrs` to twig as the attribute set of the span over `[start,
+    /// end)` — wrapping one, or re-styling the one the range already lies in,
+    /// or unwrapping it when `attrs` is empty.
+    ///
+    /// What the splice leaves selected is the span's **content** — the author's
+    /// words — and not the whole of `change.new`, which is markup and all:
+    /// `[big]{data-size="large"}` in djot, `<span …>big</span>` in Markdown. A
+    /// selection reaching past the node's own span lies in no span at all, so a
+    /// second press of the menu would nest a fresh one instead of re-styling
+    /// the one just written.
+    fn write_run_attrs(&mut self, what: &str, start: usize, end: usize, attrs: Attrs) {
+        if self.read_only || self.refuse_unsupported(what, Gesture::WrapRangeAttrs) {
+            return;
+        }
+        self.record_caret();
+        let pairs = attr_pairs(&attrs);
+        match self.editor.wrap_range_attrs(start, end, &pairs) {
+            Ok(change) => {
+                self.last_edit_kind = None;
+                self.refresh();
+                let content = self.span_content_in(&change.new);
+                self.anchor = Some(content.start);
+                self.caret = content.end;
+                self.dirty = self.source != self.clean_source;
+                self.status = None;
+                self.clamp_caret();
+                self.record_caret();
+            }
+            Err(e) => self.status = Some(format!("{what}: {e}")),
+        }
+    }
+
+    /// The content range of the attributed span `spliced` now holds — the
+    /// outermost one inside it, since that is the one just written — or
+    /// `spliced` itself where the splice left no span, which is what an unwrap
+    /// leaves behind.
+    fn span_content_in(&mut self, spliced: &Range<usize>) -> Range<usize> {
+        self.nodes()
+            .into_iter()
+            .filter(wysiwyg::is_run_span)
+            .filter(|n| spliced.start <= n.span.start && n.span.end <= spliced.end)
+            .max_by_key(|n| n.span.end - n.span.start)
+            .and_then(|n| n.content_span)
+            .unwrap_or_else(|| spliced.clone())
+    }
+
+    /// The attribute set `set_block_attrs` is about to **replace** at the caret
+    /// — which is the block's own, except in Markdown, where twig writes a
+    /// block's attributes onto a `<div>` around it and rewrites that div when
+    /// the block is its sole child. Reading the paragraph there would hand back
+    /// an empty list and quietly drop everything the div said.
+    ///
+    /// Empty when the caret is in no block at all, which is the same list a
+    /// block carrying no attributes gives — and the right one either way, since
+    /// the gesture then refuses on its own.
+    fn block_attrs_at_caret(&mut self) -> Attrs {
+        let Some(off) = self.block_offset_for_caret() else {
+            return Vec::new();
+        };
+        let nodes = self.nodes();
+        let Some(block) = nodes
+            .iter()
+            .filter(|n| matches!(n.kind, Kind::Para | Kind::Heading))
+            .filter(|n| n.span.start <= off && off <= n.span.end)
+            .min_by_key(|n| n.span.end - n.span.start)
+        else {
+            return Vec::new();
+        };
+        if self.format == Format::Markdown
+            && let Some(parent) = block.parent.and_then(|p| nodes.iter().find(|n| n.id == p))
+            && wysiwyg::element_tag(parent) == Some("div")
+            && nodes.iter().filter(|n| n.parent == Some(parent.id)).count() == 1
+        {
+            return parent.attrs.clone();
+        }
+        block.attrs.clone()
+    }
+
+    /// The attribute set `wrap_range_attrs` is about to **replace** over
+    /// `[start, end)` — the innermost attributed span the range lies inside,
+    /// which twig re-styles rather than nesting a second one in. Empty when the
+    /// range lies in no span, where the gesture mints a fresh one.
+    fn run_attrs_over(&mut self, start: usize, end: usize) -> Attrs {
+        self.nodes()
+            .into_iter()
+            .filter(wysiwyg::is_run_span)
+            .filter(|n| n.span.start <= start && end <= n.span.end)
+            .min_by_key(|n| n.span.end - n.span.start)
+            .map(|n| n.attrs)
+            .unwrap_or_default()
+    }
+
+    /// The attribute lists that bear on a presentation query, **nearest first**:
+    /// the attributed spans the caret stands in (innermost first), then its
+    /// block, then the `div`s around it. A `find_map` down this is the whole of
+    /// each query, and the order is the rule the walker draws by.
+    ///
+    /// Read at the caret, and at the selection's *start* when the caret stands
+    /// in no span there. [`write_run_attrs`](Self::write_run_attrs) leaves the
+    /// caret one past the span it just wrote — `toggle`'s convention — so
+    /// asking the menu which entry that press just ticked must not answer
+    /// `None`. Exactly the reason [`mark_offset`](Self::mark_offset) tries both.
+    fn presentation_chain(&mut self) -> Vec<Attrs> {
+        let caret = self.caret.min(self.source.len());
+        let mut chain = self.attr_chain_at(caret);
+        if !chain.iter().any(|(span, _)| *span)
+            && let Some((start, _)) = self.selection()
+        {
+            let alt = self.attr_chain_at(start);
+            if alt.iter().any(|(span, _)| *span) {
+                chain = alt;
+            }
+        }
+        chain.into_iter().map(|(_, attrs)| attrs).collect()
+    }
+
+    /// [`presentation_chain`](Self::presentation_chain) at one offset — every
+    /// node bearing the vocabulary that covers it, innermost first, each paired
+    /// with whether it is an attributed span (which is what tells the caller
+    /// its run-level answer came from a run).
+    ///
+    /// Sorted by span length, which *is* the nesting order: a span lies inside
+    /// its block and a block inside its div, so shortest-first is
+    /// nearest-first without a second tree walk.
+    fn attr_chain_at(&mut self, off: usize) -> Vec<(bool, Attrs)> {
+        let off = off.min(self.source.len());
+        let mut hits: Vec<(usize, bool, Attrs)> = Vec::new();
+        for n in self.nodes() {
+            let span = wysiwyg::is_run_span(&n);
+            let block = matches!(n.kind, Kind::Para | Kind::Heading);
+            let div = wysiwyg::element_tag(&n) == Some("div");
+            if !(span || block || div) {
+                continue;
+            }
+            // A span is half-open, the way a mark is: the offset one past it is
+            // the text after it. A block and a div claim their end too, so a
+            // caret resting at the end of a line still reads its paragraph.
+            let inside = if span {
+                n.span.start <= off && off < n.span.end
+            } else {
+                n.span.start <= off && off <= n.span.end
+            };
+            if !inside {
+                continue;
+            }
+            hits.push((n.span.end - n.span.start, span, n.attrs));
+        }
+        hits.sort_by_key(|(len, _, _)| *len);
+        hits.into_iter()
+            .map(|(_, span, attrs)| (span, attrs))
+            .collect()
+    }
+
     /// Convert the block at the caret to a heading level or paragraph.
     pub fn set_block(&mut self, kind: BlockKind) {
         // The read-only gate — this door reaches twig without the splice.
@@ -6677,6 +7113,75 @@ fn twig_mark_color(color: MarkColor) -> twig::MarkColor {
 /// more, and lands at the end of what replaced it: for
 /// [`Doc::set_mark_color`] that is a caret standing on the colour prefix when
 /// the prefix is cleared, which then sits where the highlighted text begins.
+/// One node's attribute list, twig's own `(key, value)` pairs owned — what
+/// every presentation gesture reads, edits one key of, and passes back whole.
+type Attrs = Vec<(String, Option<String>)>;
+
+/// The name of the leaf directive a page break is — [`Doc::insert_page_break`]
+/// writes it and the walker draws it, and a frontend that paginates matches a
+/// [`DirectiveMark`](crate::wysiwyg::DirectiveMark) against it. One spelling,
+/// stated once.
+pub const PAGE_BREAK: &str = "page-break";
+
+/// `attrs` with `key` set to `value`, or removed when `value` is `None`, and
+/// every other attribute kept in its place — the read-edit-write half of twig's
+/// replace-not-merge contract for a `data-` key.
+///
+/// A new key goes on the end, so a block that gains one keeps the order the
+/// document had it in and the diff is one attribute long.
+fn with_attr(attrs: &[(String, Option<String>)], key: &str, value: Option<&str>) -> Attrs {
+    let mut out: Vec<(String, Option<String>)> =
+        attrs.iter().filter(|(k, _)| k != key).cloned().collect();
+    if let Some(v) = value {
+        out.push((key.to_string(), Some(v.to_string())));
+    }
+    out
+}
+
+/// [`with_attr`] for a `class` token: every token `mine` claims is removed, and
+/// `token` added, with the rest of the list kept in order.
+///
+/// `class` is a space-separated token list, and leaf owns three of the tokens in
+/// it. A paragraph that arrives as `class="lead center"` and is right-aligned
+/// goes out as `class="lead right"`; one whose last owned token goes and which
+/// carried nothing else loses the key, so a block that has lost its whole
+/// vocabulary is spelled bare again.
+fn with_class_token(
+    attrs: &[(String, Option<String>)],
+    mine: impl Fn(&str) -> bool,
+    token: Option<&str>,
+) -> Attrs {
+    let kept: Vec<&str> = attrs
+        .iter()
+        .find(|(k, _)| k == "class")
+        .and_then(|(_, v)| v.as_deref())
+        .unwrap_or_default()
+        .split_whitespace()
+        .filter(|t| !mine(t))
+        .collect();
+    let class = kept.into_iter().chain(token).collect::<Vec<_>>().join(" ");
+    with_attr(
+        attrs,
+        "class",
+        (!class.is_empty()).then_some(class.as_str()),
+    )
+}
+
+/// An owned attribute list as the borrowed pairs twig's two attribute ops take.
+///
+/// A **bare** attribute — one twig reports with no value, such as HTML's `<p
+/// hidden>` — is passed back as an empty one. Twig refuses a `None` outright
+/// (djot has no bare attribute, so no format reads one back everywhere), and
+/// `hidden=""` is the same document where `hidden` is; dropping it instead
+/// would lose what the author wrote, which is the one thing these gestures
+/// promise not to do.
+fn attr_pairs(attrs: &[(String, Option<String>)]) -> Vec<(&str, Option<&str>)> {
+    attrs
+        .iter()
+        .map(|(k, v)| (k.as_str(), Some(v.as_deref().unwrap_or_default())))
+        .collect()
+}
+
 fn reanchor(off: usize, change: &Change) -> usize {
     if off < change.old.start {
         return off;
@@ -14564,5 +15069,351 @@ mod tests {
                 "cursor disagrees walking back at {offset}"
             );
         }
+    }
+
+    // ── the presentation vocabulary ─────────────────────────────────────────
+
+    /// A document in `format`, for the gesture tests that want more than the
+    /// Markdown `doc_with` writes.
+    fn fmt_doc(body: &str, format: Format) -> Doc {
+        Doc::from_source(body.to_string(), format).unwrap()
+    }
+
+    /// Alignment is a block property, so the gesture is `set_block_attrs` on
+    /// the caret's block whatever is selected — and each format spells it its
+    /// own way: djot's `{…}` line above the block, a `<div>` around it in
+    /// Markdown (the format has nowhere else to put it), the tag in HTML.
+    #[test]
+    fn set_alignment_spells_the_class_the_format_s_own_way() {
+        let mut dj = fmt_doc("hello\n", Format::Djot);
+        dj.caret = 1;
+        dj.set_alignment(Some(Align::Center));
+        assert_eq!(dj.source, "{.center}\nhello\n");
+        assert!(dj.dirty);
+        assert_eq!(dj.status, None);
+
+        let mut md = fmt_doc("hello\n", Format::Markdown);
+        md.caret = 1;
+        md.set_alignment(Some(Align::Right));
+        assert_eq!(md.source, "<div class=\"right\">\n\nhello\n\n</div>\n");
+
+        let mut html = fmt_doc("<p>hello</p>\n", Format::Html);
+        html.caret = html.source.find("hello").unwrap();
+        html.set_alignment(Some(Align::Justify));
+        assert_eq!(html.source, "<p class=\"justify\">hello</p>\n");
+    }
+
+    /// Each gesture edits **one key and keeps the rest** — twig's contract is
+    /// replace-not-merge, so leaf reads the node's attributes, edits its own
+    /// key out of them, and passes the list back whole. A document from
+    /// elsewhere passes through the editor unharmed.
+    #[test]
+    fn a_presentation_gesture_keeps_every_attribute_it_did_not_write() {
+        let mut d = fmt_doc(
+            "{.lead .center #intro data-line-height=\"1.5\"}\nhello\n",
+            Format::Djot,
+        );
+        d.caret = d.source.find("hello").unwrap();
+        d.set_alignment(Some(Align::Right));
+        // `center` goes, `lead` stays, and neither the id nor the spacing is
+        // touched.
+        // The serializer picks the order; what matters is which keys survive.
+        assert!(d.source.contains(".lead"), "{:?}", d.source);
+        assert!(d.source.contains(".right"), "{:?}", d.source);
+        assert!(!d.source.contains(".center"), "{:?}", d.source);
+        assert!(d.source.contains("#intro"), "{:?}", d.source);
+        assert!(
+            d.source.contains("data-line-height=\"1.5\""),
+            "{:?}",
+            d.source
+        );
+        assert_eq!(d.alignment_at_caret(), Some(Align::Right));
+        assert_eq!(d.line_spacing_at_caret(), Some(LineSpacing::OneHalf));
+
+        // And the other way round: the spacing gesture leaves the classes be.
+        d.set_line_spacing(Some(LineSpacing::Double));
+        assert!(d.source.contains(".lead"), "{:?}", d.source);
+        assert!(d.source.contains(".right"), "{:?}", d.source);
+        assert_eq!(d.line_spacing_at_caret(), Some(LineSpacing::Double));
+    }
+
+    /// Clearing is the same gesture with `None`: the key goes, the tokens leaf
+    /// owns go out of `class`, and a block left with nothing at all is spelled
+    /// bare again — in Markdown by unwrapping the div twig wrapped it in.
+    #[test]
+    fn none_clears_a_key_and_an_empty_set_unwraps_the_block() {
+        let mut dj = fmt_doc("{.lead .center}\nhello\n", Format::Djot);
+        dj.caret = dj.source.find("hello").unwrap();
+        dj.set_alignment(None);
+        assert_eq!(dj.source, "{.lead}\nhello\n", "the foreign class stays");
+        assert_eq!(dj.alignment_at_caret(), None);
+
+        let mut bare = fmt_doc("{.center}\nhello\n", Format::Djot);
+        bare.caret = bare.source.find("hello").unwrap();
+        bare.set_alignment(None);
+        assert_eq!(
+            bare.source, "hello\n",
+            "the last key takes the line with it"
+        );
+
+        let mut md = fmt_doc("hello\n", Format::Markdown);
+        md.caret = 1;
+        md.set_alignment(Some(Align::Center));
+        assert_eq!(md.source, "<div class=\"center\">\n\nhello\n\n</div>\n");
+        md.caret = md.source.find("hello").unwrap();
+        md.set_line_spacing(Some(LineSpacing::OneFifteen));
+        assert_eq!(
+            md.source, "<div class=\"center\" data-line-height=\"1.15\">\n\nhello\n\n</div>\n",
+            "the second key rewrites the div rather than nesting a second"
+        );
+        md.caret = md.source.find("hello").unwrap();
+        md.set_alignment(None);
+        md.caret = md.source.find("hello").unwrap();
+        md.set_line_spacing(None);
+        assert_eq!(md.source, "hello\n", "an empty set unwraps the div");
+    }
+
+    /// Size, face and colour are the run's over a selection and the block's
+    /// with none — so "make this paragraph larger" is a click with the caret in
+    /// it rather than a select-all first.
+    #[test]
+    fn a_run_gesture_wraps_a_selection_and_sets_the_block_without_one() {
+        // With a selection: a span, in each format's own spelling.
+        let mut dj = fmt_doc("a big b\n", Format::Djot);
+        dj.anchor = Some(2);
+        dj.caret = 5;
+        dj.set_font_size(Some(SizeStep::Large));
+        assert_eq!(dj.source, "a [big]{data-size=\"large\"} b\n");
+        assert_eq!(dj.font_size_at_caret(), Some(SizeStep::Large));
+
+        let mut md = fmt_doc("a big b\n", Format::Markdown);
+        md.anchor = Some(2);
+        md.caret = 5;
+        md.set_text_color(Some(MarkColor::Blue));
+        assert_eq!(md.source, "a <span data-color=\"blue\">big</span> b\n");
+        assert_eq!(md.text_color_at_caret(), Some(MarkColor::Blue));
+
+        // Without one: the caret's block, through the block gesture.
+        let mut block = fmt_doc("a big b\n", Format::Djot);
+        block.caret = 3;
+        block.set_font_family(Some(FontFamily::Monospace));
+        assert_eq!(block.source, "{data-font=\"monospace\"}\na big b\n");
+        assert_eq!(block.font_family_at_caret(), Some(FontFamily::Monospace));
+    }
+
+    /// twig re-styles the span a range already lies in rather than nesting a
+    /// second, and an empty set unwraps it — so a second press of the menu
+    /// fixes the size instead of building `[[big]{.a}]{.b}`, and the entry that
+    /// means "the theme's own" takes the span away.
+    #[test]
+    fn a_second_run_gesture_re_styles_the_span_and_none_unwraps_it() {
+        let mut d = fmt_doc("a big b\n", Format::Djot);
+        d.anchor = Some(2);
+        d.caret = 5;
+        d.set_font_size(Some(SizeStep::Large));
+        assert_eq!(d.source, "a [big]{data-size=\"large\"} b\n");
+
+        // The selection `wrap_range_attrs` left behind covers the whole span;
+        // colouring it now keeps the size, because the gesture reads the span's
+        // attributes before it edits its own key.
+        d.set_text_color(Some(MarkColor::Red));
+        assert_eq!(
+            d.source, "a [big]{data-size=\"large\" data-color=\"red\"} b\n",
+            "one span, both keys"
+        );
+        assert_eq!(d.font_size_at_caret(), Some(SizeStep::Large));
+        assert_eq!(d.text_color_at_caret(), Some(MarkColor::Red));
+
+        d.set_text_color(None);
+        assert_eq!(d.source, "a [big]{data-size=\"large\"} b\n");
+        d.set_font_size(None);
+        assert_eq!(d.source, "a big b\n", "the last key unwraps the span");
+        assert_eq!(d.font_size_at_caret(), None);
+    }
+
+    /// The queries read the nearest node that names the property: the span the
+    /// caret is in, then its block, then the `div`s around it.
+    #[test]
+    fn a_presentation_query_reads_the_nearest_node_that_names_it() {
+        let mut d = fmt_doc(
+            "{.center data-size=\"small\" data-font=\"serif\"}\nx [y]{data-size=\"xx-large\"} z\n",
+            Format::Djot,
+        );
+        // In the span: its own size, the block's face and alignment.
+        d.caret = d.source.find('y').unwrap();
+        assert_eq!(d.font_size_at_caret(), Some(SizeStep::XxLarge));
+        assert_eq!(d.font_family_at_caret(), Some(FontFamily::Serif));
+        assert_eq!(d.alignment_at_caret(), Some(Align::Center));
+        assert_eq!(d.line_spacing_at_caret(), None);
+        assert_eq!(d.text_color_at_caret(), None);
+
+        // Outside it: the block's size.
+        d.caret = d.source.find('x').unwrap();
+        assert_eq!(d.font_size_at_caret(), Some(SizeStep::Small));
+
+        // And through a Markdown div, which is where a Markdown block's
+        // attributes live.
+        let mut md = fmt_doc(
+            "<div class=\"center\" data-size=\"large\">\n\nhello\n\n</div>\n",
+            Format::Markdown,
+        );
+        md.caret = md.source.find("hello").unwrap();
+        assert_eq!(md.alignment_at_caret(), Some(Align::Center));
+        assert_eq!(md.font_size_at_caret(), Some(SizeStep::Large));
+
+        // A document that names none of it answers `None` everywhere, which is
+        // "the theme's own" and what every toolbar draws unlit.
+        let mut plain = doc_with("plain_presentation", "hello\n");
+        plain.caret = 1;
+        assert_eq!(plain.alignment_at_caret(), None);
+        assert_eq!(plain.line_spacing_at_caret(), None);
+        assert_eq!(plain.font_size_at_caret(), None);
+        assert_eq!(plain.font_family_at_caret(), None);
+        assert_eq!(plain.text_color_at_caret(), None);
+    }
+
+    /// A page break is a block, so twig alone lands one after the caret's whole
+    /// block; the paragraph is parted at the caret first, exactly as
+    /// `insert_thematic_break` parts it, and each format spells the directive
+    /// its own way.
+    #[test]
+    fn insert_page_break_parts_the_paragraph_and_spells_the_directive() {
+        let mut md = doc_with("page_break_md", "hello world\n");
+        md.caret = 5;
+        md.insert_page_break();
+        assert_eq!(md.source, "hello\n\n::page-break\n\nworld\n");
+        assert!(md.dirty);
+        assert_eq!(md.status, None);
+
+        let mut dj = fmt_doc("hello world\n", Format::Djot);
+        dj.caret = 5;
+        dj.insert_page_break();
+        assert_eq!(dj.source, "hello\n\n::: page-break\n:::\n\nworld\n");
+
+        // At a block's end there is no second half to mint, so the break simply
+        // follows the block — the rule the rule button already has.
+        let mut end = doc_with("page_break_end", "hello\n");
+        end.caret = 5;
+        end.insert_page_break();
+        assert_eq!(end.source, "hello\n\n::page-break\n");
+
+        // And it reaches the map as the placeholder row a frontend paginates on.
+        end.view = View::Wysiwyg;
+        end.build_visual(80);
+        assert_eq!(
+            end.vmap
+                .rows
+                .iter()
+                .find_map(|r| r.leaf_directive.as_ref())
+                .map(|m| m.name.as_str()),
+            Some(PAGE_BREAK)
+        );
+    }
+
+    /// The vocabulary's capabilities, per format. The two block properties are
+    /// `SetBlockAttrs` and the three run ones `WrapRangeAttrs`, which is why
+    /// AsciiDoc can align a paragraph and not size a run: its `[#id.role]#text#`
+    /// keeps an id and a role and has no slot for a `data-` key.
+    #[test]
+    fn the_presentation_capabilities_are_ragged_per_format() {
+        for fmt in [Format::Markdown, Format::Djot, Format::Html] {
+            let c = Capabilities::of(fmt);
+            assert!(c.alignment, "{fmt:?} alignment");
+            assert!(c.line_spacing, "{fmt:?} line spacing");
+            assert!(c.font_size, "{fmt:?} size");
+            assert!(c.font_family, "{fmt:?} face");
+            assert!(c.text_color, "{fmt:?} colour");
+        }
+        // Markdown spells both only under the extensions leaf parses with — a
+        // `<div>` and a `<span>` read back as containers under `html_elements`,
+        // and `::page-break` as a directive under `directives`. Ask twig's own
+        // defaults and the answer is no, which is why `Capabilities` is built
+        // with `supports_with`.
+        assert!(!Format::Markdown.supports(Gesture::SetBlockAttrs));
+        assert!(!Format::Markdown.supports(Gesture::WrapRangeAttrs));
+        assert!(!Format::Markdown.supports(Gesture::InsertDirective));
+
+        let adoc = Capabilities::of(Format::Asciidoc);
+        assert!(adoc.alignment && adoc.line_spacing, "AsciiDoc's `[…]` line");
+        assert!(
+            !adoc.font_size && !adoc.font_family && !adoc.text_color,
+            "AsciiDoc has no inline spelling that keeps a data- key"
+        );
+
+        // XML spells none of it, and neither page break.
+        let xml = Capabilities::of(Format::Xml);
+        assert!(!xml.alignment && !xml.font_size && !xml.page_break);
+        assert!(Capabilities::of(Format::Markdown).page_break);
+        assert!(Capabilities::of(Format::Djot).page_break);
+    }
+
+    /// A format that cannot spell a property refuses in its own words and
+    /// writes nothing — the guard every other gesture has.
+    #[test]
+    fn a_presentation_gesture_a_format_cannot_spell_is_refused_with_a_reason() {
+        let src = "<doc><p>hello</p></doc>\n";
+        #[allow(clippy::type_complexity)]
+        let ops: [(&str, &dyn Fn(&mut Doc)); 6] = [
+            ("alignment", &|d: &mut Doc| {
+                d.set_alignment(Some(Align::Center))
+            }),
+            ("line spacing", &|d: &mut Doc| {
+                d.set_line_spacing(Some(LineSpacing::Double))
+            }),
+            ("size", &|d: &mut Doc| {
+                d.set_font_size(Some(SizeStep::Large))
+            }),
+            ("face", &|d: &mut Doc| {
+                d.set_font_family(Some(FontFamily::Serif))
+            }),
+            ("colour", &|d: &mut Doc| {
+                d.set_text_color(Some(MarkColor::Red))
+            }),
+            ("page break", &|d: &mut Doc| d.insert_page_break()),
+        ];
+        for (name, op) in ops {
+            let mut d = fmt_doc(src, Format::Xml);
+            let at = d.source.find("hello").unwrap();
+            d.caret = at;
+            d.anchor = Some(at + 5);
+            op(&mut d);
+            assert_eq!(d.source, src, "{name} edited an XML document");
+            assert!(!d.dirty, "{name} marked the document dirty");
+            let status = d.status.as_deref().unwrap_or("");
+            assert!(
+                status.contains("xml"),
+                "{name}: the refusal should name the format, got {status:?}"
+            );
+        }
+
+        // AsciiDoc is the ragged one: the block gesture works where the run
+        // gesture does not, and a *selection* is what tells the two apart.
+        let mut adoc = fmt_doc("hello world\n", Format::Asciidoc);
+        adoc.anchor = Some(0);
+        adoc.caret = 5;
+        adoc.set_font_size(Some(SizeStep::Large));
+        assert_eq!(adoc.source, "hello world\n", "no inline spelling");
+        assert!(adoc.status.is_some());
+    }
+
+    /// A read-only document takes none of it, and a caret on a blank line has
+    /// no block to carry an attribute — both say so rather than writing.
+    #[test]
+    fn a_presentation_gesture_respects_read_only_and_a_blank_line() {
+        let mut ro = fmt_doc("hello\n", Format::Djot);
+        ro.read_only = true;
+        ro.caret = 1;
+        ro.set_alignment(Some(Align::Center));
+        assert_eq!(ro.source, "hello\n");
+
+        let mut blank = fmt_doc("a\n\n\nb\n", Format::Djot);
+        blank.caret = 2; // the empty line between the two paragraphs
+        blank.set_alignment(Some(Align::Center));
+        assert_eq!(blank.source, "a\n\n\nb\n");
+        assert!(
+            blank.status.as_deref().unwrap_or("").contains("no block"),
+            "got {:?}",
+            blank.status
+        );
     }
 }

@@ -28,7 +28,9 @@ use twig::{Alignment, ContainerOrigin, DirectiveForm, Editor, FlatNode, Kind, Qu
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::style::{Baseline, MarkColor, Role, Style, Token};
+use crate::style::{
+    Align, Baseline, FontFamily, LineSpacing, MarkColor, Role, SizeStep, Style, Token,
+};
 
 /// One rendered character plus the source byte offset it originates from.
 /// Synthetic glyphs (a list bullet, a quote gutter) point at their block's
@@ -149,6 +151,31 @@ pub struct VRow {
     /// is the row-level fact, and the two agree wherever a heading has content —
     /// same `u8` level, clamped the same way [`heading_style`] clamps it.
     pub heading: Option<u8>,
+    /// How this row's block is aligned across the measure — the author's
+    /// `class="center"`, on every row the block emits and `None` for the
+    /// theme's default, which is left.
+    ///
+    /// A *row* fact and not a glyph one for [`heading`](Self::heading)'s reason,
+    /// and more sharply: alignment is a property of the *line*, not of the
+    /// letters on it, so an empty paragraph the author has just centred has to
+    /// carry it with no glyph to hang it on. It rides the row like a plain
+    /// `Copy` flag, so [`BlockCache`] reuse and [`build_spliced`] carry it
+    /// untouched.
+    ///
+    /// Read from the paragraph's or heading's own attributes and from those of
+    /// every `div` around it, the nearest winning — so `<div class="center">`
+    /// around three paragraphs centres all three, which is what the author of
+    /// that HTML meant.
+    pub align: Option<Align>,
+    /// How far apart this row's block sets its lines, as a multiple of the
+    /// theme's own line height — the author's `data-line-height`, on every row
+    /// the block emits and `None` for the theme's spacing.
+    ///
+    /// A frontend that lays rows out in pixels scales the row's height by
+    /// [`LineSpacing::ratio`]; one that draws a row per terminal line ignores it,
+    /// the way it ignores a heading's size. Read at the same two levels
+    /// [`align`](Self::align) is.
+    pub line_height: Option<LineSpacing>,
     /// What this row divides, on the blank rows a block boundary is *drawn* with
     /// and `None` on every other row — including the navigable blank lines of
     /// preserve-soft flow, which are somewhere text can go rather than a gap
@@ -1313,6 +1340,7 @@ pub fn build(
         preserve_soft,
         reveal: reveal.clone(),
         pending_mark_ends: RefCell::new(Vec::new()),
+        presentation: Presentation::default(),
     };
     let last_drawn = b.top_blocks(&top);
     // The hidden frontmatter's end is the baseline for both the trailing blank
@@ -1396,6 +1424,7 @@ pub fn build_cached(
         preserve_soft,
         reveal: reveal.clone(),
         pending_mark_ends: RefCell::new(Vec::new()),
+        presentation: Presentation::default(),
     };
 
     // Record the per-block row decomposition as we go, so a later
@@ -1461,6 +1490,7 @@ pub fn build_cached(
                     preserve_soft,
                     reveal: reveal.clone(),
                     pending_mark_ends: RefCell::new(Vec::new()),
+                    presentation: Presentation::default(),
                 };
                 sub.block(0, &[], &[]);
                 // A block that drew nothing is stepped over, not stood on: its
@@ -1715,6 +1745,7 @@ pub fn build_spliced(
         preserve_soft,
         reveal: reveal.clone(),
         pending_mark_ends: RefCell::new(Vec::new()),
+        presentation: Presentation::default(),
     };
     sub.block(0, &[], &[]);
     // A table, or content that renders outside the block's span (a degenerate
@@ -2057,6 +2088,10 @@ fn shift_row(row: &VRow, delta: isize) -> VRow {
         task: row.task,
         leaf_directive: row.leaf_directive.clone(),
         heading: row.heading,
+        // Presentation, not offsets: names the author wrote, which a shifted
+        // block still wears — like `code_lang`.
+        align: row.align,
+        line_height: row.line_height,
         // Structure, not offsets: a reused block's rows divide the same blocks
         // wherever the edit above moved them to.
         boundary: row.boundary,
@@ -2403,6 +2438,55 @@ struct Builder<'a> {
     /// rather than a `&mut`, for the reason `break_glyph` is: the inline walk
     /// borrows the builder shared.
     pending_mark_ends: RefCell<Vec<usize>>,
+    /// The presentation vocabulary in force at the block being walked — the
+    /// keys the `div`s around it carry, folded together with the nearest
+    /// winning, and [`Presentation::default`] at the top level.
+    ///
+    /// Saved and restored around each `div` in [`Builder::block`], so a block
+    /// reads its own attributes over whatever its containers said and nothing
+    /// leaks sideways to the block after it. It is per-*build* state rather
+    /// than a parameter because every one of the dozen call sites of `block`
+    /// would otherwise thread a value none of them care about.
+    presentation: Presentation,
+}
+
+/// The six presentation keys as the walker carries them down a block tree —
+/// the two that are the block's ([`Align`], [`LineSpacing`]) and the three that
+/// are a run's but may be written on the block ([`SizeStep`], [`FontFamily`],
+/// [`MarkColor`]).
+///
+/// `Copy` and five `Option`s, because folding is the whole of what it does:
+/// [`under`](Presentation::under) reads a container's attributes over an
+/// existing set and a key the container does not name keeps the value it had.
+/// That is the "nearest wins" rule stated once, rather than at each of the
+/// three levels a key can be written at.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Presentation {
+    align: Option<Align>,
+    line_height: Option<LineSpacing>,
+    size: Option<SizeStep>,
+    font: Option<FontFamily>,
+    color: Option<MarkColor>,
+}
+
+impl Presentation {
+    /// This set with whatever `attrs` names written over it — the nearer node's
+    /// answer where it has one, the outer node's where it hasn't.
+    fn under(self, attrs: &[(String, Option<String>)]) -> Self {
+        Self {
+            align: Align::from_attrs(attrs).or(self.align),
+            line_height: LineSpacing::from_attrs(attrs).or(self.line_height),
+            size: SizeStep::from_attrs(attrs).or(self.size),
+            font: FontFamily::from_attrs(attrs).or(self.font),
+            color: MarkColor::from_attrs(attrs).or(self.color),
+        }
+    }
+
+    /// `base` carrying the three run-level keys — the style a block's glyphs
+    /// start from, which an attributed span inside it then writes over.
+    fn over(self, base: Style) -> Style {
+        base.size(self.size).font(self.font).color(self.color)
+    }
 }
 
 impl Builder<'_> {
@@ -2712,13 +2796,42 @@ impl Builder<'_> {
                 task: None,
                 leaf_directive: None,
                 heading: None,
+                align: None,
+                line_height: None,
                 boundary: drawn.then_some(boundary),
                 mark_ends: Vec::new(),
             });
         }
     }
 
+    /// One block, drawn under whatever presentation the containers around it
+    /// impose.
+    ///
+    /// A container named `div` with `Element` origin is transparent already —
+    /// its children draw as themselves — and it now also *contributes* its
+    /// vocabulary keys to every block it holds. That is the reading side of
+    /// twig's own rule for where a Markdown block's attributes live: there is
+    /// no attribute syntax to put on the paragraph, so `set_block_attrs` writes
+    /// a `<div …>` around it, and reading one back has to look through the div.
+    /// `<div class="center">` around three paragraphs centres all three, which
+    /// is what the author of that HTML meant, and around one is the sole-child
+    /// shape twig writes.
+    ///
+    /// Saved and restored rather than pushed onto a stack, so a nested div
+    /// reads its own keys over its parent's and the block *after* the div is
+    /// unaffected.
     fn block(&mut self, id: usize, pf: &[Glyph], pc: &[Glyph]) {
+        if element_tag(&self.nodes[id]) == Some("div") {
+            let saved = self.presentation;
+            self.presentation = saved.under(&self.nodes[id].attrs);
+            self.block_kind(id, pf, pc);
+            self.presentation = saved;
+            return;
+        }
+        self.block_kind(id, pf, pc);
+    }
+
+    fn block_kind(&mut self, id: usize, pf: &[Glyph], pc: &[Glyph]) {
         let node = &self.nodes[id];
         match node.kind.as_str() {
             "doc" | "section" => self.blocks(id, pf, pc, false),
@@ -2732,7 +2845,11 @@ impl Builder<'_> {
                     return;
                 }
                 let level = node.level.unwrap_or(1);
-                let style = heading_style(level);
+                // A `data-size` on a heading scales the *heading's* ramp, not
+                // the body's — the role and the step compose rather than
+                // compete, which is the same thing a colour does to a link.
+                let pres = self.presentation.under(&node.attrs);
+                let style = pres.over(heading_style(level));
                 let mut glyphs = Vec::new();
                 // On the revealed line the `# ` comes back as real, editable
                 // text in front of the heading. Only the opening marker: a
@@ -2767,6 +2884,8 @@ impl Builder<'_> {
                 // (see [`VRow::heading`]).
                 for row in &mut self.rows[first..] {
                     row.heading = Some(level.min(255) as u8);
+                    row.align = pres.align;
+                    row.line_height = pres.line_height;
                 }
             }
             "block_quote" => {
@@ -2816,6 +2935,27 @@ impl Builder<'_> {
             "container"
                 if container_is_directive(node)
                     && node.directive_form == Some(DirectiveForm::Leaf) =>
+            {
+                self.block_directive(id, pf);
+            }
+            // djot has no *leaf* directive form. `insert_directive` spells the
+            // same document as an empty `::: page-break` fence — a container
+            // with nothing in it — and the name comes back as the fence's one
+            // class rather than as the node's name, because djot's div is
+            // anonymous. Draw it as the placeholder Markdown's `::page-break`
+            // gets, so a frontend that paginates on a `page-break`
+            // [`DirectiveMark`] cannot tell which format the file is in.
+            //
+            // Narrow on purpose: only an *anonymous* empty fence. A Markdown
+            // `:::note` with nothing in it keeps the reading it has, because
+            // its name is its own and nothing about it says "a block with no
+            // body" the way djot's spelling of a leaf directive does.
+            "container"
+                if container_is_directive(node)
+                    && node.directive_form == Some(DirectiveForm::Container)
+                    && node.name.as_deref().unwrap_or_default().is_empty()
+                    && self.children(id).is_empty()
+                    && !leaf_directive_identity(node).0.is_empty() =>
             {
                 self.block_directive(id, pf);
             }
@@ -3072,9 +3212,20 @@ impl Builder<'_> {
                 }
                 let inline = !kids.is_empty() && kids.iter().all(|&c| is_inline(&self.nodes[c]));
                 if inline || kids.is_empty() {
-                    let glyphs = self.inline_children_with_trailing(id, Style::default());
+                    // The block's own attributes over its containers' — the
+                    // three run-level keys become the style its glyphs start
+                    // from, and the two line-level ones ride every row it
+                    // emits, a wrapped paragraph's continuations included.
+                    let pres = self.presentation.under(&node.attrs);
+                    let glyphs =
+                        self.inline_children_with_trailing(id, pres.over(Style::default()));
                     if !glyphs.is_empty() {
+                        let first = self.rows.len();
                         self.emit_wrapped(glyphs, node.span.start, pf, pc);
+                        for row in &mut self.rows[first..] {
+                            row.align = pres.align;
+                            row.line_height = pres.line_height;
+                        }
                     }
                 } else {
                     self.blocks(id, pf, pc, false);
@@ -3254,6 +3405,8 @@ impl Builder<'_> {
             task: None,
             leaf_directive: None,
             heading: None,
+            align: None,
+            line_height: None,
             boundary: None,
             mark_ends: Vec::new(),
         });
@@ -3350,6 +3503,8 @@ impl Builder<'_> {
                 task: None,
                 leaf_directive: None,
                 heading: None,
+                align: None,
+                line_height: None,
                 boundary: None,
                 mark_ends,
             });
@@ -3461,6 +3616,8 @@ impl Builder<'_> {
                 task: None,
                 leaf_directive: None,
                 heading: None,
+                align: None,
+                line_height: None,
                 boundary: None,
                 mark_ends: Vec::new(),
             });
@@ -3604,8 +3761,7 @@ impl Builder<'_> {
     fn block_directive(&mut self, id: usize, pf: &[Glyph]) {
         let node = &self.nodes[id];
         let (start, end) = (node.span.start, node.span.end);
-        let name = node.name.clone().unwrap_or_default();
-        let attrs = node.attrs.clone();
+        let (name, attrs) = leaf_directive_identity(node);
         let label = self.image_alt(id); // its `[label]` children, flattened
         let shown = if label.is_empty() { &name } else { &label };
         let style = Style::default().role(Role::Image);
@@ -3817,6 +3973,30 @@ impl Builder<'_> {
                     Some((_, close)) => self.push_delim(out, close, style),
                     None => self.note_mark_end(id),
                 }
+            }
+            // An attributed span — the run-level half of the presentation
+            // vocabulary. djot's `[text]{…}`, AsciiDoc's `[.a]#text#`, HTML's
+            // and Markdown's `<span …>`: one node with a name twig hands back
+            // for two of the four (see [`is_run_span`]), all four carrying the
+            // author's `data-size`, `data-font` and `data-color` on the run
+            // they cover.
+            //
+            // The keys are written over the surrounding style rather than
+            // replacing it, so a span inside a block that names its own size
+            // wins on size and keeps the block's face — the nearest-wins rule
+            // the block walker applies through a `div`. A key the span does not
+            // name is one the block still says.
+            //
+            // A `data-color` here is the text's *foreground*, where the same key
+            // on a `mark` is a highlight's background: same vocabulary, same
+            // enum, and no collision, because a `mark` is a `mark` and a span is
+            // a span.
+            //
+            // Otherwise this is the plain `recurse` an anonymous container has
+            // always had — no delimiters, because the `{…}` is markup and the
+            // span's text is the author's words.
+            "container" if is_run_span(node) && !self.children(id).is_empty() => {
+                self.recurse(id, run_style(node, base), out)
             }
             // A text directive (`:name[label]{…}`) — the inline form of a generic
             // directive. Its `[label]` children are the visible text; the name and
@@ -4150,6 +4330,8 @@ impl Builder<'_> {
             task: None,
             leaf_directive: None,
             heading: None,
+            align: None,
+            line_height: None,
             boundary: None,
             mark_ends,
         });
@@ -4300,6 +4482,8 @@ impl Builder<'_> {
                 task: None,
                 leaf_directive: None,
                 heading: None,
+                align: None,
+                line_height: None,
                 // The one drawn row here is a block boundary like any other —
                 // "rendered the way a block boundary is rendered" is the whole
                 // point of it — so it says so, and a frontend spacing boundaries
@@ -5158,6 +5342,81 @@ pub(crate) fn element_tag(node: &FlatNode) -> Option<&str> {
         .flatten()
 }
 
+/// A leaf directive's name and whatever attributes are not part of spelling
+/// it — the two things a [`DirectiveMark`] carries, which twig hands back
+/// differently per format and which a frontend must not be able to tell apart.
+///
+/// Markdown's `::page-break` is a `Leaf`-form directive *named* `page-break`
+/// with no attributes, and this returns it verbatim. Djot has no leaf form:
+/// `insert_directive` writes the same document as an empty `::: page-break`
+/// fence, whose container is anonymous (a djot div carries no name) and whose
+/// name arrives as the fence's one class. So where the node has no name of its
+/// own the first `class` token *is* the name, and whatever else the class said
+/// — an author's `::: page-break {.wide}` — stays an attribute.
+fn leaf_directive_identity(node: &FlatNode) -> (String, Vec<(String, Option<String>)>) {
+    let named = node.name.clone().unwrap_or_default();
+    if !named.is_empty() {
+        return (named, node.attrs.clone());
+    }
+    let class = node
+        .attrs
+        .iter()
+        .find(|(k, _)| k == "class")
+        .and_then(|(_, v)| v.as_deref())
+        .unwrap_or_default();
+    let mut tokens = class.split_whitespace();
+    let Some(name) = tokens.next().map(str::to_string) else {
+        return (named, node.attrs.clone());
+    };
+    let rest = tokens.collect::<Vec<_>>().join(" ");
+    let attrs = node
+        .attrs
+        .iter()
+        .filter_map(|(k, v)| {
+            if k != "class" {
+                return Some((k.clone(), v.clone()));
+            }
+            (!rest.is_empty()).then(|| (k.clone(), Some(rest.clone())))
+        })
+        .collect();
+    (name, attrs)
+}
+
+/// Is this inline `container` an **attributed span** — the node leaf's run-level
+/// vocabulary rides — rather than a named directive?
+///
+/// The four formats spell one span four ways and twig hands the name back for
+/// two of them: HTML's and Markdown's `<span …>` arrive named `span` with
+/// `Element` origin, while djot's `[text]{…}` and AsciiDoc's `[.a]#text#`
+/// arrive anonymous (an empty name) with `Directive` origin. All four are the
+/// same node to `wrap_range_attrs`, which is what writes them, so they are the
+/// same node here.
+///
+/// A *named* directive is not one, whatever its name: a Markdown `:span[…]{…}`
+/// is a directive the parser read as a directive, twig's own
+/// `wrap_range_attrs` says so, and it keeps the handling it has.
+pub(crate) fn is_run_span(node: &FlatNode) -> bool {
+    if node.kind != Kind::Container {
+        return false;
+    }
+    match node.name.as_deref() {
+        None | Some("") => true,
+        Some("span") => node.origin == Some(ContainerOrigin::Element),
+        Some(_) => false,
+    }
+}
+
+/// `base` with an attributed span's three run-level keys written over it — the
+/// nearest-wins fold [`is_run_span`] describes, for one span.
+fn run_style(node: &FlatNode, base: Style) -> Style {
+    Style {
+        size: SizeStep::from_attrs(&node.attrs).or(base.size),
+        font: FontFamily::from_attrs(&node.attrs).or(base.font),
+        color: MarkColor::from_attrs(&node.attrs).or(base.color),
+        ..base
+    }
+}
+
 pub(crate) fn is_inline(node: &FlatNode) -> bool {
     // A directive is inline only in its `text` form (`:name[label]{…}`); the
     // `leaf` and `container` forms are blocks. All three report the same `kind`,
@@ -5167,10 +5426,19 @@ pub(crate) fn is_inline(node: &FlatNode) -> bool {
     // then walked as a container of blocks, rendering as empty rows with no
     // caret home at all.
     //
-    // An HTML element shares the `container` kind but never the `text` form, so
-    // it answers `false` here and is walked as the block it is.
+    // An HTML element shares the `container` kind, and twig sets the same form
+    // on the two tags the lightweight formats have a generic spelling for: a
+    // `<span>` is `Text` and a `<div>` is `Container`, while a `<video>` or a
+    // `<picture>` has no form at all. So the form answers for an element as it
+    // answers for a directive, and the origin is not consulted — which is what
+    // makes a `<span …>` inside a paragraph an inline node.
+    //
+    // It has to. `wrap_range_attrs` spells an attributed run as exactly that
+    // span in Markdown and HTML, and a paragraph holding one whose kids were
+    // not all inline failed the test below and was walked as a container of
+    // blocks: the text either side of the span rendered as nothing at all.
     if node.kind == Kind::Container {
-        return container_is_directive(node) && node.directive_form == Some(DirectiveForm::Text);
+        return node.directive_form == Some(DirectiveForm::Text);
     }
     is_inline_kind(&node.kind)
 }
@@ -5223,6 +5491,11 @@ pub(crate) fn assert_maps_eq(a: &VisualMap, b: &VisualMap, ctx: &str) {
         assert_eq!(ra.boundary, rb.boundary, "row {i} boundary ({ctx})");
         assert_eq!(ra.code, rb.code, "row {i} code ({ctx})");
         assert_eq!(ra.code_lang, rb.code_lang, "row {i} code_lang ({ctx})");
+        assert_eq!(ra.align, rb.align, "row {i} align ({ctx})");
+        assert_eq!(
+            ra.line_height, rb.line_height,
+            "row {i} line_height ({ctx})"
+        );
         assert_eq!(
             ra.glyphs.len(),
             rb.glyphs.len(),
@@ -5297,6 +5570,37 @@ mod tests {
         )
         .unwrap();
         build_t(&ed.nodes().unwrap(), src, Some(80))
+    }
+
+    /// [`map`] in `format`, parsed the way every leaf document is — the
+    /// extensions [`crate::doc::parse_extensions`] turns on, which is what
+    /// pairs a Markdown `<div …>` with its `</div>` into a container and makes
+    /// `::page-break` a directive rather than a paragraph of colons.
+    fn map_leaf(src: &str, format: Format) -> VisualMap {
+        let mut ed =
+            Editor::new_ext(src.as_bytes(), format, crate::doc::parse_extensions()).unwrap();
+        build_t(&ed.nodes().unwrap(), src, Some(80))
+    }
+
+    /// The alignment and line spacing of every row that draws text, in order —
+    /// how a test reads a block property off the map.
+    fn line_facts(m: &VisualMap) -> Vec<(Option<Align>, Option<LineSpacing>)> {
+        m.rows
+            .iter()
+            .filter(|r| r.glyphs.iter().any(|g| !g.ch.is_whitespace()))
+            .map(|r| (r.align, r.line_height))
+            .collect()
+    }
+
+    /// The style of the glyph spelling `ch`, first occurrence — how a test reads
+    /// a run property off the map.
+    fn style_of(m: &VisualMap, ch: char) -> Style {
+        m.rows
+            .iter()
+            .flat_map(|r| r.glyphs.iter())
+            .find(|g| g.ch == ch)
+            .unwrap_or_else(|| panic!("no glyph {ch:?} in the map"))
+            .style
     }
 
     /// [`map`] with soft breaks preserved (`LineFlow::Preserve`).
@@ -8248,5 +8552,188 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── the presentation vocabulary ─────────────────────────────────────────
+
+    /// A block's own attributes, in the three formats that spell one on the
+    /// block itself: HTML's tag, djot's `{…}` line, and — the odd one — a
+    /// Markdown `<div>` around it, which is where twig has to put a Markdown
+    /// block's attributes because the format has nowhere else.
+    #[test]
+    fn a_block_carries_its_alignment_on_every_row_it_draws() {
+        // HTML, on the paragraph. `lead` is somebody else's class and is
+        // neither read nor in the way.
+        let html = map_leaf("<p class=\"lead center\">hi</p>\n", Format::Html);
+        assert_eq!(line_facts(&html), vec![(Some(Align::Center), None)]);
+
+        // djot's attribute line, on the block.
+        let dj = map_leaf("{.right}\nhi\n", Format::Djot);
+        assert_eq!(line_facts(&dj), vec![(Some(Align::Right), None)]);
+
+        // A heading carries it too, and on every row a wrapped one draws.
+        let h = map_leaf("{.center}\n# a heading\n", Format::Djot);
+        assert_eq!(line_facts(&h), vec![(Some(Align::Center), None)]);
+        assert_eq!(h.rows[0].heading, Some(1));
+
+        // Both keys at once, and the line spacing is read the same way.
+        let both = map_leaf("{.justify data-line-height=\"1.5\"}\nhi\n", Format::Djot);
+        assert_eq!(
+            line_facts(&both),
+            vec![(Some(Align::Justify), Some(LineSpacing::OneHalf))]
+        );
+
+        // An unknown token and an unknown ratio are somebody else's, and the
+        // block draws at the theme's default rather than at a guess.
+        let other = map_leaf("{.lead data-line-height=\"1.3\"}\nhi\n", Format::Djot);
+        assert_eq!(line_facts(&other), vec![(None, None)]);
+    }
+
+    /// `<div class="center">` around three paragraphs centres all three, which
+    /// is what the author of that HTML meant — and around one is the sole-child
+    /// shape twig's `set_block_attrs` writes in Markdown.
+    #[test]
+    fn a_div_lends_its_alignment_to_every_block_inside_it() {
+        let m = map_leaf(
+            "<div class=\"center\" data-line-height=\"2\">\n\none\n\ntwo\n\n</div>\n",
+            Format::Markdown,
+        );
+        assert_eq!(
+            line_facts(&m),
+            vec![
+                (Some(Align::Center), Some(LineSpacing::Double)),
+                (Some(Align::Center), Some(LineSpacing::Double)),
+            ]
+        );
+
+        // The nearer node wins, and the block after the div is untouched — the
+        // context is restored, not left running.
+        let nested = map_leaf(
+            "<div class=\"center\">\n\n<div class=\"right\">\n\ninner\n\n</div>\n\nouter\n\n</div>\n\nafter\n",
+            Format::Markdown,
+        );
+        assert_eq!(
+            line_facts(&nested),
+            vec![
+                (Some(Align::Right), None),
+                (Some(Align::Center), None),
+                (None, None),
+            ]
+        );
+    }
+
+    /// Size, face and colour are the run's, and the block's when the whole
+    /// block is meant — read at both levels with the nearer winning.
+    #[test]
+    fn a_span_s_size_beats_its_block_s_and_its_face_falls_through() {
+        // `<div data-font>` over `<p data-size>` over `<span data-size>`: the
+        // span wins on size, the block is still what says the face.
+        // The span is not first on its line: a `<span …>` opening one is an
+        // HTML *block* to CommonMark, which is a fact about Markdown and not
+        // about this.
+        let m = map_leaf(
+            "<div data-font=\"serif\">\n\nc <span data-size=\"small\">a</span> b\n\n</div>\n",
+            Format::Markdown,
+        );
+        let a = style_of(&m, 'a');
+        assert_eq!(a.size, Some(SizeStep::Small));
+        assert_eq!(a.font, Some(FontFamily::Serif));
+        // The text outside the span keeps the div's face and no size at all.
+        let b = style_of(&m, 'b');
+        assert_eq!(b.size, None);
+        assert_eq!(b.font, Some(FontFamily::Serif));
+
+        // djot spells the same span anonymously and it reads identically.
+        let dj = map_leaf(
+            "{data-size=\"large\"}\nx [y]{data-size=\"xx-large\" data-color=\"blue\"} z\n",
+            Format::Djot,
+        );
+        assert_eq!(style_of(&dj, 'x').size, Some(SizeStep::Large));
+        assert_eq!(style_of(&dj, 'y').size, Some(SizeStep::XxLarge));
+        assert_eq!(style_of(&dj, 'y').color, Some(MarkColor::Blue));
+        // The block's size is still the block's outside the span.
+        assert_eq!(style_of(&dj, 'z').size, Some(SizeStep::Large));
+        assert_eq!(style_of(&dj, 'z').color, None);
+    }
+
+    /// The one key two nodes share. `data-color` on a `mark` is the highlight's
+    /// *background* and reaches a glyph through [`Role::Mark`]; the same key on
+    /// an attributed span is the text's foreground. Same vocabulary, same enum,
+    /// no collision — and a mark inside a coloured span wears both.
+    #[test]
+    fn a_mark_keeps_its_highlight_colour_and_a_span_colours_the_text() {
+        let m = map_leaf("a ==\u{1f534} red== b\n", Format::Markdown);
+        let r = style_of(&m, 'r');
+        assert_eq!(r.role, Role::Mark(Some(MarkColor::Red)));
+        assert_eq!(r.color, None, "a highlight is not a text colour");
+
+        let both = map_leaf(
+            "<span data-color=\"blue\">a ==\u{1f534} red== b</span>\n",
+            Format::Markdown,
+        );
+        let r = style_of(&both, 'r');
+        assert_eq!(r.role, Role::Mark(Some(MarkColor::Red)), "the highlight");
+        assert_eq!(r.color, Some(MarkColor::Blue), "the letters");
+    }
+
+    /// A page break is the `::page-break` leaf directive, and djot spells the
+    /// same document as an empty `::: page-break` fence whose name comes back
+    /// as a class. Both draw the placeholder row every leaf directive gets and
+    /// both carry the same [`DirectiveMark`], because a frontend that opens a
+    /// page at one must not be able to tell which format the file is in.
+    #[test]
+    fn a_page_break_reads_the_same_in_markdown_and_in_djot() {
+        for (fmt, src) in [
+            (Format::Markdown, "a\n\n::page-break\n\nb\n"),
+            (Format::Djot, "a\n\n::: page-break\n:::\n\nb\n"),
+        ] {
+            let m = map_leaf(src, fmt);
+            let marks: Vec<&DirectiveMark> = m
+                .rows
+                .iter()
+                .filter_map(|r| r.leaf_directive.as_ref())
+                .collect();
+            assert_eq!(marks.len(), 1, "{fmt:?} draws one placeholder");
+            assert_eq!(marks[0].name, "page-break", "{fmt:?}");
+            assert!(marks[0].attrs.is_empty(), "{fmt:?}: {:?}", marks[0].attrs);
+            assert!(
+                m.rows
+                    .iter()
+                    .any(|r| r.glyphs.iter().map(|g| g.ch).collect::<String>()
+                        == "\u{29c9} page-break"),
+                "{fmt:?} draws the label, got {:?}",
+                m.rows
+                    .iter()
+                    .map(|r| r.glyphs.iter().map(|g| g.ch).collect::<String>())
+                    .collect::<Vec<_>>()
+            );
+        }
+
+        // A Markdown `:::note` with nothing in it is *not* this: its name is
+        // its own, and nothing about it says "a block with no body" the way
+        // djot's spelling of a leaf directive does.
+        let empty_fence = map_leaf("::: note\n:::\n", Format::Markdown);
+        assert!(
+            empty_fence.rows.iter().all(|r| r.leaf_directive.is_none()),
+            "a named empty fence keeps the reading it has"
+        );
+    }
+
+    /// A djot fence carrying more than its name keeps the rest as an attribute
+    /// rather than folding it into the name: the *first* class token is the
+    /// name, because that is where `insert_directive` puts it.
+    #[test]
+    fn a_djot_fence_s_first_class_is_the_directive_s_name_and_the_rest_is_attributes() {
+        let m = map_leaf("{.page-break .wide}\n:::\n:::\n", Format::Djot);
+        let mark = m
+            .rows
+            .iter()
+            .find_map(|r| r.leaf_directive.as_ref())
+            .expect("a placeholder");
+        assert_eq!(mark.name, "page-break");
+        assert_eq!(
+            mark.attrs,
+            vec![("class".to_string(), Some("wide".to_string()))]
+        );
     }
 }
