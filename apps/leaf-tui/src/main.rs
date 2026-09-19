@@ -366,6 +366,7 @@ pub const FORMAT_MENU: &[MenuEntry] = &[
     MenuEntry::Action(Command::Quote),
     MenuEntry::Action(Command::TaskItem),
     MenuEntry::Action(Command::TaskChecked),
+    MenuEntry::Action(Command::CycleAlign),
     MenuEntry::Header("Inline"),
     MenuEntry::Action(Command::Inline(InlineKind::Strong)),
     MenuEntry::Action(Command::Inline(InlineKind::Emph)),
@@ -405,6 +406,7 @@ pub const INSERT_MENU: &[MenuEntry] = &[
     MenuEntry::Action(Command::Audio),
     MenuEntry::Action(Command::Footnote),
     MenuEntry::Action(Command::ThematicBreak),
+    MenuEntry::Action(Command::PageBreak),
     MenuEntry::Action(Command::CodeLanguage),
 ];
 

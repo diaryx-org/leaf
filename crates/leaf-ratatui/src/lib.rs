@@ -43,8 +43,8 @@ pub mod style;
 #[cfg(feature = "images")]
 pub use image::Images;
 pub use input::{
-    MouseOutcome, Outcome, cycle_markup_mode, follow, handle_key, handle_mouse, line_flow_name,
-    markup_mode_name, toggle_line_flow,
+    MouseOutcome, Outcome, align_name, cycle_alignment, cycle_markup_mode, follow, handle_key,
+    handle_mouse, line_flow_name, markup_mode_name, toggle_line_flow,
 };
 pub use leaf_core::ColorScheme;
 pub use render::render;
