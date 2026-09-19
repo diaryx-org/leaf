@@ -37,6 +37,35 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.2.1 — 2026-09-19
+
+### Fixed
+
+- **core** — Backspace at a centred block strips its attributes, and after a Markdown div joins across the hidden tag ([`5566140`](https://github.com/diaryx-org/leaf/commit/5566140a71909469749c82e1e00dff87be891e5e))
+- **core** — Backspace and Delete step over an attributed span's hidden tags, and take the span with its last letter ([`a5440a0`](https://github.com/diaryx-org/leaf/commit/a5440a0df23afb1867ccfefa3ae246ac51de03c5))
+- **core** — Backspace at a block's start and Delete at its end are twig's join, spelled per format ([`4495062`](https://github.com/diaryx-org/leaf/commit/4495062e984f7ad43ea014a661c058cba486cce0))
+
+### Behavioural changes
+
+- Backspace at the start of a paragraph or heading whose attributes are spelled before it (a djot `{…}` line, a Markdown `<div>` it is the sole child of) now strips those attributes and keeps the text; it deleted one byte of the markup before.
+
+- Backspace at the start of a paragraph that follows a Markdown `<div>` now moves the paragraph into the div, joined to its last paragraph by a soft break; it deleted the newline under the `</div>` before.
+
+- the line a Markdown `</div>` sits on is no longer a blank row: `visible_text` spells one fewer `\n` per div followed by a block, that line's offset is no longer a caret stop, and a document ending in a div no longer renders trailing empty rows for the tag's line.
+
+- Backspace with the caret after an attributed span's closing markup (`</span>`, djot's `]{…}`) deletes the span's last character instead of a byte of the markup. Delete in front of its opening markup deletes the first character.
+
+- The Backspace or Delete that takes the last character of an attributed span's text removes the span, attributes included, in the same edit. A span that is empty as written is removed together with the character before it (Backspace) or after it (Delete).
+
+- Backspace at the start of a paragraph under an ATX heading now joins the paragraph onto the heading's line (`# Title below`); it left the paragraph a separate block before.
+
+- Backspace at the start of an HTML paragraph now joins it to the paragraph before it as one `<p>`; it deleted the `>` off the opening tag before.
+
+- Backspace at the start of a paragraph after a Markdown `<div>` or a list now moves the paragraph into the div, or under the item's continuation indent, rather than joining it as a soft break outside.
+
+- Delete at the end of a paragraph or heading now joins the next block into it by the same rules; it deleted one newline before. Where the next block cannot be joined the caret steps forward and nothing is deleted.
+
+
 ## v0.2.0 — 2026-09-18
 
 ### Added
