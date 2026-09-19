@@ -68,6 +68,16 @@ await LeafEditor.init(wasmUrl);
   and Djot doesn't — together with `caretInMark()` or `state.hasSelection`,
   which say whether there is anything for the colour to belong to.
   `setMarkColor` is the exact one-splice gesture underneath.
+- **The presentation vocabulary.** `setAlignment`, `setLineSpacing`,
+  `setFontSize`, `setFontFamily`, `setTextColor` and `insertPageBreak`, each
+  taking one of a closed list of *names* (`ALIGNMENTS`, `LINE_SPACINGS`,
+  `SIZE_STEPS`, `FONT_FAMILIES`, `MARK_COLORS`) or `null` to clear it, and each
+  with an `…AtCaret()` query a control lights itself by and a
+  `capabilities()` flag it dims by. Alignment and spacing are the caret's
+  block; size, face and colour are the selection, or the block when there is
+  none. The row element carries the alignment class and `data-line-height`, the
+  run element `data-size`, `data-font` and `data-color` — the document's own
+  spelling, so the editor's DOM and a published page's are the same.
 - **Syntax highlighting** in a fenced block whose language a grammar knows:
   each run carries a `token` — one of core's eight classes — and arrives as a
   `.leaf-t-<token>` class beside `.leaf-r-code`, coloured by the
@@ -84,6 +94,33 @@ The keyboard mirrors leaf-gpui: ⌘B/I/U, ⌘⇧C code, ⌘⇧M highlight, ⌘�
 paragraph and headings, ⌘⇧7/8 lists, ⌘[ / ⌘] outdent and indent, ⌘E toggles
 the source view, ⌘⇧V pastes as plain text. Ctrl stands in for ⌘ off a Mac, and
 on a Mac Control is left to the system's own bindings.
+
+## `presentation.css`
+
+[`src/presentation.css`](src/presentation.css) is the stylesheet **a page built
+from a leaf document links to**. A document carries alignment, spacing, size,
+face and colour as names rather than measurements — `class="center"`,
+`data-size="large"`, `data-color="red"` — which survive in every format leaf
+writes (a `<div>`/`<span>` in Markdown, a `{.center}` line in djot, an
+attribute in HTML). This file is one rule per token and nothing else, so a
+page rendered by anything that passes that markup through draws what the author
+meant, with no leaf and no JavaScript present:
+
+```html
+<link rel="stylesheet" href="node_modules/@diaryx/leaf/src/presentation.css" />
+```
+
+```js
+import "@diaryx/leaf/presentation.css";   // the same file, through the exports map
+```
+
+The seven colours are `var(--leaf-red, …)` and friends, so a page with a
+palette overrides them and a page without still reads in light and in dark. The
+editor injects these very rules, scoped to its own surface and with two
+corrections of its own (sizes relative to the text around them, so a step on a
+heading scales the heading; spacing as a multiple of the theme's line height);
+`PRESENTATION_CSS` is the same text as a string, for a host that renders leaf
+documents outside the editor. A test holds the file and the constant level.
 
 ## Building and testing
 

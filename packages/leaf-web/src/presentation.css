@@ -1,0 +1,63 @@
+/* leaf's presentation vocabulary, as CSS.
+ *
+ * A leaf document carries alignment, line spacing, size, face and colour as
+ * *names* — `class="center"`, `data-size="large"` — and never as measurements,
+ * so that a document outlives the theme it was written under. This file is the
+ * whole of what a page built from such a document needs to render them with no
+ * leaf present: one rule per token, nothing else. Link it beside your own
+ * stylesheet.
+ *
+ *     <link rel="stylesheet" href="node_modules/@diaryx/leaf/src/presentation.css">
+ *
+ * Every token is what CSS already calls the same thing, so each rule is a
+ * transcription and nothing is learned twice. The editor injects these very
+ * rules, scoped to its own surface, which is why they live in a file of their
+ * own rather than inside `editor.js` — see `PRESENTATION_CSS` there, which the
+ * test page holds level with this text.
+ *
+ * The colours are custom properties with a fallback: a page that has a palette
+ * sets `--leaf-red` and friends and gets its own, and a page that has none
+ * still reads. The fallbacks are mid-tone on purpose — each clears 4:1 against
+ * white and against a near-black page, because this file cannot know which it
+ * is being read on.
+ */
+
+/* Alignment. There is no `left` token: absence is the theme's default, which
+   is left, and a document that wants to say so has no reason to. */
+.center  { text-align: center }
+.right   { text-align: right }
+.justify { text-align: justify }
+
+/* Line spacing, as the multiple every word processor's menu offers. `1` is not
+   a token, because `1` is absence. */
+[data-line-height="1.15"] { line-height: 1.15 }
+[data-line-height="1.5"]  { line-height: 1.5 }
+[data-line-height="2"]    { line-height: 2 }
+
+/* Size, in CSS's own `<absolute-size>` keywords less `medium`, which is
+   absence. The browser's own ramp for these words is the one the vocabulary
+   means. */
+[data-size="xx-small"]  { font-size: xx-small }
+[data-size="x-small"]   { font-size: x-small }
+[data-size="small"]     { font-size: small }
+[data-size="large"]     { font-size: large }
+[data-size="x-large"]   { font-size: x-large }
+[data-size="xx-large"]  { font-size: xx-large }
+[data-size="xxx-large"] { font-size: xxx-large }
+
+/* Face, in CSS's generic families — the browser's fallback chain does the
+   resolving a document should never do for itself. */
+[data-font="serif"]      { font-family: serif }
+[data-font="sans-serif"] { font-family: sans-serif }
+[data-font="monospace"]  { font-family: monospace }
+[data-font="cursive"]    { font-family: cursive }
+
+/* Colour, in the seven names a highlight is already spelled with — a page with
+   a red for a highlight has a red for text, and both should be that red. */
+[data-color="red"]    { color: var(--leaf-red, #d24b3f) }
+[data-color="orange"] { color: var(--leaf-orange, #b96c12) }
+[data-color="yellow"] { color: var(--leaf-yellow, #9a7b12) }
+[data-color="green"]  { color: var(--leaf-green, #2e8b57) }
+[data-color="blue"]   { color: var(--leaf-blue, #3d7fd6) }
+[data-color="purple"] { color: var(--leaf-purple, #a855c9) }
+[data-color="brown"]  { color: var(--leaf-brown, #a9713c) }

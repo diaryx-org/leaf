@@ -73,6 +73,37 @@ export type MarkColor = "red" | "orange" | "yellow" | "green" | "blue" | "purple
  */
 export const MARK_COLORS: readonly MarkColor[];
 
+/** How a block is aligned across the measure. `null` is the theme's default,
+ *  which is left — there is no `left` token, because absence is it. */
+export type Align = "center" | "right" | "justify";
+/** How far apart a block sets its lines, as a multiple of the theme's own line
+ *  height. `null` is the theme's, which is why there is no `"1"`. */
+export type LineSpacing = "1.15" | "1.5" | "2";
+/** A size step, in CSS's `<absolute-size>` keywords less `medium` — which is
+ *  absence, and so is `null`. */
+export type SizeStep =
+  | "xx-small" | "x-small" | "small" | "large" | "x-large" | "xx-large" | "xxx-large";
+/** A face, in CSS's generic families. `null` is the theme's body face. */
+export type FontFamily = "serif" | "sans-serif" | "monospace" | "cursive";
+
+/** The alignment tokens in the order a control should offer them. */
+export const ALIGNMENTS: readonly Align[];
+/** The line-spacing tokens, likewise. */
+export const LINE_SPACINGS: readonly LineSpacing[];
+/** The size steps, smallest first. */
+export const SIZE_STEPS: readonly SizeStep[];
+/** The four generic faces. */
+export const FONT_FAMILIES: readonly FontFamily[];
+
+/**
+ * leaf's presentation vocabulary as CSS — one rule per token, the same text as
+ * the package's `src/presentation.css`, which is the file a page built from a
+ * leaf document links to. The editor injects these rules scoped to its own
+ * surface; a host rendering leaf documents elsewhere can inject them as they
+ * are.
+ */
+export const PRESENTATION_CSS: string;
+
 /** A source format the model can parse. */
 export type Format = "markdown" | "djot" | "html" | "xml";
 
@@ -244,6 +275,37 @@ export class LeafEditor {
   insertThematicBreak(): void;
   /** Insert block media; any selection becomes the alt text. */
   insertMedia(kind: "image" | "video" | "audio", destination: string, alt?: string): void;
+  // ── the presentation vocabulary ────────────────────────────────────────
+  // Alignment and spacing are the caret's block; size, face and colour are the
+  // selection, or the block with no selection. `null` clears the key and
+  // returns the property to the theme's own; a name outside the vocabulary
+  // throws. Dim each control by its own `capabilities()` flag — `alignment`,
+  // `line_spacing`, `font_size`, `font_family`, `text_color`, `page_break`.
+
+  /** Align the caret's block, or `null` for the theme's default (left). */
+  setAlignment(align?: Align | null): void;
+  /** Set the block's line spacing as a multiple of the theme's, or `null`. */
+  setLineSpacing(spacing?: LineSpacing | null): void;
+  /** Set the selection a step larger or smaller, or `null` for the theme's size. */
+  setFontSize(size?: SizeStep | null): void;
+  /** Set the selection's face, or `null` for the theme's body face. */
+  setFontFamily(font?: FontFamily | null): void;
+  /** Colour the selection's letters, or `null` for the theme's text colour —
+   *  not `setMarkColor`, which colours a highlight's background. */
+  setTextColor(color?: MarkColor | null): void;
+  /** Write a page break at the caret (the `::page-break` leaf directive). */
+  insertPageBreak(): void;
+  /** The alignment in force at the caret, or null — which swatch is lit. */
+  alignmentAtCaret(): Align | null;
+  /** The line spacing in force at the caret, or null. */
+  lineSpacingAtCaret(): LineSpacing | null;
+  /** The size step at the caret, or null. */
+  fontSizeAtCaret(): SizeStep | null;
+  /** The face at the caret, or null. */
+  fontFamilyAtCaret(): FontFamily | null;
+  /** The *text* colour at the caret, or null — not `EditorState.markColor`. */
+  textColorAtCaret(): MarkColor | null;
+
   tableInsertRow(below?: boolean): void;
   tableDeleteRow(): void;
   tableInsertColumn(right?: boolean): void;

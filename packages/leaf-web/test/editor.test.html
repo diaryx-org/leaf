@@ -40,7 +40,15 @@
 // Run with `cargo xtask web --test`, which serves this page and opens it. The
 // page reports into `document.title` and `window.__results` as well as on
 // screen, so an automated driver can read the outcome without scraping.
-import { LeafEditor, MARK_COLORS } from "../src/index.js";
+import {
+  LeafEditor,
+  MARK_COLORS,
+  ALIGNMENTS,
+  LINE_SPACINGS,
+  SIZE_STEPS,
+  FONT_FAMILIES,
+  PRESENTATION_CSS,
+} from "../src/index.js";
 
 const results = [];
 const list = document.getElementById("results");
@@ -351,7 +359,7 @@ await test("a media row has a caret stop on each side of the picture", () => {
 
   // Core's two columns are the row's two ends, and each maps to a distinct
   // place in the DOM — the failure this replaced put both at the same one.
-  const coreLen = Number(rowEl.dataset.mediaCoreLen);
+  const coreLen = Number(rowEl.dataset.leafCoreLen);
   assert(coreLen > 0, "the row's core length was not recorded");
   const near = ed._domPoint(zwsps[0], 0);
   const far = ed._domPoint(zwsps[1], 1);
@@ -924,6 +932,148 @@ await test("a wide glyph keeps the caret in step across a cell", () => {
   // a mapping that answers with the same offset every time.
   assert(seen.size > 2, `only ${seen.size} distinct offsets across the cell`);
   return ed;
+});
+
+// ── the presentation vocabulary ───────────────────────────────────────────
+
+await test("a centred block carries the class, and spacing scales the line box", () => {
+  const ed = editor('<div class="center" data-line-height="1.5">\n\nhello\n\n</div>\n');
+  const row = ed.rowEls.find((r) => r.textContent.includes("hello"));
+  assert(row, "the block did not render");
+  assert(row.classList.contains("center"), `the row's classes are ${row.className}`);
+  eq(row.dataset.lineHeight, "1.5", "the spacing token rides the row");
+  eq(getComputedStyle(row).textAlign, "center", "the stylesheet did not reach the row");
+  // A multiple of the *theme's* line height (24px), not of the font size —
+  // which is the difference between the editor's rule and the published page's
+  // unitless one, and the reason the row's line box is computed in JS.
+  eq(row.style.lineHeight, "36px", "the line box is not 1.5 of the theme's");
+  return ed;
+});
+
+/**
+ * Put the caret inside a word, as a click would. Each block gesture rewrites
+ * the source around the caret — in Markdown by wrapping the block in a
+ * `<div>` — so a test that presses two of them in a row says where the second
+ * one is aimed rather than inheriting wherever the first left the caret.
+ */
+function caretAt(ed, word) {
+  ed.reveal(ed.source().indexOf(word) + 1);
+}
+
+await test("the alignment gesture writes the class and the query reads it back", () => {
+  const ed = editor("hello\n");
+  eq(ed.alignmentAtCaret(), null, "a plain paragraph is the theme's default, which is left");
+  ed.setAlignment("center");
+  eq(ed.alignmentAtCaret(), "center");
+  const row = ed.rowEls.find((r) => r.textContent.includes("hello"));
+  assert(row.classList.contains("center"), `the row's classes are ${row.className}`);
+  // Clearing is the same gesture with null — there is no `left` token.
+  caretAt(ed, "hello");
+  ed.setAlignment(null);
+  eq(ed.alignmentAtCaret(), null);
+  const cleared = ed.rowEls.find((r) => r.textContent.includes("hello"));
+  assert(!cleared.classList.contains("center"), "the class outlived the key");
+  assert(!ed.source().includes("<div"), `an empty set unwraps the div: ${JSON.stringify(ed.source())}`);
+  return ed;
+});
+
+await test("a large run carries data-size, and the face and colour beside it", () => {
+  const ed = editor('a <span data-size="large" data-font="serif" data-color="red">big</span> b\n');
+  const runs = [...ed.contentEl.querySelectorAll(".leaf-run")];
+  const run = runs.find((r) => r.dataset.size);
+  assert(run, "no run carried a size");
+  eq(run.textContent, "big", "the attributed span is not the run it wraps");
+  eq(run.dataset.size, "large");
+  eq(run.dataset.font, "serif");
+  eq(run.dataset.color, "red");
+  // A *step* larger than the text around it (16px × 1.125), not the absolute
+  // keyword — so the same run inside a heading would step up from the
+  // heading's size rather than down to the body's.
+  eq(getComputedStyle(run).fontSize, "18px", "the size step is not relative to the text around it");
+  const plain = runs.find((r) => !r.dataset.color && r.textContent.trim());
+  assert(
+    getComputedStyle(run).color !== getComputedStyle(plain).color,
+    "the colour token did not reach the run"
+  );
+  assert(/serif/i.test(getComputedStyle(run).fontFamily), "the face token did not reach the run");
+  return ed;
+});
+
+await test("a page break draws a rule, and the caret steps over it in one press", () => {
+  const ed = editor("before\n\n::page-break\n\nafter\n");
+  const breakRow = ed.rowEls.find((r) => r.classList.contains("leaf-page-break"));
+  assert(breakRow, "no page-break row was drawn");
+  assert(breakRow.querySelector(".leaf-page-break-rule"), "the row has no rule in it");
+  assert(
+    !ed.contentEl.textContent.includes("page-break"),
+    "the placeholder glyphs are still being painted alongside the rule"
+  );
+  const before = ed.rowEls.find((r) => r.textContent === "before");
+  const after = ed.rowEls.find((r) => r.textContent === "after");
+  assert(before && after, "the paragraphs either side did not render");
+  // The browser's own vertical motion, which is what an arrow key runs. The
+  // break holds no caret, so one press clears it — two would mean the rule had
+  // become a line the author has to walk through.
+  const sel = window.getSelection();
+  place(firstText(before), 0);
+  sel.modify("move", "forward", "line");
+  assert(
+    after.contains(sel.anchorNode),
+    "one step down did not clear the break"
+  );
+  place(firstText(after), 0);
+  sel.modify("move", "backward", "line");
+  assert(
+    before.contains(sel.anchorNode),
+    "one step up did not clear the break"
+  );
+  return ed;
+});
+
+await test("the page-break gesture writes a directive the renderer knows", () => {
+  const ed = editor("hello world\n");
+  assert(ed.capabilities().page_break, "markdown spells a page break");
+  ed.insertPageBreak();
+  assert(ed.source().includes("::page-break"), `wrote ${JSON.stringify(ed.source())}`);
+  assert(
+    ed.rowEls.some((r) => r.classList.contains("leaf-page-break")),
+    "the directive did not arrive as a drawn break"
+  );
+  return ed;
+});
+
+await test("every presentation token the package offers is one core writes", () => {
+  const ed = editor("hello\n");
+  for (const [tokens, set, read] of [
+    [ALIGNMENTS, "setAlignment", "alignmentAtCaret"],
+    [LINE_SPACINGS, "setLineSpacing", "lineSpacingAtCaret"],
+    [SIZE_STEPS, "setFontSize", "fontSizeAtCaret"],
+    [FONT_FAMILIES, "setFontFamily", "fontFamilyAtCaret"],
+    [MARK_COLORS, "setTextColor", "textColorAtCaret"],
+  ]) {
+    for (const token of tokens) {
+      caretAt(ed, "hello");
+      ed[set](token);
+      eq(ed[read](), token, `${set}(${token})`);
+    }
+    caretAt(ed, "hello");
+    ed[set](null);
+    eq(ed[read](), null, `${set}(null) clears`);
+  }
+  // A name outside the vocabulary is an error, not the null that clears — the
+  // two are one keystroke apart and mean opposite things.
+  let threw = false;
+  try { ed.setFontSize("huge"); } catch { threw = true; }
+  assert(threw, "an unknown size was read as no size");
+  return ed;
+});
+
+await test("the injected rules and presentation.css are the same stylesheet", async () => {
+  const text = await (await fetch("../src/presentation.css")).text();
+  // Comments and whitespace are each file's own; the rules are not.
+  const rules = (css) => css.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\s+/g, " ").trim();
+  eq(rules(text), rules(PRESENTATION_CSS), "presentation.css has drifted from PRESENTATION_CSS");
+  assert(rules(text).length > 0, "presentation.css is empty");
 });
 
 // ── report ────────────────────────────────────────────────────────────────
