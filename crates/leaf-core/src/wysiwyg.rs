@@ -29,7 +29,8 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::style::{
-    Align, Baseline, FontFamily, LineSpacing, MarkColor, Role, SizeStep, Style, Token,
+    Align, Baseline, FaceId, FaceRef, FaceTable, FontSize, LineHeight, MarkColor, Role, Style,
+    TextColor, Token,
 };
 
 /// One rendered character plus the source byte offset it originates from.
@@ -172,10 +173,11 @@ pub struct VRow {
     /// the block emits and `None` for the theme's spacing.
     ///
     /// A frontend that lays rows out in pixels scales the row's height by
-    /// [`LineSpacing::ratio`]; one that draws a row per terminal line ignores it,
-    /// the way it ignores a heading's size. Read at the same two levels
-    /// [`align`](Self::align) is.
-    pub line_height: Option<LineSpacing>,
+    /// [`LineHeight::as_f32`]; one that draws a row per terminal line ignores
+    /// it, the way it ignores a heading's size. Read at the same two levels
+    /// [`align`](Self::align) is, and one of the menu's three names or the
+    /// exact ratio the author asked for.
+    pub line_height: Option<LineHeight>,
     /// What this row divides, on the blank rows a block boundary is *drawn* with
     /// and `None` on every other row — including the navigable blank lines of
     /// preserve-soft flow, which are somewhere text can go rather than a gap
@@ -513,11 +515,39 @@ pub struct VisualMap {
     /// of it. Derived from the per-row [`VRow::leaf_directive`] mark once the
     /// rows are final, exactly as [`media`](VisualMap::media) is.
     pub directives: Vec<DirectiveInfo>,
+    /// Every named font family this map's glyphs are set in, by the
+    /// [`FaceId`] they carry — the side table that lets [`Style`] stay `Copy`
+    /// while a family name stays a `String`.
+    ///
+    /// Not derived from the rows the way [`code_blocks`](Self::code_blocks) is,
+    /// because the name is not on the rows: it is interned as the walker meets
+    /// the attribute. So each of the three build paths assembles it from what
+    /// it actually walked — a fresh build from its own walk, a cached build
+    /// from each block's walk or the names its cache entry stored, a splice
+    /// from the previous map's table plus the one block it re-rendered. A
+    /// [`FaceId`] is derived from the name rather than being an index, which is
+    /// what makes those three agree glyph for glyph; see the type's note.
+    faces: FaceTable,
 }
 
 impl VisualMap {
     pub fn num_rows(&self) -> usize {
         self.rows.len()
+    }
+
+    /// The family name a glyph's [`FaceRef::Named`] stands for, or `None` for
+    /// an id from another map — which a frontend draws in the theme's body
+    /// face, as it draws a family it cannot resolve.
+    pub fn face_name(&self, id: FaceId) -> Option<&str> {
+        self.faces.name(id)
+    }
+
+    /// Every named family this map draws — how a frontend warms a font cache
+    /// before it lays a frame out. See [`faces`](Self::faces).
+    ///
+    /// [`faces`]: VisualMap::faces
+    pub fn faces(&self) -> &FaceTable {
+        &self.faces
     }
 
     /// The width of `row` in display columns — the rightmost column its caret
@@ -1341,6 +1371,7 @@ pub fn build(
         reveal: reveal.clone(),
         pending_mark_ends: RefCell::new(Vec::new()),
         presentation: Presentation::default(),
+        faces: RefCell::new(FaceTable::default()),
     };
     let last_drawn = b.top_blocks(&top);
     // The hidden frontmatter's end is the baseline for both the trailing blank
@@ -1364,6 +1395,7 @@ pub fn build(
         code_blocks,
         media,
         directives,
+        faces: b.faces.into_inner(),
     }
 }
 
@@ -1425,11 +1457,16 @@ pub fn build_cached(
         reveal: reveal.clone(),
         pending_mark_ends: RefCell::new(Vec::new()),
         presentation: Presentation::default(),
+        faces: RefCell::new(FaceTable::default()),
     };
 
     // Record the per-block row decomposition as we go, so a later
     // [`build_spliced`] can patch one block without rebuilding the map.
     let mut layout_blocks: Vec<BlockLayout> = Vec::with_capacity(blocks.len());
+    // The document's face table, assembled block by block: from the walk on a
+    // miss, from what the entry stored on a hit. The outer builder walks no
+    // attributes of its own (it spells boundaries), so it never adds to it.
+    let mut faces = FaceTable::default();
     let mut all_shift_safe = true;
     // The class of the last block that drew anything: what the next separator
     // closes, and what the trailing blank lines close at the end. A hidden block
@@ -1465,6 +1502,7 @@ pub fn build_cached(
         // the (shifted) `last_off` so the next separator lands right — no marshal.
         // Only shift-safe blocks are ever cached, so a hit is safe by construction.
         if let Some(hit) = cache.reuse(hash, bytes, &rkey) {
+            faces.merge(&hit.faces);
             let delta = start as isize - hit.built_start as isize;
             for row in &hit.rows {
                 b.rows.push(shift_row(row, delta));
@@ -1496,6 +1534,7 @@ pub fn build_cached(
                     reveal: reveal.clone(),
                     pending_mark_ends: RefCell::new(Vec::new()),
                     presentation: Presentation::default(),
+                    faces: RefCell::new(FaceTable::default()),
                 };
                 sub.block(0, &[], &[]);
                 // A block that drew nothing is stepped over, not stood on: its
@@ -1510,6 +1549,11 @@ pub fn build_cached(
                 };
                 let stepped_over = sub.stepped_over;
                 b.stepped_over = b.stepped_over.max(stepped_over);
+                // The names this block's glyph ids stand for. They go into the
+                // document's table *and* into the cache entry, because a hit
+                // re-emits these rows without walking an attribute again.
+                let block_faces = sub.faces.into_inner();
+                faces.merge(&block_faces);
                 // Cache only a block that is table-free AND renders inside its own
                 // span: those two are the conditions for reuse-by-shift to be
                 // correct. A block failing either is re-rendered every build (a
@@ -1524,6 +1568,7 @@ pub fn build_cached(
                             last_off,
                             stepped_over,
                             rkey,
+                            block_faces,
                         );
                     }
                     b.rows.extend(sub.rows);
@@ -1613,6 +1658,7 @@ pub fn build_cached(
         code_blocks,
         media,
         directives,
+        faces,
     }
 }
 
@@ -1761,6 +1807,7 @@ pub fn build_spliced(
         reveal: reveal.clone(),
         pending_mark_ends: RefCell::new(Vec::new()),
         presentation: Presentation::default(),
+        faces: RefCell::new(FaceTable::default()),
     };
     sub.block(0, &[], &[]);
     // A table, or content that renders outside the block's span (a degenerate
@@ -1768,6 +1815,13 @@ pub fn build_spliced(
     if !sub.tables.is_empty() || !rows_within(&sub.rows, &blocks[k].span) {
         return None;
     }
+    // The face table starts from the previous map's, because every row this
+    // path keeps was built against it and its glyphs' ids still mean what they
+    // meant. The re-rendered block adds whatever it met. An id the edit took
+    // the last glyph of stays in the table, naming nothing — the price of not
+    // walking the rows this path exists to avoid walking.
+    let mut faces = prev.faces;
+    faces.merge(&sub.faces.into_inner());
     let new_content = sub.rows;
     let new_content_len = new_content.len();
     let new_stops = collect_stops(&new_content);
@@ -1849,6 +1903,7 @@ pub fn build_spliced(
         code_blocks,
         media,
         directives,
+        faces,
     })
 }
 
@@ -1964,6 +2019,12 @@ struct CachedBlock {
     /// no-reveal case — which is why an entry stored under `MarkupMode::None`
     /// keeps hitting for every block that isn't the caret's.
     reveal: Option<Range<usize>>,
+    /// The named families this block's glyphs are set in — see
+    /// [`VisualMap::faces`]. Stored with the rows because a hit re-emits them
+    /// without walking a `data-font` again, and the map still has to be able to
+    /// say what the id on a reused glyph names. Empty for every block that
+    /// names no family, which is nearly all of them.
+    faces: FaceTable,
     /// The build that last reused or inserted this entry (see `generation`).
     generation: u64,
 }
@@ -2019,6 +2080,7 @@ impl BlockCache {
         last_off: usize,
         stepped_over: usize,
         reveal: Option<Range<usize>>,
+        faces: FaceTable,
     ) {
         let g = self.generation;
         let bucket = self.entries.entry(hash).or_default();
@@ -2030,6 +2092,7 @@ impl BlockCache {
             e.rows = rows;
             e.last_off = last_off;
             e.stepped_over = stepped_over;
+            e.faces = faces;
             e.generation = g;
         } else {
             bucket.push(CachedBlock {
@@ -2039,6 +2102,7 @@ impl BlockCache {
                 last_off,
                 stepped_over,
                 reveal,
+                faces,
                 generation: g,
             });
         }
@@ -2471,37 +2535,50 @@ struct Builder<'a> {
     /// than a parameter because every one of the dozen call sites of `block`
     /// would otherwise thread a value none of them care about.
     presentation: Presentation,
+    /// The named families this walk has met, by the id its glyphs carry — see
+    /// [`VisualMap::faces`]. A `RefCell` for [`pending_mark_ends`]'s reason:
+    /// the inline walk borrows the builder shared, and a span's `data-font` is
+    /// read from inside it.
+    ///
+    /// [`pending_mark_ends`]: Builder::pending_mark_ends
+    faces: RefCell<FaceTable>,
 }
 
 /// The six presentation keys as the walker carries them down a block tree —
-/// the two that are the block's ([`Align`], [`LineSpacing`]) and the three that
-/// are a run's but may be written on the block ([`SizeStep`], [`FontFamily`],
-/// [`MarkColor`]).
+/// the two that are the block's ([`Align`], [`LineHeight`]) and the three that
+/// are a run's but may be written on the block ([`FontSize`], [`FaceRef`],
+/// [`TextColor`]).
 ///
 /// `Copy` and five `Option`s, because folding is the whole of what it does:
 /// [`under`](Presentation::under) reads a container's attributes over an
 /// existing set and a key the container does not name keeps the value it had.
 /// That is the "nearest wins" rule stated once, rather than at each of the
-/// three levels a key can be written at.
+/// three levels a key can be written at. A name and a value fold alike: the
+/// nearer node wins whichever of the two forms either of them wrote.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Presentation {
     align: Option<Align>,
-    line_height: Option<LineSpacing>,
-    size: Option<SizeStep>,
-    font: Option<FontFamily>,
-    color: Option<MarkColor>,
+    line_height: Option<LineHeight>,
+    size: Option<FontSize>,
+    font: Option<FaceRef>,
+    color: Option<TextColor>,
 }
 
 impl Presentation {
     /// This set with whatever `attrs` names written over it — the nearer node's
     /// answer where it has one, the outer node's where it hasn't.
-    fn under(self, attrs: &[(String, Option<String>)]) -> Self {
+    ///
+    /// `faces` is the build's intern table, which a named family is recorded in
+    /// on the way past: the glyph carries the id and the table carries the
+    /// string. Shared rather than `&mut` because the inline walk this feeds
+    /// borrows the builder shared, the way `pending_mark_ends` does.
+    fn under(self, attrs: &[(String, Option<String>)], faces: &RefCell<FaceTable>) -> Self {
         Self {
             align: Align::from_attrs(attrs).or(self.align),
-            line_height: LineSpacing::from_attrs(attrs).or(self.line_height),
-            size: SizeStep::from_attrs(attrs).or(self.size),
-            font: FontFamily::from_attrs(attrs).or(self.font),
-            color: MarkColor::from_attrs(attrs).or(self.color),
+            line_height: LineHeight::from_attrs(attrs).or(self.line_height),
+            size: FontSize::from_attrs(attrs).or(self.size),
+            font: faces.borrow_mut().face_from_attrs(attrs).or(self.font),
+            color: TextColor::from_attrs(attrs).or(self.color),
         }
     }
 
@@ -2846,7 +2923,7 @@ impl Builder<'_> {
     fn block(&mut self, id: usize, pf: &[Glyph], pc: &[Glyph]) {
         if element_tag(&self.nodes[id]) == Some("div") {
             let saved = self.presentation;
-            self.presentation = saved.under(&self.nodes[id].attrs);
+            self.presentation = saved.under(&self.nodes[id].attrs, &self.faces);
             self.block_kind(id, pf, pc);
             self.presentation = saved;
             // Step the walk past the closing `</div>`, as the fenced-div arm
@@ -2885,7 +2962,7 @@ impl Builder<'_> {
                 // A `data-size` on a heading scales the *heading's* ramp, not
                 // the body's — the role and the step compose rather than
                 // compete, which is the same thing a colour does to a link.
-                let pres = self.presentation.under(&node.attrs);
+                let pres = self.presentation.under(&node.attrs, &self.faces);
                 let style = pres.over(heading_style(level));
                 let mut glyphs = Vec::new();
                 // On the revealed line the `# ` comes back as real, editable
@@ -3253,7 +3330,7 @@ impl Builder<'_> {
                     // three run-level keys become the style its glyphs start
                     // from, and the two line-level ones ride every row it
                     // emits, a wrapped paragraph's continuations included.
-                    let pres = self.presentation.under(&node.attrs);
+                    let pres = self.presentation.under(&node.attrs, &self.faces);
                     let glyphs =
                         self.inline_children_with_trailing(id, pres.over(Style::default()));
                     if !glyphs.is_empty() {
@@ -4033,7 +4110,7 @@ impl Builder<'_> {
             // always had — no delimiters, because the `{…}` is markup and the
             // span's text is the author's words.
             "container" if is_run_span(node) && !self.children(id).is_empty() => {
-                self.recurse(id, run_style(node, base), out)
+                self.recurse(id, run_style(node, base, &self.faces), out)
             }
             // A text directive (`:name[label]{…}`) — the inline form of a generic
             // directive. Its `[label]` children are the visible text; the name and
@@ -5453,12 +5530,16 @@ pub(crate) fn is_run_span(node: &FlatNode) -> bool {
 }
 
 /// `base` with an attributed span's three run-level keys written over it — the
-/// nearest-wins fold [`is_run_span`] describes, for one span.
-fn run_style(node: &FlatNode, base: Style) -> Style {
+/// nearest-wins fold [`is_run_span`] describes, for one span. `faces` is the
+/// build's intern table, as it is for [`Presentation::under`].
+fn run_style(node: &FlatNode, base: Style, faces: &RefCell<FaceTable>) -> Style {
     Style {
-        size: SizeStep::from_attrs(&node.attrs).or(base.size),
-        font: FontFamily::from_attrs(&node.attrs).or(base.font),
-        color: MarkColor::from_attrs(&node.attrs).or(base.color),
+        size: FontSize::from_attrs(&node.attrs).or(base.size),
+        font: faces
+            .borrow_mut()
+            .face_from_attrs(&node.attrs)
+            .or(base.font),
+        color: TextColor::from_attrs(&node.attrs).or(base.color),
         ..base
     }
 }
@@ -5570,6 +5651,7 @@ pub(crate) fn assert_maps_eq(a: &VisualMap, b: &VisualMap, ctx: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::style::{FontFamily, LineSpacing, SizeStep};
     use twig::{Editor, Format, NodeId};
 
     fn map(src: &str) -> VisualMap {
@@ -5630,7 +5712,7 @@ mod tests {
 
     /// The alignment and line spacing of every row that draws text, in order —
     /// how a test reads a block property off the map.
-    fn line_facts(m: &VisualMap) -> Vec<(Option<Align>, Option<LineSpacing>)> {
+    fn line_facts(m: &VisualMap) -> Vec<(Option<Align>, Option<LineHeight>)> {
         m.rows
             .iter()
             .filter(|r| r.glyphs.iter().any(|g| !g.ch.is_whitespace()))
@@ -8651,13 +8733,22 @@ mod tests {
         let both = map_leaf("{.justify data-line-height=\"1.5\"}\nhi\n", Format::Djot);
         assert_eq!(
             line_facts(&both),
-            vec![(Some(Align::Justify), Some(LineSpacing::OneHalf))]
+            vec![(
+                Some(Align::Justify),
+                Some(LineHeight::Step(LineSpacing::OneHalf))
+            )]
         );
 
-        // An unknown token and an unknown ratio are somebody else's, and the
-        // block draws at the theme's default rather than at a guess.
+        // An unknown token is somebody else's and the block draws at the
+        // theme's alignment; a ratio outside the menu's three is the author's
+        // own and draws at exactly what they wrote.
         let other = map_leaf("{.lead data-line-height=\"1.3\"}\nhi\n", Format::Djot);
-        assert_eq!(line_facts(&other), vec![(None, None)]);
+        assert_eq!(line_facts(&other), vec![(None, LineHeight::ratio(1.3))]);
+
+        // A value the grammar does not cover is neither: carried by the
+        // document, drawn at the theme's spacing, and read as nothing at all.
+        let em = map_leaf("{data-line-height=\"1.3em\"}\nhi\n", Format::Djot);
+        assert_eq!(line_facts(&em), vec![(None, None)]);
     }
 
     /// `<div class="center">` around three paragraphs centres all three, which
@@ -8672,8 +8763,14 @@ mod tests {
         assert_eq!(
             line_facts(&m),
             vec![
-                (Some(Align::Center), Some(LineSpacing::Double)),
-                (Some(Align::Center), Some(LineSpacing::Double)),
+                (
+                    Some(Align::Center),
+                    Some(LineHeight::Step(LineSpacing::Double))
+                ),
+                (
+                    Some(Align::Center),
+                    Some(LineHeight::Step(LineSpacing::Double))
+                ),
             ]
         );
 
@@ -8707,24 +8804,90 @@ mod tests {
             Format::Markdown,
         );
         let a = style_of(&m, 'a');
-        assert_eq!(a.size, Some(SizeStep::Small));
-        assert_eq!(a.font, Some(FontFamily::Serif));
+        assert_eq!(a.size, Some(FontSize::Step(SizeStep::Small)));
+        assert_eq!(a.font, Some(FaceRef::Generic(FontFamily::Serif)));
         // The text outside the span keeps the div's face and no size at all.
         let b = style_of(&m, 'b');
         assert_eq!(b.size, None);
-        assert_eq!(b.font, Some(FontFamily::Serif));
+        assert_eq!(b.font, Some(FaceRef::Generic(FontFamily::Serif)));
 
         // djot spells the same span anonymously and it reads identically.
         let dj = map_leaf(
             "{data-size=\"large\"}\nx [y]{data-size=\"xx-large\" data-color=\"blue\"} z\n",
             Format::Djot,
         );
-        assert_eq!(style_of(&dj, 'x').size, Some(SizeStep::Large));
-        assert_eq!(style_of(&dj, 'y').size, Some(SizeStep::XxLarge));
-        assert_eq!(style_of(&dj, 'y').color, Some(MarkColor::Blue));
+        assert_eq!(
+            style_of(&dj, 'x').size,
+            Some(FontSize::Step(SizeStep::Large))
+        );
+        assert_eq!(
+            style_of(&dj, 'y').size,
+            Some(FontSize::Step(SizeStep::XxLarge))
+        );
+        assert_eq!(
+            style_of(&dj, 'y').color,
+            Some(TextColor::Named(MarkColor::Blue))
+        );
         // The block's size is still the block's outside the span.
-        assert_eq!(style_of(&dj, 'z').size, Some(SizeStep::Large));
+        assert_eq!(
+            style_of(&dj, 'z').size,
+            Some(FontSize::Step(SizeStep::Large))
+        );
         assert_eq!(style_of(&dj, 'z').color, None);
+    }
+
+    /// The exact half of the vocabulary reaches a glyph and a row by the same
+    /// doors the names do — the fold has one rule, not one per form. A named
+    /// family is the one that cannot ride the glyph as itself: the walker
+    /// interns it and the glyph carries the id.
+    #[test]
+    fn an_exact_size_face_and_colour_reach_the_glyph_and_the_row() {
+        let m = map_leaf(
+            "<div data-line-height=\"1.3\">\n\nc <span data-size=\"14pt\" \
+             data-color=\"#c03030\" data-font=\"Garamond\">a</span> b\n\n</div>\n",
+            Format::Markdown,
+        );
+        let a = style_of(&m, 'a');
+        assert_eq!(a.size, FontSize::points(14.0));
+        assert_eq!(
+            a.color,
+            Some(TextColor::Rgb {
+                r: 0xc0,
+                g: 0x30,
+                b: 0x30
+            })
+        );
+        assert_eq!(a.font, Some(FaceRef::Named(FaceId::of("Garamond"))));
+        assert_eq!(m.face_name(FaceId::of("Garamond")), Some("Garamond"));
+        // The div's ratio is the row's, on every row the block draws.
+        assert_eq!(line_facts(&m), vec![(None, LineHeight::ratio(1.3))]);
+        // And the text outside the span has none of the span's three.
+        let b = style_of(&m, 'b');
+        assert_eq!((b.size, b.font, b.color), (None, None, None));
+
+        // One name, one entry, however many spans wear it — the table is what
+        // keeps a `Style` `Copy` and it should not grow per run.
+        let twice = map_leaf(
+            "x <span data-font=\"Garamond\">a</span> y <span data-font=\"Garamond\">b</span>\n",
+            Format::Markdown,
+        );
+        assert_eq!(twice.faces().len(), 1);
+        assert_eq!(
+            style_of(&twice, 'a').font,
+            style_of(&twice, 'b').font,
+            "one family, one id"
+        );
+
+        // A generic needs no entry at all: it names itself.
+        let generic = map_leaf(
+            "<div data-font=\"serif\">\n\nhi\n\n</div>\n",
+            Format::Markdown,
+        );
+        assert_eq!(
+            style_of(&generic, 'h').font,
+            Some(FaceRef::Generic(FontFamily::Serif))
+        );
+        assert!(generic.faces().is_empty());
     }
 
     /// The one key two nodes share. `data-color` on a `mark` is the highlight's
@@ -8744,7 +8907,11 @@ mod tests {
         );
         let r = style_of(&both, 'r');
         assert_eq!(r.role, Role::Mark(Some(MarkColor::Red)), "the highlight");
-        assert_eq!(r.color, Some(MarkColor::Blue), "the letters");
+        assert_eq!(
+            r.color,
+            Some(TextColor::Named(MarkColor::Blue)),
+            "the letters"
+        );
     }
 
     /// A page break is the `::page-break` leaf directive, and djot spells the

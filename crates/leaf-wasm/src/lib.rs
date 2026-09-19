@@ -44,8 +44,10 @@
 //! how gpui shapes a heading's line at a single larger size.
 
 use leaf_core::style::{
-    Align as CoreAlign, Baseline, FontFamily as CoreFontFamily, LineSpacing as CoreLineSpacing,
+    Align as CoreAlign, Baseline, FontFace as CoreFontFace, FontFamily as CoreFontFamily,
+    FontSize as CoreFontSize, LineHeight as CoreLineHeight, LineSpacing as CoreLineSpacing,
     MarkColor as CoreMarkColor, Role, SizeStep as CoreSizeStep, Style as LStyle,
+    TextColor as CoreTextColor,
 };
 use leaf_core::wysiwyg::text_width;
 use leaf_core::{
@@ -1614,6 +1616,14 @@ impl LeafDoc {
         self.view()
     }
 
+    // The four below still speak the *closed* vocabulary, though core's is open
+    // now: a name is wrapped into the open type on the way in and narrowed back
+    // to a name on the way out, so an exact `14pt` or `#c03030` in a document
+    // reads as `null` here and the toolbar ticks the default — exactly what
+    // this API did before. Teaching this surface the exact forms (which costs
+    // it nothing, since it speaks strings both ways) is the bindings' own step
+    // of `docs/proposals/exact-presentation-values.md`, not this one.
+
     /// Set the line spacing of the caret's block (`"1.15"`, `"1.5"`, `"2"`), or
     /// return it to the theme's with `null`. `set_alignment`'s peer in every
     /// respect but the key; single spacing is absence.
@@ -1658,7 +1668,8 @@ impl LeafDoc {
     /// the letters and needs nothing. They share the vocabulary on purpose, so a
     /// page with a `--leaf-red` for a highlight has it for text too.
     pub fn set_text_color(&mut self, color: Option<String>) -> Result<DocView, JsValue> {
-        self.doc.set_text_color(mark_color(color.as_deref())?);
+        self.doc
+            .set_text_color(mark_color(color.as_deref())?.map(CoreTextColor::Named));
         self.view()
     }
 
@@ -1690,6 +1701,7 @@ impl LeafDoc {
     pub fn line_spacing_at_caret(&mut self) -> Option<String> {
         self.doc
             .line_spacing_at_caret()
+            .and_then(CoreLineHeight::step)
             .map(|l| l.name().to_string())
     }
 
@@ -1698,7 +1710,10 @@ impl LeafDoc {
     /// node deeper: the attributed span the caret stands in, then its block,
     /// then the `div`s around it, the nearest winning.
     pub fn font_size_at_caret(&mut self) -> Option<String> {
-        self.doc.font_size_at_caret().map(|s| s.name().to_string())
+        self.doc
+            .font_size_at_caret()
+            .and_then(CoreFontSize::step)
+            .map(|s| s.name().to_string())
     }
 
     /// The face in force at the caret, or `undefined` for the theme's body face.
@@ -1706,6 +1721,7 @@ impl LeafDoc {
     pub fn font_family_at_caret(&mut self) -> Option<String> {
         self.doc
             .font_family_at_caret()
+            .and_then(|f| f.generic())
             .map(|f| f.name().to_string())
     }
 
@@ -1714,7 +1730,10 @@ impl LeafDoc {
     /// `font_size_at_caret`'s peer, and not [`DocView::mark_color`], which reads
     /// a highlight's background off a `mark` node the caret is standing in.
     pub fn text_color_at_caret(&mut self) -> Option<String> {
-        self.doc.text_color_at_caret().map(|c| c.name().to_string())
+        self.doc
+            .text_color_at_caret()
+            .and_then(CoreTextColor::named)
+            .map(|c| c.name().to_string())
     }
 
     pub fn insert_link(&mut self, destination: &str) -> Result<DocView, JsValue> {
@@ -2251,7 +2270,10 @@ fn wysiwyg_rows(vmap: &VisualMap, ss: usize, se: usize, hls: &[CoreHighlight]) -
                 // are properties of the *line*, so an empty paragraph just
                 // centred has no run to carry them.
                 align: vrow.align.map(|a| a.name().to_string()),
-                line_height: vrow.line_height.map(|l| l.name().to_string()),
+                line_height: vrow
+                    .line_height
+                    .and_then(CoreLineHeight::step)
+                    .map(|l| l.name().to_string()),
             }
         })
         .collect()
@@ -2321,9 +2343,18 @@ fn make_run(text: String, style: LStyle, sel: bool, hl: Option<&CoreHighlight>, 
         hl_color: hl.and_then(|h| h.color.clone()),
         mark_color: mark_color_name(style.role),
         token: style.token.map(|t| t.name().to_string()),
-        size: style.size.map(|s| s.name().to_string()),
-        font: style.font.map(|f| f.name().to_string()),
-        text_color: style.color.map(|c| c.name().to_string()),
+        size: style
+            .size
+            .and_then(CoreFontSize::step)
+            .map(|s| s.name().to_string()),
+        font: style
+            .font
+            .and_then(|f| f.generic())
+            .map(|f| f.name().to_string()),
+        text_color: style
+            .color
+            .and_then(CoreTextColor::named)
+            .map(|c| c.name().to_string()),
     }
 }
 
@@ -2356,11 +2387,11 @@ fn alignment(token: Option<&str>) -> Result<Option<CoreAlign>, JsValue> {
 /// A line spacing by the ratio a document spells it with — the argument
 /// `set_line_spacing` takes. `None` is the theme's spacing, which is what `"1"`
 /// would mean and is why it is not a value.
-fn line_spacing(name: Option<&str>) -> Result<Option<CoreLineSpacing>, JsValue> {
+fn line_spacing(name: Option<&str>) -> Result<Option<CoreLineHeight>, JsValue> {
     match name {
         None => Ok(None),
         Some(name) => CoreLineSpacing::from_attr(name)
-            .map(Some)
+            .map(|step| Some(CoreLineHeight::Step(step)))
             .ok_or_else(|| JsValue::from_str(&format!("unknown line spacing: {name}"))),
     }
 }
@@ -2368,11 +2399,11 @@ fn line_spacing(name: Option<&str>) -> Result<Option<CoreLineSpacing>, JsValue> 
 /// A size step by CSS's keyword for it — the argument `set_font_size` takes.
 /// `None` is the theme's own size, which is what `"medium"` would mean and is
 /// why it is not a value.
-fn size_step(name: Option<&str>) -> Result<Option<CoreSizeStep>, JsValue> {
+fn size_step(name: Option<&str>) -> Result<Option<CoreFontSize>, JsValue> {
     match name {
         None => Ok(None),
         Some(name) => CoreSizeStep::from_attr(name)
-            .map(Some)
+            .map(|step| Some(CoreFontSize::Step(step)))
             .ok_or_else(|| JsValue::from_str(&format!("unknown font size: {name}"))),
     }
 }
@@ -2381,11 +2412,11 @@ fn size_step(name: Option<&str>) -> Result<Option<CoreSizeStep>, JsValue> {
 /// is the theme's body face. A concrete family (`"Garamond"`) is an error rather
 /// than a silent pass-through: leaf's vocabulary is the four generics, and a
 /// document that names a face names it from somewhere else.
-fn font_family(name: Option<&str>) -> Result<Option<CoreFontFamily>, JsValue> {
+fn font_family(name: Option<&str>) -> Result<Option<CoreFontFace>, JsValue> {
     match name {
         None => Ok(None),
         Some(name) => CoreFontFamily::from_attr(name)
-            .map(Some)
+            .map(|generic| Some(CoreFontFace::Generic(generic)))
             .ok_or_else(|| JsValue::from_str(&format!("unknown font family: {name}"))),
     }
 }
@@ -2937,12 +2968,15 @@ mod tests {
         assert_eq!(alignment(Some("center")).unwrap(), Some(CoreAlign::Center));
         assert_eq!(
             line_spacing(Some("1.5")).unwrap(),
-            Some(CoreLineSpacing::OneHalf)
+            Some(CoreLineHeight::Step(CoreLineSpacing::OneHalf))
         );
-        assert_eq!(size_step(Some("large")).unwrap(), Some(CoreSizeStep::Large));
+        assert_eq!(
+            size_step(Some("large")).unwrap(),
+            Some(CoreFontSize::Step(CoreSizeStep::Large))
+        );
         assert_eq!(
             font_family(Some("monospace")).unwrap(),
-            Some(CoreFontFamily::Monospace)
+            Some(CoreFontFace::Generic(CoreFontFamily::Monospace))
         );
         // Absence is the theme's own, and the only way to ask for it.
         assert_eq!(alignment(None).unwrap(), None);

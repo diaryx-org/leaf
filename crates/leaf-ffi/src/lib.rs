@@ -45,9 +45,11 @@ use leaf_core::style::{Baseline, Role, Style as LStyle};
 use leaf_core::wysiwyg::text_width;
 use leaf_core::{
     Align as CoreAlign, Alignment, BlockKind, Capabilities as CoreCapabilities, ColorScheme, Doc,
-    FontFamily as CoreFontFamily, Format, InlineKind, LineFlow as CoreLineFlow,
+    FontFace as CoreFontFace, FontFamily as CoreFontFamily, FontSize as CoreFontSize, Format,
+    InlineKind, LineFlow as CoreLineFlow, LineHeight as CoreLineHeight,
     LineSpacing as CoreLineSpacing, MarkColor as CoreMarkColor, MarkupMode as CoreMarkupMode,
-    MediaKind as CoreMediaKind, SizeStep as CoreSizeStep, View, VisualMap,
+    MediaKind as CoreMediaKind, SizeStep as CoreSizeStep, TextColor as CoreTextColor, View,
+    VisualMap,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -2013,12 +2015,21 @@ impl LeafDoc {
         g.view()
     }
 
+    // The four presentation types below are still the *closed* vocabulary,
+    // though core's are open now: a gesture wraps its name into the open type
+    // and a query narrows back to one, so an exact `14pt` or `#c03030` in a
+    // document reads as `nil` here and the menu ticks the default — exactly
+    // what this API did before. Opening it (UniFFI enums with associated
+    // values, and the views learning to spell a value) is the bindings' own
+    // step of `docs/proposals/exact-presentation-values.md`, not this one.
+
     /// Set the line spacing of the caret's block, or return it to the theme's
     /// with `nil`. [`set_alignment`](Self::set_alignment)'s peer in every
     /// respect but the key. Gate on [`Capabilities::line_spacing`].
     pub fn set_line_spacing(&self, spacing: Option<LineSpacing>) -> DocView {
         let mut g = self.lock();
-        g.doc.set_line_spacing(spacing.map(CoreLineSpacing::from));
+        g.doc
+            .set_line_spacing(spacing.map(|s| CoreLineHeight::Step(CoreLineSpacing::from(s))));
         g.view()
     }
 
@@ -2032,7 +2043,8 @@ impl LeafDoc {
     /// nested. Gate on [`Capabilities::font_size`].
     pub fn set_font_size(&self, size: Option<SizeStep>) -> DocView {
         let mut g = self.lock();
-        g.doc.set_font_size(size.map(CoreSizeStep::from));
+        g.doc
+            .set_font_size(size.map(|s| CoreFontSize::Step(CoreSizeStep::from(s))));
         g.view()
     }
 
@@ -2041,7 +2053,8 @@ impl LeafDoc {
     /// [`Capabilities::font_family`].
     pub fn set_font_family(&self, font: Option<FontFamily>) -> DocView {
         let mut g = self.lock();
-        g.doc.set_font_family(font.map(CoreFontFamily::from));
+        g.doc
+            .set_font_family(font.map(|f| CoreFontFace::Generic(CoreFontFamily::from(f))));
         g.view()
     }
 
@@ -2053,7 +2066,8 @@ impl LeafDoc {
     /// [`Capabilities::text_color`].
     pub fn set_text_color(&self, color: Option<MarkColor>) -> DocView {
         let mut g = self.lock();
-        g.doc.set_text_color(color.map(CoreMarkColor::from));
+        g.doc
+            .set_text_color(color.map(|c| CoreTextColor::Named(CoreMarkColor::from(c))));
         g.view()
     }
 
@@ -2088,7 +2102,10 @@ impl LeafDoc {
     /// [`alignment_at_caret`](Self::alignment_at_caret)'s peer.
     pub fn line_spacing_at_caret(&self) -> Option<LineSpacing> {
         let mut g = self.lock();
-        g.doc.line_spacing_at_caret().map(LineSpacing::from)
+        g.doc
+            .line_spacing_at_caret()
+            .and_then(CoreLineHeight::step)
+            .map(LineSpacing::from)
     }
 
     /// The size in force at the caret, or `nil` for the theme's own — which
@@ -2097,14 +2114,20 @@ impl LeafDoc {
     /// `div`s around it, the nearest winning.
     pub fn font_size_at_caret(&self) -> Option<SizeStep> {
         let mut g = self.lock();
-        g.doc.font_size_at_caret().map(SizeStep::from)
+        g.doc
+            .font_size_at_caret()
+            .and_then(CoreFontSize::step)
+            .map(SizeStep::from)
     }
 
     /// The face in force at the caret, or `nil` for the theme's body face.
     /// [`font_size_at_caret`](Self::font_size_at_caret)'s peer.
     pub fn font_family_at_caret(&self) -> Option<FontFamily> {
         let mut g = self.lock();
-        g.doc.font_family_at_caret().map(FontFamily::from)
+        g.doc
+            .font_family_at_caret()
+            .and_then(|f| f.generic())
+            .map(FontFamily::from)
     }
 
     /// The *text* colour in force at the caret, or `nil` for the theme's — which
@@ -2114,7 +2137,10 @@ impl LeafDoc {
     /// `mark` node the caret is standing in.
     pub fn text_color_at_caret(&self) -> Option<MarkColor> {
         let mut g = self.lock();
-        g.doc.text_color_at_caret().map(MarkColor::from)
+        g.doc
+            .text_color_at_caret()
+            .and_then(CoreTextColor::named)
+            .map(MarkColor::from)
     }
 
     /// Which of the formatting commands above this document's format can
@@ -2728,7 +2754,10 @@ fn wysiwyg_rows(vmap: &VisualMap, ss: usize, se: usize, hls: &[leaf_core::Highli
                 // and spacing are properties of the *line*, so an empty
                 // paragraph just centred has no run to carry them.
                 align: vrow.align.map(|a| a.name().to_string()),
-                line_height: vrow.line_height.map(|l| l.name().to_string()),
+                line_height: vrow
+                    .line_height
+                    .and_then(CoreLineHeight::step)
+                    .map(|l| l.name().to_string()),
                 boundary: vrow.boundary.map(|b| Boundary {
                     above: b.above.into(),
                     below: b.below.into(),
@@ -3003,9 +3032,18 @@ fn make_run(
         hl_color: hl.and_then(|h| h.color.clone()),
         mark_color: mark_color_name(style.role),
         token: style.token.map(|t| t.name().to_string()),
-        size: style.size.map(|s| s.name().to_string()),
-        font: style.font.map(|f| f.name().to_string()),
-        text_color: style.color.map(|c| c.name().to_string()),
+        size: style
+            .size
+            .and_then(CoreFontSize::step)
+            .map(|s| s.name().to_string()),
+        font: style
+            .font
+            .and_then(|f| f.generic())
+            .map(|f| f.name().to_string()),
+        text_color: style
+            .color
+            .and_then(CoreTextColor::named)
+            .map(|c| c.name().to_string()),
     }
 }
 

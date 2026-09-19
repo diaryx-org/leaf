@@ -33,7 +33,8 @@ pub use doc::{
 };
 pub use source::{SourceMap, StyledRun};
 pub use style::{
-    Align, Baseline, FontFamily, LineSpacing, MarkColor, Role, SizeStep, Style, Token,
+    Align, Baseline, FaceId, FaceRef, FaceTable, FontFace, FontFamily, FontSize, Hundredths,
+    LineHeight, LineSpacing, MarkColor, Role, SizeStep, Style, TextColor, Token,
 };
 pub use wysiwyg::{
     BlockClass, Boundary, CodeBlockInfo, ColorScheme, Glyph, MediaInfo, MediaKind, MediaSource,
