@@ -2049,11 +2049,12 @@ impl Doc {
     /// mark's `content_span` ends exactly at `off`.
     fn skip_trailing_close_delims(&mut self, off: usize) -> usize {
         let off = off.min(self.source.len());
+        let runs = self.run_span_ids();
         self.editor
             .ancestors_at(off)
             .unwrap_or_default()
             .into_iter()
-            .filter(|m| inline_kind(&m.kind).is_some())
+            .filter(|m| hides_delims(m, &runs))
             .filter(|m| off < m.span.end && m.content_span.as_ref().is_some_and(|c| c.end == off))
             .map(|m| m.span.end)
             .max()
@@ -2071,11 +2072,12 @@ impl Doc {
     /// `**_x_**` clears every delimiter at once, and is a no-op anywhere else.
     fn skip_leading_open_delims(&mut self, off: usize) -> usize {
         let off = off.min(self.source.len());
+        let runs = self.run_span_ids();
         self.editor
             .ancestors_at(off)
             .unwrap_or_default()
             .into_iter()
-            .filter(|m| inline_kind(&m.kind).is_some())
+            .filter(|m| hides_delims(m, &runs))
             .filter(|m| {
                 m.span.start < off && m.content_span.as_ref().is_some_and(|c| c.start == off)
             })
@@ -2095,13 +2097,14 @@ impl Doc {
     /// anywhere else — mid-run, or in prose, no mark's span ends at `off`.
     fn step_inside_close_delims(&mut self, off: usize) -> usize {
         let mut off = off.min(self.source.len());
+        let runs = self.run_span_ids();
         loop {
             let inner = self
                 .editor
                 .ancestors_at(prev_boundary(&self.source, off))
                 .unwrap_or_default()
                 .into_iter()
-                .filter(|m| inline_kind(&m.kind).is_some() && m.span.end == off)
+                .filter(|m| hides_delims(m, &runs) && m.span.end == off)
                 .filter_map(|m| m.content_span.clone().map(|c| c.end))
                 .filter(|&end| end < off)
                 .max();
@@ -2117,13 +2120,14 @@ impl Doc {
     /// [`step_inside_close_delims`](Self::step_inside_close_delims).
     fn step_inside_open_delims(&mut self, off: usize) -> usize {
         let mut off = off.min(self.source.len());
+        let runs = self.run_span_ids();
         loop {
             let inner = self
                 .editor
                 .ancestors_at(off)
                 .unwrap_or_default()
                 .into_iter()
-                .filter(|m| inline_kind(&m.kind).is_some() && m.span.start == off)
+                .filter(|m| hides_delims(m, &runs) && m.span.start == off)
                 .filter_map(|m| m.content_span.clone().map(|c| c.start))
                 .filter(|&start| start > off)
                 .min();
@@ -2132,6 +2136,54 @@ impl Doc {
                 None => return off,
             }
         }
+    }
+
+    /// The ids of the document's attributed run spans — the inline
+    /// `Container`s [`wysiwyg::is_run_span`] picks out — for [`hides_delims`],
+    /// which sees an ancestor chain and so only a kind. Read once per gesture,
+    /// not once per step of a walk.
+    fn run_span_ids(&mut self) -> Vec<NodeId> {
+        self.nodes()
+            .iter()
+            .filter(|n| wysiwyg::is_run_span(n))
+            .map(|n| n.id)
+            .collect()
+    }
+
+    /// The attributed span whose text is exactly `content` — the whole of
+    /// `<span …>i</span>`'s `i`, or nothing at all when `content` is empty
+    /// and sits between the tags of `<span …></span>` — as the whole range
+    /// spelling the span: the node's span, widened to its attribute block
+    /// where the format writes that outside the node, as djot's
+    /// `[i]{data-size="large"}` does. `None` for any other range, including
+    /// part of a span's text.
+    ///
+    /// An empty span has an interior of no bytes, or no known interior at
+    /// all: twig gives Markdown's `<span …></span>` the first and djot's
+    /// `[]{…}` the second, and the chain already says the offset is inside.
+    fn run_span_of_content(&mut self, content: Range<usize>) -> Option<Range<usize>> {
+        let runs = self.run_span_ids();
+        let m = self
+            .editor
+            .ancestors_at(content.start)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|m| runs.contains(&NodeId(m.node_id)))
+            .find(|m| match &m.content_span {
+                Some(c) => *c == content,
+                None => content.is_empty(),
+            })?;
+        let mut range = m.span;
+        if let Some(attrs) = self
+            .editor
+            .document()
+            .ok()
+            .and_then(|mut d| d.attrs_span(NodeId(m.node_id)).ok().flatten())
+        {
+            range.start = range.start.min(attrs.start);
+            range.end = range.end.max(attrs.end);
+        }
+        Some(range)
     }
 
     /// The inline mark kinds whose span covers `off`, each with that span — the
@@ -2932,6 +2984,21 @@ impl Doc {
                 self.caret
             } else {
                 let inside = self.step_inside_close_delims(self.caret);
+                // An attributed span with no text — `<span …></span>` as the
+                // file was written — is hidden markup around nothing, and a
+                // byte-step here would take its `>`. Backspace takes the span
+                // whole, with the character before it: the character the key
+                // looks aimed at, since the span draws nothing.
+                if let Some(span) = self.run_span_of_content(inside..inside) {
+                    let from = if self.source[..span.start].ends_with('\n') {
+                        span.start
+                    } else {
+                        prev_boundary(&self.source, span.start)
+                    };
+                    let from = from.max(self.caret_floor());
+                    self.splice(from, span.end, "", EditKind::Delete);
+                    return;
+                }
                 self.skip_leading_open_delims(inside)
                     .max(self.caret_floor())
             };
@@ -2948,6 +3015,18 @@ impl Doc {
                 && self.is_hidden_escape(prev - 1)
             {
                 prev -= 1;
+            }
+            // The delete that takes the last of a span's text takes the span
+            // with it, in the same edit: `<span …>i</span>` losing its `i`
+            // would leave an empty span the map has no stop inside, so the
+            // caret would draw at the next stop — a line away — until a
+            // further key removed the span. Landing on the span's start is
+            // where the letter was.
+            if self.view != View::Source
+                && let Some(span) = self.run_span_of_content(prev..end)
+            {
+                self.splice(span.start, span.end, "", EditKind::Delete);
+                return;
             }
             if prev < end {
                 self.splice(prev, end, "", EditKind::Delete);
@@ -3316,9 +3395,27 @@ impl Doc {
                 self.caret
             } else {
                 let inside = self.step_inside_open_delims(self.caret);
+                // The mirror of Backspace's empty-span rule: an attributed
+                // span with no text goes whole, with the character after it.
+                if let Some(span) = self.run_span_of_content(inside..inside) {
+                    let to = if self.source[span.end..].starts_with('\n') {
+                        span.end
+                    } else {
+                        next_boundary(&self.source, span.end)
+                    };
+                    self.splice(span.start, to, "", EditKind::Delete);
+                    return;
+                }
                 self.skip_trailing_close_delims(inside)
             };
             let next = next_boundary(&self.source, from);
+            // And of its emptying rule: the span goes with its last letter.
+            if self.view != View::Source
+                && let Some(span) = self.run_span_of_content(from..next)
+            {
+                self.splice(span.start, span.end, "", EditKind::Delete);
+                return;
+            }
             if from < next {
                 self.splice(from, next, "", EditKind::Delete);
             }
@@ -7408,6 +7505,18 @@ fn line_end_from(s: &str, start: usize) -> usize {
 /// `None` for every other kind, including the inline nodes that aren't marks at
 /// all (`str`, `link`, `image`, the math and break kinds): they're things a
 /// caret stands in, not formatting a button toggles.
+/// Whether a match from an ancestor chain is an inline run whose delimiters
+/// the rich view draws nothing for — a mark (`**`, `_`, `==`), or an
+/// attributed span: `<span data-size="large">…</span>`, djot's `[…]{…}`. The
+/// span is a [`Kind::Container`], which the kind alone cannot tell from a
+/// block `<div>`, so the chain's caller passes [`Doc::run_span_ids`] and the
+/// answer is the node's own. Every delete and caret step that walks over a
+/// `**` walks over a span's tags by this test; without it Backspace after
+/// `</span>` took the `>` and left the paragraph unparseable.
+fn hides_delims(m: &QueryMatch, run_spans: &[NodeId]) -> bool {
+    inline_kind(&m.kind).is_some() || run_spans.contains(&NodeId(m.node_id))
+}
+
 fn inline_kind(kind: &Kind) -> Option<InlineKind> {
     Some(match kind {
         Kind::Strong => InlineKind::Strong,
@@ -16240,6 +16349,101 @@ mod tests {
             d.source, "above\n\n<!-- note -->\n\nbelow\n",
             "the comment stays"
         );
+        assert_eq!(d.caret, 5);
+    }
+
+    /// Backspace at the end of an attributed span steps inside its hidden
+    /// closing tag the way it steps inside a `**`, and takes the span with
+    /// its last letter. Before, the byte-step took the `>` of `</span>`,
+    /// which left the paragraph unparseable: it vanished from the rich view,
+    /// and the Backspace after that joined the next block into the wreck.
+    #[test]
+    fn backspace_walks_into_a_sized_span_and_takes_the_emptied_span_with_its_space() {
+        let src = "above\n\nThis <span data-size=\"x-large\">is</span> a test\n\nTest 2\n";
+        let mut d = wysiwyg_doc("wys_span_bs", src);
+        d.caret = d.source.find("a test").unwrap() + 6;
+        for _ in 0..7 {
+            d.backspace();
+        }
+        assert_eq!(
+            d.source,
+            "above\n\nThis <span data-size=\"x-large\">is</span>\n\nTest 2\n"
+        );
+        d.backspace();
+        assert_eq!(
+            d.source, "above\n\nThis <span data-size=\"x-large\">i</span>\n\nTest 2\n",
+            "the first Backspace after the tag takes the letter, not the `>`"
+        );
+        d.backspace();
+        assert_eq!(
+            d.source, "above\n\nThis \n\nTest 2\n",
+            "the last letter takes the span with it"
+        );
+        assert_eq!(d.caret, 12, "the caret is where the letter was");
+        d.backspace();
+        assert_eq!(d.source, "above\n\nThis\n\nTest 2\n");
+        assert_eq!(d.caret, 11);
+        d.build_visual(80);
+        assert!(
+            d.vmap
+                .rows
+                .iter()
+                .any(|r| r.glyphs.iter().map(|g| g.ch).collect::<String>() == "This"),
+            "the paragraph is still drawn"
+        );
+    }
+
+    #[test]
+    fn backspace_walks_into_a_djot_sized_span_too() {
+        let mut d = wysiwyg_djot("This [is]{data-size=\"x-large\"}\n\nTest 2\n");
+        d.caret = d.source.find("\n\nTest 2").unwrap();
+        // The caret home at the paragraph's end is inside the span, before
+        // its `]`: the map offers no stop after `]{…}`.
+        d.build_visual(80);
+        assert_eq!(d.vmap.stop_before(31), Some(8));
+        d.caret = 8;
+        d.backspace();
+        assert_eq!(d.source, "This [i]{data-size=\"x-large\"}\n\nTest 2\n");
+        d.backspace();
+        assert_eq!(
+            d.source, "This \n\nTest 2\n",
+            "the attribute block outside the span goes with it"
+        );
+        d.backspace();
+        assert_eq!(d.source, "This\n\nTest 2\n");
+        assert_eq!(d.caret, 4);
+    }
+
+    /// A span that is empty as the file was written has no stop of its own;
+    /// Backspace reaching it from behind takes it with the character before
+    /// it, the character the key looked aimed at.
+    #[test]
+    fn backspace_over_an_already_empty_span_takes_it_with_the_character_before() {
+        let src = "This <span data-size=\"x-large\"></span> a test\n";
+        let mut d = wysiwyg_doc("wys_span_empty", src);
+        d.caret = d.source.find(" a test").unwrap();
+        d.backspace();
+        assert_eq!(d.source, "This a test\n");
+        assert_eq!(d.caret, 4);
+    }
+
+    /// The mirror: Delete in front of a span's opening tag takes its first
+    /// letter, and the span with its last.
+    #[test]
+    fn delete_walks_into_a_sized_span_and_takes_the_span_with_its_last_letter() {
+        let src = "This <span data-size=\"x-large\">is</span> a test\n";
+        let mut d = wysiwyg_doc("wys_span_del", src);
+        d.caret = 5;
+        d.delete_forward();
+        assert_eq!(
+            d.source,
+            "This <span data-size=\"x-large\">s</span> a test\n"
+        );
+        d.delete_forward();
+        assert_eq!(d.source, "This  a test\n");
+        assert_eq!(d.caret, 5);
+        d.delete_forward();
+        assert_eq!(d.source, "This a test\n");
         assert_eq!(d.caret, 5);
     }
 }
