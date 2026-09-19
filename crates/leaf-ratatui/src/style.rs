@@ -1250,11 +1250,22 @@ mod tests {
     #[test]
     fn a_runs_size_and_face_change_nothing() {
         let theme = Theme::dark();
-        let sized = LStyle {
-            size: leaf_core::FontSize::points(24.0),
+        // Both halves of the open type, because both reach a cell: a name from
+        // the menu's seven, and the exact size an *Other…* field writes.
+        let stepped = LStyle {
+            size: Some(leaf_core::FontSize::Step(leaf_core::SizeStep::XxLarge)),
             font: Some(leaf_core::FaceRef::Generic(leaf_core::FontFamily::Cursive)),
             ..LStyle::default()
         };
-        assert_eq!(theme.to_ratatui(sized), theme.to_ratatui(LStyle::default()));
+        let exact = LStyle {
+            size: leaf_core::FontSize::points(24.0),
+            font: Some(leaf_core::FaceRef::Named(leaf_core::FaceId::of("Garamond"))),
+            ..LStyle::default()
+        };
+        assert_eq!(
+            theme.to_ratatui(stepped),
+            theme.to_ratatui(LStyle::default())
+        );
+        assert_eq!(theme.to_ratatui(exact), theme.to_ratatui(LStyle::default()));
     }
 }

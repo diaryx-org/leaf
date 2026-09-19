@@ -24,6 +24,21 @@
 
 use std::borrow::Cow;
 
+/// The value `key` carries in an attribute list, or `None` where the key is
+/// absent or bare (`<span data-size>`, which names nothing).
+///
+/// The one line every `from_attrs` in this module opens with. It takes the
+/// attribute list rather than the node so the module stays free of twig as well
+/// as of any toolkit; the pairs are plain `String`s, and the WYSIWYG builder,
+/// the source builder and the caret queries all hand over the same
+/// `node.attrs`.
+fn attr<'a>(attrs: &'a [(String, Option<String>)], key: &str) -> Option<&'a str> {
+    attrs
+        .iter()
+        .find(|(k, _)| k == key)
+        .and_then(|(_, v)| v.as_deref())
+}
+
 /// What a glyph *is*, typographically — the semantic role a frontend maps to its
 /// own presentation. Mutually exclusive per glyph (a glyph is a heading, or a
 /// link, or body text — not two at once); the compositional emphasis a run can
@@ -104,15 +119,10 @@ impl MarkColor {
     /// under `data-color`, having stripped the emoji that spelled it out of the
     /// node's content.
     ///
-    /// Takes the attribute list rather than the node so this module stays free
-    /// of twig as well as of any toolkit; the pairs are plain `String`s, and
-    /// both the WYSIWYG and source builders hand over the same `node.attrs`.
+    /// Reads the list through [`attr`], which is why the pairs are plain
+    /// `String`s rather than anything of twig's.
     pub fn from_attrs(attrs: &[(String, Option<String>)]) -> Option<Self> {
-        attrs
-            .iter()
-            .find(|(k, _)| k == "data-color")
-            .and_then(|(_, v)| v.as_deref())
-            .and_then(Self::from_attr)
+        attr(attrs, "data-color").and_then(Self::from_attr)
     }
 
     /// Read a `data-color` attribute value. `None` for a name outside the
@@ -204,11 +214,9 @@ impl Align {
     /// both the block walker and the caret query hand over the same
     /// `node.attrs`.
     pub fn from_attrs(attrs: &[(String, Option<String>)]) -> Option<Self> {
-        attrs
-            .iter()
-            .find(|(k, _)| k == "class")
-            .and_then(|(_, v)| v.as_deref())
-            .and_then(|class| class.split_whitespace().find_map(Self::from_token))
+        attr(attrs, "class")?
+            .split_whitespace()
+            .find_map(Self::from_token)
     }
 
     /// Read one `class` token. `None` for a token outside the vocabulary,
@@ -274,11 +282,7 @@ impl LineSpacing {
     /// The spacing a block's attributes name, if any — twig records it under
     /// `data-line-height`.
     pub fn from_attrs(attrs: &[(String, Option<String>)]) -> Option<Self> {
-        attrs
-            .iter()
-            .find(|(k, _)| k == "data-line-height")
-            .and_then(|(_, v)| v.as_deref())
-            .and_then(Self::from_attr)
+        attr(attrs, "data-line-height").and_then(Self::from_attr)
     }
 
     /// Read a `data-line-height` value. `None` for anything that is not one of
@@ -356,11 +360,7 @@ impl SizeStep {
     /// The size a run's or block's attributes name, if any — twig records it
     /// under `data-size`.
     pub fn from_attrs(attrs: &[(String, Option<String>)]) -> Option<Self> {
-        attrs
-            .iter()
-            .find(|(k, _)| k == "data-size")
-            .and_then(|(_, v)| v.as_deref())
-            .and_then(Self::from_attr)
+        attr(attrs, "data-size").and_then(Self::from_attr)
     }
 
     /// Read a `data-size` value. `None` for a name outside the vocabulary — a
@@ -467,24 +467,22 @@ impl FontFamily {
     /// The face a run's or block's attributes name, if any — twig records it
     /// under `data-font`.
     pub fn from_attrs(attrs: &[(String, Option<String>)]) -> Option<Self> {
-        attrs
-            .iter()
-            .find(|(k, _)| k == "data-font")
-            .and_then(|(_, v)| v.as_deref())
-            .and_then(Self::from_attr)
+        attr(attrs, "data-font").and_then(Self::from_attr)
     }
 
     /// Read a `data-font` value. `None` for a concrete family name, which is
     /// [`FontFace::Named`]'s to read; [`FontFace::from_attr`] is the door that
     /// reads both.
+    ///
+    /// The four generics are matched without regard to case, because they are
+    /// CSS keywords and CSS reads a keyword either way — a hand-written
+    /// document says `Serif` as readily as `serif`, and a family actually
+    /// *named* "Serif" is not a thing anyone has installed. The canonical
+    /// spelling [`name`](Self::name) writes back is the lowercase one.
     pub fn from_attr(value: &str) -> Option<Self> {
-        Some(match value {
-            "serif" => Self::Serif,
-            "sans-serif" => Self::SansSerif,
-            "monospace" => Self::Monospace,
-            "cursive" => Self::Cursive,
-            _ => return None,
-        })
+        Self::ALL
+            .into_iter()
+            .find(|f| value.eq_ignore_ascii_case(f.name()))
     }
 
     /// The token twig spells it with, and what [`from_attr`](Self::from_attr)
@@ -576,11 +574,20 @@ impl Hundredths {
     /// anything else, and for zero: a size or a spacing of nothing is not a
     /// value, it is a mistake.
     ///
+    /// CSS's `<number>` wants digits on whichever side of the point it has, so
+    /// `.5` is a number and `14.` is not, and this reads them the same way.
+    ///
     /// A third decimal place rounds rather than being refused, because the
     /// number a colour picker or a font panel hands back is whatever floating
     /// point made of the slider.
     fn parse(value: &str) -> Option<Self> {
-        let (int, frac) = value.split_once('.').unwrap_or((value, ""));
+        let (int, frac) = match value.split_once('.') {
+            // A trailing bare point is not a `<number>`: `14.` is a typo, and
+            // reading it as 14 would write a document the author did not mean.
+            Some((_, "")) => return None,
+            Some(pair) => pair,
+            None => (value, ""),
+        };
         if int.is_empty() && frac.is_empty() {
             return None;
         }
@@ -641,11 +648,7 @@ impl FontSize {
     /// The size a run's or block's attributes name, if any — twig records it
     /// under `data-size`.
     pub fn from_attrs(attrs: &[(String, Option<String>)]) -> Option<Self> {
-        attrs
-            .iter()
-            .find(|(k, _)| k == "data-size")
-            .and_then(|(_, v)| v.as_deref())
-            .and_then(Self::from_attr)
+        attr(attrs, "data-size").and_then(Self::from_attr)
     }
 
     /// Read a `data-size` value: one of CSS's seven keywords, or a `<number>pt`.
@@ -706,6 +709,12 @@ impl FontSize {
 /// [`from_attr`](Self::from_attr) answers `Step(OneHalf)` for `1.50` as well as
 /// for `1.5`, so that two spellings of one spacing are one value and the
 /// document is rewritten with the name a menu can tick.
+///
+/// And a ratio of **1 is absence**, exactly as it is for [`LineSpacing`], whose
+/// three names begin above it: single spacing is what a block with no
+/// `data-line-height` is set at, and a document should not carry a key that
+/// says nothing. `from_attr("1")` and `ratio(1.0)` both answer `None`, so a
+/// gesture given one clears the key and the query then ticks *Single*.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LineHeight {
     Step(LineSpacing),
@@ -716,35 +725,44 @@ impl LineHeight {
     /// The spacing a block's attributes name, if any — twig records it under
     /// `data-line-height`.
     pub fn from_attrs(attrs: &[(String, Option<String>)]) -> Option<Self> {
-        attrs
-            .iter()
-            .find(|(k, _)| k == "data-line-height")
-            .and_then(|(_, v)| v.as_deref())
-            .and_then(Self::from_attr)
+        attr(attrs, "data-line-height").and_then(Self::from_attr)
     }
 
     /// Read a `data-line-height` value: one of the three names, or any positive
-    /// decimal.
+    /// decimal other than 1, which is absence.
     pub fn from_attr(value: &str) -> Option<Self> {
         let value = value.trim();
         if let Some(step) = LineSpacing::from_attr(value) {
             return Some(Self::Step(step));
         }
-        Hundredths::parse(value).map(Self::of)
+        Hundredths::parse(value).and_then(Self::of)
     }
 
     /// A ratio, or `None` for a number this vocabulary cannot carry — the
-    /// constructor an *Other…* field calls with what the author typed.
+    /// constructor an *Other…* field calls with what the author typed. 1 is one
+    /// of those numbers: see the type's note.
     pub fn ratio(ratio: f32) -> Option<Self> {
-        Hundredths::from_f32(ratio).map(Self::of)
+        Hundredths::from_f32(ratio).and_then(Self::of)
     }
 
-    /// A ratio as the name for it where there is one — see the type's note.
-    fn of(ratio: Hundredths) -> Self {
-        match LineSpacing::from_attr(&ratio.to_string()) {
+    /// A ratio as the name for it where there is one, and `None` where the
+    /// ratio is 1 — see the type's note.
+    ///
+    /// Compared in hundredths rather than through [`Display`](std::fmt::Display)
+    /// and [`LineSpacing::from_attr`], so that reading a spacing does not format
+    /// a `String` to throw away.
+    fn of(ratio: Hundredths) -> Option<Self> {
+        const SINGLE: u16 = 100;
+        if ratio.hundredths() == SINGLE {
+            return None;
+        }
+        let step = LineSpacing::ALL
+            .into_iter()
+            .find(|s| (s.ratio() * 100.0).round() as u16 == ratio.hundredths());
+        Some(match step {
             Some(step) => Self::Step(step),
             None => Self::Ratio(ratio),
-        }
+        })
     }
 
     /// The token twig spells it with, and what [`from_attr`](Self::from_attr)
@@ -796,11 +814,7 @@ impl TextColor {
     /// colour under. The two never collide: a `mark` is a `mark` and a span is
     /// a span.
     pub fn from_attrs(attrs: &[(String, Option<String>)]) -> Option<Self> {
-        attrs
-            .iter()
-            .find(|(k, _)| k == "data-color")
-            .and_then(|(_, v)| v.as_deref())
-            .and_then(Self::from_attr)
+        attr(attrs, "data-color").and_then(Self::from_attr)
     }
 
     /// Read a `data-color` value: one of the seven names, `#rrggbb`, or the
@@ -882,11 +896,7 @@ impl FontFace {
     /// The face a run's or block's attributes name, if any — twig records it
     /// under `data-font`.
     pub fn from_attrs(attrs: &[(String, Option<String>)]) -> Option<Self> {
-        attrs
-            .iter()
-            .find(|(k, _)| k == "data-font")
-            .and_then(|(_, v)| v.as_deref())
-            .and_then(Self::from_attr)
+        attr(attrs, "data-font").and_then(Self::from_attr)
     }
 
     /// Read a `data-font` value: one of the four generics, or any other
@@ -1021,6 +1031,14 @@ impl FaceTable {
         self.entries.len()
     }
 
+    /// Record one family, keeping the vec ascending by id — the sorted insert
+    /// both doors below are, written once.
+    fn insert(&mut self, id: FaceId, name: &str) {
+        if let Err(i) = self.entries.binary_search_by_key(&id, |(k, _)| *k) {
+            self.entries.insert(i, (id, name.to_string()));
+        }
+    }
+
     /// Record `face` and hand back what a glyph carries for it. A generic needs
     /// no entry — it names itself.
     pub(crate) fn intern(&mut self, face: &FontFace) -> FaceRef {
@@ -1028,9 +1046,7 @@ impl FaceTable {
             FontFace::Generic(generic) => FaceRef::Generic(*generic),
             FontFace::Named(name) => {
                 let id = FaceId::of(name);
-                if let Err(i) = self.entries.binary_search_by_key(&id, |(k, _)| *k) {
-                    self.entries.insert(i, (id, name.clone()));
-                }
+                self.insert(id, name);
                 FaceRef::Named(id)
             }
         }
@@ -1048,9 +1064,7 @@ impl FaceTable {
     /// of the per-block walks, cache hits and spliced remnants it is made of.
     pub(crate) fn merge(&mut self, other: &FaceTable) {
         for (id, name) in &other.entries {
-            if let Err(i) = self.entries.binary_search_by_key(id, |(k, _)| *k) {
-                self.entries.insert(i, (*id, name.clone()));
-            }
+            self.insert(*id, name);
         }
     }
 }
@@ -1338,6 +1352,23 @@ mod tests {
         assert_eq!(SizeStep::from_attr("14pt"), None);
         assert_eq!(FontFamily::from_attr("Garamond"), None);
         assert_eq!(FontFamily::from_attr("fantasy"), None);
+        // A generic is a CSS keyword, and CSS reads a keyword either way — the
+        // spelling written back is still the lowercase one.
+        assert_eq!(FontFamily::from_attr("Serif"), Some(FontFamily::Serif));
+        assert_eq!(
+            FontFamily::from_attr("SANS-SERIF"),
+            Some(FontFamily::SansSerif)
+        );
+        assert_eq!(
+            FontFamily::from_attr("MonoSpace").unwrap().name(),
+            "monospace"
+        );
+        assert_eq!(
+            FontFace::from_attr("Serif"),
+            Some(FontFace::Generic(FontFamily::Serif)),
+            "and the open type reads it as the generic, not as a family name"
+        );
+        assert_eq!(FontFace::from_attr("Serif").unwrap().name(), "serif");
     }
 
     /// The size ramp's defaults are CSS's own user-agent ratios for the same
@@ -1456,6 +1487,13 @@ mod tests {
         assert_eq!(lh("1.5").unwrap().name(), "1.5");
         assert!((lh("1.3").unwrap().as_f32() - 1.3).abs() < 1e-6);
         assert!((lh("1.5").unwrap().as_f32() - 1.5).abs() < 1e-6);
+        // Single is absence, however it is spelled, so a gesture given it
+        // clears the key rather than writing a `data-line-height="1"` that
+        // says nothing.
+        for v in ["1", "1.0", "1.00", " 1 "] {
+            assert_eq!(lh(v), None, "{v:?} is single, which is absence");
+        }
+        assert_eq!(LineHeight::ratio(1.0), None);
 
         // Colour: the seven names, `#rrggbb`, and `#rgb` read but never
         // written.
@@ -1550,6 +1588,13 @@ mod tests {
         // hands back whatever floating point made of its slider.
         assert_eq!(FontSize::from_attr("13.456pt"), FontSize::points(13.46));
         assert_eq!(FontSize::from_attr("13.454pt"), FontSize::points(13.45));
+        // CSS wants digits on whichever side of the point the number has: `.5`
+        // is a number, a trailing bare point is a typo.
+        assert_eq!(FontSize::from_attr(".5pt"), FontSize::points(0.5));
+        assert_eq!(LineHeight::from_attr(".5"), LineHeight::ratio(0.5));
+        assert_eq!(FontSize::from_attr("14.pt"), None);
+        assert_eq!(LineHeight::from_attr("1."), None);
+        assert_eq!(FontSize::from_attr(".pt"), None);
     }
 
     /// A glyph carries a [`FaceId`], not a `String`, and the id is derived from
