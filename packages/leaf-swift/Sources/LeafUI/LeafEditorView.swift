@@ -622,6 +622,45 @@ public final class LeafEditorModel: ObservableObject {
     #endif
     public func toggleView() { run { $0.toggleView() } }
 
+    // ── zoom ──────────────────────────────────────────────────────────────────
+    // The model's, not the host's, because the surface changes it too: a pinch
+    // lands here, and View ▸ Zoom In reaches the focused document through here.
+    // The default is a fit, which is the identity off paper and, on it, the
+    // sheet filling the window — the readable size on a screen whose point is
+    // not a printer's, whatever the type on the sheet is set at.
+
+    /// How large the document is on screen — see `Zoom`. Set it to move the
+    /// view; read `zoomScale` for the number it currently is.
+    @Published public var zoom: Zoom = .fitWidth {
+        didSet { textView?.zoom = zoom }
+    }
+
+    /// The scale `zoom` resolves to on the current viewport, `1` being actual
+    /// size. Published, so a "125%" label follows a pinch and a resize.
+    @Published public private(set) var zoomScale: CGFloat = 1
+
+    /// To the next stop up `Zoom.stops` from wherever the view is — View ▸ Zoom In.
+    public func zoomIn() { zoom = .scale(Zoom.stepUp(from: zoomScale)) }
+    /// To the next stop down — View ▸ Zoom Out.
+    public func zoomOut() { zoom = .scale(Zoom.stepDown(from: zoomScale)) }
+    /// One layout point per screen point — View ▸ Actual Size.
+    public func actualSize() { zoom = .actualSize }
+
+    /// What the surface reports after a pinch, a resize under a fit, or a page
+    /// set or cleared. The mode is written at once when a gesture moved it — a
+    /// gesture is never inside a SwiftUI update — and the scale a turn later,
+    /// because a fit can re-resolve inside `updateNSView` (the host changed the
+    /// page) and a publish from inside an update is what SwiftUI forbids.
+    fileprivate func zoomChanged(_ mode: Zoom, _ scale: CGFloat) {
+        if zoom != mode { zoom = mode }
+        if zoomScale != scale {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.zoomScale != scale else { return }
+                self.zoomScale = scale
+            }
+        }
+    }
+
     // ── markup exposure preference ──────────────────────────────────────────
     // A three-rung ladder, not a pair of toggles. `.none` (the default) is the
     // clean surface Diaryx ships: delimiters hidden, and typed syntax kept
@@ -687,15 +726,15 @@ public struct LeafEditor: View {
     /// editor draws it rather than the host stacking a label over the view.
     /// `page` puts the document on paper — a stack of sheets broken at the page
     /// boundaries, wrapping to the sheet's margins rather than the theme's
-    /// `measure`. `nil` (the default) is the continuous scrolling flow.
-    /// `zoom` scales the surface on screen without re-laying it out; it applies to
-    /// both flows, though a zoom control is really a paginated idiom.
+    /// `measure`. `nil` (the default) is the continuous scrolling flow. How
+    /// large it is on screen is the model's `zoom`, which a pinch on the
+    /// surface and View ▸ Zoom both move.
     public init(model: LeafEditorModel, theme: EditorTheme = .default,
                 placeholder: String? = nil,
-                page: PageSetup? = nil, zoom: CGFloat = 1) {
+                page: PageSetup? = nil) {
         self.model = model
         self.surface = LeafEditorSurface(model: model, theme: theme, placeholder: placeholder,
-                                         page: page, zoom: zoom)
+                                         page: page)
     }
 
     public var body: some View {
@@ -709,12 +748,11 @@ struct LeafEditorSurface: NSViewRepresentable {
     private let theme: EditorTheme
     private let placeholder: String?
     private let page: PageSetup?
-    private let zoom: CGFloat
 
     init(model: LeafEditorModel, theme: EditorTheme, placeholder: String?,
-         page: PageSetup?, zoom: CGFloat) {
+         page: PageSetup?) {
         self.model = model; self.theme = theme; self.placeholder = placeholder
-        self.page = page; self.zoom = zoom
+        self.page = page
     }
 
     public func makeNSView(context: Context) -> NSScrollView {
@@ -751,7 +789,6 @@ struct LeafEditorSurface: NSViewRepresentable {
             textView.autoresizingMask = page == nil ? [.width] : []
             textView.frame = CGRect(origin: .zero, size: CGSize(width: scroll.contentSize.width, height: 0))
             textView.pageSetup = page
-            textView.zoom = zoom
             // `doc.view()` is a read-only snapshot — routing it through `command`
             // forces an immediate render → `onStateChange`, rather than waiting on
             // whatever layout pass happens to come next.
@@ -767,7 +804,6 @@ struct LeafEditorSurface: NSViewRepresentable {
         // every SwiftUI update (which is every state change at all) costs a
         // comparison rather than a relayout.
         hosted.pageSetup = page
-        hosted.zoom = zoom
         hosted.placeholder = placeholder
         // Re-read rather than trusting the copy `makeTextView` took: a host that
         // flips this on the model after the view exists (or per document, for a
@@ -845,7 +881,8 @@ struct LeafEditorSurface: NSViewRepresentable {
     private func makeTextView() -> LeafTextView {
         let textView = LeafTextView(doc: model.doc, theme: theme)
         textView.pageSetup = page
-        textView.zoom = zoom
+        textView.zoom = model.zoom
+        textView.onZoomChange = { [weak model] mode, scale in model?.zoomChanged(mode, scale) }
         textView.placeholder = placeholder
         // Defer the publish: `render()` can fire during a SwiftUI layout pass, and
         // mutating an `@Published` mid-update loops the view system.
@@ -915,14 +952,19 @@ public struct LeafEditor: View {
     private let model: LeafEditorModel
     private let theme: EditorTheme
     private let placeholder: String?
+    private let page: PageSetup?
     private let accessory: AnyView?
     private var header: AnyView?
 
     /// `placeholder` is the cue shown while the document is empty, drawn where
-    /// its first character will go — see `LeafTextView.placeholder`.
+    /// its first character will go — see `LeafTextView.placeholder`. `page`
+    /// puts the document on paper, as the AppKit peer's does: a stack of sheets
+    /// the reader pinches to a comfortable size, or that the model's `zoom` fits
+    /// to the screen's width. `nil` (the default) is the continuous flow.
     public init(model: LeafEditorModel, theme: EditorTheme = .default,
-                placeholder: String? = nil) {
+                placeholder: String? = nil, page: PageSetup? = nil) {
         self.model = model; self.theme = theme; self.placeholder = placeholder
+        self.page = page
         self.accessory = nil
     }
 
@@ -932,10 +974,11 @@ public struct LeafEditor: View {
     /// explicitly rather than SwiftUI's own `.toolbar(placement: .keyboard)`.
     public init<Accessory: View>(
         model: LeafEditorModel, theme: EditorTheme = .default,
-        placeholder: String? = nil,
+        placeholder: String? = nil, page: PageSetup? = nil,
         @ViewBuilder accessory: () -> Accessory
     ) {
         self.model = model; self.theme = theme; self.placeholder = placeholder
+        self.page = page
         self.accessory = AnyView(accessory())
     }
 
@@ -963,7 +1006,7 @@ public struct LeafEditor: View {
     }
 
     public var body: some View {
-        LeafEditorSurface(model: model, theme: theme, placeholder: placeholder,
+        LeafEditorSurface(model: model, theme: theme, placeholder: placeholder, page: page,
                           accessory: accessory, header: header)
             .focusedSceneValue(\.leafEditor, model)
     }
@@ -1047,10 +1090,14 @@ final class LeafEditorController: UIViewController {
         // the caret back into what is visible, as a text view would. Nothing
         // here resizes the text view — see `LeafTextView.intrinsicContentSize`
         // for why its tail deliberately does not follow the keyboard.
-        if inset > 0, let textView = scroll.subviews.first(where: { $0 is LeafTextView }) as? LeafTextView,
-           textView.isFirstResponder {
+        if inset > 0, let textView, textView.isFirstResponder {
             textView.revealCaret()
         }
+    }
+
+    /// The text view in the scroll, through the wrapper that carries its zoom.
+    var textView: LeafTextView? {
+        (scroll.subviews.first { $0 is LeafZoomView } as? LeafZoomView)?.textView
     }
 
     private func updateFill() {
@@ -1066,14 +1113,15 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
     @ObservedObject private var model: LeafEditorModel
     private let theme: EditorTheme
     private let placeholder: String?
+    private let page: PageSetup?
     /// Type-erased so the surface stays a concrete, non-generic type.
     private let accessory: AnyView?
     /// The view above the first line, inside the scroll — see `LeafEditor.header`.
     private let header: AnyView?
 
-    init(model: LeafEditorModel, theme: EditorTheme, placeholder: String?, accessory: AnyView?,
-         header: AnyView?) {
-        self.model = model; self.theme = theme; self.placeholder = placeholder
+    init(model: LeafEditorModel, theme: EditorTheme, placeholder: String?, page: PageSetup?,
+         accessory: AnyView?, header: AnyView?) {
+        self.model = model; self.theme = theme; self.placeholder = placeholder; self.page = page
         self.accessory = accessory; self.header = header
     }
 
@@ -1140,6 +1188,12 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
         let scroll = controller.scroll
         scroll.alwaysBounceVertical = true
         scroll.keyboardDismissMode = .interactive
+        // One finger scrolls; two are the text view's pinch and nothing else's.
+        // Left at its default the scroll view's pan takes a second finger too,
+        // and a two-finger drag that is not quite a pinch scrolls and scales at
+        // once. (A pan already under way on the first finger is the pinch's
+        // to cancel — see `handlePinch`.)
+        scroll.panGestureRecognizer.maximumNumberOfTouches = 1
         pin(textView, into: controller, header: makeHeader(context: context))
 
         // A reader is opened to be read — see the AppKit peer.
@@ -1150,8 +1204,7 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
     }
 
     public func updateUIViewController(_ controller: LeafEditorController, context: Context) {
-        let scroll = controller.scroll
-        guard let hosted = scroll.subviews.first(where: { $0 is LeafTextView }) as? LeafTextView else { return }
+        guard let hosted = controller.textView else { return }
         // A freshly-swapped model has never been through `makeUIViewController`, so its
         // `textView` is still nil — that mismatch (rather than comparing docs
         // directly, which `LeafTextView` doesn't expose) is the stale-binding
@@ -1159,7 +1212,7 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
         // this the cached `hosted` view would go on showing the OLD model's doc
         // forever (the bug this fixes; hosts no longer need `.id(...)`).
         guard model.textView === hosted else {
-            hosted.removeFromSuperview() // also tears down its own constraints
+            hosted.zoomHost?.removeFromSuperview() // also tears down its own constraints
             if let header = context.coordinator.headerHosting {
                 header.willMove(toParent: nil)
                 header.view.removeFromSuperview()
@@ -1179,6 +1232,9 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
         }
         hosted.theme = theme
         hosted.placeholder = placeholder
+        // Guards itself against an unchanged value, so re-applying it on every
+        // SwiftUI update costs a comparison rather than a relayout.
+        hosted.pageSetup = page
         // Re-read rather than trusting the copy `makeTextView` took: a host that
         // flips this on the model after the view exists (or per document, for a
         // vault where only some files use the convention) gets it honoured.
@@ -1254,6 +1310,9 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
     private func makeTextView() -> LeafTextView {
         let textView = LeafTextView(doc: model.doc, theme: theme)
         textView.placeholder = placeholder
+        textView.pageSetup = page
+        textView.zoom = model.zoom
+        textView.onZoomChange = { [weak model] mode, scale in model?.zoomChanged(mode, scale) }
         // Defer the publish: `render()` can fire during a SwiftUI layout pass, and
         // mutating an `@Published` mid-update loops the view system.
         textView.onStateChange = { [weak model] s in
@@ -1311,11 +1370,16 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
     /// constraint set `makeUIViewController` and the stale-binding rebuild both
     /// need. The header joins as a child controller, for the reasons on
     /// `LeafEditorController`.
+    ///
+    /// What is pinned is the text view's `LeafZoomView`, never the text view:
+    /// the zoom is the text view's transform, which constraints do not see, and
+    /// the wrapper is what carries the scaled size to the scroll view.
     private func pin(_ textView: LeafTextView, into controller: LeafEditorController,
                      header: UIHostingController<AnyView>?) {
         let scroll = controller.scroll
-        scroll.addSubview(textView)
-        textView.translatesAutoresizingMaskIntoConstraints = false
+        let zoomed = LeafZoomView(textView: textView)
+        scroll.addSubview(zoomed)
+        zoomed.translatesAutoresizingMaskIntoConstraints = false
         // Without this, the content's height is purely the text view's intrinsic
         // height — for a short or empty document that's a sliver at the top, and
         // UIKit only routes touches to a view under them, so tapping anywhere in
@@ -1331,11 +1395,18 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
         let fill = scroll.contentLayoutGuide.heightAnchor.constraint(
             greaterThanOrEqualTo: scroll.frameLayoutGuide.heightAnchor)
         controller.fill = fill
+        // The width is the viewport's — except on paper, where a sheet wider
+        // than the screen keeps its width (the wrapper's intrinsic width, at a
+        // required compression resistance) and the scroll view scrolls sideways
+        // to it. So the equality yields, and only the floor is required.
+        let width = zoomed.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor)
+        width.priority = .defaultHigh
         var constraints = [
-            textView.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
-            textView.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
-            textView.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
-            textView.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor),
+            zoomed.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+            zoomed.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+            zoomed.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+            zoomed.widthAnchor.constraint(greaterThanOrEqualTo: scroll.frameLayoutGuide.widthAnchor),
+            width,
             fill,
         ]
         if let header {
@@ -1351,15 +1422,15 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
             // content, so the slack is the text view's, where a tap below the
             // last row lands the caret at the end as it does without a header.
             header.view.setContentHuggingPriority(.required, for: .vertical)
-            textView.setContentHuggingPriority(.defaultLow, for: .vertical)
+            zoomed.setContentHuggingPriority(.defaultLow, for: .vertical)
             constraints += [
                 header.view.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
                 header.view.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
                 header.view.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
-                textView.topAnchor.constraint(equalTo: header.view.bottomAnchor),
+                zoomed.topAnchor.constraint(equalTo: header.view.bottomAnchor),
             ]
         } else {
-            constraints.append(textView.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor))
+            constraints.append(zoomed.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor))
         }
         NSLayoutConstraint.activate(constraints)
     }

@@ -165,7 +165,8 @@ menus from it — add `.commands { LeafEditorCommands() }` to the scene and Form
 carries Bold ⌘B, Italic ⌘I, Underline ⌘U, Code ⇧⌘C, Highlight ⇧⌘M (with the
 Highlight Colour submenu), Paragraph and
 Heading 1–6 (⌃0–⌃6), the lists (⇧⌘8, ⇧⌘7), Block Quote ⇧⌘9, Indent/Outdent
-(⌘], ⌘[), footnote and rule; View gains Source View ⌘E. Items tick to follow the
+(⌘], ⌘[), footnote and rule; View gains Source View ⌘E and the Zoom submenu
+(⌘>, ⌘<, ⌘0, the fits). Items tick to follow the
 caret and disable without an editor or on a reader. The editor lets the menu bar
 take a chord first, so an item flashes when its key is pressed, and handles ⌘B/I/U/E
 itself only in a window with no such item.
@@ -204,12 +205,12 @@ column and a `PageSetup` moves it to the sheet's margin, neither of which is
 `theme.padding`. It sits under the caret, so a reader sees the caret standing at
 its first letter, and it goes the moment there is anything to read.
 
-**A paginated view** (macOS). Pass a `PageSetup` and the document is laid onto a
-stack of sheets instead of one scrolling column — the word-processor view, with a
-zoom that scales the surface without re-laying it out:
+**A paginated view** (macOS and iOS). Pass a `PageSetup` and the document is
+laid onto a stack of sheets instead of one scrolling column — the word-processor
+view:
 
 ```swift
-LeafEditor(model: editor, theme: theme, page: .usLetter, zoom: 1.0)
+LeafEditor(model: editor, theme: theme, page: .usLetter)
 LeafEditor(model: editor, theme: theme, page: nil)          // continuous (the default)
 ```
 
@@ -250,12 +251,38 @@ What it breaks on:
 - **A block too tall for any sheet** is placed and left to overflow, taking the
   sheets it covers to itself. Bouncing it to a fresh sheet forever is a hang.
 
+**Zoom.** How large the document is on screen is the model's `zoom`, a `Zoom`:
+a `.scale` (`1` is one layout point per screen point, held to `Zoom.range`,
+25%–400%), or a fit the viewport resolves and keeps resolving as the window
+changes — `.fitWidth`, the sheet and its backdrop to the viewport's width, or
+`.fitPage`, a whole sheet at once. The default is `.fitWidth`, which is the
+identity off paper and, on it, the size a sheet is readable at on a screen —
+a Mac's point is a hundred-and-some to the inch, not a printer's seventy-two,
+so a sheet at actual size is smaller than paper. `zoomScale` is the number a
+fit currently is, for a "125%" label. It is the model's rather than the host's
+because the surface moves it too: a trackpad pinch and a two-finger double tap
+(to twice the fit, and back) on the Mac, a pinch on iOS, and View ▸ Zoom from
+`LeafEditorCommands` — Zoom In ⌘> and Zoom Out ⌘< step `Zoom.stops`, Actual
+Size ⌘0, Fit Width and Fit Page (Pages' bindings, since ⌘+ and ⌘− are leaf's
+Text Size everywhere). A zoom about a point keeps that point where it is on
+screen; a keyboard step holds the viewport's centre.
+
+```swift
+editor.zoom = .fitWidth          // or .fitPage, or .scale(1.25)
+editor.zoomIn(); editor.zoomOut(); editor.actualSize()
+Text("\(Int(editor.zoomScale * 100))%")
+```
+
 Zoom is a view transform and nothing more: the layout always works in unzoomed
-page space, the draw scales the context, and points coming back the other way are
-divided out. So dragging a zoom slider re-*draws* but never re-shapes — the
-per-row shaping cache survives untouched — and the text stays vector-crisp at
-every scale, which resampling a rasterized layer would cost. `LeafTextView.zoomRange`
-is 25%–400%.
+page space and the surface scales the result — the Mac view scales its drawing
+context and divides clicks back out; the iOS view is scaled by its own
+`transform`, with its backing store re-rendered at the zoomed resolution once a
+pinch ends, so UIKit converts touches and the system selection's geometry on
+its own. Either way a pinch re-*draws* but never re-shapes — the per-row shaping
+cache survives untouched — and the text stays vector-crisp at every scale. A
+UIKit host embedding `LeafTextView` in a scroll view of its own pins the
+`LeafZoomView` around it, not the text view: Auto Layout does not read
+transforms, and the wrapper is what carries the scaled size.
 
 **The document as a PDF** (macOS and iOS). `pdfData(theme:page:title:)` on the
 model — or `pdfData(page:title:)` on either text view, in its own theme — is the
@@ -278,10 +305,7 @@ would misread, such as a leading `/` for the app's own root; that hook is asked
 first and synchronously, so a file that is simply on disk draws in the same
 pass. One only the host can fetch (`onResolveMedia`) draws as its labelled
 chip, because the page is made now rather than when the host answers. An SVG is paths on the page, not a picture
-of one — it scales, selects and prints as vectors, the same as on screen. On iOS the same `pageSetup` is a view mode
-too, for a host that wants the stack on screen.
-
-The iOS surface stays on the continuous flow.
+of one — it scales, selects and prints as vectors, the same as on screen.
 
 **Smart, rich clipboard** (the same behaviour as leaf-tui / leaf-gpui via
 `arboard`, reached here through `NSPasteboard`/`UIPasteboard`). A copy publishes

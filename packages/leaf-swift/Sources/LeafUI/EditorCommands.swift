@@ -11,7 +11,8 @@
 //  The items are the same public commands the toolbar's buttons call, with the
 //  same shortcuts every other leaf frontend binds (see leaf-gpui's key map).
 //  Checkmarks follow `EditorState`: Bold is ticked while the caret stands in
-//  bold text, Source View while the source is showing.
+//  bold text, Source View while the source is showing. View ▸ Zoom follows the
+//  model's `zoom`, which the surface's own pinch moves too.
 
 import LeafFFI
 import SwiftUI
@@ -91,9 +92,7 @@ public struct LeafEditorCommands: Commands {
             if let editor {
                 ViewMenuItems(editor: editor)
             } else {
-                Toggle(loc("menu.sourceView", "Source View"), isOn: .constant(false))
-                    .keyboardShortcut("e", modifiers: .command)
-                    .disabled(true)
+                ViewMenuItems.placeholders
             }
         }
     }
@@ -286,8 +285,10 @@ private struct FormatMenuItems: View {
     }
 }
 
-/// The View menu's item: the rendered/source toggle, ticked while the source
-/// is showing.
+/// The View menu's items: the rendered/source toggle, ticked while the source
+/// is showing, and the zoom — Pages' bindings, since ⌘+ and ⌘− are leaf's
+/// Text Size on every frontend: ⌘> and ⌘< step the stops, ⌘0 is actual size,
+/// and the two fits are ticked while they are the rule in force.
 private struct ViewMenuItems: View {
     @ObservedObject var editor: LeafEditorModel
 
@@ -295,5 +296,41 @@ private struct ViewMenuItems: View {
         Toggle(loc("menu.sourceView", "Source View"),
                isOn: Binding(get: { editor.isSource }, set: { _ in editor.toggleView() }))
             .keyboardShortcut("e", modifiers: .command)
+        Divider()
+        Menu(loc("menu.zoom", "Zoom")) {
+            Button(loc("menu.zoomIn", "Zoom In")) { editor.zoomIn() }
+                .keyboardShortcut(">", modifiers: .command)
+                .disabled(editor.zoomScale >= Zoom.range.upperBound)
+            Button(loc("menu.zoomOut", "Zoom Out")) { editor.zoomOut() }
+                .keyboardShortcut("<", modifiers: .command)
+                .disabled(editor.zoomScale <= Zoom.range.lowerBound)
+            Divider()
+            Toggle(loc("menu.actualSize", "Actual Size"),
+                   isOn: Binding(get: { editor.zoom == .actualSize }, set: { _ in editor.actualSize() }))
+                .keyboardShortcut("0", modifiers: .command)
+            Toggle(loc("menu.fitWidth", "Fit Width"),
+                   isOn: Binding(get: { editor.zoom == .fitWidth }, set: { _ in editor.zoom = .fitWidth }))
+            Toggle(loc("menu.fitPage", "Fit Page"),
+                   isOn: Binding(get: { editor.zoom == .fitPage }, set: { _ in editor.zoom = .fitPage }))
+        }
+    }
+
+    /// The same items with no editor to act on, so the menu keeps its shape and
+    /// its shortcuts stay listed.
+    @ViewBuilder static var placeholders: some View {
+        Toggle(loc("menu.sourceView", "Source View"), isOn: .constant(false))
+            .keyboardShortcut("e", modifiers: .command)
+            .disabled(true)
+        Divider()
+        Menu(loc("menu.zoom", "Zoom")) {
+            Button(loc("menu.zoomIn", "Zoom In")) {}.keyboardShortcut(">", modifiers: .command)
+            Button(loc("menu.zoomOut", "Zoom Out")) {}.keyboardShortcut("<", modifiers: .command)
+            Divider()
+            Toggle(loc("menu.actualSize", "Actual Size"), isOn: .constant(false))
+                .keyboardShortcut("0", modifiers: .command)
+            Toggle(loc("menu.fitWidth", "Fit Width"), isOn: .constant(false))
+            Toggle(loc("menu.fitPage", "Fit Page"), isOn: .constant(false))
+        }
+        .disabled(true)
     }
 }

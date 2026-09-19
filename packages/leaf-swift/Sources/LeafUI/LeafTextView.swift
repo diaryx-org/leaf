@@ -53,11 +53,19 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             // A paginated document is a fixed width the scroll view may have to
             // scroll sideways to, so it stops tracking the viewport's.
             autoresizingMask = pageSetup == nil ? [.width] : []
+            // A fit is a rule about the sheet, and the sheet just changed (or
+            // went away, which makes a fit the identity). Resolve it over the new
+            // one before the layout that will draw it.
+            let scale = zoomMode.resolve(in: viewportSize, page: pageSetup)
+            let rescaled = scale != zoomScale
+            zoomScale = scale
             relayoutForWidth(force: true)
+            if rescaled { onZoomChange?(zoomMode, zoomScale) }
         }
     }
 
-    /// The on-screen scale, `1` being one layout point per screen point.
+    /// How large the document is on screen: a scale, or a fit the viewport
+    /// resolves — see `Zoom`. `zoomScale` is what it currently resolves to.
     ///
     /// A view-level transform and nothing more: `EditorLayout` always works in
     /// unzoomed page space, `draw` scales the context, and points coming the other
@@ -65,39 +73,127 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// of a zoom slider re-*draws* but never re-shapes — the row cache, which is
     /// keyed by wrap width, survives untouched — and the text stays vector-crisp
     /// at every stop, which is what scaling a rasterized layer would cost.
-    public var zoom: CGFloat {
-        get { zoomScale }
-        set {
-            let clamped = min(max(newValue, Self.zoomRange.lowerBound), Self.zoomRange.upperBound)
-            guard clamped != zoomScale else { return }
-            zoomScale = clamped
-            // No re-shaping: the wrap width is the sheet's (or the theme's) and
-            // neither moved. This re-runs the layout only because the viewport
-            // measured in layout points just changed, which is what decides where
-            // the stack centres.
-            relayoutForWidth(force: true)
-            needsDisplay = true
-        }
+    ///
+    /// Setting it here keeps the centre of the viewport where it is; a pinch
+    /// keeps the point under the fingers, through `setZoom(_:anchor:)`.
+    public var zoom: Zoom {
+        get { zoomMode }
+        set { setZoom(newValue, anchor: nil) }
     }
-    private var zoomScale: CGFloat = 1
+    private var zoomMode: Zoom = .actualSize
 
-    /// The scales the view will hold — 25% to 400%, the range a word processor's
-    /// zoom control usually offers.
-    public static let zoomRange: ClosedRange<CGFloat> = 0.25...4
+    /// The scale `zoom` resolves to on this viewport, `1` being one layout point
+    /// per screen point. The same as the scale for `.scale`; for a fit, the
+    /// number the fit currently is.
+    public private(set) var zoomScale: CGFloat = 1
+
+    /// Fired when `zoom` or `zoomScale` changes for any reason — a pinch, a
+    /// resize under a fit, a page set or cleared — so a host that owns the zoom
+    /// (the model does) learns what the surface decided.
+    public var onZoomChange: ((Zoom, CGFloat) -> Void)?
+
+    /// The scales the view will hold. `Zoom.range`, kept here for the callers
+    /// that had it.
+    public static let zoomRange: ClosedRange<CGFloat> = Zoom.range
+
+    /// Set the zoom, keeping the layout under `anchor` (a point in this view's
+    /// coordinates) at the same place on screen — the point under a pinch, or,
+    /// for `nil`, the centre of what is visible, which is what a keyboard step
+    /// should hold still.
+    public func setZoom(_ zoom: Zoom, anchor: CGPoint? = nil) {
+        let scale = zoom.resolve(in: viewportSize, page: pageSetup)
+        // A scale past the range is held at its edge as a mode too, so what is
+        // reported back is the scale the view is at, not the one it was asked.
+        let zoom = zoom.isFit ? zoom : .scale(scale)
+        let changed = zoom != zoomMode || scale != zoomScale
+        zoomMode = zoom
+        if scale != zoomScale { applyZoomScale(scale, anchor: anchor) }
+        if changed { onZoomChange?(zoomMode, zoomScale) }
+    }
+
+    /// Re-resolve a fit against the viewport as it is now — after a resize.
+    /// The top-left of what is visible stays put, so a window widened under a
+    /// fit grows the page in place rather than sliding it.
+    private func refitZoom() {
+        guard zoomMode.isFit else { return }
+        let scale = zoomMode.resolve(in: viewportSize, page: pageSetup)
+        guard scale != zoomScale else { return }
+        applyZoomScale(scale, anchor: visibleRect.origin)
+        onZoomChange?(zoomMode, zoomScale)
+    }
+
+    /// The viewport in view points — the clip view's, or the bounds when
+    /// there is no scroll view around this one.
+    private var viewportSize: CGSize {
+        enclosingScrollView?.contentView.bounds.size ?? bounds.size
+    }
+
+    /// Move to `scale`, holding the layout point under `anchor` (view
+    /// coordinates at the *old* scale; nil for the viewport's centre) at the
+    /// same place in the viewport.
+    ///
+    /// The scroll offset moves by `p · (s′ − s)` for the layout point `p` under
+    /// the anchor: its view position is `p·s`, the anchor's offset within the
+    /// viewport is `p·s − origin`, and keeping that offset at the new scale is
+    /// `origin′ = p·s′ − (p·s − origin)`.
+    private func applyZoomScale(_ scale: CGFloat, anchor: CGPoint?) {
+        let visible = visibleRect
+        let anchorView = anchor ?? CGPoint(x: visible.midX, y: visible.midY)
+        let p = layoutPoint(anchorView)
+        let delta = scale - zoomScale
+        zoomScale = scale
+        // No re-shaping: the wrap width is the sheet's (or the theme's) and
+        // neither moved. This re-runs the layout only because the viewport
+        // measured in layout points just changed, which is what decides where
+        // the stack centres.
+        relayoutForWidth(force: true)
+        needsDisplay = true
+        guard let scroll = enclosingScrollView else { return }
+        let clip = scroll.contentView
+        let target = CGPoint(x: visible.origin.x + p.x * delta, y: visible.origin.y + p.y * delta)
+        let bounds = clip.bounds
+        let clamped = CGPoint(
+            x: min(max(target.x, 0), max(0, frame.width - bounds.width)),
+            y: min(max(target.y, -clip.contentInsets.top), max(-clip.contentInsets.top, frame.height - bounds.height)))
+        clip.scroll(to: clamped)
+        scroll.reflectScrolledClipView(clip)
+    }
 
     /// A point in view coordinates in layout (page) space — the inverse of the
-    /// scale `draw` applies. The identity at `zoom == 1`.
-    private func layoutPoint(_ p: CGPoint) -> CGPoint { CGPoint(x: p.x / zoom, y: p.y / zoom) }
+    /// scale `draw` applies. The identity at `zoomScale == 1`.
+    private func layoutPoint(_ p: CGPoint) -> CGPoint { CGPoint(x: p.x / zoomScale, y: p.y / zoomScale) }
 
     /// A rect in layout space back out in view coordinates.
     private func viewRect(_ r: CGRect) -> CGRect {
-        r.applying(CGAffineTransform(scaleX: zoom, y: zoom))
+        r.applying(CGAffineTransform(scaleX: zoomScale, y: zoomScale))
     }
 
     /// A rect in view coordinates back in layout space — how a dirty band becomes
     /// something the row and page loops can cull against.
     private func layoutRect(_ r: CGRect) -> CGRect {
-        r.applying(CGAffineTransform(scaleX: 1 / zoom, y: 1 / zoom))
+        r.applying(CGAffineTransform(scaleX: 1 / zoomScale, y: 1 / zoomScale))
+    }
+
+    // MARK: zooming by gesture
+
+    /// A pinch on the trackpad, about the point under it. Each event carries the
+    /// change since the last, so the scale compounds through the gesture and
+    /// the clamp at the range's edge simply holds.
+    public override func magnify(with event: NSEvent) {
+        let anchor = convert(event.locationInWindow, from: nil)
+        setZoom(.scale(zoomScale * (1 + event.magnification)), anchor: anchor)
+    }
+
+    /// A two-finger double tap: in to twice the fit, and from anywhere else back
+    /// to the fit — Safari's smart zoom, read onto a page.
+    public override func smartMagnify(with event: NSEvent) {
+        let anchor = convert(event.locationInWindow, from: nil)
+        let fit = Zoom.fitWidth.resolve(in: viewportSize, page: pageSetup)
+        if abs(zoomScale - fit) < 0.01 {
+            setZoom(.scale(fit * 2), anchor: anchor)
+        } else {
+            setZoom(.fitWidth, anchor: anchor)
+        }
     }
     /// Fired after every repaint so a host can update a toolbar/footer.
     public var onStateChange: ((EditorState) -> Void)?
@@ -372,6 +468,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     public override func layout() {
         super.layout()
+        refitZoom()
         relayoutForWidth(force: false)
         applyContentSize()
     }
@@ -385,7 +482,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// and it is the viewport the stack should centre in, since that is what the
     /// reader is looking through.
     private var layoutWidth: CGFloat {
-        (enclosingScrollView?.contentView.bounds.width ?? bounds.width) / zoom
+        (enclosingScrollView?.contentView.bounds.width ?? bounds.width) / zoomScale
     }
 
     /// How many times this turn of the run loop has re-wrapped for a changed
@@ -438,7 +535,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// text lands the caret at the document's end, same as most text editors.
     private func applyContentSize() {
         let clip = enclosingScrollView?.contentView.bounds.size ?? bounds.size
-        let raw = layoutEngine.contentHeight * zoom
+        let raw = layoutEngine.contentHeight * zoomScale
         // Once the document already needs to scroll, pad another half screen below
         // the last line, so a long entry can be pulled up to a comfortable reading
         // height instead of staying glued to the bottom edge. Content that already
@@ -455,7 +552,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // Continuously the layout has no width of its own: it fills the viewport
         // (and `autoresizingMask` keeps it there). A stack of sheets is a fixed
         // width, so a window narrower than one scrolls sideways to it.
-        let w = max(layoutEngine.contentWidth * zoom, clip.width)
+        let w = max(layoutEngine.contentWidth * zoomScale, clip.width)
         if abs(frame.height - h) > 0.5 || abs(frame.width - w) > 0.5 {
             setFrameSize(NSSize(width: w, height: h))
         }
@@ -513,7 +610,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // divided back out.
         ctx.saveGState()
         defer { ctx.restoreGState() }
-        ctx.scaleBy(x: zoom, y: zoom)
+        ctx.scaleBy(x: zoomScale, y: zoomScale)
         let band = layoutRect(dirtyRect)
 
         // On paper there is no caret, no selection, no flash, no marker in the
@@ -714,7 +811,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         guard highlights.contains(where: { $0.marker != nil }) else { return }
         let box: CGFloat = 20
         let inset: CGFloat = 4
-        let width = bounds.width / zoom
+        let width = bounds.width / zoomScale
         for highlight in highlights {
             guard let symbol = highlight.marker else { continue }
             let rc = doc.posForOffset(off: UInt32(highlight.start))
@@ -2222,7 +2319,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         guard !boxes.isEmpty else { return }
         ctx.saveGState()
         defer { ctx.restoreGState() }
-        ctx.scaleBy(x: zoom, y: zoom)
+        ctx.scaleBy(x: zoomScale, y: zoomScale)
         ctx.clip(to: boxes)
         let s = doc.posForOffset(off: UInt32(from)), e = doc.posForOffset(off: UInt32(to))
         for row in Int(s.row)...max(Int(s.row), Int(e.row)) where layoutEngine.rows.indices.contains(row) {
@@ -2370,6 +2467,9 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     @objc private func keyStateChanged() { resetBlink(); needsDisplay = true }
 
     @objc private func viewportResized() {
+        // A fit is a function of the viewport, so it goes first: the relayout
+        // that follows is at the width the new scale leaves.
+        refitZoom()
         relayoutForWidth(force: false)
         applyContentSize()
     }
