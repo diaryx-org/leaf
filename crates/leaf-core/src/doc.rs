@@ -2909,12 +2909,6 @@ impl Doc {
         if self.view != View::Source && self.backspace_attributed_block_start() {
             return;
         }
-        // WYSIWYG: at the start of the paragraph after a Markdown `<div>`, the
-        // byte behind the caret is the newline under a hidden `</div>`; taking
-        // it looks like nothing and takes the tag apart on the next press.
-        if self.view != View::Source && self.backspace_after_div() {
-            return;
-        }
         // WYSIWYG: at a block picture's stops, a byte-at-a-time delete would take
         // the markup apart under a caret that cannot see it — see
         // `delete_around_block_media`.
@@ -2926,6 +2920,14 @@ impl Doc {
         // `|`, which the rich view never drew, so the key would have looked like
         // it did nothing. The stop before is the last cell's end.
         if self.view != View::Source && self.backspace_at_table_end() {
+            return;
+        }
+        // WYSIWYG: at the start of a block's content, the byte behind the caret
+        // is a block boundary, and Backspace over one is a join — twig's, so
+        // that what a join is in each format is not this file's to know. After
+        // the picture and table cases, which are block starts with their own
+        // answers.
+        if self.view != View::Source && self.backspace_joins_block() {
             return;
         }
         // WYSIWYG: Backspace on a *blank line* deletes back to the previous caret
@@ -3146,69 +3148,148 @@ impl Doc {
         true
     }
 
-    /// Backspace at the start of the paragraph after a Markdown `<div>`: join
-    /// it into the div's last paragraph, as Backspace at a paragraph's start
-    /// joins it to the paragraph above everywhere else — the joined text takes
-    /// the presentation of the block it joins, which is the rule every editor
-    /// with a centred paragraph follows, and what the same press already did
-    /// in djot, where the block above carries its attributes on a line of its
-    /// own and no closing tag stands between.
+    /// Backspace at the start of a block's content: join the block into the
+    /// block before it, as one gesture — twig's `join_blocks`, the inverse of
+    /// the split Enter makes, spelled the format's way. Two paragraphs join
+    /// on a soft break; a paragraph under a marker heading joins onto the
+    /// heading's line; a paragraph after a Markdown `<div>` moves inside it,
+    /// the hidden `</div>` carried past the joined text; HTML's `</p><p>` is
+    /// taken as one; a quote's or an item's continuation prefix is written.
+    /// The joined text takes the block above's presentation and containers,
+    /// which is the rule every editor with a centred paragraph follows.
     ///
-    /// The tag is why this is a rule of its own. The div closes with a
-    /// `</div>` on a line under its last child, and the byte behind the caret
-    /// is the newline under that line: the ordinary delete took it, which
-    /// drew nothing different, and the next press took the `>` and left the
-    /// div unclosed. So the paragraph moves inside instead, as one splice:
-    /// `hello\n\n</div>\n\nbelow` becomes `hello\nbelow\n\n</div>`, the
-    /// soft-break join of any two paragraphs, with the tag carried past it.
+    /// Leaf used to join by deleting the one newline behind the caret, which
+    /// is the right bytes for two Markdown paragraphs and nothing else: under
+    /// a heading it left two blocks, in HTML it took the `>` off a tag, and
+    /// after a div it took the newline under the hidden `</div>`, which drew
+    /// nothing different and took the tag apart on the next press. What a
+    /// join is in each format is twig's to know, and now it does.
     ///
-    /// Where the div's last child is not a paragraph — a list, a code block —
-    /// there is no text to join, and the caret steps back to the stop before.
-    /// Returns whether it acted; `false` leaves Backspace its character delete.
-    fn backspace_after_div(&mut self) -> bool {
-        if self.format != Format::Markdown {
+    /// Where twig refuses — the block above is a code block, a table or a
+    /// rule with no text to join into, or the caret's block would have to
+    /// leave a div that holds more after it — the caret steps back to the
+    /// stop before instead, as it does at a table's end: the key moves the
+    /// caret and takes no markup apart. Where nothing precedes the block, or
+    /// the format cannot join at all, Backspace keeps its character delete.
+    ///
+    /// Returns whether it acted.
+    fn backspace_joins_block(&mut self) -> bool {
+        let caret = self.caret;
+        if caret <= self.caret_floor() {
             return false;
         }
+        let Some(text) = self.text_block_opening_at(caret) else {
+            return false;
+        };
+        match self.join_blocks(caret) {
+            Ok(change) => {
+                // The caret keeps its place at the start of the text it stood
+                // on, wherever the join put that text — after a soft break,
+                // a space, or a quote's prefix. Found by the bytes, as
+                // `block_content_in` finds a re-spelled block.
+                let region = &self.source[change.new.clone()];
+                let at = region
+                    .find(&text)
+                    .map_or(change.new.start, |i| change.new.start + i);
+                self.land_after_join(at);
+                true
+            }
+            Err(twig::Error::NotEditable) => {
+                self.step_back_to_stop();
+                true
+            }
+            Err(twig::Error::NotFound | twig::Error::UnsupportedFormat) => false,
+            Err(e) => {
+                self.status = Some(format!("join: {e}"));
+                true
+            }
+        }
+    }
+
+    /// Delete at the end of a block's content: join the block after it into
+    /// this one — [`backspace_joins_block`](Self::backspace_joins_block)'s
+    /// mirror, and the same twig gesture aimed at the next block. The caret
+    /// stays where it was, which is where the joined text now begins after
+    /// the separator. Where twig refuses, the caret steps forward to the next
+    /// stop instead; where no block follows, Delete keeps its character
+    /// delete.
+    fn delete_forward_joins_block(&mut self) -> bool {
         let caret = self.caret;
-        let nodes = self.nodes();
-        let Some(block) = nodes
+        let at_end = self
+            .nodes()
             .iter()
-            .find(|n| n.kind == Kind::Para && n.span.start == caret)
-        else {
+            .filter(|n| matches!(n.kind, Kind::Para | Kind::Heading))
+            .any(|n| n.content_span.as_ref().is_some_and(|c| c.end == caret));
+        if !at_end {
+            return false;
+        }
+        // The next stop, across a line end, in a block: what Delete at a
+        // block's end points at. On the same line it is a hidden delimiter's
+        // far side, which the ordinary delete handles; on a blank line it is
+        // the empty paragraph the byte delete has always closed.
+        self.rebuild_map();
+        let Some(stop) = self.vmap.stop_after(caret) else {
             return false;
         };
-        let Some(div) = nodes
-            .iter()
-            .filter(|n| wysiwyg::element_tag(n) == Some("div"))
-            .filter(|n| n.parent == block.parent && n.span.end <= block.span.start)
-            .filter(|n| self.source[n.span.end..block.span.start].trim().is_empty())
-            .max_by_key(|n| n.span.end)
-        else {
+        if !self.source[caret..stop].contains('\n') || !self.has_block_at(stop) {
             return false;
-        };
-        let last = nodes
-            .iter()
-            .filter(|n| n.parent == Some(div.id))
-            .max_by_key(|n| n.span.end);
-        match last {
-            Some(last) if last.kind == Kind::Para && last.span.end < div.span.end => {
-                let end = last.span.end;
-                let tail = self.source[end..div.span.end].to_string();
-                let text = self.source[block.span.start..block.span.end].to_string();
-                self.splice(
-                    end,
-                    block.span.end,
-                    &format!("\n{text}{tail}"),
-                    EditKind::Other,
-                );
-                self.caret = end + 1;
+        }
+        match self.join_blocks(stop) {
+            Ok(change) => {
+                self.land_after_join(change.old.start);
+                true
+            }
+            Err(twig::Error::NotEditable | twig::Error::NotFound) => {
+                self.caret = stop;
                 self.anchor = None;
                 self.goal_col = None;
-                self.record_caret();
+                true
             }
-            _ => self.step_back_to_stop(),
+            Err(twig::Error::UnsupportedFormat) => false,
+            Err(e) => {
+                self.status = Some(format!("join: {e}"));
+                true
+            }
         }
-        true
+    }
+
+    /// The content bytes of the paragraph or heading whose content opens
+    /// exactly at `off` — the block a Backspace there is at the start of.
+    fn text_block_opening_at(&mut self, off: usize) -> Option<String> {
+        self.nodes()
+            .into_iter()
+            .filter(|n| matches!(n.kind, Kind::Para | Kind::Heading))
+            .find_map(|n| {
+                let c = n.content_span?;
+                (c.start == off).then(|| self.source[c].to_string())
+            })
+    }
+
+    /// Hand the block at `offset` to twig's `join_blocks`, with the undo
+    /// plumbing every structural gesture has; the caret is the caller's to
+    /// place from the change, via [`land_after_join`](Self::land_after_join).
+    fn join_blocks(&mut self, offset: usize) -> Result<Change, twig::Error> {
+        if self.read_only {
+            return Err(twig::Error::NotEditable);
+        }
+        self.record_caret();
+        let change = self.editor.join_blocks(offset)?;
+        self.last_edit_kind = None; // structural edit is its own undo step
+        self.refresh();
+        Ok(change)
+    }
+
+    /// Finish a join: the caret at `at`, no selection, the map this
+    /// revision's before the clamp — see `write_block_attrs` for why.
+    fn land_after_join(&mut self, at: usize) {
+        self.caret = at;
+        self.anchor = None;
+        self.goal_col = None;
+        self.dirty = self.source != self.clean_source;
+        self.status = None;
+        self.rebuild_map();
+        self.clamp_caret();
+        self.record_caret();
     }
 
     /// Backspace at a table's trailing stop: move onto the stop before it (the
@@ -3373,6 +3454,11 @@ impl Doc {
             // The mirror of Backspace's: forward-delete in front of a picture
             // would eat the `!` off its markup and leave a link where a photo was.
             if self.view != View::Source && self.delete_around_block_media(true) {
+                return;
+            }
+            // And of Backspace's join: at the end of a block's content, Delete
+            // joins the next block into this one.
+            if self.view != View::Source && self.delete_forward_joins_block() {
                 return;
             }
             // Delete forward over an in-cell `<br>` takes the whole tag, the mirror
@@ -16305,14 +16391,29 @@ mod tests {
         d.undo();
         assert_eq!(d.source, src, "one undo step");
 
-        // Nothing to join into: a list closes the div, and the caret steps
-        // back to the stop before instead.
+        // A list closes the div: the paragraph joins the last item's text,
+        // under the item's continuation indent, inside the div.
         let src = "<div class=\"center\">\n\n- item\n\n</div>\n\nbelow\n";
         let mut d = wysiwyg_doc("wys_div_list", src);
         d.caret = d.source.find("below").unwrap();
         d.backspace();
+        assert_eq!(
+            d.source, "<div class=\"center\">\n\n- item\n  below\n\n</div>\n",
+            "the paragraph joins the item"
+        );
+        assert_eq!(d.caret, d.source.find("below").unwrap());
+
+        // And where twig has nothing to join into — a code block above — the
+        // caret steps back to the stop before, and nothing is deleted.
+        let src = "```\ncode\n```\n\nbelow\n";
+        let mut d = wysiwyg_doc("wys_code_then_para", src);
+        d.caret = d.source.find("below").unwrap();
+        d.backspace();
         assert_eq!(d.source, src, "nothing is deleted");
-        assert_eq!(d.caret, d.source.find("item").unwrap() + 4);
+        assert!(
+            d.caret < d.source.find("below").unwrap(),
+            "the caret stepped back"
+        );
     }
 
     /// Backspace on a blank line collapses to the stop before it — but not
@@ -16445,5 +16546,74 @@ mod tests {
         d.delete_forward();
         assert_eq!(d.source, "This a test\n");
         assert_eq!(d.caret, 5);
+    }
+
+    /// Backspace at a block's start is twig's join, spelled per format — so
+    /// the cases the one-newline delete got wrong come out right: a
+    /// paragraph joins onto a heading's line, HTML's `</p><p>` goes as one,
+    /// and a quote's prefix is written on the joined line.
+    #[test]
+    fn backspace_at_a_block_start_joins_it_the_format_s_way() {
+        let mut d = wysiwyg_doc("wys_join_heading", "# Title\n\nbelow\n");
+        d.caret = d.source.find("below").unwrap();
+        d.backspace();
+        assert_eq!(d.source, "# Title below\n", "onto the heading's line");
+        assert_eq!(d.caret, d.source.find("below").unwrap());
+        d.undo();
+        assert_eq!(d.source, "# Title\n\nbelow\n", "one undo step");
+
+        let mut d = wysiwyg_doc("wys_join_quote", "> a\n\nb\n");
+        d.caret = d.source.find('b').unwrap();
+        d.backspace();
+        assert_eq!(d.source, "> a\n> b\n", "into the quote, with its prefix");
+        assert_eq!(d.caret, d.source.find('b').unwrap());
+
+        let mut h = fmt_doc("<p>above</p>\n<p class=\"x\">below</p>\n", Format::Html);
+        h.view = View::Wysiwyg;
+        h.build_visual(80);
+        h.caret = h.source.find("below").unwrap();
+        h.backspace();
+        assert_eq!(
+            h.source, "<p>above\nbelow</p>\n",
+            "one paragraph, the tag gone whole"
+        );
+        assert_eq!(h.caret, h.source.find("below").unwrap());
+    }
+
+    /// Delete at the end of a block's content is the same join aimed at the
+    /// block after it, and the caret stays where the joined text now begins.
+    #[test]
+    fn delete_at_a_block_end_joins_the_next_block_into_it() {
+        let src = "above\n\n<div class=\"center\">\n\nhello\n\n</div>\n\nbelow\n";
+        let mut d = wysiwyg_doc("wys_del_join", src);
+        d.caret = d.source.find("hello").unwrap() + 5;
+        d.delete_forward();
+        assert_eq!(
+            d.source, "above\n\n<div class=\"center\">\n\nhello\nbelow\n\n</div>\n",
+            "below joins hello inside the div"
+        );
+        assert_eq!(
+            d.caret,
+            d.source.find("hello").unwrap() + 5,
+            "the caret stays"
+        );
+
+        let mut d = wysiwyg_doc("wys_del_join_head", "above\n\n# Title\n");
+        d.caret = 5;
+        d.delete_forward();
+        assert_eq!(
+            d.source, "above\nTitle\n",
+            "the heading's marker goes with the join"
+        );
+        assert_eq!(d.caret, 5);
+
+        // A code block after the paragraph: nothing to join, the caret steps
+        // forward onto the next stop and nothing is deleted.
+        let src = "above\n\n```\ncode\n```\n";
+        let mut d = wysiwyg_doc("wys_del_code", src);
+        d.caret = 5;
+        d.delete_forward();
+        assert_eq!(d.source, src);
+        assert!(d.caret > 5, "the caret stepped forward");
     }
 }
