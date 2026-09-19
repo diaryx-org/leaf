@@ -78,6 +78,14 @@ await LeafEditor.init(wasmUrl);
   none. The row element carries the alignment class and `data-line-height`, the
   run element `data-size`, `data-font` and `data-color` — the document's own
   spelling, so the editor's DOM and a published page's are the same.
+  Every key but alignment also takes the **exact value** the names cannot
+  spell — `"14pt"`, `"Garamond"`, `"#c03030"`, `"1.3"` — which a control offers
+  under its names as an *Other…* row (the demo's is a `prompt()`). The
+  attribute is the document's either way; a value is drawn by an inline style
+  beside it, because no stylesheet can enumerate one. An exact size is that
+  many points and not the heading's ramp scaled, and an exact colour is painted
+  as written in both appearances: that is what exact means, and it is the
+  portability the author traded away.
 - **Syntax highlighting** in a fenced block whose language a grammar knows:
   each run carries a `token` — one of core's eight classes — and arrives as a
   `.leaf-t-<token>` class beside `.leaf-r-code`, coloured by the
@@ -113,6 +121,12 @@ meant, with no leaf and no JavaScript present:
 ```js
 import "@diaryx/leaf/presentation.css";   // the same file, through the exports map
 ```
+
+It holds the *names* and only the names: there is no rule to write for every
+point size, family and hex triple, so a page rendered with this file alone
+draws `data-size="14pt"` at its own size and `data-color="#c03030"` in its own
+ink. A page that wants the values too renders its runs the way the editor does
+— the value inline, beside the attribute — and the file's header says so.
 
 The seven colours are `var(--leaf-red, …)` and friends, so a page with a
 palette overrides them and a page without still reads in light and in dark. The

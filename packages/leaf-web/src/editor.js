@@ -151,6 +151,27 @@ export const SIZE_STEPS = Object.freeze([
 /** CSS's generic families, less `fantasy` and `system-ui`, which no author asks for. */
 export const FONT_FAMILIES = Object.freeze(["serif", "sans-serif", "monospace", "cursive"]);
 
+/**
+ * Is this token one of the names above, or the exact value an author asked for?
+ *
+ * The vocabulary is open at one end: beside its names each key also takes a
+ * measurement — `data-size="14pt"`, `data-font="Garamond"`,
+ * `data-color="#c03030"` — which the author wrote knowing it is exact and not
+ * portable. A name is a rule `presentation.css` already has; a value cannot be
+ * enumerated by any stylesheet, so `_runEl` transcribes it into an inline
+ * style beside the `data-` attribute the document carries either way.
+ *
+ * One predicate per property, here beside the list it reads, so that "is this
+ * a name" is decided in exactly one place per key. Spacing needs none: the
+ * three names *are* ratios, and `_rowEl` computes the row's line box from the
+ * number whichever it was given.
+ */
+const isSizeStep = (token) => SIZE_STEPS.includes(token);
+/** A generic family the stylesheet has a rule for, rather than a family named. */
+const isFontGeneric = (token) => FONT_FAMILIES.includes(token);
+/** One of the seven colour names, rather than a hex triple. */
+const isColorName = (token) => MARK_COLORS.includes(token);
+
 /** The name of the leaf directive a page break is — `Doc::insert_page_break`
  *  writes `::page-break`, and the row arrives in `DocView.directives` under
  *  this name whichever format spelled it. */
@@ -556,25 +577,33 @@ export class LeafEditor {
   // ── the presentation vocabulary ───────────────────────────────────────────
   // Alignment and spacing are the block's; size, face and colour are the
   // selection's, or the block's with no selection. Each takes one of the
-  // vocabulary's names, or `null` to clear the key and return the property to
-  // the theme's own — and refuses a name outside its list, because a typo and
-  // "clear this" are one keystroke apart and mean opposite things. Dim each
-  // control by its own `capabilities()` flag.
+  // vocabulary's names — or, for all but alignment, the exact value the names
+  // cannot spell — or `null` to clear the key and return the property to the
+  // theme's own; and each refuses a token outside its grammar, because a typo
+  // and "clear this" are one keystroke apart and mean opposite things. A value
+  // comes back from the query in its canonical spelling. Dim each control by
+  // its own `capabilities()` flag.
 
   /** Align the caret's block: `"center"`, `"right"`, `"justify"`, or `null`
    *  for the theme's default, which is left. */
   setAlignment(align = null) { this._command((d) => d.set_alignment(align ?? undefined)); }
   /** Open the caret's block up to a multiple of the theme's line height:
-   *  `"1.15"`, `"1.5"`, `"2"`, or `null` for the theme's own. */
+   *  `"1.15"`, `"1.5"`, `"2"`, any other positive decimal (`"1.3"`), or `null`
+   *  for the theme's own. */
   setLineSpacing(spacing = null) { this._command((d) => d.set_line_spacing(spacing ?? undefined)); }
-  /** Set the selection a step larger or smaller — one of `SIZE_STEPS`, or
-   *  `null` for the theme's size. With no selection it is the whole block. */
+  /** Set the selection a step larger or smaller — one of `SIZE_STEPS` — or to
+   *  an exact size in points (`"14pt"`, `"13.5pt"`), which is that many points
+   *  and not the heading's ramp scaled; `null` is the theme's size. `pt` is
+   *  the only unit. With no selection it is the whole block. */
   setFontSize(size = null) { this._command((d) => d.set_font_size(size ?? undefined)); }
-  /** Set the selection's face — one of `FONT_FAMILIES`, or `null` for the
-   *  theme's body face. `setFontSize`'s peer. */
+  /** Set the selection's face — one of `FONT_FAMILIES`, or a family the author
+   *  names (`"Garamond"`), which draws where it is installed and falls back to
+   *  the page's own face where it is not; `null` is the theme's body face.
+   *  `setFontSize`'s peer. */
   setFontFamily(font = null) { this._command((d) => d.set_font_family(font ?? undefined)); }
   /**
-   * Colour the selection's *letters* — one of `MARK_COLORS`, or `null` for the
+   * Colour the selection's *letters* — one of `MARK_COLORS`, a hex triple
+   * (`"#c03030"`, painted as written in both appearances), or `null` for the
    * theme's text colour. Not `setMarkColor`, which colours a highlight's
    * background: same seven names, and the two never collide because a mark is a
    * mark and a span is a span.
@@ -595,7 +624,9 @@ export class LeafEditor {
     this._syncFromDom();
     return this.doc.line_spacing_at_caret() ?? null;
   }
-  /** The size step at the caret, or null for the theme's size. */
+  /** The size at the caret — a step, or a point size in its canonical
+   *  spelling — or null for the theme's size, which is also the answer where
+   *  the document carries something the grammar does not cover. */
   fontSizeAtCaret() {
     this._syncFromDom();
     return this.doc.font_size_at_caret() ?? null;
@@ -909,6 +940,12 @@ export class LeafEditor {
     // editor draws with, whatever that is. So the row's line box is computed
     // here, in px, the way a heading's already is — an inline style, which
     // also settles which of it and the stylesheet's unitless ratio wins.
+    //
+    // A ratio the menu does not offer (`1.3`) is a number like the three that
+    // it does, so it goes through this same arithmetic and needs no path of
+    // its own: the token *is* the multiple, which is why spacing has no
+    // is-it-a-name predicate beside the other three. Anything the grammar does
+    // not cover reads as the theme's own.
     const spacing = row.line_height ? Number(row.line_height) || 1 : 1;
     // Sizing the *whole* row from its heading level (not per run) mirrors gpui
     // shaping a heading's line at one size: an inline `code` run inside a
@@ -1162,9 +1199,26 @@ export class LeafEditor {
     // recommendation and what the document itself carries — so the span the
     // editor draws and the span a published page carries are spelled the same,
     // and `presentation.css` styles both.
-    if (run.size) span.dataset.size = run.size;
-    if (run.font) span.dataset.font = run.font;
-    if (run.text_color) span.dataset.color = run.text_color;
+    //
+    // A *value* — `14pt`, `Garamond`, `#c03030` — keeps the attribute, because
+    // the attribute is what the document says, and gains the inline style the
+    // stylesheet cannot hold: a rule per possible measurement is not a file
+    // anyone can write. That is the portability the author traded away at the
+    // *Other…* row, and the editor's own surface is the one place it is whole.
+    // An inline declaration also settles the ramp below: an exact size is that
+    // many points, not the heading's size scaled.
+    if (run.size) {
+      span.dataset.size = run.size;
+      if (!isSizeStep(run.size)) span.style.fontSize = run.size;
+    }
+    if (run.font) {
+      span.dataset.font = run.font;
+      if (!isFontGeneric(run.font)) span.style.fontFamily = cssFamily(run.font);
+    }
+    if (run.text_color) {
+      span.dataset.color = run.text_color;
+      if (!isColorName(run.text_color)) span.style.color = run.text_color;
+    }
     span._src = run.src;
     span.textContent = run.text;
     return span;
@@ -2100,6 +2154,21 @@ function el(tag, cls) {
 }
 
 /**
+ * A family the author named, as a `font-family` declaration wants it: quoted.
+ *
+ * `Garamond` would stand bare and `Times New Roman` would happen to mean the
+ * same thing unquoted, but a name beginning with a digit, holding a comma, or
+ * spelling a CSS-wide keyword (`inherit`) would not — and a quoted string is
+ * the canonical form for every family that is not a generic, which these never
+ * are (see `isFontGeneric`). Quotes and backslashes inside the name are
+ * escaped rather than dropped, so a name cannot close the string and spill
+ * into the declaration.
+ */
+function cssFamily(name) {
+  return '"' + name.replace(/["\\]/g, "\\$&") + '"';
+}
+
+/**
  * Whether `row` is the blank row core spells a block boundary with: no caret
  * home, drawn short so a boundary reads as spacing rather than as an empty line
  * the author never typed.
@@ -2775,6 +2844,12 @@ img.leaf-media, video.leaf-media { max-height: 60vh; }
  * preview pane, a print sheet) needs these rules and should not have to fetch a
  * file to get them. The editor injects them scoped to its own surface; on a
  * published page they are unscoped, which is the whole point of them.
+ *
+ * One rule per token, and only the tokens that are *names*: a stylesheet can
+ * enumerate `large` and `red` and can never enumerate `14pt` or `#c03030`. A
+ * host that renders runs itself draws those the way `_runEl` does — the value
+ * inline, beside the attribute — and a page that has only this file draws the
+ * names and leaves the values at its own defaults.
  */
 export const PRESENTATION_CSS = `
 .center  { text-align: center }

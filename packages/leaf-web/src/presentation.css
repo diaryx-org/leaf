@@ -1,11 +1,12 @@
 /* leaf's presentation vocabulary, as CSS.
  *
  * A leaf document carries alignment, line spacing, size, face and colour as
- * *names* — `class="center"`, `data-size="large"` — and never as measurements,
- * so that a document outlives the theme it was written under. This file is the
- * whole of what a page built from such a document needs to render them with no
- * leaf present: one rule per token, nothing else. Link it beside your own
- * stylesheet.
+ * *names* — `class="center"`, `data-size="large"` — so that a document
+ * outlives the theme it was written under; an author who needs a measurement
+ * instead writes one on the same key, and reads the note at the foot of this
+ * comment. This file is the whole of what a page built from such a document
+ * needs to render the names with no leaf present: one rule per token, nothing
+ * else. Link it beside your own stylesheet.
  *
  *     <link rel="stylesheet" href="node_modules/@diaryx/leaf/src/presentation.css">
  *
@@ -20,6 +21,21 @@
  * still reads. The fallbacks are mid-tone on purpose — each clears 4:1 against
  * white and against a near-black page, because this file cannot know which it
  * is being read on.
+ *
+ * WHAT THIS FILE CANNOT DRAW. Beside its names, the vocabulary takes the exact
+ * value an author asked for on the same key — `data-size="14pt"`,
+ * `data-font="Garamond"`, `data-color="#c03030"`, `data-line-height="1.3"`.
+ * A value is not something a stylesheet can enumerate: there is no rule to
+ * write for every point size, every family and every hex triple, and CSS
+ * `attr()` into `font-size` is one browser this year. So the editor draws each
+ * as an inline style on the run or row, beside the `data-` attribute, and a
+ * page rendered with this file alone shows the names and not the values — a
+ * `14pt` run reads at the page's own size, a `#c03030` one in its own ink.
+ *
+ * That is the portability the author traded away at the *Other…* row, stated
+ * where it bites. A page that wants the values too renders its runs the way
+ * `editor.js` does (`_runEl`), or writes the handful of rules its own
+ * documents actually use.
  */
 
 /* Alignment. There is no `left` token: absence is the theme's default, which
