@@ -11,6 +11,7 @@ import type {
   HighlightIn,
   HighlightOut,
   SelectionQuote,
+  TextCounts,
 } from "../pkg/leaf_wasm.js";
 
 /** Presentation knobs, mirroring `leaf-gpui`'s `EditorStyle`. All optional. */
@@ -208,6 +209,15 @@ export class LeafEditor {
    * of what surrounds it and its byte range, or null with nothing selected.
    */
   selectionQuote(context?: number): SelectionQuote | null;
+  /**
+   * Words, characters, and paragraphs over the whole document, counted over the
+   * text a reader sees and not the markup that spells it (`**bold**` is one
+   * word and four characters; a link is its label, not its destination).
+   * O(document), so ask when the typing settles rather than on every keystroke.
+   */
+  counts(): TextCounts;
+  /** The same statistics over the selection alone, or null with nothing selected. */
+  selectionCounts(): TextCounts | null;
   /**
    * Which formatting controls this document's format can spell — one flag per
    * toolbar button. Depends only on the format, so read once per document.

@@ -33,4 +33,5 @@ export {
   type FootnoteDefView,
   type HighlightOut,
   type SelectionQuote,
+  type TextCounts,
 } from "../pkg/leaf_wasm.js";
