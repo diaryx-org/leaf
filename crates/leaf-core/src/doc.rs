@@ -2850,6 +2850,19 @@ impl Doc {
         if self.view != View::Source && self.backspace_heading_start() {
             return;
         }
+        // WYSIWYG: and at the start of a block whose presentation is spelled
+        // as hidden markup before it — djot's `{.center}` line, Markdown's
+        // `<div class="center">` — Backspace takes that markup, the way it
+        // takes a heading's `#`, rather than a byte out of it.
+        if self.view != View::Source && self.backspace_attributed_block_start() {
+            return;
+        }
+        // WYSIWYG: at the start of the paragraph after a Markdown `<div>`, the
+        // byte behind the caret is the newline under a hidden `</div>`; taking
+        // it looks like nothing and takes the tag apart on the next press.
+        if self.view != View::Source && self.backspace_after_div() {
+            return;
+        }
         // WYSIWYG: at a block picture's stops, a byte-at-a-time delete would take
         // the markup apart under a caret that cannot see it — see
         // `delete_around_block_media`.
@@ -2881,7 +2894,16 @@ impl Doc {
         {
             let stop = stop.max(self.caret_floor());
             if stop < self.caret {
-                self.splice(stop, self.caret, "", EditKind::Delete);
+                if self.source[stop..self.caret].trim().is_empty() {
+                    self.splice(stop, self.caret, "", EditKind::Delete);
+                } else {
+                    // Hidden markup stands between the stop and the caret — a
+                    // `</div>`, a comment, a link reference definition — and
+                    // collapsing to the stop would delete it. Take the blank
+                    // line alone, with the newline that opened it, and land
+                    // the caret where the collapse would have.
+                    self.delete_blank_line_to(stop);
+                }
                 return;
             }
         }
@@ -2931,6 +2953,183 @@ impl Doc {
                 self.splice(prev, end, "", EditKind::Delete);
             }
         }
+    }
+
+    /// Remove the blank line the caret is on — its own newline and the one
+    /// that ended the line before it — and put the caret on `stop`, the caret
+    /// stop before it. The [`backspace`](Self::backspace) blank-line rule for a
+    /// blank line that hidden markup separates from the block above: the
+    /// navigable blank row after a `</div>` is always one of at least three
+    /// newlines under the tag (the drawn separators either side of it), so
+    /// taking two leaves the blank line the tag needs under it.
+    fn delete_blank_line_to(&mut self, stop: usize) {
+        let caret = self.caret;
+        let line_start = self.source[..caret].rfind('\n').map_or(0, |i| i + 1);
+        let line_end = self.source[caret..]
+            .find('\n')
+            .map_or(self.source.len(), |i| caret + i);
+        let from = line_start.saturating_sub(1).max(stop);
+        let to = (line_end + 1).min(self.source.len());
+        self.splice(from, to, "", EditKind::Delete);
+        self.caret = stop;
+        self.anchor = None;
+        self.goal_col = None;
+        self.record_caret();
+    }
+
+    /// Move the caret to the stop before it and consume the key — what
+    /// Backspace does where the byte behind the caret is hidden markup it
+    /// has no structural answer for, rather than take that markup apart.
+    fn step_back_to_stop(&mut self) {
+        // The map answers about offsets, so it has to be this revision's — see
+        // `open_paragraph_at_block_edge`.
+        self.rebuild_map();
+        if let Some(off) = self
+            .vmap
+            .stop_before(self.caret)
+            .filter(|&o| o >= self.caret_floor())
+        {
+            self.caret = off;
+            self.anchor = None;
+            self.goal_col = None;
+        }
+    }
+
+    /// Backspace's presentation behaviour: with the caret exactly at the start
+    /// of a block's content, and that block's attributes spelled as hidden
+    /// markup before it, strip the attributes. The peer of
+    /// [`backspace_heading_start`](Self::backspace_heading_start), and the same
+    /// reasoning: the `{.center}` line above a djot block and the
+    /// `<div class="center">` around a Markdown one are what the byte behind
+    /// the caret belongs to, and the rich view draws neither. The ordinary
+    /// delete took the newline out of `{.center}\nhello` and left
+    /// `{.center}hello` — the attribute line fused onto the text as prose —
+    /// and out of `<div …>\n\nhello` it took the blank line the div needs.
+    ///
+    /// The whole attribute set goes, the way the whole `#` marker does — the
+    /// press is over the line that spells it, not over one key of it — and
+    /// twig's `set_block_attrs` with an empty list is the edit: it removes the
+    /// djot line and unwraps the Markdown div. Where the block is the first of
+    /// several in a div, twig has no sole child to unwrap and answers with a
+    /// no-op, so the caret steps back to the stop before instead, as it does
+    /// at a table's end. A later child of the div has an ordinary paragraph
+    /// above it and is not this rule's.
+    ///
+    /// Returns whether it acted; `false` leaves Backspace its character delete.
+    fn backspace_attributed_block_start(&mut self) -> bool {
+        if !matches!(self.format, Format::Markdown | Format::Djot) {
+            return false;
+        }
+        let caret = self.caret;
+        let nodes = self.nodes();
+        let Some(block) = nodes
+            .iter()
+            .filter(|n| matches!(n.kind, Kind::Para | Kind::Heading))
+            .find(|n| n.content_span.as_ref().map_or(n.span.start, |c| c.start) == caret)
+        else {
+            return false;
+        };
+        match self.format {
+            Format::Djot => {
+                // twig records where the `{…}` block was written, so this is
+                // the parser's own answer and not a scan for a `{` above the
+                // block; `None` (a synthesized or merged set) is not a line
+                // the caret is standing after.
+                let spelled = self
+                    .editor
+                    .document()
+                    .ok()
+                    .and_then(|mut d| d.attrs_span(block.id).ok().flatten())
+                    .is_some_and(|s| s.end <= caret);
+                if !spelled {
+                    return false;
+                }
+            }
+            _ => {
+                let Some(div) = block
+                    .parent
+                    .and_then(|p| nodes.iter().find(|n| n.id == p))
+                    .filter(|p| wysiwyg::element_tag(p) == Some("div"))
+                else {
+                    return false;
+                };
+                let mut kids = nodes.iter().filter(|n| n.parent == Some(div.id));
+                if kids.clone().any(|k| k.span.start < block.span.start) {
+                    return false;
+                }
+                if kids.nth(1).is_some() {
+                    self.step_back_to_stop();
+                    return true;
+                }
+            }
+        }
+        self.write_block_attrs("block attributes", Vec::new());
+        true
+    }
+
+    /// Backspace at the start of the paragraph after a Markdown `<div>`: join
+    /// it into the div's last paragraph, as Backspace at a paragraph's start
+    /// joins it to the paragraph above everywhere else — the joined text takes
+    /// the presentation of the block it joins, which is the rule every editor
+    /// with a centred paragraph follows, and what the same press already did
+    /// in djot, where the block above carries its attributes on a line of its
+    /// own and no closing tag stands between.
+    ///
+    /// The tag is why this is a rule of its own. The div closes with a
+    /// `</div>` on a line under its last child, and the byte behind the caret
+    /// is the newline under that line: the ordinary delete took it, which
+    /// drew nothing different, and the next press took the `>` and left the
+    /// div unclosed. So the paragraph moves inside instead, as one splice:
+    /// `hello\n\n</div>\n\nbelow` becomes `hello\nbelow\n\n</div>`, the
+    /// soft-break join of any two paragraphs, with the tag carried past it.
+    ///
+    /// Where the div's last child is not a paragraph — a list, a code block —
+    /// there is no text to join, and the caret steps back to the stop before.
+    /// Returns whether it acted; `false` leaves Backspace its character delete.
+    fn backspace_after_div(&mut self) -> bool {
+        if self.format != Format::Markdown {
+            return false;
+        }
+        let caret = self.caret;
+        let nodes = self.nodes();
+        let Some(block) = nodes
+            .iter()
+            .find(|n| n.kind == Kind::Para && n.span.start == caret)
+        else {
+            return false;
+        };
+        let Some(div) = nodes
+            .iter()
+            .filter(|n| wysiwyg::element_tag(n) == Some("div"))
+            .filter(|n| n.parent == block.parent && n.span.end <= block.span.start)
+            .filter(|n| self.source[n.span.end..block.span.start].trim().is_empty())
+            .max_by_key(|n| n.span.end)
+        else {
+            return false;
+        };
+        let last = nodes
+            .iter()
+            .filter(|n| n.parent == Some(div.id))
+            .max_by_key(|n| n.span.end);
+        match last {
+            Some(last) if last.kind == Kind::Para && last.span.end < div.span.end => {
+                let end = last.span.end;
+                let tail = self.source[end..div.span.end].to_string();
+                let text = self.source[block.span.start..block.span.end].to_string();
+                self.splice(
+                    end,
+                    block.span.end,
+                    &format!("\n{text}{tail}"),
+                    EditKind::Other,
+                );
+                self.caret = end + 1;
+                self.anchor = None;
+                self.goal_col = None;
+                self.record_caret();
+            }
+            _ => self.step_back_to_stop(),
+        }
+        true
     }
 
     /// Backspace at a table's trailing stop: move onto the stop before it (the
@@ -4247,6 +4446,13 @@ impl Doc {
                 self.anchor = anchor.map(|a| reanchor_in_block(a, &change, block));
                 self.dirty = self.source != self.clean_source;
                 self.status = None;
+                // The clamp reads the caret floor off the map, and this edit
+                // can move the floor: taking the `{…}` line off a djot
+                // document's first block moves the first rendered offset to 0,
+                // and a floor read from the old map stood the caret past the
+                // block's text. So the map is this revision's before the clamp
+                // — see `open_paragraph_at_block_edge`.
+                self.rebuild_map();
                 self.clamp_caret();
                 self.record_caret();
             }
@@ -15883,5 +16089,157 @@ mod tests {
         );
         assert_eq!(h.caret, h.source.find("there").unwrap() + 1);
         assert_eq!(h.alignment_at_caret(), Some(Align::Right));
+    }
+
+    /// A djot document open in the rich view, with its map built as
+    /// [`wysiwyg_doc`] builds a Markdown one's.
+    fn wysiwyg_djot(body: &str) -> Doc {
+        let mut d = fmt_doc(body, Format::Djot);
+        d.view = View::Wysiwyg;
+        d.build_visual(80);
+        d
+    }
+
+    /// Backspace at the start of a block whose presentation is spelled as
+    /// hidden markup before it strips that presentation, the way Backspace at
+    /// a heading's start strips its `#`. The ordinary delete fused djot's
+    /// `{.center}` line onto the text and took the blank line a Markdown div
+    /// needs between its tag and its paragraph.
+    #[test]
+    fn backspace_at_the_start_of_a_centred_paragraph_strips_its_attributes() {
+        let mut md = wysiwyg_doc(
+            "wys_attr_bksp",
+            "above\n\n<div class=\"center\">\n\nhello\n\n</div>\n\nbelow\n",
+        );
+        md.caret = md.source.find("hello").unwrap();
+        md.backspace();
+        assert_eq!(
+            md.source, "above\n\nhello\n\nbelow\n",
+            "the div is unwrapped"
+        );
+        assert_eq!(md.caret, 7, "the caret stays at the start of its text");
+        md.backspace();
+        assert_eq!(
+            md.source, "above\nhello\n\nbelow\n",
+            "the next press joins the paragraphs, as it always did"
+        );
+
+        let mut dj = wysiwyg_djot("above\n\n{.center}\nhello\n\nbelow\n");
+        dj.caret = dj.source.find("hello").unwrap();
+        dj.backspace();
+        assert_eq!(
+            dj.source, "above\n\nhello\n\nbelow\n",
+            "the attribute line goes"
+        );
+        assert_eq!(dj.caret, 7);
+
+        // A heading's own marker is the nearer hidden markup, and goes first;
+        // the attributes are the next press's.
+        let mut dj = wysiwyg_djot("{.center}\n# Title\n");
+        dj.caret = dj.source.find("Title").unwrap();
+        dj.backspace();
+        assert_eq!(dj.source, "{.center}\nTitle\n", "the `#` first");
+        dj.build_visual(80);
+        dj.backspace();
+        assert_eq!(dj.source, "Title\n", "then the attributes");
+        assert_eq!(dj.caret, 0);
+    }
+
+    /// A div around several blocks has no sole child for twig to unwrap, so
+    /// at its first block the caret steps back to the stop before rather than
+    /// taking the div apart; a later block has an ordinary paragraph above it
+    /// and joins as any paragraph does.
+    #[test]
+    fn backspace_at_the_first_of_a_div_s_blocks_steps_back_and_a_later_one_joins() {
+        let src = "above\n\n<div class=\"center\">\n\nhello\n\nworld\n\n</div>\n";
+        let mut d = wysiwyg_doc("wys_div_first", src);
+        d.caret = d.source.find("hello").unwrap();
+        d.backspace();
+        assert_eq!(d.source, src, "nothing is deleted");
+        assert_eq!(d.caret, 5, "the caret steps back to the end of `above`");
+
+        let mut d = wysiwyg_doc("wys_div_later", src);
+        d.caret = d.source.find("world").unwrap();
+        d.backspace();
+        assert_eq!(
+            d.source, "above\n\n<div class=\"center\">\n\nhello\nworld\n\n</div>\n",
+            "a later block joins the one above it"
+        );
+    }
+
+    /// Backspace at the start of the paragraph after a Markdown div joins it
+    /// into the div's last paragraph — the join any two paragraphs make, with
+    /// the hidden `</div>` carried past the joined text. The ordinary delete
+    /// took the newline under the tag, which drew nothing different, and the
+    /// next press took the `>` and left the div unclosed.
+    #[test]
+    fn backspace_after_a_div_joins_the_paragraph_into_it() {
+        let src = "above\n\n<div class=\"center\">\n\nhello\n\n</div>\n\nbelow\n";
+        let mut d = wysiwyg_doc("wys_div_join", src);
+        d.caret = d.source.find("below").unwrap();
+        d.backspace();
+        assert_eq!(
+            d.source,
+            "above\n\n<div class=\"center\">\n\nhello\nbelow\n\n</div>\n"
+        );
+        assert_eq!(
+            d.caret,
+            d.source.find("below").unwrap(),
+            "the caret stays at the start of the joined text"
+        );
+        d.build_visual(80);
+        assert_eq!(
+            d.alignment_at_caret(),
+            Some(Align::Center),
+            "and is centred now"
+        );
+        d.undo();
+        assert_eq!(d.source, src, "one undo step");
+
+        // Nothing to join into: a list closes the div, and the caret steps
+        // back to the stop before instead.
+        let src = "<div class=\"center\">\n\n- item\n\n</div>\n\nbelow\n";
+        let mut d = wysiwyg_doc("wys_div_list", src);
+        d.caret = d.source.find("below").unwrap();
+        d.backspace();
+        assert_eq!(d.source, src, "nothing is deleted");
+        assert_eq!(d.caret, d.source.find("item").unwrap() + 4);
+    }
+
+    /// Backspace on a blank line collapses to the stop before it — but not
+    /// across hidden markup, which that collapse deleted whole: a `</div>`,
+    /// or a comment between two blocks. There the blank line goes alone, and
+    /// the caret lands where the collapse would have put it.
+    #[test]
+    fn backspace_on_a_blank_line_after_hidden_markup_keeps_the_markup() {
+        let mut d = wysiwyg_doc(
+            "wys_div_blank",
+            "<div class=\"center\">\n\nhello\n\n</div>\n\n\n\nbelow\n",
+        );
+        d.caret = d.source.find("below").unwrap() - 2; // the empty paragraph
+        assert!(
+            d.vmap.is_stop(d.caret),
+            "the empty paragraph is a caret home"
+        );
+        d.backspace();
+        assert_eq!(
+            d.source, "<div class=\"center\">\n\nhello\n\n</div>\n\nbelow\n",
+            "the blank line goes and the div stays closed"
+        );
+        assert_eq!(
+            d.caret,
+            d.source.find("hello").unwrap() + 5,
+            "onto the end of `hello`"
+        );
+
+        let mut d = wysiwyg_doc("wys_comment_blank", "above\n\n<!-- note -->\n\n\n\nbelow\n");
+        d.caret = d.source.find("below").unwrap() - 2;
+        assert!(d.vmap.is_stop(d.caret));
+        d.backspace();
+        assert_eq!(
+            d.source, "above\n\n<!-- note -->\n\nbelow\n",
+            "the comment stays"
+        );
+        assert_eq!(d.caret, 5);
     }
 }
