@@ -463,6 +463,22 @@ fileprivate struct FfiConverterUInt64: FfiConverterPrimitive {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterDouble: FfiConverterPrimitive {
+    typealias FfiType = Double
+    typealias SwiftType = Double
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Double {
+        return try lift(readDouble(&buf))
+    }
+
+    public static func write(_ value: Double, into buf: inout [UInt8]) {
+        writeDouble(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterBool : FfiConverter {
     typealias FfiType = Int8
     typealias SwiftType = Bool
@@ -648,17 +664,21 @@ public protocol LeafDocProtocol : AnyObject {
     
     /**
      * The face in force at the caret, or `nil` for the theme's body face.
-     * [`font_size_at_caret`](Self::font_size_at_caret)'s peer.
+     * [`font_size_at_caret`](Self::font_size_at_caret)'s peer, and a `.named`
+     * is the family the author picked, shown as its own ticked row.
      */
-    func fontFamilyAtCaret()  -> FontFamily?
+    func fontFamilyAtCaret()  -> FontFace?
     
     /**
      * The size in force at the caret, or `nil` for the theme's own — which
      * entry a size menu shows ticked. Run-level, so the chain starts one node
      * deeper: the attributed span the caret stands in, then its block, then the
      * `div`s around it, the nearest winning.
+     *
+     * A `.points` is a size no row of the menu's seven can tick, and the menu
+     * shows it as a row of its own — "14 pt" — above *Other…*.
      */
-    func fontSizeAtCaret()  -> SizeStep?
+    func fontSizeAtCaret()  -> FontSize?
     
     /**
      * The footnote reference at byte offset `off`, resolved to the note it
@@ -800,8 +820,11 @@ public protocol LeafDocProtocol : AnyObject {
      * The line spacing in force at the caret, or `nil` for the theme's own —
      * which entry a spacing menu shows ticked.
      * [`alignment_at_caret`](Self::alignment_at_caret)'s peer.
+     *
+     * A `.ratio` is a spacing no row of the menu's three can tick, and is the
+     * author's own: the menu shows it as a row of its own above *Other…*.
      */
-    func lineSpacingAtCaret()  -> LineSpacing?
+    func lineSpacingAtCaret()  -> LineHeight?
     
     /**
      * The destination of the link at byte offset `off` —
@@ -1005,8 +1028,12 @@ public protocol LeafDocProtocol : AnyObject {
      * Set the face of the selected run, or of the caret's whole block.
      * [`set_font_size`](Self::set_font_size)'s peer. Gate on
      * [`Capabilities::font_family`].
+     *
+     * `.generic(.serif)` from the menu's four, or `.named("Garamond")` from
+     * the platform's font picker — which draws in that family where it is
+     * installed and in the theme's body face where it is not.
      */
-    func setFontFamily(font: FontFamily?)  -> DocView
+    func setFontFamily(font: FontFace?)  -> DocView
     
     /**
      * Set the size of the selected run, or of the caret's whole block when
@@ -1017,8 +1044,11 @@ public protocol LeafDocProtocol : AnyObject {
      * rather than a select-all first. With a selection the range is wrapped in
      * an attributed span, or the span it already lies in is re-styled, never
      * nested. Gate on [`Capabilities::font_size`].
+     *
+     * `.step(.large)` from the menu's seven, or `.points(14)` from an
+     * *Other…* field — a size in points, which is what the paper will show.
      */
-    func setFontSize(size: SizeStep?)  -> DocView
+    func setFontSize(size: FontSize?)  -> DocView
     
     /**
      * Toggle the current block to a heading of `level` (1–6); toggling the
@@ -1044,8 +1074,12 @@ public protocol LeafDocProtocol : AnyObject {
      * Set the line spacing of the caret's block, or return it to the theme's
      * with `nil`. [`set_alignment`](Self::set_alignment)'s peer in every
      * respect but the key. Gate on [`Capabilities::line_spacing`].
+     *
+     * `.step(.oneHalf)` from the menu's three, or `.ratio(1.3)` from an
+     * *Other…* field. A ratio that spells one of the three *is* that name, and
+     * a ratio of 1 is single spacing, which is absence and clears the key.
      */
-    func setLineSpacing(spacing: LineSpacing?)  -> DocView
+    func setLineSpacing(spacing: LineHeight?)  -> DocView
     
     /**
      * Colour the highlight at the caret, or clear its colour with `None`.
@@ -1113,8 +1147,12 @@ public protocol LeafDocProtocol : AnyObject {
      * background and needs a highlight to colour, this one paints the letters
      * and needs nothing. They share the seven names on purpose. Gate on
      * [`Capabilities::text_color`].
+     *
+     * `.named(.red)` from the seven swatches, or `.rgb(r:g:b:)` from the
+     * system colour picker — painted as written in both appearances, which is
+     * what "exact" costs.
      */
-    func setTextColor(color: MarkColor?)  -> DocView
+    func setTextColor(color: TextColor?)  -> DocView
     
     /**
      * Switch to **unwrapped** layout — one visual row per block, no column wrapping —
@@ -1193,9 +1231,10 @@ public protocol LeafDocProtocol : AnyObject {
      * swatch a text-colour control marks as the current one.
      * [`font_size_at_caret`](Self::font_size_at_caret)'s peer, and not
      * [`DocView::mark_color`], which reads a highlight's background off a
-     * `mark` node the caret is standing in.
+     * `mark` node the caret is standing in. A `.rgb` is the author's own
+     * triple, which the palette shows as a swatch of its own.
      */
-    func textColorAtCaret()  -> MarkColor?
+    func textColorAtCaret()  -> TextColor?
     
     /**
      * The visible text between two offsets — `text(in:)`. In the WYSIWYG
@@ -1560,10 +1599,11 @@ open func docEndOffset() -> UInt32 {
     
     /**
      * The face in force at the caret, or `nil` for the theme's body face.
-     * [`font_size_at_caret`](Self::font_size_at_caret)'s peer.
+     * [`font_size_at_caret`](Self::font_size_at_caret)'s peer, and a `.named`
+     * is the family the author picked, shown as its own ticked row.
      */
-open func fontFamilyAtCaret() -> FontFamily? {
-    return try!  FfiConverterOptionTypeFontFamily.lift(try! rustCall() {
+open func fontFamilyAtCaret() -> FontFace? {
+    return try!  FfiConverterOptionTypeFontFace.lift(try! rustCall() {
     uniffi_leaf_ffi_fn_method_leafdoc_font_family_at_caret(self.uniffiClonePointer(),$0
     )
 })
@@ -1574,9 +1614,12 @@ open func fontFamilyAtCaret() -> FontFamily? {
      * entry a size menu shows ticked. Run-level, so the chain starts one node
      * deeper: the attributed span the caret stands in, then its block, then the
      * `div`s around it, the nearest winning.
+     *
+     * A `.points` is a size no row of the menu's seven can tick, and the menu
+     * shows it as a row of its own — "14 pt" — above *Other…*.
      */
-open func fontSizeAtCaret() -> SizeStep? {
-    return try!  FfiConverterOptionTypeSizeStep.lift(try! rustCall() {
+open func fontSizeAtCaret() -> FontSize? {
+    return try!  FfiConverterOptionTypeFontSize.lift(try! rustCall() {
     uniffi_leaf_ffi_fn_method_leafdoc_font_size_at_caret(self.uniffiClonePointer(),$0
     )
 })
@@ -1812,9 +1855,12 @@ open func lineFlow() -> LineFlow {
      * The line spacing in force at the caret, or `nil` for the theme's own —
      * which entry a spacing menu shows ticked.
      * [`alignment_at_caret`](Self::alignment_at_caret)'s peer.
+     *
+     * A `.ratio` is a spacing no row of the menu's three can tick, and is the
+     * author's own: the menu shows it as a row of its own above *Other…*.
      */
-open func lineSpacingAtCaret() -> LineSpacing? {
-    return try!  FfiConverterOptionTypeLineSpacing.lift(try! rustCall() {
+open func lineSpacingAtCaret() -> LineHeight? {
+    return try!  FfiConverterOptionTypeLineHeight.lift(try! rustCall() {
     uniffi_leaf_ffi_fn_method_leafdoc_line_spacing_at_caret(self.uniffiClonePointer(),$0
     )
 })
@@ -2230,11 +2276,15 @@ open func setDarkAppearance(dark: Bool) -> DocView {
      * Set the face of the selected run, or of the caret's whole block.
      * [`set_font_size`](Self::set_font_size)'s peer. Gate on
      * [`Capabilities::font_family`].
+     *
+     * `.generic(.serif)` from the menu's four, or `.named("Garamond")` from
+     * the platform's font picker — which draws in that family where it is
+     * installed and in the theme's body face where it is not.
      */
-open func setFontFamily(font: FontFamily?) -> DocView {
+open func setFontFamily(font: FontFace?) -> DocView {
     return try!  FfiConverterTypeDocView.lift(try! rustCall() {
     uniffi_leaf_ffi_fn_method_leafdoc_set_font_family(self.uniffiClonePointer(),
-        FfiConverterOptionTypeFontFamily.lower(font),$0
+        FfiConverterOptionTypeFontFace.lower(font),$0
     )
 })
 }
@@ -2248,11 +2298,14 @@ open func setFontFamily(font: FontFamily?) -> DocView {
      * rather than a select-all first. With a selection the range is wrapped in
      * an attributed span, or the span it already lies in is re-styled, never
      * nested. Gate on [`Capabilities::font_size`].
+     *
+     * `.step(.large)` from the menu's seven, or `.points(14)` from an
+     * *Other…* field — a size in points, which is what the paper will show.
      */
-open func setFontSize(size: SizeStep?) -> DocView {
+open func setFontSize(size: FontSize?) -> DocView {
     return try!  FfiConverterTypeDocView.lift(try! rustCall() {
     uniffi_leaf_ffi_fn_method_leafdoc_set_font_size(self.uniffiClonePointer(),
-        FfiConverterOptionTypeSizeStep.lower(size),$0
+        FfiConverterOptionTypeFontSize.lower(size),$0
     )
 })
 }
@@ -2299,11 +2352,15 @@ open func setLineFlow(mode: LineFlow) -> DocView {
      * Set the line spacing of the caret's block, or return it to the theme's
      * with `nil`. [`set_alignment`](Self::set_alignment)'s peer in every
      * respect but the key. Gate on [`Capabilities::line_spacing`].
+     *
+     * `.step(.oneHalf)` from the menu's three, or `.ratio(1.3)` from an
+     * *Other…* field. A ratio that spells one of the three *is* that name, and
+     * a ratio of 1 is single spacing, which is absence and clears the key.
      */
-open func setLineSpacing(spacing: LineSpacing?) -> DocView {
+open func setLineSpacing(spacing: LineHeight?) -> DocView {
     return try!  FfiConverterTypeDocView.lift(try! rustCall() {
     uniffi_leaf_ffi_fn_method_leafdoc_set_line_spacing(self.uniffiClonePointer(),
-        FfiConverterOptionTypeLineSpacing.lower(spacing),$0
+        FfiConverterOptionTypeLineHeight.lower(spacing),$0
     )
 })
 }
@@ -2419,11 +2476,15 @@ open func setSelectionOffsets(anchor: UInt32, focus: UInt32) -> DocView {
      * background and needs a highlight to colour, this one paints the letters
      * and needs nothing. They share the seven names on purpose. Gate on
      * [`Capabilities::text_color`].
+     *
+     * `.named(.red)` from the seven swatches, or `.rgb(r:g:b:)` from the
+     * system colour picker — painted as written in both appearances, which is
+     * what "exact" costs.
      */
-open func setTextColor(color: MarkColor?) -> DocView {
+open func setTextColor(color: TextColor?) -> DocView {
     return try!  FfiConverterTypeDocView.lift(try! rustCall() {
     uniffi_leaf_ffi_fn_method_leafdoc_set_text_color(self.uniffiClonePointer(),
-        FfiConverterOptionTypeMarkColor.lower(color),$0
+        FfiConverterOptionTypeTextColor.lower(color),$0
     )
 })
 }
@@ -2579,10 +2640,11 @@ open func taskCheckedAtCaret() -> Bool? {
      * swatch a text-colour control marks as the current one.
      * [`font_size_at_caret`](Self::font_size_at_caret)'s peer, and not
      * [`DocView::mark_color`], which reads a highlight's background off a
-     * `mark` node the caret is standing in.
+     * `mark` node the caret is standing in. A `.rgb` is the author's own
+     * triple, which the palette shows as a swatch of its own.
      */
-open func textColorAtCaret() -> MarkColor? {
-    return try!  FfiConverterOptionTypeMarkColor.lift(try! rustCall() {
+open func textColorAtCaret() -> TextColor? {
+    return try!  FfiConverterOptionTypeTextColor.lift(try! rustCall() {
     uniffi_leaf_ffi_fn_method_leafdoc_text_color_at_caret(self.uniffiClonePointer(),$0
     )
 })
@@ -4720,12 +4782,14 @@ public struct Row {
     public var align: String?
     /**
      * How far apart this row's block sets its lines, as a multiple of the
-     * theme's own line height — `"1.15"`, `"1.5"`, `"2"` — and `None` for the
-     * theme's spacing. On every row the block emits.
+     * theme's own line height — the menu's three (`"1.15"`, `"1.5"`, `"2"`)
+     * or any other positive decimal the author asked for (`"1.3"`) — and
+     * `None` for the theme's spacing, which is what `"1"` would mean and is
+     * why it is never written. On every row the block emits.
      *
-     * The ratio is the name read as arithmetic (`leaf_core::LineSpacing::ratio`),
-     * so a renderer laying rows out in points multiplies its line height by it;
-     * one drawing a row per terminal line ignores it, the way it ignores a
+     * The token *is* the ratio, so a renderer laying rows out in points
+     * multiplies its line height by it whether or not the menu has a row for
+     * it; one drawing a row per terminal line ignores it, the way it ignores a
      * heading's size. See [`leaf_core::VRow::line_height`].
      */
     public var lineHeight: String?
@@ -4780,12 +4844,14 @@ public struct Row {
          */align: String?, 
         /**
          * How far apart this row's block sets its lines, as a multiple of the
-         * theme's own line height — `"1.15"`, `"1.5"`, `"2"` — and `None` for the
-         * theme's spacing. On every row the block emits.
+         * theme's own line height — the menu's three (`"1.15"`, `"1.5"`, `"2"`)
+         * or any other positive decimal the author asked for (`"1.3"`) — and
+         * `None` for the theme's spacing, which is what `"1"` would mean and is
+         * why it is never written. On every row the block emits.
          *
-         * The ratio is the name read as arithmetic (`leaf_core::LineSpacing::ratio`),
-         * so a renderer laying rows out in points multiplies its line height by it;
-         * one drawing a row per terminal line ignores it, the way it ignores a
+         * The token *is* the ratio, so a renderer laying rows out in points
+         * multiplies its line height by it whether or not the menu has a row for
+         * it; one drawing a row per terminal line ignores it, the way it ignores a
          * heading's size. See [`leaf_core::VRow::line_height`].
          */lineHeight: String?, 
         /**
@@ -5152,31 +5218,40 @@ public struct Run {
      */
     public var token: String?
     /**
-     * How large this run is set relative to the text around it — `"xx-small"`,
+     * How large this run is set — one of CSS's seven keywords (`"xx-small"`,
      * `"x-small"`, `"small"`, `"large"`, `"x-large"`, `"xx-large"`,
-     * `"xxx-large"` — or absent for the theme's own size, which is every run
+     * `"xxx-large"`), or the exact size the author asked for (`"14pt"`,
+     * `"13.5pt"`) — and absent for the theme's own size, which is every run
      * there was before the presentation vocabulary.
      *
-     * A *step*, never a measurement, and a name for [`mark_color`](Self::mark_color)'s
-     * reason: the document says how much bigger, the renderer's theme says how
-     * big. `leaf_core::SizeStep::scale` carries CSS's own ratios for a renderer
-     * that wants a default ramp rather than one of its own.
+     * A *token* rather than an enum, for [`mark_color`](Self::mark_color)'s
+     * reason and one more: a keyword says how much bigger and leaves how big
+     * to the theme (`leaf_core::SizeStep::scale` has CSS's own ratios for a
+     * renderer that wants a default ramp), while a `pt` size is exactly that
+     * many points of the sheet. A renderer reads its table first and parses
+     * the suffix when the table has no entry.
      */
     public var size: String?
     /**
-     * The face this run is set in — `"serif"`, `"sans-serif"`, `"monospace"`,
-     * `"cursive"` — or absent for the theme's body face.
+     * The face this run is set in — one of CSS's four generics (`"serif"`,
+     * `"sans-serif"`, `"monospace"`, `"cursive"`), or a family the author
+     * named (`"Garamond"`) — and absent for the theme's body face.
      *
-     * A CSS generic rather than a family name, for [`size`](Self::size)'s
-     * reason: the theme names the concrete face, so `serif` is whichever serif
-     * this platform's theme has and a document never asks for one that isn't
-     * installed.
+     * A generic is the theme's to name, so `serif` is whichever serif this
+     * platform's theme has and opens everywhere. A family name is resolved
+     * through the platform's font registry and falls back to the body face
+     * where it is not installed, which is the portability the author traded
+     * away knowingly.
      */
     public var font: String?
     /**
-     * The run's *foreground* colour, by the same seven names
-     * [`mark_color`](Self::mark_color) carries — or absent for the theme's text
-     * colour.
+     * The run's *foreground* colour — one of the seven names
+     * [`mark_color`](Self::mark_color) carries, or six lowercase hex digits
+     * behind a `#` (`"#c03030"`) — and absent for the theme's text colour.
+     *
+     * A name is two inks, one per appearance, and the theme owns both; a
+     * triple is painted as written in the light appearance and in the dark
+     * one alike, which is what "exact" means.
      *
      * Not [`mark_color`](Self::mark_color), though they share a vocabulary on
      * purpose: that is a highlight's *background* and reaches a run through its
@@ -5261,29 +5336,38 @@ public struct Run {
          * it is, and one that does keys a palette on the name.
          */token: String?, 
         /**
-         * How large this run is set relative to the text around it — `"xx-small"`,
+         * How large this run is set — one of CSS's seven keywords (`"xx-small"`,
          * `"x-small"`, `"small"`, `"large"`, `"x-large"`, `"xx-large"`,
-         * `"xxx-large"` — or absent for the theme's own size, which is every run
+         * `"xxx-large"`), or the exact size the author asked for (`"14pt"`,
+         * `"13.5pt"`) — and absent for the theme's own size, which is every run
          * there was before the presentation vocabulary.
          *
-         * A *step*, never a measurement, and a name for [`mark_color`](Self::mark_color)'s
-         * reason: the document says how much bigger, the renderer's theme says how
-         * big. `leaf_core::SizeStep::scale` carries CSS's own ratios for a renderer
-         * that wants a default ramp rather than one of its own.
+         * A *token* rather than an enum, for [`mark_color`](Self::mark_color)'s
+         * reason and one more: a keyword says how much bigger and leaves how big
+         * to the theme (`leaf_core::SizeStep::scale` has CSS's own ratios for a
+         * renderer that wants a default ramp), while a `pt` size is exactly that
+         * many points of the sheet. A renderer reads its table first and parses
+         * the suffix when the table has no entry.
          */size: String?, 
         /**
-         * The face this run is set in — `"serif"`, `"sans-serif"`, `"monospace"`,
-         * `"cursive"` — or absent for the theme's body face.
+         * The face this run is set in — one of CSS's four generics (`"serif"`,
+         * `"sans-serif"`, `"monospace"`, `"cursive"`), or a family the author
+         * named (`"Garamond"`) — and absent for the theme's body face.
          *
-         * A CSS generic rather than a family name, for [`size`](Self::size)'s
-         * reason: the theme names the concrete face, so `serif` is whichever serif
-         * this platform's theme has and a document never asks for one that isn't
-         * installed.
+         * A generic is the theme's to name, so `serif` is whichever serif this
+         * platform's theme has and opens everywhere. A family name is resolved
+         * through the platform's font registry and falls back to the body face
+         * where it is not installed, which is the portability the author traded
+         * away knowingly.
          */font: String?, 
         /**
-         * The run's *foreground* colour, by the same seven names
-         * [`mark_color`](Self::mark_color) carries — or absent for the theme's text
-         * colour.
+         * The run's *foreground* colour — one of the seven names
+         * [`mark_color`](Self::mark_color) carries, or six lowercase hex digits
+         * behind a `#` (`"#c03030"`) — and absent for the theme's text colour.
+         *
+         * A name is two inks, one per appearance, and the theme owns both; a
+         * triple is painted as written in the light appearance and in the dark
+         * one alike, which is what "exact" means.
          *
          * Not [`mark_color`](Self::mark_color), though they share a vocabulary on
          * purpose: that is a highlight's *background* and reaches a run through its
@@ -6168,6 +6252,89 @@ extension BlockClass: Equatable, Hashable {}
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
+ * The face a run is set in: one of CSS's four generics, or the family the
+ * author named.
+ *
+ * A generic opens on every machine and a family name does not, which is the
+ * trade [`FontFamily`]'s note states once. A named family is resolved through
+ * the platform's font registry and falls back to the theme's body face where
+ * it is not installed.
+ */
+
+public enum FontFace {
+    
+    case generic(FontFamily
+    )
+    /**
+     * A family name, as the font panel spells it. Trimmed on the way in, and
+     * one that spells a generic (`"Serif"`) is read as that generic.
+     */
+    case named(String
+    )
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFontFace: FfiConverterRustBuffer {
+    typealias SwiftType = FontFace
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FontFace {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .generic(try FfiConverterTypeFontFamily.read(from: &buf)
+        )
+        
+        case 2: return .named(try FfiConverterString.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: FontFace, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case let .generic(v1):
+            writeInt(&buf, Int32(1))
+            FfiConverterTypeFontFamily.write(v1, into: &buf)
+            
+        
+        case let .named(v1):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(v1, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFontFace_lift(_ buf: RustBuffer) throws -> FontFace {
+    return try FfiConverterTypeFontFace.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFontFace_lower(_ value: FontFace) -> RustBuffer {
+    return FfiConverterTypeFontFace.lower(value)
+}
+
+
+
+extension FontFace: Equatable, Hashable {}
+
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
  * The face a run is set in — CSS's generic families, less `fantasy` and
  * `system-ui`, neither of which an author asks for. What
  * [`LeafDoc::set_font_family`] writes.
@@ -6252,6 +6419,90 @@ public func FfiConverterTypeFontFamily_lower(_ value: FontFamily) -> RustBuffer 
 
 
 extension FontFamily: Equatable, Hashable {}
+
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * How large a run is set: a [`SizeStep`] relative to the text around it, or
+ * the point size the author asked for. What [`LeafDoc::set_font_size`] writes
+ * and [`LeafDoc::font_size_at_caret`] answers.
+ *
+ * The step is what a menu offers first and what a document should say where a
+ * name will do — it reads as a step up under every theme. The point size is
+ * what the author typed and is all it is: 14 points of the sheet on paper, and
+ * 14 points before the zoom on screen. A heading set to an exact size is that
+ * size and not its ramp scaled.
+ */
+
+public enum FontSize {
+    
+    case step(SizeStep
+    )
+    /**
+     * Points. 0.01 to 655.35; anything else is absence — see the note above.
+     */
+    case points(Double
+    )
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFontSize: FfiConverterRustBuffer {
+    typealias SwiftType = FontSize
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FontSize {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .step(try FfiConverterTypeSizeStep.read(from: &buf)
+        )
+        
+        case 2: return .points(try FfiConverterDouble.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: FontSize, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case let .step(v1):
+            writeInt(&buf, Int32(1))
+            FfiConverterTypeSizeStep.write(v1, into: &buf)
+            
+        
+        case let .points(v1):
+            writeInt(&buf, Int32(2))
+            FfiConverterDouble.write(v1, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFontSize_lift(_ buf: RustBuffer) throws -> FontSize {
+    return try FfiConverterTypeFontSize.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFontSize_lower(_ value: FontSize) -> RustBuffer {
+    return FfiConverterTypeFontSize.lower(value)
+}
+
+
+
+extension FontSize: Equatable, Hashable {}
 
 
 
@@ -6397,6 +6648,88 @@ public func FfiConverterTypeLineFlow_lower(_ value: LineFlow) -> RustBuffer {
 
 
 extension LineFlow: Equatable, Hashable {}
+
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * How far apart a block's lines are set: a [`LineSpacing`] from the menu's
+ * three, or the ratio the author asked for. [`FontSize`]'s peer one property
+ * along, and with no unit at all — a line height is a multiple.
+ *
+ * A ratio that spells one of the three names *is* that name, so
+ * `.ratio(1.5)` comes back as `.step(.oneHalf)` and a menu has a row to tick.
+ * A ratio of 1 is single spacing, which is absence: it clears the key.
+ */
+
+public enum LineHeight {
+    
+    case step(LineSpacing
+    )
+    /**
+     * A multiple of the theme's line height. 1 is absence.
+     */
+    case ratio(Double
+    )
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLineHeight: FfiConverterRustBuffer {
+    typealias SwiftType = LineHeight
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LineHeight {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .step(try FfiConverterTypeLineSpacing.read(from: &buf)
+        )
+        
+        case 2: return .ratio(try FfiConverterDouble.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: LineHeight, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case let .step(v1):
+            writeInt(&buf, Int32(1))
+            FfiConverterTypeLineSpacing.write(v1, into: &buf)
+            
+        
+        case let .ratio(v1):
+            writeInt(&buf, Int32(2))
+            FfiConverterDouble.write(v1, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLineHeight_lift(_ buf: RustBuffer) throws -> LineHeight {
+    return try FfiConverterTypeLineHeight.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLineHeight_lower(_ value: LineHeight) -> RustBuffer {
+    return FfiConverterTypeLineHeight.lower(value)
+}
+
+
+
+extension LineHeight: Equatable, Hashable {}
 
 
 
@@ -6946,6 +7279,86 @@ extension TableAlignment: Equatable, Hashable {}
 
 
 
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * A run's *foreground* colour: one of the seven [`MarkColor`] names, or the
+ * RGB triple the author asked for.
+ *
+ * A name is two inks, one per appearance, and the theme owns both. A triple is
+ * painted as written in the light appearance and in the dark one alike — that
+ * is what "exact" means, and the theme does not soften it.
+ */
+
+public enum TextColor {
+    
+    case named(MarkColor
+    )
+    case rgb(r: UInt8, g: UInt8, b: UInt8
+    )
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTextColor: FfiConverterRustBuffer {
+    typealias SwiftType = TextColor
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TextColor {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .named(try FfiConverterTypeMarkColor.read(from: &buf)
+        )
+        
+        case 2: return .rgb(r: try FfiConverterUInt8.read(from: &buf), g: try FfiConverterUInt8.read(from: &buf), b: try FfiConverterUInt8.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: TextColor, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case let .named(v1):
+            writeInt(&buf, Int32(1))
+            FfiConverterTypeMarkColor.write(v1, into: &buf)
+            
+        
+        case let .rgb(r,g,b):
+            writeInt(&buf, Int32(2))
+            FfiConverterUInt8.write(r, into: &buf)
+            FfiConverterUInt8.write(g, into: &buf)
+            FfiConverterUInt8.write(b, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTextColor_lift(_ buf: RustBuffer) throws -> TextColor {
+    return try FfiConverterTypeTextColor.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTextColor_lower(_ value: TextColor) -> RustBuffer {
+    return FfiConverterTypeTextColor.lower(value)
+}
+
+
+
+extension TextColor: Equatable, Hashable {}
+
+
+
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
@@ -7213,8 +7626,8 @@ fileprivate struct FfiConverterOptionTypeAlign: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterOptionTypeFontFamily: FfiConverterRustBuffer {
-    typealias SwiftType = FontFamily?
+fileprivate struct FfiConverterOptionTypeFontFace: FfiConverterRustBuffer {
+    typealias SwiftType = FontFace?
 
     public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
         guard let value = value else {
@@ -7222,13 +7635,13 @@ fileprivate struct FfiConverterOptionTypeFontFamily: FfiConverterRustBuffer {
             return
         }
         writeInt(&buf, Int8(1))
-        FfiConverterTypeFontFamily.write(value, into: &buf)
+        FfiConverterTypeFontFace.write(value, into: &buf)
     }
 
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
-        case 1: return try FfiConverterTypeFontFamily.read(from: &buf)
+        case 1: return try FfiConverterTypeFontFace.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -7237,8 +7650,8 @@ fileprivate struct FfiConverterOptionTypeFontFamily: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterOptionTypeLineSpacing: FfiConverterRustBuffer {
-    typealias SwiftType = LineSpacing?
+fileprivate struct FfiConverterOptionTypeFontSize: FfiConverterRustBuffer {
+    typealias SwiftType = FontSize?
 
     public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
         guard let value = value else {
@@ -7246,13 +7659,37 @@ fileprivate struct FfiConverterOptionTypeLineSpacing: FfiConverterRustBuffer {
             return
         }
         writeInt(&buf, Int8(1))
-        FfiConverterTypeLineSpacing.write(value, into: &buf)
+        FfiConverterTypeFontSize.write(value, into: &buf)
     }
 
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
-        case 1: return try FfiConverterTypeLineSpacing.read(from: &buf)
+        case 1: return try FfiConverterTypeFontSize.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeLineHeight: FfiConverterRustBuffer {
+    typealias SwiftType = LineHeight?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeLineHeight.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeLineHeight.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -7285,8 +7722,8 @@ fileprivate struct FfiConverterOptionTypeMarkColor: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterOptionTypeSizeStep: FfiConverterRustBuffer {
-    typealias SwiftType = SizeStep?
+fileprivate struct FfiConverterOptionTypeTextColor: FfiConverterRustBuffer {
+    typealias SwiftType = TextColor?
 
     public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
         guard let value = value else {
@@ -7294,13 +7731,13 @@ fileprivate struct FfiConverterOptionTypeSizeStep: FfiConverterRustBuffer {
             return
         }
         writeInt(&buf, Int8(1))
-        FfiConverterTypeSizeStep.write(value, into: &buf)
+        FfiConverterTypeTextColor.write(value, into: &buf)
     }
 
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
-        case 1: return try FfiConverterTypeSizeStep.read(from: &buf)
+        case 1: return try FfiConverterTypeTextColor.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -7700,10 +8137,10 @@ private var initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_doc_end_offset() != 21296) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_font_family_at_caret() != 17811) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_font_family_at_caret() != 51206) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_font_size_at_caret() != 60931) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_font_size_at_caret() != 45536) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_footnote_at() != 35464) {
@@ -7754,7 +8191,7 @@ private var initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_line_flow() != 56552) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_line_spacing_at_caret() != 14718) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_line_spacing_at_caret() != 28751) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_link_destination_at() != 56247) {
@@ -7862,10 +8299,10 @@ private var initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_dark_appearance() != 43306) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_font_family() != 44359) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_font_family() != 63340) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_font_size() != 57483) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_font_size() != 60203) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_heading() != 23018) {
@@ -7877,7 +8314,7 @@ private var initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_line_flow() != 4051) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_line_spacing() != 12408) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_line_spacing() != 52812) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_mark_color() != 43839) {
@@ -7901,7 +8338,7 @@ private var initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_selection_offsets() != 21825) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_text_color() != 32316) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_text_color() != 22576) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_unwrapped() != 31068) {
@@ -7943,7 +8380,7 @@ private var initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_task_checked_at_caret() != 58214) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_text_color_at_caret() != 42925) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_text_color_at_caret() != 17658) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_text_in_range() != 21460) {
