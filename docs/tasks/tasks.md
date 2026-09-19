@@ -25,6 +25,7 @@ contents:
 - '[`can_undo` counts edits, and twig counts steps](can-undo-counts-edits-not-steps.md)'
 - '[Backspace at the start of a table cell eats the column separator](backspace-at-cell-start-eats-the-separator.md)'
 - '[The rule and table buttons at a paragraph''s end split nothing and leave blank lines behind](rule-and-table-at-a-paragraph-end-split-nothing-and-leave-blank-lines.md)'
+- '[The macOS formatting bar pages by group instead of scrolling](macos-bar-pages-by-group.md)'
 part_of: '[leaf](/README.md)'
 ---
 # Tasks
