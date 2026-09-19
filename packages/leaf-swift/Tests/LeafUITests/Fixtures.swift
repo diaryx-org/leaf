@@ -29,11 +29,17 @@ func mkRun(
     markColor: String? = nil,
     // What a `code` run is to its block's language, by class id — nil for
     // plain code and for every other role.
-    token: String? = nil
+    token: String? = nil,
+    // The presentation vocabulary's run-level facts, by the names core carries:
+    // a size step (`large`), a generic face (`serif`), and an ink (`red`). Nil
+    // is what every run said before the vocabulary existed.
+    size: String? = nil,
+    font: String? = nil,
+    textColor: String? = nil
 ) -> Run {
     Run(text: text, role: role, bold: bold, italic: italic, underline: underline,
         strike: strike, sup: sup, sub: sub, src: src, sel: sel, hl: hl, hlColor: hlColor,
-        markColor: markColor, token: token)
+        markColor: markColor, token: token, size: size, font: font, textColor: textColor)
 }
 
 func row(
@@ -44,6 +50,11 @@ func row(
     directive: Bool = false,
     directiveLabel: String? = nil,
     heading: UInt8? = nil,
+    // The presentation vocabulary's block-level facts, by the names core carries
+    // on every row the block emits: an alignment (`center`) and a line spacing
+    // (`1.5`).
+    align: String? = nil,
+    lineHeight: String? = nil,
     boundary: Boundary? = nil
 ) -> Row {
     Row(
@@ -54,9 +65,22 @@ func row(
         directive: directive,
         directiveLabel: directiveLabel,
         heading: heading,
+        align: align,
+        lineHeight: lineHeight,
         boundary: boundary
     )
 }
+
+/// A leaf directive's frame entry — what tells the layout that a placeholder row
+/// is a page break rather than some host's own `::toc`.
+func mkDirective(_ name: String, startRow: UInt32, endRow: UInt32,
+                 label: String = "", attrs: [DirectiveAttr] = []) -> DirectiveView {
+    DirectiveView(startRow: startRow, endRow: endRow, name: name, label: label, attrs: attrs)
+}
+
+/// The placeholder row core draws a page break with, and the directive that
+/// names it — the pair a frame carries, since neither means a break alone.
+func pageBreakRow() -> Row { row([mkRun("⧉ page-break", role: "image")], directive: true) }
 
 /// The blank row core spells a block boundary with — `decoration` plus the
 /// label saying which pair it divides, exactly as `emit_separators_before`

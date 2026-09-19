@@ -66,6 +66,46 @@ public struct EditorTheme {
     /// than `baselineSuperShift` because a descender has less room under the
     /// baseline than an ascender has above it.
     public var baselineSubShift: CGFloat
+    /// How much larger or smaller a run set to one of the presentation
+    /// vocabulary's size steps is than the text around it — a multiple of the
+    /// size that run would otherwise take, keyed by the step's own name
+    /// (`xx-small`…`xxx-large`, the `data-size` token core carries on `Run.size`).
+    ///
+    /// A multiple rather than a point size, which is the whole reason the
+    /// document says `large` and not `18pt`: a step scales whatever it is applied
+    /// to, so `large` on a heading is a step up from *that heading* and the same
+    /// word in body text is a step up from the body. A name this table has no
+    /// entry for is drawn at the plain size, the bargain `markBackground(_:)` and
+    /// `syntaxColor(_:)` already make with a vocabulary a newer core has grown.
+    public var sizeSteps: [String: CGFloat]
+    /// The concrete family each of the vocabulary's four generic faces names,
+    /// keyed by the `data-font` token (`Run.font`). `monospace` is not here: it
+    /// is `monoFontName`, so a document's monospaced run and its inline `code`
+    /// are the one face this theme already names.
+    ///
+    /// The document names a *generic* and the theme names the face, so a
+    /// document never asks for a family the machine hasn't got. The defaults are
+    /// the faces every Apple platform has shipped for a decade — see
+    /// `defaultFontFamilies` for which and why.
+    public var fontFamilies: [String: String]
+    /// How far apart a block set to one of the vocabulary's spacings lays its
+    /// lines, as a multiple of this theme's own `lineHeight`, keyed by the
+    /// `data-line-height` token (`Row.lineHeight`).
+    ///
+    /// A table rather than the token read as arithmetic, though the tokens
+    /// happen to be numbers: a theme whose body already sets at 1.5 may want
+    /// "double" to mean something other than twice *its* leading, and a token
+    /// this table doesn't know sets at the theme's own spacing rather than at
+    /// whatever `Double(name)` makes of it.
+    public var lineSpacings: [String: CGFloat]
+    /// The ink a run with a `data-color` is painted in (`Run.textColor`), keyed
+    /// by the seven names a highlight's colour is also spelled with, each with a
+    /// light and a dark version. A name this table has no entry for reads in
+    /// `textColor`.
+    ///
+    /// The same vocabulary as `markBackground(_:)` and deliberately not the same
+    /// colours — see `Palette.textInks`, which is where the two part company.
+    public var textColors: [String: LeafColor]
     /// The widest the text column may run, **in characters of the body font** —
     /// the classic typographic "measure". Nil fills whatever `padding` leaves.
     ///
@@ -149,6 +189,46 @@ public struct EditorTheme {
     /// The system's monospaced face — SF Mono — sized to sit with the body type.
     public static let systemMonospacedFontName = "system-monospaced"
 
+    /// CSS's own ramp, which is where the vocabulary's step names come from: the
+    /// ratios a browser's user-agent stylesheet gives `small`, `large`,
+    /// `x-large`… against `medium`, `medium` being absence. A document rendered
+    /// from leaf's published stylesheet and one drawn by this renderer therefore
+    /// agree about how much bigger `large` is, which is the point of naming a
+    /// step rather than a size.
+    public static let defaultSizeSteps: [String: CGFloat] = [
+        "xx-small": 0.5625,
+        "x-small": 0.625,
+        "small": 0.8125,
+        "large": 1.125,
+        "x-large": 1.5,
+        "xx-large": 2,
+        "xxx-large": 3,
+    ]
+
+    /// The face this platform sets each generic family in.
+    ///
+    /// `sans-serif` is the system's own text face — the body's default, so a run
+    /// that asks for sans-serif in a theme that already sets in one is a no-op
+    /// rather than a jump to some other grotesque. `serif` is Georgia and
+    /// `cursive` is Snell Roundhand because both have shipped on macOS *and* iOS
+    /// for as long as either has had fonts, which a document opened on a phone
+    /// depends on; a theme with a licence to a better pair should say so here.
+    /// `monospace` is absent on purpose — it resolves to `monoFontName`.
+    public static let defaultFontFamilies: [String: String] = [
+        "serif": "Georgia",
+        "sans-serif": EditorTheme.systemFontName,
+        "cursive": "Snell Roundhand",
+    ]
+
+    /// The word processor's spacing menu, as multiples of the theme's leading:
+    /// the tokens are the ratios and the default is to mean them literally. `1`
+    /// is not here because `1` is absence.
+    public static let defaultLineSpacings: [String: CGFloat] = [
+        "1.15": 1.15,
+        "1.5": 1.5,
+        "2": 2,
+    ]
+
     public init(
         bodyFontName: String = EditorTheme.systemFontName,
         monoFontName: String = EditorTheme.systemMonospacedFontName,
@@ -161,6 +241,10 @@ public struct EditorTheme {
         baselineScale: CGFloat = 0.72,
         baselineSuperShift: CGFloat = 0.34,
         baselineSubShift: CGFloat = 0.16,
+        sizeSteps: [String: CGFloat] = EditorTheme.defaultSizeSteps,
+        fontFamilies: [String: String] = EditorTheme.defaultFontFamilies,
+        lineSpacings: [String: CGFloat] = EditorTheme.defaultLineSpacings,
+        textColors: [String: LeafColor] = Palette.textInks,
         measure: CGFloat? = 68,
         padding: LeafInsets = LeafInsets(top: 12, left: 16, bottom: 12, right: 16),
         textColor: LeafColor = Palette.label,
@@ -201,6 +285,10 @@ public struct EditorTheme {
         self.baselineScale = baselineScale
         self.baselineSuperShift = baselineSuperShift
         self.baselineSubShift = baselineSubShift
+        self.sizeSteps = sizeSteps
+        self.fontFamilies = fontFamilies
+        self.lineSpacings = lineSpacings
+        self.textColors = textColors
         self.measure = measure
         self.padding = padding
         self.textColor = textColor
@@ -252,6 +340,12 @@ public struct EditorTheme {
             || baselineScale != other.baselineScale
             || baselineSuperShift != other.baselineSuperShift
             || baselineSubShift != other.baselineSubShift
+            // A run's size step and a block's spacing are lengths, not colours:
+            // one shapes the run wider, the other opens the row's line box. A
+            // face changes both. So all three re-wrap.
+            || sizeSteps != other.sizeSteps
+            || fontFamilies != other.fontFamilies
+            || lineSpacings != other.lineSpacings
             || measure != other.measure
             || padding != other.padding
             // The quote gutter is stretched to `quoteIndent` at shaping time, so
@@ -408,12 +502,68 @@ public struct EditorTheme {
     var directiveLabelHeight: CGFloat { fontSize * 0.75 + 4 }
 
     /// The laid-out height of `row`: a shrunk gap for a block-boundary decoration
-    /// row (empty, holds no caret), otherwise its heading/body line box.
+    /// row (empty, holds no caret), otherwise its heading/body line box — opened
+    /// by the block's own line spacing and by the largest size step any of its
+    /// runs is set at.
+    ///
+    /// The step matters because a line box is the theme's number rather than the
+    /// measured glyphs' (see `rowHeight(heading:)`): a row holding an `x-large`
+    /// run in a body-sized box would set those glyphs over the line above it. It
+    /// only ever grows — a row whose one `small` run is the only thing on it
+    /// keeps the body's leading, because the rows around it do and a document
+    /// whose lines drift closer together wherever a word is small reads as broken.
+    ///
+    /// A boundary row is left at the plain gap: it separates two blocks and
+    /// belongs to neither, so the spacing of the one below it is not its business.
     func rowHeight(for row: Row) -> CGFloat {
-        row.isBlockGap ? blockGap : rowHeight(heading: row.heading)
+        guard !row.isBlockGap else { return blockGap }
+        let step = row.runs.reduce(CGFloat(1)) { max($0, sizeScale($1.size)) }
+        return rowHeight(heading: row.heading) * step * lineSpacing(row.lineHeight)
+    }
+
+    /// How much larger a run set to size step `name` is than it would otherwise
+    /// be — `1` for no step and for a step this theme's ramp has no entry for.
+    func sizeScale(_ name: String?) -> CGFloat {
+        guard let name, let scale = sizeSteps[name], scale > 0 else { return 1 }
+        return scale
+    }
+
+    /// The multiple a block set to line spacing `name` lays its lines at — `1`
+    /// for no spacing and for a token this theme has no entry for.
+    func lineSpacing(_ name: String?) -> CGFloat {
+        guard let name, let ratio = lineSpacings[name], ratio > 0 else { return 1 }
+        return ratio
+    }
+
+    /// The ink a run coloured `name` is painted in, or `textColor` for no colour
+    /// and for a name outside the palette — `markBackground(_:)`'s bargain, and
+    /// for its reason: a colour a newer core knows draws as ordinary text rather
+    /// than not at all.
+    func textColor(_ name: String?) -> LeafColor {
+        guard let name, let ink = textColors[name] else { return textColor }
+        return ink
     }
 
     // ── fonts ────────────────────────────────────────────────────────────────
+
+    /// The family this theme sets generic face `name` in — `monoFontName` for
+    /// `monospace`, this theme's answer from `fontFamilies` for the rest, and nil
+    /// for no face and for a generic it doesn't name, which then reads in the
+    /// body face like every run around it.
+    func fontName(_ name: String?) -> String? {
+        guard let name else { return nil }
+        if name == "monospace" { return monoFontName }
+        return fontFamilies[name]
+    }
+
+    /// A run's font: the generic face `family` names at `size` with the requested
+    /// traits, or the body face when the run asks for none.
+    func font(family: String?, size: CGFloat, bold: Bool, italic: Bool) -> LeafFont {
+        guard let name = fontName(family) else {
+            return proportionalFont(size: size, bold: bold, italic: italic)
+        }
+        return makeFont(name: name, size: size, bold: bold, italic: italic)
+    }
 
     /// A body/heading font at `size` with the requested emphasis traits.
     func proportionalFont(size: CGFloat, bold: Bool, italic: Bool) -> LeafFont {

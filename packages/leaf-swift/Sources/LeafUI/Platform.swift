@@ -105,6 +105,34 @@ public enum Palette {
         }
         return base.withAlphaComponent(0.28)
     }
+    /// The ink a `data-color` run is painted in, keyed by the same seven names
+    /// `markBackground(named:)` washes a highlight with — the presentation
+    /// vocabulary's text colour. Nil for anything outside that vocabulary, which
+    /// then reads in the theme's own `textColor`.
+    ///
+    /// The same hues as the highlights and *not* the same colours: a wash sits
+    /// behind prose at an eighth of its strength, where an ink has to carry the
+    /// letters themselves. `systemYellow` as a background is a highlighter; as
+    /// ink on white it is invisible. So each name is the system colour's
+    /// high-contrast pair — the light half dark enough to read on paper, the dark
+    /// half light enough to read on a dark window — spelled as hexes for
+    /// `dynamic(light:dark:)`, the way the syntax palette above is and for the
+    /// same reason: a PDF rendered under `.aqua` gets the light half whatever the
+    /// window is showing.
+    public static var textInks: [String: LeafColor] {
+        [
+            "red": dynamic(light: "#d70015", dark: "#ff6961"),
+            "orange": dynamic(light: "#c93400", dark: "#ffb340"),
+            // Amber rather than a highlighter's yellow: the one name whose
+            // system colour has no legible ink in a light appearance at all.
+            "yellow": dynamic(light: "#946200", dark: "#ffd426"),
+            "green": dynamic(light: "#248a3d", dark: "#30db5b"),
+            "blue": dynamic(light: "#0040dd", dark: "#409cff"),
+            "purple": dynamic(light: "#8944ab", dark: "#da8fff"),
+            "brown": dynamic(light: "#7f6545", dark: "#b59469"),
+        ]
+    }
+
     /// The wash behind a host-painted highlight (`LeafEditorModel.setHighlights`)
     /// — an annotation's footprint, a search hit. The same yellow family as
     /// `markBackground` (both mean "someone marked this"), a step stronger so a

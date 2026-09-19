@@ -48,6 +48,19 @@ final class DocumentPDFTests: XCTestCase {
         XCTAssertEqual(range.length, pdf.numberOfPages)
     }
 
+    func testAPageBreakPutsWhatFollowsOnTheNextSheetOfPaper() throws {
+        // Two short paragraphs are one page of A4; the break between them is the
+        // only reason for a second, and it is the same `EditorLayout` that
+        // decides it on paper as on screen.
+        let doc = try LeafDoc(source: "One.\n\n::page-break\n\nTwo.\n", format: "markdown")
+        let view = LeafTextView(doc: doc, theme: .default)
+        XCTAssertEqual(try document(view.pdfData(page: .a4)).numberOfPages, 2)
+
+        let plain = try LeafDoc(source: "One.\n\nTwo.\n", format: "markdown")
+        let plainView = LeafTextView(doc: plain, theme: .default)
+        XCTAssertEqual(try document(plainView.pdfData(page: .a4)).numberOfPages, 1)
+    }
+
     func testTheColumnsAreThePageSetups() throws {
         // Two columns set narrower and read down-then-across; the sheet count is
         // whatever the layout says it is, and the PDF has exactly that many.
@@ -147,6 +160,19 @@ final class DocumentPDFTests: XCTestCase {
         sheet.frame = CGRect(x: 0, y: 0, width: 612, height: 0)
         sheet.pageSetup = PageSetup.usLetter.paper
         XCTAssertEqual(sheet.pages.count, pdf.numberOfPages)
+    }
+
+    func testAPageBreakPutsWhatFollowsOnTheNextSheetOfPaper() throws {
+        // Two short paragraphs are one page of A4; the break between them is the
+        // only reason for a second, and it is the same `EditorLayout` that
+        // decides it on paper as on screen.
+        let doc = try LeafDoc(source: "One.\n\n::page-break\n\nTwo.\n", format: "markdown")
+        let view = LeafTextView(doc: doc, theme: .default)
+        XCTAssertEqual(try document(view.pdfData(page: .a4)).numberOfPages, 2)
+
+        let plain = try LeafDoc(source: "One.\n\nTwo.\n", format: "markdown")
+        let plainView = LeafTextView(doc: plain, theme: .default)
+        XCTAssertEqual(try document(plainView.pdfData(page: .a4)).numberOfPages, 1)
     }
 
     func testTheColumnsAreThePageSetups() throws {
