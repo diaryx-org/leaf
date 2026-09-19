@@ -1115,6 +1115,7 @@ public final class LeafTextView: UIView, UITextInput {
             }
             // The system paints selection on iOS, so no selection fill here.
             BlockChrome.drawRule(rl, theme: renderTheme, selColor: nil, in: ctx)
+            BlockChrome.drawPageBreak(rl, theme: renderTheme, selColor: nil, in: ctx)
             // Draw each wrapped visual line's substring on its own line box, hung
             // at the row's indent (zero on the first line, the prefix width after).
             for (i, wl) in rl.wrapped.enumerated() {
@@ -1123,7 +1124,7 @@ public final class LeafTextView: UIView, UITextInput {
                 // once says nothing about the lines after it.
                 let o = rl.lineOrigin(i)
                 if o.y >= rect.maxY || o.y + rl.lineHeight <= rect.minY { continue }
-                wl.attributed.draw(with: CGRect(x: o.x + wl.indent, y: o.y,
+                wl.attributed.draw(with: CGRect(x: o.x + wl.offset, y: o.y,
                                                 width: rl.columnWidth - wl.indent, height: rl.lineHeight),
                                    options: [.usesLineFragmentOrigin], context: nil)
             }
@@ -1242,9 +1243,9 @@ public final class LeafTextView: UIView, UITextInput {
         let rows = layoutEngine.rows
         var i = 0
         while i < rows.count {
-            guard rows[i].row.directive, rows[i].table == nil else { i += 1; continue }
+            guard rows[i].isChromedDirective else { i += 1; continue }
             let start = i
-            while i < rows.count, rows[i].row.directive, rows[i].table == nil { i += 1 }
+            while i < rows.count, rows[i].isChromedDirective { i += 1 }
             // The run's rows reduced to their vertical bands, merged where they
             // touch. Continuously that always collapses back to a single box.
             // Paginated, a run crossing a sheet edge — between two of its rows, or

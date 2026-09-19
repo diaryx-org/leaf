@@ -97,15 +97,26 @@ enum AttributedRow {
         // run's UTF-16 indices still line up 1:1 with core's `caret_ch` — the
         // whole file's contract. Core Text measures the smaller font's advances,
         // so hit-testing and the caret rect follow on their own.
-        let runSize = size * (run.sup || run.sub ? theme.baselineScale : 1)
+        //
+        // The run's own size step multiplies the size it would otherwise take,
+        // which is what makes `large` mean "a step up from the text around it"
+        // rather than a number: on a heading row it is a step up from the
+        // heading, in prose a step up from the body. The baseline shift is
+        // measured off the result, so a footnote reference inside an x-large run
+        // rides that run.
+        let runSize = size * theme.sizeScale(run.size) * (run.sup || run.sub ? theme.baselineScale : 1)
 
         // A comment in a highlighted block is italic on top of its colour —
         // the one token the palette gives a style as well as a hue.
         let italic = run.italic || (isCode && run.token == "comment")
         var attrs: [NSAttributedString.Key: Any] = [:]
+        // A `code` run is monospaced whatever else it says — the role is what the
+        // glyphs *are*, and a face named on top of that is a face for the prose
+        // around them. Everything else takes the generic family the run names
+        // (`serif`, `cursive`, `monospace`…) and the body face when it names none.
         attrs[.font] = isCode
             ? theme.monospaceFont(size: runSize, bold: bold, italic: italic)
-            : theme.proportionalFont(size: runSize, bold: bold, italic: run.italic)
+            : theme.font(family: run.font, size: runSize, bold: bold, italic: run.italic)
         if run.sup {
             attrs[.baselineOffset] = runSize * theme.baselineSuperShift
         } else if run.sub {
@@ -139,6 +150,20 @@ enum AttributedRow {
         case "delimiter": attrs[.foregroundColor] = theme.secondaryColor
         case "mark": attrs[.foregroundColor] = theme.textColor
         default: attrs[.foregroundColor] = theme.textColor
+        }
+
+        // A colour the author named on the run wins over the role's own ink: the
+        // role says what the glyphs are and the colour is a statement about
+        // *these* glyphs, made later. It changes the ink and nothing else, which
+        // is the whole of what a foreground colour should do — a coloured run
+        // inside a link is still underlined, a coloured `==mark==` keeps its
+        // wash, and a coloured word in a heading is still the heading's size.
+        //
+        // Never over a quote's gutter, which is drawn clear on purpose (the view
+        // paints a real bar there): those glyphs hold the row's offsets and must
+        // not become visible because the block around them is coloured.
+        if let named = run.textColor, run.role != "quote" {
+            attrs[.foregroundColor] = theme.textColor(named)
         }
 
         // Backgrounds honoured by `NSAttributedString.draw(with:)`. Inline `code`

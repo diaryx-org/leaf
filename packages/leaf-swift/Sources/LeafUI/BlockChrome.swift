@@ -240,4 +240,34 @@ enum BlockChrome {
         ctx.setFillColor(theme.ruleColor.cgColor)
         ctx.fill(line)
     }
+
+    /// Paint a page break in the continuous flow: a dashed hairline where the
+    /// paper would end, in place of core's `⧉ page-break` placeholder glyphs.
+    ///
+    /// Dashed rather than solid, and the only thing here that is: a thematic
+    /// break is a division the author wrote *into the text* and draws as a solid
+    /// rule, where this is a division of the *paper* — real in the paginated view,
+    /// a promise in the scrolling one. A reader who can see both wants to tell
+    /// them apart at a glance, and dashes are what every word processor's
+    /// "page break" marker has been for thirty years.
+    ///
+    /// Nothing is drawn once the break has been spent by pagination: the row has
+    /// no height there, because the page it asked for is the drawing.
+    static func drawPageBreak(_ rl: RowLayout, theme: EditorTheme,
+                              selColor: LeafColor?, in ctx: CGContext) {
+        guard let line = rl.pageBreakLine(theme: theme) else { return }
+        if let selColor, rl.row.runs.contains(where: { $0.sel }) {
+            ctx.setFillColor(selColor.cgColor)
+            ctx.fill(CGRect(x: line.minX, y: rl.top + rl.labelInset,
+                            width: line.width, height: rl.height - rl.labelInset))
+        }
+        ctx.saveGState()
+        defer { ctx.restoreGState() }
+        ctx.setStrokeColor(theme.ruleColor.cgColor)
+        ctx.setLineWidth(theme.ruleThickness)
+        ctx.setLineDash(phase: 0, lengths: [6, 4])
+        ctx.move(to: CGPoint(x: line.minX, y: line.midY))
+        ctx.addLine(to: CGPoint(x: line.maxX, y: line.midY))
+        ctx.strokePath()
+    }
 }
