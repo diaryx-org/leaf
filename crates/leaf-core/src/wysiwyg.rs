@@ -1470,6 +1470,11 @@ pub fn build_cached(
                 b.rows.push(shift_row(row, delta));
             }
             b.last_off = (hit.last_off as isize + delta) as usize;
+            // `0` is a block that stepped over nothing, and no answer to shift.
+            if hit.stepped_over > 0 {
+                let stepped = (hit.stepped_over as isize + delta) as usize;
+                b.stepped_over = b.stepped_over.max(stepped);
+            }
         } else {
             // Miss: marshal just this block's subtree and render it. A subtree is
             // self-contained with local ids (root at 0) and absolute spans, so a
@@ -1503,13 +1508,23 @@ pub fn build_cached(
                 } else {
                     sub.last_off
                 };
+                let stepped_over = sub.stepped_over;
+                b.stepped_over = b.stepped_over.max(stepped_over);
                 // Cache only a block that is table-free AND renders inside its own
                 // span: those two are the conditions for reuse-by-shift to be
                 // correct. A block failing either is re-rendered every build (a
                 // fresh render always matches a fresh whole-document build).
                 if sub.tables.is_empty() {
                     if rows_within(&sub.rows, &block.span) {
-                        cache.store(hash, bytes, start, sub.rows.clone(), last_off, rkey);
+                        cache.store(
+                            hash,
+                            bytes,
+                            start,
+                            sub.rows.clone(),
+                            last_off,
+                            stepped_over,
+                            rkey,
+                        );
                     }
                     b.rows.extend(sub.rows);
                 } else {
@@ -1934,6 +1949,10 @@ struct CachedBlock {
     /// `last_off` after this block was emitted, absolute as built — restored
     /// (shifted) on reuse so the following separator lands correctly.
     last_off: usize,
+    /// `stepped_over` after this block was emitted, absolute as built — the
+    /// hidden tail a block ends with (a `</div>`), restored with `last_off`
+    /// so the trailing blank lines are counted from past it on a hit too.
+    stepped_over: usize,
     /// Where the reveal line fell *within this block* when the rows were built,
     /// as a block-relative byte range — see [`reveal_key`]. Compared alongside
     /// `bytes` on a hit, because identical source renders to different rows
@@ -1990,6 +2009,7 @@ impl BlockCache {
     /// Cache the rows a freshly-rendered block produced (or refresh an existing
     /// entry for the same bytes and reveal — an identical block elsewhere, or a
     /// re-render).
+    #[allow(clippy::too_many_arguments)]
     fn store(
         &mut self,
         hash: u64,
@@ -1997,6 +2017,7 @@ impl BlockCache {
         built_start: usize,
         rows: Vec<VRow>,
         last_off: usize,
+        stepped_over: usize,
         reveal: Option<Range<usize>>,
     ) {
         let g = self.generation;
@@ -2008,6 +2029,7 @@ impl BlockCache {
             e.built_start = built_start;
             e.rows = rows;
             e.last_off = last_off;
+            e.stepped_over = stepped_over;
             e.generation = g;
         } else {
             bucket.push(CachedBlock {
@@ -2015,6 +2037,7 @@ impl BlockCache {
                 built_start,
                 rows,
                 last_off,
+                stepped_over,
                 reveal,
                 generation: g,
             });
@@ -2826,6 +2849,20 @@ impl Builder<'_> {
             self.presentation = saved.under(&self.nodes[id].attrs);
             self.block_kind(id, pf, pc);
             self.presentation = saved;
+            // Step the walk past the closing `</div>`, as the fenced-div arm
+            // below anchors past its `:::`. The tag sits on a line of its own
+            // after the last child and the blank line under it, and the rich
+            // view draws nothing for it — so left where the last child ended,
+            // the separator logic read the tag's line as a blank line between
+            // the div and the block below, and drew a navigable empty row there
+            // that the author never opened and Backspace could not close; and
+            // at the end of the document the trailing count read it as an empty
+            // paragraph the author had left. It is hidden markup the walk steps
+            // over, which is what `stepped_over` records, so both counts start
+            // past it.
+            let end = self.nodes[id].span.end;
+            self.last_off = self.last_off.max(end);
+            self.stepped_over = self.stepped_over.max(end);
             return;
         }
         self.block_kind(id, pf, pc);
@@ -5777,6 +5814,11 @@ mod tests {
             // document as a blank row. One at the start, one between blocks,
             // one at the end, so each position is covered.
             "<!-- lead -->\n\npara\n\n<!-- exec -->\n```\ncode\n```\n\nafter\n\n<!-- trail -->\n",
+            // A Markdown `<div>` ends with a hidden `</div>` line the walk
+            // steps over — between blocks and closing the file, so both the
+            // separator after it and the trailing count are covered.
+            "above\n\n<div class=\"center\">\n\nhello\n\n</div>\n\nbelow\n",
+            "above\n\n<div class=\"center\">\n\nhello\n\nworld\n\n</div>\n",
             // Link reference definitions: roots beside `doc` like footnotes,
             // but drawing nothing. Alone between blocks, glued under a
             // paragraph, and closing the file under a comment — the README
@@ -8249,6 +8291,26 @@ mod tests {
             .iter()
             .map(|r| r.glyphs.iter().map(|g| g.ch).collect())
             .collect()
+    }
+
+    #[test]
+    fn a_div_s_closing_tag_is_not_a_blank_row() {
+        // The `</div>` sits on a line of its own under the div's last child and
+        // draws nothing. Counting the separator from the child's end read that
+        // line as a blank line between the div and the block below — a
+        // navigable empty row the author never opened — and at the end of the
+        // file, as an empty trailing paragraph.
+        let m = map("above\n\n<div class=\"center\">\n\nhello\n\n</div>\n\nbelow\n");
+        assert_eq!(row_texts(&m), ["above", "", "hello", "", "below"]);
+        assert!(!m.is_stop(36), "the `</div>` line is not a caret home");
+        assert_eq!(
+            m.stop_after(34),
+            Some(44),
+            "from `hello` the next stop is `below`"
+        );
+
+        let m = map("above\n\n<div class=\"center\">\n\nhello\n\n</div>\n");
+        assert_eq!(row_texts(&m), ["above", "", "hello"], "no trailing rows");
     }
 
     #[test]
