@@ -376,6 +376,50 @@ public struct EditorTheme {
         return t
     }
 
+    /// This theme with its type set so that `measure` characters of the body
+    /// font fill one column of `page` — the theme's own `measure` when none is
+    /// given, or the classic 66 when it has none either.
+    ///
+    /// On paper the column is the sheet's and `measure` has nothing to decide,
+    /// so the equation runs the other way: the width is fixed and the type is
+    /// what gives. Without this the default 16-point body, chosen for a screen,
+    /// sets a one-inch-margin Letter column 58 characters wide — *shorter* than
+    /// the 68 the continuous flow wraps to, because that flow's column at 16
+    /// points is wider than a sheet of Letter — and a page that came out 13.4
+    /// points is a page that reads as the flow does. The result rounds to a
+    /// half point, since a size like 13.41 is not one anyone would name.
+    ///
+    /// A helper, not a rule the page applies on its own: two columns of a
+    /// sheet at 68 would drop the type below 7 points, and a page someone wants
+    /// at "12 point, full stop" should not have to argue with a formula. The
+    /// host decides; this is what the answer is when it wants the flow's.
+    ///
+    /// What is *on screen* is a separate question with a separate knob — a
+    /// Mac's point is a hundred-and-some to the inch, not seventy-two, so a
+    /// sheet at actual size is smaller than paper — and that knob is `Zoom`.
+    public func fitted(to page: PageSetup, measure: CGFloat? = nil) -> EditorTheme {
+        let characters = measure ?? self.measure ?? 66
+        let column = page.columnWidth
+        guard characters > 0, column > 0, fontSize > 0 else { return self }
+        let wanted = column / characters               // the mean advance the column wants
+        // A glyph's advance is not quite proportional to its size — the system
+        // face swaps optical sizes and tracks its small sizes wider — so the
+        // scale is refined by measuring the candidate, twice, rather than read
+        // off this theme's advance once. Each pass brings the estimate onto the
+        // measurement it stands on; two are within a hundredth of a point.
+        var candidate = self
+        for _ in 0..<3 {
+            let advance = candidate.averageCharWidth
+            guard advance > 0 else { return self }
+            let raw = candidate.fontSize * wanted / advance
+            let size = (raw * 2).rounded() / 2
+            guard size > 0 else { return self }
+            if size == candidate.fontSize { break }
+            candidate = scaled(by: size / fontSize)
+        }
+        return candidate
+    }
+
     // ── derived metrics ──────────────────────────────────────────────────────
 
     /// The ratio the line box grows relative to the font — the body's leading.

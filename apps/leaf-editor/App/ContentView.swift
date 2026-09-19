@@ -75,10 +75,24 @@ struct ContentView: View {
     /// the default — the point of the measure being counted in *characters* is
     /// that width and text size compose without a table of point widths: pick a
     /// size, and the column that holds ~65 characters of it follows.
+    ///
+    /// On paper the column is the sheet's, so the equation runs the other way:
+    /// `fitted(to:)` sets the type so the chosen measure fills the column — the
+    /// default 16 points sets a Letter column only 58 characters wide, shorter
+    /// than the flow's 68 — and the text-size choice then scales from there, so
+    /// both menus still mean something on a page. How big that reads on screen
+    /// is the zoom's business, which opens at fit-width.
     private var theme: EditorTheme {
         var t = EditorTheme.default
-        t.fontSize = textSize.points
-        t.lineHeight = textSize.points * 1.5
+        if let page {
+            t = t.fitted(to: page, measure: columnWidth.measure ?? 88)
+            let factor = textSize.points / TextSize.medium.points
+            t.fontSize *= factor
+            t.lineHeight *= factor
+        } else {
+            t.fontSize = textSize.points
+            t.lineHeight = textSize.points * 1.5
+        }
         t.measure = columnWidth.measure
         return t
     }
