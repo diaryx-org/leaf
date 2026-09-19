@@ -122,6 +122,13 @@ private struct FormatMenuItems: View {
             HighlightColourRows(editor: editor)
         }
         .disabled(!editable)
+        // The letters' own colour, directly under the highlight's: the two share
+        // the seven names on purpose, and a menu that offered one without the
+        // other beside it would read as two unrelated palettes.
+        Menu(loc("menu.textColour", "Text Colour")) {
+            TextColourRows(editor: editor)
+        }
+        .disabled(!editable)
         Divider()
         Toggle(loc("menu.paragraph", "Paragraph"), isOn: block(editor.state.heading == nil) { editor.setParagraph() })
             .keyboardShortcut("0", modifiers: .control)
@@ -132,6 +139,28 @@ private struct FormatMenuItems: View {
                        isOn: block(editor.state.heading == UInt32(level)) { editor.setHeading(UInt32(level)) })
                     .keyboardShortcut(KeyEquivalent(Character(String(level))), modifiers: .control)
             }
+        }
+        .disabled(!editable)
+        // The presentation vocabulary, under the block kinds it decorates and
+        // above the list structure: how the block is laid, and how its letters
+        // are set. The rows are the ones the formatting bar's own menus drop —
+        // one definition, as with the highlight colours above — and the
+        // shortcuts are the Mac's own, which is why the bar's copies don't
+        // carry them.
+        Menu(loc("menu.alignment", "Alignment")) {
+            AlignmentRows(editor: editor, shortcuts: true)
+        }
+        .disabled(!editable)
+        Menu(loc("menu.lineSpacing", "Line Spacing")) {
+            LineSpacingRows(editor: editor)
+        }
+        .disabled(!editable)
+        Menu(loc("menu.textSize", "Text Size")) {
+            TextSizeRows(editor: editor, shortcuts: true)
+        }
+        .disabled(!editable)
+        Menu(loc("menu.font", "Font")) {
+            FontFamilyRows(editor: editor)
         }
         .disabled(!editable)
         Divider()
@@ -155,6 +184,12 @@ private struct FormatMenuItems: View {
             .disabled(!editable)
         Button(loc("menu.rule", "Insert Horizontal Rule")) { editor.insertThematicBreak() }
             .disabled(!editable)
+        // Beside the rule: both write a block into the document rather than
+        // restyling one, and this is the only one of the six new gestures that
+        // does. Dimmed where the format spells no directive to carry it (HTML,
+        // AsciiDoc) rather than failing on the press.
+        Button(loc("menu.pageBreak", "Insert Page Break")) { editor.insertPageBreak() }
+            .disabled(!editable || !editor.capabilities.pageBreak)
         // The same rows the formatting bar's Table button drops — one
         // definition, as with the highlight colours above.
         Menu(loc("menu.table", "Table")) {
@@ -199,12 +234,38 @@ private struct FormatMenuItems: View {
                 Divider()
                 Toggle(loc("menu.highlight.noColour", "No Colour"), isOn: .constant(false))
             }
+            Menu(loc("menu.textColour", "Text Colour")) {
+                ForEach(MarkColor.palette, id: \.self) { color in
+                    Toggle(color.menuTitle, isOn: .constant(false))
+                }
+            }
             Divider()
             Toggle(loc("menu.paragraph", "Paragraph"), isOn: .constant(false)).keyboardShortcut("0", modifiers: .control)
             Menu(loc("menu.heading", "Heading")) {
                 ForEach(1...6, id: \.self) { level in
                     Toggle(String(format: loc("menu.headingN", "Heading %d"), level), isOn: .constant(false))
                         .keyboardShortcut(KeyEquivalent(Character(String(level))), modifiers: .control)
+                }
+            }
+            Menu(loc("menu.alignment", "Alignment")) {
+                Toggle(loc("menu.align.left", "Left"), isOn: .constant(false))
+                    .keyboardShortcut("{", modifiers: .command)
+                Toggle(loc("menu.align.center", "Center"), isOn: .constant(false))
+                    .keyboardShortcut("|", modifiers: .command)
+                Toggle(loc("menu.align.right", "Right"), isOn: .constant(false))
+                    .keyboardShortcut("}", modifiers: .command)
+                Toggle(loc("menu.align.justify", "Justify"), isOn: .constant(false))
+            }
+            Menu(loc("menu.lineSpacing", "Line Spacing")) {
+                Toggle(loc("menu.spacing.single", "Single"), isOn: .constant(false))
+            }
+            Menu(loc("menu.textSize", "Text Size")) {
+                Button(loc("menu.size.bigger", "Bigger")) {}.keyboardShortcut("+", modifiers: .command)
+                Button(loc("menu.size.smaller", "Smaller")) {}.keyboardShortcut("-", modifiers: .command)
+            }
+            Menu(loc("menu.font", "Font")) {
+                ForEach(FontFamily.all, id: \.self) { face in
+                    Toggle(face.title, isOn: .constant(false))
                 }
             }
             Divider()
@@ -216,6 +277,7 @@ private struct FormatMenuItems: View {
             Divider()
             Button(loc("menu.footnote", "Insert Footnote")) {}
             Button(loc("menu.rule", "Insert Horizontal Rule")) {}
+            Button(loc("menu.pageBreak", "Insert Page Break")) {}
             Menu(loc("menu.table", "Table")) {
                 Button(loc("menu.insertTable", "Insert Table")) {}
             }

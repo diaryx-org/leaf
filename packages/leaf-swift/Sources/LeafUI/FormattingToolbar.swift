@@ -105,6 +105,8 @@ public struct LeafFormattingToolbar: View {
                 separator
                 blockStyles
                 separator
+                presentationTools
+                separator
                 indentTools
                 separator
                 historyTools
@@ -228,6 +230,69 @@ public struct LeafFormattingToolbar: View {
         #if !canImport(UIKit)
         .help(loc("menu.table", "Table"))
         #endif
+    }
+
+    /// The presentation vocabulary: how the block is laid (alignment, spacing),
+    /// how the letters are set (size, face, colour), and where the paper ends.
+    ///
+    /// Its own group rather than four more tools in the block group, and in this
+    /// order: the two that describe a *line* first, the three that describe the
+    /// *letters* after, and the page break last because it is the only one that
+    /// writes something into the document rather than restyling what is there.
+    /// A group is the unit the bar will page by when
+    /// `docs/tasks/macos-bar-pages-by-group.md` lands, so eight tools arriving as
+    /// one group is eight tools that turn onto a page together instead of eight
+    /// more the trailing edge cuts in half.
+    ///
+    /// Alignment is four buttons and not a menu: it is the one property here a
+    /// reader glances at to see how the block they are in is set, and a segment
+    /// shows that where a menu would have to be opened to find out. The other
+    /// four are menus, which is also what lets them ask the document for the
+    /// caret's value only when they open (see `LeafEditorModel`'s queries).
+    private var presentationTools: some View {
+        Group {
+            alignmentSegment
+            menuTool("arrow.up.and.down.text.horizontal", loc("menu.lineSpacing", "Line Spacing"),
+                     enabled: editor.capabilities.lineSpacing) {
+                LineSpacingRows(editor: editor)
+            }
+            menuTool("textformat.size", loc("menu.textSize", "Text Size"),
+                     enabled: editor.capabilities.fontSize) {
+                TextSizeRows(editor: editor)
+            }
+            menuTool("textformat", loc("menu.font", "Font"),
+                     enabled: editor.capabilities.fontFamily) {
+                FontFamilyRows(editor: editor)
+            }
+            menuTool("paintpalette", loc("menu.textColour", "Text Colour"),
+                     enabled: editor.capabilities.textColor) {
+                TextColourRows(editor: editor)
+            }
+            tool("arrow.down.to.line", loc("menu.pageBreak", "Page Break"),
+                 enabled: editor.capabilities.pageBreak) { editor.insertPageBreak() }
+        }
+    }
+
+    /// Left · Centre · Right · Justify, lit by the block the caret is in. Left is
+    /// *clearing* the key — the vocabulary has no `left` token, because absence
+    /// is left — so the button that looks like the default is the one that
+    /// restores it.
+    ///
+    /// The light reads `editor.alignment`, which rides the published frame for
+    /// the reason the Link button's does: walking the caret out of a centred
+    /// paragraph changes no mark and no heading, so a segment asking core for
+    /// itself would never be told (see `EditorState.align`).
+    private var alignmentSegment: some View {
+        Group {
+            tool("text.alignleft", loc("menu.align.left", "Left"),
+                 active: editor.alignment == nil,
+                 enabled: editor.capabilities.alignment) { editor.setAlignment(nil) }
+            ForEach(Align.all, id: \.self) { align in
+                tool(align.symbol, align.title,
+                     active: editor.alignment == align,
+                     enabled: editor.capabilities.alignment) { editor.setAlignment(align) }
+            }
+        }
     }
 
     private var indentTools: some View {
@@ -405,6 +470,39 @@ public struct LeafFormattingToolbar: View {
             Image(systemName: systemImage)
                 .font(.system(size: metrics.glyphSize))
         }
+    }
+
+    /// A tool whose whole job is its menu — no primary action, the way Table has
+    /// none: there is no "apply the last size" gesture, only a choice. Dimmed by
+    /// its capability, so a format that cannot spell the property offers no rows
+    /// to open.
+    ///
+    /// Written once here because the vocabulary added four of them at a stroke
+    /// and they differ only in glyph, label, and which rows they drop.
+    private func menuTool<Rows: View>(
+        _ systemImage: String,
+        _ label: String,
+        enabled: Bool,
+        @ViewBuilder rows: () -> Rows
+    ) -> some View {
+        Menu {
+            rows()
+        } label: {
+            Image(systemName: systemImage)
+                .font(.system(size: metrics.glyphSize))
+        }
+        // `.plain` for the reason the Highlight menu takes it: `.menuStyle(.button)`
+        // is macOS 13 and this package is macOS 12.
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .frame(width: metrics.buttonWidth, height: metrics.buttonHeight)
+        .foregroundStyle(enabled ? Color.primary : Color(Palette.tertiary))
+        .contentShape(Rectangle())
+        .disabled(!enabled)
+        .accessibilityLabel(label)
+        #if !canImport(UIKit)
+        .help(label)
+        #endif
     }
 
     private func textTool(
