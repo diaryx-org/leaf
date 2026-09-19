@@ -160,6 +160,347 @@ impl MarkColor {
     ];
 }
 
+/// How a block's lines are set across the measure — the one presentation
+/// property an author reaches for before any other, and the only one of the
+/// six whose vocabulary is a *class* rather than a `data-` key.
+///
+/// A `class` is a space-separated token list in every format leaf opens, and
+/// this reads the one token it knows and leaves the rest: a paragraph that
+/// arrives as `class="lead center"` is centred and keeps `lead`. A token
+/// outside the vocabulary is not an error — it is somebody else's class, and a
+/// document from elsewhere passes through the editor unharmed.
+///
+/// There is no `Left`, because absence is left: the default alignment is the
+/// theme's, and a document that agrees with it has no reason to say so. A
+/// right-to-left default is a theme matter, not a class.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Align {
+    Center,
+    Right,
+    Justify,
+}
+
+impl Align {
+    /// The alignment a block's attributes name, if any — the first token of
+    /// `class` that is one of the three, in source order.
+    ///
+    /// Takes the attribute list rather than the node for [`MarkColor`]'s
+    /// reason: this module stays free of twig as well as of any toolkit, and
+    /// both the block walker and the caret query hand over the same
+    /// `node.attrs`.
+    pub fn from_attrs(attrs: &[(String, Option<String>)]) -> Option<Self> {
+        attrs
+            .iter()
+            .find(|(k, _)| k == "class")
+            .and_then(|(_, v)| v.as_deref())
+            .and_then(|class| class.split_whitespace().find_map(Self::from_token))
+    }
+
+    /// Read one `class` token. `None` for a token outside the vocabulary,
+    /// which is how a foreign class is *kept* rather than misread — the
+    /// gesture that rewrites the alignment removes only the tokens this
+    /// answers `Some` for.
+    pub fn from_token(token: &str) -> Option<Self> {
+        Some(match token {
+            "center" => Self::Center,
+            "right" => Self::Right,
+            "justify" => Self::Justify,
+            _ => return None,
+        })
+    }
+
+    /// The token twig spells it with, and what [`from_token`](Self::from_token)
+    /// reads back — also the class a frontend's stylesheet selects on, which is
+    /// why it is CSS's own word for the same thing.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Center => "center",
+            Self::Right => "right",
+            Self::Justify => "justify",
+        }
+    }
+
+    /// This alignment's position in [`ALL`](Self::ALL) — the index a frontend's
+    /// own segmented control is keyed by, the way [`MarkColor::index`] keys a
+    /// palette.
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Center => 0,
+            Self::Right => 1,
+            Self::Justify => 2,
+        }
+    }
+
+    /// Every alignment, in the order a toolbar offers them. Left is absent
+    /// because absence *is* left; a segmented control draws a fourth segment
+    /// for it and calls [`crate::Doc::set_alignment`] with `None`.
+    pub const ALL: [Self; 3] = [Self::Center, Self::Right, Self::Justify];
+}
+
+/// How far apart a block's lines are set, as a multiple of the theme's own line
+/// height — the spacing menu every word processor has, less the single spacing
+/// that is absence.
+///
+/// The tokens are the numbers rather than names (`loose`, `double`) so that a
+/// stylesheet's line is `line-height: 1.5` and a reader of the source sees the
+/// ratio. `1` is not a token, because `1` is absence and a document should not
+/// carry a key that says nothing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LineSpacing {
+    /// `1.15` — the word processor's default "a little more air".
+    OneFifteen,
+    /// `1.5`.
+    OneHalf,
+    /// `2` — double spacing.
+    Double,
+}
+
+impl LineSpacing {
+    /// The spacing a block's attributes name, if any — twig records it under
+    /// `data-line-height`.
+    pub fn from_attrs(attrs: &[(String, Option<String>)]) -> Option<Self> {
+        attrs
+            .iter()
+            .find(|(k, _)| k == "data-line-height")
+            .and_then(|(_, v)| v.as_deref())
+            .and_then(Self::from_attr)
+    }
+
+    /// Read a `data-line-height` value. `None` for a ratio outside the
+    /// vocabulary — a document carrying `data-line-height="1.3"` keeps the key
+    /// and draws at the theme's spacing, rather than having leaf guess a step.
+    pub fn from_attr(value: &str) -> Option<Self> {
+        Some(match value {
+            "1.15" => Self::OneFifteen,
+            "1.5" => Self::OneHalf,
+            "2" => Self::Double,
+            _ => return None,
+        })
+    }
+
+    /// The token twig spells it with, and what [`from_attr`](Self::from_attr)
+    /// reads back.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::OneFifteen => "1.15",
+            Self::OneHalf => "1.5",
+            Self::Double => "2",
+        }
+    }
+
+    /// The ratio itself — what a frontend multiplies the theme's line height by
+    /// to lay the row out. A *derived* number, not a carried one: the document
+    /// says `1.5`, and this is that name read as arithmetic.
+    pub const fn ratio(self) -> f32 {
+        match self {
+            Self::OneFifteen => 1.15,
+            Self::OneHalf => 1.5,
+            Self::Double => 2.0,
+        }
+    }
+
+    /// This spacing's position in [`ALL`](Self::ALL) — the index a frontend's
+    /// own menu is keyed by.
+    pub const fn index(self) -> usize {
+        match self {
+            Self::OneFifteen => 0,
+            Self::OneHalf => 1,
+            Self::Double => 2,
+        }
+    }
+
+    /// Every spacing, in the order a menu offers them. Single is absent for the
+    /// reason `left` is absent from [`Align::ALL`].
+    pub const ALL: [Self; 3] = [Self::OneFifteen, Self::OneHalf, Self::Double];
+}
+
+/// How large a run is set relative to the text around it — CSS's
+/// `<absolute-size>` keyword set with `medium` removed, because `medium` is
+/// absence.
+///
+/// A *step*, never a measurement, for the reason [`MarkColor`] is a name and
+/// not a hex triple: a run set to `14pt` in a theme whose body is 12pt is a
+/// step up, and the same run under a 16pt theme is a step *down* — the author's
+/// intent inverted by a change they never made. A run set to `Large` is a step
+/// up under every theme.
+///
+/// A heading keeps its own ramp: a `data-size` on a heading scales the
+/// heading's size, not the body's.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SizeStep {
+    XxSmall,
+    XSmall,
+    Small,
+    Large,
+    XLarge,
+    XxLarge,
+    XxxLarge,
+}
+
+impl SizeStep {
+    /// The size a run's or block's attributes name, if any — twig records it
+    /// under `data-size`.
+    pub fn from_attrs(attrs: &[(String, Option<String>)]) -> Option<Self> {
+        attrs
+            .iter()
+            .find(|(k, _)| k == "data-size")
+            .and_then(|(_, v)| v.as_deref())
+            .and_then(Self::from_attr)
+    }
+
+    /// Read a `data-size` value. `None` for a name outside the vocabulary — a
+    /// `data-size="14pt"` from elsewhere is carried and drawn at the theme's
+    /// own size, which is the same answer the stylesheet gives it.
+    pub fn from_attr(value: &str) -> Option<Self> {
+        Some(match value {
+            "xx-small" => Self::XxSmall,
+            "x-small" => Self::XSmall,
+            "small" => Self::Small,
+            "large" => Self::Large,
+            "x-large" => Self::XLarge,
+            "xx-large" => Self::XxLarge,
+            "xxx-large" => Self::XxxLarge,
+            _ => return None,
+        })
+    }
+
+    /// The token twig spells it with, and what [`from_attr`](Self::from_attr)
+    /// reads back — CSS's own keyword, so a stylesheet rule is
+    /// `[data-size="large"] { font-size: large }` and nothing is learned twice.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::XxSmall => "xx-small",
+            Self::XSmall => "x-small",
+            Self::Small => "small",
+            Self::Large => "large",
+            Self::XLarge => "x-large",
+            Self::XxLarge => "xx-large",
+            Self::XxxLarge => "xxx-large",
+        }
+    }
+
+    /// The multiple of the theme's body size this step sets — the ratios CSS's
+    /// own user-agent stylesheet uses for the same seven words, so a browser
+    /// given only leaf's stylesheet and a native renderer given the theme agree
+    /// about how big `large` is.
+    ///
+    /// A *default*: a theme is free to scale its own ramp, the way a frontend
+    /// is free to pick its own red for [`MarkColor::Red`]. What the document
+    /// carries is the name.
+    pub const fn scale(self) -> f32 {
+        match self {
+            Self::XxSmall => 0.5625,
+            Self::XSmall => 0.625,
+            Self::Small => 0.8125,
+            Self::Large => 1.125,
+            Self::XLarge => 1.5,
+            Self::XxLarge => 2.0,
+            Self::XxxLarge => 3.0,
+        }
+    }
+
+    /// This step's position in [`ALL`](Self::ALL) — smallest first, so a
+    /// frontend's menu is `ALL` in order and a "larger" button is `index() + 1`.
+    pub const fn index(self) -> usize {
+        match self {
+            Self::XxSmall => 0,
+            Self::XSmall => 1,
+            Self::Small => 2,
+            Self::Large => 3,
+            Self::XLarge => 4,
+            Self::XxLarge => 5,
+            Self::XxxLarge => 6,
+        }
+    }
+
+    /// Every step, smallest first. `medium` is absent because `medium` is
+    /// absence — a menu draws it as the entry that calls
+    /// [`crate::Doc::set_font_size`] with `None`.
+    pub const ALL: [Self; 7] = [
+        Self::XxSmall,
+        Self::XSmall,
+        Self::Small,
+        Self::Large,
+        Self::XLarge,
+        Self::XxLarge,
+        Self::XxxLarge,
+    ];
+}
+
+/// The face a run is set in — CSS's generic families, less `fantasy` and
+/// `system-ui`, neither of which an author asks for.
+///
+/// A generic, never a font name, for [`SizeStep`]'s reason: a document that
+/// names `Georgia` renders in the fallback everywhere Georgia is not installed,
+/// which is every Linux terminal and most of the web. The theme names the
+/// concrete face for each — `Serif` is Georgia on a Mac and Noto Serif on a
+/// Linux box, and `Monospace` is the theme's mono face, which inline code
+/// already uses.
+///
+/// A named family is *carried* (twig will spell `data-font="Garamond"`) and is
+/// not in this vocabulary: [`from_attr`](Self::from_attr) answers `None` for
+/// it, the native renderers may resolve it through the platform's font registry,
+/// and the toolbar offers the four.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FontFamily {
+    Serif,
+    SansSerif,
+    Monospace,
+    Cursive,
+}
+
+impl FontFamily {
+    /// The face a run's or block's attributes name, if any — twig records it
+    /// under `data-font`.
+    pub fn from_attrs(attrs: &[(String, Option<String>)]) -> Option<Self> {
+        attrs
+            .iter()
+            .find(|(k, _)| k == "data-font")
+            .and_then(|(_, v)| v.as_deref())
+            .and_then(Self::from_attr)
+    }
+
+    /// Read a `data-font` value. `None` for a concrete family name, which is
+    /// carried by the document and left to whatever the frontend can resolve.
+    pub fn from_attr(value: &str) -> Option<Self> {
+        Some(match value {
+            "serif" => Self::Serif,
+            "sans-serif" => Self::SansSerif,
+            "monospace" => Self::Monospace,
+            "cursive" => Self::Cursive,
+            _ => return None,
+        })
+    }
+
+    /// The token twig spells it with, and what [`from_attr`](Self::from_attr)
+    /// reads back — CSS's own generic, so the stylesheet line is
+    /// `font-family: serif`.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Serif => "serif",
+            Self::SansSerif => "sans-serif",
+            Self::Monospace => "monospace",
+            Self::Cursive => "cursive",
+        }
+    }
+
+    /// This face's position in [`ALL`](Self::ALL) — the index a frontend's own
+    /// font table is keyed by.
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Serif => 0,
+            Self::SansSerif => 1,
+            Self::Monospace => 2,
+            Self::Cursive => 3,
+        }
+    }
+
+    /// Every face, in the order a menu offers them. The theme's own body face
+    /// is absent because it is absence — the menu entry for it calls
+    /// [`crate::Doc::set_font_family`] with `None`.
+    pub const ALL: [Self; 4] = [Self::Serif, Self::SansSerif, Self::Monospace, Self::Cursive];
+}
+
 /// What a glyph in a fenced code block is *to the language it is written in*
 /// — the syntax-highlighting vocabulary, one level down from [`Role`].
 ///
@@ -303,6 +644,28 @@ pub struct Style {
     /// highlighting. Only meaningful beside [`Role::Code`]; a frontend that
     /// ignores it draws code in one colour, as every frontend once did.
     pub token: Option<Token>,
+    /// How large this run is set relative to the text around it — the author's
+    /// `data-size`, and `None` for the theme's own size, which is every glyph
+    /// there was before the presentation vocabulary.
+    ///
+    /// Read at both levels, the nearer winning: a span's `data-size` inside a
+    /// block carrying its own applies to the span. A frontend that ignores it
+    /// draws one size, as `leaf-ratatui` does — a cell has one size.
+    pub size: Option<SizeStep>,
+    /// The face this run is set in — the author's `data-font`, and `None` for
+    /// the theme's body face. Read at the same two levels [`size`](Self::size)
+    /// is.
+    pub font: Option<FontFamily>,
+    /// The run's *foreground* colour — the author's `data-color` on an
+    /// attributed span, and `None` for the theme's text colour.
+    ///
+    /// The same seven names [`Role::Mark`] carries, and deliberately the same
+    /// enum: a frontend that has a red for a highlight has a red for text, and
+    /// both should be *that* red. The two never collide, because a `mark` is a
+    /// `mark` and a span is a span — a `data-color` on a `mark` node is the
+    /// highlight's background and reaches a glyph through its role, while this
+    /// is what a `<span data-color="red">` paints the letters.
+    pub color: Option<MarkColor>,
 }
 
 impl Style {
@@ -340,6 +703,21 @@ impl Style {
         self.token = t;
         self
     }
+
+    pub const fn size(mut self, s: Option<SizeStep>) -> Self {
+        self.size = s;
+        self
+    }
+
+    pub const fn font(mut self, f: Option<FontFamily>) -> Self {
+        self.font = f;
+        self
+    }
+
+    pub const fn color(mut self, c: Option<MarkColor>) -> Self {
+        self.color = c;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -372,6 +750,103 @@ mod tests {
         }
         assert_eq!(Token::from_name("meta"), None);
         assert_eq!(Token::from_name(""), None);
+    }
+
+    /// Each presentation enum carries the same three hand-written tables
+    /// [`MarkColor`] does — `ALL`, `index`, and the `name`/`from_*` pair — and
+    /// nothing but this makes them agree. A frontend indexes its own menu by
+    /// `index` and a stylesheet keys on `name`, so a variant added to one table
+    /// and missed in another draws the wrong thing rather than failing to
+    /// compile.
+    #[test]
+    fn the_presentation_tables_agree_with_each_other() {
+        for (i, a) in Align::ALL.into_iter().enumerate() {
+            assert_eq!(a.index(), i, "{} is not where ALL puts it", a.name());
+            assert_eq!(Align::from_token(a.name()), Some(a), "name round-trip");
+        }
+        for (i, l) in LineSpacing::ALL.into_iter().enumerate() {
+            assert_eq!(l.index(), i, "{} is not where ALL puts it", l.name());
+            assert_eq!(LineSpacing::from_attr(l.name()), Some(l), "name round-trip");
+        }
+        for (i, z) in SizeStep::ALL.into_iter().enumerate() {
+            assert_eq!(z.index(), i, "{} is not where ALL puts it", z.name());
+            assert_eq!(SizeStep::from_attr(z.name()), Some(z), "name round-trip");
+        }
+        for (i, f) in FontFamily::ALL.into_iter().enumerate() {
+            assert_eq!(f.index(), i, "{} is not where ALL puts it", f.name());
+            assert_eq!(FontFamily::from_attr(f.name()), Some(f), "name round-trip");
+        }
+        // Nothing outside the vocabulary is guessed at.
+        assert_eq!(Align::from_token("left"), None);
+        assert_eq!(LineSpacing::from_attr("1"), None);
+        assert_eq!(SizeStep::from_attr("medium"), None);
+        assert_eq!(SizeStep::from_attr("14pt"), None);
+        assert_eq!(FontFamily::from_attr("Garamond"), None);
+        assert_eq!(FontFamily::from_attr("fantasy"), None);
+    }
+
+    /// The size ramp's defaults are CSS's own user-agent ratios for the same
+    /// seven words, so a browser given only leaf's stylesheet and a native
+    /// renderer given the theme agree about how big `large` is. Pinned because
+    /// they are the one place core carries a *number*.
+    #[test]
+    fn the_size_ramp_is_css_s_own() {
+        let ramp: Vec<f32> = SizeStep::ALL.into_iter().map(SizeStep::scale).collect();
+        assert_eq!(
+            ramp,
+            vec![0.5625, 0.625, 0.8125, 1.125, 1.5, 2.0, 3.0],
+            "the CSS absolute-size ratios, medium removed"
+        );
+        // Monotonic, and `medium` (1.0) is the gap absence sits in.
+        assert!(ramp.windows(2).all(|w| w[0] < w[1]));
+        assert!(SizeStep::Small.scale() < 1.0 && SizeStep::Large.scale() > 1.0);
+        let spacing: Vec<f32> = LineSpacing::ALL
+            .into_iter()
+            .map(LineSpacing::ratio)
+            .collect();
+        assert_eq!(spacing, vec![1.15, 1.5, 2.0]);
+    }
+
+    /// `class` is a token list, and leaf reads the one token it knows out of it
+    /// and leaves the rest — the rule that lets a document from elsewhere pass
+    /// through the editor unharmed.
+    #[test]
+    fn an_alignment_is_one_token_of_a_class_and_the_rest_is_somebody_else_s() {
+        let class = |v: &str| vec![("class".to_string(), Some(v.to_string()))];
+        assert_eq!(Align::from_attrs(&class("center")), Some(Align::Center));
+        assert_eq!(
+            Align::from_attrs(&class("lead center")),
+            Some(Align::Center)
+        );
+        assert_eq!(
+            Align::from_attrs(&class("center lead")),
+            Some(Align::Center)
+        );
+        assert_eq!(Align::from_attrs(&class("lead wide")), None);
+        assert_eq!(Align::from_attrs(&class("")), None);
+        assert_eq!(Align::from_attrs(&[]), None);
+        // A bare `class` has no token list to read.
+        assert_eq!(Align::from_attrs(&[("class".to_string(), None)]), None);
+        // The other three read their own key and nothing else.
+        let attr = |k: &str, v: &str| vec![(k.to_string(), Some(v.to_string()))];
+        assert_eq!(
+            LineSpacing::from_attrs(&attr("data-line-height", "1.5")),
+            Some(LineSpacing::OneHalf)
+        );
+        assert_eq!(LineSpacing::from_attrs(&attr("class", "1.5")), None);
+        assert_eq!(
+            SizeStep::from_attrs(&attr("data-size", "large")),
+            Some(SizeStep::Large)
+        );
+        assert_eq!(
+            FontFamily::from_attrs(&attr("data-font", "monospace")),
+            Some(FontFamily::Monospace)
+        );
+        // Text colour is the highlight's own vocabulary, read off the same key.
+        assert_eq!(
+            MarkColor::from_attrs(&attr("data-color", "blue")),
+            Some(MarkColor::Blue)
+        );
     }
 
     /// The attribute twig actually writes, read off the shape a `FlatNode`

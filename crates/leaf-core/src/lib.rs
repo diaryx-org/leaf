@@ -29,10 +29,12 @@ pub mod wysiwyg;
 
 pub use doc::{
     Capabilities, DiskState, Doc, FootnoteDef, FootnoteRef, Highlight, HighlightCursor,
-    InlineMarks, Landing, LineFlow, MarkupMode, Quote, View, VisualKey,
+    InlineMarks, Landing, LineFlow, MarkupMode, PAGE_BREAK, Quote, View, VisualKey,
 };
 pub use source::{SourceMap, StyledRun};
-pub use style::{Baseline, MarkColor, Role, Style, Token};
+pub use style::{
+    Align, Baseline, FontFamily, LineSpacing, MarkColor, Role, SizeStep, Style, Token,
+};
 pub use wysiwyg::{
     BlockClass, Boundary, CodeBlockInfo, ColorScheme, Glyph, MediaInfo, MediaKind, MediaSource,
     TableCell, TableInfo, TableRow, VRow, VisualMap,
