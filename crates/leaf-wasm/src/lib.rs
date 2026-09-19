@@ -44,10 +44,9 @@
 //! how gpui shapes a heading's line at a single larger size.
 
 use leaf_core::style::{
-    Align as CoreAlign, Baseline, FontFace as CoreFontFace, FontFamily as CoreFontFamily,
-    FontSize as CoreFontSize, LineHeight as CoreLineHeight, LineSpacing as CoreLineSpacing,
-    MarkColor as CoreMarkColor, Role, SizeStep as CoreSizeStep, Style as LStyle,
-    TextColor as CoreTextColor,
+    Align as CoreAlign, Baseline, FaceRef as CoreFaceRef, FaceTable as CoreFaceTable,
+    FontFace as CoreFontFace, FontSize as CoreFontSize, LineHeight as CoreLineHeight,
+    MarkColor as CoreMarkColor, Role, Style as LStyle, TextColor as CoreTextColor,
 };
 use leaf_core::wysiwyg::text_width;
 use leaf_core::{
@@ -128,29 +127,39 @@ pub struct Run {
     /// renderer that knows nothing about tokens still draws the run as the code
     /// it is, and one that does keys a palette on the name.
     token: Option<String>,
-    /// How large this run is set relative to the text around it — `"xx-small"`,
-    /// `"x-small"`, `"small"`, `"large"`, `"x-large"`, `"xx-large"`,
-    /// `"xxx-large"` — or absent for the theme's own size, which is every run
-    /// there was before the presentation vocabulary.
+    /// How large this run is set — one of CSS's seven `<absolute-size>`
+    /// keywords (`"xx-small"`, `"x-small"`, `"small"`, `"large"`, `"x-large"`,
+    /// `"xx-large"`, `"xxx-large"`), or the exact size the author asked for
+    /// (`"14pt"`, `"13.5pt"`) — and absent for the theme's own size, which is
+    /// every run there was before the presentation vocabulary.
     ///
-    /// CSS's own `<absolute-size>` keyword, so the renderer's rule is
-    /// `[data-size="large"] { font-size: large }` and nothing is learned twice.
-    /// A *step*, never a measurement, for [`Self::mark_color`]'s reason: the
-    /// document says how much bigger, the stylesheet says how big.
+    /// A keyword is a rule the stylesheet can enumerate —
+    /// `[data-size="large"] { font-size: large }` — and says how much bigger
+    /// while the stylesheet says how big. A `pt` size cannot be enumerated, and
+    /// is a transcription of `font-size: 14pt` the renderer sets inline beside
+    /// the attribute: that is the portability the author traded away knowingly,
+    /// and `presentation.css` alone draws the keywords and not the values.
     size: Option<String>,
-    /// The face this run is set in — `"serif"`, `"sans-serif"`, `"monospace"`,
-    /// `"cursive"` — or absent for the theme's body face. CSS's own generic
-    /// again, so the rule is `font-family: serif` and the browser's fallback
-    /// chain does the resolving a document should never do for itself.
+    /// The face this run is set in — one of CSS's four generics (`"serif"`,
+    /// `"sans-serif"`, `"monospace"`, `"cursive"`), or a family the author
+    /// named (`"Garamond"`) — and absent for the theme's body face.
+    ///
+    /// A generic is a rule (`font-family: serif`) and the browser's fallback
+    /// chain does the resolving a document should never do for itself. A family
+    /// name is `font-family: Garamond` inline, for [`Self::size`]'s reason, and
+    /// falls back to the page's own face where it is not installed.
     font: Option<String>,
-    /// The run's *foreground* colour, by the same seven names
-    /// [`Self::mark_color`] carries — or absent for the theme's text colour.
+    /// The run's *foreground* colour — one of the seven names
+    /// [`Self::mark_color`] carries, or six lowercase hex digits behind a `#`
+    /// (`"#c03030"`) — and absent for the theme's text colour.
     ///
     /// Not `mark_color`, though they share a vocabulary on purpose: that is a
     /// highlight's *background* and reaches a run through its `mark` role, this
     /// is what the letters themselves are painted. A renderer with a red for a
     /// highlight has a red for text, and both should be that red — which on the
-    /// web is one custom property read by both rules.
+    /// web is one custom property read by both rules. A triple is `color:
+    /// #c03030` inline and is painted as written in both appearances, which is
+    /// what "exact" means.
     text_color: Option<String>,
 }
 
@@ -343,12 +352,14 @@ pub struct Row {
     /// author has just centred carries it with no run to hang it on.
     align: Option<String>,
     /// How far apart this row's block sets its lines, as a multiple of the
-    /// theme's own line height — `"1.15"`, `"1.5"`, `"2"` — and `null` for the
-    /// theme's spacing. On every row the block emits.
+    /// theme's own line height — the menu's three (`"1.15"`, `"1.5"`, `"2"`)
+    /// or any other positive decimal the author asked for (`"1.3"`) — and
+    /// `null` for the theme's spacing, which is what `"1"` would mean and is
+    /// why it is never written. On every row the block emits.
     ///
-    /// The token is the ratio, so the renderer's attribute selector is
-    /// `[data-line-height="1.5"] { line-height: 1.5 }` and a reader of the
-    /// source sees the number the document carries.
+    /// The token *is* the ratio, so the stylesheet's rule for one of the three
+    /// is `[data-line-height="1.5"] { line-height: 1.5 }` and a value it cannot
+    /// enumerate is `line-height: 1.3` inline, for [`Run::size`]'s reason.
     line_height: Option<String>,
 }
 
@@ -1591,10 +1602,14 @@ impl LeafDoc {
     // Six gestures and five queries over a document's *presentation*: alignment
     // and line spacing, which are the block's and ride [`Row::align`] and
     // [`Row::line_height`], and size, face and colour, which are the run's and
-    // ride [`Run::size`], [`Run::font`] and [`Run::text_color`]. Every value is
-    // a **name** a stylesheet can select on — `center`, `1.5`, `large`, `serif`,
-    // `red` — and never a measurement, which is why a document outlives the
-    // theme it was written under. `presentation.css` is the rule per token.
+    // ride [`Run::size`], [`Run::font`] and [`Run::text_color`]. Each value is
+    // a **name** a stylesheet can select on — `center`, `1.5`, `large`,
+    // `serif`, `red` — or, for the four properties whose vocabulary is open,
+    // the exact value the author asked for: `14pt`, `Garamond`, `#c03030`,
+    // `1.3`. A name outlives the theme it was written under and a value does
+    // not, which is the trade the author takes knowingly; `presentation.css` is
+    // the rule per name, and a value is an inline style the renderer sets
+    // beside the attribute. See `docs/proposals/exact-presentation-values.md`.
     //
     // Each gesture edits one attribute key and keeps the rest, so a document
     // from elsewhere passes through the editor unharmed, and `null` clears the
@@ -1616,17 +1631,14 @@ impl LeafDoc {
         self.view()
     }
 
-    // The four below still speak the *closed* vocabulary, though core's is open
-    // now: a name is wrapped into the open type on the way in and narrowed back
-    // to a name on the way out, so an exact `14pt` or `#c03030` in a document
-    // reads as `null` here and the toolbar ticks the default — exactly what
-    // this API did before. Teaching this surface the exact forms (which costs
-    // it nothing, since it speaks strings both ways) is the bindings' own step
-    // of `docs/proposals/exact-presentation-values.md`, not this one.
-
-    /// Set the line spacing of the caret's block (`"1.15"`, `"1.5"`, `"2"`), or
+    /// Set the line spacing of the caret's block — one of the menu's three
+    /// (`"1.15"`, `"1.5"`, `"2"`) or any other positive decimal (`"1.3"`) — or
     /// return it to the theme's with `null`. `set_alignment`'s peer in every
-    /// respect but the key; single spacing is absence.
+    /// respect but the key.
+    ///
+    /// A decimal that spells one of the three *is* that name, and `"1"` is
+    /// single spacing, which is absence and clears the key rather than writing
+    /// a value that says nothing.
     pub fn set_line_spacing(&mut self, spacing: Option<String>) -> Result<DocView, JsValue> {
         let spacing = line_spacing(spacing.as_deref())?;
         self.doc.set_line_spacing(spacing);
@@ -1635,8 +1647,9 @@ impl LeafDoc {
 
     /// Set the size of the selected run, or of the caret's whole block when
     /// nothing is selected — CSS's absolute-size keywords (`"xx-small"` …
-    /// `"xxx-large"`), with `null` for the theme's own size. `"medium"` is not a
-    /// value: `medium` is absence.
+    /// `"xxx-large"`) or a point size (`"14pt"`, `"13.5pt"`), with `null` for
+    /// the theme's own size. `"medium"` is not a value: `medium` is absence,
+    /// and so is a point size a sheet of paper could not hold.
     ///
     /// Size, face and colour are the *run's*, and the block's when no run is
     /// chosen — so "make this paragraph larger" is a press with the caret in it
@@ -1649,11 +1662,14 @@ impl LeafDoc {
         self.view()
     }
 
-    /// Set the face of the selected run, or of the caret's whole block —
-    /// `"serif"`, `"sans-serif"`, `"monospace"`, `"cursive"`, or `null` for the
-    /// theme's body face. `set_font_size`'s peer. A generic rather than a family
-    /// name: a document that names `Garamond` renders in the fallback everywhere
-    /// Garamond is not installed.
+    /// Set the face of the selected run, or of the caret's whole block — one of
+    /// CSS's four generics (`"serif"`, `"sans-serif"`, `"monospace"`,
+    /// `"cursive"`), or a family name (`"Garamond"`), or `null` for the theme's
+    /// body face. `set_font_size`'s peer.
+    ///
+    /// A generic opens on every machine; a family name renders in the fallback
+    /// everywhere it is not installed, which is the cost the author takes
+    /// knowingly. A name that spells a generic is read as that generic.
     pub fn set_font_family(&mut self, font: Option<String>) -> Result<DocView, JsValue> {
         let font = font_family(font.as_deref())?;
         self.doc.set_font_family(font);
@@ -1661,15 +1677,16 @@ impl LeafDoc {
     }
 
     /// Set the *text* colour of the selected run, or of the caret's whole block
-    /// — the same seven names `set_mark_color` takes, or `null` for the theme's.
+    /// — the same seven names `set_mark_color` takes, or a hex triple
+    /// (`"#c03030"`, or the `"#f00"` shorthand), or `null` for the theme's.
     ///
     /// `set_font_size`'s peer, and **not** `set_mark_color`: that one colours a
     /// highlight's background and needs a highlight to colour, this one paints
     /// the letters and needs nothing. They share the vocabulary on purpose, so a
     /// page with a `--leaf-red` for a highlight has it for text too.
     pub fn set_text_color(&mut self, color: Option<String>) -> Result<DocView, JsValue> {
-        self.doc
-            .set_text_color(mark_color(color.as_deref())?.map(CoreTextColor::Named));
+        let color = text_color(color.as_deref())?;
+        self.doc.set_text_color(color);
         self.view()
     }
 
@@ -1697,23 +1714,21 @@ impl LeafDoc {
 
     /// The line spacing in force at the caret, or `undefined` for the theme's
     /// own — which entry a spacing menu shows ticked. `alignment_at_caret`'s
-    /// peer.
+    /// peer, and the token is the canonical one, so what a menu ticks is what
+    /// a gesture wrote.
     pub fn line_spacing_at_caret(&mut self) -> Option<String> {
         self.doc
             .line_spacing_at_caret()
-            .and_then(CoreLineHeight::step)
             .map(|l| l.name().to_string())
     }
 
     /// The size in force at the caret, or `undefined` for the theme's own —
-    /// which entry a size menu shows ticked. Run-level, so the chain starts one
-    /// node deeper: the attributed span the caret stands in, then its block,
-    /// then the `div`s around it, the nearest winning.
+    /// which entry a size menu shows ticked, or the exact size it shows as a
+    /// row of its own. Run-level, so the chain starts one node deeper: the
+    /// attributed span the caret stands in, then its block, then the `div`s
+    /// around it, the nearest winning.
     pub fn font_size_at_caret(&mut self) -> Option<String> {
-        self.doc
-            .font_size_at_caret()
-            .and_then(CoreFontSize::step)
-            .map(|s| s.name().to_string())
+        self.doc.font_size_at_caret().map(|s| s.name().to_string())
     }
 
     /// The face in force at the caret, or `undefined` for the theme's body face.
@@ -1721,7 +1736,6 @@ impl LeafDoc {
     pub fn font_family_at_caret(&mut self) -> Option<String> {
         self.doc
             .font_family_at_caret()
-            .and_then(|f| f.generic())
             .map(|f| f.name().to_string())
     }
 
@@ -1730,10 +1744,7 @@ impl LeafDoc {
     /// `font_size_at_caret`'s peer, and not [`DocView::mark_color`], which reads
     /// a highlight's background off a `mark` node the caret is standing in.
     pub fn text_color_at_caret(&mut self) -> Option<String> {
-        self.doc
-            .text_color_at_caret()
-            .and_then(CoreTextColor::named)
-            .map(|c| c.name().to_string())
+        self.doc.text_color_at_caret().map(|c| c.name().to_string())
     }
 
     pub fn insert_link(&mut self, destination: &str) -> Result<DocView, JsValue> {
@@ -2244,6 +2255,9 @@ fn media_views(vmap: &VisualMap, scheme: ColorScheme) -> Vec<MediaView> {
 }
 
 fn wysiwyg_rows(vmap: &VisualMap, ss: usize, se: usize, hls: &[CoreHighlight]) -> Vec<Row> {
+    // The map's own face table, for the family name a glyph carries only an id
+    // for — threaded down beside `hls`, which travels the same road.
+    let faces = vmap.faces();
     vmap.rows
         .iter()
         .map(|vrow| {
@@ -2255,7 +2269,7 @@ fn wysiwyg_rows(vmap: &VisualMap, ss: usize, se: usize, hls: &[CoreHighlight]) -
             let heading = vrow.heading;
 
             Row {
-                runs: runs_of(&vrow.glyphs, ss, se, hls),
+                runs: runs_of(&vrow.glyphs, ss, se, hls, faces),
                 decoration: vrow.decoration,
                 code: vrow.code,
                 code_lang: vrow.code_lang.clone(),
@@ -2270,10 +2284,7 @@ fn wysiwyg_rows(vmap: &VisualMap, ss: usize, se: usize, hls: &[CoreHighlight]) -
                 // are properties of the *line*, so an empty paragraph just
                 // centred has no run to carry them.
                 align: vrow.align.map(|a| a.name().to_string()),
-                line_height: vrow
-                    .line_height
-                    .and_then(CoreLineHeight::step)
-                    .map(|l| l.name().to_string()),
+                line_height: vrow.line_height.map(|l| l.name().to_string()),
             }
         })
         .collect()
@@ -2284,6 +2295,9 @@ fn wysiwyg_rows(vmap: &VisualMap, ss: usize, se: usize, hls: &[CoreHighlight]) -
 /// counterpart of the TUI's `build_lines`. This is what backs the source view,
 /// whose caret rides raw byte offsets (see `Doc::caret_pos`).
 fn source_rows(source: &str, ss: usize, se: usize) -> Vec<Row> {
+    // Raw text carries no attributed span, so no run of it names a family and
+    // the table it would be read out of is empty.
+    let faces = CoreFaceTable::default();
     let body = LStyle::default();
     let mut rows = Vec::new();
     let mut byte = 0usize;
@@ -2298,14 +2312,14 @@ fn source_rows(source: &str, ss: usize, se: usize) -> Vec<Row> {
         let mut runs = Vec::new();
         if a < b {
             if a > 0 {
-                runs.push(make_run(raw[..a].to_string(), body, false, None, 0));
+                runs.push(make_run(raw[..a].to_string(), body, false, None, 0, &faces));
             }
-            runs.push(make_run(raw[a..b].to_string(), body, true, None, 0));
+            runs.push(make_run(raw[a..b].to_string(), body, true, None, 0, &faces));
             if b < raw.len() {
-                runs.push(make_run(raw[b..].to_string(), body, false, None, 0));
+                runs.push(make_run(raw[b..].to_string(), body, false, None, 0, &faces));
             }
         } else if !raw.is_empty() {
-            runs.push(make_run(raw.to_string(), body, false, None, 0));
+            runs.push(make_run(raw.to_string(), body, false, None, 0, &faces));
         }
 
         rows.push(Row {
@@ -2327,7 +2341,14 @@ fn source_rows(source: &str, ss: usize, se: usize) -> Vec<Row> {
 
 /// Build a [`Run`] from an accumulated string and the core style it was drawn
 /// with — the one place role, emphasis, and baseline cross into the view shape.
-fn make_run(text: String, style: LStyle, sel: bool, hl: Option<&CoreHighlight>, src: usize) -> Run {
+fn make_run(
+    text: String,
+    style: LStyle,
+    sel: bool,
+    hl: Option<&CoreHighlight>,
+    src: usize,
+    faces: &CoreFaceTable,
+) -> Run {
     Run {
         text,
         role: role_name(style.role),
@@ -2343,18 +2364,22 @@ fn make_run(text: String, style: LStyle, sel: bool, hl: Option<&CoreHighlight>, 
         hl_color: hl.and_then(|h| h.color.clone()),
         mark_color: mark_color_name(style.role),
         token: style.token.map(|t| t.name().to_string()),
-        size: style
-            .size
-            .and_then(CoreFontSize::step)
-            .map(|s| s.name().to_string()),
-        font: style
-            .font
-            .and_then(|f| f.generic())
-            .map(|f| f.name().to_string()),
-        text_color: style
-            .color
-            .and_then(CoreTextColor::named)
-            .map(|c| c.name().to_string()),
+        size: style.size.map(|s| s.name().to_string()),
+        font: style.font.and_then(|f| face_name(f, faces)),
+        text_color: style.color.map(|c| c.name().to_string()),
+    }
+}
+
+/// The face a run is set in, spelled — the generic's CSS keyword, or the family
+/// name the map's table holds for the id the glyph carries.
+///
+/// `None` for an id no table knows, which is an id from another map: a renderer
+/// draws that in the page's own face, and a face that draws as absence names
+/// itself as absence too.
+fn face_name(face: CoreFaceRef, faces: &CoreFaceTable) -> Option<String> {
+    match face {
+        CoreFaceRef::Generic(generic) => Some(generic.name().to_string()),
+        CoreFaceRef::Named(id) => faces.name(id).map(str::to_string),
     }
 }
 
@@ -2384,40 +2409,56 @@ fn alignment(token: Option<&str>) -> Result<Option<CoreAlign>, JsValue> {
     }
 }
 
-/// A line spacing by the ratio a document spells it with — the argument
-/// `set_line_spacing` takes. `None` is the theme's spacing, which is what `"1"`
-/// would mean and is why it is not a value.
+/// A line spacing by the token a document spells it with — the argument
+/// `set_line_spacing` takes: one of the three names, or any other positive
+/// decimal. `None` is the theme's spacing, which is what `"1"` means and is why
+/// `"1"` is not a value; anything outside the grammar is an error, for
+/// [`mark_color`]'s reason.
 fn line_spacing(name: Option<&str>) -> Result<Option<CoreLineHeight>, JsValue> {
     match name {
         None => Ok(None),
-        Some(name) => CoreLineSpacing::from_attr(name)
-            .map(|step| Some(CoreLineHeight::Step(step)))
+        Some(name) => CoreLineHeight::from_attr(name)
+            .map(Some)
             .ok_or_else(|| JsValue::from_str(&format!("unknown line spacing: {name}"))),
     }
 }
 
-/// A size step by CSS's keyword for it — the argument `set_font_size` takes.
-/// `None` is the theme's own size, which is what `"medium"` would mean and is
-/// why it is not a value.
+/// A size by the token a document spells it with — the argument `set_font_size`
+/// takes: one of CSS's seven keywords, or a `<number>pt`. `None` is the theme's
+/// own size, which is what `"medium"` would mean and is why it is not a value.
 fn size_step(name: Option<&str>) -> Result<Option<CoreFontSize>, JsValue> {
     match name {
         None => Ok(None),
-        Some(name) => CoreSizeStep::from_attr(name)
-            .map(|step| Some(CoreFontSize::Step(step)))
+        Some(name) => CoreFontSize::from_attr(name)
+            .map(Some)
             .ok_or_else(|| JsValue::from_str(&format!("unknown font size: {name}"))),
     }
 }
 
-/// A face by CSS's generic for it — the argument `set_font_family` takes. `None`
-/// is the theme's body face. A concrete family (`"Garamond"`) is an error rather
-/// than a silent pass-through: leaf's vocabulary is the four generics, and a
-/// document that names a face names it from somewhere else.
+/// A face by the token a document spells it with — the argument
+/// `set_font_family` takes: one of CSS's four generics, or a family name.
+/// `None` is the theme's body face; a name that spells a generic is read as
+/// that generic, and a name that is only whitespace names nothing and is an
+/// error.
 fn font_family(name: Option<&str>) -> Result<Option<CoreFontFace>, JsValue> {
     match name {
         None => Ok(None),
-        Some(name) => CoreFontFamily::from_attr(name)
-            .map(|generic| Some(CoreFontFace::Generic(generic)))
+        Some(name) => CoreFontFace::from_attr(name)
+            .map(Some)
             .ok_or_else(|| JsValue::from_str(&format!("unknown font family: {name}"))),
+    }
+}
+
+/// A *text* colour by the token a document spells it with — the argument
+/// `set_text_color` takes: one of the seven names, `#rrggbb`, or the `#rgb`
+/// shorthand. `None` is the theme's ink; anything else is an error, for
+/// [`mark_color`]'s reason.
+fn text_color(name: Option<&str>) -> Result<Option<CoreTextColor>, JsValue> {
+    match name {
+        None => Ok(None),
+        Some(name) => CoreTextColor::from_attr(name)
+            .map(Some)
+            .ok_or_else(|| JsValue::from_str(&format!("unknown text colour: {name}"))),
     }
 }
 
@@ -2435,7 +2476,13 @@ fn mark_color_name(role: Role) -> Option<String> {
 /// shared body of a row's runs and a table cell's. A glyph is selected when its
 /// source byte lies in `[ss, se)`, so the selection splits a run exactly as a
 /// style change does.
-fn runs_of(glyphs: &[Glyph], ss: usize, se: usize, hls: &[CoreHighlight]) -> Vec<Run> {
+fn runs_of(
+    glyphs: &[Glyph],
+    ss: usize,
+    se: usize,
+    hls: &[CoreHighlight],
+    faces: &CoreFaceTable,
+) -> Vec<Run> {
     // Which highlight (by index) covers a glyph — first by start when several
     // overlap, matching `Doc::highlight_at`. Part of the run key: a highlight
     // splits a run exactly the way the selection does.
@@ -2459,6 +2506,7 @@ fn runs_of(glyphs: &[Glyph], ss: usize, se: usize, hls: &[CoreHighlight]) -> Vec
                         was_sel,
                         hl.map(|i| &hls[i]),
                         src,
+                        faces,
                     ));
                 }
                 cur = Some((key.0, key.1, key.2, g.src));
@@ -2467,7 +2515,14 @@ fn runs_of(glyphs: &[Glyph], ss: usize, se: usize, hls: &[CoreHighlight]) -> Vec
         }
     }
     if let Some((style, was_sel, hl, src)) = cur {
-        runs.push(make_run(buf, style, was_sel, hl.map(|i| &hls[i]), src));
+        runs.push(make_run(
+            buf,
+            style,
+            was_sel,
+            hl.map(|i| &hls[i]),
+            src,
+            faces,
+        ));
     }
     runs
 }
@@ -2485,6 +2540,7 @@ fn cell_lines(
     ss: usize,
     se: usize,
     hls: &[CoreHighlight],
+    faces: &CoreFaceTable,
 ) -> Vec<TableCellLineView> {
     let mut lines = Vec::new();
     let mut seg: Vec<Glyph> = Vec::new();
@@ -2495,7 +2551,7 @@ fn cell_lines(
         if g.ch == '\n' {
             let start = line_start.unwrap_or(g.src);
             lines.push(TableCellLineView {
-                runs: runs_of(&seg, ss, se, hls),
+                runs: runs_of(&seg, ss, se, hls, faces),
                 start,
                 end: g.src,
             });
@@ -2509,7 +2565,7 @@ fn cell_lines(
         }
     }
     lines.push(TableCellLineView {
-        runs: runs_of(&seg, ss, se, hls),
+        runs: runs_of(&seg, ss, se, hls, faces),
         start: line_start.unwrap_or(cell_end),
         end: cell_end,
     });
@@ -2519,6 +2575,7 @@ fn cell_lines(
 /// The structural tables of a WYSIWYG frame — each with the `rows` span its
 /// box-glyph picture occupies (to be skipped) and its grid of styled cells.
 fn wysiwyg_tables(vmap: &VisualMap, ss: usize, se: usize, hls: &[CoreHighlight]) -> Vec<TableView> {
+    let faces = vmap.faces();
     vmap.tables
         .iter()
         .map(|t| TableView {
@@ -2533,7 +2590,15 @@ fn wysiwyg_tables(vmap: &VisualMap, ss: usize, se: usize, hls: &[CoreHighlight])
                         .cells
                         .iter()
                         .map(|cell| TableCellView {
-                            lines: cell_lines(&cell.glyphs, cell.start, cell.end, ss, se, hls),
+                            lines: cell_lines(
+                                &cell.glyphs,
+                                cell.start,
+                                cell.end,
+                                ss,
+                                se,
+                                hls,
+                                faces,
+                            ),
                             align: align_name(cell.align),
                             start: cell.start,
                             end: cell.end,
@@ -2625,7 +2690,13 @@ mod tests {
     fn a_highlighted_block_splits_its_runs_by_token() {
         let doc = wysiwyg("```rust\nlet x = 1;\n```\n");
         let row = doc.vmap.rows.iter().find(|r| r.code).expect("a code row");
-        let runs = runs_of(&row.glyphs, usize::MAX, usize::MAX, &[]);
+        let runs = runs_of(
+            &row.glyphs,
+            usize::MAX,
+            usize::MAX,
+            &[],
+            &CoreFaceTable::default(),
+        );
         let classed: Vec<(&str, Option<&str>)> = runs
             .iter()
             .map(|r| (r.text.as_str(), r.token.as_deref()))
@@ -2641,7 +2712,13 @@ mod tests {
 
         let plain = wysiwyg("```text\nlet x = 1;\n```\n");
         let row = plain.vmap.rows.iter().find(|r| r.code).unwrap();
-        let runs = runs_of(&row.glyphs, usize::MAX, usize::MAX, &[]);
+        let runs = runs_of(
+            &row.glyphs,
+            usize::MAX,
+            usize::MAX,
+            &[],
+            &CoreFaceTable::default(),
+        );
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].token, None);
     }
@@ -2651,7 +2728,13 @@ mod tests {
         let doc = wysiwyg("plain **bold** plain\n");
         let glyphs = &doc.vmap.rows[0].glyphs;
 
-        let runs = runs_of(glyphs, usize::MAX, usize::MAX, &[]);
+        let runs = runs_of(
+            glyphs,
+            usize::MAX,
+            usize::MAX,
+            &[],
+            &CoreFaceTable::default(),
+        );
         let texts: Vec<&str> = runs.iter().map(|r| r.text.as_str()).collect();
         assert_eq!(texts, ["plain ", "bold", " plain"]);
         assert!(runs.iter().all(|r| !r.sel));
@@ -2665,7 +2748,7 @@ mod tests {
         // A selection edge inside a styled span splits that span in two, and the
         // two halves keep the style.
         let start = doc.source.find("bold").unwrap();
-        let split = runs_of(glyphs, start, start + 2, &[]);
+        let split = runs_of(glyphs, start, start + 2, &[], &CoreFaceTable::default());
         let selected: Vec<&str> = split
             .iter()
             .filter(|r| r.sel)
@@ -2684,7 +2767,15 @@ mod tests {
             .vmap
             .rows
             .iter()
-            .flat_map(|r| runs_of(&r.glyphs, usize::MAX, usize::MAX, &[]))
+            .flat_map(|r| {
+                runs_of(
+                    &r.glyphs,
+                    usize::MAX,
+                    usize::MAX,
+                    &[],
+                    &CoreFaceTable::default(),
+                )
+            })
             .filter(|r| r.sup)
             .map(|r| r.text.clone())
             .collect();
@@ -2694,7 +2785,13 @@ mod tests {
             doc.vmap
                 .rows
                 .iter()
-                .flat_map(|r| runs_of(&r.glyphs, usize::MAX, usize::MAX, &[]))
+                .flat_map(|r| runs_of(
+                    &r.glyphs,
+                    usize::MAX,
+                    usize::MAX,
+                    &[],
+                    &CoreFaceTable::default()
+                ))
                 .all(|r| !(r.sup && r.sub)),
             "a run cannot be both raised and lowered"
         );
@@ -2710,7 +2807,15 @@ mod tests {
             .vmap
             .rows
             .iter()
-            .flat_map(|r| runs_of(&r.glyphs, usize::MAX, usize::MAX, &[]))
+            .flat_map(|r| {
+                runs_of(
+                    &r.glyphs,
+                    usize::MAX,
+                    usize::MAX,
+                    &[],
+                    &CoreFaceTable::default(),
+                )
+            })
             .filter(|r| r.role == "mark")
             .map(|r| (r.text.clone(), r.mark_color.clone()))
             .collect();
@@ -2946,7 +3051,15 @@ mod tests {
             .vmap
             .rows
             .iter()
-            .flat_map(|r| runs_of(&r.glyphs, usize::MAX, usize::MAX, &[]))
+            .flat_map(|r| {
+                runs_of(
+                    &r.glyphs,
+                    usize::MAX,
+                    usize::MAX,
+                    &[],
+                    &CoreFaceTable::default(),
+                )
+            })
             .filter(|r| !r.text.trim().is_empty())
             .map(|r| (r.size, r.font, r.text_color))
             .collect();
@@ -2960,11 +3073,73 @@ mod tests {
         assert!(!d.caret_in_mark());
     }
 
-    /// Each vocabulary is read back by the name the document carries, and a
-    /// name outside it is refused rather than read as a clearing — the argument
-    /// that clears is `null`, and the two differ by one typo.
+    /// The other half of each open vocabulary: the value an *Other…* field
+    /// writes, out through the gesture and back through both the query and the
+    /// run view — in its one canonical spelling, since a stylesheet keys on the
+    /// token and a renderer that cannot enumerate it sets it inline.
+    ///
+    /// The named face is the one form a glyph cannot carry as itself, so this
+    /// reads the runs through the map's own table rather than an empty one.
     #[test]
-    fn a_vocabulary_reads_back_only_its_own_names() {
+    fn an_exact_value_crosses_as_its_own_token_and_comes_back_whole() {
+        let mut d = handle("exact\n");
+        let in_text = |d: &mut LeafDoc| {
+            let at = d.doc.source.find("exact").unwrap();
+            d.doc.place_caret(at, false);
+        };
+        assert!(d.set_font_size(Some("14pt".into())).is_ok());
+        in_text(&mut d);
+        assert!(d.set_font_family(Some("Garamond".into())).is_ok());
+        in_text(&mut d);
+        assert!(d.set_text_color(Some("#c03030".into())).is_ok());
+        in_text(&mut d);
+        assert!(d.set_line_spacing(Some("1.3".into())).is_ok());
+
+        let rows = wysiwyg_rows(&d.doc.vmap, usize::MAX, usize::MAX, &[]);
+        let name = |s: &str| Some(s.to_string());
+        let styled: Vec<(Option<String>, Option<String>, Option<String>)> = rows
+            .iter()
+            .flat_map(|r| r.runs.iter())
+            .filter(|r| !r.text.trim().is_empty())
+            .map(|r| (r.size.clone(), r.font.clone(), r.text_color.clone()))
+            .collect();
+        assert_eq!(
+            styled,
+            [(name("14pt"), name("Garamond"), name("#c03030"))],
+            "the value's own spelling, where a name stood before"
+        );
+        let spaced: Vec<&str> = rows
+            .iter()
+            .filter_map(|r| r.line_height.as_deref())
+            .collect();
+        assert_eq!(spaced, ["1.3"]);
+
+        assert_eq!(d.font_size_at_caret().as_deref(), Some("14pt"));
+        assert_eq!(d.font_family_at_caret().as_deref(), Some("Garamond"));
+        assert_eq!(d.text_color_at_caret().as_deref(), Some("#c03030"));
+        assert_eq!(d.line_spacing_at_caret().as_deref(), Some("1.3"));
+
+        // A spelling that means the same value is written back the one way: a
+        // ratio that spells a name is that name, and `#rgb` expands.
+        in_text(&mut d);
+        assert!(d.set_line_spacing(Some("1.50".into())).is_ok());
+        in_text(&mut d);
+        assert_eq!(d.line_spacing_at_caret().as_deref(), Some("1.5"));
+        assert!(d.set_text_color(Some("#f00".into())).is_ok());
+        in_text(&mut d);
+        assert_eq!(d.text_color_at_caret().as_deref(), Some("#ff0000"));
+    }
+
+    /// Each vocabulary reads back the name the document carries — and now the
+    /// value beside it, since this surface speaks strings both ways and the
+    /// grammar is the document's own. A token outside that grammar is refused
+    /// rather than read as a clearing: the argument that clears is `null`, and
+    /// the two differ by one typo.
+    #[test]
+    fn a_vocabulary_reads_back_its_own_names_and_its_own_values() {
+        use leaf_core::style::{
+            FontFamily as CoreFontFamily, LineSpacing as CoreLineSpacing, SizeStep as CoreSizeStep,
+        };
         assert_eq!(alignment(Some("center")).unwrap(), Some(CoreAlign::Center));
         assert_eq!(
             line_spacing(Some("1.5")).unwrap(),
@@ -2978,19 +3153,54 @@ mod tests {
             font_family(Some("monospace")).unwrap(),
             Some(CoreFontFace::Generic(CoreFontFamily::Monospace))
         );
+        assert_eq!(
+            text_color(Some("blue")).unwrap(),
+            Some(CoreTextColor::Named(CoreMarkColor::Blue))
+        );
+        // And the exact forms, each spelled the one canonical way back.
+        assert_eq!(size_step(Some("14pt")).unwrap(), CoreFontSize::points(14.0));
+        assert_eq!(
+            line_spacing(Some("1.3")).unwrap(),
+            CoreLineHeight::ratio(1.3)
+        );
+        assert_eq!(
+            font_family(Some("Garamond")).unwrap(),
+            Some(CoreFontFace::Named("Garamond".to_string()))
+        );
+        assert_eq!(
+            text_color(Some("#c03030")).unwrap(),
+            Some(CoreTextColor::Rgb {
+                r: 0xc0,
+                g: 0x30,
+                b: 0x30
+            })
+        );
         // Absence is the theme's own, and the only way to ask for it.
         assert_eq!(alignment(None).unwrap(), None);
         assert_eq!(line_spacing(None).unwrap(), None);
         assert_eq!(size_step(None).unwrap(), None);
         assert_eq!(font_family(None).unwrap(), None);
-        // The names that are absence rather than values, and a face from
-        // somewhere else, are not in any of them. (The error itself is a
-        // `JsValue` and can only be built inside wasm, so this asks the core
-        // vocabularies the same question the helpers put to them.)
+        assert_eq!(text_color(None).unwrap(), None);
+        // A token outside the grammar is an error rather than a clearing —
+        // which each helper spells by turning the `None` below into an `Err`.
+        // Asked of the core vocabularies rather than of the helpers, because
+        // building that error is `JsValue::from_str`, which panics off wasm32
+        // and would abort the run rather than fail a case.
         assert_eq!(CoreAlign::from_token("left"), None);
-        assert_eq!(CoreLineSpacing::from_attr("1"), None);
-        assert_eq!(CoreSizeStep::from_attr("medium"), None);
-        assert_eq!(CoreFontFamily::from_attr("Garamond"), None);
+        assert_eq!(CoreLineHeight::from_attr("1"), None, "single is absence");
+        assert_eq!(CoreFontSize::from_attr("medium"), None, "and so is medium");
+        assert_eq!(CoreFontSize::from_attr("huge"), None);
+        assert_eq!(
+            CoreFontSize::from_attr("14px"),
+            None,
+            "a document is not a screen"
+        );
+        assert_eq!(
+            CoreFontFace::from_attr("   "),
+            None,
+            "a name that names nothing"
+        );
+        assert_eq!(CoreTextColor::from_attr("rgb(1, 2, 3)"), None);
     }
 
     /// A page break crosses as the leaf directive it is — the row a paginating

@@ -77,7 +77,8 @@ export const MARK_COLORS: readonly MarkColor[];
  *  which is left — there is no `left` token, because absence is it. */
 export type Align = "center" | "right" | "justify";
 /** How far apart a block sets its lines, as a multiple of the theme's own line
- *  height. `null` is the theme's, which is why there is no `"1"`. */
+ *  height — the three a menu offers. `null` is the theme's, which is why there
+ *  is no `"1"`. */
 export type LineSpacing = "1.15" | "1.5" | "2";
 /** A size step, in CSS's `<absolute-size>` keywords less `medium` — which is
  *  absence, and so is `null`. */
@@ -85,6 +86,31 @@ export type SizeStep =
   | "xx-small" | "x-small" | "small" | "large" | "x-large" | "xx-large" | "xxx-large";
 /** A face, in CSS's generic families. `null` is the theme's body face. */
 export type FontFamily = "serif" | "sans-serif" | "monospace" | "cursive";
+
+// The four open forms. Each property keeps its names as the first thing a menu
+// offers — a name is portable under every theme and `presentation.css` has a
+// rule for it — and grows one more row, *Other…*, for the author who wants a
+// number, a family or a colour the names do not cover and takes the
+// portability cost knowingly. A value is drawn by the inline style the editor
+// sets beside the `data-` attribute; a page rendered with the published
+// stylesheet alone shows the names and not the values.
+
+/** A size: one of the seven steps, or a point size (`"14pt"`, `"13.5pt"`).
+ *  Only `pt` is a unit — `px` is a screen's unit and a document is not a
+ *  screen, and the relative units are what the steps already are. */
+export type FontSize = SizeStep | `${number}pt`;
+/** A line height: one of the three names, or any other positive decimal
+ *  (`"1.3"`). A decimal that spells one of the three *is* that name. */
+export type LineHeight = LineSpacing | `${number}`;
+/** A face: one of the four generics, or a family the author named
+ *  (`"Garamond"`), which draws in that family where it is installed and in the
+ *  page's own face where it is not. */
+export type FontFace = FontFamily | (string & {});
+/** A text colour: one of the seven names, or a hex triple (`"#c03030"`, or the
+ *  `"#f00"` shorthand, which is read and never written back). A name is the
+ *  page's two inks, one per appearance; a triple is painted as written in
+ *  both. */
+export type TextColor = MarkColor | `#${string}`;
 
 /** The alignment tokens in the order a control should offer them. */
 export const ALIGNMENTS: readonly Align[];
@@ -285,26 +311,29 @@ export class LeafEditor {
   /** Align the caret's block, or `null` for the theme's default (left). */
   setAlignment(align?: Align | null): void;
   /** Set the block's line spacing as a multiple of the theme's, or `null`. */
-  setLineSpacing(spacing?: LineSpacing | null): void;
-  /** Set the selection a step larger or smaller, or `null` for the theme's size. */
-  setFontSize(size?: SizeStep | null): void;
-  /** Set the selection's face, or `null` for the theme's body face. */
-  setFontFamily(font?: FontFamily | null): void;
-  /** Colour the selection's letters, or `null` for the theme's text colour —
-   *  not `setMarkColor`, which colours a highlight's background. */
-  setTextColor(color?: MarkColor | null): void;
+  setLineSpacing(spacing?: LineHeight | null): void;
+  /** Set the selection a step larger or smaller, or to an exact point size, or
+   *  `null` for the theme's size. */
+  setFontSize(size?: FontSize | null): void;
+  /** Set the selection's face — a generic, or a family by name — or `null` for
+   *  the theme's body face. */
+  setFontFamily(font?: FontFace | null): void;
+  /** Colour the selection's letters, by name or by hex triple, or `null` for
+   *  the theme's text colour — not `setMarkColor`, which colours a highlight's
+   *  background. */
+  setTextColor(color?: TextColor | null): void;
   /** Write a page break at the caret (the `::page-break` leaf directive). */
   insertPageBreak(): void;
   /** The alignment in force at the caret, or null — which swatch is lit. */
   alignmentAtCaret(): Align | null;
   /** The line spacing in force at the caret, or null. */
-  lineSpacingAtCaret(): LineSpacing | null;
-  /** The size step at the caret, or null. */
-  fontSizeAtCaret(): SizeStep | null;
-  /** The face at the caret, or null. */
-  fontFamilyAtCaret(): FontFamily | null;
+  lineSpacingAtCaret(): LineHeight | null;
+  /** The size at the caret — a step, or a point size — or null. */
+  fontSizeAtCaret(): FontSize | null;
+  /** The face at the caret — a generic, or a family name — or null. */
+  fontFamilyAtCaret(): FontFace | null;
   /** The *text* colour at the caret, or null — not `EditorState.markColor`. */
-  textColorAtCaret(): MarkColor | null;
+  textColorAtCaret(): TextColor | null;
 
   tableInsertRow(below?: boolean): void;
   tableDeleteRow(): void;

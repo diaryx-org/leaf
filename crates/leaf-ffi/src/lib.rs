@@ -45,11 +45,11 @@ use leaf_core::style::{Baseline, Role, Style as LStyle};
 use leaf_core::wysiwyg::text_width;
 use leaf_core::{
     Align as CoreAlign, Alignment, BlockKind, Capabilities as CoreCapabilities, ColorScheme, Doc,
-    FontFace as CoreFontFace, FontFamily as CoreFontFamily, FontSize as CoreFontSize, Format,
-    InlineKind, LineFlow as CoreLineFlow, LineHeight as CoreLineHeight,
-    LineSpacing as CoreLineSpacing, MarkColor as CoreMarkColor, MarkupMode as CoreMarkupMode,
-    MediaKind as CoreMediaKind, SizeStep as CoreSizeStep, TextColor as CoreTextColor, View,
-    VisualMap,
+    FaceRef as CoreFaceRef, FaceTable as CoreFaceTable, FontFace as CoreFontFace,
+    FontFamily as CoreFontFamily, FontSize as CoreFontSize, Format, InlineKind,
+    LineFlow as CoreLineFlow, LineHeight as CoreLineHeight, LineSpacing as CoreLineSpacing,
+    MarkColor as CoreMarkColor, MarkupMode as CoreMarkupMode, MediaKind as CoreMediaKind,
+    SizeStep as CoreSizeStep, TextColor as CoreTextColor, View, VisualMap,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -178,27 +178,36 @@ pub struct Run {
     /// renderer that knows nothing about tokens still draws the run as the code
     /// it is, and one that does keys a palette on the name.
     pub token: Option<String>,
-    /// How large this run is set relative to the text around it — `"xx-small"`,
+    /// How large this run is set — one of CSS's seven keywords (`"xx-small"`,
     /// `"x-small"`, `"small"`, `"large"`, `"x-large"`, `"xx-large"`,
-    /// `"xxx-large"` — or absent for the theme's own size, which is every run
+    /// `"xxx-large"`), or the exact size the author asked for (`"14pt"`,
+    /// `"13.5pt"`) — and absent for the theme's own size, which is every run
     /// there was before the presentation vocabulary.
     ///
-    /// A *step*, never a measurement, and a name for [`mark_color`](Self::mark_color)'s
-    /// reason: the document says how much bigger, the renderer's theme says how
-    /// big. `leaf_core::SizeStep::scale` carries CSS's own ratios for a renderer
-    /// that wants a default ramp rather than one of its own.
+    /// A *token* rather than an enum, for [`mark_color`](Self::mark_color)'s
+    /// reason and one more: a keyword says how much bigger and leaves how big
+    /// to the theme (`leaf_core::SizeStep::scale` has CSS's own ratios for a
+    /// renderer that wants a default ramp), while a `pt` size is exactly that
+    /// many points of the sheet. A renderer reads its table first and parses
+    /// the suffix when the table has no entry.
     pub size: Option<String>,
-    /// The face this run is set in — `"serif"`, `"sans-serif"`, `"monospace"`,
-    /// `"cursive"` — or absent for the theme's body face.
+    /// The face this run is set in — one of CSS's four generics (`"serif"`,
+    /// `"sans-serif"`, `"monospace"`, `"cursive"`), or a family the author
+    /// named (`"Garamond"`) — and absent for the theme's body face.
     ///
-    /// A CSS generic rather than a family name, for [`size`](Self::size)'s
-    /// reason: the theme names the concrete face, so `serif` is whichever serif
-    /// this platform's theme has and a document never asks for one that isn't
-    /// installed.
+    /// A generic is the theme's to name, so `serif` is whichever serif this
+    /// platform's theme has and opens everywhere. A family name is resolved
+    /// through the platform's font registry and falls back to the body face
+    /// where it is not installed, which is the portability the author traded
+    /// away knowingly.
     pub font: Option<String>,
-    /// The run's *foreground* colour, by the same seven names
-    /// [`mark_color`](Self::mark_color) carries — or absent for the theme's text
-    /// colour.
+    /// The run's *foreground* colour — one of the seven names
+    /// [`mark_color`](Self::mark_color) carries, or six lowercase hex digits
+    /// behind a `#` (`"#c03030"`) — and absent for the theme's text colour.
+    ///
+    /// A name is two inks, one per appearance, and the theme owns both; a
+    /// triple is painted as written in the light appearance and in the dark
+    /// one alike, which is what "exact" means.
     ///
     /// Not [`mark_color`](Self::mark_color), though they share a vocabulary on
     /// purpose: that is a highlight's *background* and reaches a run through its
@@ -330,12 +339,14 @@ pub struct Row {
     /// from it. See [`leaf_core::VRow::align`].
     pub align: Option<String>,
     /// How far apart this row's block sets its lines, as a multiple of the
-    /// theme's own line height — `"1.15"`, `"1.5"`, `"2"` — and `None` for the
-    /// theme's spacing. On every row the block emits.
+    /// theme's own line height — the menu's three (`"1.15"`, `"1.5"`, `"2"`)
+    /// or any other positive decimal the author asked for (`"1.3"`) — and
+    /// `None` for the theme's spacing, which is what `"1"` would mean and is
+    /// why it is never written. On every row the block emits.
     ///
-    /// The ratio is the name read as arithmetic (`leaf_core::LineSpacing::ratio`),
-    /// so a renderer laying rows out in points multiplies its line height by it;
-    /// one drawing a row per terminal line ignores it, the way it ignores a
+    /// The token *is* the ratio, so a renderer laying rows out in points
+    /// multiplies its line height by it whether or not the menu has a row for
+    /// it; one drawing a row per terminal line ignores it, the way it ignores a
     /// heading's size. See [`leaf_core::VRow::line_height`].
     pub line_height: Option<String>,
     /// What this row divides, on the blank rows a block boundary is drawn with
@@ -845,6 +856,165 @@ impl From<FontFamily> for CoreFontFamily {
             FontFamily::SansSerif => CoreFontFamily::SansSerif,
             FontFamily::Monospace => CoreFontFamily::Monospace,
             FontFamily::Cursive => CoreFontFamily::Cursive,
+        }
+    }
+}
+
+// ── the exact forms: a value where a name will not do ───────────────────────
+//
+// Each of the four closed enums above gets an *open* one beside it, which is a
+// Swift enum with associated values: `.step(.large)` or `.points(14)`,
+// `.generic(.serif)` or `.named("Garamond")`, `.named(.red)` or `.rgb(…)`,
+// `.step(.oneHalf)` or `.ratio(1.3)`. The four gestures and four queries take
+// and answer these; the closed enums stay because they are what a menu offers
+// *first* — a name is portable under every theme, and the value under the
+// divider is the author's to take knowingly. See
+// `docs/proposals/exact-presentation-values.md`.
+//
+// **A value this vocabulary cannot carry is absence.** Each `into_core` below
+// answers `None` for one, and the gesture then *clears* the key rather than
+// writing something the document cannot mean: a ratio of `1` is single spacing,
+// which is the theme's and has no token; a size of `0pt` or `700pt` is not a
+// size a sheet of paper holds; a face named `""` names nothing. A field that
+// offers the author a number should say so before it calls — the range is
+// 0.01 to 655.35 — because from here a refusal and a clear look alike.
+
+/// How large a run is set: a [`SizeStep`] relative to the text around it, or
+/// the point size the author asked for. What [`LeafDoc::set_font_size`] writes
+/// and [`LeafDoc::font_size_at_caret`] answers.
+///
+/// The step is what a menu offers first and what a document should say where a
+/// name will do — it reads as a step up under every theme. The point size is
+/// what the author typed and is all it is: 14 points of the sheet on paper, and
+/// 14 points before the zoom on screen. A heading set to an exact size is that
+/// size and not its ramp scaled.
+#[derive(Clone, Copy, Debug, PartialEq, uniffi::Enum)]
+pub enum FontSize {
+    Step(SizeStep),
+    /// Points. 0.01 to 655.35; anything else is absence — see the note above.
+    Points(f64),
+}
+
+impl FontSize {
+    /// The core size this names, or `None` for a number core cannot carry.
+    fn into_core(self) -> Option<CoreFontSize> {
+        match self {
+            FontSize::Step(step) => Some(CoreFontSize::Step(step.into())),
+            FontSize::Points(points) => CoreFontSize::points(points as f32),
+        }
+    }
+}
+
+impl From<CoreFontSize> for FontSize {
+    fn from(s: CoreFontSize) -> Self {
+        match s {
+            CoreFontSize::Step(step) => FontSize::Step(step.into()),
+            // Divided in `f64` rather than widened from the `f32` `as_f32`
+            // answers: 1.3 as an `f32` widens to 1.2999999523, and a caller
+            // that passed 1.3 in has to get 1.3 back or no menu row ticks.
+            CoreFontSize::Points(pt) => FontSize::Points(f64::from(pt.hundredths()) / 100.0),
+        }
+    }
+}
+
+/// How far apart a block's lines are set: a [`LineSpacing`] from the menu's
+/// three, or the ratio the author asked for. [`FontSize`]'s peer one property
+/// along, and with no unit at all — a line height is a multiple.
+///
+/// A ratio that spells one of the three names *is* that name, so
+/// `.ratio(1.5)` comes back as `.step(.oneHalf)` and a menu has a row to tick.
+/// A ratio of 1 is single spacing, which is absence: it clears the key.
+#[derive(Clone, Copy, Debug, PartialEq, uniffi::Enum)]
+pub enum LineHeight {
+    Step(LineSpacing),
+    /// A multiple of the theme's line height. 1 is absence.
+    Ratio(f64),
+}
+
+impl LineHeight {
+    /// The core spacing this names, or `None` for a ratio core cannot carry.
+    fn into_core(self) -> Option<CoreLineHeight> {
+        match self {
+            LineHeight::Step(step) => Some(CoreLineHeight::Step(step.into())),
+            LineHeight::Ratio(ratio) => CoreLineHeight::ratio(ratio as f32),
+        }
+    }
+}
+
+impl From<CoreLineHeight> for LineHeight {
+    fn from(l: CoreLineHeight) -> Self {
+        match l {
+            CoreLineHeight::Step(step) => LineHeight::Step(step.into()),
+            // In `f64` throughout, for [`FontSize`]'s reason.
+            CoreLineHeight::Ratio(r) => LineHeight::Ratio(f64::from(r.hundredths()) / 100.0),
+        }
+    }
+}
+
+/// A run's *foreground* colour: one of the seven [`MarkColor`] names, or the
+/// RGB triple the author asked for.
+///
+/// A name is two inks, one per appearance, and the theme owns both. A triple is
+/// painted as written in the light appearance and in the dark one alike — that
+/// is what "exact" means, and the theme does not soften it.
+#[derive(Clone, Copy, Debug, PartialEq, uniffi::Enum)]
+pub enum TextColor {
+    Named(MarkColor),
+    Rgb { r: u8, g: u8, b: u8 },
+}
+
+impl TextColor {
+    /// The core colour this names. Always one — every triple is a colour.
+    fn into_core(self) -> Option<CoreTextColor> {
+        Some(match self {
+            TextColor::Named(color) => CoreTextColor::Named(color.into()),
+            TextColor::Rgb { r, g, b } => CoreTextColor::Rgb { r, g, b },
+        })
+    }
+}
+
+impl From<CoreTextColor> for TextColor {
+    fn from(c: CoreTextColor) -> Self {
+        match c {
+            CoreTextColor::Named(color) => TextColor::Named(color.into()),
+            CoreTextColor::Rgb { r, g, b } => TextColor::Rgb { r, g, b },
+        }
+    }
+}
+
+/// The face a run is set in: one of CSS's four generics, or the family the
+/// author named.
+///
+/// A generic opens on every machine and a family name does not, which is the
+/// trade [`FontFamily`]'s note states once. A named family is resolved through
+/// the platform's font registry and falls back to the theme's body face where
+/// it is not installed.
+#[derive(Clone, Debug, PartialEq, uniffi::Enum)]
+pub enum FontFace {
+    Generic(FontFamily),
+    /// A family name, as the font panel spells it. Trimmed on the way in, and
+    /// one that spells a generic (`"Serif"`) is read as that generic.
+    Named(String),
+}
+
+impl FontFace {
+    /// The core face this names, or `None` for a name that names nothing.
+    fn into_core(self) -> Option<CoreFontFace> {
+        match self {
+            FontFace::Generic(family) => Some(CoreFontFace::Generic(family.into())),
+            // Through the parser rather than straight into `Named`, so a name
+            // gets the trim and the generic-keyword reading a document's own
+            // `data-font` gets, and an empty one is absence.
+            FontFace::Named(name) => CoreFontFace::from_attr(&name),
+        }
+    }
+}
+
+impl From<CoreFontFace> for FontFace {
+    fn from(f: CoreFontFace) -> Self {
+        match f {
+            CoreFontFace::Generic(family) => FontFace::Generic(family.into()),
+            CoreFontFace::Named(name) => FontFace::Named(name),
         }
     }
 }
@@ -1992,9 +2162,12 @@ impl LeafDoc {
     //
     // Six gestures and five queries over a document's *presentation*: alignment
     // and line spacing, which are the block's, and size, face and colour, which
-    // are the run's. Every value is a **name** — `center`, `1.5`, `large`,
-    // `serif`, `red` — that the renderer's theme resolves, never a measurement,
-    // which is why a document outlives the theme it was written under.
+    // are the run's. Each value is a **name** the renderer's theme resolves —
+    // `center`, `1.5`, `large`, `serif`, `red` — or, for the four properties
+    // whose type is open, the exact value the author asked for: `14pt`,
+    // `Garamond`, `#c03030`, `1.3`. A name outlives the theme it was written
+    // under and a value does not, which is the trade the *Other…* row makes
+    // visible; see [`FontSize`] and its three peers.
     //
     // Each gesture edits one attribute key and keeps the rest, so a document
     // from elsewhere passes through the editor unharmed, and `nil` clears the
@@ -2015,21 +2188,17 @@ impl LeafDoc {
         g.view()
     }
 
-    // The four presentation types below are still the *closed* vocabulary,
-    // though core's are open now: a gesture wraps its name into the open type
-    // and a query narrows back to one, so an exact `14pt` or `#c03030` in a
-    // document reads as `nil` here and the menu ticks the default — exactly
-    // what this API did before. Opening it (UniFFI enums with associated
-    // values, and the views learning to spell a value) is the bindings' own
-    // step of `docs/proposals/exact-presentation-values.md`, not this one.
-
     /// Set the line spacing of the caret's block, or return it to the theme's
     /// with `nil`. [`set_alignment`](Self::set_alignment)'s peer in every
     /// respect but the key. Gate on [`Capabilities::line_spacing`].
-    pub fn set_line_spacing(&self, spacing: Option<LineSpacing>) -> DocView {
+    ///
+    /// `.step(.oneHalf)` from the menu's three, or `.ratio(1.3)` from an
+    /// *Other…* field. A ratio that spells one of the three *is* that name, and
+    /// a ratio of 1 is single spacing, which is absence and clears the key.
+    pub fn set_line_spacing(&self, spacing: Option<LineHeight>) -> DocView {
         let mut g = self.lock();
         g.doc
-            .set_line_spacing(spacing.map(|s| CoreLineHeight::Step(CoreLineSpacing::from(s))));
+            .set_line_spacing(spacing.and_then(LineHeight::into_core));
         g.view()
     }
 
@@ -2041,20 +2210,25 @@ impl LeafDoc {
     /// rather than a select-all first. With a selection the range is wrapped in
     /// an attributed span, or the span it already lies in is re-styled, never
     /// nested. Gate on [`Capabilities::font_size`].
-    pub fn set_font_size(&self, size: Option<SizeStep>) -> DocView {
+    ///
+    /// `.step(.large)` from the menu's seven, or `.points(14)` from an
+    /// *Other…* field — a size in points, which is what the paper will show.
+    pub fn set_font_size(&self, size: Option<FontSize>) -> DocView {
         let mut g = self.lock();
-        g.doc
-            .set_font_size(size.map(|s| CoreFontSize::Step(CoreSizeStep::from(s))));
+        g.doc.set_font_size(size.and_then(FontSize::into_core));
         g.view()
     }
 
     /// Set the face of the selected run, or of the caret's whole block.
     /// [`set_font_size`](Self::set_font_size)'s peer. Gate on
     /// [`Capabilities::font_family`].
-    pub fn set_font_family(&self, font: Option<FontFamily>) -> DocView {
+    ///
+    /// `.generic(.serif)` from the menu's four, or `.named("Garamond")` from
+    /// the platform's font picker — which draws in that family where it is
+    /// installed and in the theme's body face where it is not.
+    pub fn set_font_family(&self, font: Option<FontFace>) -> DocView {
         let mut g = self.lock();
-        g.doc
-            .set_font_family(font.map(|f| CoreFontFace::Generic(CoreFontFamily::from(f))));
+        g.doc.set_font_family(font.and_then(FontFace::into_core));
         g.view()
     }
 
@@ -2064,10 +2238,13 @@ impl LeafDoc {
     /// background and needs a highlight to colour, this one paints the letters
     /// and needs nothing. They share the seven names on purpose. Gate on
     /// [`Capabilities::text_color`].
-    pub fn set_text_color(&self, color: Option<MarkColor>) -> DocView {
+    ///
+    /// `.named(.red)` from the seven swatches, or `.rgb(r:g:b:)` from the
+    /// system colour picker — painted as written in both appearances, which is
+    /// what "exact" costs.
+    pub fn set_text_color(&self, color: Option<TextColor>) -> DocView {
         let mut g = self.lock();
-        g.doc
-            .set_text_color(color.map(|c| CoreTextColor::Named(CoreMarkColor::from(c))));
+        g.doc.set_text_color(color.and_then(TextColor::into_core));
         g.view()
     }
 
@@ -2100,47 +2277,43 @@ impl LeafDoc {
     /// The line spacing in force at the caret, or `nil` for the theme's own —
     /// which entry a spacing menu shows ticked.
     /// [`alignment_at_caret`](Self::alignment_at_caret)'s peer.
-    pub fn line_spacing_at_caret(&self) -> Option<LineSpacing> {
+    ///
+    /// A `.ratio` is a spacing no row of the menu's three can tick, and is the
+    /// author's own: the menu shows it as a row of its own above *Other…*.
+    pub fn line_spacing_at_caret(&self) -> Option<LineHeight> {
         let mut g = self.lock();
-        g.doc
-            .line_spacing_at_caret()
-            .and_then(CoreLineHeight::step)
-            .map(LineSpacing::from)
+        g.doc.line_spacing_at_caret().map(LineHeight::from)
     }
 
     /// The size in force at the caret, or `nil` for the theme's own — which
     /// entry a size menu shows ticked. Run-level, so the chain starts one node
     /// deeper: the attributed span the caret stands in, then its block, then the
     /// `div`s around it, the nearest winning.
-    pub fn font_size_at_caret(&self) -> Option<SizeStep> {
+    ///
+    /// A `.points` is a size no row of the menu's seven can tick, and the menu
+    /// shows it as a row of its own — "14 pt" — above *Other…*.
+    pub fn font_size_at_caret(&self) -> Option<FontSize> {
         let mut g = self.lock();
-        g.doc
-            .font_size_at_caret()
-            .and_then(CoreFontSize::step)
-            .map(SizeStep::from)
+        g.doc.font_size_at_caret().map(FontSize::from)
     }
 
     /// The face in force at the caret, or `nil` for the theme's body face.
-    /// [`font_size_at_caret`](Self::font_size_at_caret)'s peer.
-    pub fn font_family_at_caret(&self) -> Option<FontFamily> {
+    /// [`font_size_at_caret`](Self::font_size_at_caret)'s peer, and a `.named`
+    /// is the family the author picked, shown as its own ticked row.
+    pub fn font_family_at_caret(&self) -> Option<FontFace> {
         let mut g = self.lock();
-        g.doc
-            .font_family_at_caret()
-            .and_then(|f| f.generic())
-            .map(FontFamily::from)
+        g.doc.font_family_at_caret().map(FontFace::from)
     }
 
     /// The *text* colour in force at the caret, or `nil` for the theme's — which
     /// swatch a text-colour control marks as the current one.
     /// [`font_size_at_caret`](Self::font_size_at_caret)'s peer, and not
     /// [`DocView::mark_color`], which reads a highlight's background off a
-    /// `mark` node the caret is standing in.
-    pub fn text_color_at_caret(&self) -> Option<MarkColor> {
+    /// `mark` node the caret is standing in. A `.rgb` is the author's own
+    /// triple, which the palette shows as a swatch of its own.
+    pub fn text_color_at_caret(&self) -> Option<TextColor> {
         let mut g = self.lock();
-        g.doc
-            .text_color_at_caret()
-            .and_then(CoreTextColor::named)
-            .map(MarkColor::from)
+        g.doc.text_color_at_caret().map(TextColor::from)
     }
 
     /// Which of the formatting commands above this document's format can
@@ -2736,11 +2909,14 @@ fn mark_id(kind: InlineKind) -> &'static str {
 /// identical `(style, selected)`. A glyph is selected when its source byte lies
 /// in `[ss, se)`.
 fn wysiwyg_rows(vmap: &VisualMap, ss: usize, se: usize, hls: &[leaf_core::Highlight]) -> Vec<Row> {
+    // The map's own face table, for the family name a glyph carries only an id
+    // for — threaded down beside `hls`, which travels the same road.
+    let faces = vmap.faces();
     vmap.rows
         .iter()
         .map(|vrow| {
             Row {
-                runs: runs_of(&vrow.glyphs, ss, se, hls),
+                runs: runs_of(&vrow.glyphs, ss, se, hls, faces),
                 decoration: vrow.decoration,
                 code: vrow.code,
                 code_lang: vrow.code_lang.clone(),
@@ -2754,10 +2930,7 @@ fn wysiwyg_rows(vmap: &VisualMap, ss: usize, se: usize, hls: &[leaf_core::Highli
                 // and spacing are properties of the *line*, so an empty
                 // paragraph just centred has no run to carry them.
                 align: vrow.align.map(|a| a.name().to_string()),
-                line_height: vrow
-                    .line_height
-                    .and_then(CoreLineHeight::step)
-                    .map(|l| l.name().to_string()),
+                line_height: vrow.line_height.map(|l| l.name().to_string()),
                 boundary: vrow.boundary.map(|b| Boundary {
                     above: b.above.into(),
                     below: b.below.into(),
@@ -2783,6 +2956,7 @@ fn cell_lines(
     ss: usize,
     se: usize,
     hls: &[leaf_core::Highlight],
+    faces: &CoreFaceTable,
 ) -> Vec<TableCellLineView> {
     let mut lines = Vec::new();
     let mut seg: Vec<leaf_core::Glyph> = Vec::new();
@@ -2793,7 +2967,7 @@ fn cell_lines(
         if g.ch == '\n' {
             let start = line_start.unwrap_or(g.src);
             lines.push(TableCellLineView {
-                runs: runs_of(&seg, ss, se, hls),
+                runs: runs_of(&seg, ss, se, hls, faces),
                 start: start as u32,
                 end: g.src as u32,
             });
@@ -2807,7 +2981,7 @@ fn cell_lines(
         }
     }
     lines.push(TableCellLineView {
-        runs: runs_of(&seg, ss, se, hls),
+        runs: runs_of(&seg, ss, se, hls, faces),
         start: line_start.unwrap_or(cell_end) as u32,
         end: cell_end as u32,
     });
@@ -2819,6 +2993,7 @@ fn runs_of(
     ss: usize,
     se: usize,
     hls: &[leaf_core::Highlight],
+    faces: &CoreFaceTable,
 ) -> Vec<Run> {
     // Which highlight (by index) covers a glyph — first by start when several
     // overlap, matching `Doc::highlight_at`. Part of the run key: a highlight
@@ -2844,6 +3019,7 @@ fn runs_of(
                         was_sel,
                         hl.map(|i| &hls[i]),
                         src,
+                        faces,
                     ));
                 }
                 cur = Some((key.0, key.1, key.2, g.src));
@@ -2852,7 +3028,14 @@ fn runs_of(
         }
     }
     if let Some((style, was_sel, hl, src)) = cur {
-        runs.push(make_run(buf, style, was_sel, hl.map(|i| &hls[i]), src));
+        runs.push(make_run(
+            buf,
+            style,
+            was_sel,
+            hl.map(|i| &hls[i]),
+            src,
+            faces,
+        ));
     }
     runs
 }
@@ -2924,6 +3107,7 @@ fn wysiwyg_tables(
     se: usize,
     hls: &[leaf_core::Highlight],
 ) -> Vec<TableView> {
+    let faces = vmap.faces();
     vmap.tables
         .iter()
         .map(|t| TableView {
@@ -2938,7 +3122,15 @@ fn wysiwyg_tables(
                         .cells
                         .iter()
                         .map(|cell| TableCellView {
-                            lines: cell_lines(&cell.glyphs, cell.start, cell.end, ss, se, hls),
+                            lines: cell_lines(
+                                &cell.glyphs,
+                                cell.start,
+                                cell.end,
+                                ss,
+                                se,
+                                hls,
+                                faces,
+                            ),
                             align: align_name(cell.align),
                             start: cell.start as u32,
                             end: cell.end as u32,
@@ -2965,6 +3157,9 @@ fn align_name(a: Alignment) -> String {
 /// with the `[ss, se)` selection carved out as its own run. Backs the source
 /// view, whose caret rides raw byte offsets.
 fn source_rows(source: &str, ss: usize, se: usize) -> Vec<Row> {
+    // Raw text carries no attributed span, so no run of it names a family and
+    // the table it would be read out of is empty.
+    let faces = CoreFaceTable::default();
     let body = LStyle::default();
     let mut rows = Vec::new();
     let mut byte = 0usize;
@@ -2981,14 +3176,35 @@ fn source_rows(source: &str, ss: usize, se: usize) -> Vec<Row> {
         let mut runs = Vec::new();
         if a < b {
             if a > 0 {
-                runs.push(make_run(raw[..a].to_string(), body, false, None, start));
+                runs.push(make_run(
+                    raw[..a].to_string(),
+                    body,
+                    false,
+                    None,
+                    start,
+                    &faces,
+                ));
             }
-            runs.push(make_run(raw[a..b].to_string(), body, true, None, start + a));
+            runs.push(make_run(
+                raw[a..b].to_string(),
+                body,
+                true,
+                None,
+                start + a,
+                &faces,
+            ));
             if b < raw.len() {
-                runs.push(make_run(raw[b..].to_string(), body, false, None, start + b));
+                runs.push(make_run(
+                    raw[b..].to_string(),
+                    body,
+                    false,
+                    None,
+                    start + b,
+                    &faces,
+                ));
             }
         } else if !raw.is_empty() {
-            runs.push(make_run(raw.to_string(), body, false, None, start));
+            runs.push(make_run(raw.to_string(), body, false, None, start, &faces));
         }
 
         rows.push(Row {
@@ -3016,6 +3232,7 @@ fn make_run(
     sel: bool,
     hl: Option<&leaf_core::Highlight>,
     src: usize,
+    faces: &CoreFaceTable,
 ) -> Run {
     Run {
         text,
@@ -3032,18 +3249,22 @@ fn make_run(
         hl_color: hl.and_then(|h| h.color.clone()),
         mark_color: mark_color_name(style.role),
         token: style.token.map(|t| t.name().to_string()),
-        size: style
-            .size
-            .and_then(CoreFontSize::step)
-            .map(|s| s.name().to_string()),
-        font: style
-            .font
-            .and_then(|f| f.generic())
-            .map(|f| f.name().to_string()),
-        text_color: style
-            .color
-            .and_then(CoreTextColor::named)
-            .map(|c| c.name().to_string()),
+        size: style.size.map(|s| s.name().to_string()),
+        font: style.font.and_then(|f| face_name(f, faces)),
+        text_color: style.color.map(|c| c.name().to_string()),
+    }
+}
+
+/// The face a run is set in, spelled — the generic's CSS keyword, or the family
+/// name the map's table holds for the id the glyph carries.
+///
+/// `None` for an id no table knows, which is an id from another map: a frontend
+/// draws that in the theme's body face, and a face that draws as absence names
+/// itself as absence too.
+fn face_name(face: CoreFaceRef, faces: &CoreFaceTable) -> Option<String> {
+    match face {
+        CoreFaceRef::Generic(generic) => Some(generic.name().to_string()),
+        CoreFaceRef::Named(id) => faces.name(id).map(str::to_string),
     }
 }
 
@@ -3315,7 +3536,7 @@ mod tests {
         // opening line, which is no block of the document's.)
         let at = d.source().find("centred").unwrap() as u32;
         d.set_selection_offsets(at, at);
-        let v = d.set_line_spacing(Some(LineSpacing::OneHalf));
+        let v = d.set_line_spacing(Some(LineHeight::Step(LineSpacing::OneHalf)));
         let row = v
             .rows
             .iter()
@@ -3323,7 +3544,10 @@ mod tests {
             .expect("the block");
         assert_eq!(row.align.as_deref(), Some("center"));
         assert_eq!(row.line_height.as_deref(), Some("1.5"));
-        assert_eq!(d.line_spacing_at_caret(), Some(LineSpacing::OneHalf));
+        assert_eq!(
+            d.line_spacing_at_caret(),
+            Some(LineHeight::Step(LineSpacing::OneHalf))
+        );
 
         // `nil` clears, and absence is the theme's default rather than a token
         // meaning "left".
@@ -3334,7 +3558,7 @@ mod tests {
         assert_eq!(d.alignment_at_caret(), None);
         assert_eq!(
             d.line_spacing_at_caret(),
-            Some(LineSpacing::OneHalf),
+            Some(LineHeight::Step(LineSpacing::OneHalf)),
             "clearing one key leaves the other standing"
         );
     }
@@ -3353,11 +3577,11 @@ mod tests {
             let at = d.source().find("serif").unwrap() as u32;
             d.set_selection_offsets(at, at);
         };
-        d.set_font_size(Some(SizeStep::Large));
+        d.set_font_size(Some(FontSize::Step(SizeStep::Large)));
         in_text(&d);
-        d.set_font_family(Some(FontFamily::Serif));
+        d.set_font_family(Some(FontFace::Generic(FontFamily::Serif)));
         in_text(&d);
-        let v = d.set_text_color(Some(MarkColor::Blue));
+        let v = d.set_text_color(Some(TextColor::Named(MarkColor::Blue)));
 
         let styled: Vec<(Option<&str>, Option<&str>, Option<&str>)> = v
             .rows
@@ -3374,9 +3598,18 @@ mod tests {
             .collect();
         assert_eq!(styled, [(Some("large"), Some("serif"), Some("blue"))]);
 
-        assert_eq!(d.font_size_at_caret(), Some(SizeStep::Large));
-        assert_eq!(d.font_family_at_caret(), Some(FontFamily::Serif));
-        assert_eq!(d.text_color_at_caret(), Some(MarkColor::Blue));
+        assert_eq!(
+            d.font_size_at_caret(),
+            Some(FontSize::Step(SizeStep::Large))
+        );
+        assert_eq!(
+            d.font_family_at_caret(),
+            Some(FontFace::Generic(FontFamily::Serif))
+        );
+        assert_eq!(
+            d.text_color_at_caret(),
+            Some(TextColor::Named(MarkColor::Blue))
+        );
 
         // A run's text colour is not a highlight's wash: nothing here is a
         // `mark`, so the palette that colours one reports nothing.
@@ -3387,6 +3620,114 @@ mod tests {
                 .flat_map(|r| r.runs.iter())
                 .all(|r| r.mark_color.is_none())
         );
+    }
+
+    /// The other half of each open type: the value an *Other…* row writes, out
+    /// through the gesture and back through both the query and the run view.
+    /// The view's token is the canonical spelling, because a renderer's theme
+    /// table is keyed by string and parses what it does not find.
+    #[test]
+    fn an_exact_value_crosses_as_its_own_token_and_comes_back_whole() {
+        let d = doc("exact\n");
+        let in_text = |d: &Arc<LeafDoc>| {
+            let at = d.source().find("exact").unwrap() as u32;
+            d.set_selection_offsets(at, at);
+        };
+        d.set_font_size(Some(FontSize::Points(14.0)));
+        in_text(&d);
+        d.set_font_family(Some(FontFace::Named("Garamond".to_string())));
+        in_text(&d);
+        d.set_text_color(Some(TextColor::Rgb {
+            r: 0xc0,
+            g: 0x30,
+            b: 0x30,
+        }));
+        in_text(&d);
+        let v = d.set_line_spacing(Some(LineHeight::Ratio(1.3)));
+
+        let styled: Vec<(Option<&str>, Option<&str>, Option<&str>)> = v
+            .rows
+            .iter()
+            .flat_map(|r| r.runs.iter())
+            .filter(|r| !r.text.trim().is_empty())
+            .map(|r| {
+                (
+                    r.size.as_deref(),
+                    r.font.as_deref(),
+                    r.text_color.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            styled,
+            [(Some("14pt"), Some("Garamond"), Some("#c03030"))],
+            "the value's own spelling, where a name stood before"
+        );
+        let spaced: Vec<&str> = v
+            .rows
+            .iter()
+            .filter_map(|r| r.line_height.as_deref())
+            .collect();
+        assert_eq!(spaced, ["1.3"]);
+
+        assert_eq!(d.font_size_at_caret(), Some(FontSize::Points(14.0)));
+        assert_eq!(
+            d.font_family_at_caret(),
+            Some(FontFace::Named("Garamond".to_string()))
+        );
+        assert_eq!(
+            d.text_color_at_caret(),
+            Some(TextColor::Rgb {
+                r: 0xc0,
+                g: 0x30,
+                b: 0x30
+            })
+        );
+        assert_eq!(d.line_spacing_at_caret(), Some(LineHeight::Ratio(1.3)));
+    }
+
+    /// A value the vocabulary cannot carry is absence, and the gesture clears
+    /// the key rather than writing something the document cannot mean. A field
+    /// that offers a number should say so before it calls — from here a
+    /// refusal and a clear look alike.
+    #[test]
+    fn a_value_outside_the_vocabulary_clears_the_key() {
+        let d = doc("plain\n");
+        let in_text = |d: &Arc<LeafDoc>| {
+            let at = d.source().find("plain").unwrap() as u32;
+            d.set_selection_offsets(at, at);
+        };
+        d.set_font_size(Some(FontSize::Points(14.0)));
+        in_text(&d);
+        assert_eq!(d.font_size_at_caret(), Some(FontSize::Points(14.0)));
+        d.set_font_size(Some(FontSize::Points(700.0)));
+        in_text(&d);
+        assert_eq!(d.font_size_at_caret(), None, "past what a sheet holds");
+
+        // A ratio of 1 is single spacing, which is the theme's and has no
+        // token: the same clearing, and the one an author actually means.
+        d.set_line_spacing(Some(LineHeight::Ratio(1.5)));
+        in_text(&d);
+        assert_eq!(
+            d.line_spacing_at_caret(),
+            Some(LineHeight::Step(LineSpacing::OneHalf)),
+            "a ratio that spells a name is that name"
+        );
+        d.set_line_spacing(Some(LineHeight::Ratio(1.0)));
+        in_text(&d);
+        assert_eq!(d.line_spacing_at_caret(), None);
+
+        // And a name that spells a generic is that generic, whatever its case
+        // — the reading a document's own `data-font` gets.
+        d.set_font_family(Some(FontFace::Named("  Serif ".to_string())));
+        in_text(&d);
+        assert_eq!(
+            d.font_family_at_caret(),
+            Some(FontFace::Generic(FontFamily::Serif))
+        );
+        d.set_font_family(Some(FontFace::Named("   ".to_string())));
+        in_text(&d);
+        assert_eq!(d.font_family_at_caret(), None);
     }
 
     /// A page break crosses as the leaf directive it is — the row a paginating
@@ -3482,7 +3823,7 @@ mod tests {
         };
         // "a" at 10, a `<br>` at 11..15 (the break glyph), "b" at 15; cell 10..16.
         let glyphs = [g('a', 10), g('\n', 11), g('b', 15)];
-        let lines = cell_lines(&glyphs, 10, 16, 0, 0, &[]);
+        let lines = cell_lines(&glyphs, 10, 16, 0, 0, &[], &CoreFaceTable::default());
         assert_eq!(lines.len(), 2, "one break makes two lines");
         assert_eq!(
             (lines[0].start, lines[0].end),
@@ -3501,14 +3842,14 @@ mod tests {
 
         // A trailing break leaves an empty last line homed at the cell's end.
         let trailing = [g('a', 10), g('\n', 11)];
-        let lines = cell_lines(&trailing, 10, 15, 0, 0, &[]);
+        let lines = cell_lines(&trailing, 10, 15, 0, 0, &[], &CoreFaceTable::default());
         assert_eq!(lines.len(), 2);
         assert!(lines[1].runs.is_empty());
         assert_eq!((lines[1].start, lines[1].end), (15, 15));
 
         // No break: one line spanning the whole cell.
         let plain = [g('P', 10), g('e', 11)];
-        let lines = cell_lines(&plain, 10, 12, 0, 0, &[]);
+        let lines = cell_lines(&plain, 10, 12, 0, 0, &[], &CoreFaceTable::default());
         assert_eq!(lines.len(), 1);
         assert_eq!((lines[0].start, lines[0].end), (10, 12));
     }
