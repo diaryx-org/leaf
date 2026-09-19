@@ -127,6 +127,35 @@ export const MARK_COLORS = Object.freeze([
   "red", "orange", "yellow", "green", "blue", "purple", "brown",
 ]);
 
+/**
+ * The presentation vocabulary: the tokens the four non-colour properties take,
+ * in the order a control should offer them. `MARK_COLORS` is the fifth list —
+ * `setTextColor` takes exactly the names `setMarkColor` does, because a
+ * frontend with a red for a highlight has a red for text.
+ *
+ * Each is a *name*, never a measurement, and each is what CSS already calls the
+ * same thing — so `presentation.css` is a transcription of these and a control
+ * built from the list cannot offer a token the document could not carry.
+ * `null` is the vocabulary's absent value everywhere: it clears the key and
+ * returns the property to the theme's own. There is no `left` and no `1`,
+ * because those *are* absence.
+ * @type {readonly string[]}
+ */
+export const ALIGNMENTS = Object.freeze(["center", "right", "justify"]);
+/** The line-spacing multiples, as ratios of the theme's own line height. */
+export const LINE_SPACINGS = Object.freeze(["1.15", "1.5", "2"]);
+/** CSS's `<absolute-size>` keywords, less `medium` — which is absence. */
+export const SIZE_STEPS = Object.freeze([
+  "xx-small", "x-small", "small", "large", "x-large", "xx-large", "xxx-large",
+]);
+/** CSS's generic families, less `fantasy` and `system-ui`, which no author asks for. */
+export const FONT_FAMILIES = Object.freeze(["serif", "sans-serif", "monospace", "cursive"]);
+
+/** The name of the leaf directive a page break is — `Doc::insert_page_break`
+ *  writes `::page-break`, and the row arrives in `DocView.directives` under
+ *  this name whichever format spelled it. */
+const PAGE_BREAK = "page-break";
+
 export class LeafEditor {
   /**
    * Load and instantiate the wasm module. Call once before constructing any
@@ -524,6 +553,65 @@ export class LeafEditor {
   insertMedia(kind, destination, alt = "") {
     this._command((d) => d.insert_media(kind, destination, alt));
   }
+  // ── the presentation vocabulary ───────────────────────────────────────────
+  // Alignment and spacing are the block's; size, face and colour are the
+  // selection's, or the block's with no selection. Each takes one of the
+  // vocabulary's names, or `null` to clear the key and return the property to
+  // the theme's own — and refuses a name outside its list, because a typo and
+  // "clear this" are one keystroke apart and mean opposite things. Dim each
+  // control by its own `capabilities()` flag.
+
+  /** Align the caret's block: `"center"`, `"right"`, `"justify"`, or `null`
+   *  for the theme's default, which is left. */
+  setAlignment(align = null) { this._command((d) => d.set_alignment(align ?? undefined)); }
+  /** Open the caret's block up to a multiple of the theme's line height:
+   *  `"1.15"`, `"1.5"`, `"2"`, or `null` for the theme's own. */
+  setLineSpacing(spacing = null) { this._command((d) => d.set_line_spacing(spacing ?? undefined)); }
+  /** Set the selection a step larger or smaller — one of `SIZE_STEPS`, or
+   *  `null` for the theme's size. With no selection it is the whole block. */
+  setFontSize(size = null) { this._command((d) => d.set_font_size(size ?? undefined)); }
+  /** Set the selection's face — one of `FONT_FAMILIES`, or `null` for the
+   *  theme's body face. `setFontSize`'s peer. */
+  setFontFamily(font = null) { this._command((d) => d.set_font_family(font ?? undefined)); }
+  /**
+   * Colour the selection's *letters* — one of `MARK_COLORS`, or `null` for the
+   * theme's text colour. Not `setMarkColor`, which colours a highlight's
+   * background: same seven names, and the two never collide because a mark is a
+   * mark and a span is a span.
+   */
+  setTextColor(color = null) { this._command((d) => d.set_text_color(color ?? undefined)); }
+  /** Write a page break at the caret — the `::page-break` leaf directive, drawn
+   *  here as a dashed rule and a `break-after: page` when the page is printed. */
+  insertPageBreak() { this._command((d) => d.insert_page_break()); }
+
+  /** The alignment in force at the caret, or null for the theme's default —
+   *  which swatch of an alignment control is lit. */
+  alignmentAtCaret() {
+    this._syncFromDom();
+    return this.doc.alignment_at_caret() ?? null;
+  }
+  /** The line spacing in force at the caret, or null. */
+  lineSpacingAtCaret() {
+    this._syncFromDom();
+    return this.doc.line_spacing_at_caret() ?? null;
+  }
+  /** The size step at the caret, or null for the theme's size. */
+  fontSizeAtCaret() {
+    this._syncFromDom();
+    return this.doc.font_size_at_caret() ?? null;
+  }
+  /** The face at the caret, or null for the theme's body face. */
+  fontFamilyAtCaret() {
+    this._syncFromDom();
+    return this.doc.font_family_at_caret() ?? null;
+  }
+  /** The *text* colour at the caret, or null — not `EditorState.markColor`,
+   *  which is the colour of the highlight around it. */
+  textColorAtCaret() {
+    this._syncFromDom();
+    return this.doc.text_color_at_caret() ?? null;
+  }
+
   tableInsertRow(below = true) { this._command((d) => d.table_insert_row(below)); }
   tableDeleteRow() { this._command((d) => d.table_delete_row()); }
   tableInsertColumn(right = true) { this._command((d) => d.table_insert_column(right)); }
@@ -667,6 +755,15 @@ export class LeafEditor {
       this.tableSpans.push([t.start_row, t.end_row]);
       for (let r = t.start_row + 1; r < t.end_row; r++) covered.add(r);
     }
+    // The one leaf directive this frontend has a drawing for: a page break,
+    // which is a rule across the measure rather than the `⧉ page-break`
+    // placeholder every other directive gets. The narrow half of the host hook
+    // `docs/tasks/web-directive-hook.md` argues for — the vocabulary here is
+    // leaf's own, so it needs no hook to know what the name means.
+    const breakAt = new Set();
+    for (const d of view.directives || []) {
+      if (d.name === PAGE_BREAK) breakAt.add(d.start_row);
+    }
     for (let i = 0; i < view.rows.length; i++) {
       // A filler row core reserved under the media: the element built on the
       // first row already occupies that height in the flow, so drawing these
@@ -696,14 +793,19 @@ export class LeafEditor {
       }
       const row = view.rows[i];
       const media = mediaAt.get(i) || null;
+      const pageBreak = breakAt.has(i);
       const runs = canonicalRuns(row.runs);
-      const key = media ? mediaKey(media, row) : rowKey(row, runs, i, view.rows);
+      const key = pageBreak
+        ? pageBreakKey(row)
+        : media
+          ? mediaKey(media, row)
+          : rowKey(row, runs, i, view.rows);
       let el = take(key);
       if (el) {
         this._adoptRow(el, runs);
         this.rowEls.push(el);
       } else {
-        el = this._rowEl(row, i, view.rows, media, false, runs);
+        el = this._rowEl(row, i, view.rows, media, false, runs, pageBreak);
       }
       keyed.push({ key, el });
     }
@@ -777,14 +879,16 @@ export class LeafEditor {
    * `detached` marks a filler row that is tracked but never inserted (see
    * `render`). `runs` is the row's runs with selection splits merged back
    * (`canonicalRuns`), passed in when the caller has already done it.
+   * `pageBreak` marks the one leaf directive this frontend draws itself.
    */
-  _rowEl(row, i, rows, media = null, detached = false, runs = null) {
+  _rowEl(row, i, rows, media = null, detached = false, runs = null, pageBreak = false) {
     const div = el("div", "leaf-row");
     if (detached) {
       this.rowEls.push(div);
       return div;
     }
     if (media) return this._mediaRowEl(div, media, row);
+    if (pageBreak) return this._pageBreakRowEl(div, row);
     runs ??= canonicalRuns(row.runs);
     // A block-boundary gap row holds no caret. Left editable, the browser's own
     // ArrowUp/ArrowDown lands in its short line box on the way between blocks, so
@@ -793,6 +897,19 @@ export class LeafEditor {
     // native vertical motion step straight over it to the next real line.
     const gap = isBlockGap(row);
     if (gap) div.setAttribute("contenteditable", "false");
+    // The block's half of the presentation vocabulary, on every row the block
+    // emits. The alignment token *is* the CSS class and the spacing token is
+    // the attribute value, so `presentation.css` — the same rules this editor
+    // injects, scoped to its surface — does the aligning with nothing
+    // translated on the way.
+    if (row.align) div.classList.add(row.align);
+    if (row.line_height) div.dataset.lineHeight = row.line_height;
+    // The spacing is a multiple of the *theme's* line height, not of the font
+    // size: opening a paragraph to 1.5 means half again the leading this
+    // editor draws with, whatever that is. So the row's line box is computed
+    // here, in px, the way a heading's already is — an inline style, which
+    // also settles which of it and the stylesheet's unitless ratio wins.
+    const spacing = row.line_height ? Number(row.line_height) || 1 : 1;
     // Sizing the *whole* row from its heading level (not per run) mirrors gpui
     // shaping a heading's line at one size: an inline `code` run inside a
     // heading still reads at the heading's size.
@@ -800,16 +917,18 @@ export class LeafEditor {
       const size = this.theme.fontSize * this.theme.headingScale[Math.min(row.heading, 6) - 1];
       div.classList.add("h");
       div.style.fontSize = size + "px";
-      div.style.lineHeight = size * this._ratio + "px";
+      div.style.lineHeight = size * this._ratio * spacing + "px";
+    } else if (spacing !== 1) {
+      div.style.lineHeight = this.theme.lineHeight * spacing + "px";
     }
     // Keep empty rows occupying their line so the caret has somewhere to sit —
     // except a block-boundary gap row (empty, holds no caret), drawn short so a
     // paragraph break reads as spacing rather than a blank line.
     div.style.minHeight = (row.heading
-      ? this.theme.fontSize * this.theme.headingScale[Math.min(row.heading, 6) - 1] * this._ratio
+      ? this.theme.fontSize * this.theme.headingScale[Math.min(row.heading, 6) - 1] * this._ratio * spacing
       : gap
         ? this.theme.lineHeight * this.theme.blockGapScale * gapScale(row)
-        : this.theme.lineHeight) + "px";
+        : this.theme.lineHeight * spacing) + "px";
 
     if (row.code) {
       div.classList.add("code");
@@ -862,8 +981,8 @@ export class LeafEditor {
     // the row core is addressing is the label glyphs it put there for a surface
     // that can't paint one (`🖼 a leaf`). The two lengths have nothing to do with
     // each other, and every offset that crosses between them goes through this
-    // number. See `mediaCoreLen`.
-    div.dataset.mediaCoreLen = String(
+    // number. See `atomCoreLen`.
+    div.dataset.leafCoreLen = String(
       (row?.runs || []).reduce((n, r) => n + r.text.length, 0)
     );
     div.appendChild(document.createTextNode(ZWSP));
@@ -907,6 +1026,39 @@ export class LeafEditor {
     div.appendChild(node);
 
     div.appendChild(document.createTextNode(ZWSP));
+    this.rowEls.push(div);
+    return div;
+  }
+
+  /**
+   * Build the row for a `::page-break` directive: a dashed rule across the
+   * measure, in place of the `⧉ page-break` placeholder glyphs core draws for a
+   * surface that knows nothing of the name.
+   *
+   * The row holds no caret — it is `contenteditable="false"` with no text at
+   * all, the block-gap row's shape rather than the media row's. A picture is
+   * something the caret sits either side of, because the author may want to
+   * type in front of it or behind it; a page break is a seam between two pages
+   * with nothing on it to edit, and the blank boundary rows on each side of it
+   * are already the caret's homes there. So native ArrowUp/ArrowDown steps
+   * straight across it, in one press, rather than resting on a line with
+   * nothing to stand on.
+   *
+   * The `leafCoreLen` marker is the media row's, for the same reason: what core
+   * counts on this row (`⧉ page-break`, twelve columns) and what is drawn here
+   * (nothing) have nothing to do with each other, and every offset that crosses
+   * between the two goes through that number.
+   */
+  _pageBreakRowEl(div, row) {
+    div.classList.add("leaf-page-break");
+    div.setAttribute("contenteditable", "false");
+    div.dataset.leafCoreLen = String(
+      (row?.runs || []).reduce((n, r) => n + r.text.length, 0)
+    );
+    const rule = el("div", "leaf-page-break-rule");
+    rule.setAttribute("role", "separator");
+    rule.setAttribute("aria-label", "page break");
+    div.appendChild(rule);
     this.rowEls.push(div);
     return div;
   }
@@ -1005,6 +1157,14 @@ export class LeafEditor {
     // per token colours it. A run without one is plain code.
     if (run.token) cls += " leaf-t-" + run.token;
     span.className = cls;
+    // The run's half of the presentation vocabulary. `data-` attributes rather
+    // than classes because each takes a value, which is twig's own
+    // recommendation and what the document itself carries — so the span the
+    // editor draws and the span a published page carries are spelled the same,
+    // and `presentation.css` styles both.
+    if (run.size) span.dataset.size = run.size;
+    if (run.font) span.dataset.font = run.font;
+    if (run.text_color) span.dataset.color = run.text_color;
     span._src = run.src;
     span.textContent = run.text;
     return span;
@@ -1054,7 +1214,24 @@ export class LeafEditor {
 
   /** A collapsed range at a row's UTF-16 offset, or null if that row is gone. */
   _rangeForRow(row, ch) {
-    const rowEl = this.rowEls[row];
+    let rowEl = this.rowEls[row];
+    // A page break holds no caret (see `_pageBreakRowEl`), and core's caret
+    // lands on it the moment one is inserted — `insert_page_break` leaves it at
+    // the end of what it wrote. Put the browser's caret on the first row past
+    // the break that does hold one, so the author carries on typing below the
+    // seam; the next `selectionchange` tells core where that was.
+    if (rowEl && rowEl.classList.contains("leaf-page-break")) {
+      for (let r = row + 1; r < this.rowEls.length; r++) {
+        const next = this.rowEls[r];
+        if (next && next.isConnected && !next.classList.contains("leaf-page-break")
+            && next.getAttribute("contenteditable") !== "false") {
+          rowEl = next;
+          ch = 0;
+          break;
+        }
+      }
+      if (rowEl === this.rowEls[row]) return null; // a break with nothing after it
+    }
     return rowEl && rowEl.isConnected ? rangeAtOffset(rowEl, ch) : null;
   }
 
@@ -1993,7 +2170,10 @@ function sameStyle(a, b) {
     a.hl === b.hl &&
     a.hl_color === b.hl_color &&
     a.mark_color === b.mark_color &&
-    a.token === b.token
+    a.token === b.token &&
+    a.size === b.size &&
+    a.font === b.font &&
+    a.text_color === b.text_color
   );
 }
 
@@ -2010,6 +2190,9 @@ function runKey(run) {
     (run.hl ? "#" + run.hl + ":" + (run.hl_color || "") : "") +
     (run.mark_color ? "=" + run.mark_color : "") +
     (run.token ? "@" + run.token : "") +
+    (run.size ? "~" + run.size : "") +
+    (run.font ? "$" + run.font : "") +
+    (run.text_color ? "%" + run.text_color : "") +
     "\u0001" +
     run.text +
     "\u0002"
@@ -2032,6 +2215,10 @@ function rowKey(row, runs, i, rows) {
     (row.code_lang || "") +
     "|" +
     (b ? (b.above || "") + "/" + (b.below || "") : "") +
+    "|" +
+    (row.align || "") +
+    "|" +
+    (row.line_height || "") +
     "|";
   for (const run of runs) key += runKey(run);
   return key;
@@ -2041,6 +2228,13 @@ function rowKey(row, runs, i, rows) {
 function mediaKey(media, row) {
   const len = (row?.runs || []).reduce((n, r) => n + r.text.length, 0);
   return "m" + len + "|" + JSON.stringify([media.kind, media.src, media.poster, media.alt, media.sources]);
+}
+
+/** `rowKey` for a page break: a rule is a rule, and the only thing that can
+ *  change under it is what core counts the placeholder row as. */
+function pageBreakKey(row) {
+  const len = (row?.runs || []).reduce((n, r) => n + r.text.length, 0);
+  return "pb" + len;
 }
 
 /** `rowKey` for a drawn grid: its shape, alignment, and every cell's runs. */
@@ -2085,28 +2279,28 @@ function rowTextLength(rowEl) {
 }
 
 /**
- * How long core believes a media row is, or null for an ordinary row.
+ * How long core believes a *drawn* row is, or null for an ordinary one.
  *
- * A media row is the one place where the text core addresses and the text the
- * browser renders are unrelated. Core lays out `🖼 alt` — nine columns for a
- * picture with a short caption — and publishes two caret stops on it, one in
- * front of the media and one past it. The renderer draws the real element
- * instead, whose only editable text is a zero-width space on each side. Mapping
- * a column through *that* text put both stops at the same place, so the caret
- * could never be seen after a picture and a step down through a document needed
- * two presses per image to get by.
+ * A row the renderer draws its own element on — block media, a page break — is
+ * where the text core addresses and the text the browser renders are unrelated.
+ * Core lays out `🖼 alt` — nine columns for a picture with a short caption — and
+ * publishes two caret stops on it, one in front of the media and one past it.
+ * The renderer draws the real element instead, whose only editable text is a
+ * zero-width space on each side. Mapping a column through *that* text put both
+ * stops at the same place, so the caret could never be seen after a picture and
+ * a step down through a document needed two presses per image to get by.
  *
  * The row's two ends are the only positions either description agrees on, so
  * that is what the two are mapped through.
  */
-function mediaCoreLen(rowEl) {
-  const raw = rowEl?.dataset?.mediaCoreLen;
+function atomCoreLen(rowEl) {
+  const raw = rowEl?.dataset?.leafCoreLen;
   return raw == null ? null : Number(raw);
 }
 
 /** A collapsed `Range` `off` UTF-16 units into a row's editable text. */
 function rangeAtOffset(rowEl, off) {
-  const coreLen = mediaCoreLen(rowEl);
+  const coreLen = atomCoreLen(rowEl);
   // Core's column, translated to the near or far side of the drawn element —
   // the row's start, or past everything on it.
   if (coreLen != null) off = off <= 0 ? 0 : rowTextLength(rowEl);
@@ -2143,7 +2337,7 @@ function rangeAtOffset(rowEl, off) {
  * glyphs stay correct.
  */
 function offsetTo(rowEl, node, offset) {
-  const coreLen = mediaCoreLen(rowEl);
+  const coreLen = atomCoreLen(rowEl);
   if (coreLen != null) {
     // Anywhere but hard against the row's start counts as past the media, so a
     // single ArrowRight steps over a picture instead of landing in the gap
@@ -2274,8 +2468,33 @@ function ensureStylesheet() {
   if (document.getElementById(STYLE_ID)) return;
   const style = document.createElement("style");
   style.id = STYLE_ID;
-  style.textContent = EDITOR_CSS;
+  // The presentation vocabulary is the same text `presentation.css` ships —
+  // scoped to the editor's own surface, because a host page has its own
+  // `.center` and an editor has no business restyling it. The editor's
+  // corrections to those rules follow, and win by coming last.
+  style.textContent = EDITOR_CSS + scopeCss(PRESENTATION_CSS, ".leaf-editor") + EDITOR_PRESENTATION_CSS;
   document.head.appendChild(style);
+}
+
+/**
+ * The same rules, confined to a prefix: every selector in `css` gets `prefix `
+ * in front of it, so `.center` becomes `.leaf-editor .center`.
+ *
+ * Deliberately simple, and safe only for the shape `PRESENTATION_CSS` is in —
+ * flat rules, one selector list each, no at-rules and no nesting. Comments are
+ * dropped first so a brace inside one cannot be read as a rule.
+ */
+function scopeCss(css, prefix) {
+  return css
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/([^{}]+)\{/g, (_, selectors) =>
+      selectors
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .map((s) => prefix + " " + s)
+        .join(", ") + " {"
+    );
 }
 
 const EDITOR_CSS = `
@@ -2299,6 +2518,18 @@ const EDITOR_CSS = `
   --leaf-mk-blue: #c4dcf7;
   --leaf-mk-purple: #e0cdf7;
   --leaf-mk-brown: #e4d2b2;
+  /* The same seven names as *ink* — what a run whose data-color says so is
+     painted. The wash above is a background and pale by design; these are
+     letters, so they are the deeper version of each hue, the one the syntax
+     palette below already sets code in. presentation.css names the same
+     properties with a mid-tone fallback, for a page that defines neither. */
+  --leaf-red: #c02617;
+  --leaf-orange: #b45309;
+  --leaf-yellow: #8f7000;
+  --leaf-green: #0a7040;
+  --leaf-blue: #1d68c7;
+  --leaf-purple: #9526a0;
+  --leaf-brown: #8a5a2b;
   --leaf-code-fg: #b5305f;
   --leaf-code-bg: #f1f2f4;
   --leaf-code-border: #dfe2e8;
@@ -2343,6 +2574,15 @@ const EDITOR_CSS = `
     --leaf-mk-blue: #93b8dd;
     --leaf-mk-purple: #bda3dc;
     --leaf-mk-brown: #c0a87e;
+    /* The inks lighten as the page darkens, for the reason the washes deepen:
+       the same seven names, legible against near-black. */
+    --leaf-red: #f7768e;
+    --leaf-orange: #e09c50;
+    --leaf-yellow: #e0af68;
+    --leaf-green: #9ece6a;
+    --leaf-blue: #7aa2f7;
+    --leaf-purple: #c678dd;
+    --leaf-brown: #c0a87e;
     --leaf-code-fg: #e59ac0;
     --leaf-code-bg: #2a2f3a;
     --leaf-code-border: #3a4150;
@@ -2522,5 +2762,97 @@ img.leaf-media, video.leaf-media { max-height: 60vh; }
 .leaf-measure {
   position: absolute; visibility: hidden; white-space: pre; top: -9999px; left: 0;
   font-family: var(--leaf-font); font-size: var(--leaf-size);
+}
+`;
+
+/**
+ * leaf's presentation vocabulary as CSS — the same rules as
+ * [`presentation.css`](./presentation.css), which is the file a page built from
+ * a leaf document links to, and which the test page holds level with this
+ * constant so the two cannot drift.
+ *
+ * Exported because a host that renders leaf documents *outside* the editor (a
+ * preview pane, a print sheet) needs these rules and should not have to fetch a
+ * file to get them. The editor injects them scoped to its own surface; on a
+ * published page they are unscoped, which is the whole point of them.
+ */
+export const PRESENTATION_CSS = `
+.center  { text-align: center }
+.right   { text-align: right }
+.justify { text-align: justify }
+
+[data-line-height="1.15"] { line-height: 1.15 }
+[data-line-height="1.5"]  { line-height: 1.5 }
+[data-line-height="2"]    { line-height: 2 }
+
+[data-size="xx-small"]  { font-size: xx-small }
+[data-size="x-small"]   { font-size: x-small }
+[data-size="small"]     { font-size: small }
+[data-size="large"]     { font-size: large }
+[data-size="x-large"]   { font-size: x-large }
+[data-size="xx-large"]  { font-size: xx-large }
+[data-size="xxx-large"] { font-size: xxx-large }
+
+[data-font="serif"]      { font-family: serif }
+[data-font="sans-serif"] { font-family: sans-serif }
+[data-font="monospace"]  { font-family: monospace }
+[data-font="cursive"]    { font-family: cursive }
+
+[data-color="red"]    { color: var(--leaf-red, #d24b3f) }
+[data-color="orange"] { color: var(--leaf-orange, #b96c12) }
+[data-color="yellow"] { color: var(--leaf-yellow, #9a7b12) }
+[data-color="green"]  { color: var(--leaf-green, #2e8b57) }
+[data-color="blue"]   { color: var(--leaf-blue, #3d7fd6) }
+[data-color="purple"] { color: var(--leaf-purple, #a855c9) }
+[data-color="brown"]  { color: var(--leaf-brown, #a9713c) }
+`;
+
+/**
+ * What the editor says about the vocabulary that a published page does not.
+ * Injected after the scoped copy of `PRESENTATION_CSS`, so these win.
+ *
+ * Two corrections and one drawing. The size keywords are *absolute*: on a page
+ * whose headings are the browser's own that is exactly right, but here a
+ * heading's size is set on the row, and a large keyword on a run inside it would
+ * drop the run to 18px instead of making it a step larger than the heading. So
+ * the same ramp is restated as multiples of the text around it, in the ratios
+ * CSS's own user-agent stylesheet gives those very words — 13/16 for `small`,
+ * 18/16 for `large`, and so on, which is what makes the two agree on a page
+ * whose body is 16px. Line spacing is the other: the tokens are multiples of the *theme's*
+ * line height, a number only this editor knows, so the row's line box is
+ * computed in `_rowEl` and arrives as an inline style; the unitless rule
+ * underneath is a published page's answer and is overridden by that. And a page
+ * break is a rule across the measure, which only a surface that is not itself
+ * paginated has to draw.
+ */
+const EDITOR_PRESENTATION_CSS = `
+.leaf-editor [data-size="xx-small"]  { font-size: 0.5625em }
+.leaf-editor [data-size="x-small"]   { font-size: 0.625em }
+.leaf-editor [data-size="small"]     { font-size: 0.8125em }
+.leaf-editor [data-size="large"]     { font-size: 1.125em }
+.leaf-editor [data-size="x-large"]   { font-size: 1.5em }
+.leaf-editor [data-size="xx-large"]  { font-size: 2em }
+.leaf-editor [data-size="xxx-large"] { font-size: 3em }
+
+/* A page break: the seam between two pages, on a surface that has only one. The
+   row is an atom holding no caret (see _pageBreakRowEl), so it is drawn rather
+   than written — a dashed hairline across the measure, which is what
+   leaf-swift's continuous view draws in the same place. */
+.leaf-page-break {
+  white-space: normal;
+  padding: 4px 0;
+  line-height: 0;
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
+}
+.leaf-page-break-rule {
+  border-top: 1px dashed var(--leaf-muted);
+  height: 0;
+}
+/* Printed, it is the thing it stands for. */
+@media print {
+  .leaf-page-break { break-after: page; page-break-after: always; }
+  .leaf-page-break-rule { border-top: 0; }
 }
 `;

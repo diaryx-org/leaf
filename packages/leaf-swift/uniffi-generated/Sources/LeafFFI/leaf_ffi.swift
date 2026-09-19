@@ -537,6 +537,16 @@ fileprivate struct FfiConverterString: FfiConverter {
 public protocol LeafDocProtocol : AnyObject {
     
     /**
+     * The alignment in force at the caret, or `nil` for the theme's default —
+     * which segment of an alignment control is lit.
+     *
+     * Read off the nearest node that names one: the caret's block, and the
+     * `div`s around it after that, so the control follows the caret into a
+     * centred `<div>`.
+     */
+    func alignmentAtCaret()  -> Align?
+    
+    /**
      * The selection's fixed end (equals the caret when there's no selection).
      */
     func anchorOffset()  -> UInt32
@@ -635,6 +645,20 @@ public protocol LeafDocProtocol : AnyObject {
      * The last caret stop in the document — `UITextInput.endOfDocument`.
      */
     func docEndOffset()  -> UInt32
+    
+    /**
+     * The face in force at the caret, or `nil` for the theme's body face.
+     * [`font_size_at_caret`](Self::font_size_at_caret)'s peer.
+     */
+    func fontFamilyAtCaret()  -> FontFamily?
+    
+    /**
+     * The size in force at the caret, or `nil` for the theme's own — which
+     * entry a size menu shows ticked. Run-level, so the chain starts one node
+     * deeper: the attributed span the caret stands in, then its block, then the
+     * `div`s around it, the nearest winning.
+     */
+    func fontSizeAtCaret()  -> SizeStep?
     
     /**
      * The footnote reference at byte offset `off`, resolved to the note it
@@ -737,6 +761,19 @@ public protocol LeafDocProtocol : AnyObject {
     func insertMedia(kind: MediaKind, destination: String, alt: String)  -> DocView
     
     /**
+     * Insert a page break at the caret — a leaf directive with no label, placed
+     * exactly as [`insert_thematic_break`](Self::insert_thematic_break) places a
+     * rule, a selection replaced by it and a bare paragraph parted at the caret
+     * first.
+     *
+     * A frontend that paginates opens a page at the row's directive mark and
+     * gives the row no height; one that does not draws the `⧉ page-break`
+     * placeholder every leaf directive gets. Gate on
+     * [`Capabilities::page_break`].
+     */
+    func insertPageBreak()  -> DocView
+    
+    /**
      * Insert a fresh table at the caret — one header row, `rows` empty body
      * rows, `cols` columns — and leave the caret in its first header cell.
      * The one table verb that needs no table under the caret; gate it on
@@ -758,6 +795,13 @@ public protocol LeafDocProtocol : AnyObject {
      * The current soft-break flow preference (see [`LineFlow`]).
      */
     func lineFlow()  -> LineFlow
+    
+    /**
+     * The line spacing in force at the caret, or `nil` for the theme's own —
+     * which entry a spacing menu shows ticked.
+     * [`alignment_at_caret`](Self::alignment_at_caret)'s peer.
+     */
+    func lineSpacingAtCaret()  -> LineSpacing?
     
     /**
      * The destination of the link at byte offset `off` —
@@ -937,6 +981,16 @@ public protocol LeafDocProtocol : AnyObject {
     func selectionQuote(context: UInt32)  -> SelectionQuote?
     
     /**
+     * Align the caret's block, or return it to the theme's default with `nil`.
+     *
+     * A block property, so it is the caret's *block* whatever is selected: a
+     * line belongs to a block, and "centre this" with three words selected
+     * means the paragraph, not the words. Other `class` tokens on the block are
+     * kept. Gate on [`Capabilities::alignment`].
+     */
+    func setAlignment(align: Align?)  -> DocView
+    
+    /**
      * Tell core whether the host is in a dark appearance, so a `<picture>`'s
      * `prefers-color-scheme` `<source>`s resolve to the right banner. Call it
      * from `viewDidChangeEffectiveAppearance` (AppKit) or
@@ -946,6 +1000,25 @@ public protocol LeafDocProtocol : AnyObject {
      * URLs, and a renderer keying its views by `src` tears nothing down.
      */
     func setDarkAppearance(dark: Bool)  -> DocView
+    
+    /**
+     * Set the face of the selected run, or of the caret's whole block.
+     * [`set_font_size`](Self::set_font_size)'s peer. Gate on
+     * [`Capabilities::font_family`].
+     */
+    func setFontFamily(font: FontFamily?)  -> DocView
+    
+    /**
+     * Set the size of the selected run, or of the caret's whole block when
+     * nothing is selected; `nil` returns it to the theme's own size.
+     *
+     * Size, face and colour are the *run's*, and the block's when no run is
+     * chosen — so "make this paragraph larger" is a press with the caret in it
+     * rather than a select-all first. With a selection the range is wrapped in
+     * an attributed span, or the span it already lies in is re-styled, never
+     * nested. Gate on [`Capabilities::font_size`].
+     */
+    func setFontSize(size: SizeStep?)  -> DocView
     
     /**
      * Toggle the current block to a heading of `level` (1–6); toggling the
@@ -966,6 +1039,13 @@ public protocol LeafDocProtocol : AnyObject {
      * immediately, laying preserved soft breaks out as their own rows.
      */
     func setLineFlow(mode: LineFlow)  -> DocView
+    
+    /**
+     * Set the line spacing of the caret's block, or return it to the theme's
+     * with `nil`. [`set_alignment`](Self::set_alignment)'s peer in every
+     * respect but the key. Gate on [`Capabilities::line_spacing`].
+     */
+    func setLineSpacing(spacing: LineSpacing?)  -> DocView
     
     /**
      * Colour the highlight at the caret, or clear its colour with `None`.
@@ -1025,6 +1105,16 @@ public protocol LeafDocProtocol : AnyObject {
      * `UITextInput.selectedTextRange` and handle dragging.
      */
     func setSelectionOffsets(anchor: UInt32, focus: UInt32)  -> DocView
+    
+    /**
+     * Set the *text* colour of the selected run, or of the caret's whole block.
+     * [`set_font_size`](Self::set_font_size)'s peer, and **not**
+     * [`set_mark_color`](Self::set_mark_color): that one colours a highlight's
+     * background and needs a highlight to colour, this one paints the letters
+     * and needs nothing. They share the seven names on purpose. Gate on
+     * [`Capabilities::text_color`].
+     */
+    func setTextColor(color: MarkColor?)  -> DocView
     
     /**
      * Switch to **unwrapped** layout — one visual row per block, no column wrapping —
@@ -1097,6 +1187,15 @@ public protocol LeafDocProtocol : AnyObject {
      * for a plain list item or no item at all. Drives a toolbar's checked state.
      */
     func taskCheckedAtCaret()  -> Bool?
+    
+    /**
+     * The *text* colour in force at the caret, or `nil` for the theme's — which
+     * swatch a text-colour control marks as the current one.
+     * [`font_size_at_caret`](Self::font_size_at_caret)'s peer, and not
+     * [`DocView::mark_color`], which reads a highlight's background off a
+     * `mark` node the caret is standing in.
+     */
+    func textColorAtCaret()  -> MarkColor?
     
     /**
      * The visible text between two offsets — `text(in:)`. In the WYSIWYG
@@ -1249,6 +1348,21 @@ public convenience init(source: String, format: String)throws  {
 
     
 
+    
+    /**
+     * The alignment in force at the caret, or `nil` for the theme's default —
+     * which segment of an alignment control is lit.
+     *
+     * Read off the nearest node that names one: the caret's block, and the
+     * `div`s around it after that, so the control follows the caret into a
+     * centred `<div>`.
+     */
+open func alignmentAtCaret() -> Align? {
+    return try!  FfiConverterOptionTypeAlign.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_alignment_at_caret(self.uniffiClonePointer(),$0
+    )
+})
+}
     
     /**
      * The selection's fixed end (equals the caret when there's no selection).
@@ -1445,6 +1559,30 @@ open func docEndOffset() -> UInt32 {
 }
     
     /**
+     * The face in force at the caret, or `nil` for the theme's body face.
+     * [`font_size_at_caret`](Self::font_size_at_caret)'s peer.
+     */
+open func fontFamilyAtCaret() -> FontFamily? {
+    return try!  FfiConverterOptionTypeFontFamily.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_font_family_at_caret(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+    /**
+     * The size in force at the caret, or `nil` for the theme's own — which
+     * entry a size menu shows ticked. Run-level, so the chain starts one node
+     * deeper: the attributed span the caret stands in, then its block, then the
+     * `div`s around it, the nearest winning.
+     */
+open func fontSizeAtCaret() -> SizeStep? {
+    return try!  FfiConverterOptionTypeSizeStep.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_font_size_at_caret(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+    /**
      * The footnote reference at byte offset `off`, resolved to the note it
      * names — [`footnote_at_caret`](Self::footnote_at_caret) for a place the
      * caret isn't.
@@ -1613,6 +1751,24 @@ open func insertMedia(kind: MediaKind, destination: String, alt: String) -> DocV
 }
     
     /**
+     * Insert a page break at the caret — a leaf directive with no label, placed
+     * exactly as [`insert_thematic_break`](Self::insert_thematic_break) places a
+     * rule, a selection replaced by it and a bare paragraph parted at the caret
+     * first.
+     *
+     * A frontend that paginates opens a page at the row's directive mark and
+     * gives the row no height; one that does not draws the `⧉ page-break`
+     * placeholder every leaf directive gets. Gate on
+     * [`Capabilities::page_break`].
+     */
+open func insertPageBreak() -> DocView {
+    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_insert_page_break(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+    /**
      * Insert a fresh table at the caret — one header row, `rows` empty body
      * rows, `cols` columns — and leave the caret in its first header cell.
      * The one table verb that needs no table under the caret; gate it on
@@ -1648,6 +1804,18 @@ open func insertThematicBreak() -> DocView {
 open func lineFlow() -> LineFlow {
     return try!  FfiConverterTypeLineFlow.lift(try! rustCall() {
     uniffi_leaf_ffi_fn_method_leafdoc_line_flow(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+    /**
+     * The line spacing in force at the caret, or `nil` for the theme's own —
+     * which entry a spacing menu shows ticked.
+     * [`alignment_at_caret`](Self::alignment_at_caret)'s peer.
+     */
+open func lineSpacingAtCaret() -> LineSpacing? {
+    return try!  FfiConverterOptionTypeLineSpacing.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_line_spacing_at_caret(self.uniffiClonePointer(),$0
     )
 })
 }
@@ -2026,6 +2194,22 @@ open func selectionQuote(context: UInt32) -> SelectionQuote? {
 }
     
     /**
+     * Align the caret's block, or return it to the theme's default with `nil`.
+     *
+     * A block property, so it is the caret's *block* whatever is selected: a
+     * line belongs to a block, and "centre this" with three words selected
+     * means the paragraph, not the words. Other `class` tokens on the block are
+     * kept. Gate on [`Capabilities::alignment`].
+     */
+open func setAlignment(align: Align?) -> DocView {
+    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_set_alignment(self.uniffiClonePointer(),
+        FfiConverterOptionTypeAlign.lower(align),$0
+    )
+})
+}
+    
+    /**
      * Tell core whether the host is in a dark appearance, so a `<picture>`'s
      * `prefers-color-scheme` `<source>`s resolve to the right banner. Call it
      * from `viewDidChangeEffectiveAppearance` (AppKit) or
@@ -2038,6 +2222,37 @@ open func setDarkAppearance(dark: Bool) -> DocView {
     return try!  FfiConverterTypeDocView.lift(try! rustCall() {
     uniffi_leaf_ffi_fn_method_leafdoc_set_dark_appearance(self.uniffiClonePointer(),
         FfiConverterBool.lower(dark),$0
+    )
+})
+}
+    
+    /**
+     * Set the face of the selected run, or of the caret's whole block.
+     * [`set_font_size`](Self::set_font_size)'s peer. Gate on
+     * [`Capabilities::font_family`].
+     */
+open func setFontFamily(font: FontFamily?) -> DocView {
+    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_set_font_family(self.uniffiClonePointer(),
+        FfiConverterOptionTypeFontFamily.lower(font),$0
+    )
+})
+}
+    
+    /**
+     * Set the size of the selected run, or of the caret's whole block when
+     * nothing is selected; `nil` returns it to the theme's own size.
+     *
+     * Size, face and colour are the *run's*, and the block's when no run is
+     * chosen — so "make this paragraph larger" is a press with the caret in it
+     * rather than a select-all first. With a selection the range is wrapped in
+     * an attributed span, or the span it already lies in is re-styled, never
+     * nested. Gate on [`Capabilities::font_size`].
+     */
+open func setFontSize(size: SizeStep?) -> DocView {
+    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_set_font_size(self.uniffiClonePointer(),
+        FfiConverterOptionTypeSizeStep.lower(size),$0
     )
 })
 }
@@ -2076,6 +2291,19 @@ open func setLineFlow(mode: LineFlow) -> DocView {
     return try!  FfiConverterTypeDocView.lift(try! rustCall() {
     uniffi_leaf_ffi_fn_method_leafdoc_set_line_flow(self.uniffiClonePointer(),
         FfiConverterTypeLineFlow.lower(mode),$0
+    )
+})
+}
+    
+    /**
+     * Set the line spacing of the caret's block, or return it to the theme's
+     * with `nil`. [`set_alignment`](Self::set_alignment)'s peer in every
+     * respect but the key. Gate on [`Capabilities::line_spacing`].
+     */
+open func setLineSpacing(spacing: LineSpacing?) -> DocView {
+    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_set_line_spacing(self.uniffiClonePointer(),
+        FfiConverterOptionTypeLineSpacing.lower(spacing),$0
     )
 })
 }
@@ -2180,6 +2408,22 @@ open func setSelectionOffsets(anchor: UInt32, focus: UInt32) -> DocView {
     uniffi_leaf_ffi_fn_method_leafdoc_set_selection_offsets(self.uniffiClonePointer(),
         FfiConverterUInt32.lower(anchor),
         FfiConverterUInt32.lower(focus),$0
+    )
+})
+}
+    
+    /**
+     * Set the *text* colour of the selected run, or of the caret's whole block.
+     * [`set_font_size`](Self::set_font_size)'s peer, and **not**
+     * [`set_mark_color`](Self::set_mark_color): that one colours a highlight's
+     * background and needs a highlight to colour, this one paints the letters
+     * and needs nothing. They share the seven names on purpose. Gate on
+     * [`Capabilities::text_color`].
+     */
+open func setTextColor(color: MarkColor?) -> DocView {
+    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_set_text_color(self.uniffiClonePointer(),
+        FfiConverterOptionTypeMarkColor.lower(color),$0
     )
 })
 }
@@ -2326,6 +2570,20 @@ open func tableSetAlignment(alignment: TableAlignment) -> DocView {
 open func taskCheckedAtCaret() -> Bool? {
     return try!  FfiConverterOptionBool.lift(try! rustCall() {
     uniffi_leaf_ffi_fn_method_leafdoc_task_checked_at_caret(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+    /**
+     * The *text* colour in force at the caret, or `nil` for the theme's — which
+     * swatch a text-colour control marks as the current one.
+     * [`font_size_at_caret`](Self::font_size_at_caret)'s peer, and not
+     * [`DocView::mark_color`], which reads a highlight's background off a
+     * `mark` node the caret is standing in.
+     */
+open func textColorAtCaret() -> MarkColor? {
+    return try!  FfiConverterOptionTypeMarkColor.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_text_color_at_caret(self.uniffiClonePointer(),$0
     )
 })
 }
@@ -2691,6 +2949,45 @@ public struct Capabilities {
      * Shift+Return inside a cell — [`LeafDoc::cell_line_break`].
      */
     public var cellLineBreak: Bool
+    /**
+     * The alignment control — [`LeafDoc::set_alignment`]. Every format leaf
+     * opens but XML spells a block's attributes.
+     */
+    public var alignment: Bool
+    /**
+     * The line-spacing menu — [`LeafDoc::set_line_spacing`]. The same gesture
+     * as [`alignment`](Self::alignment) and so the same answer, and its own
+     * flag because a toolbar dims controls one at a time.
+     */
+    public var lineSpacing: Bool
+    /**
+     * The size menu — [`LeafDoc::set_font_size`]. **Narrower than the block
+     * pair**: it wraps a selection in an attributed span, which AsciiDoc has no
+     * slot for, so this is `false` there while [`alignment`](Self::alignment) is
+     * `true`. The block-level form of the same property — the caret in a
+     * paragraph, nothing selected — still works, which is why the flag
+     * describes the control rather than the caret.
+     */
+    public var fontSize: Bool
+    /**
+     * The face menu — [`LeafDoc::set_font_family`]. A span, as
+     * [`font_size`](Self::font_size) is.
+     */
+    public var fontFamily: Bool
+    /**
+     * The text-colour swatches — [`LeafDoc::set_text_color`]. A span again, and
+     * not to be confused with [`mark_color`](Self::mark_color): that is a
+     * highlight's background and rides the `mark` node, this is a run's
+     * foreground and rides an attributed span.
+     */
+    public var textColor: Bool
+    /**
+     * The page-break button — [`LeafDoc::insert_page_break`]. Markdown and djot
+     * and no others, though twig spells the gesture in HTML and AsciiDoc too:
+     * the flag describes what leaf can *show*, and the walker draws neither of
+     * those spellings yet.
+     */
+    public var pageBreak: Bool
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -2725,7 +3022,40 @@ public struct Capabilities {
          */table: Bool, 
         /**
          * Shift+Return inside a cell — [`LeafDoc::cell_line_break`].
-         */cellLineBreak: Bool) {
+         */cellLineBreak: Bool, 
+        /**
+         * The alignment control — [`LeafDoc::set_alignment`]. Every format leaf
+         * opens but XML spells a block's attributes.
+         */alignment: Bool, 
+        /**
+         * The line-spacing menu — [`LeafDoc::set_line_spacing`]. The same gesture
+         * as [`alignment`](Self::alignment) and so the same answer, and its own
+         * flag because a toolbar dims controls one at a time.
+         */lineSpacing: Bool, 
+        /**
+         * The size menu — [`LeafDoc::set_font_size`]. **Narrower than the block
+         * pair**: it wraps a selection in an attributed span, which AsciiDoc has no
+         * slot for, so this is `false` there while [`alignment`](Self::alignment) is
+         * `true`. The block-level form of the same property — the caret in a
+         * paragraph, nothing selected — still works, which is why the flag
+         * describes the control rather than the caret.
+         */fontSize: Bool, 
+        /**
+         * The face menu — [`LeafDoc::set_font_family`]. A span, as
+         * [`font_size`](Self::font_size) is.
+         */fontFamily: Bool, 
+        /**
+         * The text-colour swatches — [`LeafDoc::set_text_color`]. A span again, and
+         * not to be confused with [`mark_color`](Self::mark_color): that is a
+         * highlight's background and rides the `mark` node, this is a run's
+         * foreground and rides an attributed span.
+         */textColor: Bool, 
+        /**
+         * The page-break button — [`LeafDoc::insert_page_break`]. Markdown and djot
+         * and no others, though twig spells the gesture in HTML and AsciiDoc too:
+         * the flag describes what leaf can *show*, and the walker draws neither of
+         * those spellings yet.
+         */pageBreak: Bool) {
         self.bold = bold
         self.italic = italic
         self.code = code
@@ -2747,6 +3077,12 @@ public struct Capabilities {
         self.codeLanguage = codeLanguage
         self.table = table
         self.cellLineBreak = cellLineBreak
+        self.alignment = alignment
+        self.lineSpacing = lineSpacing
+        self.fontSize = fontSize
+        self.fontFamily = fontFamily
+        self.textColor = textColor
+        self.pageBreak = pageBreak
     }
 }
 
@@ -2817,6 +3153,24 @@ extension Capabilities: Equatable, Hashable {
         if lhs.cellLineBreak != rhs.cellLineBreak {
             return false
         }
+        if lhs.alignment != rhs.alignment {
+            return false
+        }
+        if lhs.lineSpacing != rhs.lineSpacing {
+            return false
+        }
+        if lhs.fontSize != rhs.fontSize {
+            return false
+        }
+        if lhs.fontFamily != rhs.fontFamily {
+            return false
+        }
+        if lhs.textColor != rhs.textColor {
+            return false
+        }
+        if lhs.pageBreak != rhs.pageBreak {
+            return false
+        }
         return true
     }
 
@@ -2842,6 +3196,12 @@ extension Capabilities: Equatable, Hashable {
         hasher.combine(codeLanguage)
         hasher.combine(table)
         hasher.combine(cellLineBreak)
+        hasher.combine(alignment)
+        hasher.combine(lineSpacing)
+        hasher.combine(fontSize)
+        hasher.combine(fontFamily)
+        hasher.combine(textColor)
+        hasher.combine(pageBreak)
     }
 }
 
@@ -2873,7 +3233,13 @@ public struct FfiConverterTypeCapabilities: FfiConverterRustBuffer {
                 footnote: FfiConverterBool.read(from: &buf), 
                 codeLanguage: FfiConverterBool.read(from: &buf), 
                 table: FfiConverterBool.read(from: &buf), 
-                cellLineBreak: FfiConverterBool.read(from: &buf)
+                cellLineBreak: FfiConverterBool.read(from: &buf), 
+                alignment: FfiConverterBool.read(from: &buf), 
+                lineSpacing: FfiConverterBool.read(from: &buf), 
+                fontSize: FfiConverterBool.read(from: &buf), 
+                fontFamily: FfiConverterBool.read(from: &buf), 
+                textColor: FfiConverterBool.read(from: &buf), 
+                pageBreak: FfiConverterBool.read(from: &buf)
         )
     }
 
@@ -2899,6 +3265,12 @@ public struct FfiConverterTypeCapabilities: FfiConverterRustBuffer {
         FfiConverterBool.write(value.codeLanguage, into: &buf)
         FfiConverterBool.write(value.table, into: &buf)
         FfiConverterBool.write(value.cellLineBreak, into: &buf)
+        FfiConverterBool.write(value.alignment, into: &buf)
+        FfiConverterBool.write(value.lineSpacing, into: &buf)
+        FfiConverterBool.write(value.fontSize, into: &buf)
+        FfiConverterBool.write(value.fontFamily, into: &buf)
+        FfiConverterBool.write(value.textColor, into: &buf)
+        FfiConverterBool.write(value.pageBreak, into: &buf)
     }
 }
 
@@ -4335,6 +4707,29 @@ public struct Row {
      */
     public var heading: UInt8?
     /**
+     * How this row's block is aligned across the measure — `"center"`,
+     * `"right"`, `"justify"` — and `None` for the theme's default, which is
+     * left. On every row the block emits.
+     *
+     * A *row* fact and not a run one for [`heading`](Self::heading)'s reason,
+     * and more sharply: alignment is a property of the line, not of the letters
+     * on it, so an empty paragraph the author has just centred carries it with
+     * no run to hang it on. A renderer sets its paragraph style's alignment
+     * from it. See [`leaf_core::VRow::align`].
+     */
+    public var align: String?
+    /**
+     * How far apart this row's block sets its lines, as a multiple of the
+     * theme's own line height — `"1.15"`, `"1.5"`, `"2"` — and `None` for the
+     * theme's spacing. On every row the block emits.
+     *
+     * The ratio is the name read as arithmetic (`leaf_core::LineSpacing::ratio`),
+     * so a renderer laying rows out in points multiplies its line height by it;
+     * one drawing a row per terminal line ignores it, the way it ignores a
+     * heading's size. See [`leaf_core::VRow::line_height`].
+     */
+    public var lineHeight: String?
+    /**
      * What this row divides, on the blank rows a block boundary is drawn with
      * and `None` everywhere else — so `boundary != nil` is exactly "this row is
      * a drawn block boundary". A frontend spaces a boundary by the pair it
@@ -4373,6 +4768,27 @@ public struct Row {
          * inline `` `code` `` run inside a heading still reads at the heading's size.
          */heading: UInt8?, 
         /**
+         * How this row's block is aligned across the measure — `"center"`,
+         * `"right"`, `"justify"` — and `None` for the theme's default, which is
+         * left. On every row the block emits.
+         *
+         * A *row* fact and not a run one for [`heading`](Self::heading)'s reason,
+         * and more sharply: alignment is a property of the line, not of the letters
+         * on it, so an empty paragraph the author has just centred carries it with
+         * no run to hang it on. A renderer sets its paragraph style's alignment
+         * from it. See [`leaf_core::VRow::align`].
+         */align: String?, 
+        /**
+         * How far apart this row's block sets its lines, as a multiple of the
+         * theme's own line height — `"1.15"`, `"1.5"`, `"2"` — and `None` for the
+         * theme's spacing. On every row the block emits.
+         *
+         * The ratio is the name read as arithmetic (`leaf_core::LineSpacing::ratio`),
+         * so a renderer laying rows out in points multiplies its line height by it;
+         * one drawing a row per terminal line ignores it, the way it ignores a
+         * heading's size. See [`leaf_core::VRow::line_height`].
+         */lineHeight: String?, 
+        /**
          * What this row divides, on the blank rows a block boundary is drawn with
          * and `None` everywhere else — so `boundary != nil` is exactly "this row is
          * a drawn block boundary". A frontend spaces a boundary by the pair it
@@ -4387,6 +4803,8 @@ public struct Row {
         self.directive = directive
         self.directiveLabel = directiveLabel
         self.heading = heading
+        self.align = align
+        self.lineHeight = lineHeight
         self.boundary = boundary
     }
 }
@@ -4416,6 +4834,12 @@ extension Row: Equatable, Hashable {
         if lhs.heading != rhs.heading {
             return false
         }
+        if lhs.align != rhs.align {
+            return false
+        }
+        if lhs.lineHeight != rhs.lineHeight {
+            return false
+        }
         if lhs.boundary != rhs.boundary {
             return false
         }
@@ -4430,6 +4854,8 @@ extension Row: Equatable, Hashable {
         hasher.combine(directive)
         hasher.combine(directiveLabel)
         hasher.combine(heading)
+        hasher.combine(align)
+        hasher.combine(lineHeight)
         hasher.combine(boundary)
     }
 }
@@ -4449,6 +4875,8 @@ public struct FfiConverterTypeRow: FfiConverterRustBuffer {
                 directive: FfiConverterBool.read(from: &buf), 
                 directiveLabel: FfiConverterOptionString.read(from: &buf), 
                 heading: FfiConverterOptionUInt8.read(from: &buf), 
+                align: FfiConverterOptionString.read(from: &buf), 
+                lineHeight: FfiConverterOptionString.read(from: &buf), 
                 boundary: FfiConverterOptionTypeBoundary.read(from: &buf)
         )
     }
@@ -4461,6 +4889,8 @@ public struct FfiConverterTypeRow: FfiConverterRustBuffer {
         FfiConverterBool.write(value.directive, into: &buf)
         FfiConverterOptionString.write(value.directiveLabel, into: &buf)
         FfiConverterOptionUInt8.write(value.heading, into: &buf)
+        FfiConverterOptionString.write(value.align, into: &buf)
+        FfiConverterOptionString.write(value.lineHeight, into: &buf)
         FfiConverterOptionTypeBoundary.write(value.boundary, into: &buf)
     }
 }
@@ -4721,6 +5151,40 @@ public struct Run {
      * it is, and one that does keys a palette on the name.
      */
     public var token: String?
+    /**
+     * How large this run is set relative to the text around it — `"xx-small"`,
+     * `"x-small"`, `"small"`, `"large"`, `"x-large"`, `"xx-large"`,
+     * `"xxx-large"` — or absent for the theme's own size, which is every run
+     * there was before the presentation vocabulary.
+     *
+     * A *step*, never a measurement, and a name for [`mark_color`](Self::mark_color)'s
+     * reason: the document says how much bigger, the renderer's theme says how
+     * big. `leaf_core::SizeStep::scale` carries CSS's own ratios for a renderer
+     * that wants a default ramp rather than one of its own.
+     */
+    public var size: String?
+    /**
+     * The face this run is set in — `"serif"`, `"sans-serif"`, `"monospace"`,
+     * `"cursive"` — or absent for the theme's body face.
+     *
+     * A CSS generic rather than a family name, for [`size`](Self::size)'s
+     * reason: the theme names the concrete face, so `serif` is whichever serif
+     * this platform's theme has and a document never asks for one that isn't
+     * installed.
+     */
+    public var font: String?
+    /**
+     * The run's *foreground* colour, by the same seven names
+     * [`mark_color`](Self::mark_color) carries — or absent for the theme's text
+     * colour.
+     *
+     * Not [`mark_color`](Self::mark_color), though they share a vocabulary on
+     * purpose: that is a highlight's *background* and reaches a run through its
+     * `mark` role, this is what the letters themselves are painted. A renderer
+     * with a red for a highlight has a red for text, and both should be that
+     * red.
+     */
+    public var textColor: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -4795,7 +5259,38 @@ public struct Run {
          * A class id like `role`, and beside it for the reason `mark_color` is: a
          * renderer that knows nothing about tokens still draws the run as the code
          * it is, and one that does keys a palette on the name.
-         */token: String?) {
+         */token: String?, 
+        /**
+         * How large this run is set relative to the text around it — `"xx-small"`,
+         * `"x-small"`, `"small"`, `"large"`, `"x-large"`, `"xx-large"`,
+         * `"xxx-large"` — or absent for the theme's own size, which is every run
+         * there was before the presentation vocabulary.
+         *
+         * A *step*, never a measurement, and a name for [`mark_color`](Self::mark_color)'s
+         * reason: the document says how much bigger, the renderer's theme says how
+         * big. `leaf_core::SizeStep::scale` carries CSS's own ratios for a renderer
+         * that wants a default ramp rather than one of its own.
+         */size: String?, 
+        /**
+         * The face this run is set in — `"serif"`, `"sans-serif"`, `"monospace"`,
+         * `"cursive"` — or absent for the theme's body face.
+         *
+         * A CSS generic rather than a family name, for [`size`](Self::size)'s
+         * reason: the theme names the concrete face, so `serif` is whichever serif
+         * this platform's theme has and a document never asks for one that isn't
+         * installed.
+         */font: String?, 
+        /**
+         * The run's *foreground* colour, by the same seven names
+         * [`mark_color`](Self::mark_color) carries — or absent for the theme's text
+         * colour.
+         *
+         * Not [`mark_color`](Self::mark_color), though they share a vocabulary on
+         * purpose: that is a highlight's *background* and reaches a run through its
+         * `mark` role, this is what the letters themselves are painted. A renderer
+         * with a red for a highlight has a red for text, and both should be that
+         * red.
+         */textColor: String?) {
         self.text = text
         self.role = role
         self.bold = bold
@@ -4810,6 +5305,9 @@ public struct Run {
         self.hlColor = hlColor
         self.markColor = markColor
         self.token = token
+        self.size = size
+        self.font = font
+        self.textColor = textColor
     }
 }
 
@@ -4859,6 +5357,15 @@ extension Run: Equatable, Hashable {
         if lhs.token != rhs.token {
             return false
         }
+        if lhs.size != rhs.size {
+            return false
+        }
+        if lhs.font != rhs.font {
+            return false
+        }
+        if lhs.textColor != rhs.textColor {
+            return false
+        }
         return true
     }
 
@@ -4877,6 +5384,9 @@ extension Run: Equatable, Hashable {
         hasher.combine(hlColor)
         hasher.combine(markColor)
         hasher.combine(token)
+        hasher.combine(size)
+        hasher.combine(font)
+        hasher.combine(textColor)
     }
 }
 
@@ -4901,7 +5411,10 @@ public struct FfiConverterTypeRun: FfiConverterRustBuffer {
                 hl: FfiConverterOptionString.read(from: &buf), 
                 hlColor: FfiConverterOptionString.read(from: &buf), 
                 markColor: FfiConverterOptionString.read(from: &buf), 
-                token: FfiConverterOptionString.read(from: &buf)
+                token: FfiConverterOptionString.read(from: &buf), 
+                size: FfiConverterOptionString.read(from: &buf), 
+                font: FfiConverterOptionString.read(from: &buf), 
+                textColor: FfiConverterOptionString.read(from: &buf)
         )
     }
 
@@ -4920,6 +5433,9 @@ public struct FfiConverterTypeRun: FfiConverterRustBuffer {
         FfiConverterOptionString.write(value.hlColor, into: &buf)
         FfiConverterOptionString.write(value.markColor, into: &buf)
         FfiConverterOptionString.write(value.token, into: &buf)
+        FfiConverterOptionString.write(value.size, into: &buf)
+        FfiConverterOptionString.write(value.font, into: &buf)
+        FfiConverterOptionString.write(value.textColor, into: &buf)
     }
 }
 
@@ -5423,6 +5939,91 @@ public func FfiConverterTypeTableView_lower(_ value: TableView) -> RustBuffer {
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
+ * How a block's lines are set across the measure — the closed vocabulary
+ * [`LeafDoc::set_alignment`] writes and [`LeafDoc::alignment_at_caret`]
+ * reports.
+ *
+ * There is no `left`, because absence is left: the default alignment is the
+ * theme's, and a document that agrees with it has no reason to say so. A
+ * segmented control draws a fourth segment for it and calls `setAlignment(nil)`.
+ *
+ * An enum rather than the name string [`Row::align`] carries, for
+ * [`MarkColor`]'s reason: a row's alignment is a *rendering* fact that has to
+ * survive a token this build has never heard of, while this is the closed set a
+ * control offers.
+ */
+
+public enum Align {
+    
+    case center
+    case right
+    case justify
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAlign: FfiConverterRustBuffer {
+    typealias SwiftType = Align
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Align {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .center
+        
+        case 2: return .right
+        
+        case 3: return .justify
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: Align, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .center:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .right:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .justify:
+            writeInt(&buf, Int32(3))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAlign_lift(_ buf: RustBuffer) throws -> Align {
+    return try FfiConverterTypeAlign.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAlign_lower(_ value: Align) -> RustBuffer {
+    return FfiConverterTypeAlign.lower(value)
+}
+
+
+
+extension Align: Equatable, Hashable {}
+
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
  * The block kinds core tells apart — the vocabulary a [`Boundary`] is spelled
  * in. The FFI mirror of [`leaf_core::BlockClass`]; `Other` covers every kind
  * core doesn't separate out, so a frontend's `match` stays exhaustive as the
@@ -5561,6 +6162,96 @@ public func FfiConverterTypeBlockClass_lower(_ value: BlockClass) -> RustBuffer 
 
 
 extension BlockClass: Equatable, Hashable {}
+
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * The face a run is set in — CSS's generic families, less `fantasy` and
+ * `system-ui`, neither of which an author asks for. What
+ * [`LeafDoc::set_font_family`] writes.
+ *
+ * A generic, never a font name, for [`SizeStep`]'s reason: a document naming
+ * `Georgia` renders in the fallback everywhere Georgia is not installed. The
+ * theme names the concrete face for each — `Serif` is whichever serif this
+ * platform's theme has, and `Monospace` is the face inline code already uses.
+ * The theme's own body face is absent because it is absence; the menu entry for
+ * it is `setFontFamily(nil)`.
+ */
+
+public enum FontFamily {
+    
+    case serif
+    case sansSerif
+    case monospace
+    case cursive
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFontFamily: FfiConverterRustBuffer {
+    typealias SwiftType = FontFamily
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FontFamily {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .serif
+        
+        case 2: return .sansSerif
+        
+        case 3: return .monospace
+        
+        case 4: return .cursive
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: FontFamily, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .serif:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .sansSerif:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .monospace:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .cursive:
+            writeInt(&buf, Int32(4))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFontFamily_lift(_ buf: RustBuffer) throws -> FontFamily {
+    return try FfiConverterTypeFontFamily.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFontFamily_lower(_ value: FontFamily) -> RustBuffer {
+    return FfiConverterTypeFontFamily.lower(value)
+}
+
+
+
+extension FontFamily: Equatable, Hashable {}
 
 
 
@@ -5706,6 +6397,93 @@ public func FfiConverterTypeLineFlow_lower(_ value: LineFlow) -> RustBuffer {
 
 
 extension LineFlow: Equatable, Hashable {}
+
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * How far apart a block's lines are set, as a multiple of the theme's own line
+ * height — the vocabulary [`LeafDoc::set_line_spacing`] writes.
+ *
+ * Single spacing is absent for the reason `left` is absent from [`Align`]: it
+ * is the theme's, and the menu entry for it is `setLineSpacing(nil)`.
+ */
+
+public enum LineSpacing {
+    
+    /**
+     * `1.15` — the word processor's default "a little more air".
+     */
+    case oneFifteen
+    /**
+     * `1.5`.
+     */
+    case oneHalf
+    /**
+     * `2` — double spacing.
+     */
+    case double
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLineSpacing: FfiConverterRustBuffer {
+    typealias SwiftType = LineSpacing
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LineSpacing {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .oneFifteen
+        
+        case 2: return .oneHalf
+        
+        case 3: return .double
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: LineSpacing, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .oneFifteen:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .oneHalf:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .double:
+            writeInt(&buf, Int32(3))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLineSpacing_lift(_ buf: RustBuffer) throws -> LineSpacing {
+    return try FfiConverterTypeLineSpacing.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLineSpacing_lower(_ value: LineSpacing) -> RustBuffer {
+    return FfiConverterTypeLineSpacing.lower(value)
+}
+
+
+
+extension LineSpacing: Equatable, Hashable {}
 
 
 
@@ -5973,6 +6751,116 @@ public func FfiConverterTypeMediaKind_lower(_ value: MediaKind) -> RustBuffer {
 
 
 extension MediaKind: Equatable, Hashable {}
+
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * How large a run is set relative to the text around it — CSS's
+ * `<absolute-size>` keywords with `medium` removed, because `medium` is
+ * absence. What [`LeafDoc::set_font_size`] writes.
+ *
+ * A *step*, never a measurement: a run set to `14pt` in a 12pt theme is a step
+ * up and the same run under a 16pt theme is a step *down*, the author's intent
+ * inverted by a change they never made. `Large` is a step up under every theme,
+ * and `leaf_core::SizeStep::scale` has CSS's own ratio for each if the theme
+ * wants a default ramp.
+ */
+
+public enum SizeStep {
+    
+    case xxSmall
+    case xSmall
+    case small
+    case large
+    case xLarge
+    case xxLarge
+    case xxxLarge
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSizeStep: FfiConverterRustBuffer {
+    typealias SwiftType = SizeStep
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SizeStep {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .xxSmall
+        
+        case 2: return .xSmall
+        
+        case 3: return .small
+        
+        case 4: return .large
+        
+        case 5: return .xLarge
+        
+        case 6: return .xxLarge
+        
+        case 7: return .xxxLarge
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: SizeStep, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .xxSmall:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .xSmall:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .small:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .large:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .xLarge:
+            writeInt(&buf, Int32(5))
+        
+        
+        case .xxLarge:
+            writeInt(&buf, Int32(6))
+        
+        
+        case .xxxLarge:
+            writeInt(&buf, Int32(7))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSizeStep_lift(_ buf: RustBuffer) throws -> SizeStep {
+    return try FfiConverterTypeSizeStep.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSizeStep_lower(_ value: SizeStep) -> RustBuffer {
+    return FfiConverterTypeSizeStep.lower(value)
+}
+
+
+
+extension SizeStep: Equatable, Hashable {}
 
 
 
@@ -6301,6 +7189,78 @@ fileprivate struct FfiConverterOptionTypeSelectionQuote: FfiConverterRustBuffer 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeAlign: FfiConverterRustBuffer {
+    typealias SwiftType = Align?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeAlign.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeAlign.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeFontFamily: FfiConverterRustBuffer {
+    typealias SwiftType = FontFamily?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeFontFamily.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeFontFamily.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeLineSpacing: FfiConverterRustBuffer {
+    typealias SwiftType = LineSpacing?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeLineSpacing.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeLineSpacing.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeMarkColor: FfiConverterRustBuffer {
     typealias SwiftType = MarkColor?
 
@@ -6317,6 +7277,30 @@ fileprivate struct FfiConverterOptionTypeMarkColor: FfiConverterRustBuffer {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterTypeMarkColor.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeSizeStep: FfiConverterRustBuffer {
+    typealias SwiftType = SizeStep?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeSizeStep.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeSizeStep.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -6662,6 +7646,9 @@ private var initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_alignment_at_caret() != 11833) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_anchor_offset() != 45633) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -6713,6 +7700,12 @@ private var initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_doc_end_offset() != 21296) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_font_family_at_caret() != 17811) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_font_size_at_caret() != 60931) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_footnote_at() != 35464) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -6749,6 +7742,9 @@ private var initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_insert_media() != 15569) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_insert_page_break() != 6660) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_insert_table() != 45407) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -6756,6 +7752,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_line_flow() != 56552) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_line_spacing_at_caret() != 14718) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_link_destination_at() != 56247) {
@@ -6857,7 +7856,16 @@ private var initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_selection_quote() != 871) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_alignment() != 10877) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_dark_appearance() != 43306) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_font_family() != 44359) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_font_size() != 57483) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_heading() != 23018) {
@@ -6867,6 +7875,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_line_flow() != 4051) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_line_spacing() != 12408) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_mark_color() != 43839) {
@@ -6888,6 +7899,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_selection_offsets() != 21825) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_text_color() != 32316) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_unwrapped() != 31068) {
@@ -6927,6 +7941,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_task_checked_at_caret() != 58214) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_text_color_at_caret() != 42925) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_text_in_range() != 21460) {

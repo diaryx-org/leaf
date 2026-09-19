@@ -103,6 +103,13 @@ pub enum Command {
     Quote,
     TaskItem,
     TaskChecked,
+    /// Step the alignment of the block at the caret one notch — the *key's*
+    /// command, as [`Command::CycleMarkup`] is. A cycle and not three setters
+    /// because this surface can draw only two of the four notches: `justify`
+    /// renders as left in a cell grid, and a menu row that changes the document
+    /// and nothing visible is a row that reads as broken. A frontend that can
+    /// draw all four offers all four.
+    CycleAlign,
 
     // ── inline ──
     Inline(InlineKind),
@@ -119,6 +126,7 @@ pub enum Command {
     Audio,
     Footnote,
     ThematicBreak,
+    PageBreak,
     CodeLanguage,
 
     // ── table ──
@@ -189,6 +197,10 @@ impl Command {
             Quote => "Quote",
             TaskItem => "Checklist Item",
             TaskChecked => "Tick Checkbox",
+            // "Text", against the `Align Column …` rows a table offers: the two
+            // alignments are different properties of different things, and a
+            // palette lists them side by side.
+            CycleAlign => "Cycle Text Alignment",
 
             Inline(InlineKind::Strong) => "Bold",
             Inline(InlineKind::Emph) => "Italic",
@@ -215,6 +227,7 @@ impl Command {
             Audio => "Audio…",
             Footnote => "Footnote",
             ThematicBreak => "Horizontal Rule",
+            PageBreak => "Page Break",
             CodeLanguage => "Code Language…",
 
             RowAbove => "Insert Row Above",
@@ -283,6 +296,7 @@ impl Command {
             Quote => "⌥9",
             TaskItem => "⌥t",
             TaskChecked => "⌥x",
+            CycleAlign => "⌥a",
 
             Inline(InlineKind::Strong) => "⌥b",
             Inline(InlineKind::Emph) => "⌥i",
@@ -296,6 +310,10 @@ impl Command {
             Image => "⌥e",
             Footnote => "⌥f",
             ThematicBreak => "⌥r",
+            // Shifted onto the key its unshifted neighbour owns, the way ⌥⇧w
+            // and ⌥⇧f are: ⌥r rules a line across the prose, ⌥⇧r one across the
+            // paper.
+            PageBreak => "⌥⇧r",
             CodeLanguage => "⌥l",
 
             ToggleView => "⌥w",
@@ -347,6 +365,7 @@ impl Command {
             NumberedList => c.ordered_list,
             Quote => c.blockquote,
             TaskItem | TaskChecked => c.task,
+            CycleAlign => c.alignment,
 
             Inline(InlineKind::Strong) => c.bold,
             Inline(InlineKind::Emph) => c.italic,
@@ -368,6 +387,7 @@ impl Command {
             Image | Video | Audio => c.image,
             Footnote => c.footnote,
             ThematicBreak => c.thematic_break,
+            PageBreak => c.page_break,
             // Only ever offered with the caret already in a fence: there is no
             // "the language of no code block".
             CodeLanguage => c.code_language && ctx.in_code,
@@ -456,6 +476,7 @@ impl Command {
             Quote => doc.toggle_blockquote(),
             TaskItem => doc.toggle_task_item(),
             TaskChecked => doc.toggle_task_checked(),
+            CycleAlign => leaf_ratatui::cycle_alignment(doc),
 
             Inline(k) => doc.toggle(k),
             // The compound, not the bare gesture: over a selection this both
@@ -468,6 +489,7 @@ impl Command {
             Audio => return Outcome::AudioPrompt,
             Footnote => doc.insert_footnote(),
             ThematicBreak => doc.insert_thematic_break(),
+            PageBreak => doc.insert_page_break(),
             CodeLanguage => return Outcome::LanguagePrompt,
 
             RowAbove => doc.table_insert_row(false),
@@ -552,6 +574,7 @@ const BLOCK: &[Command] = &[
     Command::Quote,
     Command::TaskItem,
     Command::TaskChecked,
+    Command::CycleAlign,
 ];
 
 const INLINE: &[Command] = &[
@@ -581,6 +604,7 @@ const INSERT: &[Command] = &[
     Command::Audio,
     Command::Footnote,
     Command::ThematicBreak,
+    Command::PageBreak,
     Command::CodeLanguage,
 ];
 

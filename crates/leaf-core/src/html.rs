@@ -10,7 +10,8 @@
 //! `<div>` per line.
 //!
 //! Handed that raw, twig is faithful to a fault and the Markdown comes out wrong
-//! in two distinct ways, both verified against twig-doc 2.1.0:
+//! in three distinct ways, the first two verified against twig-doc 2.1.0 and the
+//! third against 3.6.0:
 //!
 //!   - **Djot leaks in.** A `<div>` is a fenced div, and the Markdown serializer
 //!     spells it `::: … :::` — syntax Markdown does not have, so Slack's HTML
@@ -18,6 +19,10 @@
 //!   - **Unknown elements pass through raw.** `<meta>`, `<script>`, `<style>`,
 //!     `<table>` (twig builds no table from HTML) survive into the output as the
 //!     tags themselves, dropping markup into a prose document.
+//!   - **A styling attribute comes back as a `<div>`.** Since twig 3.6 a block
+//!     carrying any attribute is written inside a literal `<div …>` … `</div>`
+//!     pair, Markdown having no attribute syntax of its own — so Word's
+//!     `<p class=MsoNormal>` pastes as that tag around the sentence.
 //!
 //! So the paste direction is three steps, not one: [`sanitize`] rewrites the
 //! clipboard's dialect into the subset twig reads faithfully, twig's
@@ -29,7 +34,7 @@
 //! over the input nodes and the output text. twig 3.0 exposes the library's own
 //! measured answer, so all three are gone; see [`parse_fragment`].
 
-use twig::{Document, Format, Kind, Target};
+use twig::{Document, Fidelity, Format, Kind, Target, Warning};
 
 /// Render a `format` source fragment to HTML, for the clipboard's `text/html`.
 ///
@@ -68,8 +73,8 @@ pub(crate) fn parse_fragment(html: &str, format: Format) -> Option<String> {
     // exemption here the way they needed one from the old node scan: twig folds
     // them into the table vocabulary and reports a headed table as lossless.
     //
-    // `Section` is the one degradation that is not leaf's business, and the
-    // reason this reads the warning's `kind` rather than just its emptiness.
+    // `Section` is the one degradation that is not leaf's business, and one of
+    // the two reasons this reads the warning rather than just its emptiness.
     // twig reports the loss of a sectioning wrapper — `<html>`, `<body>`,
     // `<section>`, `<main>` — because Markdown cannot spell one, and for a
     // *document* conversion that is a true loss. For a paste it is the goal:
@@ -81,7 +86,7 @@ pub(crate) fn parse_fragment(html: &str, format: Format) -> Option<String> {
     // `<html><head>…</head><body>`, so a leaf→leaf paste is a section every
     // time.
     let warnings = doc.diagnostics(Target::from(format)).ok()?;
-    if warnings.iter().any(|w| w.kind != Kind::Section) {
+    if warnings.iter().any(would_leak) {
         return None;
     }
 
@@ -97,6 +102,48 @@ pub(crate) fn parse_fragment(html: &str, format: Format) -> Option<String> {
         return None;
     }
     Some(source.to_string())
+}
+
+/// Whether one twig fidelity warning is a reason to decline the paste.
+///
+/// twig 3.6 measures a conversion on two axes, not one: the node — is this
+/// node written, and read back as itself — and, added in 3.6, the node's
+/// **attributes**. The paste gate cares about one question, which is neither
+/// axis by itself: *would converting put something in the document the user
+/// did not copy?* A fragment that comes through as prose minus a styling hook
+/// is a good paste; one that comes through carrying `<div class="MsoNormal">`
+/// is not.
+///
+///   - [`Fidelity::Degraded`] / [`Fidelity::Dropped`] are the node axis and
+///     the original gate: content read back as the wrong thing, or gone.
+///     `Section` is the standing exemption, for the reason in
+///     [`parse_fragment`].
+///   - [`Fidelity::AttrsDegraded`] means the attributes *are* written, where
+///     the target will not read them back as this node's. In Markdown that
+///     spelling is a literal `<div …>` / `</div>` pair around the block (new
+///     in twig 3.6 — before it, a block's attributes were written nowhere and
+///     reported as nothing), which is exactly the visible markup the gate
+///     exists to keep out. Decline.
+///   - [`Fidelity::AttrsDropped`] means they are not written at all. Nothing
+///     reaches the document; the user gets the prose without the decoration,
+///     which for a paste is the goal rather than a loss. **Accept** — and note
+///     that most of what twig reports here is not a loss at all: its HTML
+///     parser keeps `href`, `src` and `alt` in the node's attribute bag
+///     *besides* modelling them as the link's destination and the image's, so
+///     `<a href="…">` and `<img src alt>` are reported `AttrsDropped` against
+///     Markdown even though the Markdown written for them is `[l](https://x.dev)`
+///     and `![p](u)`, destination and all. Declining on this code is what made
+///     every link and image on the clipboard unpasteable under 3.6.0.
+///
+/// The catch-all declines: `Fidelity` is `#[non_exhaustive]`, and an axis twig
+/// adds next is one leaf has not weighed.
+fn would_leak(w: &Warning) -> bool {
+    match w.fidelity {
+        Fidelity::Degraded | Fidelity::Dropped => w.kind != Kind::Section,
+        Fidelity::AttrsDropped => false,
+        Fidelity::AttrsDegraded => true,
+        _ => true,
+    }
 }
 
 /// Strip a sole wrapping `<p>`, for a selection that lives inside one block.
@@ -141,6 +188,87 @@ fn namespaced(name: &str) -> bool {
     name.contains(':')
 }
 
+/// Attributes that style or identify an element rather than say anything about
+/// its content — a pasteboard's own dialect, and never prose.
+///
+/// Every pasteboard writes them: Word ships `class=MsoNormal`, `lang=EN-US` and
+/// `xmlns:o=…`, Google Docs `dir="ltr"`, `id="docs-internal-guid-…"` and a
+/// `style` on everything, Slack a `class` per line. Left on the element they
+/// used to evaporate in the Markdown, harmlessly; since twig 3.6 a block that
+/// carries *any* attribute is written inside a literal `<div …>` … `</div>`
+/// pair, so Word's paragraph came out as `<div class="MsoNormal">` wrapped
+/// around the sentence. Dropping them here is the same fix the `<div>`→`<p>`
+/// rewrite has always applied to a div's, and it keeps the decision where the
+/// rest of the pasteboard dialect is handled.
+///
+/// A deny list and not an allow list, deliberately: an attribute that turns out
+/// to carry content and is not here — `start` on an `<ol>` — survives to twig,
+/// which reports it, and [`would_leak`] declines the paste. The failure mode is
+/// a fall back to the plain flavor. An allow list's would be silently losing it.
+fn presentational(name: &str) -> bool {
+    const NAMES: [&str; 11] = [
+        "align", "bgcolor", "class", "dir", "height", "id", "lang", "role", "style", "valign",
+        "width",
+    ];
+    NAMES.contains(&name)
+        || name.starts_with("data-")
+        || name.starts_with("aria-")
+        || name.starts_with("on")
+        || namespaced(name)
+}
+
+/// `attrs` — the raw text between a tag's name and its `>` — with the
+/// [`presentational`] pairs removed, each survivor kept verbatim so its own
+/// quoting survives.
+fn keep_attrs(attrs: &str) -> String {
+    let b = attrs.as_bytes();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i].is_ascii_whitespace() || b[i] == b'/' {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < b.len() && !b[i].is_ascii_whitespace() && b[i] != b'=' && b[i] != b'/' {
+            i += 1;
+        }
+        let name = attrs[start..i].to_ascii_lowercase();
+        // `= value`, when there is one: bare, or quoted with either quote, and
+        // the value may hold whitespace and `/` alike.
+        let mut j = i;
+        while j < b.len() && b[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        if j < b.len() && b[j] == b'=' {
+            j += 1;
+            while j < b.len() && b[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            match b.get(j) {
+                Some(&q @ (b'"' | b'\'')) => {
+                    j += 1;
+                    while j < b.len() && b[j] != q {
+                        j += 1;
+                    }
+                    j = (j + 1).min(b.len());
+                }
+                _ => {
+                    while j < b.len() && !b[j].is_ascii_whitespace() {
+                        j += 1;
+                    }
+                }
+            }
+            i = j;
+        }
+        if !name.is_empty() && !presentational(&name) {
+            out.push(' ');
+            out.push_str(attrs[start..i].trim());
+        }
+    }
+    out
+}
+
 /// Rewrite clipboard HTML into the subset twig converts faithfully.
 ///
 /// Not a general sanitizer and not a security boundary — twig renders no HTML we
@@ -157,7 +285,10 @@ fn namespaced(name: &str) -> bool {
 ///     because twig reads no stylesheet and Google Docs writes *all* of its
 ///     emphasis this way — without this, pasting from Docs silently loses it;
 ///   - Docs' `<b style="font-weight:normal">` document wrapper goes, or the
-///     whole paste comes out bold.
+///     whole paste comes out bold;
+///   - a [`presentational`] attribute goes wherever it is written, because
+///     since twig 3.6 a block that carries one is written into Markdown inside
+///     a literal `<div …>` pair — see that function.
 ///
 /// Unknown elements are left for twig, and for [`parse_fragment`]'s diagnostics
 /// gate to catch if twig doesn't know them either.
@@ -250,7 +381,15 @@ fn sanitize(html: &str) -> String {
                 }
             }
             None => {
-                out.push_str(&html[lt..tag.end]);
+                // Written back from the parse rather than copied, so the
+                // pasteboard's styling attributes can be left behind.
+                out.push('<');
+                out.push_str(&tag.name);
+                out.push_str(&keep_attrs(&tag.attrs));
+                if tag.self_closing {
+                    out.push_str(" /");
+                }
+                out.push('>');
                 if !tag.self_closing && !VOID.contains(&tag.name.as_str()) {
                     owed.push((tag.name, None));
                 }
@@ -649,6 +788,40 @@ mod tests {
     }
 
     #[test]
+    fn an_attribute_markdown_cannot_spell_is_a_note_and_not_a_loss() {
+        // twig 3.6's second fidelity axis. Its HTML parser keeps `href`, `src`
+        // and `alt` in the node's attribute bag *as well as* modelling them as
+        // the link's destination and the image's, so converting to Markdown —
+        // which has no attribute syntax to write the bag with — reports the
+        // node as `AttrsDropped`. The Markdown it writes carries the
+        // destination all the same, which is what these assert: the warning is
+        // about the bag, and there is nothing missing from the paste.
+        assert_eq!(
+            md(r#"<a href="https://x.dev" title="t">l</a>"#).as_deref(),
+            Some("[l](https://x.dev)")
+        );
+        assert_eq!(
+            md(r#"<p><img src="u" alt="p" width="10"></p>"#).as_deref(),
+            Some("![p](u)")
+        );
+        // Declining on that code is what made every link and image on the
+        // clipboard fall back to the plain flavor under 3.6.0.
+        assert_eq!(
+            md(r#"<p>a <b>b</b> and <a href="https://x.dev">l</a></p>"#).as_deref(),
+            Some("a **b** and [l](https://x.dev)")
+        );
+    }
+
+    #[test]
+    fn an_attribute_markdown_spells_as_a_div_declines() {
+        // The other half of the axis, and the half that leaks. `start` is a
+        // content attribute, so the sanitizer leaves it; Markdown writes it as
+        // `<div start="3">` around the list, which is markup the user never
+        // copied. The plain flavor is the better paste.
+        assert_eq!(md(r#"<ol start="3"><li>a</li><li>b</li></ol>"#), None);
+    }
+
+    #[test]
     fn a_sectioning_wrapper_is_the_one_loss_a_paste_wants() {
         // twig degrades both of these — neither wrapper has a Markdown spelling
         // — but only one of them leaks. A `Section` is written by dropping the
@@ -712,5 +885,41 @@ mod tests {
     #[test]
     fn sanitize_leaves_unknown_elements_for_twig() {
         assert_eq!(sanitize("<figure>x</figure>"), "<figure>x</figure>");
+    }
+
+    #[test]
+    fn sanitize_drops_a_pasteboard_s_styling_attributes_and_keeps_its_content_ones() {
+        // Word's, Google Docs' and Slack's, each verbatim from the clips above.
+        assert_eq!(sanitize("<p class=MsoNormal>a</p>"), "<p>a</p>");
+        assert_eq!(sanitize(r#"<body lang=EN-US>a</body>"#), "<body>a</body>");
+        assert_eq!(
+            sanitize(r#"<html xmlns:o="urn:schemas-microsoft-com:office:office">a</html>"#),
+            "<html>a</html>"
+        );
+        assert_eq!(
+            sanitize(r#"<p dir="ltr" style="line-height:1.38;">a</p>"#),
+            "<p>a</p>"
+        );
+        assert_eq!(sanitize(r#"<h1 id="docs-guid-9c1">h</h1>"#), "<h1>h</h1>");
+        assert_eq!(
+            sanitize(r#"<li data-x="1" aria-label="l">a</li>"#),
+            "<li>a</li>"
+        );
+        // …and the attributes that say what the element *is* stay, quoting and
+        // all. Dropping these would lose the destination itself.
+        assert_eq!(
+            sanitize(r#"<a class="c" href="https://x.dev" title="t">l</a>"#),
+            r#"<a href="https://x.dev" title="t">l</a>"#
+        );
+        assert_eq!(
+            sanitize(r#"<img src=u alt='p' width="10">"#),
+            "<img src=u alt='p'>"
+        );
+        // A value holding a `>`, an unquoted value, and a self-closing tag all
+        // survive the rewrite the attribute scan performs.
+        assert_eq!(
+            sanitize(r#"<figure style="font-family:'a>b'" data-n=3 />"#),
+            "<figure />"
+        );
     }
 }

@@ -58,6 +58,45 @@ const MARK_WASHES: [Color; 7] = [
     Color::Indexed(180), // brown   — (215, 175, 135)
 ];
 
+/// The seven **inks** for a run the author coloured — `data-color` on a span,
+/// the run-level half of the vocabulary — indexed the same way
+/// [`MARK_WASHES`] is, so `[0]` is red in both.
+///
+/// The dark scheme's, in the ANSI names the rest of this palette prefers: the
+/// author asked for red *text*, and text is exactly where the terminal's own
+/// tuning of "red" is the one that will read on the user's background. That is
+/// the opposite of the wash rule above it, and for a reason — a wash is a
+/// ground that somebody else's ink has to sit on, so it cannot be left to the
+/// terminal's taste, while an ink sits on the terminal's own page.
+///
+/// A separate row rather than a reuse of [`MARK_WASHES`], which is the same
+/// seven names: those are chosen pale so black reads *on* them, and pale ink
+/// on a light terminal is ink that isn't there. Same vocabulary, same seven
+/// names, different job.
+const DARK_INKS: [Color; 7] = [
+    Color::Red,
+    Color::Indexed(208), // orange — no ANSI name for it
+    Color::Yellow,
+    Color::Green,
+    Color::Blue,
+    Color::Magenta,      // purple
+    Color::Indexed(180), // brown — no ANSI name either
+];
+
+/// The light scheme's inks, from the dark half of the colour cube for the
+/// reason [`Theme::light`]'s whole ramp is: ANSI yellow and green are chosen
+/// to sit on a *dark* page and wash out to nothing on white. Amber stands in
+/// for yellow here exactly as it does for the headings.
+const LIGHT_INKS: [Color; 7] = [
+    Color::Indexed(124), // red
+    Color::Indexed(130), // orange
+    Color::Indexed(94),  // yellow — amber
+    Color::Indexed(22),  // green
+    Color::Indexed(26),  // blue
+    Color::Indexed(90),  // purple
+    Color::Indexed(95),  // brown
+];
+
 /// The terminal's palette, keyed on a glyph's semantic [`Role`]. This is the
 /// presentation the core used to bake in and no longer does: a terminal can
 /// usually only tell a heading from body text by *color*, so the choice of
@@ -117,6 +156,22 @@ pub struct Theme {
     /// scheme — reads on every one of them. The alternative was a fg/bg pair
     /// per colour, fourteen fields to say what one row of washes says.
     pub mark_colors: [Color; 7],
+    /// The inks for a run the author *coloured* — `data-color` on an attributed
+    /// span, the run-level half of the presentation vocabulary — indexed by
+    /// [`MarkColor::index`](leaf_core::MarkColor::index) like
+    /// [`mark_colors`](Self::mark_colors), so `[0]` is red in both.
+    ///
+    /// The same seven names as the washes and a different row of colours,
+    /// because the two have different jobs: a wash is a ground somebody else's
+    /// ink sits on and is therefore pale, and pale ink on a light terminal is
+    /// no ink at all. Unlike the washes these *do* differ by scheme — see
+    /// [`DARK_INKS`] and [`LIGHT_INKS`].
+    ///
+    /// A coloured run keeps everything else its role gave it: a coloured word
+    /// inside a `==highlight==` keeps the highlighter's ground and only its
+    /// letters change hue, which is what the author of a coloured word in a
+    /// highlighted sentence meant.
+    pub text_colors: [Color; 7],
     /// A list item's bullet or number.
     pub list_marker: Color,
     /// A block quote's `│` gutter.
@@ -227,6 +282,7 @@ impl Theme {
             mark_fg: Color::Black,
             mark_bg: Color::Yellow,
             mark_colors: MARK_WASHES,
+            text_colors: DARK_INKS,
             list_marker: Color::Yellow,
             quote_gutter: Color::Green,
             rule: Color::DarkGray,
@@ -300,6 +356,7 @@ impl Theme {
             mark_fg: Color::Black,
             mark_bg: Color::Indexed(220),
             mark_colors: MARK_WASHES,
+            text_colors: LIGHT_INKS,
             list_marker: Color::Indexed(94),
             quote_gutter: Color::Indexed(22),
             rule: Color::Indexed(243),
@@ -419,6 +476,20 @@ impl Theme {
                 out = out.add_modifier(Modifier::ITALIC);
             }
         }
+        // The run's own colour, last of the three inks so it wins over the
+        // role's and the token's: `data-color` is the author saying this word
+        // is red, and a red word inside a code span is still red. Only the
+        // foreground moves — a coloured word inside a `==highlight==` keeps the
+        // highlighter's ground, which is what colouring a word in a highlighted
+        // sentence means.
+        //
+        // The other two run-level properties, `size` and `font`, are read and
+        // ignored: a terminal cell has one size and one face, so there is
+        // nothing here to honour them with. See `wysiwyg_lines` for the row-level
+        // property in the same position.
+        if let Some(color) = s.color {
+            out = out.fg(self.text_colors[color.index()]);
+        }
         if s.bold {
             out = out.add_modifier(Modifier::BOLD);
         }
@@ -537,11 +608,18 @@ fn ansi_base16_rgb(index: u8) -> Option<(u8, u8, u8)> {
 /// slides under the box rather than wrapping or running off the right edge. The
 /// caret and mouse in `ui` mirror this exact shift, so a code column still round-
 /// trips to its source byte.
+///
+/// `width` is the measure the rows are laid into — the same content width
+/// [`crate::render`] built the map at. A row whose block carries an
+/// [`Align`](leaf_core::Align) is padded into it with leading blanks
+/// ([`align_pad`]); the caret and the mouse shift by the same amount, so a
+/// centred line still round-trips to its source byte.
 pub fn wysiwyg_lines(
     vmap: &VisualMap,
     sel: Option<(usize, usize)>,
     highlights: &[Highlight],
     theme: &Theme,
+    width: usize,
     code_shift: impl Fn(usize) -> Option<usize>,
 ) -> Vec<Line<'static>> {
     // One cursor for the whole view: the rows are walked in order and so are
@@ -560,6 +638,17 @@ pub fn wysiwyg_lines(
                     " ".repeat(CODE_INSET),
                     Style::default().bg(theme.code_bg),
                 ));
+            }
+            // …and an aligned row opens with its pad: the blank columns that put
+            // a centred or right-aligned line where the author asked for it.
+            // Never on a code row, which owns its own box and its own left edge.
+            let pad = if shift.is_some() {
+                0
+            } else {
+                align_pad(row.align, vmap.row_width(r), width)
+            };
+            if pad > 0 {
+                spans.push(Span::raw(" ".repeat(pad)));
             }
             let mut buf = String::new();
             let mut cur: Option<Style> = None;
@@ -593,6 +682,39 @@ pub fn wysiwyg_lines(
             Line::from(spans)
         })
         .collect()
+}
+
+/// The blank columns a row is pushed right by to sit where its block's
+/// alignment says: half the slack for [`Align::Center`], all of it for
+/// [`Align::Right`], none for an unaligned row or one that already fills (or
+/// overruns) the measure.
+///
+/// Padding is the whole of what a terminal can do here. A cell grid has no
+/// sub-column positions, so "centred" is "as centred as the odd column allows"
+/// — the extra column goes to the right, which is where every terminal centring
+/// puts it.
+///
+/// [`Align::Justify`] pads like an unaligned row, i.e. draws left. Justifying
+/// means stretching the spaces *between* words until the line fills the
+/// measure, and a terminal can only stretch them a whole cell at a time: on a
+/// forty-column line that is the difference between one space and two, which
+/// reads as a typo rather than as typesetting. The document keeps the token —
+/// leaf-swift and the stylesheet justify properly — and this surface renders
+/// what it honestly can, the way it renders a heading's `data-size` as
+/// ordinary-sized text.
+///
+/// One function because the painter, the caret, and the mouse all need the
+/// same number and must not disagree about it: [`wysiwyg_lines`] pads by it,
+/// [`crate::render`] shifts the terminal cursor by it, and
+/// [`crate::handle_mouse`] takes it back off a clicked column.
+pub fn align_pad(align: Option<leaf_core::Align>, row_width: usize, width: usize) -> usize {
+    use leaf_core::Align;
+    let slack = width.saturating_sub(row_width);
+    match align {
+        Some(Align::Center) => slack / 2,
+        Some(Align::Right) => slack,
+        Some(Align::Justify) | None => 0,
+    }
 }
 
 /// A glyph's or a run's final style at source byte `at`: its own style, the
@@ -796,7 +918,7 @@ mod tests {
             marker: None,
         }];
 
-        let lines = wysiwyg_lines(&doc.vmap, None, &painted, &theme, |_| None);
+        let lines = wysiwyg_lines(&doc.vmap, None, &painted, &theme, 40, |_| None);
         let washed: String = lines[0]
             .spans
             .iter()
@@ -823,7 +945,7 @@ mod tests {
             marker: None,
         }];
 
-        let lines = wysiwyg_lines(&doc.vmap, Some((4, 7)), &painted, &theme, |_| None);
+        let lines = wysiwyg_lines(&doc.vmap, Some((4, 7)), &painted, &theme, 40, |_| None);
         let span = lines[0]
             .spans
             .iter()
@@ -1013,5 +1135,123 @@ mod tests {
                 .add_modifier
                 .contains(Modifier::UNDERLINED)
         );
+    }
+
+    // ── the presentation vocabulary ─────────────────────────────────────────
+
+    /// The map for `src`, laid out at `width` — how the presentation tests get
+    /// the rows `render` would hand the painter.
+    fn map(src: &str, format: leaf_core::Format, width: usize) -> leaf_core::VisualMap {
+        let mut doc = leaf_core::Doc::from_source(src.into(), format).unwrap();
+        doc.build_visual(width);
+        doc.vmap.clone()
+    }
+
+    /// What a row draws, blanks and all — the string a reader would see on that
+    /// terminal line.
+    fn painted(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    /// Alignment is padding, and padding is the whole of it: half the slack
+    /// centres, all of it right-aligns, and a line with no slack stays put.
+    #[test]
+    fn a_centred_row_is_padded_into_the_measure() {
+        let m = map("{.center}\nhi\n", leaf_core::Format::Djot, 20);
+        let lines = wysiwyg_lines(&m, None, &[], &Theme::dark(), 20, |_| None);
+        // 20 columns, two of them glyphs: nine blanks, "hi", nine columns of
+        // nothing. The odd column goes right, which is where a terminal puts it.
+        assert_eq!(painted(&lines[0]), "         hi");
+    }
+
+    /// The other half of the same rule, and the one that has to land on the
+    /// measure's last column exactly — an off-by-one here draws a right-aligned
+    /// line one short of the edge, which reads as neither aligned nor centred.
+    #[test]
+    fn a_right_aligned_row_ends_at_the_measure() {
+        let m = map("{.right}\nhi\n", leaf_core::Format::Djot, 20);
+        let lines = wysiwyg_lines(&m, None, &[], &Theme::dark(), 20, |_| None);
+        assert_eq!(painted(&lines[0]).chars().count(), 20);
+        assert!(painted(&lines[0]).ends_with("hi"));
+    }
+
+    /// The arithmetic on its own, including the two cases that must *not* pad:
+    /// a justified block (a terminal cannot stretch spaces, so it draws left)
+    /// and a line that already fills or overruns the measure.
+    #[test]
+    fn justify_draws_left_and_a_full_line_is_never_padded() {
+        use leaf_core::Align;
+        assert_eq!(align_pad(Some(Align::Center), 4, 10), 3);
+        assert_eq!(align_pad(Some(Align::Right), 4, 10), 6);
+        assert_eq!(align_pad(Some(Align::Justify), 4, 10), 0);
+        assert_eq!(align_pad(None, 4, 10), 0);
+        // No slack, and a row wider than the measure, which must not underflow.
+        assert_eq!(align_pad(Some(Align::Center), 10, 10), 0);
+        assert_eq!(align_pad(Some(Align::Right), 14, 10), 0);
+    }
+
+    /// The run-level colour: a `data-color` span is the text's *foreground*, in
+    /// the theme's own ink for that name — and a highlight inside it keeps its
+    /// wash, because the two properties spell one key and mean two things.
+    #[test]
+    fn a_coloured_run_takes_the_ink_and_a_mark_keeps_its_wash() {
+        let theme = Theme::dark();
+        let m = map(
+            "<span data-color=\"blue\">plain ==\u{1f534} red== end</span>\n",
+            leaf_core::Format::Markdown,
+            40,
+        );
+        let lines = wysiwyg_lines(&m, None, &[], &theme, 40, |_| None);
+        let blue = theme.text_colors[MarkColor::Blue.index()];
+
+        // Ordinary text in the span: the ink, and nothing behind it.
+        let plain = lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content.contains("plain"))
+            .expect("the coloured run draws");
+        assert_eq!(plain.style.fg, Some(blue));
+        assert_eq!(plain.style.bg, None);
+
+        // The highlight inside it: the same ink on the red highlighter's wash.
+        let marked = lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content.contains("red"))
+            .expect("the highlight draws");
+        assert_eq!(marked.style.fg, Some(blue), "the letters are the span's");
+        assert_eq!(
+            marked.style.bg,
+            Some(theme.mark_colors[MarkColor::Red.index()]),
+            "the ground is the highlight's"
+        );
+    }
+
+    /// The inks are not the washes. A wash is pale so black reads on it; ink
+    /// that pale on a light terminal is ink that isn't there, which is why the
+    /// two rows differ and why this one differs by scheme.
+    #[test]
+    fn the_text_inks_are_their_own_row_and_differ_by_scheme() {
+        assert_ne!(Theme::dark().text_colors, MARK_WASHES);
+        assert_ne!(Theme::light().text_colors, MARK_WASHES);
+        assert_ne!(Theme::dark().text_colors, Theme::light().text_colors);
+        // The washes, being a ground under one fixed ink, are the same row in
+        // both — the contrast this one is measured against.
+        assert_eq!(Theme::dark().mark_colors, Theme::light().mark_colors);
+    }
+
+    /// Size and face are ignored, silently: a cell has one size and one face,
+    /// so a run that names either draws exactly as the text around it. Stated
+    /// as a test because "nothing happens" is the kind of behaviour that gets
+    /// implemented by accident later.
+    #[test]
+    fn a_runs_size_and_face_change_nothing() {
+        let theme = Theme::dark();
+        let sized = LStyle {
+            size: Some(leaf_core::SizeStep::XxLarge),
+            font: Some(leaf_core::FontFamily::Cursive),
+            ..LStyle::default()
+        };
+        assert_eq!(theme.to_ratatui(sized), theme.to_ratatui(LStyle::default()));
     }
 }
