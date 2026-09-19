@@ -13,6 +13,16 @@
 //! GUI varies size and font instead. So each frontend maps a [`Role`] to its own
 //! look: `leaf-tui` turns it into terminal colors, `leaf-gpui` into an `Hsla`
 //! plus a font size and family. Core stays out of that argument.
+//!
+//! The one place core does carry a paint value is the presentation vocabulary
+//! the author writes by hand: a `data-size` is a *name* ([`SizeStep`]) where a
+//! name will do and a measurement ([`FontSize::Points`]) where the author needed
+//! exactness, and the open type beside each closed enum — [`FontSize`],
+//! [`LineHeight`], [`TextColor`], [`FontFace`] — is where the two meet. A name
+//! outlives a theme change and a value does not, which is the trade the author
+//! makes knowingly; see `docs/proposals/exact-presentation-values.md`.
+
+use std::borrow::Cow;
 
 /// What a glyph *is*, typographically — the semantic role a frontend maps to its
 /// own presentation. Mutually exclusive per glyph (a glyph is a heading, or a
@@ -73,6 +83,11 @@ pub enum Role {
 /// and each frontend still decides which red draws it — a terminal picks an
 /// ANSI hue, a GUI an `Hsla`, the web a CSS custom property. The distinction is
 /// the same one [`Role::Heading`] makes by carrying a level rather than a size.
+///
+/// These seven stay the whole of a *highlight's* vocabulary, because they are
+/// encoded in twig's Markdown bytes as circle emoji and are twig's to keep
+/// closed. A run's foreground has no such constraint and opens: see
+/// [`TextColor`], which is one of these names or a hex triple.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MarkColor {
     Red,
@@ -266,9 +281,9 @@ impl LineSpacing {
             .and_then(Self::from_attr)
     }
 
-    /// Read a `data-line-height` value. `None` for a ratio outside the
-    /// vocabulary — a document carrying `data-line-height="1.3"` keeps the key
-    /// and draws at the theme's spacing, rather than having leaf guess a step.
+    /// Read a `data-line-height` value. `None` for anything that is not one of
+    /// the three names — an exact ratio is [`LineHeight::Ratio`]'s to read, and
+    /// [`LineHeight::from_attr`] is the door that reads both.
     pub fn from_attr(value: &str) -> Option<Self> {
         Some(match value {
             "1.15" => Self::OneFifteen,
@@ -349,8 +364,8 @@ impl SizeStep {
     }
 
     /// Read a `data-size` value. `None` for a name outside the vocabulary — a
-    /// `data-size="14pt"` from elsewhere is carried and drawn at the theme's
-    /// own size, which is the same answer the stylesheet gives it.
+    /// `data-size="14pt"` is a measurement and [`FontSize::Points`]'s to read,
+    /// and [`FontSize::from_attr`] is the door that reads both.
     pub fn from_attr(value: &str) -> Option<Self> {
         Some(match value {
             "xx-small" => Self::XxSmall,
@@ -437,10 +452,9 @@ impl SizeStep {
 /// Linux box, and `Monospace` is the theme's mono face, which inline code
 /// already uses.
 ///
-/// A named family is *carried* (twig will spell `data-font="Garamond"`) and is
-/// not in this vocabulary: [`from_attr`](Self::from_attr) answers `None` for
-/// it, the native renderers may resolve it through the platform's font registry,
-/// and the toolbar offers the four.
+/// A named family is not in this vocabulary: [`from_attr`](Self::from_attr)
+/// answers `None` for it, and it is [`FontFace::Named`]'s to read — the open
+/// type beside this one, which the toolbar offers under the four generics.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FontFamily {
     Serif,
@@ -461,7 +475,8 @@ impl FontFamily {
     }
 
     /// Read a `data-font` value. `None` for a concrete family name, which is
-    /// carried by the document and left to whatever the frontend can resolve.
+    /// [`FontFace::Named`]'s to read; [`FontFace::from_attr`] is the door that
+    /// reads both.
     pub fn from_attr(value: &str) -> Option<Self> {
         Some(match value {
             "serif" => Self::Serif,
@@ -499,6 +514,545 @@ impl FontFamily {
     /// is absent because it is absence — the menu entry for it calls
     /// [`crate::Doc::set_font_family`] with `None`.
     pub const ALL: [Self; 4] = [Self::Serif, Self::SansSerif, Self::Monospace, Self::Cursive];
+}
+
+// ── the exact forms: a value where a name will not do ───────────────────────
+//
+// Each of the four run- and block-level properties gets an *open* type beside
+// its closed enum: the name, or the measurement the name cannot be. The enums
+// above are unchanged and still the menus' first offer — a name is portable
+// and a value is exact, and the author who takes the second takes the
+// portability cost knowingly.
+//
+// Each open type reads its own key with `from_attrs`, tries the **name first**
+// and the value second, and spells what it holds back with `name()`. A value
+// the grammar does not cover — `huge`, `14px`, `rgb(…)`, `1.3em` — answers
+// `None` exactly as it did before these types existed: carried untouched by the
+// document and drawn at the theme's default.
+
+/// A number a presentation value carries, in hundredths — 14 points is `1400`,
+/// a ratio of 1.3 is `130`.
+///
+/// Fixed point rather than an `f32` because a [`Style`] is stamped on every
+/// glyph and compared for run-merging, so the type has to be `Eq`, and because
+/// two spellings of the same number must be the same value: an author's
+/// `14.0pt` and the menu's `14pt` are one size, not two runs. Hundredths is
+/// more precision than any menu writes and enough for the `13.25pt` a fitted
+/// theme lands on.
+///
+/// `u16`, so the largest value is 655.35 — past any type size a sheet of paper
+/// holds and any line height a document means. A number above it is not a
+/// number this vocabulary carries, and reads as `None`.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct Hundredths(u16);
+
+impl Hundredths {
+    /// The number `value` names, rounded to the nearest hundredth. `None` for
+    /// anything that is not a positive finite number this can hold — the same
+    /// answer the parsers give a value outside the grammar.
+    pub fn from_f32(value: f32) -> Option<Self> {
+        if !value.is_finite() {
+            return None;
+        }
+        let h = (value * 100.0).round();
+        (1.0..=f32::from(u16::MAX))
+            .contains(&h)
+            .then_some(Self(h as u16))
+    }
+
+    /// The number itself — what a frontend lays out with.
+    pub fn as_f32(self) -> f32 {
+        self.0 as f32 / 100.0
+    }
+
+    /// The hundredths themselves, for a frontend that would rather do integer
+    /// arithmetic than divide and multiply back.
+    pub const fn hundredths(self) -> u16 {
+        self.0
+    }
+
+    /// Read a decimal — digits, at most one point, no sign and no exponent,
+    /// which is the whole of what a word processor's field writes. `None` for
+    /// anything else, and for zero: a size or a spacing of nothing is not a
+    /// value, it is a mistake.
+    ///
+    /// A third decimal place rounds rather than being refused, because the
+    /// number a colour picker or a font panel hands back is whatever floating
+    /// point made of the slider.
+    fn parse(value: &str) -> Option<Self> {
+        let (int, frac) = value.split_once('.').unwrap_or((value, ""));
+        if int.is_empty() && frac.is_empty() {
+            return None;
+        }
+        if !int.bytes().chain(frac.bytes()).all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let whole: u32 = if int.is_empty() { 0 } else { int.parse().ok()? };
+        // Out of range before the arithmetic rather than after it, so a
+        // thousand digits of integer part is a `None` and not an overflow.
+        if whole > u32::from(u16::MAX) / 100 {
+            return None;
+        }
+        let digit = |i: usize| frac.as_bytes().get(i).map_or(0, |b| u32::from(b - b'0'));
+        let mut h = whole * 100 + digit(0) * 10 + digit(1);
+        if digit(2) >= 5 {
+            h += 1;
+        }
+        (1..=u32::from(u16::MAX))
+            .contains(&h)
+            .then_some(Self(h as u16))
+    }
+}
+
+impl std::fmt::Display for Hundredths {
+    /// The shortest decimal that means this number: `14`, `13.5`, `1.25`. What
+    /// a document is written with, so that a value set twice from the same menu
+    /// spells the same bytes both times.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (whole, frac) = (self.0 / 100, self.0 % 100);
+        match frac {
+            0 => write!(f, "{whole}"),
+            _ if frac % 10 == 0 => write!(f, "{whole}.{}", frac / 10),
+            _ => write!(f, "{whole}.{frac:02}"),
+        }
+    }
+}
+
+/// How large a run is set: a [`SizeStep`] relative to the text around it, or
+/// the point size the author asked for.
+///
+/// The step is what a menu offers first, and is what a document should say
+/// where a name will do — it reads as a step up under every theme. The point
+/// size is what the author typed and is all it is: 14 points of the sheet on
+/// the paginated view, and 14 points before the zoom on screen, which is how
+/// every other point size on a page behaves. A heading set to an exact size is
+/// that size and not its ramp scaled — the name scales the ramp, the value
+/// replaces it.
+///
+/// Only `pt` is a unit. `px` is a screen's unit and a document is not a screen;
+/// `em`, `rem` and `%` are relative, which is what the steps already are.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FontSize {
+    Step(SizeStep),
+    Points(Hundredths),
+}
+
+impl FontSize {
+    /// The size a run's or block's attributes name, if any — twig records it
+    /// under `data-size`.
+    pub fn from_attrs(attrs: &[(String, Option<String>)]) -> Option<Self> {
+        attrs
+            .iter()
+            .find(|(k, _)| k == "data-size")
+            .and_then(|(_, v)| v.as_deref())
+            .and_then(Self::from_attr)
+    }
+
+    /// Read a `data-size` value: one of CSS's seven keywords, or a `<number>pt`.
+    /// The unit is matched without regard to case, because a hand-written
+    /// document says `14PT` as readily as `14pt` and CSS reads both.
+    pub fn from_attr(value: &str) -> Option<Self> {
+        let value = value.trim();
+        if let Some(step) = SizeStep::from_attr(value) {
+            return Some(Self::Step(step));
+        }
+        let number = value.strip_suffix("pt").or_else(|| {
+            let (n, unit) = value.split_at_checked(value.len().checked_sub(2)?)?;
+            unit.eq_ignore_ascii_case("pt").then_some(n)
+        })?;
+        Hundredths::parse(number).map(Self::Points)
+    }
+
+    /// A size in points, or `None` for a number this vocabulary cannot carry —
+    /// the constructor an *Other…* field calls with what the author typed.
+    pub fn points(points: f32) -> Option<Self> {
+        Hundredths::from_f32(points).map(Self::Points)
+    }
+
+    /// The token twig spells it with, and what [`from_attr`](Self::from_attr)
+    /// reads back: the step's CSS keyword, or the shortest decimal with `pt`
+    /// after it.
+    pub fn name(self) -> Cow<'static, str> {
+        match self {
+            Self::Step(step) => Cow::Borrowed(step.name()),
+            Self::Points(pt) => Cow::Owned(format!("{pt}pt")),
+        }
+    }
+
+    /// The step, for a menu asking which of its seven rows to tick — `None`
+    /// when the size is an exact one, which the menu shows as its own row.
+    pub const fn step(self) -> Option<SizeStep> {
+        match self {
+            Self::Step(step) => Some(step),
+            Self::Points(_) => None,
+        }
+    }
+
+    /// The point size, or `None` when the size is a step — whose size in points
+    /// is the theme's business and not this type's.
+    pub fn points_value(self) -> Option<f32> {
+        match self {
+            Self::Step(_) => None,
+            Self::Points(pt) => Some(pt.as_f32()),
+        }
+    }
+}
+
+/// How far apart a block's lines are set: a [`LineSpacing`] from the menu's
+/// three, or the ratio the author asked for. [`FontSize`]'s peer, one property
+/// along, and with no unit at all — a line height is a multiple.
+///
+/// A ratio that spells one of the three names *is* that name:
+/// [`from_attr`](Self::from_attr) answers `Step(OneHalf)` for `1.50` as well as
+/// for `1.5`, so that two spellings of one spacing are one value and the
+/// document is rewritten with the name a menu can tick.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LineHeight {
+    Step(LineSpacing),
+    Ratio(Hundredths),
+}
+
+impl LineHeight {
+    /// The spacing a block's attributes name, if any — twig records it under
+    /// `data-line-height`.
+    pub fn from_attrs(attrs: &[(String, Option<String>)]) -> Option<Self> {
+        attrs
+            .iter()
+            .find(|(k, _)| k == "data-line-height")
+            .and_then(|(_, v)| v.as_deref())
+            .and_then(Self::from_attr)
+    }
+
+    /// Read a `data-line-height` value: one of the three names, or any positive
+    /// decimal.
+    pub fn from_attr(value: &str) -> Option<Self> {
+        let value = value.trim();
+        if let Some(step) = LineSpacing::from_attr(value) {
+            return Some(Self::Step(step));
+        }
+        Hundredths::parse(value).map(Self::of)
+    }
+
+    /// A ratio, or `None` for a number this vocabulary cannot carry — the
+    /// constructor an *Other…* field calls with what the author typed.
+    pub fn ratio(ratio: f32) -> Option<Self> {
+        Hundredths::from_f32(ratio).map(Self::of)
+    }
+
+    /// A ratio as the name for it where there is one — see the type's note.
+    fn of(ratio: Hundredths) -> Self {
+        match LineSpacing::from_attr(&ratio.to_string()) {
+            Some(step) => Self::Step(step),
+            None => Self::Ratio(ratio),
+        }
+    }
+
+    /// The token twig spells it with, and what [`from_attr`](Self::from_attr)
+    /// reads back.
+    pub fn name(self) -> Cow<'static, str> {
+        match self {
+            Self::Step(step) => Cow::Borrowed(step.name()),
+            Self::Ratio(r) => Cow::Owned(r.to_string()),
+        }
+    }
+
+    /// The step, for a menu asking which of its three rows to tick — `None` for
+    /// an exact ratio, which the menu shows as its own row.
+    pub const fn step(self) -> Option<LineSpacing> {
+        match self {
+            Self::Step(step) => Some(step),
+            Self::Ratio(_) => None,
+        }
+    }
+
+    /// The ratio itself — what a frontend multiplies the theme's line height
+    /// by. Unlike [`FontSize`]'s points this always answers, because a step's
+    /// ratio is the name read as arithmetic ([`LineSpacing::ratio`]) and not a
+    /// theme's choice.
+    pub fn as_f32(self) -> f32 {
+        match self {
+            Self::Step(step) => step.ratio(),
+            Self::Ratio(r) => r.as_f32(),
+        }
+    }
+}
+
+/// A run's foreground colour: one of the seven [`MarkColor`] names, or the RGB
+/// triple the author asked for.
+///
+/// A name is two inks, one per appearance, and the theme owns both. A triple is
+/// painted as written in the light appearance and in the dark one alike — that
+/// is what "exact" means, and the proposal does not soften it with a heuristic.
+/// `#rgb` is read and never written; six lowercase digits is the spelling.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TextColor {
+    Named(MarkColor),
+    Rgb { r: u8, g: u8, b: u8 },
+}
+
+impl TextColor {
+    /// The colour a run's or block's attributes name, if any — twig records it
+    /// under `data-color`, the key a `mark` node carries its *highlight's*
+    /// colour under. The two never collide: a `mark` is a `mark` and a span is
+    /// a span.
+    pub fn from_attrs(attrs: &[(String, Option<String>)]) -> Option<Self> {
+        attrs
+            .iter()
+            .find(|(k, _)| k == "data-color")
+            .and_then(|(_, v)| v.as_deref())
+            .and_then(Self::from_attr)
+    }
+
+    /// Read a `data-color` value: one of the seven names, `#rrggbb`, or the
+    /// `#rgb` shorthand a stylesheet author writes (`#f00` is `#ff0000`, each
+    /// digit doubled, as CSS expands it).
+    pub fn from_attr(value: &str) -> Option<Self> {
+        let value = value.trim();
+        if let Some(named) = MarkColor::from_attr(value) {
+            return Some(Self::Named(named));
+        }
+        let hex = value.strip_prefix('#')?;
+        if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        let nib = |i: usize| u8::from_str_radix(&hex[i..i + 1], 16).ok();
+        let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+        match hex.len() {
+            3 => Some(Self::Rgb {
+                r: nib(0)? * 0x11,
+                g: nib(1)? * 0x11,
+                b: nib(2)? * 0x11,
+            }),
+            6 => Some(Self::Rgb {
+                r: byte(0)?,
+                g: byte(2)?,
+                b: byte(4)?,
+            }),
+            _ => None,
+        }
+    }
+
+    /// The token twig spells it with, and what [`from_attr`](Self::from_attr)
+    /// reads back: the name, or six lowercase hex digits behind a `#`.
+    pub fn name(self) -> Cow<'static, str> {
+        match self {
+            Self::Named(c) => Cow::Borrowed(c.name()),
+            Self::Rgb { r, g, b } => Cow::Owned(format!("#{r:02x}{g:02x}{b:02x}")),
+        }
+    }
+
+    /// The name, for a palette asking which of its seven swatches to tick —
+    /// `None` for an exact triple, which the palette shows as a swatch of its
+    /// own.
+    pub const fn named(self) -> Option<MarkColor> {
+        match self {
+            Self::Named(c) => Some(c),
+            Self::Rgb { .. } => None,
+        }
+    }
+
+    /// The triple, or `None` for a name — whose two inks are the theme's.
+    pub const fn rgb(self) -> Option<(u8, u8, u8)> {
+        match self {
+            Self::Named(_) => None,
+            Self::Rgb { r, g, b } => Some((r, g, b)),
+        }
+    }
+}
+
+/// The face a run is set in: one of CSS's four generics, or the family the
+/// author named.
+///
+/// A generic opens on every machine and a family name does not, which is the
+/// trade stated once in [`FontFamily`]'s own note. A named family is resolved
+/// through the platform's font registry by the frontends that have one, and
+/// falls back to the body face where it is not installed.
+///
+/// Owned, because a family name is a `String` and this is what a gesture takes
+/// and a query answers — neither is per-glyph. What a *glyph* carries is
+/// [`FaceRef`], the `Copy` half, whose name is looked up in the map's
+/// [`FaceTable`].
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum FontFace {
+    Generic(FontFamily),
+    Named(String),
+}
+
+impl FontFace {
+    /// The face a run's or block's attributes name, if any — twig records it
+    /// under `data-font`.
+    pub fn from_attrs(attrs: &[(String, Option<String>)]) -> Option<Self> {
+        attrs
+            .iter()
+            .find(|(k, _)| k == "data-font")
+            .and_then(|(_, v)| v.as_deref())
+            .and_then(Self::from_attr)
+    }
+
+    /// Read a `data-font` value: one of the four generics, or any other
+    /// non-empty string, which is a family name. Trimmed, and nothing else —
+    /// a family name is what the author typed, and leaf has no table of real
+    /// ones to check it against.
+    pub fn from_attr(value: &str) -> Option<Self> {
+        let value = value.trim();
+        match FontFamily::from_attr(value) {
+            Some(generic) => Some(Self::Generic(generic)),
+            None => (!value.is_empty()).then(|| Self::Named(value.to_string())),
+        }
+    }
+
+    /// The token twig spells it with, and what [`from_attr`](Self::from_attr)
+    /// reads back — the generic's CSS keyword, or the family name as given.
+    pub fn name(&self) -> Cow<'_, str> {
+        match self {
+            Self::Generic(generic) => Cow::Borrowed(generic.name()),
+            Self::Named(name) => Cow::Borrowed(name.as_str()),
+        }
+    }
+
+    /// The generic, for a menu asking which of its four rows to tick — `None`
+    /// for a named family, which the menu shows as a row of its own.
+    pub const fn generic(&self) -> Option<FontFamily> {
+        match self {
+            Self::Generic(generic) => Some(*generic),
+            Self::Named(_) => None,
+        }
+    }
+}
+
+/// A named family's id on a glyph — what [`FaceRef::Named`] carries and
+/// [`FaceTable::name`] reads back.
+///
+/// A 32-bit FNV-1a of the family name, and *not* an index, for one reason: a
+/// glyph's id has to mean the same thing however its row was built. A row comes
+/// from a fresh walk, from a [`crate::wysiwyg::BlockCache`] hit cloned at a
+/// shifted offset, or from a previous map a splice kept untouched — and an
+/// index into a table that each of those three assembled differently would have
+/// the same glyph naming two faces. Derived from the name, nothing has to be
+/// remapped and a spliced map's glyphs compare equal to a fresh build's.
+///
+/// Two family names that hashed alike would draw in one face. That needs about
+/// 2¹⁶ distinct families in one document to become likely, and a document with
+/// 2¹⁶ families has a different problem.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct FaceId(u32);
+
+impl FaceId {
+    /// The id a family name has. FNV-1a, written out rather than taken from
+    /// `DefaultHasher`, because the value is compared across builds and must
+    /// not depend on a hasher's seed or version.
+    pub fn of(name: &str) -> Self {
+        let mut h: u32 = 0x811c_9dc5;
+        for b in name.as_bytes() {
+            h ^= u32::from(*b);
+            h = h.wrapping_mul(0x0100_0193);
+        }
+        Self(h)
+    }
+}
+
+/// The face a *glyph* is set in — [`FontFace`]'s `Copy` half, so that a
+/// [`Style`] stays `Copy` and `Eq` and can be stamped on every glyph and
+/// compared for run-merging.
+///
+/// A named family is an id into the map's [`FaceTable`], which the walker
+/// interns into as it meets each name. A frontend reads the name back with
+/// [`crate::wysiwyg::VisualMap::face_name`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FaceRef {
+    Generic(FontFamily),
+    Named(FaceId),
+}
+
+impl FaceRef {
+    /// The generic, or `None` for a named family — [`FontFace::generic`]'s peer.
+    pub const fn generic(self) -> Option<FontFamily> {
+        match self {
+            Self::Generic(generic) => Some(generic),
+            Self::Named(_) => None,
+        }
+    }
+
+    /// The id of the named family, or `None` for a generic.
+    pub const fn id(self) -> Option<FaceId> {
+        match self {
+            Self::Generic(_) => None,
+            Self::Named(id) => Some(id),
+        }
+    }
+}
+
+/// Every named family a [`crate::wysiwyg::VisualMap`] draws, by the id its
+/// glyphs carry — the side table that lets [`Style`] stay `Copy` while a face
+/// name stays a `String`.
+///
+/// Small: one entry per *distinct* family name in the document, which is
+/// normally none. A splice may leave an entry no glyph names any more, because
+/// the splice reuses the previous map's table rather than rebuilding it from
+/// rows it deliberately did not walk; an unused entry costs a string and draws
+/// nothing.
+#[derive(Clone, Default, Debug, PartialEq, Eq)]
+pub struct FaceTable {
+    /// Ascending by id, so a lookup is a binary search and two tables built
+    /// from the same names compare equal whatever order they met them in.
+    entries: Vec<(FaceId, String)>,
+}
+
+impl FaceTable {
+    /// The family name `id` stands for, or `None` for an id from another map —
+    /// which a frontend draws in the theme's body face, as it draws a face it
+    /// cannot resolve.
+    pub fn name(&self, id: FaceId) -> Option<&str> {
+        let i = self.entries.binary_search_by_key(&id, |(k, _)| *k).ok()?;
+        Some(self.entries[i].1.as_str())
+    }
+
+    /// Every family in the table, by id — how a frontend warms a font cache
+    /// before it draws.
+    pub fn iter(&self) -> impl Iterator<Item = (FaceId, &str)> {
+        self.entries.iter().map(|(id, name)| (*id, name.as_str()))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Record `face` and hand back what a glyph carries for it. A generic needs
+    /// no entry — it names itself.
+    pub(crate) fn intern(&mut self, face: &FontFace) -> FaceRef {
+        match face {
+            FontFace::Generic(generic) => FaceRef::Generic(*generic),
+            FontFace::Named(name) => {
+                let id = FaceId::of(name);
+                if let Err(i) = self.entries.binary_search_by_key(&id, |(k, _)| *k) {
+                    self.entries.insert(i, (id, name.clone()));
+                }
+                FaceRef::Named(id)
+            }
+        }
+    }
+
+    /// The face `attrs` name, interned — the walker's door.
+    pub(crate) fn face_from_attrs(
+        &mut self,
+        attrs: &[(String, Option<String>)],
+    ) -> Option<FaceRef> {
+        FontFace::from_attrs(attrs).map(|face| self.intern(&face))
+    }
+
+    /// Take in everything `other` knows — how a build assembles one table out
+    /// of the per-block walks, cache hits and spliced remnants it is made of.
+    pub(crate) fn merge(&mut self, other: &FaceTable) {
+        for (id, name) in &other.entries {
+            if let Err(i) = self.entries.binary_search_by_key(id, |(k, _)| *k) {
+                self.entries.insert(i, (*id, name.clone()));
+            }
+        }
+    }
 }
 
 /// What a glyph in a fenced code block is *to the language it is written in*
@@ -644,28 +1198,29 @@ pub struct Style {
     /// highlighting. Only meaningful beside [`Role::Code`]; a frontend that
     /// ignores it draws code in one colour, as every frontend once did.
     pub token: Option<Token>,
-    /// How large this run is set relative to the text around it — the author's
-    /// `data-size`, and `None` for the theme's own size, which is every glyph
+    /// How large this run is set — the author's `data-size` as a step or a
+    /// point size, and `None` for the theme's own size, which is every glyph
     /// there was before the presentation vocabulary.
     ///
     /// Read at both levels, the nearer winning: a span's `data-size` inside a
     /// block carrying its own applies to the span. A frontend that ignores it
     /// draws one size, as `leaf-ratatui` does — a cell has one size.
-    pub size: Option<SizeStep>,
-    /// The face this run is set in — the author's `data-font`, and `None` for
-    /// the theme's body face. Read at the same two levels [`size`](Self::size)
-    /// is.
-    pub font: Option<FontFamily>,
+    pub size: Option<FontSize>,
+    /// The face this run is set in — the author's `data-font` as a generic or
+    /// as an id into the map's [`FaceTable`], and `None` for the theme's body
+    /// face. Read at the same two levels [`size`](Self::size) is.
+    pub font: Option<FaceRef>,
     /// The run's *foreground* colour — the author's `data-color` on an
     /// attributed span, and `None` for the theme's text colour.
     ///
-    /// The same seven names [`Role::Mark`] carries, and deliberately the same
-    /// enum: a frontend that has a red for a highlight has a red for text, and
-    /// both should be *that* red. The two never collide, because a `mark` is a
+    /// The same seven names [`Role::Mark`] carries, over the same enum: a
+    /// frontend that has a red for a highlight has a red for text, and both
+    /// should be *that* red. The two never collide, because a `mark` is a
     /// `mark` and a span is a span — a `data-color` on a `mark` node is the
     /// highlight's background and reaches a glyph through its role, while this
-    /// is what a `<span data-color="red">` paints the letters.
-    pub color: Option<MarkColor>,
+    /// is what a `<span data-color="red">` paints the letters. Only this one
+    /// opens to a triple, for the reason [`MarkColor`]'s note gives.
+    pub color: Option<TextColor>,
 }
 
 impl Style {
@@ -704,17 +1259,17 @@ impl Style {
         self
     }
 
-    pub const fn size(mut self, s: Option<SizeStep>) -> Self {
+    pub const fn size(mut self, s: Option<FontSize>) -> Self {
         self.size = s;
         self
     }
 
-    pub const fn font(mut self, f: Option<FontFamily>) -> Self {
+    pub const fn font(mut self, f: Option<FaceRef>) -> Self {
         self.font = f;
         self
     }
 
-    pub const fn color(mut self, c: Option<MarkColor>) -> Self {
+    pub const fn color(mut self, c: Option<TextColor>) -> Self {
         self.color = c;
         self
     }
@@ -866,5 +1421,174 @@ mod tests {
             MarkColor::from_attrs(&[("data-color".to_string(), None)]),
             None
         );
+    }
+
+    /// Each open type reads the **name first** and the value second, and spells
+    /// back what it read in one canonical form — so a size set twice from the
+    /// same field writes the same bytes both times, and a document rewritten by
+    /// leaf is a document a stylesheet can still key on where a name was used.
+    #[test]
+    fn each_property_reads_a_name_or_a_value_and_spells_one_of_them_back() {
+        // Size: the seven keywords, then `<number>pt`.
+        let size = |v: &str| FontSize::from_attr(v);
+        assert_eq!(size("large"), Some(FontSize::Step(SizeStep::Large)));
+        assert_eq!(size("14pt"), FontSize::points(14.0));
+        assert_eq!(size("14.0pt"), size("14pt"), "the same size, spelled twice");
+        assert_eq!(size(" 13.5pt "), FontSize::points(13.5));
+        assert_eq!(size("14PT"), size("14pt"), "CSS reads its units either way");
+        assert_eq!(size("14pt").unwrap().name(), "14pt");
+        assert_eq!(size("13.50pt").unwrap().name(), "13.5pt");
+        assert_eq!(size("13.25pt").unwrap().name(), "13.25pt");
+        assert_eq!(size("large").unwrap().name(), "large");
+        assert_eq!(size("14pt").unwrap().points_value(), Some(14.0));
+        assert_eq!(size("large").unwrap().points_value(), None);
+        assert_eq!(size("large").unwrap().step(), Some(SizeStep::Large));
+
+        // Line height: the three names, then any positive decimal — and a
+        // decimal that spells a name *is* the name.
+        let lh = |v: &str| LineHeight::from_attr(v);
+        assert_eq!(lh("1.5"), Some(LineHeight::Step(LineSpacing::OneHalf)));
+        assert_eq!(lh("1.50"), lh("1.5"), "one spacing, not two");
+        assert_eq!(lh("2.0"), Some(LineHeight::Step(LineSpacing::Double)));
+        assert_eq!(lh("1.3"), LineHeight::ratio(1.3));
+        assert_eq!(lh("1.3").unwrap().name(), "1.3");
+        assert_eq!(lh("1.25").unwrap().name(), "1.25");
+        assert_eq!(lh("1.5").unwrap().name(), "1.5");
+        assert!((lh("1.3").unwrap().as_f32() - 1.3).abs() < 1e-6);
+        assert!((lh("1.5").unwrap().as_f32() - 1.5).abs() < 1e-6);
+
+        // Colour: the seven names, `#rrggbb`, and `#rgb` read but never
+        // written.
+        let col = |v: &str| TextColor::from_attr(v);
+        assert_eq!(col("red"), Some(TextColor::Named(MarkColor::Red)));
+        assert_eq!(
+            col("#c03030"),
+            Some(TextColor::Rgb {
+                r: 0xc0,
+                g: 0x30,
+                b: 0x30
+            })
+        );
+        assert_eq!(col("#C03030"), col("#c03030"));
+        assert_eq!(col("#f00"), col("#ff0000"), "each digit doubled");
+        assert_eq!(col("#c03030").unwrap().name(), "#c03030");
+        assert_eq!(col("red").unwrap().name(), "red");
+        assert_eq!(col("#c03030").unwrap().rgb(), Some((0xc0, 0x30, 0x30)));
+        assert_eq!(col("red").unwrap().named(), Some(MarkColor::Red));
+
+        // Face: the four generics, then any other non-empty string.
+        let face = |v: &str| FontFace::from_attr(v);
+        assert_eq!(face("serif"), Some(FontFace::Generic(FontFamily::Serif)));
+        assert_eq!(face("Garamond"), Some(FontFace::Named("Garamond".into())));
+        assert_eq!(face("  Garamond  "), face("Garamond"));
+        assert_eq!(face("Garamond").unwrap().name(), "Garamond");
+        assert_eq!(face("serif").unwrap().name(), "serif");
+        assert_eq!(face("Garamond").unwrap().generic(), None);
+    }
+
+    /// A value outside the grammar is what it was before the vocabulary opened:
+    /// `None` here, carried untouched by the document, and drawn at the theme's
+    /// default. `px` is a screen's unit and a document is not a screen; the
+    /// relative units are what the steps already are; and a colour function is
+    /// a CSS parser leaf is not going to become.
+    #[test]
+    fn a_value_outside_the_grammar_is_carried_and_not_guessed_at() {
+        for v in ["huge", "14px", "1.3em", "14", "pt", "-14pt", "0pt", ""] {
+            assert_eq!(FontSize::from_attr(v), None, "{v:?} is not a size");
+        }
+        for v in ["1.3em", "normal", "-1.3", "0", "1.2.3", ""] {
+            assert_eq!(LineHeight::from_attr(v), None, "{v:?} is not a spacing");
+        }
+        for v in [
+            "rgb(192, 48, 48)",
+            "chartreuse",
+            "#c0303",
+            "#gggggg",
+            "c03030",
+            "#",
+            "",
+        ] {
+            assert_eq!(TextColor::from_attr(v), None, "{v:?} is not a colour");
+        }
+        // A face has almost no grammar to fall outside of — only emptiness,
+        // because a family name is whatever the author typed.
+        assert_eq!(FontFace::from_attr("   "), None);
+        assert_eq!(FontFace::from_attr(""), None);
+        // And a bare attribute has no value at all, at every key.
+        let bare = |k: &str| vec![(k.to_string(), None)];
+        assert_eq!(FontSize::from_attrs(&bare("data-size")), None);
+        assert_eq!(LineHeight::from_attrs(&bare("data-line-height")), None);
+        assert_eq!(TextColor::from_attrs(&bare("data-color")), None);
+        assert_eq!(FontFace::from_attrs(&bare("data-font")), None);
+    }
+
+    /// The fixed point is the reason a [`Style`] stays `Copy` and `Eq`, and
+    /// hundredths is where the rounding lands. Pinned because the spelling is
+    /// what a document is written with: a shortest decimal, so a size set twice
+    /// from the same field writes the same bytes.
+    #[test]
+    fn a_value_is_hundredths_and_spells_itself_as_short_as_it_can() {
+        let h = |v: f32| Hundredths::from_f32(v).unwrap().to_string();
+        assert_eq!(h(14.0), "14");
+        assert_eq!(h(13.5), "13.5");
+        assert_eq!(h(1.25), "1.25");
+        assert_eq!(h(1.3), "1.3");
+        assert_eq!(h(0.05), "0.05");
+        assert_eq!(Hundredths::from_f32(14.0).unwrap().as_f32(), 14.0);
+        assert_eq!(Hundredths::from_f32(14.0).unwrap().hundredths(), 1400);
+        // Out of what a u16 of hundredths holds, and out of what a size means.
+        assert_eq!(Hundredths::from_f32(700.0), None);
+        assert_eq!(Hundredths::from_f32(0.0), None);
+        assert_eq!(Hundredths::from_f32(-1.0), None);
+        assert_eq!(Hundredths::from_f32(f32::NAN), None);
+        // And an integer part too long to hold is a `None`, not an overflow.
+        assert_eq!(FontSize::from_attr("42949672.99pt"), None);
+        assert_eq!(FontSize::from_attr("999999999999pt"), None);
+        assert_eq!(FontSize::from_attr("655.36pt"), None);
+        assert_eq!(FontSize::from_attr("655.35pt").unwrap().name(), "655.35pt");
+        // A third decimal place rounds rather than being refused — a font panel
+        // hands back whatever floating point made of its slider.
+        assert_eq!(FontSize::from_attr("13.456pt"), FontSize::points(13.46));
+        assert_eq!(FontSize::from_attr("13.454pt"), FontSize::points(13.45));
+    }
+
+    /// A glyph carries a [`FaceId`], not a `String`, and the id is derived from
+    /// the name so that a row built three different ways names one face. The
+    /// table is the only place the string lives.
+    #[test]
+    fn a_named_face_is_interned_once_and_its_id_is_the_name_s_own() {
+        let mut faces = FaceTable::default();
+        let garamond = FontFace::Named("Garamond".into());
+        let a = faces.intern(&garamond);
+        let b = faces.intern(&FontFace::Named("Garamond".into()));
+        assert_eq!(a, b, "one name, one id");
+        assert_eq!(faces.len(), 1, "and one entry");
+        assert_eq!(a, FaceRef::Named(FaceId::of("Garamond")));
+        assert_eq!(faces.name(FaceId::of("Garamond")), Some("Garamond"));
+        assert_eq!(a.generic(), None);
+
+        // A generic names itself and needs no entry.
+        let serif = faces.intern(&FontFace::Generic(FontFamily::Serif));
+        assert_eq!(serif, FaceRef::Generic(FontFamily::Serif));
+        assert_eq!(serif.id(), None);
+        assert_eq!(faces.len(), 1);
+
+        // Two tables that met the same names in opposite orders are equal, so
+        // a map assembled out of cache hits compares against a fresh build.
+        let mut one = FaceTable::default();
+        one.intern(&FontFace::Named("Futura".into()));
+        one.intern(&garamond);
+        let mut two = FaceTable::default();
+        two.intern(&garamond);
+        two.intern(&FontFace::Named("Futura".into()));
+        assert_eq!(one, two);
+
+        // And a merge is how a build makes one table out of several walks.
+        let mut merged = FaceTable::default();
+        merged.merge(&one);
+        merged.merge(&faces);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged.name(FaceId::of("Futura")), Some("Futura"));
+        assert_eq!(merged.name(FaceId::of("Bodoni")), None);
     }
 }

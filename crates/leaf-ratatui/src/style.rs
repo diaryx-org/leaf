@@ -487,7 +487,10 @@ impl Theme {
         // ignored: a terminal cell has one size and one face, so there is
         // nothing here to honour them with. See `wysiwyg_lines` for the row-level
         // property in the same position.
-        if let Some(color) = s.color {
+        // The named half of the vocabulary only: a terminal's ink for `red` is
+        // this theme's, and an exact `#c03030` draws in the theme's own ink
+        // until the truecolour cell lands (see the exact-values proposal).
+        if let Some(color) = s.color.and_then(leaf_core::TextColor::named) {
             out = out.fg(self.text_colors[color.index()]);
         }
         if s.bold {
@@ -1248,8 +1251,8 @@ mod tests {
     fn a_runs_size_and_face_change_nothing() {
         let theme = Theme::dark();
         let sized = LStyle {
-            size: Some(leaf_core::SizeStep::XxLarge),
-            font: Some(leaf_core::FontFamily::Cursive),
+            size: leaf_core::FontSize::points(24.0),
+            font: Some(leaf_core::FaceRef::Generic(leaf_core::FontFamily::Cursive)),
             ..LStyle::default()
         };
         assert_eq!(theme.to_ratatui(sized), theme.to_ratatui(LStyle::default()));

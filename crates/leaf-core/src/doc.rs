@@ -40,7 +40,7 @@ use unicode_segmentation::GraphemeCursor;
 
 use crate::html;
 use crate::source::{self, SourceMap};
-use crate::style::{Align, FontFamily, LineSpacing, MarkColor, SizeStep};
+use crate::style::{Align, FontFace, FontSize, LineHeight, MarkColor, TextColor};
 use crate::wysiwyg::{self, MediaKind, MediaStop, VisualMap};
 
 /// Which view the body shows.
@@ -4428,17 +4428,19 @@ impl Doc {
 
     /// Set — or with `None` clear — the line spacing of the block the caret is
     /// in. [`set_alignment`](Self::set_alignment)'s peer in every respect but
-    /// the key: [`LineSpacing`] under `data-line-height`.
-    pub fn set_line_spacing(&mut self, spacing: Option<LineSpacing>) {
+    /// the key: [`LineHeight`] under `data-line-height`, one of the menu's
+    /// three names or an exact ratio, written in its canonical spelling.
+    pub fn set_line_spacing(&mut self, spacing: Option<LineHeight>) {
         let attrs = self.block_attrs_at_caret();
         if spacing.is_none()
             && self.refuse_clear_from_div("line spacing", &attrs, |a| {
-                LineSpacing::from_attrs(a).is_some()
+                LineHeight::from_attrs(a).is_some()
             })
         {
             return;
         }
-        let attrs = with_attr(&attrs, "data-line-height", spacing.map(LineSpacing::name));
+        let spelling = spacing.map(LineHeight::name);
+        let attrs = with_attr(&attrs, "data-line-height", spelling.as_deref());
         self.write_block_attrs("line spacing", attrs);
     }
 
@@ -4455,20 +4457,32 @@ impl Doc {
     ///
     /// The walker reads the key at both levels with the nearer winning, so a
     /// span's `data-size` inside a block carrying its own applies to the span.
-    pub fn set_font_size(&mut self, size: Option<SizeStep>) {
-        self.set_run_attr("size", "data-size", size.map(SizeStep::name));
+    ///
+    /// The vocabulary is [`FontSize`]: one of CSS's seven keywords, which is
+    /// what a menu offers first because a step reads as a step up under every
+    /// theme, or the point size an author asked for, which is exact and is all
+    /// it is. Either is written in its canonical spelling, so a size set twice
+    /// from the same field writes the same bytes both times.
+    pub fn set_font_size(&mut self, size: Option<FontSize>) {
+        let spelling = size.map(FontSize::name);
+        self.set_run_attr("size", "data-size", spelling.as_deref());
     }
 
     /// Set — or with `None` clear — the face of the selected run, or of the
     /// caret's whole block. [`set_font_size`](Self::set_font_size)'s peer, with
-    /// [`FontFamily`] under `data-font`.
-    pub fn set_font_family(&mut self, font: Option<FontFamily>) {
-        self.set_run_attr("font", "data-font", font.map(FontFamily::name));
+    /// [`FontFace`] under `data-font` — one of the four generics, or the family
+    /// the author named, which the frontends resolve through the platform's
+    /// font registry and fall back to the body face without.
+    pub fn set_font_family(&mut self, font: Option<FontFace>) {
+        let spelling = font.as_ref().map(FontFace::name);
+        self.set_run_attr("font", "data-font", spelling.as_deref());
     }
 
     /// Set — or with `None` clear — the *text* colour of the selected run, or of
     /// the caret's whole block. [`set_font_size`](Self::set_font_size)'s peer,
-    /// with [`MarkColor`] under `data-color`.
+    /// with [`TextColor`] under `data-color` — one of the seven names, whose
+    /// two inks the theme owns, or the triple the author picked, which is
+    /// painted as written in both appearances.
     ///
     /// The same key and the same seven names [`set_mark_color`](Self::set_mark_color)
     /// writes, and a different thing: that one colours a highlight's
@@ -4477,8 +4491,9 @@ impl Doc {
     /// collide, because a `mark` is a `mark` and a span is a span — and they
     /// share a vocabulary on purpose, so that a frontend with a red for a
     /// highlight has a red for text and both are *that* red.
-    pub fn set_text_color(&mut self, color: Option<MarkColor>) {
-        self.set_run_attr("text colour", "data-color", color.map(MarkColor::name));
+    pub fn set_text_color(&mut self, color: Option<TextColor>) {
+        let spelling = color.map(TextColor::name);
+        self.set_run_attr("text colour", "data-color", spelling.as_deref());
     }
 
     /// Insert a page break at the caret — `::page-break`, a leaf directive with
@@ -4545,10 +4560,10 @@ impl Doc {
 
     /// The line spacing in force at the caret, or `None` for the theme's own.
     /// [`alignment_at_caret`](Self::alignment_at_caret)'s peer.
-    pub fn line_spacing_at_caret(&mut self) -> Option<LineSpacing> {
+    pub fn line_spacing_at_caret(&mut self) -> Option<LineHeight> {
         self.presentation_chain()
             .iter()
-            .find_map(|attrs| LineSpacing::from_attrs(attrs))
+            .find_map(|attrs| LineHeight::from_attrs(attrs))
     }
 
     /// The size in force at the caret, or `None` for the theme's own — the
@@ -4557,28 +4572,33 @@ impl Doc {
     /// Run-level, so the chain starts one node deeper: the attributed span the
     /// caret stands in, then its block, then the `div`s around it. The nearest
     /// wins, which is the rule the walker draws by.
-    pub fn font_size_at_caret(&mut self) -> Option<SizeStep> {
+    ///
+    /// A name or a value, whichever the nearest node wrote. A `data-size` the
+    /// grammar does not cover — a `huge` from elsewhere — is not a size this
+    /// can answer, so the answer is `None` and the menu ticks *Default*, the
+    /// same thing it did before the vocabulary opened.
+    pub fn font_size_at_caret(&mut self) -> Option<FontSize> {
         self.presentation_chain()
             .iter()
-            .find_map(|attrs| SizeStep::from_attrs(attrs))
+            .find_map(|attrs| FontSize::from_attrs(attrs))
     }
 
     /// The face in force at the caret, or `None` for the theme's body face.
     /// [`font_size_at_caret`](Self::font_size_at_caret)'s peer.
-    pub fn font_family_at_caret(&mut self) -> Option<FontFamily> {
+    pub fn font_family_at_caret(&mut self) -> Option<FontFace> {
         self.presentation_chain()
             .iter()
-            .find_map(|attrs| FontFamily::from_attrs(attrs))
+            .find_map(|attrs| FontFace::from_attrs(attrs))
     }
 
     /// The *text* colour in force at the caret, or `None` for the theme's.
     /// [`font_size_at_caret`](Self::font_size_at_caret)'s peer, and not
     /// [`mark_color_at_caret`](Self::mark_color_at_caret) — that one reads a
     /// highlight's background off a `mark`, and a `mark` is never in this chain.
-    pub fn text_color_at_caret(&mut self) -> Option<MarkColor> {
+    pub fn text_color_at_caret(&mut self) -> Option<TextColor> {
         self.presentation_chain()
             .iter()
-            .find_map(|attrs| MarkColor::from_attrs(attrs))
+            .find_map(|attrs| TextColor::from_attrs(attrs))
     }
 
     /// The selection-or-caret half of the three run-level gestures: a span over
@@ -7870,6 +7890,7 @@ fn detect_format(path: &Path) -> Result<Format> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::style::{FontFamily, LineSpacing, SizeStep};
 
     /// A document open in `view`. WYSIWYG motion reads the visual map, which the
     /// renderer stamps each frame, so the map is built here too — a WYSIWYG doc
@@ -11304,6 +11325,93 @@ mod tests {
         d.build_visual_unwrapped();
 
         wysiwyg::assert_maps_eq(&d.vmap, &reference_map(&d.source), "after the edit");
+    }
+
+    /// A glyph's [`FaceId`] has to mean the same thing however its row was
+    /// built. A row comes three ways — a fresh walk, a [`BlockCache`] hit
+    /// cloned at a shifted offset, and a previous map's rows a splice kept
+    /// untouched — and only the first of those walks a `data-font` at all. An
+    /// index into a per-build table would have had the same glyph naming two
+    /// families the moment a second one appeared; the id is the name's own
+    /// hash, so nothing is remapped and the table is merged rather than rebuilt.
+    ///
+    /// Two families, because one cannot tell a wrong id from a right one.
+    ///
+    /// [`FaceId`]: crate::style::FaceId
+    /// [`BlockCache`]: crate::wysiwyg::BlockCache
+    #[test]
+    fn a_spliced_rebuild_still_says_which_family_each_glyph_is_set_in() {
+        use crate::style::{FaceId, FaceRef};
+        let garamond = FaceId::of("Garamond");
+        let futura = FaceId::of("Futura");
+        let mut d = wysiwyg_doc(
+            "two_faces",
+            "x <span data-font=\"Garamond\">alpha</span>\n\ny <span data-font=\"Futura\">beta</span>\n",
+        );
+        d.build_visual_unwrapped();
+
+        // What the map has to keep saying, whichever path built it.
+        let check = |d: &Doc, ctx: &str| {
+            let face_of = |ch: char| {
+                d.vmap
+                    .rows
+                    .iter()
+                    .flat_map(|r| r.glyphs.iter())
+                    .find(|g| g.ch == ch)
+                    .map(|g| g.style.font)
+            };
+            assert_eq!(face_of('a'), Some(Some(FaceRef::Named(garamond))), "{ctx}");
+            assert_eq!(face_of('b'), Some(Some(FaceRef::Named(futura))), "{ctx}");
+            assert_eq!(d.vmap.face_name(garamond), Some("Garamond"), "{ctx}");
+            assert_eq!(d.vmap.face_name(futura), Some("Futura"), "{ctx}");
+            assert_eq!(d.vmap.face_name(FaceId::of("Bodoni")), None, "{ctx}");
+        };
+        check(&d, "fresh");
+
+        // An edit inside the second block: the single-block case the splice
+        // path is for. The first block's rows are carried over untouched, so
+        // its glyphs' ids are the previous build's and the table has to be too.
+        let at = d.source.find("beta").unwrap();
+        d.edit(at, at, "z");
+        d.build_visual_unwrapped();
+        check(&d, "after an edit in the second block");
+        wysiwyg::assert_maps_eq(&d.vmap, &reference_map(&d.source), "spliced");
+
+        // And the other way round, so the block that was kept is the one that
+        // is now re-rendered.
+        let at = d.source.find("alpha").unwrap();
+        d.edit(at, at, "z");
+        d.build_visual_unwrapped();
+        check(&d, "after an edit in the first block");
+        wysiwyg::assert_maps_eq(&d.vmap, &reference_map(&d.source), "spliced again");
+
+        // A structural edit is one the splice bails out of, so the map is
+        // reassembled by `build_cached` — where an untouched block is a *cache
+        // hit* and its rows are cloned without a `data-font` being walked
+        // again. The names the entry stored are what keeps the table honest
+        // there.
+        let at = d.source.find("\n\ny ").unwrap();
+        d.edit(at, at, "\n\nmiddle");
+        d.build_visual_unwrapped();
+        wysiwyg::assert_maps_eq(&d.vmap, &reference_map(&d.source), "cached");
+        // Twice, because that first `build_cached` is what stores the entries:
+        // this one is the build where the Garamond block is a *hit*, its rows
+        // cloned with their ids and no attribute walked to explain them.
+        let at = d.source.len() - 1;
+        d.edit(at, at, "\n\ntail");
+        d.build_visual_unwrapped();
+        check(&d, "after a structural edit, through the block cache");
+        wysiwyg::assert_maps_eq(&d.vmap, &reference_map(&d.source), "cached again");
+
+        // A family the edit took the last glyph of leaves the glyphs with no
+        // face and the table with a name nothing asks for — harmless, and the
+        // price of not walking the rows the splice exists to avoid walking.
+        let span = d.source.find("<span data-font=\"Futura\">").unwrap();
+        let end = d.source.rfind("</span>").unwrap() + "</span>".len();
+        d.edit(span, end, "beta");
+        d.build_visual_unwrapped();
+        assert!(!d.source.contains("Futura"), "{:?}", d.source);
+        wysiwyg::assert_maps_eq(&d.vmap, &reference_map(&d.source), "the face removed");
     }
 
     #[test]
@@ -15774,13 +15882,19 @@ mod tests {
             d.source
         );
         assert_eq!(d.alignment_at_caret(), Some(Align::Right));
-        assert_eq!(d.line_spacing_at_caret(), Some(LineSpacing::OneHalf));
+        assert_eq!(
+            d.line_spacing_at_caret(),
+            Some(LineHeight::Step(LineSpacing::OneHalf))
+        );
 
         // And the other way round: the spacing gesture leaves the classes be.
-        d.set_line_spacing(Some(LineSpacing::Double));
+        d.set_line_spacing(Some(LineHeight::Step(LineSpacing::Double)));
         assert!(d.source.contains(".lead"), "{:?}", d.source);
         assert!(d.source.contains(".right"), "{:?}", d.source);
-        assert_eq!(d.line_spacing_at_caret(), Some(LineSpacing::Double));
+        assert_eq!(
+            d.line_spacing_at_caret(),
+            Some(LineHeight::Step(LineSpacing::Double))
+        );
     }
 
     /// Clearing is the same gesture with `None`: the key goes, the tokens leaf
@@ -15807,7 +15921,7 @@ mod tests {
         md.set_alignment(Some(Align::Center));
         assert_eq!(md.source, "<div class=\"center\">\n\nhello\n\n</div>\n");
         md.caret = md.source.find("hello").unwrap();
-        md.set_line_spacing(Some(LineSpacing::OneFifteen));
+        md.set_line_spacing(Some(LineHeight::Step(LineSpacing::OneFifteen)));
         assert_eq!(
             md.source, "<div class=\"center\" data-line-height=\"1.15\">\n\nhello\n\n</div>\n",
             "the second key rewrites the div rather than nesting a second"
@@ -15828,23 +15942,173 @@ mod tests {
         let mut dj = fmt_doc("a big b\n", Format::Djot);
         dj.anchor = Some(2);
         dj.caret = 5;
-        dj.set_font_size(Some(SizeStep::Large));
+        dj.set_font_size(Some(FontSize::Step(SizeStep::Large)));
         assert_eq!(dj.source, "a [big]{data-size=\"large\"} b\n");
-        assert_eq!(dj.font_size_at_caret(), Some(SizeStep::Large));
+        assert_eq!(
+            dj.font_size_at_caret(),
+            Some(FontSize::Step(SizeStep::Large))
+        );
 
         let mut md = fmt_doc("a big b\n", Format::Markdown);
         md.anchor = Some(2);
         md.caret = 5;
-        md.set_text_color(Some(MarkColor::Blue));
+        md.set_text_color(Some(TextColor::Named(MarkColor::Blue)));
         assert_eq!(md.source, "a <span data-color=\"blue\">big</span> b\n");
-        assert_eq!(md.text_color_at_caret(), Some(MarkColor::Blue));
+        assert_eq!(
+            md.text_color_at_caret(),
+            Some(TextColor::Named(MarkColor::Blue))
+        );
 
         // Without one: the caret's block, through the block gesture.
         let mut block = fmt_doc("a big b\n", Format::Djot);
         block.caret = 3;
-        block.set_font_family(Some(FontFamily::Monospace));
+        block.set_font_family(Some(FontFace::Generic(FontFamily::Monospace)));
         assert_eq!(block.source, "{data-font=\"monospace\"}\na big b\n");
-        assert_eq!(block.font_family_at_caret(), Some(FontFamily::Monospace));
+        assert_eq!(
+            block.font_family_at_caret(),
+            Some(FontFace::Generic(FontFamily::Monospace))
+        );
+    }
+
+    /// The *Other…* row of each of the four menus: a value goes into the
+    /// document in its canonical spelling and comes back out of the query as
+    /// the same value. One round trip per property, because the four go out
+    /// through different doors — two block gestures, and the run three through
+    /// the span that `wrap_range_attrs` mints.
+    #[test]
+    fn an_exact_value_round_trips_through_the_gesture_and_the_query() {
+        // Size: the run three, over a selection.
+        let mut d = fmt_doc("a big b\n", Format::Djot);
+        d.anchor = Some(2);
+        d.caret = 5;
+        d.set_font_size(FontSize::points(14.0));
+        assert_eq!(d.source, "a [big]{data-size=\"14pt\"} b\n");
+        assert_eq!(d.font_size_at_caret(), FontSize::points(14.0));
+
+        // Colour, onto the same span — the gesture keeps the size it finds.
+        d.set_text_color(Some(TextColor::Rgb {
+            r: 0xc0,
+            g: 0x30,
+            b: 0x30,
+        }));
+        assert_eq!(
+            d.source,
+            "a [big]{data-size=\"14pt\" data-color=\"#c03030\"} b\n"
+        );
+        assert_eq!(
+            d.text_color_at_caret(),
+            Some(TextColor::Rgb {
+                r: 0xc0,
+                g: 0x30,
+                b: 0x30
+            })
+        );
+
+        // Face: a family name, as given.
+        d.set_font_family(Some(FontFace::Named("Garamond".into())));
+        assert!(
+            d.source.contains("data-font=\"Garamond\""),
+            "{:?}",
+            d.source
+        );
+        assert_eq!(
+            d.font_family_at_caret(),
+            Some(FontFace::Named("Garamond".into()))
+        );
+
+        // Line spacing: a block gesture, and an exact ratio.
+        let mut block = fmt_doc("hello\n", Format::Djot);
+        block.caret = 1;
+        block.set_line_spacing(LineHeight::ratio(1.3));
+        assert_eq!(block.source, "{data-line-height=\"1.3\"}\nhello\n");
+        assert_eq!(block.line_spacing_at_caret(), LineHeight::ratio(1.3));
+
+        // And a value spelled long is written back short, so the same press
+        // twice writes the same bytes: `14.0pt` in, `14pt` out.
+        let mut long = fmt_doc("{data-size=\"14.0pt\"}\nhello\n", Format::Djot);
+        long.caret = long.source.find("hello").unwrap();
+        assert_eq!(long.font_size_at_caret(), FontSize::points(14.0));
+        let in_force = long.font_size_at_caret();
+        long.set_font_size(in_force);
+        assert_eq!(long.source, "{data-size=\"14pt\"}\nhello\n");
+    }
+
+    /// A value the grammar does not cover is what it was before the vocabulary
+    /// opened: carried untouched by the document, answered `None` by the query
+    /// so the menu ticks *Default*, and rewritten only by a gesture on its own
+    /// key. leaf is not going to grow a CSS parser to guess at `1.3em`.
+    #[test]
+    fn a_value_outside_the_grammar_is_carried_and_the_menu_ticks_the_default() {
+        let src =
+            "{data-size=\"huge\" data-color=\"rgb(1,2,3)\" data-line-height=\"1.3em\"}\nhello\n";
+        let mut d = fmt_doc(src, Format::Djot);
+        d.caret = d.source.find("hello").unwrap();
+        assert_eq!(d.font_size_at_caret(), None);
+        assert_eq!(d.text_color_at_caret(), None);
+        assert_eq!(d.line_spacing_at_caret(), None);
+
+        // The keys are still there, untouched, after a gesture on a *different*
+        // key — "edit one key and keep the rest" holds for a value it cannot
+        // read as readily as for one it can.
+        d.set_alignment(Some(Align::Center));
+        assert!(d.source.contains("data-size=\"huge\""), "{:?}", d.source);
+        assert!(
+            d.source.contains("data-color=\"rgb(1,2,3)\""),
+            "{:?}",
+            d.source
+        );
+        assert!(
+            d.source.contains("data-line-height=\"1.3em\""),
+            "{:?}",
+            d.source
+        );
+        // And the gesture on its *own* key replaces it, which is the one way a
+        // carried value ever changes.
+        d.caret = d.source.find("hello").unwrap();
+        d.set_font_size(FontSize::points(12.0));
+        assert!(d.source.contains("data-size=\"12pt\""), "{:?}", d.source);
+        assert!(!d.source.contains("huge"), "{:?}", d.source);
+    }
+
+    /// The nearest node wins whichever *form* either node wrote: a value inside
+    /// a name, a name inside a value. The fold has one rule and does not learn
+    /// a second one for exact values.
+    #[test]
+    fn the_nearest_node_wins_whether_it_named_a_size_or_measured_one() {
+        // A value inside a name: the block says `small`, the span says `14pt`.
+        let mut d = fmt_doc(
+            "{data-size=\"small\"}\nx [y]{data-size=\"14pt\"} z\n",
+            Format::Djot,
+        );
+        d.caret = d.source.find('y').unwrap();
+        assert_eq!(d.font_size_at_caret(), FontSize::points(14.0));
+        d.caret = d.source.find('x').unwrap();
+        assert_eq!(
+            d.font_size_at_caret(),
+            Some(FontSize::Step(SizeStep::Small))
+        );
+
+        // And a name inside a value, which is the same rule read the other way.
+        let mut e = fmt_doc(
+            "{data-size=\"14pt\" data-color=\"#c03030\"}\nx [y]{data-size=\"small\"} z\n",
+            Format::Djot,
+        );
+        e.caret = e.source.find('y').unwrap();
+        assert_eq!(
+            e.font_size_at_caret(),
+            Some(FontSize::Step(SizeStep::Small))
+        );
+        assert_eq!(
+            e.text_color_at_caret(),
+            Some(TextColor::Rgb {
+                r: 0xc0,
+                g: 0x30,
+                b: 0x30
+            }),
+            "the block's colour still reaches the span"
+        );
+        e.caret = e.source.find('x').unwrap();
+        assert_eq!(e.font_size_at_caret(), FontSize::points(14.0));
     }
 
     /// twig re-styles the span a range already lies in rather than nesting a
@@ -15856,19 +16120,25 @@ mod tests {
         let mut d = fmt_doc("a big b\n", Format::Djot);
         d.anchor = Some(2);
         d.caret = 5;
-        d.set_font_size(Some(SizeStep::Large));
+        d.set_font_size(Some(FontSize::Step(SizeStep::Large)));
         assert_eq!(d.source, "a [big]{data-size=\"large\"} b\n");
 
         // The selection `wrap_range_attrs` left behind covers the whole span;
         // colouring it now keeps the size, because the gesture reads the span's
         // attributes before it edits its own key.
-        d.set_text_color(Some(MarkColor::Red));
+        d.set_text_color(Some(TextColor::Named(MarkColor::Red)));
         assert_eq!(
             d.source, "a [big]{data-size=\"large\" data-color=\"red\"} b\n",
             "one span, both keys"
         );
-        assert_eq!(d.font_size_at_caret(), Some(SizeStep::Large));
-        assert_eq!(d.text_color_at_caret(), Some(MarkColor::Red));
+        assert_eq!(
+            d.font_size_at_caret(),
+            Some(FontSize::Step(SizeStep::Large))
+        );
+        assert_eq!(
+            d.text_color_at_caret(),
+            Some(TextColor::Named(MarkColor::Red))
+        );
 
         d.set_text_color(None);
         assert_eq!(d.source, "a [big]{data-size=\"large\"} b\n");
@@ -15887,15 +16157,24 @@ mod tests {
         );
         // In the span: its own size, the block's face and alignment.
         d.caret = d.source.find('y').unwrap();
-        assert_eq!(d.font_size_at_caret(), Some(SizeStep::XxLarge));
-        assert_eq!(d.font_family_at_caret(), Some(FontFamily::Serif));
+        assert_eq!(
+            d.font_size_at_caret(),
+            Some(FontSize::Step(SizeStep::XxLarge))
+        );
+        assert_eq!(
+            d.font_family_at_caret(),
+            Some(FontFace::Generic(FontFamily::Serif))
+        );
         assert_eq!(d.alignment_at_caret(), Some(Align::Center));
         assert_eq!(d.line_spacing_at_caret(), None);
         assert_eq!(d.text_color_at_caret(), None);
 
         // Outside it: the block's size.
         d.caret = d.source.find('x').unwrap();
-        assert_eq!(d.font_size_at_caret(), Some(SizeStep::Small));
+        assert_eq!(
+            d.font_size_at_caret(),
+            Some(FontSize::Step(SizeStep::Small))
+        );
 
         // And through a Markdown div, which is where a Markdown block's
         // attributes live.
@@ -15905,7 +16184,10 @@ mod tests {
         );
         md.caret = md.source.find("hello").unwrap();
         assert_eq!(md.alignment_at_caret(), Some(Align::Center));
-        assert_eq!(md.font_size_at_caret(), Some(SizeStep::Large));
+        assert_eq!(
+            md.font_size_at_caret(),
+            Some(FontSize::Step(SizeStep::Large))
+        );
 
         // A document that names none of it answers `None` everywhere, which is
         // "the theme's own" and what every toolbar draws unlit.
@@ -15931,7 +16213,7 @@ mod tests {
         let at = d.source.find("world").unwrap();
         d.anchor = Some(at);
         d.caret = at + "world".len();
-        d.set_text_color(Some(MarkColor::Red));
+        d.set_text_color(Some(TextColor::Named(MarkColor::Red)));
         assert_eq!(
             d.source,
             "{.center data-size=\"small\" #box}\n:::\nhello [world]{data-color=\"red\"}\n:::\n",
@@ -15941,7 +16223,10 @@ mod tests {
         // And the queries stop at the block: a djot div is not a `<div>`, the
         // walker lends its keys to nothing inside it, and a query that said
         // otherwise would tick a menu entry no glyph on screen obeys.
-        assert_eq!(d.text_color_at_caret(), Some(MarkColor::Red));
+        assert_eq!(
+            d.text_color_at_caret(),
+            Some(TextColor::Named(MarkColor::Red))
+        );
         assert_eq!(d.font_size_at_caret(), None);
         assert_eq!(d.alignment_at_caret(), None);
     }
@@ -16031,13 +16316,13 @@ mod tests {
         // A `data-` key the same way, and a key the block did not have still
         // goes on the end.
         html.caret = html.source.find("hello").unwrap();
-        html.set_line_spacing(Some(LineSpacing::Double));
+        html.set_line_spacing(Some(LineHeight::Step(LineSpacing::Double)));
         assert_eq!(
             html.source,
             "<p id=\"intro\" class=\"lead right\" data-line-height=\"2\">hello</p>\n"
         );
         html.caret = html.source.find("hello").unwrap();
-        html.set_font_size(Some(SizeStep::Large));
+        html.set_font_size(Some(FontSize::Step(SizeStep::Large)));
         assert_eq!(
             html.source,
             "<p id=\"intro\" class=\"lead right\" data-line-height=\"2\" data-size=\"large\">hello</p>\n"
@@ -16156,16 +16441,16 @@ mod tests {
                 d.set_alignment(Some(Align::Center))
             }),
             ("line spacing", &|d: &mut Doc| {
-                d.set_line_spacing(Some(LineSpacing::Double))
+                d.set_line_spacing(Some(LineHeight::Step(LineSpacing::Double)))
             }),
             ("size", &|d: &mut Doc| {
-                d.set_font_size(Some(SizeStep::Large))
+                d.set_font_size(Some(FontSize::Step(SizeStep::Large)))
             }),
             ("face", &|d: &mut Doc| {
-                d.set_font_family(Some(FontFamily::Serif))
+                d.set_font_family(Some(FontFace::Generic(FontFamily::Serif)))
             }),
             ("colour", &|d: &mut Doc| {
-                d.set_text_color(Some(MarkColor::Red))
+                d.set_text_color(Some(TextColor::Named(MarkColor::Red)))
             }),
             ("page break", &|d: &mut Doc| d.insert_page_break()),
         ];
@@ -16189,7 +16474,7 @@ mod tests {
         let mut adoc = fmt_doc("hello world\n", Format::Asciidoc);
         adoc.anchor = Some(0);
         adoc.caret = 5;
-        adoc.set_font_size(Some(SizeStep::Large));
+        adoc.set_font_size(Some(FontSize::Step(SizeStep::Large)));
         assert_eq!(adoc.source, "hello world\n", "no inline spelling");
         assert!(adoc.status.is_some());
     }
@@ -16247,13 +16532,16 @@ mod tests {
         assert_eq!(word(&md), 2);
 
         // A second key on the same div — the line grows, the caret rides it.
-        md.set_line_spacing(Some(LineSpacing::Double));
+        md.set_line_spacing(Some(LineHeight::Step(LineSpacing::Double)));
         assert_eq!(
             md.source,
             "<div class=\"right\" data-line-height=\"2\">\n\nthe quick brown fox\n\n</div>\n"
         );
         assert_eq!(word(&md), 2);
-        assert_eq!(md.line_spacing_at_caret(), Some(LineSpacing::Double));
+        assert_eq!(
+            md.line_spacing_at_caret(),
+            Some(LineHeight::Step(LineSpacing::Double))
+        );
 
         // Unwrapping: the line shrinks, and then the div goes altogether.
         md.set_alignment(None);
@@ -16284,7 +16572,7 @@ mod tests {
         assert_eq!(word(&dj), 2);
         assert_eq!(dj.alignment_at_caret(), Some(Align::Center));
 
-        dj.set_line_spacing(Some(LineSpacing::Double));
+        dj.set_line_spacing(Some(LineHeight::Step(LineSpacing::Double)));
         assert_eq!(
             dj.source, "{.center data-line-height=\"2\"}\nthe quick brown fox\n",
             "a second press edits the line the first wrote"
@@ -16311,17 +16599,20 @@ mod tests {
         // No selection: the run gesture goes through the block door.
         let mut md = fmt_doc("the quick brown fox\n", Format::Markdown);
         md.caret = md.source.find("brown").unwrap() + 2;
-        md.set_font_size(Some(SizeStep::Large));
+        md.set_font_size(Some(FontSize::Step(SizeStep::Large)));
         assert_eq!(
             md.source,
             "<div data-size=\"large\">\n\nthe quick brown fox\n\n</div>\n"
         );
         assert_eq!(md.caret - md.source.find("brown").unwrap(), 2);
-        assert_eq!(md.font_size_at_caret(), Some(SizeStep::Large));
-        md.set_font_size(Some(SizeStep::Small));
         assert_eq!(
             md.font_size_at_caret(),
-            Some(SizeStep::Small),
+            Some(FontSize::Step(SizeStep::Large))
+        );
+        md.set_font_size(Some(FontSize::Step(SizeStep::Small)));
+        assert_eq!(
+            md.font_size_at_caret(),
+            Some(FontSize::Step(SizeStep::Small)),
             "the second press reached the same block"
         );
 
