@@ -47,24 +47,43 @@ public struct EditorState: Equatable {
     /// I'm in" from "highlight what I've chosen, in this colour" — one press
     /// that means both, in `LeafEditorModel.highlight(_:)`.
     public var hasSelection: Bool
+    /// How the block the caret stands in is aligned, and nil for the theme's
+    /// default (left) — which segment of an alignment control is lit.
+    ///
+    /// Here for `link` and `markColor`'s reason, and it is the sharpest case of
+    /// it: walking the caret from a centred paragraph into an ordinary one moves
+    /// no mark, no heading and no dirty flag, so a control asking core for itself
+    /// would never be told, and would keep the centre lit over left-aligned text.
+    ///
+    /// Alignment alone, of the vocabulary's six properties: the other five are
+    /// offered in menus, which are built when they open and can ask the document
+    /// then (`LeafEditorModel.fontSize` and its siblings). A segmented control is
+    /// on screen the whole time and has nothing to ask.
+    public var align: Align?
 
-    /// `link`, `markColor` and `hasSelection` default so a host that built a
-    /// state by hand before any of them existed still compiles; the
+    /// `link`, `markColor`, `hasSelection` and `align` default so a host that
+    /// built a state by hand before any of them existed still compiles; the
     /// frame-projecting initializer below is the real path.
     public init(view: String, dirty: Bool, heading: UInt32?, active: [String], link: String? = nil,
                 canUndo: Bool = false, canRedo: Bool = false,
-                markColor: MarkColor? = nil, hasSelection: Bool = false) {
+                markColor: MarkColor? = nil, hasSelection: Bool = false,
+                align: Align? = nil) {
         self.view = view; self.dirty = dirty; self.heading = heading
         self.active = active; self.link = link
         self.canUndo = canUndo; self.canRedo = canRedo
         self.markColor = markColor; self.hasSelection = hasSelection
+        self.align = align
     }
 
     /// Project a full `DocView` down to the chrome-facing state.
     public init(_ v: DocView) {
+        // The caret's own row carries its block's alignment — core puts it on
+        // every row the block emits, so there is no second question to ask.
+        let caretRow = Int(v.caretRow)
         self.init(view: v.view, dirty: v.dirty, heading: v.heading, active: v.active, link: v.link,
                   canUndo: v.canUndo, canRedo: v.canRedo,
-                  markColor: v.markColor, hasSelection: v.hasSelection)
+                  markColor: v.markColor, hasSelection: v.hasSelection,
+                  align: v.rows.indices.contains(caretRow) ? Align(name: v.rows[caretRow].align) : nil)
     }
 }
 
@@ -120,6 +139,25 @@ struct WrappedLine {
     /// on every continuation line, so a wrapped quote or list item hangs under its
     /// own text rather than sliding back under the gutter.
     var indent: CGFloat = 0
+    /// How far further right the block's alignment pushes this line: half the
+    /// room it leaves in the column when the block is centred, all of it when it
+    /// is right-aligned, and zero for the default (left) and for a justified
+    /// block, which fills the room instead of moving.
+    ///
+    /// Alignment is an *offset* here rather than a paragraph style's
+    /// `NSTextAlignment` because nothing in this layout goes through a paragraph
+    /// style: rows are shaped and drawn line by line with Core Text, and the
+    /// caret, the hit test and the selection fill all read their x off the same
+    /// line the glyphs are drawn from. An offset keeps those four in step by
+    /// construction; an alignment on the drawn string would move the glyphs and
+    /// leave the caret where the text used to be. (A right-to-left default is a
+    /// separate question — see `docs/tasks/right-to-left-text.md`.)
+    var align: CGFloat = 0
+
+    /// Where this line's glyphs start, relative to the row's own origin — the
+    /// hanging indent plus the alignment. Every x in the layout is measured from
+    /// this, so a caret, a selection rect and a drawn glyph cannot disagree.
+    var offset: CGFloat { indent + align }
 }
 
 /// The expensive, position-independent shaping of one row: its attributed string
@@ -193,6 +231,15 @@ struct RowLayout {
     /// The sheet this row starts on, in the paginated flow. Always 0 in the
     /// continuous one, which is a single unbounded sheet.
     var page: Int = 0
+    /// Whether this row is a page break — core's `::page-break` leaf directive,
+    /// named in the frame's `directives` rather than readable off the row itself.
+    ///
+    /// Paginated, the break has already been *spent* by the time anything reads
+    /// this: the row opened the next sheet and took no height of its own (see
+    /// `gapHeight`), so there is nothing left to draw. Continuously there is no
+    /// page to turn, so the row keeps a line box and the view draws a dashed
+    /// hairline across it — the reader's only sign of where the paper would end.
+    var pageBreak: Bool = false
     /// The origin of each visual line, when the row's lines are *not* evenly
     /// spaced down from `top` at a single x — which is what a break inside a
     /// paragraph makes of them. A page break moves a line's y; a *column* break
@@ -308,11 +355,38 @@ struct RowLayout {
         }
     }
 
+    /// Whether this row belongs inside a directive's dashed outline — a
+    /// `:::name{.class}` aside, which reads as a bordered panel.
+    ///
+    /// A page break is a directive and gets none: it is drawn as the hairline
+    /// where the paper ends, and a box around that hairline would say a block of
+    /// content stands there. A table inside a directive gets none either — it has
+    /// no drawable rect of its own here, and never has had.
+    var isChromedDirective: Bool { row.directive && table == nil && !pageBreak }
+
+    /// A page break's drawn line in the continuous flow: the same hairline a
+    /// thematic break gets, in the same place, which the view strokes dashed
+    /// rather than filling — the difference between "a division the author wrote
+    /// into the text" and "where the paper would end". `nil` on every other row,
+    /// and on a break the paginated flow has already spent (it has no height
+    /// left to draw in).
+    func pageBreakLine(theme: EditorTheme) -> CGRect? {
+        guard pageBreak, table == nil, height > 0 else { return nil }
+        return hairline(theme: theme)
+    }
+
     /// A thematic break's drawn line, in view coordinates: a hairline centred in
     /// the row's box, running from past the row's own prefix to the right edge of
     /// the text column. `nil` on every other row.
     func ruleLine(theme: EditorTheme) -> CGRect? {
         guard row.isThematicBreak, table == nil else { return nil }
+        return hairline(theme: theme)
+    }
+
+    /// The rect a rule across this row occupies — shared by the two rows that
+    /// draw one, so a page break and a thematic break cannot end up at different
+    /// x's on the same page.
+    private func hairline(theme: EditorTheme) -> CGRect {
         // Measured off the line's own origin rather than the row's: a break is a
         // single line, but reading its position off the line keeps it right
         // wherever pagination put that line — including in the second column.
@@ -351,6 +425,11 @@ private struct Flow {
     /// flow, which is one unbounded column.
     var slot: Int { page.map { $0.slot(index, column) } ?? 0 }
 
+    /// Whether the cursor is standing at the top margin of a column with nothing
+    /// placed under it yet. False throughout the continuous flow, whose single
+    /// sheet has a top but no page to be at the top *of*.
+    var atColumnTop: Bool { page.map { y <= $0.contentTop(index) } ?? false }
+
     /// Whether `height` fits in the room left in this column. Always true in the
     /// continuous flow, which has no bottom to run out of.
     func fits(_ height: CGFloat) -> Bool {
@@ -368,6 +447,27 @@ private struct Flow {
     mutating func fit(_ height: CGFloat) {
         guard let page, !fits(height), y > page.contentTop(index) else { return }
         open()
+    }
+
+    /// Turn the page: resume at the top of the next *sheet*, whatever room is
+    /// left on this one. A page break's own move.
+    ///
+    /// The next sheet and not the next column, though `open()` would take the
+    /// column first: the gesture the author pressed is a page break, and a break
+    /// in a two-column layout should turn the leaf rather than hop the gutter.
+    /// (A column break is a different button nobody has asked for yet.)
+    ///
+    /// A no-op at the very top of the first sheet, so a document that opens with
+    /// a break doesn't open with a blank page instead. Nothing is placed there
+    /// yet, so there is nothing for the break to come after.
+    mutating func turnPage() {
+        guard let page, index > 0 || column > 0 || y > page.contentTop(0) else { return }
+        // `while`, not a single step: a block too tall for a sheet leaves `y`
+        // somewhere past it, and the break belongs on the first sheet that
+        // starts below whatever it spilled onto.
+        repeat { index += 1 } while page.contentTop(index) < y
+        column = 0
+        y = page.contentTop(index)
     }
 
     /// Move to the next slot in reading order: the next column of this sheet, or
@@ -392,6 +492,11 @@ private struct Flow {
 
 /// The laid-out rows of one `DocView` plus the geometry queries over them.
 struct EditorLayout {
+    /// The leaf directive a page break is, by name — `leaf_core::PAGE_BREAK`,
+    /// and the one directive this package reads rather than leaving to the host's
+    /// own vocabulary. A page is a thing only a frontend that paginates has.
+    static let pageBreakDirective = "page-break"
+
     let rows: [RowLayout]
     /// Total content height including top+bottom padding — the view's fitting size.
     /// With a page set it is the whole stack of sheets plus its backdrop, so the
@@ -490,6 +595,16 @@ struct EditorLayout {
         var mediaAt: [Int: MediaView] = [:]
         for m in docView.media { mediaAt[Int(m.startRow)] = m }
 
+        // Which rows are page breaks. A `Row` cannot answer this itself — every
+        // leaf directive draws as the same placeholder row, and only the frame's
+        // `directives` say which directive a row *is* — so the set is built once
+        // here rather than re-derived from the glyphs, which would read a
+        // paragraph that happens to say `⧉ page-break` as one.
+        var pageBreakRows = Set<Int>()
+        for d in docView.directives where d.name == EditorLayout.pageBreakDirective {
+            pageBreakRows.formUnion(Int(d.startRow)..<Int(d.endRow))
+        }
+
         // An empty stand-in shape for a table's collapsed picture rows (they draw
         // the grid, never their own glyphs).
         let emptyShape = ShapedRow(
@@ -561,13 +676,40 @@ struct EditorLayout {
             }
 
             let row = docView.rows[i]
+            let isPageBreak = pageBreakRows.contains(i)
             let shaped: ShapedRow
             if let hit = cache[row] ?? next[row], hit.wrapWidth == wrapWidth {
                 shaped = hit
             } else {
-                shaped = EditorLayout.shape(row, theme: theme, wrapWidth: wrapWidth)
+                shaped = EditorLayout.shape(row, theme: theme, wrapWidth: wrapWidth,
+                                            pageBreak: isPageBreak)
             }
             next[row] = shaped
+
+            // A page break: the page turns here, and the row itself is spent —
+            // it keeps its caret home (one empty line, as an empty row does) and
+            // takes no height, so the next block opens at the new sheet's top
+            // margin rather than a line into it. Continuously there is no page
+            // to turn: the row keeps its line box and the view draws the dashed
+            // hairline `pageBreak` asks for.
+            if isPageBreak {
+                if page != nil {
+                    flow.turnPage()
+                    let x = flow.originX(originX)
+                    layouts.append(RowLayout(
+                        row: row, shaped: shaped, top: flow.y, originX: x, columnWidth: wrapWidth,
+                        gapHeight: 0, page: flow.index, pageBreak: true,
+                        lineOrigins: [CGPoint(x: x, y: flow.y)]))
+                } else {
+                    let rl = RowLayout(row: row, shaped: shaped, top: flow.y,
+                                       originX: originX, columnWidth: wrapWidth,
+                                       pageBreak: true)
+                    flow.y += rl.height
+                    layouts.append(rl)
+                }
+                i += 1
+                continue
+            }
             let hasLabel = row.directive && !(row.directiveLabel ?? "").isEmpty
             let labelInset = hasLabel ? theme.directiveLabelHeight : 0
 
@@ -582,7 +724,12 @@ struct EditorLayout {
                 // margin — so it collapses, exactly as space-before does at the
                 // head of a page. The break itself is the separation now.
                 let gap = theme.blockGap(row.boundary)
-                let placed = flow.fits(gap) ? gap : 0
+                // …and a gap that lands *on* a column's top margin has nothing
+                // above it to be held apart from, so it collapses for the same
+                // reason. That is the gap after a page break: without this the
+                // block the author broke to would start a paragraph's spacing
+                // below the margin instead of at it.
+                let placed = flow.fits(gap) && !flow.atColumnTop ? gap : 0
                 layouts.append(RowLayout(row: row, shaped: shaped, top: flow.y,
                                          originX: flow.originX(originX), columnWidth: wrapWidth,
                                          gapHeight: placed, page: flow.index))
@@ -664,6 +811,7 @@ struct EditorLayout {
             layouts.append(RowLayout(row: Row(runs: [], decoration: false, code: false,
                                               codeLang: nil, directive: false,
                                               directiveLabel: nil, heading: nil,
+                                              align: nil, lineHeight: nil,
                                               boundary: nil),
                                      shaped: emptyShape, top: flow.y,
                                      originX: originX, columnWidth: wrapWidth))
@@ -766,9 +914,13 @@ struct EditorLayout {
     /// that walks across invisible dashes; dropping them leaves a one-line row
     /// whose caret sits at its left edge (any `caret_ch` core reports on the rule
     /// clamps there), exactly as a table's collapsed picture rows defer to the grid.
-    static func shape(_ row: Row, theme: EditorTheme, wrapWidth: CGFloat) -> ShapedRow {
+    /// A `pageBreak` row is shaped from its prefix alone for the same reason a
+    /// thematic break is: the view draws a dashed hairline (or turns the page)
+    /// where core's `⧉ page-break` placeholder glyphs would have gone.
+    static func shape(_ row: Row, theme: EditorTheme, wrapWidth: CGFloat,
+                      pageBreak: Bool = false) -> ShapedRow {
         let prefix = row.prefixRuns
-        let drawn = row.isThematicBreak ? prefix : row.runs
+        let drawn = row.isThematicBreak || pageBreak ? prefix : row.runs
         let attributed = AttributedRow.make(drawn, row: row, theme: theme)
 
         // The prefix's own geometry, measured on its own line: its total width (the
@@ -788,7 +940,9 @@ struct EditorLayout {
 
         return ShapedRow(
             attributed: attributed,
-            wrapped: wrap(attributed, width: wrapWidth, indent: prefixWidth),
+            wrapped: wrap(attributed, width: wrapWidth, indent: prefixWidth,
+                          align: row.align,
+                          prefixLength: prefix.reduce(0) { $0 + $1.text.utf16.count }),
             lineHeight: theme.rowHeight(for: row),
             wrapWidth: wrapWidth,
             prefixWidth: prefixWidth,
@@ -803,7 +957,15 @@ struct EditorLayout {
     /// `indent` hangs every line after the first that far right of the margin (and
     /// takes that much off its wrap budget), so a wrapped quote or list item lines
     /// its continuations up with its own text instead of under its gutter.
-    static func wrap(_ attributed: NSAttributedString, width: CGFloat, indent: CGFloat = 0) -> [WrappedLine] {
+    /// `align` is the block's alignment token (`Row.align`): `center` and `right`
+    /// give each line an offset into the room it leaves, and `justify` spreads
+    /// that room across the spaces of every line but the block's last — which is
+    /// what a justified paragraph is, and what leaves its final line ragged.
+    /// `prefixLength` is how many UTF-16 units of the row are its block
+    /// decoration (a quote's gutters, a list's bullet) — never justified, since
+    /// spreading a gutter moves the bar the view paints beside it.
+    static func wrap(_ attributed: NSAttributedString, width: CGFloat, indent: CGFloat = 0,
+                     align: String? = nil, prefixLength: Int = 0) -> [WrappedLine] {
         let len = attributed.length
         if len == 0 {
             return [WrappedLine(attributed: attributed, line: CTLineCreateWithAttributedString(attributed),
@@ -820,19 +982,82 @@ struct EditorLayout {
             let count: Int = width > 0
                 ? max(1, CTTypesetterSuggestLineBreak(typesetter, start, Double(budget)))
                 : len - start
-            let sub = attributed.attributedSubstring(from: NSRange(location: start, length: count))
+            var sub = attributed.attributedSubstring(from: NSRange(location: start, length: count))
+            // A justified line is spread *in the string* — kern on its spaces —
+            // rather than by a justified `CTLine` or a paragraph style, because
+            // the string is what both the glyphs and the geometry come from. Not
+            // the block's last line: that one stays ragged, as every typesetter
+            // leaves it.
+            if align == "justify", budget > 0, start + count < len {
+                sub = justify(sub, to: budget, after: max(0, prefixLength - start))
+            }
             let line = CTLineCreateWithAttributedString(sub as CFAttributedString)
+            let lineWidth = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
             lines.append(WrappedLine(
                 attributed: sub,
                 line: line,
                 start: start,
                 length: count,
-                width: CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil)),
-                indent: hang
+                width: lineWidth,
+                indent: hang,
+                // Measured without the trailing space a wrap leaves on the line:
+                // counted in, a centred line would sit half a space to the left
+                // of centre and a right-aligned one a whole space short of the
+                // margin.
+                align: alignOffset(align, room: budget - lineWidth
+                    + CGFloat(CTLineGetTrailingWhitespaceWidth(line)))
             ))
             start += count
         }
         return lines
+    }
+
+    /// How far into the room a line leaves its alignment pushes it: half for
+    /// `center`, all of it for `right`, none for the default, for `justify`
+    /// (which took the room up instead) and for a line with no room to move in —
+    /// a line wider than its column, which is what an unbreakable word makes.
+    private static func alignOffset(_ align: String?, room: CGFloat) -> CGFloat {
+        guard let align, room > 0 else { return 0 }
+        switch align {
+        case "center": return room / 2
+        case "right": return room
+        default: return 0
+        }
+    }
+
+    /// `line` spread to exactly `width` by kerning its interior spaces — the
+    /// justification a paragraph style would do, done where this layout can see
+    /// it.
+    ///
+    /// The kern goes on the spaces *between* words and never on the trailing one:
+    /// Core Text drops a line's last glyph's kern, and a space pushed at the end
+    /// of a line is width nobody sees. A line with no space to spread — one long
+    /// word, a CJK line — is returned as it came, ragged rather than letter-spaced,
+    /// which is the lesser of the two wrongs.
+    private static func justify(_ line: NSAttributedString, to width: CGFloat,
+                                after prefix: Int) -> NSAttributedString {
+        let text = line.string as NSString
+        guard prefix < text.length else { return line }
+        // The line without whatever whitespace the wrap left hanging off its end.
+        var end = text.length
+        while end > 0, text.substring(with: NSRange(location: end - 1, length: 1))
+            .trimmingCharacters(in: .whitespaces).isEmpty { end -= 1 }
+        let spaces = (prefix..<max(prefix, end)).filter {
+            text.substring(with: NSRange(location: $0, length: 1)) == " "
+        }
+        guard !spaces.isEmpty else { return line }
+        let natural = CGFloat(CTLineGetTypographicBounds(
+            CTLineCreateWithAttributedString(line as CFAttributedString), nil, nil, nil))
+        let trailing = CGFloat(CTLineGetTrailingWhitespaceWidth(
+            CTLineCreateWithAttributedString(line as CFAttributedString)))
+        let extra = width - (natural - trailing)
+        guard extra > 0 else { return line }
+        let kern = extra / CGFloat(spaces.count)
+        let out = NSMutableAttributedString(attributedString: line)
+        for i in spaces {
+            out.addAttribute(.kern, value: kern, range: NSRange(location: i, length: 1))
+        }
+        return out
     }
 
     // MARK: geometry
@@ -849,7 +1074,7 @@ struct EditorLayout {
         for (i, wl) in lines.enumerated() where ch < wl.start + wl.length || i == lines.count - 1 {
             let x = CTLineGetOffsetForStringIndex(wl.line, CFIndex(max(0, ch - wl.start)), nil)
             let o = rl.lineOrigin(i)
-            return CGRect(x: o.x + wl.indent + x, y: o.y, width: 1.5, height: rl.lineHeight)
+            return CGRect(x: o.x + wl.offset + x, y: o.y, width: 1.5, height: rl.lineHeight)
         }
         let o = rl.lineOrigin(0)
         return CGRect(x: o.x, y: o.y, width: 1.5, height: rl.lineHeight)
@@ -989,7 +1214,7 @@ struct EditorLayout {
                 // `lineOrigin` is the one accessor both flows go through: the
                 // continuous stack's formula, or where pagination placed the line.
                 let o = rl.lineOrigin(i)
-                rects.append((CGRect(x: o.x + wl.indent + x0, y: o.y, width: x1 - x0, height: rl.lineHeight),
+                rects.append((CGRect(x: o.x + wl.offset + x0, y: o.y, width: x1 - x0, height: rl.lineHeight),
                               row == s.row && cs == s.ch,
                               row == e.row && ce == e.ch))
             }
@@ -1149,7 +1374,7 @@ struct EditorLayout {
         }
         guard rl.wrapped.indices.contains(li) else { return (row, 0) }
         let wl = rl.wrapped[li]
-        let localX = point.x - rl.lineOrigin(li).x - wl.indent
+        let localX = point.x - rl.lineOrigin(li).x - wl.offset
         let rel = CTLineGetStringIndexForPosition(wl.line, CGPoint(x: max(0, localX), y: 0))
         let ch = wl.start + min(max(0, rel), wl.length)
         return (row, ch)
@@ -1194,7 +1419,7 @@ struct EditorLayout {
                 guard cs < ce else { continue }
                 let x0 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(cs - lineStart), nil)
                 let x1 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(ce - lineStart), nil)
-                ctx.fill(CGRect(x: o.x + wl.indent + x0, y: o.y, width: x1 - x0, height: rl.lineHeight))
+                ctx.fill(CGRect(x: o.x + wl.offset + x0, y: o.y, width: x1 - x0, height: rl.lineHeight))
             }
         }
     }

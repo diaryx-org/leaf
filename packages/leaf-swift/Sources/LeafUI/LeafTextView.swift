@@ -575,6 +575,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
                 if let lang = rl.row.codeLang, !lang.isEmpty { drawCodeLang(lang, in: rowRect) }
             }
             BlockChrome.drawRule(rl, theme: theme, selColor: selColor, in: ctx)
+            BlockChrome.drawPageBreak(rl, theme: theme, selColor: selColor, in: ctx)
             layoutEngine.fillSelection(row: rl, color: selColor, in: ctx)
             // Draw each wrapped visual line's substring on its own line box, hung
             // at the row's indent (zero on the first line, the prefix width after).
@@ -584,7 +585,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
                 // once says nothing about the lines after it.
                 let o = rl.lineOrigin(i)
                 if o.y >= band.maxY || o.y + rl.lineHeight <= band.minY { continue }
-                wl.attributed.draw(with: CGRect(x: o.x + wl.indent, y: o.y,
+                wl.attributed.draw(with: CGRect(x: o.x + wl.offset, y: o.y,
                                                 width: rl.columnWidth - wl.indent,
                                                 height: rl.lineHeight),
                                    options: [.usesLineFragmentOrigin])
@@ -883,7 +884,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
                 let x0 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(cs - lineStart), nil)
                 let x1 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(ce - lineStart), nil)
                 let o = rl.lineOrigin(i)
-                ctx.fill(CGRect(x: o.x + wl.indent + x0, y: o.y + rl.lineHeight - 1.5,
+                ctx.fill(CGRect(x: o.x + wl.offset + x0, y: o.y + rl.lineHeight - 1.5,
                                 width: x1 - x0, height: 1))
             }
         }
@@ -925,9 +926,9 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         let rows = layoutEngine.rows
         var i = 0
         while i < rows.count {
-            guard rows[i].row.directive, rows[i].table == nil else { i += 1; continue }
+            guard rows[i].isChromedDirective else { i += 1; continue }
             let start = i
-            while i < rows.count, rows[i].row.directive, rows[i].table == nil { i += 1 }
+            while i < rows.count, rows[i].isChromedDirective { i += 1 }
             // The run's rows reduced to their vertical bands, merged where they
             // touch. Continuously that always collapses back to the single box
             // this drew before. Paginated, a run crossing a sheet edge — between
@@ -2228,7 +2229,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             let rl = layoutEngine.rows[row]
             for (i, wl) in rl.wrapped.enumerated() {
                 let o = rl.lineOrigin(i)
-                wl.attributed.draw(with: CGRect(x: o.x + wl.indent, y: o.y,
+                wl.attributed.draw(with: CGRect(x: o.x + wl.offset, y: o.y,
                                                 width: rl.columnWidth - wl.indent, height: rl.lineHeight),
                                    options: [.usesLineFragmentOrigin])
             }

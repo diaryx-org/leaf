@@ -1,11 +1,18 @@
 ---
 title: The macOS formatting bar pages by group instead of scrolling
-status: open
+status: done
 created: 2026-09-18
 updated: 2026-09-18
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 # The macOS formatting bar pages by group instead of scrolling
+
+**Status: done**, 2026-09-18. `LeafFormattingToolbar` in `.bar` style
+measures its container and shows whole groups with chevrons to the rest;
+`ToolbarPaging` is the arithmetic, under `ToolbarPagingTests`. A host's own
+tools go on the row as `LeafFormattingToolbar.Tool` values (`.button` or
+`.menu`), one more group after history. `apps/leaf-editor` takes the
+package bar on both platforms, its display menus as host tools.
 
 **Where.** `packages/leaf-swift`, `LeafFormattingToolbar`
 (`Sources/LeafUI/FormattingToolbar.swift`). The demo host in

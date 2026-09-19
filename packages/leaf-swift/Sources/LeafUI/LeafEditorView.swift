@@ -482,6 +482,63 @@ public final class LeafEditorModel: ObservableObject {
     /// `LeafFormattingToolbar` does.
     public func highlight(_ color: MarkColor?) { run { $0.highlight(color: color) } }
 
+    // ── the presentation vocabulary ───────────────────────────────────────────
+    // Alignment and line spacing are the block's, size, face and colour the
+    // run's (and the block's with no selection — core decides which, not this).
+    // Every one of them takes an `Option`: passing nil removes the key, which is
+    // how a control spells "left", "single", and "the theme's own". See
+    // `docs/proposals/presentation-vocabulary.md`.
+    //
+    // The five queries are asked of the *document* rather than read off `state`,
+    // the way `caretInTable` is: each is offered in a menu, and a menu is built
+    // when it opens, so it sees the caret where it is now. Alignment is the
+    // exception — a segmented control is on screen the whole time and cannot ask
+    // — so that one rides the published frame (`EditorState.align`).
+
+    /// Align the caret's block, or clear its alignment with nil — which is left,
+    /// the theme's default, and the reason there is no `.left` to pass.
+    public func setAlignment(_ align: Align?) { run { $0.setAlignment(align: align) } }
+    /// How the caret's block is aligned, from the published frame.
+    public var alignment: Align? { state.align }
+
+    /// Set the caret's block's line spacing, or clear it with nil (single).
+    public func setLineSpacing(_ spacing: LineSpacing?) { run { $0.setLineSpacing(spacing: spacing) } }
+    public var lineSpacing: LineSpacing? { doc.lineSpacingAtCaret() }
+
+    /// Set the size step of the selection — or of the caret's whole block, with
+    /// nothing selected — or clear it with nil.
+    public func setFontSize(_ size: SizeStep?) { run { $0.setFontSize(size: size) } }
+    public var fontSize: SizeStep? { doc.fontSizeAtCaret() }
+
+    /// One step up or down the size ramp from whatever is at the caret — ⌘⇧+ and
+    /// ⌘⇧-, the pair every Mac text editor binds. Reads the caret's step and
+    /// writes the next one, so it is the same single gesture (and the same single
+    /// undo) as picking that step from the menu.
+    public func stepFontSize(up: Bool) {
+        let next = SizeStep.stepped(from: fontSize, up: up)
+        run { $0.setFontSize(size: next) }
+    }
+
+    /// Set the face of the selection — or of the caret's whole block — by generic
+    /// family, or clear it with nil (the theme's body face).
+    public func setFontFamily(_ font: FontFamily?) { run { $0.setFontFamily(font: font) } }
+    public var fontFamily: FontFamily? { doc.fontFamilyAtCaret() }
+
+    /// Colour the selection's text — or the caret's whole block — by name, or
+    /// clear it with nil (the theme's ink).
+    ///
+    /// The *foreground*, not `highlight(_:)`'s wash, though the two share the
+    /// seven names on purpose: a frontend with a red for a highlight has a red
+    /// for text, and both should be that red.
+    public func setTextColor(_ color: MarkColor?) { run { $0.setTextColor(color: color) } }
+    public var textColor: MarkColor? { doc.textColorAtCaret() }
+
+    /// Write a page break at the caret — `::page-break`, a leaf directive with no
+    /// label. The paginated view opens a new sheet there and the continuous one
+    /// draws a dashed hairline; a break at the very start of a document is a row
+    /// and no page, so the first sheet is never blank.
+    public func insertPageBreak() { run { $0.insertPageBreak() } }
+
     public func setParagraph()     { run { $0.setParagraph() } }
     public func setHeading(_ level: UInt32) { run { $0.setHeading(level: level) } }
     public func toggleBlockquote() { run { $0.toggleBlockquote() } }

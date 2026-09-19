@@ -19,7 +19,31 @@ use leaf_core::VisualMap;
 use leaf_core::{Doc, Highlight, HighlightCursor, SourceMap, View};
 
 use crate::EditorState;
-use crate::style::{CODE_INSET, Theme, composed, wysiwyg_lines};
+use crate::style::{CODE_INSET, Theme, align_pad, composed, wysiwyg_lines};
+
+/// The glyph a page break's rule is drawn from — dashed, against the solid `─`
+/// core gives a thematic break, so the two rules read as the two different
+/// statements they are.
+const PAGE_BREAK_DASH: char = '┄';
+
+/// The blank columns row `row` is pushed right by, for the caret and the mouse.
+/// [`crate::style::align_pad`] with the row's own facts read off the map, and
+/// with the one exception the painter also makes: a code row is drawn inside
+/// its own box and takes [`CODE_INSET`] instead of a pad.
+pub(crate) fn align_pad_of(doc: &Doc, row: usize, width: usize) -> usize {
+    let Some(align) = doc.vmap.rows.get(row).and_then(|r| r.align) else {
+        return 0;
+    };
+    if doc
+        .vmap
+        .code_blocks
+        .iter()
+        .any(|c| c.rows_span.contains(&row))
+    {
+        return 0;
+    }
+    align_pad(Some(align), doc.vmap.row_width(row), width)
+}
 
 /// Render the editing surface into `area`: the document body, its code-block
 /// boxes and framed images, the scrollbar, and the terminal caret. Updates
@@ -212,7 +236,7 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
                         }
                     })
             };
-            wysiwyg_lines(&doc.vmap, sel, highlights, &theme, code_shift)
+            wysiwyg_lines(&doc.vmap, sel, highlights, &theme, width, code_shift)
         }
     };
     let line_count = lines.len();
@@ -268,6 +292,39 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
                 }
                 f.render_widget(block, rect);
             }
+        }
+    }
+
+    // Each page break: a dashed rule straight across the measure, patched over
+    // the `⧉ page-break` placeholder core lays down for every leaf directive.
+    // Dashed, where a thematic break is solid, because the two are different
+    // statements and a reader has to be able to tell them apart at a glance:
+    // one divides the prose, the other divides the paper. The row stays a caret
+    // stop — the glyphs under the rule are still there, still clickable, still
+    // deletable with a Backspace — so this is a costume over core's row and not
+    // a replacement for it.
+    if doc.view == View::Wysiwyg {
+        for info in &doc.vmap.directives {
+            if info.name != leaf_core::PAGE_BREAK {
+                continue;
+            }
+            let row = info.rows_span.start;
+            if row < doc.scroll || (height > 0 && row >= doc.scroll + height) {
+                continue;
+            }
+            let rect = Rect {
+                x: content_area.x,
+                y: content_area.y + (row - doc.scroll) as u16,
+                width: content_area.width,
+                height: 1,
+            };
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    PAGE_BREAK_DASH.to_string().repeat(width),
+                    Style::default().fg(theme.rule),
+                ))),
+                rect,
+            );
         }
     }
 
@@ -410,8 +467,17 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
         (code_inner_w == 0 || vis < code_inner_w)
             .then(|| content_area.x + (CODE_INSET + vis) as u16)
     } else {
-        let col_visible = caret_col >= scroll_x && (width == 0 || caret_col < scroll_x + width);
-        col_visible.then(|| content_area.x + (caret_col - scroll_x) as u16)
+        // The caret rides its row's alignment pad: on a centred line it belongs
+        // under the letter it is in front of, not under the column that letter
+        // would have had if the line were flush left.
+        let pad = if doc.view == View::Wysiwyg {
+            align_pad_of(doc, caret_row, width)
+        } else {
+            0
+        };
+        let col = caret_col + pad;
+        let col_visible = col >= scroll_x && (width == 0 || col < scroll_x + width);
+        col_visible.then(|| content_area.x + (col - scroll_x) as u16)
     };
     if !caret_in_raster
         && let Some(x) = caret_x
@@ -1390,5 +1456,160 @@ mod code_render_tests {
             2,
             "heading reserved raster rows on a half-blocks terminal:\n{joined}"
         );
+    }
+}
+
+#[cfg(test)]
+mod presentation_render_tests {
+    use super::*;
+    use crate::EditorState;
+    use crate::handle_mouse;
+    use crate::style::Theme;
+    use leaf_core::{ColorScheme, Doc, Format};
+    use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::{Terminal, backend::TestBackend};
+
+    /// Draw `src` into an off-screen `w`×`h` buffer and hand back the document
+    /// and state as the frame left them — the mouse test needs the geometry
+    /// `render` publishes, which is the whole reason it reads it back from a
+    /// real frame rather than asserting against a hand-built map.
+    fn draw(src: &str, format: Format, w: u16, h: u16) -> (Doc, EditorState, Vec<String>) {
+        let mut doc = Doc::from_source(src.into(), format).unwrap();
+        let mut state = EditorState::new();
+        // Pin the palette so a test doesn't inherit the developer's own
+        // `COLORFGBG`.
+        state.set_color_scheme(ColorScheme::Dark);
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| render(f, f.area(), &mut doc, &mut state))
+            .unwrap();
+        let buf = term.backend().buffer().clone();
+        let lines = (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect();
+        (doc, state, lines)
+    }
+
+    /// One drawn line without the scrollbar's column — every test here is about
+    /// the 39 columns the document is laid into, not the 40 the terminal has.
+    fn content(line: &str) -> String {
+        line.chars().take(39).collect()
+    }
+
+    /// A page break draws as a rule across the measure, and a *dashed* one: the
+    /// same document's thematic break is solid, and a reader has to be able to
+    /// tell "this divides the prose" from "this divides the paper".
+    #[test]
+    fn a_page_break_draws_a_dashed_rule_the_thematic_break_does_not() {
+        let src = "a\n\n::page-break\n\n---\n\nb\n";
+        let (doc, _state, lines) = draw(src, Format::Markdown, 40, 12);
+        let joined = lines.join("\n");
+
+        let dashed = lines
+            .iter()
+            .position(|l| l.contains(PAGE_BREAK_DASH))
+            .unwrap_or_else(|| panic!("no page-break rule drawn:\n{joined}"));
+        // Right across the measure — the fortieth column is the scrollbar's.
+        assert_eq!(
+            content(&lines[dashed]),
+            PAGE_BREAK_DASH.to_string().repeat(39),
+            "the rule should span the content width:\n{joined}"
+        );
+        // The `⧉ page-break` placeholder core draws underneath is covered.
+        assert!(
+            !joined.contains("page-break"),
+            "the placeholder label showed through:\n{joined}"
+        );
+        // And the thematic break in the same document is still the solid rule it
+        // always was, on a row of its own.
+        let solid = lines
+            .iter()
+            .position(|l| l.starts_with('─'))
+            .unwrap_or_else(|| panic!("no thematic break drawn:\n{joined}"));
+        assert_ne!(solid, dashed);
+
+        // Still a caret stop: the rule is a costume over core's row, not a
+        // replacement for it, so the glyphs and their stops are untouched.
+        let row = &doc.vmap.rows[dashed];
+        assert!(!row.decoration, "the break row must still hold a caret");
+        assert!(row.glyphs.iter().any(|g| g.stop));
+    }
+
+    /// Centring is padding, and the padding has to be undone on the way back: a
+    /// click on a centred word must land on the glyph under the pointer.
+    #[test]
+    fn a_centred_paragraph_draws_centred_and_a_click_maps_back_through_the_pad() {
+        let src = "{.center}\nhi there\n";
+        let (mut doc, mut state, lines) = draw(src, Format::Djot, 40, 8);
+        let joined = lines.join("\n");
+        // 39 content columns (the scrollbar takes the fortieth), eight of them
+        // glyphs: fifteen blanks in front.
+        let text = lines
+            .iter()
+            .find(|l| l.contains("hi there"))
+            .unwrap_or_else(|| panic!("the paragraph is not drawn:\n{joined}"));
+        let start = text.find("hi there").unwrap();
+        assert_eq!(start, 15, "not centred in the measure:\n{joined}");
+
+        // A click on the `h` — at the column it was actually painted at — lands
+        // on the `h`, not fifteen characters into the line.
+        let h = src.find("hi there").unwrap();
+        let click = |doc: &mut Doc, state: &mut EditorState, column: u16| {
+            handle_mouse(
+                doc,
+                MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column,
+                    row: 0,
+                    modifiers: KeyModifiers::NONE,
+                },
+                state,
+            );
+        };
+        click(&mut doc, &mut state, start as u16);
+        assert_eq!(doc.caret, h, "a click on the first letter missed it");
+        // And one three columns along, which is where "there" starts.
+        click(&mut doc, &mut state, start as u16 + 3);
+        assert_eq!(doc.caret, h + 3);
+    }
+
+    /// The right-aligned half, drawn end to end: the line ends on the measure's
+    /// last column rather than one short of it.
+    #[test]
+    fn a_right_aligned_paragraph_ends_at_the_measure() {
+        let (_doc, _state, lines) = draw("{.right}\nhi there\n", Format::Djot, 40, 8);
+        let joined = lines.join("\n");
+        let text = lines
+            .iter()
+            .find(|l| l.contains("hi there"))
+            .unwrap_or_else(|| panic!("the paragraph is not drawn:\n{joined}"));
+        assert_eq!(
+            content(text).trim_end().chars().count(),
+            39,
+            "not flush with the measure:\n{joined}"
+        );
+    }
+
+    /// A coloured run reaches the cells: the theme's blue ink on the letters the
+    /// span covers, and on nothing else.
+    #[test]
+    fn a_coloured_run_reaches_the_buffer() {
+        let src = "plain [blue]{data-color=\"blue\"} plain\n";
+        let mut doc = Doc::from_source(src.into(), Format::Djot).unwrap();
+        let mut state = EditorState::new();
+        state.set_color_scheme(ColorScheme::Dark);
+        let mut term = Terminal::new(TestBackend::new(40, 6)).unwrap();
+        term.draw(|f| render(f, f.area(), &mut doc, &mut state))
+            .unwrap();
+        let buf = term.backend().buffer().clone();
+        let ink = Theme::dark().text_colors[leaf_core::MarkColor::Blue.index()];
+        let coloured: String = (0..buf.area.width)
+            .filter(|x| buf[(*x, 0)].style().fg == Some(ink))
+            .map(|x| buf[(x, 0)].symbol())
+            .collect();
+        assert_eq!(coloured, "blue");
     }
 }

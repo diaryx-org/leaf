@@ -44,9 +44,10 @@ use std::sync::{Arc, Mutex};
 use leaf_core::style::{Baseline, Role, Style as LStyle};
 use leaf_core::wysiwyg::text_width;
 use leaf_core::{
-    Alignment, BlockKind, Capabilities as CoreCapabilities, ColorScheme, Doc, Format, InlineKind,
-    LineFlow as CoreLineFlow, MarkColor as CoreMarkColor, MarkupMode as CoreMarkupMode,
-    MediaKind as CoreMediaKind, View, VisualMap,
+    Align as CoreAlign, Alignment, BlockKind, Capabilities as CoreCapabilities, ColorScheme, Doc,
+    FontFamily as CoreFontFamily, Format, InlineKind, LineFlow as CoreLineFlow,
+    LineSpacing as CoreLineSpacing, MarkColor as CoreMarkColor, MarkupMode as CoreMarkupMode,
+    MediaKind as CoreMediaKind, SizeStep as CoreSizeStep, View, VisualMap,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -175,6 +176,34 @@ pub struct Run {
     /// renderer that knows nothing about tokens still draws the run as the code
     /// it is, and one that does keys a palette on the name.
     pub token: Option<String>,
+    /// How large this run is set relative to the text around it — `"xx-small"`,
+    /// `"x-small"`, `"small"`, `"large"`, `"x-large"`, `"xx-large"`,
+    /// `"xxx-large"` — or absent for the theme's own size, which is every run
+    /// there was before the presentation vocabulary.
+    ///
+    /// A *step*, never a measurement, and a name for [`mark_color`](Self::mark_color)'s
+    /// reason: the document says how much bigger, the renderer's theme says how
+    /// big. `leaf_core::SizeStep::scale` carries CSS's own ratios for a renderer
+    /// that wants a default ramp rather than one of its own.
+    pub size: Option<String>,
+    /// The face this run is set in — `"serif"`, `"sans-serif"`, `"monospace"`,
+    /// `"cursive"` — or absent for the theme's body face.
+    ///
+    /// A CSS generic rather than a family name, for [`size`](Self::size)'s
+    /// reason: the theme names the concrete face, so `serif` is whichever serif
+    /// this platform's theme has and a document never asks for one that isn't
+    /// installed.
+    pub font: Option<String>,
+    /// The run's *foreground* colour, by the same seven names
+    /// [`mark_color`](Self::mark_color) carries — or absent for the theme's text
+    /// colour.
+    ///
+    /// Not [`mark_color`](Self::mark_color), though they share a vocabulary on
+    /// purpose: that is a highlight's *background* and reaches a run through its
+    /// `mark` role, this is what the letters themselves are painted. A renderer
+    /// with a red for a highlight has a red for text, and both should be that
+    /// red.
+    pub text_color: Option<String>,
 }
 
 /// Where a locator lands — what [`LeafDoc::locate`] answers with, and the FFI
@@ -288,6 +317,25 @@ pub struct Row {
     /// `None`. A proportional renderer sizes the *whole* row from this so an
     /// inline `` `code` `` run inside a heading still reads at the heading's size.
     pub heading: Option<u8>,
+    /// How this row's block is aligned across the measure — `"center"`,
+    /// `"right"`, `"justify"` — and `None` for the theme's default, which is
+    /// left. On every row the block emits.
+    ///
+    /// A *row* fact and not a run one for [`heading`](Self::heading)'s reason,
+    /// and more sharply: alignment is a property of the line, not of the letters
+    /// on it, so an empty paragraph the author has just centred carries it with
+    /// no run to hang it on. A renderer sets its paragraph style's alignment
+    /// from it. See [`leaf_core::VRow::align`].
+    pub align: Option<String>,
+    /// How far apart this row's block sets its lines, as a multiple of the
+    /// theme's own line height — `"1.15"`, `"1.5"`, `"2"` — and `None` for the
+    /// theme's spacing. On every row the block emits.
+    ///
+    /// The ratio is the name read as arithmetic (`leaf_core::LineSpacing::ratio`),
+    /// so a renderer laying rows out in points multiplies its line height by it;
+    /// one drawing a row per terminal line ignores it, the way it ignores a
+    /// heading's size. See [`leaf_core::VRow::line_height`].
+    pub line_height: Option<String>,
     /// What this row divides, on the blank rows a block boundary is drawn with
     /// and `None` everywhere else — so `boundary != nil` is exactly "this row is
     /// a drawn block boundary". A frontend spaces a boundary by the pair it
@@ -637,6 +685,168 @@ impl From<MarkColor> for CoreMarkColor {
     }
 }
 
+/// How a block's lines are set across the measure — the closed vocabulary
+/// [`LeafDoc::set_alignment`] writes and [`LeafDoc::alignment_at_caret`]
+/// reports.
+///
+/// There is no `left`, because absence is left: the default alignment is the
+/// theme's, and a document that agrees with it has no reason to say so. A
+/// segmented control draws a fourth segment for it and calls `setAlignment(nil)`.
+///
+/// An enum rather than the name string [`Row::align`] carries, for
+/// [`MarkColor`]'s reason: a row's alignment is a *rendering* fact that has to
+/// survive a token this build has never heard of, while this is the closed set a
+/// control offers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum Align {
+    Center,
+    Right,
+    Justify,
+}
+
+impl From<CoreAlign> for Align {
+    fn from(a: CoreAlign) -> Self {
+        match a {
+            CoreAlign::Center => Align::Center,
+            CoreAlign::Right => Align::Right,
+            CoreAlign::Justify => Align::Justify,
+        }
+    }
+}
+
+impl From<Align> for CoreAlign {
+    fn from(a: Align) -> Self {
+        match a {
+            Align::Center => CoreAlign::Center,
+            Align::Right => CoreAlign::Right,
+            Align::Justify => CoreAlign::Justify,
+        }
+    }
+}
+
+/// How far apart a block's lines are set, as a multiple of the theme's own line
+/// height — the vocabulary [`LeafDoc::set_line_spacing`] writes.
+///
+/// Single spacing is absent for the reason `left` is absent from [`Align`]: it
+/// is the theme's, and the menu entry for it is `setLineSpacing(nil)`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum LineSpacing {
+    /// `1.15` — the word processor's default "a little more air".
+    OneFifteen,
+    /// `1.5`.
+    OneHalf,
+    /// `2` — double spacing.
+    Double,
+}
+
+impl From<CoreLineSpacing> for LineSpacing {
+    fn from(l: CoreLineSpacing) -> Self {
+        match l {
+            CoreLineSpacing::OneFifteen => LineSpacing::OneFifteen,
+            CoreLineSpacing::OneHalf => LineSpacing::OneHalf,
+            CoreLineSpacing::Double => LineSpacing::Double,
+        }
+    }
+}
+
+impl From<LineSpacing> for CoreLineSpacing {
+    fn from(l: LineSpacing) -> Self {
+        match l {
+            LineSpacing::OneFifteen => CoreLineSpacing::OneFifteen,
+            LineSpacing::OneHalf => CoreLineSpacing::OneHalf,
+            LineSpacing::Double => CoreLineSpacing::Double,
+        }
+    }
+}
+
+/// How large a run is set relative to the text around it — CSS's
+/// `<absolute-size>` keywords with `medium` removed, because `medium` is
+/// absence. What [`LeafDoc::set_font_size`] writes.
+///
+/// A *step*, never a measurement: a run set to `14pt` in a 12pt theme is a step
+/// up and the same run under a 16pt theme is a step *down*, the author's intent
+/// inverted by a change they never made. `Large` is a step up under every theme,
+/// and `leaf_core::SizeStep::scale` has CSS's own ratio for each if the theme
+/// wants a default ramp.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum SizeStep {
+    XxSmall,
+    XSmall,
+    Small,
+    Large,
+    XLarge,
+    XxLarge,
+    XxxLarge,
+}
+
+impl From<CoreSizeStep> for SizeStep {
+    fn from(s: CoreSizeStep) -> Self {
+        match s {
+            CoreSizeStep::XxSmall => SizeStep::XxSmall,
+            CoreSizeStep::XSmall => SizeStep::XSmall,
+            CoreSizeStep::Small => SizeStep::Small,
+            CoreSizeStep::Large => SizeStep::Large,
+            CoreSizeStep::XLarge => SizeStep::XLarge,
+            CoreSizeStep::XxLarge => SizeStep::XxLarge,
+            CoreSizeStep::XxxLarge => SizeStep::XxxLarge,
+        }
+    }
+}
+
+impl From<SizeStep> for CoreSizeStep {
+    fn from(s: SizeStep) -> Self {
+        match s {
+            SizeStep::XxSmall => CoreSizeStep::XxSmall,
+            SizeStep::XSmall => CoreSizeStep::XSmall,
+            SizeStep::Small => CoreSizeStep::Small,
+            SizeStep::Large => CoreSizeStep::Large,
+            SizeStep::XLarge => CoreSizeStep::XLarge,
+            SizeStep::XxLarge => CoreSizeStep::XxLarge,
+            SizeStep::XxxLarge => CoreSizeStep::XxxLarge,
+        }
+    }
+}
+
+/// The face a run is set in — CSS's generic families, less `fantasy` and
+/// `system-ui`, neither of which an author asks for. What
+/// [`LeafDoc::set_font_family`] writes.
+///
+/// A generic, never a font name, for [`SizeStep`]'s reason: a document naming
+/// `Georgia` renders in the fallback everywhere Georgia is not installed. The
+/// theme names the concrete face for each — `Serif` is whichever serif this
+/// platform's theme has, and `Monospace` is the face inline code already uses.
+/// The theme's own body face is absent because it is absence; the menu entry for
+/// it is `setFontFamily(nil)`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, uniffi::Enum)]
+pub enum FontFamily {
+    Serif,
+    SansSerif,
+    Monospace,
+    Cursive,
+}
+
+impl From<CoreFontFamily> for FontFamily {
+    fn from(f: CoreFontFamily) -> Self {
+        match f {
+            CoreFontFamily::Serif => FontFamily::Serif,
+            CoreFontFamily::SansSerif => FontFamily::SansSerif,
+            CoreFontFamily::Monospace => FontFamily::Monospace,
+            CoreFontFamily::Cursive => FontFamily::Cursive,
+        }
+    }
+}
+
+impl From<FontFamily> for CoreFontFamily {
+    fn from(f: FontFamily) -> Self {
+        match f {
+            FontFamily::Serif => CoreFontFamily::Serif,
+            FontFamily::SansSerif => CoreFontFamily::SansSerif,
+            FontFamily::Monospace => CoreFontFamily::Monospace,
+            FontFamily::Cursive => CoreFontFamily::Cursive,
+        }
+    }
+}
+
 /// A visual position: a row index plus a UTF-16 offset within that row's text —
 /// the coordinate the geometry side (Core Text) draws from. Returned by
 /// [`LeafDoc::pos_for_offset`], the bridge from a source offset (what a
@@ -711,6 +921,33 @@ pub struct Capabilities {
     pub table: bool,
     /// Shift+Return inside a cell — [`LeafDoc::cell_line_break`].
     pub cell_line_break: bool,
+    /// The alignment control — [`LeafDoc::set_alignment`]. Every format leaf
+    /// opens but XML spells a block's attributes.
+    pub alignment: bool,
+    /// The line-spacing menu — [`LeafDoc::set_line_spacing`]. The same gesture
+    /// as [`alignment`](Self::alignment) and so the same answer, and its own
+    /// flag because a toolbar dims controls one at a time.
+    pub line_spacing: bool,
+    /// The size menu — [`LeafDoc::set_font_size`]. **Narrower than the block
+    /// pair**: it wraps a selection in an attributed span, which AsciiDoc has no
+    /// slot for, so this is `false` there while [`alignment`](Self::alignment) is
+    /// `true`. The block-level form of the same property — the caret in a
+    /// paragraph, nothing selected — still works, which is why the flag
+    /// describes the control rather than the caret.
+    pub font_size: bool,
+    /// The face menu — [`LeafDoc::set_font_family`]. A span, as
+    /// [`font_size`](Self::font_size) is.
+    pub font_family: bool,
+    /// The text-colour swatches — [`LeafDoc::set_text_color`]. A span again, and
+    /// not to be confused with [`mark_color`](Self::mark_color): that is a
+    /// highlight's background and rides the `mark` node, this is a run's
+    /// foreground and rides an attributed span.
+    pub text_color: bool,
+    /// The page-break button — [`LeafDoc::insert_page_break`]. Markdown and djot
+    /// and no others, though twig spells the gesture in HTML and AsciiDoc too:
+    /// the flag describes what leaf can *show*, and the walker draws neither of
+    /// those spellings yet.
+    pub page_break: bool,
 }
 
 impl From<CoreCapabilities> for Capabilities {
@@ -740,6 +977,12 @@ impl From<CoreCapabilities> for Capabilities {
             code_language: c.code_language,
             table: c.table,
             cell_line_break: c.cell_line_break,
+            alignment: c.alignment,
+            line_spacing: c.line_spacing,
+            font_size: c.font_size,
+            font_family: c.font_family,
+            text_color: c.text_color,
+            page_break: c.page_break,
         }
     }
 }
@@ -1743,6 +1986,137 @@ impl LeafDoc {
         g.doc.task_checked_at_caret()
     }
 
+    // ── the presentation vocabulary ───────────────────────────────────────────
+    //
+    // Six gestures and five queries over a document's *presentation*: alignment
+    // and line spacing, which are the block's, and size, face and colour, which
+    // are the run's. Every value is a **name** — `center`, `1.5`, `large`,
+    // `serif`, `red` — that the renderer's theme resolves, never a measurement,
+    // which is why a document outlives the theme it was written under.
+    //
+    // Each gesture edits one attribute key and keeps the rest, so a document
+    // from elsewhere passes through the editor unharmed, and `nil` clears the
+    // key. Each takes its enabled state from the matching [`Capabilities`] flag,
+    // and its *lit* state from the query beside it — the queries read the
+    // nearest node that names the property, so a control follows the caret into
+    // a centred `<div>` the way the H1 light follows it into a heading.
+
+    /// Align the caret's block, or return it to the theme's default with `nil`.
+    ///
+    /// A block property, so it is the caret's *block* whatever is selected: a
+    /// line belongs to a block, and "centre this" with three words selected
+    /// means the paragraph, not the words. Other `class` tokens on the block are
+    /// kept. Gate on [`Capabilities::alignment`].
+    pub fn set_alignment(&self, align: Option<Align>) -> DocView {
+        let mut g = self.lock();
+        g.doc.set_alignment(align.map(CoreAlign::from));
+        g.view()
+    }
+
+    /// Set the line spacing of the caret's block, or return it to the theme's
+    /// with `nil`. [`set_alignment`](Self::set_alignment)'s peer in every
+    /// respect but the key. Gate on [`Capabilities::line_spacing`].
+    pub fn set_line_spacing(&self, spacing: Option<LineSpacing>) -> DocView {
+        let mut g = self.lock();
+        g.doc.set_line_spacing(spacing.map(CoreLineSpacing::from));
+        g.view()
+    }
+
+    /// Set the size of the selected run, or of the caret's whole block when
+    /// nothing is selected; `nil` returns it to the theme's own size.
+    ///
+    /// Size, face and colour are the *run's*, and the block's when no run is
+    /// chosen — so "make this paragraph larger" is a press with the caret in it
+    /// rather than a select-all first. With a selection the range is wrapped in
+    /// an attributed span, or the span it already lies in is re-styled, never
+    /// nested. Gate on [`Capabilities::font_size`].
+    pub fn set_font_size(&self, size: Option<SizeStep>) -> DocView {
+        let mut g = self.lock();
+        g.doc.set_font_size(size.map(CoreSizeStep::from));
+        g.view()
+    }
+
+    /// Set the face of the selected run, or of the caret's whole block.
+    /// [`set_font_size`](Self::set_font_size)'s peer. Gate on
+    /// [`Capabilities::font_family`].
+    pub fn set_font_family(&self, font: Option<FontFamily>) -> DocView {
+        let mut g = self.lock();
+        g.doc.set_font_family(font.map(CoreFontFamily::from));
+        g.view()
+    }
+
+    /// Set the *text* colour of the selected run, or of the caret's whole block.
+    /// [`set_font_size`](Self::set_font_size)'s peer, and **not**
+    /// [`set_mark_color`](Self::set_mark_color): that one colours a highlight's
+    /// background and needs a highlight to colour, this one paints the letters
+    /// and needs nothing. They share the seven names on purpose. Gate on
+    /// [`Capabilities::text_color`].
+    pub fn set_text_color(&self, color: Option<MarkColor>) -> DocView {
+        let mut g = self.lock();
+        g.doc.set_text_color(color.map(CoreMarkColor::from));
+        g.view()
+    }
+
+    /// Insert a page break at the caret — a leaf directive with no label, placed
+    /// exactly as [`insert_thematic_break`](Self::insert_thematic_break) places a
+    /// rule, a selection replaced by it and a bare paragraph parted at the caret
+    /// first.
+    ///
+    /// A frontend that paginates opens a page at the row's directive mark and
+    /// gives the row no height; one that does not draws the `⧉ page-break`
+    /// placeholder every leaf directive gets. Gate on
+    /// [`Capabilities::page_break`].
+    pub fn insert_page_break(&self) -> DocView {
+        let mut g = self.lock();
+        g.doc.insert_page_break();
+        g.view()
+    }
+
+    /// The alignment in force at the caret, or `nil` for the theme's default —
+    /// which segment of an alignment control is lit.
+    ///
+    /// Read off the nearest node that names one: the caret's block, and the
+    /// `div`s around it after that, so the control follows the caret into a
+    /// centred `<div>`.
+    pub fn alignment_at_caret(&self) -> Option<Align> {
+        let mut g = self.lock();
+        g.doc.alignment_at_caret().map(Align::from)
+    }
+
+    /// The line spacing in force at the caret, or `nil` for the theme's own —
+    /// which entry a spacing menu shows ticked.
+    /// [`alignment_at_caret`](Self::alignment_at_caret)'s peer.
+    pub fn line_spacing_at_caret(&self) -> Option<LineSpacing> {
+        let mut g = self.lock();
+        g.doc.line_spacing_at_caret().map(LineSpacing::from)
+    }
+
+    /// The size in force at the caret, or `nil` for the theme's own — which
+    /// entry a size menu shows ticked. Run-level, so the chain starts one node
+    /// deeper: the attributed span the caret stands in, then its block, then the
+    /// `div`s around it, the nearest winning.
+    pub fn font_size_at_caret(&self) -> Option<SizeStep> {
+        let mut g = self.lock();
+        g.doc.font_size_at_caret().map(SizeStep::from)
+    }
+
+    /// The face in force at the caret, or `nil` for the theme's body face.
+    /// [`font_size_at_caret`](Self::font_size_at_caret)'s peer.
+    pub fn font_family_at_caret(&self) -> Option<FontFamily> {
+        let mut g = self.lock();
+        g.doc.font_family_at_caret().map(FontFamily::from)
+    }
+
+    /// The *text* colour in force at the caret, or `nil` for the theme's — which
+    /// swatch a text-colour control marks as the current one.
+    /// [`font_size_at_caret`](Self::font_size_at_caret)'s peer, and not
+    /// [`DocView::mark_color`], which reads a highlight's background off a
+    /// `mark` node the caret is standing in.
+    pub fn text_color_at_caret(&self) -> Option<MarkColor> {
+        let mut g = self.lock();
+        g.doc.text_color_at_caret().map(MarkColor::from)
+    }
+
     /// Which of the formatting commands above this document's format can
     /// actually spell — one flag per control, for building the toolbar.
     ///
@@ -2350,6 +2724,11 @@ fn wysiwyg_rows(vmap: &VisualMap, ss: usize, se: usize, hls: &[leaf_core::Highli
                 // heading has none to scan, and a renderer sizing the line by a
                 // glyph's role drew `# ` at body height until it had text.
                 heading: vrow.heading,
+                // Off the row for the same reason, and more sharply: alignment
+                // and spacing are properties of the *line*, so an empty
+                // paragraph just centred has no run to carry them.
+                align: vrow.align.map(|a| a.name().to_string()),
+                line_height: vrow.line_height.map(|l| l.name().to_string()),
                 boundary: vrow.boundary.map(|b| Boundary {
                     above: b.above.into(),
                     below: b.below.into(),
@@ -2590,7 +2969,9 @@ fn source_rows(source: &str, ss: usize, se: usize) -> Vec<Row> {
             code_lang: None,
             directive: false,
             directive_label: None,
-            heading: None,  // source view is raw text — no resolved heading rows
+            heading: None, // source view is raw text — no resolved heading rows
+            align: None,   // …no attributes resolved onto a block…
+            line_height: None,
             boundary: None, // …and no resolved block structure to divide
         });
         byte = end + 1; // skip the '\n' that `split` consumed
@@ -2622,6 +3003,9 @@ fn make_run(
         hl_color: hl.and_then(|h| h.color.clone()),
         mark_color: mark_color_name(style.role),
         token: style.token.map(|t| t.name().to_string()),
+        size: style.size.map(|s| s.name().to_string()),
+        font: style.font.map(|f| f.name().to_string()),
+        text_color: style.color.map(|c| c.name().to_string()),
     }
 }
 
@@ -2865,6 +3249,135 @@ mod tests {
         assert!(matches!(v.media[0].kind, MediaKind::Audio));
         assert_eq!(v.media[0].src, "take.mp3");
         assert_eq!(v.media[0].alt, "a take");
+    }
+
+    /// The block half of the presentation vocabulary, the whole way round:
+    /// press, and the fact comes back on **every** row of the block as the name
+    /// the document carries, with the query lighting the control that wrote it.
+    ///
+    /// The row rather than a run because an empty paragraph has no run — and a
+    /// name rather than an index because the renderer's theme owns the ramp,
+    /// which is the same division `mark_color` makes.
+    #[test]
+    fn the_block_vocabulary_crosses_on_the_row_and_comes_back_at_the_caret() {
+        let d = doc("a centred paragraph\n");
+        let v = d.set_alignment(Some(Align::Center));
+        let aligned: Vec<&str> = v
+            .rows
+            .iter()
+            .filter_map(|r| r.align.as_deref())
+            .collect::<Vec<_>>();
+        assert_eq!(aligned, ["center"], "the token, on the paragraph's row");
+        assert_eq!(d.alignment_at_caret(), Some(Align::Center));
+
+        // A second property on the same block keeps the first: each gesture
+        // edits one key and passes the rest back whole. (The caret is put back
+        // in the paragraph first — in Markdown the attributes went onto a `div`
+        // the press wrote *around* it, so the offset the caret kept is now that
+        // opening line, which is no block of the document's.)
+        let at = d.source().find("centred").unwrap() as u32;
+        d.set_selection_offsets(at, at);
+        let v = d.set_line_spacing(Some(LineSpacing::OneHalf));
+        let row = v
+            .rows
+            .iter()
+            .find(|r| r.align.is_some())
+            .expect("the block");
+        assert_eq!(row.align.as_deref(), Some("center"));
+        assert_eq!(row.line_height.as_deref(), Some("1.5"));
+        assert_eq!(d.line_spacing_at_caret(), Some(LineSpacing::OneHalf));
+
+        // `nil` clears, and absence is the theme's default rather than a token
+        // meaning "left".
+        let at = d.source().find("centred").unwrap() as u32;
+        d.set_selection_offsets(at, at);
+        let v = d.set_alignment(None);
+        assert!(v.rows.iter().all(|r| r.align.is_none()));
+        assert_eq!(d.alignment_at_caret(), None);
+        assert_eq!(
+            d.line_spacing_at_caret(),
+            Some(LineSpacing::OneHalf),
+            "clearing one key leaves the other standing"
+        );
+    }
+
+    /// The run half: size, face and colour ride the run beside `role`, so a
+    /// renderer picks a font and a foreground without re-reading the document.
+    /// With nothing selected the caret's whole block takes them, which is what
+    /// makes "make this paragraph larger" one press.
+    #[test]
+    fn the_run_vocabulary_crosses_on_the_run_and_comes_back_at_the_caret() {
+        let d = doc("big serif blue\n");
+        // Each press with the caret back in the paragraph, as a frontend's is —
+        // the first wrapped the block in a `div`, and the offset the caret kept
+        // is that opening line rather than the text.
+        let in_text = |d: &Arc<LeafDoc>| {
+            let at = d.source().find("serif").unwrap() as u32;
+            d.set_selection_offsets(at, at);
+        };
+        d.set_font_size(Some(SizeStep::Large));
+        in_text(&d);
+        d.set_font_family(Some(FontFamily::Serif));
+        in_text(&d);
+        let v = d.set_text_color(Some(MarkColor::Blue));
+
+        let styled: Vec<(Option<&str>, Option<&str>, Option<&str>)> = v
+            .rows
+            .iter()
+            .flat_map(|r| r.runs.iter())
+            .filter(|r| !r.text.trim().is_empty())
+            .map(|r| {
+                (
+                    r.size.as_deref(),
+                    r.font.as_deref(),
+                    r.text_color.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(styled, [(Some("large"), Some("serif"), Some("blue"))]);
+
+        assert_eq!(d.font_size_at_caret(), Some(SizeStep::Large));
+        assert_eq!(d.font_family_at_caret(), Some(FontFamily::Serif));
+        assert_eq!(d.text_color_at_caret(), Some(MarkColor::Blue));
+
+        // A run's text colour is not a highlight's wash: nothing here is a
+        // `mark`, so the palette that colours one reports nothing.
+        assert!(!d.caret_in_mark());
+        assert!(
+            v.rows
+                .iter()
+                .flat_map(|r| r.runs.iter())
+                .all(|r| r.mark_color.is_none())
+        );
+    }
+
+    /// A page break crosses as the leaf directive it is — the row a paginating
+    /// frontend opens a page at.
+    #[test]
+    fn a_page_break_crosses_as_a_directive_of_its_own() {
+        let d = doc("before\n\nafter\n");
+        let v = d.insert_page_break();
+        let names: Vec<&str> = v.directives.iter().map(|x| x.name.as_str()).collect();
+        assert_eq!(names, ["page-break"]);
+        assert!(d.source().contains("page-break"));
+    }
+
+    /// One flag per new control, answered by the format — the toolbar builds
+    /// itself from these rather than discovering each refusal on a press.
+    /// Markdown spells all six; XML spells none of them, being parse-only.
+    #[test]
+    fn capabilities_answer_for_the_presentation_controls_too() {
+        let md = doc("x\n").capabilities();
+        assert!(md.alignment && md.line_spacing);
+        assert!(md.font_size && md.font_family && md.text_color);
+        assert!(md.page_break);
+
+        let xml = LeafDoc::new("<a>x</a>".to_string(), "xml".to_string())
+            .unwrap()
+            .capabilities();
+        assert!(!xml.alignment && !xml.line_spacing);
+        assert!(!xml.font_size && !xml.font_family && !xml.text_color);
+        assert!(!xml.page_break);
     }
 
     #[test]

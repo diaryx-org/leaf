@@ -14,7 +14,7 @@ use ratatui::crossterm::event::{
     KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 
-use leaf_core::{BlockKind, Doc, InlineKind, LineFlow, MarkupMode, View};
+use leaf_core::{Align, BlockKind, Doc, InlineKind, LineFlow, MarkupMode, View};
 
 use crate::style::CODE_INSET;
 use crate::{ClickState, EditorState, MULTI_CLICK_WINDOW};
@@ -183,6 +183,15 @@ pub fn handle_key(doc: &mut Doc, key: KeyEvent, _state: &mut EditorState) -> Out
             KeyCode::Char('f') => doc.insert_footnote(),
             KeyCode::Char('r') => doc.insert_thematic_break(),
             KeyCode::Char('e') => return Outcome::ImagePrompt,
+            // ⌥a: step the block's alignment. Free, and the letter of the word
+            // — ^a is select-all, which is the other convention `a` answers to,
+            // and the two modifiers keep them apart.
+            KeyCode::Char('a') => cycle_alignment(doc),
+            // ⌥⇧R: a page break, shifted onto the key its unshifted neighbour
+            // already owns — the same rule ⌥⇧W and ⌥⇧F follow below. ⌥r rules a
+            // line across the prose and ⌥⇧R rules one across the paper, which is
+            // the relation the shift is standing for.
+            KeyCode::Char('R') => doc.insert_page_break(),
             // ⌥g: follow whatever the caret is standing on — a footnote
             // reference to its note, a note back to its reference, a `#fragment`
             // link to the heading it names.
@@ -276,13 +285,14 @@ fn asks_to_edit(key: &KeyEvent) -> bool {
             // them, and the in-cell line break, do not.
             KeyCode::Backspace | KeyCode::Delete | KeyCode::Enter => true,
             // The formatting toolbar, the block family, the task pair, plain
-            // paste, and the three prompts that insert something. What is
+            // paste, the three prompts that insert something, and the two
+            // presentation verbs (⌥a alignment, ⌥⇧R a page break). What is
             // missing from this list is the whole of the reading half: ⌥w,
             // ⌥⇧W, ⌥⇧F, ⌥g, ⌥p, ⌥h.
             KeyCode::Char(c) => matches!(
                 c,
                 'b' | 'i' | 'c' | 'm' | 'd' | 'u' | '0'
-                    ..='9' | 'x' | 't' | 'v' | 'k' | 'l' | 'e' | 'f' | 'r'
+                    ..='9' | 'x' | 't' | 'v' | 'k' | 'l' | 'e' | 'f' | 'r' | 'a' | 'R'
             ),
             _ => false,
         };
@@ -331,7 +341,17 @@ pub fn handle_mouse(doc: &mut Doc, m: MouseEvent, state: &mut EditorState) -> Mo
                 };
                 raw.saturating_sub(CODE_INSET) + scroll
             }
-            None => raw,
+            // A centred or right-aligned row was painted with leading blanks;
+            // take them back off, so a click lands on the glyph under the
+            // pointer rather than on the one that would have been there had the
+            // line been flush left. The same `align_pad` the painter used, so
+            // the two cannot drift. A click in the pad itself falls to column
+            // 0 — the line's start, which is the nearest glyph to it.
+            None => raw.saturating_sub(crate::render::align_pad_of(
+                doc,
+                row,
+                doc.body_width as usize,
+            )),
         }
     };
 
@@ -619,6 +639,44 @@ pub fn cycle_markup_mode(doc: &mut Doc) {
     doc.status = Some(format!("markup: {}", markup_mode_name(next)));
 }
 
+/// ⌥a — step the alignment of the block at the caret: left → centre → right →
+/// left, the three a terminal can actually draw.
+///
+/// A cycle for [`cycle_markup_mode`]'s reason — one dial, quicker to turn than
+/// to aim at — and the status names where it landed, so the key teaches its own
+/// range.
+///
+/// `justify` is not a notch. The surface draws it as left (see
+/// [`crate::style::align_pad`] for why a cell grid cannot stretch spaces), so a
+/// press that moved into it would change the document and nothing a reader can
+/// see, which is indistinguishable from a key that did nothing. A block that
+/// *arrives* justified still cycles: it leaves for left on the next press, the
+/// same as right does. Setting one is a job for a frontend that can draw it.
+pub fn cycle_alignment(doc: &mut Doc) {
+    let next = match doc.alignment_at_caret() {
+        None => Some(Align::Center),
+        Some(Align::Center) => Some(Align::Right),
+        Some(Align::Right) | Some(Align::Justify) => None,
+    };
+    doc.set_alignment(next);
+    // Core refuses a gesture the format cannot spell (and a clear it cannot
+    // reach) with its own reason on the status line; that answer is the useful
+    // one, so it is left alone and only a gesture that landed reports.
+    if doc.status.is_none() {
+        doc.status = Some(format!("alignment: {}", align_name(next)));
+    }
+}
+
+/// The word for an alignment, for the status line and a host's menu row.
+/// `None` is `left`: absence is left, and "none" would read as the absence of
+/// a setting rather than as the setting it is.
+pub fn align_name(align: Option<Align>) -> &'static str {
+    match align {
+        Some(a) => a.name(),
+        None => "left",
+    }
+}
+
 /// ⌥⇧F — flip between folding soft breaks into the reflowed paragraph and
 /// preserving them where they were written.
 pub fn toggle_line_flow(doc: &mut Doc) {
@@ -882,5 +940,57 @@ mod tests {
             count: 2,
         });
         assert_eq!(click_count(&mut state, 3, 5), 1);
+    }
+
+    /// ⌥a steps the block's alignment through the two a terminal can draw and
+    /// back to left, writing the `class` token each time and saying where it
+    /// landed. Justify is deliberately not a notch — see [`cycle_alignment`].
+    #[test]
+    fn alt_a_cycles_the_alignment_through_what_a_terminal_can_draw() {
+        let mut d = Doc::from_source("hi\n".into(), leaf_core::Format::Djot).unwrap();
+        d.build_visual(80);
+        let mut state = EditorState::new();
+
+        handle_key(&mut d, alt('a'), &mut state);
+        assert!(d.source.contains("{.center}"), "{}", d.source);
+        assert_eq!(d.status.as_deref(), Some("alignment: center"));
+
+        handle_key(&mut d, alt('a'), &mut state);
+        assert!(d.source.contains("{.right}"), "{}", d.source);
+        assert_eq!(d.status.as_deref(), Some("alignment: right"));
+
+        handle_key(&mut d, alt('a'), &mut state);
+        assert_eq!(d.source, "hi\n", "the third press clears the key");
+        assert_eq!(d.status.as_deref(), Some("alignment: left"));
+    }
+
+    /// A block that arrives justified still leaves: the cycle has no justify
+    /// notch, so the next press is the clear.
+    #[test]
+    fn alt_a_cycles_a_justified_block_back_to_left() {
+        let mut d = Doc::from_source("{.justify}\nhi\n".into(), leaf_core::Format::Djot).unwrap();
+        d.build_visual(80);
+        d.caret = d.source.find("hi").unwrap();
+        let mut state = EditorState::new();
+        handle_key(&mut d, alt('a'), &mut state);
+        assert_eq!(d.source, "hi\n");
+    }
+
+    /// ⌥⇧R writes a page break, beside the ⌥r that writes a thematic break.
+    #[test]
+    fn alt_shift_r_writes_a_page_break() {
+        let mut d = doc("a\n");
+        let mut state = EditorState::new();
+        d.caret = d.source.len();
+        handle_key(
+            &mut d,
+            KeyEvent::new(KeyCode::Char('R'), KeyModifiers::ALT | KeyModifiers::SHIFT),
+            &mut state,
+        );
+        assert!(
+            d.source.contains("::page-break"),
+            "⌥⇧R should write the directive:\n{}",
+            d.source
+        );
     }
 }

@@ -4201,10 +4201,24 @@ impl Doc {
     /// status, undo and caret plumbing [`set_mark_color`](Self::set_mark_color)
     /// has.
     ///
-    /// The caret is re-anchored from the offsets as they were, *before*
-    /// `refresh` sees the new bytes: in Markdown the splice is a `<div …>` and
-    /// two blank lines opening in front of the block, and a caret that did not
-    /// ride them would land somewhere it never was.
+    /// **The caret keeps its place in the text, not its byte offset.** How a
+    /// format spells a block's attributes is markup written *around* the block
+    /// — djot's `{…}` line above it, a `<div …>` and two blank lines in front of
+    /// it in Markdown, a longer opening tag in HTML — and every one of those
+    /// grows or shrinks above the author's own bytes. Where twig's change
+    /// rewrites the block whole (Markdown's div is spliced as one region, block
+    /// included) the plain arithmetic of [`reanchor`] has nothing to shift by
+    /// and parks the caret at the end of the splice, past the closing `</div>`:
+    /// the caret is then in no block at all, so a second press of the same menu
+    /// answers "no block at the caret" and the toolbar's queries read nothing.
+    /// [`reanchor_in_block`] is what carries it across instead — the block's
+    /// content span before and after, which is the one thing the respelling
+    /// leaves alone.
+    ///
+    /// Read *before* the splice and applied *after* `refresh`, because both
+    /// halves of that mapping are facts about a tree twig is between: the
+    /// block's old bytes are gone once the edit lands, and its new ones are not
+    /// in `self.source` until the refresh puts them there.
     fn write_block_attrs(&mut self, what: &str, attrs: Attrs) {
         if self.read_only || self.refuse_unsupported(what, Gesture::SetBlockAttrs) {
             return;
@@ -4217,14 +4231,20 @@ impl Doc {
         };
         self.record_caret();
         let pairs = attr_pairs(&attrs);
+        let was = self.block_content_at(at);
+        let text = was.clone().map(|s| self.source[s].to_string());
         match self.editor.set_block_attrs(at, &pairs) {
             Ok(change) => {
-                let caret = reanchor(self.caret, &change);
-                let anchor = self.anchor.map(|a| reanchor(a, &change));
+                let (caret, anchor) = (self.caret, self.anchor);
                 self.last_edit_kind = None; // structural edit is its own undo step
                 self.refresh();
-                self.caret = caret;
-                self.anchor = anchor;
+                let now = self.block_content_in(&change.new, text.as_deref());
+                // A block the two halves cannot both name — a code block, a
+                // caret in a list's marker — takes the plain arithmetic, which
+                // is what it had before.
+                let block = was.as_ref().zip(now.as_ref());
+                self.caret = reanchor_in_block(caret, &change, block);
+                self.anchor = anchor.map(|a| reanchor_in_block(a, &change, block));
                 self.dirty = self.source != self.clean_source;
                 self.status = None;
                 self.clamp_caret();
@@ -4232,6 +4252,49 @@ impl Doc {
             }
             Err(e) => self.status = Some(format!("{what}: {e}")),
         }
+    }
+
+    /// The content span of the innermost paragraph or heading covering `off` —
+    /// the author's own bytes, without the `# ` or the `<p>` that spells the
+    /// block around them.
+    ///
+    /// The same two kinds [`block_attrs_at_caret`](Self::block_attrs_at_caret)
+    /// reads, so that what a gesture re-anchors by is the block it wrote to.
+    fn block_content_at(&mut self, off: usize) -> Option<Range<usize>> {
+        self.nodes()
+            .into_iter()
+            .filter(|n| matches!(n.kind, Kind::Para | Kind::Heading))
+            .filter(|n| n.span.start <= off && off <= n.span.end)
+            .min_by_key(|n| n.span.end - n.span.start)
+            .map(|n| n.content_span.unwrap_or(n.span))
+    }
+
+    /// [`block_content_at`](Self::block_content_at)'s other half: the content
+    /// span of the block `region` holds now, found by the bytes it held before.
+    ///
+    /// Matched on the text rather than taken as the first block in the region,
+    /// because a rewritten region is markup and all — `<div class="center">`
+    /// carries words of its own — and because the block this gesture moved is
+    /// the one whose content the respelling did not touch. `None` where the
+    /// region holds no block at all, which is djot's every case: the `{…}` line
+    /// is spliced above the block and the block itself never moves through the
+    /// change at all, only past it.
+    fn block_content_in(
+        &mut self,
+        region: &Range<usize>,
+        text: Option<&str>,
+    ) -> Option<Range<usize>> {
+        let text = text?;
+        let spans: Vec<Range<usize>> = self
+            .nodes()
+            .into_iter()
+            .filter(|n| matches!(n.kind, Kind::Para | Kind::Heading))
+            .filter(|n| region.start <= n.span.start && n.span.end <= region.end)
+            .map(|n| n.content_span.unwrap_or(n.span))
+            .collect();
+        spans
+            .into_iter()
+            .find(|s| self.source.get(s.clone()) == Some(text))
     }
 
     /// Hand `attrs` to twig as the attribute set of the span over `[start,
@@ -7281,6 +7344,36 @@ fn reanchor(off: usize, change: &Change) -> usize {
         return change.new.end;
     }
     (off + change.new.end).saturating_sub(change.old.end)
+}
+
+/// [`reanchor`] for an edit that respells the markup *around* a block and
+/// leaves the block's own bytes alone — which is every attribute gesture.
+///
+/// `block` is that block's content span before and after the splice, so an
+/// offset standing in the text keeps its distance from the text's start and how
+/// many bytes twig wrote above it never enters the arithmetic. That is the whole
+/// rule, and it is why nothing here knows how long a `<div …>` is: a second key
+/// on the same div lengthens the attribute line, clearing the last one takes the
+/// div away entirely, and both are the same sum. `None` where the splice named
+/// no block at either end, which is every djot case — the `{…}` line is written
+/// above the block, and the block itself only shifts past it.
+///
+/// Anywhere else it is `reanchor`'s own answer: untouched before the splice,
+/// shifted by its delta after it, and at the splice's end for an offset that
+/// stood in markup being rewritten — a caret inside djot's `{…}` line has no
+/// text to keep.
+fn reanchor_in_block(
+    off: usize,
+    change: &Change,
+    block: Option<(&Range<usize>, &Range<usize>)>,
+) -> usize {
+    if let Some((was, now)) = block
+        && was.start <= off
+        && off <= was.end
+    {
+        return now.start + (off - was.start).min(now.end - now.start);
+    }
+    reanchor(off, change)
 }
 
 /// A watermark for a file's contents (see `Doc::disk_hash`).
@@ -15658,5 +15751,137 @@ mod tests {
             "got {:?}",
             blank.status
         );
+    }
+
+    /// A block attribute gesture keeps the caret on the **text** it was on, not
+    /// on the byte offset it had. Markdown has nowhere to put a paragraph's
+    /// attributes but a `<div>` around it, and twig splices the div and the
+    /// block it wraps as one region — so a caret that kept its offset landed in
+    /// the markup, and every press after the first answered "no block at the
+    /// caret" with the toolbar's queries reading nothing.
+    #[test]
+    fn a_markdown_block_gesture_keeps_the_caret_on_its_text() {
+        let word = |d: &Doc| d.caret - d.source.find("brown").unwrap();
+        let mut md = fmt_doc("the quick brown fox\n", Format::Markdown);
+        md.caret = md.source.find("brown").unwrap() + 2; // "br|own"
+
+        // Wrapping: the div and two blank lines open above the block.
+        md.set_alignment(Some(Align::Center));
+        assert_eq!(
+            md.source,
+            "<div class=\"center\">\n\nthe quick brown fox\n\n</div>\n"
+        );
+        assert_eq!(word(&md), 2, "the caret left its word: {}", md.caret);
+        assert_eq!(md.alignment_at_caret(), Some(Align::Center));
+
+        // Re-styling: the attribute line changes length under the same caret,
+        // and the second press reaches the same block rather than nothing.
+        md.set_alignment(Some(Align::Right));
+        assert_eq!(
+            md.source, "<div class=\"right\">\n\nthe quick brown fox\n\n</div>\n",
+            "a second press re-styles the div"
+        );
+        assert_eq!(md.status, None);
+        assert_eq!(word(&md), 2);
+
+        // A second key on the same div — the line grows, the caret rides it.
+        md.set_line_spacing(Some(LineSpacing::Double));
+        assert_eq!(
+            md.source,
+            "<div class=\"right\" data-line-height=\"2\">\n\nthe quick brown fox\n\n</div>\n"
+        );
+        assert_eq!(word(&md), 2);
+        assert_eq!(md.line_spacing_at_caret(), Some(LineSpacing::Double));
+
+        // Unwrapping: the line shrinks, and then the div goes altogether.
+        md.set_alignment(None);
+        assert_eq!(
+            md.source,
+            "<div data-line-height=\"2\">\n\nthe quick brown fox\n\n</div>\n"
+        );
+        assert_eq!(word(&md), 2);
+        md.set_line_spacing(None);
+        assert_eq!(md.source, "the quick brown fox\n", "the last key unwraps");
+        assert_eq!(word(&md), 2, "the caret came back down with the block");
+        assert_eq!(md.alignment_at_caret(), None);
+        assert_eq!(md.status, None);
+    }
+
+    /// The same rule in djot, where the spelling is a `{…}` line *above* the
+    /// block rather than a wrapper around it: inserting it pushes the block
+    /// down, re-styling it changes the line's length, and clearing the last key
+    /// takes the line away again. The caret rides all three.
+    #[test]
+    fn a_djot_attribute_line_keeps_the_caret_on_its_text() {
+        let word = |d: &Doc| d.caret - d.source.find("brown").unwrap();
+        let mut dj = fmt_doc("the quick brown fox\n", Format::Djot);
+        dj.caret = dj.source.find("brown").unwrap() + 2;
+
+        dj.set_alignment(Some(Align::Center));
+        assert_eq!(dj.source, "{.center}\nthe quick brown fox\n");
+        assert_eq!(word(&dj), 2);
+        assert_eq!(dj.alignment_at_caret(), Some(Align::Center));
+
+        dj.set_line_spacing(Some(LineSpacing::Double));
+        assert_eq!(
+            dj.source, "{.center data-line-height=\"2\"}\nthe quick brown fox\n",
+            "a second press edits the line the first wrote"
+        );
+        assert_eq!(word(&dj), 2);
+
+        dj.set_alignment(None);
+        assert_eq!(dj.source, "{data-line-height=\"2\"}\nthe quick brown fox\n");
+        assert_eq!(word(&dj), 2);
+
+        dj.set_line_spacing(None);
+        assert_eq!(dj.source, "the quick brown fox\n");
+        assert_eq!(word(&dj), 2);
+        assert_eq!(dj.status, None);
+    }
+
+    /// The run gestures with no selection are the block gesture, so they keep
+    /// the caret the same way — and a heading keeps it inside the heading's own
+    /// text, past the `# ` its content span starts after. A selection rides
+    /// along whole: a block gesture is not a run gesture, and what was selected
+    /// before the press is still selected after it.
+    #[test]
+    fn a_block_gesture_carries_a_selection_and_a_heading_caret_too() {
+        // No selection: the run gesture goes through the block door.
+        let mut md = fmt_doc("the quick brown fox\n", Format::Markdown);
+        md.caret = md.source.find("brown").unwrap() + 2;
+        md.set_font_size(Some(SizeStep::Large));
+        assert_eq!(
+            md.source,
+            "<div data-size=\"large\">\n\nthe quick brown fox\n\n</div>\n"
+        );
+        assert_eq!(md.caret - md.source.find("brown").unwrap(), 2);
+        assert_eq!(md.font_size_at_caret(), Some(SizeStep::Large));
+        md.set_font_size(Some(SizeStep::Small));
+        assert_eq!(
+            md.font_size_at_caret(),
+            Some(SizeStep::Small),
+            "the second press reached the same block"
+        );
+
+        // A selection: alignment is the block's whatever is selected, and the
+        // words stay selected.
+        let mut sel = fmt_doc("the quick brown fox\n", Format::Markdown);
+        let at = sel.source.find("brown").unwrap();
+        sel.anchor = Some(at);
+        sel.caret = at + 5;
+        sel.set_alignment(Some(Align::Center));
+        let now = sel.source.find("brown").unwrap();
+        assert_eq!(sel.selection(), Some((now, now + 5)), "the words moved out");
+
+        // A heading: the content span starts past the `# `.
+        let mut h = fmt_doc("# hi there\n\nbody\n", Format::Markdown);
+        h.caret = h.source.find("there").unwrap() + 1;
+        h.set_alignment(Some(Align::Right));
+        assert_eq!(
+            h.source,
+            "<div class=\"right\">\n\n# hi there\n\n</div>\n\nbody\n"
+        );
+        assert_eq!(h.caret, h.source.find("there").unwrap() + 1);
+        assert_eq!(h.alignment_at_caret(), Some(Align::Right));
     }
 }

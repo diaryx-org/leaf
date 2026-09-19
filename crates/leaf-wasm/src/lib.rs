@@ -43,7 +43,10 @@
 //! [`Row::heading`] level so the whole line can be sized as one unit, mirroring
 //! how gpui shapes a heading's line at a single larger size.
 
-use leaf_core::style::{Baseline, MarkColor as CoreMarkColor, Role, Style as LStyle};
+use leaf_core::style::{
+    Align as CoreAlign, Baseline, FontFamily as CoreFontFamily, LineSpacing as CoreLineSpacing,
+    MarkColor as CoreMarkColor, Role, SizeStep as CoreSizeStep, Style as LStyle,
+};
 use leaf_core::wysiwyg::text_width;
 use leaf_core::{
     Alignment, BlockClass, BlockKind, ColorScheme, Doc, Format, Glyph, Highlight as CoreHighlight,
@@ -123,6 +126,30 @@ pub struct Run {
     /// renderer that knows nothing about tokens still draws the run as the code
     /// it is, and one that does keys a palette on the name.
     token: Option<String>,
+    /// How large this run is set relative to the text around it — `"xx-small"`,
+    /// `"x-small"`, `"small"`, `"large"`, `"x-large"`, `"xx-large"`,
+    /// `"xxx-large"` — or absent for the theme's own size, which is every run
+    /// there was before the presentation vocabulary.
+    ///
+    /// CSS's own `<absolute-size>` keyword, so the renderer's rule is
+    /// `[data-size="large"] { font-size: large }` and nothing is learned twice.
+    /// A *step*, never a measurement, for [`Self::mark_color`]'s reason: the
+    /// document says how much bigger, the stylesheet says how big.
+    size: Option<String>,
+    /// The face this run is set in — `"serif"`, `"sans-serif"`, `"monospace"`,
+    /// `"cursive"` — or absent for the theme's body face. CSS's own generic
+    /// again, so the rule is `font-family: serif` and the browser's fallback
+    /// chain does the resolving a document should never do for itself.
+    font: Option<String>,
+    /// The run's *foreground* colour, by the same seven names
+    /// [`Self::mark_color`] carries — or absent for the theme's text colour.
+    ///
+    /// Not `mark_color`, though they share a vocabulary on purpose: that is a
+    /// highlight's *background* and reaches a run through its `mark` role, this
+    /// is what the letters themselves are painted. A renderer with a red for a
+    /// highlight has a red for text, and both should be that red — which on the
+    /// web is one custom property read by both rules.
+    text_color: Option<String>,
 }
 
 /// A selection cited out of the source — the text, a little of what
@@ -303,6 +330,24 @@ pub struct Row {
     /// already carries `h1`…`h6` too, but that can't tell the renderer how tall
     /// to make a row whose runs are mixed.)
     heading: Option<u8>,
+    /// How this row's block is aligned across the measure — `"center"`,
+    /// `"right"`, `"justify"` — and `null` for the theme's default, which is
+    /// left. On every row the block emits.
+    ///
+    /// The token is the CSS class, so the renderer puts it on the row element
+    /// and `.center { text-align: center }` does the rest. A *row* fact and not
+    /// a run one for `heading`'s reason, and more sharply: alignment is a
+    /// property of the line, not of the letters on it, so an empty paragraph the
+    /// author has just centred carries it with no run to hang it on.
+    align: Option<String>,
+    /// How far apart this row's block sets its lines, as a multiple of the
+    /// theme's own line height — `"1.15"`, `"1.5"`, `"2"` — and `null` for the
+    /// theme's spacing. On every row the block emits.
+    ///
+    /// The token is the ratio, so the renderer's attribute selector is
+    /// `[data-line-height="1.5"] { line-height: 1.5 }` and a reader of the
+    /// source sees the number the document carries.
+    line_height: Option<String>,
 }
 
 /// One `<source>` alternative of a block media element, as JS sees it — a
@@ -497,6 +542,30 @@ pub struct CapabilitiesView {
     table: bool,
     /// Shift+Return inside a cell.
     cell_line_break: bool,
+    /// The alignment control — `set_alignment`. Every format leaf opens but XML
+    /// spells a block's attributes.
+    alignment: bool,
+    /// The line-spacing menu — `set_line_spacing`. The same gesture as
+    /// `alignment` and so the same answer, and its own flag because a toolbar
+    /// dims controls one at a time.
+    line_spacing: bool,
+    /// The size menu — `set_font_size`. **Narrower than the block pair**: it
+    /// wraps a selection in an attributed span, which AsciiDoc has no slot for,
+    /// so this is `false` there while `alignment` is `true`. The block-level form
+    /// of the same property — the caret in a paragraph, nothing selected — still
+    /// works, which is why the flag describes the control rather than the caret.
+    font_size: bool,
+    /// The face menu — `set_font_family`. A span, as `font_size` is.
+    font_family: bool,
+    /// The text-colour swatches — `set_text_color`. A span again, and not to be
+    /// confused with `mark_color`: that is a highlight's background and rides the
+    /// `mark` node, this is a run's foreground and rides an attributed span.
+    text_color: bool,
+    /// The page-break button — `insert_page_break`. Markdown and djot and no
+    /// others, though twig spells the gesture in HTML and AsciiDoc too: the flag
+    /// describes what leaf can *show*, and the walker draws neither of those
+    /// spellings yet.
+    page_break: bool,
 }
 
 impl From<leaf_core::Capabilities> for CapabilitiesView {
@@ -523,6 +592,12 @@ impl From<leaf_core::Capabilities> for CapabilitiesView {
             code_language: c.code_language,
             table: c.table,
             cell_line_break: c.cell_line_break,
+            alignment: c.alignment,
+            line_spacing: c.line_spacing,
+            font_size: c.font_size,
+            font_family: c.font_family,
+            text_color: c.text_color,
+            page_break: c.page_break,
         }
     }
 }
@@ -1509,6 +1584,139 @@ impl LeafDoc {
         self.doc.task_checked_at_caret()
     }
 
+    // ── the presentation vocabulary ──────────────────────────────────────────
+    //
+    // Six gestures and five queries over a document's *presentation*: alignment
+    // and line spacing, which are the block's and ride [`Row::align`] and
+    // [`Row::line_height`], and size, face and colour, which are the run's and
+    // ride [`Run::size`], [`Run::font`] and [`Run::text_color`]. Every value is
+    // a **name** a stylesheet can select on — `center`, `1.5`, `large`, `serif`,
+    // `red` — and never a measurement, which is why a document outlives the
+    // theme it was written under. `presentation.css` is the rule per token.
+    //
+    // Each gesture edits one attribute key and keeps the rest, so a document
+    // from elsewhere passes through the editor unharmed, and `null` clears the
+    // key. A name outside a vocabulary is an error rather than a silent
+    // clearing, exactly as it is for `set_mark_color`: the two arguments differ
+    // by one typo and mean opposite things. Enable each control by its
+    // `capabilities()` flag and light it by the query beside it.
+
+    /// Align the caret's block (`"center"`, `"right"`, `"justify"`), or return
+    /// it to the theme's default with `null`/`undefined`.
+    ///
+    /// A block property, so it is the caret's *block* whatever is selected: a
+    /// line belongs to a block, and "centre this" with three words selected
+    /// means the paragraph, not the words. Other `class` tokens on the block are
+    /// kept. There is no `"left"` — absence is left.
+    pub fn set_alignment(&mut self, align: Option<String>) -> Result<DocView, JsValue> {
+        let align = alignment(align.as_deref())?;
+        self.doc.set_alignment(align);
+        self.view()
+    }
+
+    /// Set the line spacing of the caret's block (`"1.15"`, `"1.5"`, `"2"`), or
+    /// return it to the theme's with `null`. `set_alignment`'s peer in every
+    /// respect but the key; single spacing is absence.
+    pub fn set_line_spacing(&mut self, spacing: Option<String>) -> Result<DocView, JsValue> {
+        let spacing = line_spacing(spacing.as_deref())?;
+        self.doc.set_line_spacing(spacing);
+        self.view()
+    }
+
+    /// Set the size of the selected run, or of the caret's whole block when
+    /// nothing is selected — CSS's absolute-size keywords (`"xx-small"` …
+    /// `"xxx-large"`), with `null` for the theme's own size. `"medium"` is not a
+    /// value: `medium` is absence.
+    ///
+    /// Size, face and colour are the *run's*, and the block's when no run is
+    /// chosen — so "make this paragraph larger" is a press with the caret in it
+    /// rather than a select-all first. With a selection the range is wrapped in
+    /// an attributed span, or the span it already lies in is re-styled, never
+    /// nested.
+    pub fn set_font_size(&mut self, size: Option<String>) -> Result<DocView, JsValue> {
+        let size = size_step(size.as_deref())?;
+        self.doc.set_font_size(size);
+        self.view()
+    }
+
+    /// Set the face of the selected run, or of the caret's whole block —
+    /// `"serif"`, `"sans-serif"`, `"monospace"`, `"cursive"`, or `null` for the
+    /// theme's body face. `set_font_size`'s peer. A generic rather than a family
+    /// name: a document that names `Garamond` renders in the fallback everywhere
+    /// Garamond is not installed.
+    pub fn set_font_family(&mut self, font: Option<String>) -> Result<DocView, JsValue> {
+        let font = font_family(font.as_deref())?;
+        self.doc.set_font_family(font);
+        self.view()
+    }
+
+    /// Set the *text* colour of the selected run, or of the caret's whole block
+    /// — the same seven names `set_mark_color` takes, or `null` for the theme's.
+    ///
+    /// `set_font_size`'s peer, and **not** `set_mark_color`: that one colours a
+    /// highlight's background and needs a highlight to colour, this one paints
+    /// the letters and needs nothing. They share the vocabulary on purpose, so a
+    /// page with a `--leaf-red` for a highlight has it for text too.
+    pub fn set_text_color(&mut self, color: Option<String>) -> Result<DocView, JsValue> {
+        self.doc.set_text_color(mark_color(color.as_deref())?);
+        self.view()
+    }
+
+    /// Insert a page break at the caret — a leaf directive with no label, placed
+    /// exactly as `insert_thematic_break` places a rule, a selection replaced by
+    /// it and a bare paragraph parted at the caret first.
+    ///
+    /// A renderer that paginates opens a page at the row's directive mark; one
+    /// that scrolls draws a dashed rule where the `⧉ page-break` placeholder row
+    /// is.
+    pub fn insert_page_break(&mut self) -> Result<DocView, JsValue> {
+        self.doc.insert_page_break();
+        self.view()
+    }
+
+    /// The alignment in force at the caret, or `undefined` for the theme's
+    /// default — which segment of an alignment control is lit.
+    ///
+    /// Read off the nearest node that names one: the caret's block, and the
+    /// `div`s around it after that, so the control follows the caret into a
+    /// centred `<div>`.
+    pub fn alignment_at_caret(&mut self) -> Option<String> {
+        self.doc.alignment_at_caret().map(|a| a.name().to_string())
+    }
+
+    /// The line spacing in force at the caret, or `undefined` for the theme's
+    /// own — which entry a spacing menu shows ticked. `alignment_at_caret`'s
+    /// peer.
+    pub fn line_spacing_at_caret(&mut self) -> Option<String> {
+        self.doc
+            .line_spacing_at_caret()
+            .map(|l| l.name().to_string())
+    }
+
+    /// The size in force at the caret, or `undefined` for the theme's own —
+    /// which entry a size menu shows ticked. Run-level, so the chain starts one
+    /// node deeper: the attributed span the caret stands in, then its block,
+    /// then the `div`s around it, the nearest winning.
+    pub fn font_size_at_caret(&mut self) -> Option<String> {
+        self.doc.font_size_at_caret().map(|s| s.name().to_string())
+    }
+
+    /// The face in force at the caret, or `undefined` for the theme's body face.
+    /// `font_size_at_caret`'s peer.
+    pub fn font_family_at_caret(&mut self) -> Option<String> {
+        self.doc
+            .font_family_at_caret()
+            .map(|f| f.name().to_string())
+    }
+
+    /// The *text* colour in force at the caret, or `undefined` for the theme's —
+    /// which swatch a text-colour control marks as the current one.
+    /// `font_size_at_caret`'s peer, and not [`DocView::mark_color`], which reads
+    /// a highlight's background off a `mark` node the caret is standing in.
+    pub fn text_color_at_caret(&mut self) -> Option<String> {
+        self.doc.text_color_at_caret().map(|c| c.name().to_string())
+    }
+
     pub fn insert_link(&mut self, destination: &str) -> Result<DocView, JsValue> {
         self.doc.insert_link(destination);
         self.view()
@@ -2039,6 +2247,11 @@ fn wysiwyg_rows(vmap: &VisualMap, ss: usize, se: usize, hls: &[CoreHighlight]) -
                     below: class_name(b.below),
                 }),
                 heading,
+                // Off the row for `heading`'s reason, and more sharply: these
+                // are properties of the *line*, so an empty paragraph just
+                // centred has no run to carry them.
+                align: vrow.align.map(|a| a.name().to_string()),
+                line_height: vrow.line_height.map(|l| l.name().to_string()),
             }
         })
         .collect()
@@ -2082,6 +2295,8 @@ fn source_rows(source: &str, ss: usize, se: usize) -> Vec<Row> {
             directive_label: None,
             boundary: None,
             heading: None, // source view is raw text — no resolved structure
+            align: None,   // …and so no attributes resolved onto a block
+            line_height: None,
         });
         byte = end + 1; // skip the '\n' that `split` consumed
     }
@@ -2106,6 +2321,9 @@ fn make_run(text: String, style: LStyle, sel: bool, hl: Option<&CoreHighlight>, 
         hl_color: hl.and_then(|h| h.color.clone()),
         mark_color: mark_color_name(style.role),
         token: style.token.map(|t| t.name().to_string()),
+        size: style.size.map(|s| s.name().to_string()),
+        font: style.font.map(|f| f.name().to_string()),
+        text_color: style.color.map(|c| c.name().to_string()),
     }
 }
 
@@ -2119,6 +2337,56 @@ fn mark_color(name: Option<&str>) -> Result<Option<CoreMarkColor>, JsValue> {
         Some(name) => CoreMarkColor::from_attr(name)
             .map(Some)
             .ok_or_else(|| JsValue::from_str(&format!("unknown highlight colour: {name}"))),
+    }
+}
+
+/// A block alignment by the `class` token a document spells it with — the
+/// argument `set_alignment` takes. `None` is the theme's default (there is no
+/// `left` token, because absence is left); anything else outside the vocabulary
+/// is an error, for [`mark_color`]'s reason.
+fn alignment(token: Option<&str>) -> Result<Option<CoreAlign>, JsValue> {
+    match token {
+        None => Ok(None),
+        Some(token) => CoreAlign::from_token(token)
+            .map(Some)
+            .ok_or_else(|| JsValue::from_str(&format!("unknown alignment: {token}"))),
+    }
+}
+
+/// A line spacing by the ratio a document spells it with — the argument
+/// `set_line_spacing` takes. `None` is the theme's spacing, which is what `"1"`
+/// would mean and is why it is not a value.
+fn line_spacing(name: Option<&str>) -> Result<Option<CoreLineSpacing>, JsValue> {
+    match name {
+        None => Ok(None),
+        Some(name) => CoreLineSpacing::from_attr(name)
+            .map(Some)
+            .ok_or_else(|| JsValue::from_str(&format!("unknown line spacing: {name}"))),
+    }
+}
+
+/// A size step by CSS's keyword for it — the argument `set_font_size` takes.
+/// `None` is the theme's own size, which is what `"medium"` would mean and is
+/// why it is not a value.
+fn size_step(name: Option<&str>) -> Result<Option<CoreSizeStep>, JsValue> {
+    match name {
+        None => Ok(None),
+        Some(name) => CoreSizeStep::from_attr(name)
+            .map(Some)
+            .ok_or_else(|| JsValue::from_str(&format!("unknown font size: {name}"))),
+    }
+}
+
+/// A face by CSS's generic for it — the argument `set_font_family` takes. `None`
+/// is the theme's body face. A concrete family (`"Garamond"`) is an error rather
+/// than a silent pass-through: leaf's vocabulary is the four generics, and a
+/// document that names a face names it from somewhere else.
+fn font_family(name: Option<&str>) -> Result<Option<CoreFontFamily>, JsValue> {
+    match name {
+        None => Ok(None),
+        Some(name) => CoreFontFamily::from_attr(name)
+            .map(Some)
+            .ok_or_else(|| JsValue::from_str(&format!("unknown font family: {name}"))),
     }
 }
 
@@ -2579,6 +2847,147 @@ mod tests {
             Some("https://example.com/x")
         );
         assert!(d.link_destination_at(0).is_none());
+    }
+
+    /// The block half of the presentation vocabulary rides the **row**, as the
+    /// token a stylesheet selects on: `.center` is the class and
+    /// `[data-line-height="1.5"]` the attribute, so the renderer puts both on
+    /// the row element and `presentation.css` does the rest. A run could not
+    /// carry them — an empty paragraph the author has just centred hasn't got
+    /// one.
+    #[test]
+    fn the_block_vocabulary_crosses_on_the_row_and_comes_back_at_the_caret() {
+        let mut d = handle("a centred paragraph\n");
+        assert!(d.set_alignment(Some("center".into())).is_ok());
+        let rows = wysiwyg_rows(&d.doc.vmap, usize::MAX, usize::MAX, &[]);
+        let aligned: Vec<&str> = rows.iter().filter_map(|r| r.align.as_deref()).collect();
+        assert_eq!(aligned, ["center"], "the token, on the paragraph's row");
+        assert_eq!(d.alignment_at_caret().as_deref(), Some("center"));
+
+        // A second property on the same block keeps the first: each gesture
+        // edits one key and passes the rest back whole. (The caret goes back
+        // into the paragraph first — in Markdown the attributes went onto a
+        // `div` the press wrote *around* it, so the offset the caret kept is now
+        // that opening line, which is no block of the document's.)
+        let at = d.doc.source.find("centred").unwrap();
+        d.doc.place_caret(at, false);
+        assert!(d.set_line_spacing(Some("1.5".into())).is_ok());
+        let rows = wysiwyg_rows(&d.doc.vmap, usize::MAX, usize::MAX, &[]);
+        let block = rows.iter().find(|r| r.align.is_some()).expect("the block");
+        assert_eq!(block.align.as_deref(), Some("center"));
+        assert_eq!(block.line_height.as_deref(), Some("1.5"));
+        assert_eq!(d.line_spacing_at_caret().as_deref(), Some("1.5"));
+
+        // `null` clears, and absence is the theme's default rather than a token
+        // meaning "left".
+        let at = d.doc.source.find("centred").unwrap();
+        d.doc.place_caret(at, false);
+        assert!(d.set_alignment(None).is_ok());
+        let rows = wysiwyg_rows(&d.doc.vmap, usize::MAX, usize::MAX, &[]);
+        assert!(rows.iter().all(|r| r.align.is_none()));
+        assert_eq!(d.alignment_at_caret(), None);
+        assert_eq!(
+            d.line_spacing_at_caret().as_deref(),
+            Some("1.5"),
+            "clearing one key leaves the other standing"
+        );
+    }
+
+    /// The run half rides the **run**, beside `role`: `data-size`, `data-font`
+    /// and `data-color` as the document spells them, so the renderer writes the
+    /// same three attributes onto the span it draws. With nothing selected the
+    /// caret's whole block takes them, which is what makes "make this paragraph
+    /// larger" one press rather than a select-all first.
+    #[test]
+    fn the_run_vocabulary_crosses_on_the_run_and_comes_back_at_the_caret() {
+        let mut d = handle("big serif blue\n");
+        assert!(d.set_font_size(Some("large".into())).is_ok());
+        let at = d.doc.source.find("serif").unwrap();
+        d.doc.place_caret(at, false);
+        assert!(d.set_font_family(Some("serif".into())).is_ok());
+        let at = d.doc.source.find("serif").unwrap();
+        d.doc.place_caret(at, false);
+        assert!(d.set_text_color(Some("blue".into())).is_ok());
+
+        let name = |s: &str| Some(s.to_string());
+        let styled: Vec<(Option<String>, Option<String>, Option<String>)> = d
+            .doc
+            .vmap
+            .rows
+            .iter()
+            .flat_map(|r| runs_of(&r.glyphs, usize::MAX, usize::MAX, &[]))
+            .filter(|r| !r.text.trim().is_empty())
+            .map(|r| (r.size, r.font, r.text_color))
+            .collect();
+        assert_eq!(styled, [(name("large"), name("serif"), name("blue"))]);
+
+        assert_eq!(d.font_size_at_caret().as_deref(), Some("large"));
+        assert_eq!(d.font_family_at_caret().as_deref(), Some("serif"));
+        assert_eq!(d.text_color_at_caret().as_deref(), Some("blue"));
+        // A run's text colour is not a highlight's wash — nothing here is a
+        // `mark`, and the palette that colours one reports nothing.
+        assert!(!d.caret_in_mark());
+    }
+
+    /// Each vocabulary is read back by the name the document carries, and a
+    /// name outside it is refused rather than read as a clearing — the argument
+    /// that clears is `null`, and the two differ by one typo.
+    #[test]
+    fn a_vocabulary_reads_back_only_its_own_names() {
+        assert_eq!(alignment(Some("center")).unwrap(), Some(CoreAlign::Center));
+        assert_eq!(
+            line_spacing(Some("1.5")).unwrap(),
+            Some(CoreLineSpacing::OneHalf)
+        );
+        assert_eq!(size_step(Some("large")).unwrap(), Some(CoreSizeStep::Large));
+        assert_eq!(
+            font_family(Some("monospace")).unwrap(),
+            Some(CoreFontFamily::Monospace)
+        );
+        // Absence is the theme's own, and the only way to ask for it.
+        assert_eq!(alignment(None).unwrap(), None);
+        assert_eq!(line_spacing(None).unwrap(), None);
+        assert_eq!(size_step(None).unwrap(), None);
+        assert_eq!(font_family(None).unwrap(), None);
+        // The names that are absence rather than values, and a face from
+        // somewhere else, are not in any of them. (The error itself is a
+        // `JsValue` and can only be built inside wasm, so this asks the core
+        // vocabularies the same question the helpers put to them.)
+        assert_eq!(CoreAlign::from_token("left"), None);
+        assert_eq!(CoreLineSpacing::from_attr("1"), None);
+        assert_eq!(CoreSizeStep::from_attr("medium"), None);
+        assert_eq!(CoreFontFamily::from_attr("Garamond"), None);
+    }
+
+    /// A page break crosses as the leaf directive it is — the row a paginating
+    /// renderer opens a page at, and a dashed rule for one that scrolls.
+    #[test]
+    fn a_page_break_crosses_as_a_directive_of_its_own() {
+        let mut d = handle("before\n\nafter\n");
+        assert!(d.insert_page_break().is_ok());
+        let names: Vec<String> = wysiwyg_directives(&d.doc.vmap)
+            .into_iter()
+            .map(|x| x.name)
+            .collect();
+        assert_eq!(names, ["page-break"]);
+        assert!(d.doc.source.contains("page-break"));
+    }
+
+    /// One flag per new control, answered by the format — the toolbar builds
+    /// itself from these rather than discovering each refusal on a press.
+    /// Markdown spells all six; XML spells none of them, being parse-only.
+    #[test]
+    fn capabilities_answer_for_the_presentation_controls_too() {
+        let md = CapabilitiesView::from(handle("x\n").doc.capabilities());
+        assert!(md.alignment && md.line_spacing);
+        assert!(md.font_size && md.font_family && md.text_color);
+        assert!(md.page_break);
+
+        let xml = LeafDoc::new("<a>x</a>", "xml").expect("xml parses");
+        let xml = CapabilitiesView::from(xml.doc.capabilities());
+        assert!(!xml.alignment && !xml.line_spacing);
+        assert!(!xml.font_size && !xml.font_family && !xml.text_color);
+        assert!(!xml.page_break);
     }
 
     #[test]
