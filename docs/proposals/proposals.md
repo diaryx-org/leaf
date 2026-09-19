@@ -8,6 +8,7 @@ contents:
 - '[Math in leaf](math-rendering.md)'
 - '[SVG as vectors in leaf-swift, through usvg](svg-as-vectors-on-apple.md)'
 - '[A presentation vocabulary](presentation-vocabulary.md)'
+- '[Exact values beside the presentation names](exact-presentation-values.md)'
 part_of: '[leaf](/README.md)'
 ---
 # Proposals
