@@ -1,26 +1,40 @@
 //  FormattingToolbar.swift
 //
-//  The formatting bar — one horizontally scrolling row of tools, grouped by kind
-//  (inline marks · block structure · indent · history) with a hairline between
-//  groups. Every action here already exists on `LeafEditorModel`, so this is
-//  wiring rather than new editing capability; a host that wants a different
-//  arrangement can still build its own against the same public commands.
+//  The formatting bar — one row of tools, grouped by kind (inline marks · block
+//  structure · presentation · indent · history · whatever the host adds) with a
+//  hairline between groups. Every action here already exists on `LeafEditorModel`, so
+//  this is wiring rather than new editing capability; a host that wants a
+//  different arrangement can still build its own against the same public
+//  commands.
 //
 //  It ships in two shapes, because the two platforms hang it in different
 //  places. On iOS it's a keyboard accessory, floated above the soft keyboard by
 //  `LeafEditor(model:accessory:)`; on macOS there's no soft keyboard to float
-//  above, so it's a static strip the host stacks over the editor. Only the
-//  metrics differ — same tools, same order, same state bindings — so the two
-//  live here as a `Style` rather than as two files that would drift.
+//  above, so it's a static strip the host stacks over the editor. Same tools,
+//  same order, same state bindings — so the two live here as a `Style` rather
+//  than as two files that would drift. What differs is the metrics, and how the
+//  row copes with a width it does not fit in:
 //
-//  The iOS bar was once a paged TabView (three pages, swipe or tap a dot). It
-//  read badly at accessory height: `.page` reserves a strip of its own frame for
-//  the dot indicator, so inside a 44pt bar the dots and the 34pt buttons fought
-//  over the same points and both got clipped. Paging also hid two thirds of the
-//  tools behind a gesture with no affordance once the dots were gone. A scroll
-//  row shows the first group in full, hints at the next, and can't clip — and it
-//  earns its keep on macOS too, where a narrow window would otherwise squeeze
-//  the groups.
+//  **The accessory scrolls.** A finger flicks a row, and a scroll row shows the
+//  first group in full, hints at the next, and can't clip. (It was once a paged
+//  TabView — three pages, swipe or tap a dot — and read badly at accessory
+//  height: `.page` reserves a strip of its own frame for the dot indicator, so
+//  inside a 44pt bar the dots and the 34pt buttons fought over the same points
+//  and both got clipped, and the paging hid two thirds of the tools behind a
+//  gesture with no affordance once the dots were gone.)
+//
+//  **The bar pages by group.** A pointer has no sideways scroll — a mouse
+//  cannot flick — so in a column too narrow for the whole row the tools past
+//  its edge were reachable by trackpad and by nothing else, and nothing said
+//  they were there beyond a button that happened to be cut in half. So the
+//  `.bar` style shows as many *whole* groups as fit and a pair of chevrons at
+//  its trailing end turns to the rest. A group is never split, so nothing reads
+//  as "scroll", and a page turn is a click, which everything with a pointer
+//  can make. The width is measured on the container, not the row: measured on
+//  the row it could never be narrower than its own tools, so it always fit.
+//  The current page is clamped rather than reset when the width changes, so a
+//  page that has just become the last one stays up. `ToolbarPaging` is the
+//  arithmetic, kept apart from the view so a test can drive it.
 //
 //  The buttons are bare glyphs rather than filled capsules: the bar already sits
 //  on its own `.bar` material, and a row of capsules on top of that reads as
@@ -44,6 +58,13 @@
 //  toolbar too — with a plain field of the bar's own as the fallback, because a
 //  ready-made toolbar whose Link button does nothing until you wire a callback
 //  isn't ready-made.
+//
+//  A host's own tools — a paperclip, a source toggle — go on the row as a
+//  `Tool` each, drawn with the bar's own chrome, as one more group after
+//  history: paged with the rest on the desktop, scrolled with the rest on the
+//  accessory. Values rather than a `@ViewBuilder` because the paging has to
+//  know how wide the group is before it lays it out, and a view has no width
+//  until it is drawn.
 
 import LeafFFI
 import SwiftUI
@@ -59,21 +80,76 @@ import SwiftUI
 ///
 ///     // iOS: the same tools, above the keyboard.
 ///     LeafEditor(model: editor) { LeafFormattingToolbar(editor: editor) }
+///
+///     // With a tool of the host's own at the row's end.
+///     LeafFormattingToolbar(editor: editor, tools: [
+///         .button("attach", systemImage: "paperclip", label: "Attach a file") { attach() }
+///     ])
 public struct LeafFormattingToolbar: View {
     /// Which shape the bar takes. `.automatic` resolves to `.accessory` on iOS
     /// and `.bar` on macOS, which is what a host wants unless it's deliberately
     /// putting the iOS-sized bar somewhere other than above the keyboard.
     public enum Style {
-        /// Keyboard-accessory metrics: 44pt tall, finger-sized targets.
+        /// Keyboard-accessory metrics: 44pt tall, finger-sized targets, and a
+        /// row that scrolls when it does not fit.
         case accessory
-        /// Static-strip metrics: 32pt tall, pointer-sized targets.
+        /// Static-strip metrics: 32pt tall, pointer-sized targets, and a row
+        /// that pages by group when it does not fit.
         case bar
         /// The platform's usual choice.
         case automatic
     }
 
+    /// A tool of the host's own, drawn on the bar with the bar's chrome: the
+    /// same target, the same bare glyph, the same accent pill when `active`.
+    ///
+    /// Two kinds, because the bar's own tools come in two: a button that acts,
+    /// and a menu whose rows are the whole tool (the way Table is). A menu's
+    /// rows are a view of the host's, and the glyph is the bar's, so a host's
+    /// Format-style dropdown stands beside the built-in tools looking like one.
+    public struct Tool: Identifiable {
+        public let id: String
+        /// The SF Symbol on the button.
+        public var systemImage: String
+        /// The accessibility name and, on the desktop, the tooltip.
+        public var label: String
+        /// Lit with the accent pill, the way Bold is lit inside bold text.
+        public var active: Bool
+        /// Dimmed to the tertiary label and inert, the way Undo is with
+        /// nothing to undo. Inert rather than absent keeps the row's shape.
+        public var enabled: Bool
+        var kind: Kind
+
+        enum Kind {
+            case button(() -> Void)
+            case menu(AnyView)
+        }
+
+        /// A button: a press runs `action`.
+        public static func button(
+            _ id: String, systemImage: String, label: String,
+            active: Bool = false, enabled: Bool = true,
+            action: @escaping () -> Void
+        ) -> Tool {
+            Tool(id: id, systemImage: systemImage, label: label,
+                 active: active, enabled: enabled, kind: .button(action))
+        }
+
+        /// A menu: a press drops `rows`, which are whatever a `Menu` takes —
+        /// buttons, toggles, dividers, submenus.
+        public static func menu<Rows: View>(
+            _ id: String, systemImage: String, label: String,
+            active: Bool = false, enabled: Bool = true,
+            @ViewBuilder rows: () -> Rows
+        ) -> Tool {
+            Tool(id: id, systemImage: systemImage, label: label,
+                 active: active, enabled: enabled, kind: .menu(AnyView(rows())))
+        }
+    }
+
     @ObservedObject private var editor: LeafEditorModel
     private let style: Style
+    private let hostTools: [Tool]
 
     /// The reader's Dynamic Type setting, read as a bare multiplier: SwiftUI
     /// resizes this 1 the way it would resize a body-styled length, so dividing
@@ -93,23 +169,37 @@ public struct LeafFormattingToolbar: View {
     @State private var typedDestination = ""
     @FocusState private var destinationFocused: Bool
 
-    public init(editor: LeafEditorModel, style: Style = .automatic) {
+    /// The `.bar` style's paging: which page of groups is up, and the width
+    /// of the container the row has to fit. `page` is what was last turned
+    /// to, not what is showing — the view clamps it against the page count
+    /// each time it draws, so a width change never resets it (see
+    /// `ToolbarPaging.clamp`).
+    @State private var page = 0
+    @State private var width: CGFloat = 0
+
+    /// - Parameter tools: the host's own tools, as one more group at the end of
+    ///   the row. Empty by default, which is the bar as it is.
+    public init(editor: LeafEditorModel, style: Style = .automatic, tools: [Tool] = []) {
         self.editor = editor
         self.style = style
+        self.hostTools = tools
     }
 
     public var body: some View {
+        switch resolvedStyle {
+        case .accessory, .automatic: scrollingRow
+        case .bar: pagedRow
+        }
+    }
+
+    /// The accessory: one horizontal scroll, every group in a row.
+    private var scrollingRow: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: metrics.spacing) {
-                inlineMarks
-                separator
-                blockStyles
-                separator
-                presentationTools
-                separator
-                indentTools
-                separator
-                historyTools
+            HStack(spacing: 0) {
+                ForEach(Array(groups.enumerated()), id: \.element.id) { offset, group in
+                    if offset > 0 { separator }
+                    group.content
+                }
             }
             .padding(.horizontal, metrics.edgePadding)
         }
@@ -117,10 +207,128 @@ public struct LeafFormattingToolbar: View {
         .background(.bar)
     }
 
+    /// The bar: as many whole groups as fit, and chevrons to the rest.
+    ///
+    /// The width is the container's, measured on a view with no content to
+    /// hold it open, and the row is laid over it at that width. Measured on
+    /// the row itself it could never be narrower than the row's own tools, so
+    /// the row would run past the container's edge and report that it fit.
+    /// A `GeometryReader` in the background rather than `onGeometryChange`,
+    /// which is a macOS 13 modifier and this package is macOS 12.
+    private var pagedRow: some View {
+        Color.clear
+            .frame(height: metrics.barHeight)
+            .frame(maxWidth: .infinity)
+            .background(GeometryReader { proxy in
+                Color.clear.preference(key: WidthKey.self, value: proxy.size.width)
+            })
+            .onPreferenceChange(WidthKey.self) { width = $0 }
+            .overlay(alignment: .leading) { pagedContent }
+            .background(.bar)
+            .clipped()
+    }
+
+    private var pagedContent: some View {
+        let groups = self.groups
+        let pages = paging.pages(of: groups.map { groupWidth(tools: $0.count) }, in: width)
+        let current = ToolbarPaging.clamp(page, to: pages.count)
+        let showing = pages.indices.contains(current) ? pages[current] : []
+        return HStack(spacing: 0) {
+            ForEach(Array(showing.enumerated()), id: \.element) { offset, index in
+                if offset > 0 { separator }
+                groups[index].content
+            }
+            Spacer(minLength: 0)
+            if pages.count > 1 {
+                separator
+                pager(current: current, count: pages.count)
+            }
+        }
+        .padding(.horizontal, metrics.edgePadding)
+        .frame(width: width > 0 ? width : nil, height: metrics.barHeight)
+    }
+
+    // MARK: paging
+
+    private struct WidthKey: PreferenceKey {
+        static let defaultValue: CGFloat = 0
+        static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+    }
+
+    /// The paging arithmetic at this bar's (Dynamic-Type-scaled) sizes.
+    private var paging: ToolbarPaging {
+        ToolbarPaging(
+            edgePadding: metrics.edgePadding,
+            separatorWidth: metrics.separatorWidth,
+            pagerWidth: 2 * metrics.buttonWidth + metrics.spacing
+        )
+    }
+
+    /// How wide a group of `tools` buttons is: the targets and the spacing
+    /// between them. Every tool is `buttonWidth` wide, the text ones included.
+    private func groupWidth(tools: Int) -> CGFloat {
+        CGFloat(tools) * metrics.buttonWidth + CGFloat(max(0, tools - 1)) * metrics.spacing
+    }
+
+    private func pager(current: Int, count: Int) -> some View {
+        HStack(spacing: metrics.spacing) {
+            pageButton("chevron.left", loc("toolbar.previousTools", "Previous tools"),
+                       enabled: current > 0) { page = current - 1 }
+            pageButton("chevron.right", loc("toolbar.moreTools", "More tools"),
+                       enabled: current < count - 1) { page = current + 1 }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(loc("toolbar.pages", "Tool pages"))
+        .accessibilityValue(String(format: loc("toolbar.pageOf", "Page %d of %d"), current + 1, count))
+    }
+
+    private func pageButton(
+        _ symbol: String, _ label: String, enabled: Bool, action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: metrics.glyphSize, weight: .semibold))
+                .frame(width: metrics.buttonWidth, height: metrics.buttonHeight)
+                .foregroundStyle(enabled ? Color.primary : Color(Palette.tertiary))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .accessibilityLabel(label)
+        #if !canImport(UIKit)
+        .help(label)
+        #endif
+    }
+
     // MARK: tool groups
 
+    /// One group on the row: its tools as a view, and how many there are, which
+    /// is what the paging measures. The count sits beside the builder it counts
+    /// so the two are edited together.
+    private struct ToolGroup {
+        let id: String
+        let count: Int
+        let content: AnyView
+    }
+
+    /// The groups in order — the bar's five, then the host's, if it gave any.
+    private var groups: [ToolGroup] {
+        var groups = [
+            ToolGroup(id: "inline", count: 7, content: AnyView(inlineMarks)),
+            ToolGroup(id: "block", count: 9, content: AnyView(blockStyles)),
+            ToolGroup(id: "presentation", count: 9, content: AnyView(presentationTools)),
+            ToolGroup(id: "indent", count: 2, content: AnyView(indentTools)),
+            ToolGroup(id: "history", count: 2, content: AnyView(historyTools)),
+        ]
+        if !hostTools.isEmpty {
+            groups.append(ToolGroup(id: "host", count: hostTools.count, content: AnyView(hostGroup)))
+        }
+        return groups
+    }
+
+    /// Seven tools: the five marks, Highlight, Link.
     private var inlineMarks: some View {
-        Group {
+        HStack(spacing: metrics.spacing) {
             tool("bold", "Bold", active: editor.isActive("bold")) { editor.toggleBold() }
             tool("italic", "Italic", active: editor.isActive("italic")) { editor.toggleItalic() }
             tool("underline", "Underline", active: editor.isActive("underline")) { editor.toggleUnderline() }
@@ -181,8 +389,9 @@ public struct LeafFormattingToolbar: View {
             .popover(isPresented: $askingForDestination) { destinationField }
     }
 
+    /// Nine tools: H1, H2, body, quote, the two lists, the rule, Footnote, Table.
     private var blockStyles: some View {
-        Group {
+        HStack(spacing: metrics.spacing) {
             textTool("H1", "Heading 1", active: editor.state.heading == 1) { editor.setHeading(1) }
             textTool("H2", "Heading 2", active: editor.state.heading == 2) { editor.setHeading(2) }
             tool("paragraphsign", "Body text", active: editor.state.heading == nil) { editor.setParagraph() }
@@ -239,9 +448,8 @@ public struct LeafFormattingToolbar: View {
     /// order: the two that describe a *line* first, the three that describe the
     /// *letters* after, and the page break last because it is the only one that
     /// writes something into the document rather than restyling what is there.
-    /// A group is the unit the bar will page by when
-    /// `docs/tasks/macos-bar-pages-by-group.md` lands, so eight tools arriving as
-    /// one group is eight tools that turn onto a page together instead of eight
+    /// A group is the unit the `.bar` style pages by, so nine tools arriving as
+    /// one group is nine tools that turn onto a page together instead of nine
     /// more the trailing edge cuts in half.
     ///
     /// Alignment is four buttons and not a menu: it is the one property here a
@@ -250,7 +458,7 @@ public struct LeafFormattingToolbar: View {
     /// four are menus, which is also what lets them ask the document for the
     /// caret's value only when they open (see `LeafEditorModel`'s queries).
     private var presentationTools: some View {
-        Group {
+        HStack(spacing: metrics.spacing) {
             alignmentSegment
             menuTool("arrow.up.and.down.text.horizontal", loc("menu.lineSpacing", "Line Spacing"),
                      enabled: editor.capabilities.lineSpacing) {
@@ -295,8 +503,9 @@ public struct LeafFormattingToolbar: View {
         }
     }
 
+    /// Two tools: Indent, Outdent.
     private var indentTools: some View {
-        Group {
+        HStack(spacing: metrics.spacing) {
             tool("increase.indent", "Indent") { editor.indent() }
             tool("decrease.indent", "Outdent") { editor.outdent() }
         }
@@ -306,9 +515,46 @@ public struct LeafFormattingToolbar: View {
     /// button that does nothing when pressed says the document is broken, where
     /// a dimmed one says there is nothing to take back.
     private var historyTools: some View {
-        Group {
+        HStack(spacing: metrics.spacing) {
             tool("arrow.uturn.backward", "Undo", enabled: editor.state.canUndo) { editor.undo() }
             tool("arrow.uturn.forward", "Redo", enabled: editor.state.canRedo) { editor.redo() }
+        }
+    }
+
+    /// The host's tools, each in the bar's own chrome. A menu tool is the
+    /// Table tool's shape — a plain `Menu` behind a bare glyph, the pill
+    /// outside it — and a button tool is every other tool's.
+    private var hostGroup: some View {
+        HStack(spacing: metrics.spacing) {
+            ForEach(hostTools) { tool in
+                switch tool.kind {
+                case .button(let action):
+                    self.tool(tool.systemImage, tool.label, active: tool.active,
+                              enabled: tool.enabled, action: action)
+                case .menu(let rows):
+                    Menu {
+                        rows
+                    } label: {
+                        Image(systemName: tool.systemImage)
+                            .font(.system(size: metrics.glyphSize))
+                    }
+                    .buttonStyle(.plain)
+                    .menuIndicator(.hidden)
+                    .frame(width: metrics.buttonWidth, height: metrics.buttonHeight)
+                    .foregroundStyle(!tool.enabled ? Color(Palette.tertiary)
+                                     : tool.active ? Color.accentColor : Color.primary)
+                    .background(
+                        RoundedRectangle(cornerRadius: metrics.cornerRadius)
+                            .fill(tool.active ? Color.accentColor.opacity(0.15) : Color.clear)
+                    )
+                    .contentShape(Rectangle())
+                    .disabled(!tool.enabled)
+                    .accessibilityLabel(tool.label)
+                    #if !canImport(UIKit)
+                    .help(tool.label)
+                    #endif
+                }
+            }
         }
     }
 
@@ -381,13 +627,17 @@ public struct LeafFormattingToolbar: View {
         var spacing: CGFloat
         var edgePadding: CGFloat
         var separatorHeight: CGFloat
+        /// The hairline and the six points either side of it (`separator`),
+        /// which the paging has to count.
+        var separatorWidth: CGFloat { 1 + 2 * separatorPadding }
+        var separatorPadding: CGFloat
 
         /// 44 is the tap-target floor, and the row spends all of it — there's no
         /// indicator strip to leave room for any more.
         static let accessory = Metrics(
             barHeight: 44, buttonWidth: 40, buttonHeight: 36,
             glyphSize: 17, labelSize: 15, cornerRadius: 8,
-            spacing: 2, edgePadding: 8, separatorHeight: 22
+            spacing: 2, edgePadding: 8, separatorHeight: 22, separatorPadding: 6
         )
 
         /// A pointer hits a much smaller target than a fingertip, and the strip
@@ -396,7 +646,7 @@ public struct LeafFormattingToolbar: View {
         static let bar = Metrics(
             barHeight: 32, buttonWidth: 26, buttonHeight: 24,
             glyphSize: 13, labelSize: 12, cornerRadius: 5,
-            spacing: 1, edgePadding: 8, separatorHeight: 16
+            spacing: 1, edgePadding: 8, separatorHeight: 16, separatorPadding: 6
         )
 
         /// How far Dynamic Type is allowed to take the bar. The tools scale like
@@ -427,6 +677,7 @@ public struct LeafFormattingToolbar: View {
             m.spacing *= factor
             m.edgePadding *= factor
             m.separatorHeight *= factor
+            m.separatorPadding *= factor
             return m
         }
     }
@@ -437,16 +688,18 @@ public struct LeafFormattingToolbar: View {
 
     /// The style's own sizes, before Dynamic Type is applied.
     private var base: Metrics {
-        switch style {
-        case .accessory: return .accessory
-        case .bar: return .bar
-        case .automatic:
-            #if canImport(UIKit)
-            return .accessory
-            #else
-            return .bar
-            #endif
-        }
+        resolvedStyle == .bar ? .bar : .accessory
+    }
+
+    /// `style` with `.automatic` settled: the accessory on iOS, the bar on the
+    /// desktop.
+    private var resolvedStyle: Style {
+        guard style == .automatic else { return style }
+        #if canImport(UIKit)
+        return .accessory
+        #else
+        return .bar
+        #endif
     }
 
     // MARK: shared chrome
@@ -456,7 +709,7 @@ public struct LeafFormattingToolbar: View {
     private var separator: some View {
         Divider()
             .frame(height: metrics.separatorHeight)
-            .padding(.horizontal, 6)
+            .padding(.horizontal, metrics.separatorPadding)
     }
 
     private func tool(
@@ -547,6 +800,65 @@ public struct LeafFormattingToolbar: View {
         #if !canImport(UIKit)
         .help(label)
         #endif
+    }
+}
+
+/// The `.bar` style's paging arithmetic: which groups go on which page for a
+/// given width, and where a remembered page lands when the count changes.
+/// Apart from the view so a test can drive it with numbers; the view builds
+/// one from its scaled `Metrics`.
+struct ToolbarPaging: Equatable {
+    /// The row's inset from the bar's edges, both sides.
+    var edgePadding: CGFloat
+    /// The hairline between two groups, with its padding.
+    var separatorWidth: CGFloat
+    /// The two chevrons and the spacing between them.
+    var pagerWidth: CGFloat
+
+    /// Which groups go on which page, for a bar `available` points wide, as
+    /// indices into `widths`.
+    ///
+    /// One page when everything fits, chevrons and all — a single page has no
+    /// pager. Otherwise the pager's own width and the separator before it
+    /// come off the top, and the groups are packed in order, each page taking
+    /// whole groups until the next would not fit. A group wider than a page on
+    /// its own still gets one — clipped at the edge, which is the host's
+    /// column being narrower than any toolbar could be.
+    ///
+    /// Unmeasured (`available <= 0`) is one page: the chevrons should not blink
+    /// in on the first frame and out on the second.
+    func pages(of widths: [CGFloat], in available: CGFloat) -> [[Int]] {
+        guard !widths.isEmpty else { return [] }
+        let all = Array(widths.indices)
+        guard available > 0 else { return [all] }
+        let room = available - 2 * edgePadding
+        let total = widths.reduce(0, +) + CGFloat(widths.count - 1) * separatorWidth
+        if total <= room { return [all] }
+        let pageRoom = room - separatorWidth - pagerWidth
+        var pages: [[Int]] = []
+        var current: [Int] = []
+        var used: CGFloat = 0
+        for (index, width) in widths.enumerated() {
+            let need = current.isEmpty ? width : width + separatorWidth
+            if !current.isEmpty, used + need > pageRoom {
+                pages.append(current)
+                current = []
+                used = 0
+            }
+            current.append(index)
+            used += current.count == 1 ? width : need
+        }
+        pages.append(current)
+        return pages
+    }
+
+    /// The page to show when `page` was turned to under one page count and
+    /// there are now `count`: the same page while it still exists, the last
+    /// one otherwise. Clamped rather than reset, so widening a window enough
+    /// to drop a page lands on the tools nearest the ones that were up, and a
+    /// page that has just become the last stays up.
+    static func clamp(_ page: Int, to count: Int) -> Int {
+        min(max(0, page), max(0, count - 1))
     }
 }
 

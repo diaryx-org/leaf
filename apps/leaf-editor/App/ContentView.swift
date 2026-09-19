@@ -7,11 +7,12 @@ import AppKit
 import UIKit
 #endif
 
-/// A minimal cross-platform host for the `LeafUI` editor: a formatting toolbar
-/// bound to the document's live state, and the `LeafEditor` surface below it.
-/// Everything — caret math, wrapping, selection, WYSIWYG resolution — comes from
-/// leaf-core over the FFI; this file is only chrome. The same view builds for
-/// macOS and iOS because `LeafEditor`/`LeafTextView` carry both surfaces.
+/// A minimal cross-platform host for the `LeafUI` editor: the package's
+/// formatting bar with the demo's display menus added to it, and the
+/// `LeafEditor` surface below. Everything — caret math, wrapping, selection,
+/// WYSIWYG resolution — comes from leaf-core over the FFI; this file is only
+/// chrome. The same view builds for macOS and iOS because
+/// `LeafEditor`/`LeafTextView` carry both surfaces.
 struct ContentView: View {
     @StateObject private var editor = makeEditor()
     /// The soft-break flow shown in the dropdown. Held here (not read back off the
@@ -84,157 +85,90 @@ struct ContentView: View {
         return t
     }
 
+    /// The package's own bar — scrolling on iOS, paged by group on macOS —
+    /// with the demo's display chrome as a group of host tools at its end:
+    /// the source toggle, the flow and appearance menus, and the page menu
+    /// where there is a paginated view to choose.
     private var toolbar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 14) {
-                btn("bold", "bold", active: editor.isActive("bold")) { editor.toggleBold() }
-                btn("italic", "italic", active: editor.isActive("italic")) { editor.toggleItalic() }
-                btn("code", "chevron.left.forwardslash.chevron.right", active: editor.isActive("code")) { editor.toggleCode() }
-                // Lit while the caret stands in a link, and pressing it there
-                // re-points that link rather than nesting a new one. The
-                // destination comes from the same host prompt "Edit Link…" uses
-                // — see `onEditLink` in `makeEditor`.
-                btn("link", "link", active: editor.state.link != nil) {
-                    editor.onEditLink?(editor.state.link ?? "")
-                }
-                Divider().frame(height: 22)
-                btn("h1", "1.square", active: editor.state.heading == 1) { editor.setHeading(1) }
-                btn("h2", "2.square", active: editor.state.heading == 2) { editor.setHeading(2) }
-                btn("list", "list.bullet", active: false) { editor.toggleList(ordered: false) }
-                btn("quote", "text.quote", active: false) { editor.toggleBlockquote() }
-                btn("hr", "rectangle.compress.vertical", active: false) { editor.insertThematicBreak() }
-                btn("footnote", "textformat.superscript", active: false) { editor.insertFootnote() }
-                Divider().frame(height: 22)
-                tableMenu
-                Divider().frame(height: 22)
-                btn("undo", "arrow.uturn.backward", active: false) { editor.undo() }
-                btn("redo", "arrow.uturn.forward", active: false) { editor.redo() }
-                Divider().frame(height: 22)
-                btn("view", editor.isSource ? "doc.richtext" : "chevron.left.slash.chevron.right",
-                    active: editor.isSource) { editor.toggleView() }
-                Divider().frame(height: 22)
-                flowMenu
-                appearanceMenu
-                #if os(macOS)
-                pageMenu
-                #endif
-                if editor.state.dirty {
-                    Circle().fill(.secondary).frame(width: 6, height: 6)
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-        }
-        .background(.bar)
+        LeafFormattingToolbar(editor: editor, tools: hostTools)
     }
 
-    /// The table controls — a fresh table, then rows, columns, alignment, and
-    /// moves over the caret's — as the package's own `TableRows`, the rows the
-    /// formatting bar and the Format menu share. Lit while the caret is in a
-    /// table; dark where the format spells none.
-    private var tableMenu: some View {
-        Menu {
-            TableRows(editor: editor)
-        } label: {
-            Image(systemName: "tablecells")
-                .font(.system(size: 17))
-                .frame(minWidth: 24, minHeight: 24)
-                .foregroundStyle(editor.caretInTable ? Color.accentColor : Color.primary)
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .disabled(!editor.capabilities.table)
-        .accessibilityLabel("table")
+    private var hostTools: [LeafFormattingToolbar.Tool] {
+        var tools: [LeafFormattingToolbar.Tool] = [
+            .button("view", systemImage: editor.isSource ? "doc.richtext" : "chevron.left.slash.chevron.right",
+                    label: "view", active: editor.isSource) { editor.toggleView() },
+            .menu("flow", systemImage: "arrow.turn.down.left", label: "line flow",
+                  active: flowPreserved) { flowRows },
+            .menu("appearance", systemImage: "textformat.size", label: "appearance") { appearanceRows },
+        ]
+        #if os(macOS)
+        tools.append(.menu("page", systemImage: page == nil ? "doc.plaintext" : "doc.on.doc",
+                           label: "page", active: page != nil) { pageRows })
+        #endif
+        return tools
     }
 
-    /// The soft-break flow dropdown (a "View"-style menu): Fold reflows soft
-    /// breaks into the paragraph, Preserve renders each where it was written. The
+    /// The soft-break flow rows (a "View"-style menu): Fold reflows soft breaks
+    /// into the paragraph, Preserve renders each where it was written. The
     /// change takes effect immediately — the editor relays out under the new flow.
-    private var flowMenu: some View {
-        Menu {
-            Button { setFlow(false) } label: {
-                Label("Reflow soft breaks", systemImage: flowPreserved ? "" : "checkmark")
-            }
-            Button { setFlow(true) } label: {
-                Label("Preserve line breaks", systemImage: flowPreserved ? "checkmark" : "")
-            }
-        } label: {
-            Image(systemName: "arrow.turn.down.left")
-                .font(.system(size: 17))
-                .frame(minWidth: 24, minHeight: 24)
-                .foregroundStyle(flowPreserved ? Color.accentColor : Color.primary)
+    @ViewBuilder
+    private var flowRows: some View {
+        Button { setFlow(false) } label: {
+            Label("Reflow soft breaks", systemImage: flowPreserved ? "" : "checkmark")
         }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .accessibilityLabel("line flow")
+        Button { setFlow(true) } label: {
+            Label("Preserve line breaks", systemImage: flowPreserved ? "checkmark" : "")
+        }
     }
 
-    /// The display menu — how wide the text column runs and how big it's set.
+    /// The display rows — how wide the text column runs and how big it's set.
     /// Both take effect on the next paint: the editor re-wraps when the theme's
     /// *geometry* changes and only repaints when it doesn't, so holding the menu
     /// open and stepping through the widths reflows the document live.
-    private var appearanceMenu: some View {
-        Menu {
-            Text("Column width")
-            ForEach(ColumnWidth.allCases) { width in
-                Button { columnWidth = width } label: {
-                    Label(width.label, systemImage: columnWidth == width ? "checkmark" : "")
-                }
+    @ViewBuilder
+    private var appearanceRows: some View {
+        Text("Column width")
+        ForEach(ColumnWidth.allCases) { width in
+            Button { columnWidth = width } label: {
+                Label(width.label, systemImage: columnWidth == width ? "checkmark" : "")
             }
-            Divider()
-            Text("Text size")
-            ForEach(TextSize.allCases) { size in
-                Button { textSize = size } label: {
-                    Label(size.label, systemImage: textSize == size ? "checkmark" : "")
-                }
-            }
-        } label: {
-            Image(systemName: "textformat.size")
-                .font(.system(size: 17))
-                .frame(minWidth: 24, minHeight: 24)
-                .foregroundStyle(Color.primary)
         }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .accessibilityLabel("appearance")
+        Divider()
+        Text("Text size")
+        ForEach(TextSize.allCases) { size in
+            Button { textSize = size } label: {
+                Label(size.label, systemImage: textSize == size ? "checkmark" : "")
+            }
+        }
     }
 
     #if os(macOS)
-    /// The page menu — continuous scrolling, or a document laid onto sheets of a
+    /// The page rows — continuous scrolling, or a document laid onto sheets of a
     /// chosen size. Switching between them re-wraps: a page's margins decide the
     /// text column while one is set, and the theme's `measure` decides it when
     /// none is.
-    private var pageMenu: some View {
-        Menu {
-            Button { page = nil } label: {
-                Label("Continuous", systemImage: page == nil ? "checkmark" : "")
-            }
-            Divider()
-            Text("Paper")
-            Button { setPaper(.usLetter) } label: {
-                Label("US Letter", systemImage: paperIs(.usLetter) ? "checkmark" : "")
-            }
-            Button { setPaper(.a4) } label: {
-                Label("A4", systemImage: paperIs(.a4) ? "checkmark" : "")
-            }
-            Divider()
-            Text("Columns")
-            Button { setColumns(1) } label: {
-                Label("One", systemImage: (page?.columns ?? 1) == 1 ? "checkmark" : "")
-            }
-            Button { setColumns(2) } label: {
-                Label("Two", systemImage: page?.columns == 2 ? "checkmark" : "")
-            }
-            .disabled(page == nil)
-        } label: {
-            Image(systemName: page == nil ? "doc.plaintext" : "doc.on.doc")
-                .font(.system(size: 17))
-                .frame(minWidth: 24, minHeight: 24)
-                .foregroundStyle(page == nil ? Color.primary : Color.accentColor)
+    @ViewBuilder
+    private var pageRows: some View {
+        Button { page = nil } label: {
+            Label("Continuous", systemImage: page == nil ? "checkmark" : "")
         }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .accessibilityLabel("page")
+        Divider()
+        Text("Paper")
+        Button { setPaper(.usLetter) } label: {
+            Label("US Letter", systemImage: paperIs(.usLetter) ? "checkmark" : "")
+        }
+        Button { setPaper(.a4) } label: {
+            Label("A4", systemImage: paperIs(.a4) ? "checkmark" : "")
+        }
+        Divider()
+        Text("Columns")
+        Button { setColumns(1) } label: {
+            Label("One", systemImage: (page?.columns ?? 1) == 1 ? "checkmark" : "")
+        }
+        Button { setColumns(2) } label: {
+            Label("Two", systemImage: page?.columns == 2 ? "checkmark" : "")
+        }
+        .disabled(page == nil)
     }
     /// Paper and column count are separate choices on one `PageSetup`, so
     /// switching the sheet keeps the columns and vice versa.
@@ -253,17 +187,6 @@ struct ContentView: View {
     private func setFlow(_ preserve: Bool) {
         flowPreserved = preserve
         editor.setLineFlow(preserve ? .preserve : .fold)
-    }
-
-    private func btn(_ id: String, _ symbol: String, active: Bool, _ action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 17))
-                .frame(minWidth: 24, minHeight: 24)
-                .foregroundStyle(active ? Color.accentColor : Color.primary)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(id)
     }
 }
 
