@@ -284,6 +284,24 @@ UIKit host embedding `LeafTextView` in a scroll view of its own pins the
 `LeafZoomView` around it, not the text view: Auto Layout does not read
 transforms, and the wrapper is what carries the scaled size.
 
+**Type on the sheet.** The default 16-point body was chosen for a screen, and
+on a one-inch-margin Letter sheet it sets a column only 58 characters wide —
+*shorter* than the 68 the continuous flow wraps to, because that flow's column
+at 16 points is wider than a sheet of Letter. `theme.fitted(to: page, measure:)`
+sets the type so that `measure` characters (the theme's own, by default) fill
+one column of `page` — Letter at 68 comes out 13.5 points, A4 13 — rounding to
+a half point, and scaling the leading and the quote gutter with it. A helper
+rather than a rule the page applies on its own: two columns at 68 would drop the
+type below 7 points, and a page someone wants at "12 point, full stop" should
+not have to argue with a formula. The demo composes it with its text-size
+choice, so both menus still mean something on a page; what that reads as on
+screen is the zoom's business.
+
+```swift
+let paper = EditorTheme.default.fitted(to: .usLetter)       // ~68 characters a line
+LeafEditor(model: editor, theme: paper, page: .usLetter)
+```
+
 **The document as a PDF** (macOS and iOS). `pdfData(theme:page:title:)` on the
 model — or `pdfData(page:title:)` on either text view, in its own theme — is the
 document laid onto `page` by the same layout and painted by the same code the

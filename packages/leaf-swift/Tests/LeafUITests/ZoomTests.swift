@@ -61,6 +61,38 @@ final class ZoomTests: XCTestCase {
         XCTAssertEqual(Zoom.stepDown(from: 0.25), 0.25)
     }
 
+    // ── the theme fitted to a page ───────────────────────────────────────────
+
+    func testAFittedThemeSetsTheMeasureIntoTheColumn() {
+        // The whole point: `measure` characters of the fitted body fill one
+        // column of the sheet, to within the half-point the size rounds to.
+        for (page, measure) in [(PageSetup.usLetter, CGFloat(68)), (.a4, 68), (.usLetter, 52), (.usLetter.columned(2), 40)] {
+            let fitted = EditorTheme.default.fitted(to: page, measure: measure)
+            let characters = page.columnWidth / fitted.averageCharWidth
+            XCTAssertEqual(characters, measure, accuracy: 2.5,
+                           "\(measure) on a \(page.columnWidth)pt column came out \(characters) at \(fitted.fontSize)pt")
+            XCTAssertEqual(fitted.fontSize * 2, (fitted.fontSize * 2).rounded(), "rounded to a half point")
+        }
+    }
+
+    func testTheDefaultBodyIsTooLargeForALetterColumnAndTheFitBringsItDown() {
+        // The finding the helper exists for: 16pt sets Letter shorter than the
+        // flow's own 68, and the fit lands in the range a page is usually set at.
+        let unfitted = PageSetup.usLetter.columnWidth / EditorTheme.default.averageCharWidth
+        XCTAssertLessThan(unfitted, 62)
+        let fitted = EditorTheme.default.fitted(to: .usLetter)
+        XCTAssertLessThan(fitted.fontSize, EditorTheme.default.fontSize)
+        XCTAssertGreaterThan(fitted.fontSize, 12)
+        // The leading scales with it.
+        XCTAssertEqual(fitted.lineHeight / fitted.fontSize, EditorTheme.default.lineRatio, accuracy: 1e-9)
+    }
+
+    func testAFittedThemeKeepsWhatIsNotType() {
+        let fitted = EditorTheme.default.fitted(to: .a4)
+        XCTAssertEqual(fitted.padding, EditorTheme.default.padding)
+        XCTAssertEqual(fitted.measure, EditorTheme.default.measure)
+    }
+
     #if canImport(AppKit) && !targetEnvironment(macCatalyst)
     // ── the Mac view, in a scroll view ───────────────────────────────────────
 
