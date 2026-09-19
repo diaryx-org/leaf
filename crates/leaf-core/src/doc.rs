@@ -2186,6 +2186,48 @@ impl Doc {
         Some(range)
     }
 
+    /// The attributed block whose whole text is exactly `content` — the `T`
+    /// of Markdown's `<div class="center">\n\nT\n\n</div>` or djot's
+    /// `{.center}\nT` — as the range a delete that takes that text takes with
+    /// it: the whole `<div>` when the block is all the div holds, or the
+    /// `{…}` line down to the end of the text. The block version of
+    /// [`run_span_of_content`](Self::run_span_of_content), for the same
+    /// reason: a paragraph with no text is no block, so the div would stand
+    /// around nothing and the `{…}` line above nothing, and a from-scratch
+    /// map gives neither a caret home — the `T`'s row is gone with the `T`.
+    /// `None` for a block with more text, a div holding more, a heading (an
+    /// empty `# ` is still a heading), and a format whose attributes are the
+    /// block's own tag (HTML's `<p class="center"></p>` is still a
+    /// paragraph).
+    fn attributed_block_of_content(&mut self, content: Range<usize>) -> Option<Range<usize>> {
+        if content.is_empty() || !matches!(self.format, Format::Markdown | Format::Djot) {
+            return None;
+        }
+        let nodes = self.nodes();
+        let block = nodes
+            .iter()
+            .filter(|n| n.kind == Kind::Para)
+            .find(|n| n.content_span.as_ref() == Some(&content))?;
+        match self.format {
+            Format::Djot => {
+                let attrs = self
+                    .editor
+                    .document()
+                    .ok()
+                    .and_then(|mut d| d.attrs_span(block.id).ok().flatten())?;
+                (attrs.end <= block.span.start).then_some(attrs.start..content.end)
+            }
+            _ => {
+                let div = block
+                    .parent
+                    .and_then(|p| nodes.iter().find(|n| n.id == p))
+                    .filter(|p| wysiwyg::element_tag(p) == Some("div"))?;
+                let alone = nodes.iter().filter(|n| n.parent == Some(div.id)).count() == 1;
+                alone.then(|| div.span.clone())
+            }
+        }
+    }
+
     /// The inline mark kinds whose span covers `off`, each with that span — the
     /// span-carrying sibling of [`marks_at`](Self::marks_at), which reports node
     /// ids instead. Used to shed a mark by stepping past the end of its run.
@@ -3030,6 +3072,18 @@ impl Doc {
                 self.splice(span.start, span.end, "", EditKind::Delete);
                 return;
             }
+            // And the same for a block: the letter that was all of a centred
+            // paragraph's text goes with the `<div>` around it, or the `{…}`
+            // line above it, leaving a plain blank line where the letter was.
+            // A paragraph with no text is no block, so the markup would stand
+            // around nothing, the map would give it no caret home, and the
+            // next key would take the tag apart.
+            if self.view != View::Source
+                && let Some(block) = self.attributed_block_of_content(prev..end)
+            {
+                self.splice(block.start, block.end, "", EditKind::Delete);
+                return;
+            }
             if prev < end {
                 self.splice(prev, end, "", EditKind::Delete);
             }
@@ -3495,11 +3549,18 @@ impl Doc {
                 self.skip_trailing_close_delims(inside)
             };
             let next = next_boundary(&self.source, from);
-            // And of its emptying rule: the span goes with its last letter.
+            // And of its emptying rules: the span goes with its last letter,
+            // and so does the block's div or `{…}` line.
             if self.view != View::Source
                 && let Some(span) = self.run_span_of_content(from..next)
             {
                 self.splice(span.start, span.end, "", EditKind::Delete);
+                return;
+            }
+            if self.view != View::Source
+                && let Some(block) = self.attributed_block_of_content(from..next)
+            {
+                self.splice(block.start, block.end, "", EditKind::Delete);
                 return;
             }
             if from < next {
@@ -16546,6 +16607,119 @@ mod tests {
         d.delete_forward();
         assert_eq!(d.source, "This a test\n");
         assert_eq!(d.caret, 5);
+    }
+
+    /// The block version of the span's emptying rule. Centre a one-letter
+    /// paragraph — Markdown spells that as a `<div>` around it — and
+    /// Backspace the letter: the div goes with it, leaving a plain blank line
+    /// the caret is at home on, in the incremental map and the from-scratch
+    /// one alike. Before, the letter went alone; the emptied div drew a
+    /// caret home only the stale map had, and the next Backspace collapsed
+    /// the line and left `<div class="center">\n\n</div>` standing invisibly
+    /// in the file.
+    #[test]
+    fn backspace_that_empties_a_centred_paragraph_takes_its_div_with_the_letter() {
+        let mut d = wysiwyg_doc("wys_div_empty", "Try the toolbar.\n\nT\n");
+        d.caret = d.source.len() - 1;
+        d.set_alignment(Some(Align::Center));
+        assert_eq!(
+            d.source,
+            "Try the toolbar.\n\n<div class=\"center\">\n\nT\n\n</div>\n"
+        );
+        d.backspace();
+        assert_eq!(d.source, "Try the toolbar.\n\n\n");
+        assert_eq!(d.caret, 18, "on the blank line where the letter was");
+        // The host rebuilds the map after every key; the spliced map and a
+        // fresh one both give the line a caret home.
+        d.build_visual_unwrapped();
+        assert!(d.vmap.is_stop(18));
+        wysiwyg::assert_maps_eq(&d.vmap, &reference_map(&d.source), "after the div goes");
+        d.backspace();
+        assert_eq!(
+            d.source, "Try the toolbar.\n",
+            "then the blank line collapses"
+        );
+        assert_eq!(d.caret, 16);
+
+        // With a block after the div the blank line keeps a gap each side.
+        let mut d = wysiwyg_doc(
+            "wys_div_empty_mid",
+            "Try the toolbar.\n\n<div class=\"center\">\n\nT\n\n</div>\n\nbelow\n",
+        );
+        d.caret = d.source.find("T\n").unwrap() + 1;
+        d.backspace();
+        assert_eq!(d.source, "Try the toolbar.\n\n\n\nbelow\n");
+        assert_eq!(d.caret, 18);
+        d.build_visual_unwrapped();
+        assert!(d.vmap.is_stop(18));
+        wysiwyg::assert_maps_eq(&d.vmap, &reference_map(&d.source), "after the div goes");
+    }
+
+    /// djot spells the same paragraph as a `{.center}` line above it, and
+    /// twig has no node at all for that line once the paragraph is gone —
+    /// so the line goes with the letter too.
+    #[test]
+    fn backspace_that_empties_a_centred_paragraph_takes_its_djot_attrs_line_too() {
+        let mut d = fmt_doc("Try the toolbar.\n\nT\n", Format::Djot);
+        d.build_visual(80);
+        d.caret = d.source.len() - 1;
+        d.set_alignment(Some(Align::Center));
+        assert_eq!(d.source, "Try the toolbar.\n\n{.center}\nT\n");
+        d.backspace();
+        assert_eq!(d.source, "Try the toolbar.\n\n\n");
+        assert_eq!(d.caret, 18);
+        d.build_visual(80);
+        assert!(d.vmap.is_stop(18));
+    }
+
+    /// The rule is for a block that would be no block: a div holding more
+    /// keeps its tags, and an emptied heading is still a heading.
+    #[test]
+    fn emptying_a_paragraph_keeps_a_div_that_holds_more_and_a_heading_its_marker() {
+        let mut d = wysiwyg_doc(
+            "wys_div_more",
+            "<div class=\"center\">\n\nText\n\nT\n\n</div>\n",
+        );
+        d.caret = d.source.find("T\n").unwrap() + 1;
+        d.backspace();
+        assert_eq!(d.source, "<div class=\"center\">\n\nText\n\n\n\n</div>\n");
+        assert_eq!(d.caret, 28, "the blank line inside the div, as after Enter");
+
+        let mut d = wysiwyg_doc(
+            "wys_div_heading",
+            "<div class=\"center\">\n\n# T\n\n</div>\n",
+        );
+        d.caret = d.source.find("T\n").unwrap() + 1;
+        d.backspace();
+        assert_eq!(d.source, "<div class=\"center\">\n\n# \n\n</div>\n");
+        assert_eq!(d.caret, 24);
+        d.build_visual(80);
+        assert!(
+            d.vmap.is_stop(24),
+            "the empty heading is still a caret home"
+        );
+    }
+
+    /// The mirror: Delete in front of the letter takes the div with it.
+    #[test]
+    fn delete_that_empties_a_centred_paragraph_takes_its_div_with_the_letter() {
+        let mut d = wysiwyg_doc(
+            "wys_div_empty_del",
+            "Try the toolbar.\n\n<div class=\"center\">\n\nT\n\n</div>\n",
+        );
+        d.caret = d.source.find("T\n").unwrap();
+        d.delete_forward();
+        assert_eq!(d.source, "Try the toolbar.\n\n\n");
+        assert_eq!(d.caret, 18);
+        d.build_visual(80);
+        assert!(d.vmap.is_stop(18));
+
+        let mut d = fmt_doc("Try the toolbar.\n\n{.center}\nT\n", Format::Djot);
+        d.build_visual(80);
+        d.caret = d.source.find("T\n").unwrap();
+        d.delete_forward();
+        assert_eq!(d.source, "Try the toolbar.\n\n\n");
+        assert_eq!(d.caret, 18);
     }
 
     /// Backspace at a block's start is twig's join, spelled per format — so
