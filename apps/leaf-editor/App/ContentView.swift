@@ -24,25 +24,20 @@ struct ContentView: View {
     /// persist them (`@AppStorage`) rather than reset them each launch.
     @State private var columnWidth: ColumnWidth = .medium
     @State private var textSize: TextSize = .medium
-    #if os(macOS)
     /// The paginated view: nil is the continuous flow, a `PageSetup` puts the
-    /// document on paper. macOS only for now — a stack of fixed-width sheets is a
-    /// desktop idiom, and the iOS surface stays on the flow it has.
+    /// document on paper. The zoom is not here — it is the model's, because the
+    /// surface moves it too (a pinch, View ▸ Zoom), and this view only reads it
+    /// back for the label.
     @State private var page: PageSetup?
-    @State private var zoom: CGFloat = 1
-    #endif
 
     var body: some View {
         VStack(spacing: 0) {
             toolbar
             Divider()
-            #if os(macOS)
-            LeafEditor(model: editor, theme: theme, page: page, zoom: zoom)
+            LeafEditor(model: editor, theme: theme, page: page)
                 .background(page == nil ? editorBackground : Color.clear)
+            #if os(macOS)
             if page != nil { zoomBar }
-            #else
-            LeafEditor(model: editor, theme: theme)
-                .background(editorBackground)
             #endif
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)
@@ -52,20 +47,23 @@ struct ContentView: View {
     /// The zoom control, shown only on paper — the continuous flow reflows to the
     /// window, so scaling it says nothing a text-size choice doesn't say better.
     /// A page is a fixed width, which is exactly when a zoom is the right knob.
+    /// The slider writes a plain scale; a fit chosen from the menu (or the
+    /// default, which fits the width) shows here as the number it resolved to.
     private var zoomBar: some View {
         HStack(spacing: 10) {
             Spacer()
             Image(systemName: "minus.magnifyingglass").foregroundStyle(.secondary)
-            Slider(value: $zoom, in: 0.25...4)
+            Slider(value: Binding(get: { editor.zoomScale }, set: { editor.zoom = .scale($0) }),
+                   in: Zoom.range)
                 .frame(width: 180)
                 .accessibilityLabel("zoom")
             Image(systemName: "plus.magnifyingglass").foregroundStyle(.secondary)
-            Button("\(Int((zoom * 100).rounded()))%") { zoom = 1 }
+            Button("\(Int((editor.zoomScale * 100).rounded()))%") { editor.actualSize() }
                 .buttonStyle(.plain)
                 .monospacedDigit()
                 .frame(width: 44, alignment: .trailing)
                 .foregroundStyle(.secondary)
-                .help("Reset to 100%")
+                .help("Actual size")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 6)
@@ -101,10 +99,8 @@ struct ContentView: View {
                   active: flowPreserved) { flowRows },
             .menu("appearance", systemImage: "textformat.size", label: "appearance") { appearanceRows },
         ]
-        #if os(macOS)
         tools.append(.menu("page", systemImage: page == nil ? "doc.plaintext" : "doc.on.doc",
                            label: "page", active: page != nil) { pageRows })
-        #endif
         return tools
     }
 
@@ -142,11 +138,11 @@ struct ContentView: View {
         }
     }
 
-    #if os(macOS)
     /// The page rows — continuous scrolling, or a document laid onto sheets of a
     /// chosen size. Switching between them re-wraps: a page's margins decide the
     /// text column while one is set, and the theme's `measure` decides it when
-    /// none is.
+    /// none is. The zoom rows are the same commands View ▸ Zoom binds on the
+    /// Mac, here for the phone, where the menu bar is a pinch.
     @ViewBuilder
     private var pageRows: some View {
         Button { page = nil } label: {
@@ -169,6 +165,19 @@ struct ContentView: View {
             Label("Two", systemImage: page?.columns == 2 ? "checkmark" : "")
         }
         .disabled(page == nil)
+        Divider()
+        Text("Zoom — \(Int((editor.zoomScale * 100).rounded()))%")
+        Button { editor.zoomIn() } label: { Label("Zoom In", systemImage: "plus.magnifyingglass") }
+        Button { editor.zoomOut() } label: { Label("Zoom Out", systemImage: "minus.magnifyingglass") }
+        Button { editor.actualSize() } label: {
+            Label("Actual Size", systemImage: editor.zoom == .actualSize ? "checkmark" : "")
+        }
+        Button { editor.zoom = .fitWidth } label: {
+            Label("Fit Width", systemImage: editor.zoom == .fitWidth ? "checkmark" : "")
+        }
+        Button { editor.zoom = .fitPage } label: {
+            Label("Fit Page", systemImage: editor.zoom == .fitPage ? "checkmark" : "")
+        }
     }
     /// Paper and column count are separate choices on one `PageSetup`, so
     /// switching the sheet keeps the columns and vice versa.
@@ -182,7 +191,6 @@ struct ContentView: View {
         guard let page else { return }
         self.page = page.columned(n)
     }
-    #endif
 
     private func setFlow(_ preserve: Bool) {
         flowPreserved = preserve

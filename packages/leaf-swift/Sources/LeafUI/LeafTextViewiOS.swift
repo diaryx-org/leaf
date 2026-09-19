@@ -191,7 +191,182 @@ public final class LeafTextView: UIView, UITextInput {
             // The column width changed, and the shape cache is only valid at the
             // width it was built for.
             shapeCache.removeAll(keepingCapacity: true)
+            // A fit is a rule about the sheet, and the sheet just changed (or
+            // went away, which makes a fit the identity). Resolve it over the
+            // new one before the layout that will draw it.
+            let scale = zoomMode.resolve(in: viewportSize, page: pageSetup)
+            let rescaled = scale != zoomScale
+            if rescaled { applyZoomScale(scale, anchor: nil, sharpen: true, settle: false) }
             relayoutForWidth(force: true)
+            zoomHost?.invalidateIntrinsicContentSize()
+            if rescaled { onZoomChange?(zoomMode, zoomScale) }
+        }
+    }
+
+    // MARK: zoom
+
+    /// How large the document is on screen — see `Zoom`, and the AppKit peer's
+    /// `zoom`, which this is the same value as. `zoomScale` is what it currently
+    /// resolves to.
+    ///
+    /// Applied as the view's own `transform`, not as a scale inside `draw` as
+    /// the AppKit peer does it: UIKit converts touches, the system's selection
+    /// geometry (`UITextInput`'s rects go out through the view hierarchy), the
+    /// players' frames and the peek's anchors through a transform on its own, so
+    /// nothing in this file learns the scale exists — where the AppKit view has
+    /// no system selection to keep in step and divides its own clicks out. The
+    /// one thing the transform alone would not do is keep the glyphs sharp — a
+    /// scaled layer is a scaled bitmap — so the backing store is rendered at
+    /// the zoomed resolution (`contentScaleFactor`), once a pinch has ended
+    /// rather than at every frame of it.
+    ///
+    /// Auto Layout does not read transforms, so the scroll view is given the
+    /// scaled size by `LeafZoomView`, which this view sits in — `LeafEditor`
+    /// does that, and a UIKit host embedding this view itself does the same.
+    public var zoom: Zoom {
+        get { zoomMode }
+        set { setZoom(newValue, anchor: nil) }
+    }
+    private var zoomMode: Zoom = .actualSize
+
+    /// The scale `zoom` resolves to on this viewport, `1` being one layout point
+    /// per screen point.
+    public private(set) var zoomScale: CGFloat = 1
+
+    /// Fired when `zoom` or `zoomScale` changes for any reason — a pinch, a
+    /// resize under a fit, a page set or cleared — so a host that owns the zoom
+    /// (the model does) learns what the surface decided.
+    public var onZoomChange: ((Zoom, CGFloat) -> Void)?
+
+    /// Set the zoom, keeping the layout under `anchor` (a point in this view's
+    /// coordinates) at the same place on screen — the point under a pinch, or,
+    /// for `nil`, the centre of what is visible.
+    public func setZoom(_ zoom: Zoom, anchor: CGPoint? = nil) {
+        let scale = zoom.resolve(in: viewportSize, page: pageSetup)
+        // A scale past the range is held at its edge as a mode too, so what is
+        // reported back is the scale the view is at, not the one it was asked.
+        let zoom = zoom.isFit ? zoom : .scale(scale)
+        let changed = zoom != zoomMode || scale != zoomScale
+        zoomMode = zoom
+        if scale != zoomScale { applyZoomScale(scale, anchor: anchor, sharpen: true, settle: true) }
+        if changed { onZoomChange?(zoomMode, zoomScale) }
+    }
+
+    /// The wrapper that gives Auto Layout the scaled size, when there is one.
+    var zoomHost: LeafZoomView? { superview as? LeafZoomView }
+
+    /// Re-resolve a fit against the viewport as it is now — the wrapper calls
+    /// this from its layout, so a rotation under a fit re-fits. The top-left
+    /// of what is visible stays put.
+    func refitZoom() {
+        guard zoomMode.isFit else { return }
+        let scale = zoomMode.resolve(in: viewportSize, page: pageSetup)
+        guard scale != zoomScale else { return }
+        let anchor = enclosingScrollView().map { convert($0.bounds.origin, from: $0) }
+        applyZoomScale(scale, anchor: anchor, sharpen: true, settle: false)
+        onZoomChange?(zoomMode, zoomScale)
+    }
+
+    /// The viewport in screen points: the scroll view's bounds less the bars it
+    /// runs under. Not less the keyboard — that is a content inset, and a fit
+    /// that shrank every time the keyboard rose would zoom the page on every
+    /// tap into it.
+    private var viewportSize: CGSize {
+        guard let scroll = enclosingScrollView() else { return bounds.size }
+        let safe = scroll.safeAreaInsets
+        return CGSize(width: scroll.bounds.width - safe.left - safe.right,
+                      height: scroll.bounds.height - safe.top - safe.bottom)
+    }
+
+    /// Move to `scale`, holding the layout point under `anchor` (this view's
+    /// coordinates; nil for the viewport's centre) at the same place in the
+    /// viewport. The scroll offset moves by `p · (s′ − s)` for that point `p`,
+    /// as the AppKit peer's `applyZoomScale` derives.
+    ///
+    /// `sharpen` re-renders the backing store at the new resolution, which a
+    /// pinch defers to its end. `settle` lays the scroll view out first so the
+    /// offset is clamped against the real content size; from inside a layout
+    /// pass (a re-fit) it is estimated instead, since laying out from within
+    /// layout is the loop UIKit warns about.
+    private func applyZoomScale(_ scale: CGFloat, anchor: CGPoint?, sharpen: Bool, settle: Bool) {
+        let scroll = enclosingScrollView()
+        let p = anchor ?? scroll.map { convert(CGPoint(x: $0.bounds.midX, y: $0.bounds.midY), from: $0) }
+            ?? CGPoint(x: bounds.midX, y: bounds.midY)
+        let delta = scale - zoomScale
+        zoomScale = scale
+        transform = CGAffineTransform(scaleX: scale, y: scale)
+        if sharpen { sharpenBackingStore() }
+        zoomHost?.invalidateIntrinsicContentSize()
+        zoomHost?.setNeedsLayout()
+        guard let scroll else { return }
+        if settle { scroll.layoutIfNeeded() }
+        let content: CGSize = settle ? scroll.contentSize : {
+            let host = zoomHost
+            let intrinsic = host?.intrinsicContentSize ?? CGSize(width: 0, height: intrinsicContentSize.height * scale)
+            return CGSize(width: max(scroll.contentSize.width, intrinsic.width),
+                          height: (host?.frame.minY ?? 0) + intrinsic.height)
+        }()
+        let inset = scroll.adjustedContentInset
+        var offset = scroll.contentOffset
+        offset.x += p.x * delta
+        offset.y += p.y * delta
+        let maxX = max(-inset.left, content.width + inset.right - scroll.bounds.width)
+        let maxY = max(-inset.top, content.height + inset.bottom - scroll.bounds.height)
+        offset.x = min(max(offset.x, -inset.left), maxX)
+        offset.y = min(max(offset.y, -inset.top), maxY)
+        scroll.contentOffset = offset
+    }
+
+    /// Render the backing store at the zoomed resolution, so text at 200% is
+    /// drawn at 200% rather than scaled up from 100%. UIKit redraws on the
+    /// change; unchanged, it is left alone.
+    private func sharpenBackingStore() {
+        let wanted = traitCollection.displayScale * zoomScale
+        guard abs(contentScaleFactor - wanted) > 0.001 else { return }
+        contentScaleFactor = wanted
+        layer.contentsScale = wanted
+        setNeedsDisplay()
+    }
+
+    /// The scale a pinch started from, so each frame of the gesture is the
+    /// gesture's own cumulative scale over it rather than a compound of frames.
+    private var pinchStart: CGFloat = 1
+
+    /// A pinch, about the point between the fingers. The backing store is
+    /// left at the old resolution until the fingers lift — every frame of a
+    /// pinch is a redraw of the whole document otherwise.
+    @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            pinchStart = zoomScale
+            // The scroll view's pan has usually begun already, on whichever
+            // finger landed first, and would go on scrolling by that finger
+            // through the pinch — and decelerating after it — which is a zoom
+            // that drifts off the point it is about. Disabling a recognizer
+            // cancels it; it is enabled again when the pinch ends, for the
+            // next touch. The cancel bounces an over-scrolled view back with an
+            // animation that would race the offsets set below, so the offset is
+            // brought into range here, at once.
+            if let scroll = enclosingScrollView() {
+                scroll.panGestureRecognizer.isEnabled = false
+                let inset = scroll.adjustedContentInset
+                var offset = scroll.contentOffset
+                offset.x = min(max(offset.x, -inset.left), max(-inset.left, scroll.contentSize.width + inset.right - scroll.bounds.width))
+                offset.y = min(max(offset.y, -inset.top), max(-inset.top, scroll.contentSize.height + inset.bottom - scroll.bounds.height))
+                scroll.setContentOffset(offset, animated: false)
+            }
+        case .changed:
+            let anchor = gesture.location(in: self)
+            let scale = Zoom.clamp(pinchStart * gesture.scale)
+            guard scale != zoomScale else { return }
+            zoomMode = .scale(scale)
+            applyZoomScale(scale, anchor: anchor, sharpen: false, settle: true)
+            onZoomChange?(zoomMode, zoomScale)
+        case .ended, .cancelled, .failed:
+            enclosingScrollView()?.panGestureRecognizer.isEnabled = true
+            sharpenBackingStore()
+        default:
+            break
         }
     }
 
@@ -530,6 +705,9 @@ public final class LeafTextView: UIView, UITextInput {
         addInteraction(textInteraction)
         addGestureRecognizer(mediaTap)
         addGestureRecognizer(linkPress)
+        let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch))
+        pinch.delegate = self   // alongside the scroll view's pan: a pinch that drifts also scrolls
+        addGestureRecognizer(pinch)
         addInteraction(editMenu)
         // Seed with the initial caret so the first reflow opens at the top.
         lastCaretOffset = doc.caretOffset()
@@ -866,12 +1044,20 @@ public final class LeafTextView: UIView, UITextInput {
         // animation or after it, with `draw` handed the whole bounds each time.
         // The compositor's, then, and not worth provoking: the bars change
         // with nothing, the keyboard with every tap.
-        let viewportHeight = enclosingScrollView().map {
+        //
+        // In layout points: the viewport is measured on screen, and this size is
+        // scaled up by the zoom on its way to the scroll view (`LeafZoomView`).
+        let viewportHeight = (enclosingScrollView().map {
             $0.bounds.height - $0.safeAreaInsets.top - $0.safeAreaInsets.bottom
-        } ?? 0
+        } ?? 0) / zoomScale
         let extra = pageSetup == nil && raw > viewportHeight ? viewportHeight * 0.5 : 0
         return CGSize(width: UIView.noIntrinsicMetric, height: raw + extra)
     }
+
+    /// The layout's own width — the stack's, on paper — or `0` in the continuous
+    /// flow, which has no width but the one it is given. What the wrapper reports
+    /// as its intrinsic width, scaled.
+    var layoutContentWidth: CGFloat { layoutEngine.contentWidth }
 
     /// A custom view shown above the system keyboard while this view is first
     /// responder — a host app's own formatting toolbar, say. `nil` (the
@@ -952,6 +1138,8 @@ public final class LeafTextView: UIView, UITextInput {
             mediaPlayers.reposition(layoutEngine.mediaRects())
         }
         invalidateIntrinsicContentSize()
+        // The scroll view reads the wrapper's size, not this view's.
+        zoomHost?.invalidateIntrinsicContentSize()
         setNeedsDisplay()
         // Only follow the caret when it actually moved, not on a passive reflow.
         let caret = doc.caretOffset()
@@ -1730,7 +1918,9 @@ extension LeafTextView: UIGestureRecognizerDelegate {
     /// system owns caret placement, selection, the loupe and the edit menu, and
     /// activating a media box is strictly additive to whichever of those the
     /// touch was also going to drive. Failing to say so would make the two
-    /// exclusive, and the system's would win.
+    /// exclusive, and the system's would win. The pinch is the same alongside
+    /// the scroll view's pan: two fingers that spread and drift both zoom and
+    /// scroll, as they do in every zooming scroll view.
     public func gestureRecognizer(
         _ gestureRecognizer: UIGestureRecognizer,
         shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
