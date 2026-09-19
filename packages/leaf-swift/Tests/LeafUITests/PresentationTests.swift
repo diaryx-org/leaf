@@ -369,7 +369,7 @@ final class PresentationTests: XCTestCase {
         let doc = try LeafDoc(source: "hello world\n", format: "markdown")
         XCTAssertTrue(doc.capabilities().alignment, "markdown spells the div this needs")
         _ = doc.setAlignment(align: .center)
-        _ = doc.setLineSpacing(spacing: .oneHalf)
+        _ = doc.setLineSpacing(spacing: .step(.oneHalf))
         XCTAssertTrue(doc.source().contains("center"), "the gesture wrote something")
         XCTAssertEqual(doc.alignmentAtCaret(), .center)
 

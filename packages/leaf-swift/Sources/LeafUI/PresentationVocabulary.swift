@@ -201,3 +201,45 @@ public extension FontFamily {
         }
     }
 }
+
+// MARK: - narrowing the open types back to the sets these menus offer
+//
+// The binding's four presentation types carry a name *or* a value now —
+// `.step(.large)` or `.points(14)`, `.generic(.serif)` or `.named("Garamond")`
+// — which is step 2 of `docs/proposals/exact-presentation-values.md`. The menus
+// above still offer the names alone, so these four are where a value at the
+// caret reads as nil and the menu ticks *Default*: exactly what it did before
+// the types opened, and no more. The *Other…* rows, the ticked row an exact
+// value shows above them, and *Bigger*/*Smaller* by a point are step 3.
+
+public extension FontSize {
+    /// The step, or nil for an exact point size no row of the seven can tick.
+    var stepOnly: SizeStep? {
+        guard case let .step(step) = self else { return nil }
+        return step
+    }
+}
+
+public extension LineHeight {
+    /// The step, or nil for an exact ratio no row of the three can tick.
+    var stepOnly: LineSpacing? {
+        guard case let .step(step) = self else { return nil }
+        return step
+    }
+}
+
+public extension FontFace {
+    /// The generic, or nil for a family the author named.
+    var genericOnly: FontFamily? {
+        guard case let .generic(family) = self else { return nil }
+        return family
+    }
+}
+
+public extension TextColor {
+    /// The name, or nil for an exact triple no swatch of the seven can tick.
+    var namedOnly: MarkColor? {
+        guard case let .named(color) = self else { return nil }
+        return color
+    }
+}

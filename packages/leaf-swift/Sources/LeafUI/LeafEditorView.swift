@@ -502,13 +502,17 @@ public final class LeafEditorModel: ObservableObject {
     public var alignment: Align? { state.align }
 
     /// Set the caret's block's line spacing, or clear it with nil (single).
-    public func setLineSpacing(_ spacing: LineSpacing?) { run { $0.setLineSpacing(spacing: spacing) } }
-    public var lineSpacing: LineSpacing? { doc.lineSpacingAtCaret() }
+    public func setLineSpacing(_ spacing: LineSpacing?) {
+        run { $0.setLineSpacing(spacing: spacing.map { LineHeight.step($0) }) }
+    }
+    public var lineSpacing: LineSpacing? { doc.lineSpacingAtCaret()?.stepOnly }
 
     /// Set the size step of the selection — or of the caret's whole block, with
     /// nothing selected — or clear it with nil.
-    public func setFontSize(_ size: SizeStep?) { run { $0.setFontSize(size: size) } }
-    public var fontSize: SizeStep? { doc.fontSizeAtCaret() }
+    public func setFontSize(_ size: SizeStep?) {
+        run { $0.setFontSize(size: size.map { FontSize.step($0) }) }
+    }
+    public var fontSize: SizeStep? { doc.fontSizeAtCaret()?.stepOnly }
 
     /// One step up or down the size ramp from whatever is at the caret — ⌘⇧+ and
     /// ⌘⇧-, the pair every Mac text editor binds. Reads the caret's step and
@@ -516,13 +520,15 @@ public final class LeafEditorModel: ObservableObject {
     /// undo) as picking that step from the menu.
     public func stepFontSize(up: Bool) {
         let next = SizeStep.stepped(from: fontSize, up: up)
-        run { $0.setFontSize(size: next) }
+        run { $0.setFontSize(size: next.map { FontSize.step($0) }) }
     }
 
     /// Set the face of the selection — or of the caret's whole block — by generic
     /// family, or clear it with nil (the theme's body face).
-    public func setFontFamily(_ font: FontFamily?) { run { $0.setFontFamily(font: font) } }
-    public var fontFamily: FontFamily? { doc.fontFamilyAtCaret() }
+    public func setFontFamily(_ font: FontFamily?) {
+        run { $0.setFontFamily(font: font.map { FontFace.generic($0) }) }
+    }
+    public var fontFamily: FontFamily? { doc.fontFamilyAtCaret()?.genericOnly }
 
     /// Colour the selection's text — or the caret's whole block — by name, or
     /// clear it with nil (the theme's ink).
@@ -530,8 +536,10 @@ public final class LeafEditorModel: ObservableObject {
     /// The *foreground*, not `highlight(_:)`'s wash, though the two share the
     /// seven names on purpose: a frontend with a red for a highlight has a red
     /// for text, and both should be that red.
-    public func setTextColor(_ color: MarkColor?) { run { $0.setTextColor(color: color) } }
-    public var textColor: MarkColor? { doc.textColorAtCaret() }
+    public func setTextColor(_ color: MarkColor?) {
+        run { $0.setTextColor(color: color.map { TextColor.named($0) }) }
+    }
+    public var textColor: MarkColor? { doc.textColorAtCaret()?.namedOnly }
 
     /// Write a page break at the caret — `::page-break`, a leaf directive with no
     /// label. The paginated view opens a new sheet there and the continuous one
