@@ -13,6 +13,7 @@
       "types": "./src/editor.d.ts",
       "default": "./src/editor.js"
     },
+    "./presentation.css": "./src/presentation.css",
     "./wasm": "./pkg/leaf_wasm_bg.wasm"
   },
   "types": "./src/index.d.ts",
