@@ -875,6 +875,9 @@ pub struct Capabilities {
     /// `Gesture::InsertDirective`. Markdown under the `directives` extension
     /// [`parse_extensions`] turns on (`::page-break`) and djot, which spells
     /// it as an empty `::: page-break` fence.
+    ///
+    /// **Those two and no others**, though twig spells the gesture in HTML and
+    /// AsciiDoc as well — see [`Capabilities::of`].
     pub page_break: bool,
 }
 
@@ -927,7 +930,18 @@ impl Capabilities {
             font_size: supports(Gesture::WrapRangeAttrs),
             font_family: supports(Gesture::WrapRangeAttrs),
             text_color: supports(Gesture::WrapRangeAttrs),
-            page_break: supports(Gesture::InsertDirective),
+            // Narrower than the gesture, on purpose. Twig spells
+            // `InsertDirective` in HTML and AsciiDoc too, and spells it
+            // *differently* there — `<page-break></page-break>` and `<<<` —
+            // and the walker reads only the two spellings above. An HTML page
+            // break draws as nothing at all (no row, no caret home) and an
+            // AsciiDoc one as an empty unlabelled row, so the button would
+            // write a break the author cannot see and cannot get back to.
+            // The proposal claims Markdown and djot, and this is that claim.
+            // Widening it is the walker's work, not this line's — see
+            // `docs/tasks/page-break-in-html-and-asciidoc.md`.
+            page_break: supports(Gesture::InsertDirective)
+                && matches!(format, Format::Markdown | Format::Djot),
         }
     }
 }
@@ -3956,6 +3970,11 @@ impl Doc {
     /// the div rather than nesting a second one.
     pub fn set_alignment(&mut self, align: Option<Align>) {
         let attrs = self.block_attrs_at_caret();
+        if align.is_none()
+            && self.refuse_clear_from_div("alignment", &attrs, |a| Align::from_attrs(a).is_some())
+        {
+            return;
+        }
         let attrs = with_class_token(
             &attrs,
             |t| Align::from_token(t).is_some(),
@@ -3969,6 +3988,13 @@ impl Doc {
     /// the key: [`LineSpacing`] under `data-line-height`.
     pub fn set_line_spacing(&mut self, spacing: Option<LineSpacing>) {
         let attrs = self.block_attrs_at_caret();
+        if spacing.is_none()
+            && self.refuse_clear_from_div("line spacing", &attrs, |a| {
+                LineSpacing::from_attrs(a).is_some()
+            })
+        {
+            return;
+        }
         let attrs = with_attr(&attrs, "data-line-height", spacing.map(LineSpacing::name));
         self.write_block_attrs("line spacing", attrs);
     }
@@ -4121,10 +4147,54 @@ impl Doc {
                 self.write_run_attrs(what, start, end, attrs);
             }
             None => {
-                let attrs = with_attr(&self.block_attrs_at_caret(), key, value);
+                let own = self.block_attrs_at_caret();
+                if value.is_none()
+                    && self.refuse_clear_from_div(what, &own, |a| a.iter().any(|(k, _)| k == key))
+                {
+                    return;
+                }
+                let attrs = with_attr(&own, key, value);
                 self.write_block_attrs(what, attrs);
             }
         }
+    }
+
+    /// A clear this gesture cannot carry out, said out loud instead of written:
+    /// the node it rewrites — the caret's block, or the `<div>` around it that
+    /// [`block_attrs_at_caret`](Self::block_attrs_at_caret) folds to in Markdown
+    /// — does not name the property at all, and a `div` further out does.
+    ///
+    /// Handing twig the block's attributes with the key already absent changes
+    /// no byte, and the query goes on answering `Some` off the div: the menu
+    /// entry the author pressed stays unticked, and nothing says why. Twig's
+    /// `set_block_attrs` reaches one node, so leaf cannot clear a key it did not
+    /// write on a node it is not rewriting — the honest answer is the status
+    /// line, in the voice the other refusals use.
+    ///
+    /// `names` is the property's own reading of an attribute list, because
+    /// alignment lives in a `class` token rather than a key of its own. Spans
+    /// are skipped: one inside the block is not what a *block* gesture writes
+    /// either, but neither is it "the div around the block", and the run-level
+    /// gestures reach it through a selection.
+    fn refuse_clear_from_div(
+        &mut self,
+        what: &str,
+        own: &Attrs,
+        names: impl Fn(&Attrs) -> bool,
+    ) -> bool {
+        if names(own) {
+            return false;
+        }
+        let caret = self.caret.min(self.source.len());
+        if !self
+            .attr_chain_at(caret)
+            .iter()
+            .any(|(span, attrs)| !span && names(attrs))
+        {
+            return false;
+        }
+        self.status = Some(format!("{what}: set on the div around the block"));
+        true
     }
 
     /// Hand `attrs` to twig as the caret's block's whole attribute set, with the
@@ -7127,13 +7197,33 @@ pub const PAGE_BREAK: &str = "page-break";
 /// every other attribute kept in its place — the read-edit-write half of twig's
 /// replace-not-merge contract for a `data-` key.
 ///
-/// A new key goes on the end, so a block that gains one keeps the order the
-/// document had it in and the diff is one attribute long.
+/// **A key that is already there is rewritten where it stands**, and only a key
+/// the node did not have goes on the end. That is what makes the proposal's
+/// worked example true: `class="lead center" id="intro"
+/// data-line-height="1.5"`, right-aligned, is `class="lead right" id="intro"
+/// data-line-height="1.5"` — the same document with one token changed, and a
+/// one-line diff. Removing the key and pushing it back would reorder the
+/// author's attributes on every press, so a document that passed through the
+/// editor came out shuffled even where nothing about it had changed.
+///
+/// A duplicate key — which no format leaf opens can spell, but twig reports
+/// verbatim — collapses onto the first of its copies, since twig is handed one
+/// value for one key either way.
 fn with_attr(attrs: &[(String, Option<String>)], key: &str, value: Option<&str>) -> Attrs {
-    let mut out: Vec<(String, Option<String>)> =
-        attrs.iter().filter(|(k, _)| k != key).cloned().collect();
-    if let Some(v) = value {
-        out.push((key.to_string(), Some(v.to_string())));
+    let mut out: Attrs = Vec::with_capacity(attrs.len() + 1);
+    let mut written = false;
+    for (k, v) in attrs {
+        if k != key {
+            out.push((k.clone(), v.clone()));
+            continue;
+        }
+        if let Some(new) = value.filter(|_| !written) {
+            out.push((k.clone(), Some(new.to_string())));
+            written = true;
+        }
+    }
+    if let Some(new) = value.filter(|_| !written) {
+        out.push((key.to_string(), Some(new.to_string())));
     }
     out
 }
@@ -7145,7 +7235,8 @@ fn with_attr(attrs: &[(String, Option<String>)], key: &str, value: Option<&str>)
 /// it. A paragraph that arrives as `class="lead center"` and is right-aligned
 /// goes out as `class="lead right"`; one whose last owned token goes and which
 /// carried nothing else loses the key, so a block that has lost its whole
-/// vocabulary is spelled bare again.
+/// vocabulary is spelled bare again. `class` itself keeps its place among the
+/// attributes, because [`with_attr`] does the writing.
 fn with_class_token(
     attrs: &[(String, Option<String>)],
     mine: impl Fn(&str) -> bool,
@@ -15272,6 +15363,145 @@ mod tests {
         assert_eq!(plain.text_color_at_caret(), None);
     }
 
+    /// A djot fenced div is anonymous the way an attributed span is, and is a
+    /// block all the same — the *form* is the whole of what tells them apart.
+    /// Read as a span it poisoned both halves: the run gesture copied the div's
+    /// entire attribute set onto the span it minted, duplicating the `id`, and
+    /// the run and block queries answered off a node the walker draws nothing
+    /// for.
+    #[test]
+    fn a_djot_fenced_div_is_not_an_attributed_span() {
+        let src = "{.center data-size=\"small\" #box}\n:::\nhello world\n:::\n";
+        let mut d = fmt_doc(src, Format::Djot);
+        let at = d.source.find("world").unwrap();
+        d.anchor = Some(at);
+        d.caret = at + "world".len();
+        d.set_text_color(Some(MarkColor::Red));
+        assert_eq!(
+            d.source,
+            "{.center data-size=\"small\" #box}\n:::\nhello [world]{data-color=\"red\"}\n:::\n",
+            "the span carries its own key and nothing of the div's"
+        );
+
+        // And the queries stop at the block: a djot div is not a `<div>`, the
+        // walker lends its keys to nothing inside it, and a query that said
+        // otherwise would tick a menu entry no glyph on screen obeys.
+        assert_eq!(d.text_color_at_caret(), Some(MarkColor::Red));
+        assert_eq!(d.font_size_at_caret(), None);
+        assert_eq!(d.alignment_at_caret(), None);
+    }
+
+    /// Clearing a property the block does not name and a `div` around it does
+    /// would write nothing and change nothing — twig's `set_block_attrs`
+    /// reaches one node, and the div is not it. The gesture says so instead of
+    /// leaving the author pressing an entry that never ticks.
+    #[test]
+    fn clearing_a_property_an_enclosing_div_names_says_so_and_writes_nothing() {
+        // Markdown, two paragraphs in one div: not the sole-child shape twig
+        // writes, so `block_attrs_at_caret` reads the paragraph and the
+        // paragraph names none of it.
+        let src = "<div class=\"center\" data-line-height=\"1.5\" data-size=\"large\">\n\nhello\n\nworld\n\n</div>\n";
+        let mut md = fmt_doc(src, Format::Markdown);
+        md.caret = md.source.find("hello").unwrap();
+        assert_eq!(md.alignment_at_caret(), Some(Align::Center));
+
+        md.set_alignment(None);
+        assert_eq!(md.source, src, "nothing written");
+        assert!(!md.dirty);
+        assert_eq!(
+            md.status.as_deref(),
+            Some("alignment: set on the div around the block")
+        );
+        assert_eq!(md.alignment_at_caret(), Some(Align::Center));
+
+        // The same for a `data-` key, at both levels — the block pair and the
+        // run three, the run three at a bare caret being the block gesture.
+        md.set_line_spacing(None);
+        assert_eq!(md.source, src);
+        assert_eq!(
+            md.status.as_deref(),
+            Some("line spacing: set on the div around the block")
+        );
+        md.set_font_size(None);
+        assert_eq!(md.source, src);
+        assert_eq!(
+            md.status.as_deref(),
+            Some("size: set on the div around the block")
+        );
+
+        // HTML has no sole-child fold at all: a block's attributes go on the
+        // block, so the div around one is always out of reach.
+        let html_src = "<div class=\"center\"><p>hi</p></div>\n";
+        let mut html = fmt_doc(html_src, Format::Html);
+        html.caret = html.source.find("hi").unwrap();
+        assert_eq!(html.alignment_at_caret(), Some(Align::Center));
+        html.set_alignment(None);
+        assert_eq!(html.source, html_src);
+        assert!(!html.dirty);
+        assert_eq!(
+            html.status.as_deref(),
+            Some("alignment: set on the div around the block")
+        );
+
+        // And it is a refusal, not a rule against clearing: a block that names
+        // the property itself still loses it, div or no div.
+        let mut own = fmt_doc(
+            "<div class=\"center\"><p class=\"right\">hi</p></div>\n",
+            Format::Html,
+        );
+        own.caret = own.source.find("hi").unwrap();
+        own.set_alignment(None);
+        assert_eq!(own.source, "<div class=\"center\"><p>hi</p></div>\n");
+        assert_eq!(own.status, None);
+    }
+
+    /// An edited key is rewritten **where it stands**. The proposal's worked
+    /// example is the test: a paragraph that came in as `id="intro"
+    /// class="lead center" data-line-height="1.5"` and is right-aligned goes
+    /// out as the same list with one token changed. Removing the key and
+    /// pushing it back shuffled a document's attributes on every press.
+    #[test]
+    fn an_edited_key_keeps_its_place_among_the_attributes() {
+        let mut html = fmt_doc(
+            "<p id=\"intro\" class=\"lead center\" data-line-height=\"1.5\">hello</p>\n",
+            Format::Html,
+        );
+        html.caret = html.source.find("hello").unwrap();
+        html.set_alignment(Some(Align::Right));
+        assert_eq!(
+            html.source,
+            "<p id=\"intro\" class=\"lead right\" data-line-height=\"1.5\">hello</p>\n"
+        );
+
+        // A `data-` key the same way, and a key the block did not have still
+        // goes on the end.
+        html.caret = html.source.find("hello").unwrap();
+        html.set_line_spacing(Some(LineSpacing::Double));
+        assert_eq!(
+            html.source,
+            "<p id=\"intro\" class=\"lead right\" data-line-height=\"2\">hello</p>\n"
+        );
+        html.caret = html.source.find("hello").unwrap();
+        html.set_font_size(Some(SizeStep::Large));
+        assert_eq!(
+            html.source,
+            "<p id=\"intro\" class=\"lead right\" data-line-height=\"2\" data-size=\"large\">hello</p>\n"
+        );
+
+        // Djot writes the same list in its own spelling, and the order is the
+        // author's there too.
+        let mut dj = fmt_doc(
+            "{#intro .lead .center data-line-height=\"1.5\"}\nhello\n",
+            Format::Djot,
+        );
+        dj.caret = dj.source.find("hello").unwrap();
+        dj.set_alignment(Some(Align::Right));
+        assert_eq!(
+            dj.source,
+            "{#intro .lead .right data-line-height=\"1.5\"}\nhello\n"
+        );
+    }
+
     /// A page break is a block, so twig alone lands one after the caret's whole
     /// block; the paragraph is parted at the caret first, exactly as
     /// `insert_thematic_break` parts it, and each format spells the directive
@@ -15345,6 +15575,19 @@ mod tests {
         assert!(!xml.alignment && !xml.font_size && !xml.page_break);
         assert!(Capabilities::of(Format::Markdown).page_break);
         assert!(Capabilities::of(Format::Djot).page_break);
+
+        // And those two *only*, though twig spells the gesture in HTML and
+        // AsciiDoc as well: it spells it differently there —
+        // `<page-break></page-break>` and `<<<` — and the walker reads neither,
+        // so the button would write a break that draws as nothing at all in
+        // HTML and as an empty unlabelled row in AsciiDoc. The flag describes
+        // what leaf can show, not what twig can write. See
+        // `docs/tasks/page-break-in-html-and-asciidoc.md`.
+        let exts = parse_extensions();
+        assert!(Format::Html.supports_with(exts, Gesture::InsertDirective));
+        assert!(Format::Asciidoc.supports_with(exts, Gesture::InsertDirective));
+        assert!(!Capabilities::of(Format::Html).page_break);
+        assert!(!Capabilities::of(Format::Asciidoc).page_break);
     }
 
     /// A format that cannot spell a property refuses in its own words and

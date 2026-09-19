@@ -5395,12 +5395,21 @@ fn leaf_directive_identity(node: &FlatNode) -> (String, Vec<(String, Option<Stri
 /// A *named* directive is not one, whatever its name: a Markdown `:span[…]{…}`
 /// is a directive the parser read as a directive, twig's own
 /// `wrap_range_attrs` says so, and it keeps the handling it has.
+///
+/// **Anonymous is not enough**, and the form is what finishes the question:
+/// a djot fenced div (`{.center}` / `:::` / … / `:::`) is anonymous too, with
+/// the same `Directive` origin, and is a *block* — `Container` form against the
+/// span's `Text`. Reading one as a span made every gesture and every query lie
+/// about it: `set_text_color` over a word inside such a div copied the whole
+/// div's attribute set — its `id` along with the rest — onto the new span, and
+/// `alignment_at_caret` reported the div's `.center` as a *run's* answer while
+/// the walker drew none. So the anonymous arm asks the form [`is_inline`] asks.
 pub(crate) fn is_run_span(node: &FlatNode) -> bool {
     if node.kind != Kind::Container {
         return false;
     }
     match node.name.as_deref() {
-        None | Some("") => true,
+        None | Some("") => node.directive_form == Some(DirectiveForm::Text),
         Some("span") => node.origin == Some(ContainerOrigin::Element),
         Some(_) => false,
     }
