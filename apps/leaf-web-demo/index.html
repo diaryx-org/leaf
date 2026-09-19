@@ -75,8 +75,16 @@
          and it is populated from `MARK_COLORS` so the demo cannot offer a
          colour the editor would refuse. Choosing one over a plain selection
          highlights it *and* colours it, in one undo step. -->
-    <select id="mark-color" title="the colour of the highlight at the caret">
+    <select id="mark-color" data-cap="mark_color" title="the colour of the highlight at the caret">
       <option value="">no colour</option>
+    </select>
+    <!-- The text's own colour, beside the highlight's and from the same seven
+         names: a frontend with a red for a highlight has a red for text. This
+         one paints the letters (`data-color` on a span), that one the wash
+         behind them (`data-color` on a mark) — the same key, and they never
+         collide because a mark is a mark and a span is a span. -->
+    <select id="text-color" data-cap="text_color" title="the colour of the text at the caret">
+      <option value="">text colour</option>
     </select>
     <div class="sep"></div>
     <button data-cmd="setParagraph" data-cap="heading">¶</button>
@@ -86,6 +94,27 @@
     <button data-cmd="toggleBlockquote" data-cap="blockquote">❝</button>
     <button data-cmd="toggleList" data-arg="false" data-cap="bullet_list">• List</button>
     <button data-cmd="toggleList" data-arg="true" data-cap="ordered_list">1. List</button>
+    <div class="sep"></div>
+    <!-- The presentation vocabulary. Alignment and spacing are the caret's
+         block; size, face and colour are the selection, or the block when
+         there is none. Every control is built from the editor's own token
+         lists, so the demo cannot offer a name the document could not carry,
+         and each reflects its `…AtCaret()` query as the caret moves. There is
+         no `left` token — absence is left — so the first button clears. -->
+    <button data-align="" data-cap="alignment" id="b-align-">⇤ left</button>
+    <button data-align="center" data-cap="alignment" id="b-align-center">↔ centre</button>
+    <button data-align="right" data-cap="alignment" id="b-align-right">⇥ right</button>
+    <button data-align="justify" data-cap="alignment" id="b-align-justify">≣ justify</button>
+    <select id="line-spacing" data-cap="line_spacing" title="how far apart this block sets its lines">
+      <option value="">spacing</option>
+    </select>
+    <select id="font-size" data-cap="font_size" title="a step larger or smaller than the text around it">
+      <option value="">size</option>
+    </select>
+    <select id="font-family" data-cap="font_family" title="the face this run is set in">
+      <option value="">face</option>
+    </select>
+    <button data-cmd="insertPageBreak" data-cap="page_break">⇟ break</button>
     <div class="sep"></div>
     <button data-cmd="insertFootnote" data-cap="footnote">[^]</button>
     <button data-cmd="insertThematicBreak" data-cap="thematic_break">──</button>
@@ -117,7 +146,13 @@
 </div>
 
 <script type="module">
-import { LeafEditor, MARK_COLORS } from "../../packages/leaf-web/src/index.js";
+import {
+  LeafEditor,
+  MARK_COLORS,
+  LINE_SPACINGS,
+  SIZE_STEPS,
+  FONT_FAMILIES,
+} from "../../packages/leaf-web/src/index.js";
 
 const SAMPLE = `# leaf on the web 🍃
 
@@ -167,6 +202,38 @@ fn main() {
 }
 \`\`\`
 
+## Presentation is a vocabulary, not a measurement
+The toolbar's second group writes what a word processor's does — but as *names*
+a stylesheet can select on, never as points or hex. Put the caret in these and
+watch the controls follow it.
+
+<div class="center">
+
+A centred paragraph. The class is what the document carries and what
+\`presentation.css\` selects on, so a page built from this file centres it with
+no leaf present.
+
+</div>
+
+<div data-line-height="1.5">
+
+This block sets its lines one and a half times the theme's own leading — the
+ratio a spacing menu offers, and a multiple rather than a measurement so that
+it still means "open" under a theme with different metrics.
+
+</div>
+
+A run can be <span data-size="large" data-font="serif" data-color="red">larger,
+serif, and red</span> without the document saying how large, which serif, or
+which red: the theme answers all three, and the seven colour names are the ones
+a highlight already uses.
+
+::page-break
+
+Past the break. On this surface it is a dashed rule the caret steps over; in
+print it is \`break-after: page\`, and in leaf-swift's paginated view it opens a
+new page.
+
 ## Attachments
 Images, video, and audio are block media — core reserves the row, the browser
 paints the real element over it.
@@ -201,6 +268,12 @@ function applyCapabilities(editor, state) {
         ? "put the caret in a table first"
         : "";
   }
+  // The menus dim by their own capability flag the way the buttons do — a
+  // format that cannot spell a size has a size menu that says so rather than
+  // one that refuses on use.
+  for (const sel of document.querySelectorAll("#toolbar select[data-cap]")) {
+    sel.disabled = readOnly || !caps[sel.dataset.cap];
+  }
   // The colour picker takes both gates: a format that spells a colour on a
   // highlight (Markdown does, djot doesn't), and something for the colour to
   // belong to — a highlight the caret is in, or a selection the press would
@@ -211,6 +284,18 @@ function applyCapabilities(editor, state) {
   // Follows the caret: the picker shows the colour of the highlight it is
   // standing in, and falls back to "no colour" outside one.
   if (state) colors.value = state.markColor ?? "";
+  // The presentation controls follow the caret the same way, but by asking:
+  // the frame carries the highlight's colour and not these, so each is a query
+  // at the caret. Alignment is four buttons of which exactly one is lit, and
+  // the first — clear — is the lit one wherever the document says nothing.
+  const align = editor.alignmentAtCaret();
+  for (const btn of document.querySelectorAll("#toolbar button[data-align]")) {
+    btn.classList.toggle("on", btn.dataset.align === (align ?? ""));
+  }
+  document.getElementById("line-spacing").value = editor.lineSpacingAtCaret() ?? "";
+  document.getElementById("font-size").value = editor.fontSizeAtCaret() ?? "";
+  document.getElementById("font-family").value = editor.fontFamilyAtCaret() ?? "";
+  document.getElementById("text-color").value = editor.textColorAtCaret() ?? "";
   // History buttons enable by what the frame says there is to undo or redo.
   if (state) {
     document.getElementById("b-undo").disabled = !state.canUndo;
@@ -275,7 +360,10 @@ async function main() {
   for (const btn of document.querySelectorAll("#toolbar button")) {
     btn.addEventListener("click", () => {
       const cmd = btn.dataset.cmd, arg = btn.dataset.arg;
-      if (cmd === "setHeading") editor.setHeading(parseInt(arg, 10));
+      // The alignment group is one command with four arguments, the first of
+      // which is `null` — there is no `left` token, so "left" is clearing it.
+      if (btn.dataset.align != null) editor.setAlignment(btn.dataset.align || null);
+      else if (cmd === "setHeading") editor.setHeading(parseInt(arg, 10));
       else if (arg != null) editor[cmd](arg === "true");
       else editor[cmd]();
       editor.focus();
@@ -295,6 +383,30 @@ async function main() {
     editor.highlight(colors.value || null);
     editor.focus();
   });
+
+  // The presentation menus, each built from the editor's own token list for the
+  // reason the colours are: a demo that spelled its own would eventually offer
+  // one the document cannot carry. The empty first option is the vocabulary's
+  // absent value — `null`, which clears the key and hands the property back to
+  // the theme.
+  for (const [id, tokens, method] of [
+    ["line-spacing", LINE_SPACINGS, "setLineSpacing"],
+    ["font-size", SIZE_STEPS, "setFontSize"],
+    ["font-family", FONT_FAMILIES, "setFontFamily"],
+    ["text-color", MARK_COLORS, "setTextColor"],
+  ]) {
+    const menu = document.getElementById(id);
+    for (const token of tokens) {
+      const opt = document.createElement("option");
+      opt.value = token;
+      opt.textContent = token;
+      menu.append(opt);
+    }
+    menu.addEventListener("change", () => {
+      editor[method](menu.value || null);
+      editor.focus();
+    });
+  }
 
   // The find box paints every hit as a highlight; a click on one lands there.
   const find = document.getElementById("find");
