@@ -2,7 +2,7 @@
 title: Tasks
 description: Deferred work on leaf, one file each — a commitment with a done state
 created: 2026-09-04
-updated: 2026-09-18
+updated: 2026-09-19
 contents:
 - '[Bold inside code inserts visible delimiters](bold-inside-code-inserts-delimiters.md)'
 - '[Bold over italic does not toggle off](bold-over-italic-does-not-toggle-off.md)'
@@ -27,6 +27,7 @@ contents:
 - '[The rule and table buttons at a paragraph''s end split nothing and leave blank lines behind](rule-and-table-at-a-paragraph-end-split-nothing-and-leave-blank-lines.md)'
 - '[The macOS formatting bar pages by group instead of scrolling](macos-bar-pages-by-group.md)'
 - '[A page break in HTML and AsciiDoc is a row the walker does not draw](page-break-in-html-and-asciidoc.md)'
+- '[Dynamic Type on paper should be a zoom, not a repagination](ios-dynamic-type-on-paper.md)'
 part_of: '[leaf](/README.md)'
 ---
 # Tasks
