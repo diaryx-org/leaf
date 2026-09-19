@@ -53,7 +53,8 @@ use leaf_core::style::{
 use leaf_core::wysiwyg::text_width;
 use leaf_core::{
     Alignment, BlockClass, BlockKind, ColorScheme, Doc, Format, Glyph, Highlight as CoreHighlight,
-    InlineKind, LineFlow as CoreLineFlow, MarkupMode as CoreMarkupMode, MediaKind, View, VisualMap,
+    InlineKind, LineFlow as CoreLineFlow, MarkupMode as CoreMarkupMode, MediaKind,
+    TextCounts as CoreTextCounts, View, VisualMap,
 };
 use serde::{Deserialize, Serialize};
 use tsify_next::Tsify;
@@ -181,6 +182,38 @@ pub struct SelectionQuote {
     start: usize,
     /// Byte offset where it ends (exclusive).
     end: usize,
+}
+
+/// How much writing there is — over the whole document, or over the
+/// selection. The wasm shape of `leaf_core::TextCounts`; see
+/// [`LeafDoc::counts`] for what is counted and what isn't.
+#[derive(Serialize, Tsify)]
+#[tsify(into_wasm_abi)]
+pub struct TextCounts {
+    /// Words, by UAX#29 word segmentation: a segment holding at least one
+    /// letter or digit, so `don't` is one and a lone dash is none. A
+    /// hyphenated compound is two, which is what the algorithm says.
+    words: usize,
+    /// Characters as a reader counts them — grapheme clusters, spaces
+    /// included. An emoji family and an accented letter are each one.
+    characters: usize,
+    /// The same, less every whitespace grapheme.
+    characters_without_spaces: usize,
+    /// Block-level containers holding at least one non-whitespace character:
+    /// a paragraph, a heading, each list item, each paragraph inside a
+    /// blockquote, a whole code block, a whole table.
+    paragraphs: usize,
+}
+
+impl From<CoreTextCounts> for TextCounts {
+    fn from(c: CoreTextCounts) -> Self {
+        TextCounts {
+            words: c.words,
+            characters: c.characters,
+            characters_without_spaces: c.characters_without_spaces,
+            paragraphs: c.paragraphs,
+        }
+    }
 }
 
 /// A host-painted range of the source, as [`LeafDoc::set_highlights`] takes
@@ -1181,6 +1214,29 @@ impl LeafDoc {
                 start: q.start,
                 end: q.end,
             })
+    }
+
+    /// Words, characters, and paragraphs over the whole document — the numbers
+    /// a status bar or an inspector puts next to a piece of writing.
+    ///
+    /// Counted over the text a reader sees rather than the markup that spells
+    /// it: `**bold**` is one word and four characters, a link is its label and
+    /// not its destination, a picture counts nothing, and frontmatter is not
+    /// writing. The same in both views — the count reads neither the view nor
+    /// the map the host last built. See `leaf_core::Doc::counts`.
+    ///
+    /// It is O(document) and not free (about 4 ms on a 45 KB file), so ask
+    /// when the typing settles rather than on every keystroke; there is no
+    /// `DocView` in it, because nothing about the document changes by being
+    /// counted.
+    pub fn counts(&self) -> TextCounts {
+        self.doc.counts().into()
+    }
+
+    /// The same statistics over the selection alone — `undefined` when nothing
+    /// is selected. See `leaf_core::Doc::selection_counts`.
+    pub fn selection_counts(&self) -> Option<TextCounts> {
+        self.doc.selection_counts().map(Into::into)
     }
 
     /// Whether the document refuses to change — see `set_read_only`.
@@ -3295,5 +3351,32 @@ mod tests {
         let doc = wysiwyg("# just a heading\n\nand a paragraph.\n");
         assert!(wysiwyg_tables(&doc.vmap, usize::MAX, usize::MAX, &[]).is_empty());
         assert!(wysiwyg_directives(&doc.vmap).is_empty());
+    }
+
+    /// The whole point of the record is that the numbers cross the boundary,
+    /// so this checks the ones a host would show — and that a selection
+    /// narrows them and no selection answers nothing at all.
+    #[test]
+    fn counts_cross_the_boundary_whole_and_selected() {
+        let mut d = LeafDoc::new("a **bold** word\n\n- item\n", "markdown").unwrap();
+        let c = d.counts();
+        assert_eq!(
+            (
+                c.words,
+                c.characters,
+                c.characters_without_spaces,
+                c.paragraphs
+            ),
+            (4, 15, 13, 2)
+        );
+
+        assert!(d.selection_counts().is_none(), "no selection, no counts");
+        // Straight onto the caret and anchor: `select_range` would hand back a
+        // `DocView`, which is a frame for a browser to paint and not a thing
+        // to build off wasm.
+        d.doc.anchor = Some(0);
+        d.doc.caret = 10;
+        let s = d.selection_counts().expect("a selection");
+        assert_eq!((s.words, s.characters, s.paragraphs), (2, 6, 1));
     }
 }
