@@ -266,6 +266,11 @@ void uniffi_leaf_ffi_fn_free_leafdoc(void*_Nonnull ptr, RustCallStatus *_Nonnull
 void*_Nonnull uniffi_leaf_ffi_fn_constructor_leafdoc_new(RustBuffer source, RustBuffer format, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_ALIGNMENT_AT_CARET
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_ALIGNMENT_AT_CARET
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_alignment_at_caret(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_ANCHOR_OFFSET
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_ANCHOR_OFFSET
 uint32_t uniffi_leaf_ffi_fn_method_leafdoc_anchor_offset(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
@@ -351,6 +356,16 @@ int32_t uniffi_leaf_ffi_fn_method_leafdoc_distance_offset(void*_Nonnull ptr, uin
 uint32_t uniffi_leaf_ffi_fn_method_leafdoc_doc_end_offset(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_FONT_FAMILY_AT_CARET
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_FONT_FAMILY_AT_CARET
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_font_family_at_caret(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_FONT_SIZE_AT_CARET
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_FONT_SIZE_AT_CARET
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_font_size_at_caret(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_FOOTNOTE_AT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_FOOTNOTE_AT
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_footnote_at(void*_Nonnull ptr, uint32_t off, RustCallStatus *_Nonnull out_status
@@ -411,6 +426,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_insert_link(void*_Nonnull ptr, Rust
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_insert_media(void*_Nonnull ptr, RustBuffer kind, RustBuffer destination, RustBuffer alt, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INSERT_PAGE_BREAK
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INSERT_PAGE_BREAK
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_insert_page_break(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INSERT_TABLE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INSERT_TABLE
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_insert_table(void*_Nonnull ptr, uint32_t rows, uint32_t cols, RustCallStatus *_Nonnull out_status
@@ -424,6 +444,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_insert_thematic_break(void*_Nonnull
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_LINE_FLOW
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_LINE_FLOW
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_line_flow(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_LINE_SPACING_AT_CARET
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_LINE_SPACING_AT_CARET
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_line_spacing_at_caret(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_LINK_DESTINATION_AT
@@ -591,9 +616,24 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_selection_html(void*_Nonnull ptr, R
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_selection_quote(void*_Nonnull ptr, uint32_t context, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_ALIGNMENT
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_ALIGNMENT
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_alignment(void*_Nonnull ptr, RustBuffer align, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_DARK_APPEARANCE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_DARK_APPEARANCE
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_dark_appearance(void*_Nonnull ptr, int8_t dark, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_FONT_FAMILY
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_FONT_FAMILY
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_font_family(void*_Nonnull ptr, RustBuffer font, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_FONT_SIZE
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_FONT_SIZE
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_font_size(void*_Nonnull ptr, RustBuffer size, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_HEADING
@@ -609,6 +649,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_highlights(void*_Nonnull ptr, R
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_LINE_FLOW
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_LINE_FLOW
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_line_flow(void*_Nonnull ptr, RustBuffer mode, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_LINE_SPACING
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_LINE_SPACING
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_line_spacing(void*_Nonnull ptr, RustBuffer spacing, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_MARK_COLOR
@@ -644,6 +689,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_selection(void*_Nonnull ptr, ui
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_SELECTION_OFFSETS
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_SELECTION_OFFSETS
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_selection_offsets(void*_Nonnull ptr, uint32_t anchor, uint32_t focus, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_TEXT_COLOR
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_TEXT_COLOR
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_text_color(void*_Nonnull ptr, RustBuffer color, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_UNWRAPPED
@@ -709,6 +759,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_table_set_alignment(void*_Nonnull p
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TASK_CHECKED_AT_CARET
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TASK_CHECKED_AT_CARET
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_task_checked_at_caret(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TEXT_COLOR_AT_CARET
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TEXT_COLOR_AT_CARET
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_text_color_at_caret(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TEXT_IN_RANGE
@@ -1076,6 +1131,12 @@ void ffi_leaf_ffi_rust_future_free_void(uint64_t handle
 void ffi_leaf_ffi_rust_future_complete_void(uint64_t handle, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_ALIGNMENT_AT_CARET
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_ALIGNMENT_AT_CARET
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_alignment_at_caret(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_ANCHOR_OFFSET
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_ANCHOR_OFFSET
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_anchor_offset(void
@@ -1178,6 +1239,18 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_doc_end_offset(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_FONT_FAMILY_AT_CARET
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_FONT_FAMILY_AT_CARET
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_font_family_at_caret(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_FONT_SIZE_AT_CARET
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_FONT_SIZE_AT_CARET
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_font_size_at_caret(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_FOOTNOTE_AT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_FOOTNOTE_AT
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_footnote_at(void
@@ -1250,6 +1323,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_insert_media(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_INSERT_PAGE_BREAK
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_INSERT_PAGE_BREAK
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_insert_page_break(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_INSERT_TABLE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_INSERT_TABLE
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_insert_table(void
@@ -1265,6 +1344,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_insert_thematic_break(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_LINE_FLOW
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_LINE_FLOW
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_line_flow(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_LINE_SPACING_AT_CARET
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_LINE_SPACING_AT_CARET
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_line_spacing_at_caret(void
     
 );
 #endif
@@ -1466,9 +1551,27 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_selection_quote(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_ALIGNMENT
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_ALIGNMENT
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_alignment(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_DARK_APPEARANCE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_DARK_APPEARANCE
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_dark_appearance(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_FONT_FAMILY
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_FONT_FAMILY
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_font_family(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_FONT_SIZE
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_FONT_SIZE
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_font_size(void
     
 );
 #endif
@@ -1487,6 +1590,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_highlights(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_LINE_FLOW
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_LINE_FLOW
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_line_flow(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_LINE_SPACING
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_LINE_SPACING
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_line_spacing(void
     
 );
 #endif
@@ -1529,6 +1638,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_selection(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_SELECTION_OFFSETS
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_SELECTION_OFFSETS
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_selection_offsets(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_TEXT_COLOR
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_TEXT_COLOR
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_text_color(void
     
 );
 #endif
@@ -1607,6 +1722,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_table_set_alignment(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_TASK_CHECKED_AT_CARET
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_TASK_CHECKED_AT_CARET
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_task_checked_at_caret(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_TEXT_COLOR_AT_CARET
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_TEXT_COLOR_AT_CARET
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_text_color_at_caret(void
     
 );
 #endif
