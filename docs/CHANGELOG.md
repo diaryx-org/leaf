@@ -37,6 +37,90 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.2.0 — 2026-09-18
+
+### Added
+
+- **core** — a presentation vocabulary — alignment, spacing, size, face, colour and page breaks as attributes ([`edd3839`](https://github.com/diaryx-org/leaf/commit/edd3839447e85f156eb6c20ef6c63e3b064cd13a))
+- **ffi,wasm** — the presentation gestures, queries and row facts reach both bindings ([`910aef4`](https://github.com/diaryx-org/leaf/commit/910aef4dc3439ebfc0a69e488ffda282ad009732))
+- **ratatui** — alignment pads the row, a coloured run takes an ink, and a page break rules the paper ([`ff9be2f`](https://github.com/diaryx-org/leaf/commit/ff9be2fc5320139a4b89488312cf8218f3f15a8b))
+- **web** — presentation.css, and the vocabulary on every row and run ([`4ce7e1d`](https://github.com/diaryx-org/leaf/commit/4ce7e1d0c72da05d9b0b100daa7673a1fc21d9fc))
+- **web** — the demo's alignment, spacing, size, face, colour and break controls ([`4a7c7d2`](https://github.com/diaryx-org/leaf/commit/4a7c7d2bdb4fae42c28e8822c207febda89ff492))
+- **swift** — the renderer draws the presentation vocabulary ([`6913620`](https://github.com/diaryx-org/leaf/commit/6913620a48e5e837558b6a6948efd7336782fb38))
+- **swift** — the toolbar and the Format menu offer the presentation vocabulary ([`ae33dde`](https://github.com/diaryx-org/leaf/commit/ae33dde0e38a5fa835e9ccf18969cc60cbec26d4))
+- **swift** — the formatting bar pages by group on the desktop, and takes a host's tools ([`3bb5c0a`](https://github.com/diaryx-org/leaf/commit/3bb5c0a3f6282be00c818635f2bbbf911fdeee44))
+
+### Fixed
+
+- **swift** — make TableRows public, which the editor app's toolbar already uses ([`905a88e`](https://github.com/diaryx-org/leaf/commit/905a88e737668392e18b75272e7e8220e198ba42))
+- **core** — a table gets a caret stop past it, so a click under a trailing table can add a line ([`61e588d`](https://github.com/diaryx-org/leaf/commit/61e588d33ecfff868cd2ec9cb7962f7a0b550c8c))
+- **core** — a djot div is not a span, a page break is Markdown and djot, a clear that cannot reach says so, and an edited key keeps its place ([`ca31104`](https://github.com/diaryx-org/leaf/commit/ca31104a2649fc18e800bdcdf560483f23914346))
+- **core** — the paste gate reads twig 3.6's attribute warnings as the notes they are ([`c8a293b`](https://github.com/diaryx-org/leaf/commit/c8a293b639465ae9a60cc12cd417132e01a53da1))
+- **core** — a block attribute gesture keeps the caret on its text when the spelling grows above it ([`0923823`](https://github.com/diaryx-org/leaf/commit/09238238f622afb458c7ed174ef7060427e817c3))
+
+### Behavioural changes
+
+- a table's bottom border row is no longer `decoration`;
+its end is a caret stop at `TableInfo::end_src`. Right from a table's last
+cell, and Down from its last row, now stop once past the table before
+reaching the block below; a click on the bottom border lands past the
+table rather than in the last cell; `visible_text` and `text_in_range`
+spell one more `\n` per table, for the new stop.
+
+- `Style` gains `size`, `font` and `color`; `VRow` gains `align` and `line_height`; `Capabilities` gains `alignment`, `line_spacing`, `font_size`, `font_family`, `text_color` and `page_break`. All three are plain structs with public fields, so a struct literal of any of them no longer compiles until the new fields are named — `Style` and `VRow` are `Default`, so `..Default::default()` is the one-line fix. A frontend that only reads fields is unaffected, and every new field is `None`/`false` where the document says nothing.
+
+- a paragraph containing an HTML `<span>` (in Markdown under `html_elements` or in HTML) now renders as the whole paragraph. It previously rendered as the span's content alone, the text either side of it drawing nothing — so a document with one gains rows and glyphs it did not have.
+
+- an anonymous djot fenced div with no children and a class (`::: page-break` / `:::`) now emits one placeholder row carrying a `DirectiveMark` named by its first class token. It previously emitted no rows at all and held no caret.
+
+- the FFI records `Run`, `Row` and `Capabilities` gain fields — `size`, `font` and `text_color` on a run, `align` and `line_height` on a row, and `alignment`, `line_spacing`, `font_size`, `font_family`, `text_color` and `page_break` on the capabilities. Swift generates a memberwise `init` per record, so code that *builds* one (a preview, a test fixture) no longer compiles until the new arguments are passed; code that only reads is unaffected, and every new field is `nil`/`false` where the document says nothing.
+
+- the wasm `Run`, `Row` and `CapabilitiesView` gain the same fields. Additive for a reader — the objects are serialised, so a renderer that ignores them sees what it saw before.
+
+- `Doc::paste_html` now declines HTML whose block carries an
+  attribute Markdown can only spell as a wrapping `<div>` — `<ol start="3">`
+  pasted as a list numbered from 3 and now returns `false`, for the caller to
+  answer with the plain flavor. Attributes that merely style or identify
+  (`class`, `style`, `id`, `dir`, `lang`, `align`, `role`, `data-*`, `aria-*`,
+  a namespaced `xmlns:o`) are dropped before the conversion as they always
+  effectively were, so a Word, Google Docs or Slack paste is unchanged.
+
+- after `set_alignment`, `set_line_spacing`, or a run gesture
+with no selection, the caret (and a selection) now sits on the same text it sat
+on before, rather than keeping its byte offset. In Markdown that offset landed
+in the `<div>` the gesture wrote, which is what made a second press a no-op;
+callers that worked around it by re-seeking the caret themselves no longer need
+to, and callers that relied on the caret landing after the splice will see it in
+the block instead.
+
+- `leaf_ratatui::wysiwyg_lines` takes a `width` argument between the theme and the code-shift closure — the measure the rows are laid into, which is what a row's alignment pad is measured against. A host calling it directly passes the same content width it built the visual map at; `0` reproduces the old, never-padded drawing.
+
+- ⌥a and ⌥⇧R now edit the document through `handle_key`, where both were previously unbound and silent: ⌥a cycles the caret block's alignment and ⌥⇧R inserts a `::page-break` directive. Both are refused with a reason in a read-only document, as the rest of the editing keys are.
+
+- a glyph whose `Style::color` the document set now draws in the new `Theme::text_colors` ink for that name rather than in its role's colour, and a `page-break` leaf directive's row now draws as a dashed rule across the content width rather than as the `⧉ page-break` placeholder text.
+
+- a document containing a `::page-break` directive now draws a dashed rule where the `⧉ page-break` placeholder row used to be, and that row no longer holds a caret — vertical motion crosses it in one press instead of stopping on it.
+
+- a media row's core length is now `data-leaf-core-len`, not `data-media-core-len`. Nothing in the API exposed it; a host reading the attribute off the DOM (or a test) must follow the rename.
+
+- the editor's injected stylesheet now carries leaf's presentation vocabulary, scoped to `.leaf-editor`. An element *inside* an editor's container that a host had given its own `.center`, `[data-size]`, `[data-font]` or `[data-color]` meaning now also takes leaf's.
+
+- a `Row` carrying `align` or `line_height`, and a `Run` carrying `size` or `font`, now lay out differently — a centred block's lines move, a spaced block's rows open, and a row grows to the largest size step on it. A frontend that passed these through unread saw none of it before.
+
+- `EditorState` gains `align`, the caret block's alignment, so two states that differ only in it are now unequal and the frame republishes on a caret move between differently aligned blocks. Its initializer's new parameter is defaulted, so code that builds one by hand still compiles.
+
+- in the paginated flow a block boundary that lands exactly on a column's top margin no longer places its gap. A document whose block happened to start a sheet moves up by one paragraph's spacing.
+
+- `LeafFormattingToolbar` grows a group of nine tools, so a host embedding it at a fixed width sees more of the row scrolled off the trailing edge than before.
+
+- `LeafEditorCommands`' Format menu gains Text Colour, Alignment, Line Spacing, Text Size, Font and Insert Page Break, and with them the shortcuts ⌘{, ⌘|, ⌘} and ⌘+/⌘-. A host that binds any of those chords itself now has a conflict.
+
+- `LeafFormattingToolbar` in `.bar` style (the macOS
+default) pages by group with chevrons when the row does not fit, instead
+of scrolling. `LeafFormattingToolbar(editor:style:tools:)` takes a host's
+own tools; the two-argument form is unchanged.
+
+
 ## v0.1.21 — 2026-09-18
 
 ### Added
