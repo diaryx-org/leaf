@@ -1,6 +1,6 @@
 ---
 title: "Proposal: a presentation vocabulary"
-status: accepted
+status: implemented
 created: 2026-09-18
 updated: 2026-09-18
 part_of: '[Proposals](/docs/proposals/proposals.md)'
@@ -9,6 +9,25 @@ part_of: '[Proposals](/docs/proposals/proposals.md)'
 # A presentation vocabulary
 
 ## Status
+
+`implemented` on 2026-09-18, in the sequence's order, against the published
+twig-doc 3.6.0 (`8c29ea2`): core in `edd3839`, with a review's four fixes in
+`ca31104` and the caret kept on its text through a Markdown `<div>` wrap in
+`0923823`; both bindings in `910aef4`; leaf-swift in `6913620` and `ae33dde`;
+leaf-web in `4ce7e1d` and `4a7c7d2`; leaf-ratatui in `ff9be2f`. Four things
+the text below did not foresee. `Capabilities::page_break` is true for
+Markdown and djot only: twig spells the directive in HTML and AsciiDoc too,
+but the walker cannot yet read `<page-break>` or `<<<` back, and the
+[task](../tasks/page-break-in-html-and-asciidoc.md) says what would. A clear
+that cannot reach its property — the caret's block is inside a `<div>` that
+sets it and is not its sole child — sets a status rather than silently doing
+nothing. The terminal draws text colour in its own inks rather than the
+highlight's washes, and leaf-swift likewise keeps a contrast-checked pair per
+name, because a wash that reads *under* text does not read *as* text. And
+twig 3.6's new attribute axis of diagnostics reported an HTML link's `href`
+and an image's `src` as attributes Markdown drops, which leaf's paste gate
+read as a lossy paste; the gate now asks the question it meant to
+(`c8a293b`), and the two twig defects behind it are tasks in twig.
 
 `accepted` on 2026-09-18, on the twig side having landed: twig's
 [presentation as attributes](https://github.com/diaryx-org/twig/blob/main/docs/proposals/presentation-as-attributes.md)
