@@ -12,6 +12,20 @@
 //  no ink of its own, because absence is what those mean and a document should
 //  not carry a key that says nothing.
 //
+//  Four of the five offer the *names first* and, under a divider, an "Other…"
+//  row that opens a field or a platform picker for the exact form — 14pt,
+//  Garamond, #c03030, 1.3. A name is portable under every theme and a value is
+//  exact, and the row is labelled so the trade is visible (Apple's own word for
+//  the row on a font-size popup that opens a field). Above it, when the caret
+//  stands in an exact value, a ticked row of that value's own, so the menu
+//  always shows what is in force. Alignment has no such row: left, centre,
+//  right and justify are the whole of what a line can do.
+//
+//  Pressing Other… sets `LeafEditorModel.pendingOther` rather than presenting
+//  anything here — a `Menu`'s rows are torn down by the press that chooses one,
+//  so a popover hung on a row would be dismissed by the gesture that asked for
+//  it. `LeafEditor` watches that and raises the field (`PresentationOther.swift`).
+//
 //  Each group dims on its own capability flag: a format that cannot spell the
 //  property at all (XML spells none of them; AsciiDoc refuses the three
 //  run-level ones inline) gets a dimmed control rather than a press that turns
@@ -79,12 +93,15 @@ struct TextSizeRows: View {
             // Largest first: a size menu reads as a ramp, and a ramp that runs
             // downwards is the one every font panel draws.
             ForEach(SizeStep.ramp.reversed(), id: \.self) { step in
-                toggle(step.title, on: editor.fontSize == step) { editor.setFontSize(step) }
+                toggle(step.title, on: editor.fontSize == .step(step)) {
+                    editor.setFontSize(.step(step))
+                }
             }
             Divider()
             toggle(loc("menu.size.default", "Default"), on: editor.fontSize == nil) {
                 editor.setFontSize(nil)
             }
+            OtherRow(editor: editor, field: .size, exact: editor.fontSize?.exactTitle)
         }
         .disabled(!editor.capabilities.fontSize)
     }
@@ -104,12 +121,15 @@ struct FontFamilyRows: View {
     var body: some View {
         Group {
             ForEach(FontFamily.all, id: \.self) { face in
-                toggle(face.title, on: editor.fontFamily == face) { editor.setFontFamily(face) }
+                toggle(face.title, on: editor.fontFamily == .generic(face)) {
+                    editor.setFontFamily(.generic(face))
+                }
             }
             Divider()
             toggle(loc("menu.font.default", "Default"), on: editor.fontFamily == nil) {
                 editor.setFontFamily(nil)
             }
+            OtherRow(editor: editor, field: .face, exact: editor.fontFamily?.exactTitle)
         }
         .disabled(!editor.capabilities.fontFamily)
     }
@@ -130,10 +150,11 @@ struct LineSpacingRows: View {
                 editor.setLineSpacing(nil)
             }
             ForEach(LineSpacing.all, id: \.self) { spacing in
-                toggle(spacing.title, on: editor.lineSpacing == spacing) {
-                    editor.setLineSpacing(spacing)
+                toggle(spacing.title, on: editor.lineSpacing == .step(spacing)) {
+                    editor.setLineSpacing(.step(spacing))
                 }
             }
+            OtherRow(editor: editor, field: .spacing, exact: editor.lineSpacing?.exactTitle)
         }
         .disabled(!editor.capabilities.lineSpacing)
     }
@@ -152,19 +173,45 @@ struct TextColourRows: View {
     var body: some View {
         Group {
             ForEach(MarkColor.palette, id: \.self) { colour in
-                toggle(colour.menuTitle, on: editor.textColor == colour) {
-                    editor.setTextColor(colour)
+                toggle(colour.menuTitle, on: editor.textColor == .named(colour)) {
+                    editor.setTextColor(.named(colour))
                 }
             }
             Divider()
             toggle(loc("menu.textColour.none", "Default"), on: editor.textColor == nil) {
                 editor.setTextColor(nil)
             }
+            OtherRow(editor: editor, field: .colour, exact: editor.textColor?.exactTitle)
         }
         .disabled(!editor.capabilities.textColor)
     }
 
     private func toggle(_ title: String, on: Bool, _ apply: @escaping () -> Void) -> some View {
         Toggle(title, isOn: Binding(get: { on }, set: { _ in apply() }))
+    }
+}
+
+/// The exact half of one group: a ticked row showing the value at the caret
+/// when it is an exact one, and *Other…* under it.
+///
+/// One view for all four because they differ only in which field the press
+/// opens and how the value spells itself, and because the ticked row has a rule
+/// worth writing once: it is shown **only** when there is an exact value, since
+/// a permanent row reading "14 pt" over a document set in none of it would be
+/// offering a size nobody chose. Pressing the ticked row re-opens the field
+/// seeded with that value, which is the only sensible thing a ticked row can do
+/// — it is already what is in force, so there is nothing to apply.
+struct OtherRow: View {
+    @ObservedObject var editor: LeafEditorModel
+    let field: PresentationOther
+    /// The value at the caret, spelled, or nil when it is a name or nothing.
+    let exact: String?
+
+    var body: some View {
+        Divider()
+        if let exact {
+            Toggle(exact, isOn: Binding(get: { true }, set: { _ in editor.pendingOther = field }))
+        }
+        Button(field.label) { editor.pendingOther = field }
     }
 }

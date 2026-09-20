@@ -98,13 +98,16 @@ enum AttributedRow {
         // whole file's contract. Core Text measures the smaller font's advances,
         // so hit-testing and the caret rect follow on their own.
         //
-        // The run's own size step multiplies the size it would otherwise take,
+        // The run's own size *step* multiplies the size it would otherwise take,
         // which is what makes `large` mean "a step up from the text around it"
         // rather than a number: on a heading row it is a step up from the
-        // heading, in prose a step up from the body. The baseline shift is
-        // measured off the result, so a footnote reference inside an x-large run
-        // rides that run.
-        let runSize = size * theme.sizeScale(run.size) * (run.sup || run.sub ? theme.baselineScale : 1)
+        // heading, in prose a step up from the body. An exact `14pt` replaces
+        // that size instead of scaling it — the name scales the ramp and the
+        // value replaces it — which `theme.runSize(base:token:)` is the one
+        // place deciding. The baseline shift is measured off the result, so a
+        // footnote reference inside an x-large run rides that run.
+        let runSize = theme.runSize(base: size, token: run.size)
+            * (run.sup || run.sub ? theme.baselineScale : 1)
 
         // A comment in a highlighted block is italic on top of its colour —
         // the one token the palette gives a style as well as a hue.
