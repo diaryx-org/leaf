@@ -1,11 +1,41 @@
 ---
 title: Math in leaf
-status: draft
+status: implemented
 created: 2026-09-19
 updated: 2026-09-19
 part_of: '[Proposals](/docs/proposals/proposals.md)'
 ---
 # Math in leaf
+
+## Status
+
+`implemented` on 2026-09-19, unreleased, in the order the text below gives:
+`leaf-math` in `17dff4b`; the Markdown flag in `d4485c2` and the core
+rendering in `eaa73b4`; both bindings in `086fd0d`; leaf-ratatui in
+`f112676`; leaf-web in `c4b644e`; leaf-swift in `ac8fae4`. leaf-gpui is not
+done: it is archived, and stays on the code-styled text it drew before.
+
+Five things the argument did not settle. An inline atom is not on every
+surface — a terminal cannot composite a picture over one cell — so a
+frontend says it paints pictures in a line (`Doc::set_inline_pictures`) and
+the terminal, which does not, keeps the code-styled TeX for inline math and
+gets display math as pixels over its rows, only on a graphics protocol. The
+reveal line the builder takes became a `Reveal` that says whether it reveals
+all markup or only math, and in the hidden modes core threads the caret's
+line through only when the last build's layout says a block with a formula
+meets it, so a document with no math still pays nothing for caret motion.
+The media heights, the math heights and that capability moved into one
+`Surface`. On the web, an inline formula keeps its one-character atom in the
+DOM — the unit the caret counts the row by — and draws as the picture by a
+transparent glyph stretched to the picture's width, which is also what put a
+`map_key` on the frame so a caret move onto a revealed line repaints, a gap
+`MarkupMode::Full` had too. And the wasm measure the text asked for: 3.69 MB
+to 5.81 MB, 0.52 MB of it KaTeX's fonts, the rest RaTeX's code — the
+`<text>`-mode option would save only the fonts.
+
+One thing found rather than built: twig's `insert_literal` does not escape a
+`$` under the math extension, so typing `$x$` in `MarkupMode::None` mints a
+formula. Filed in twig, and as `docs/tasks/a-typed-dollar-mints-math-in-the-hidden-mode.md` here.
 
 ## The picture
 
