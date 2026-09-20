@@ -33,7 +33,24 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
-_No commits since the last tag._
+### Breaking
+
+- **core** — Markdown reads math ([`d4485c2`](https://github.com/diaryx-org/leaf/commit/d4485c2c5e565f1ae940f4fb266f37cd72e70240))
+- **core** — a formula is a picture that reveals to its TeX on the caret's line ([`eaa73b4`](https://github.com/diaryx-org/leaf/commit/eaa73b48bcd5e426a96aeb77b9b830d590f9db4a))
+
+### Added
+
+- **leaf-math** — TeX to a self-contained SVG picture with baseline metrics, through RaTeX ([`17dff4b`](https://github.com/diaryx-org/leaf/commit/17dff4bc292f2662f1ef99f1a55e650013874dbc))
+- **ffi, wasm** — both bindings hand over a formula's picture and its place ([`086fd0d`](https://github.com/diaryx-org/leaf/commit/086fd0d99bdcc2768801ab4a535bfafc16442ee5))
+- **leaf-ratatui** — a display formula is pixels over its rows, centred and unframed ([`f112676`](https://github.com/diaryx-org/leaf/commit/f1126762d34cd79e57c863f54b928e768d790df8))
+- **leaf-web** — a formula is its picture in the line, and a caret move onto it repaints ([`c4b644e`](https://github.com/diaryx-org/leaf/commit/c4b644e4abb9c8f99057e358f01798646955d612))
+- **leaf-swift** — a formula is its picture in the line and a centred block, on the Mac and on iOS ([`ac8fae4`](https://github.com/diaryx-org/leaf/commit/ac8fae499b4b82b06afeb1bce165c8fe99297792))
+
+### Behavioural changes
+
+- every Markdown document leaf opens now parses `$…$` as inline math and `$$…$$` as display math; `$5 and $6` stays prose, since twig never opens math on a dollar followed by whitespace.
+
+- `wysiwyg::build`, `build_cached` and `build_spliced` take a `&Surface` where they took `&HashMap<String, usize>`, and an `Option<Reveal>` where they took `Option<Range<usize>>`; `Role` gains `Math` and `BlockClass` gains `Math`, which an exhaustive match must add; `VRow` and `VisualMap` gain a `math` field; `Doc::counts` no longer counts the TeX of an inline formula as words.
 
 <!-- git-cliff:end -->
 
