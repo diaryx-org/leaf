@@ -37,6 +37,16 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.3.1 — 2026-09-19
+
+### Added
+
+- **core** — a word count of the text on the page, not of the markup under it ([`495f874`](https://github.com/diaryx-org/leaf/commit/495f874c48eb0ffc494790d29e4d4d068f43c5a6))
+- **ffi, wasm** — both bindings can say how much has been written ([`0859465`](https://github.com/diaryx-org/leaf/commit/0859465b9e1b7184c20f544c58a20aebf91f818a))
+- **leaf-web** — the editor shell can say how much has been written ([`6f87608`](https://github.com/diaryx-org/leaf/commit/6f8760876d65772955244919af8a61f6a1ab1975))
+- **leaf-swift** — the model can say how much has been written, when a host asks ([`bcef992`](https://github.com/diaryx-org/leaf/commit/bcef992e76f80d22cebc1c9354b30e6968f253ea))
+
+
 ## v0.3.0 — 2026-09-19
 
 ### Breaking
