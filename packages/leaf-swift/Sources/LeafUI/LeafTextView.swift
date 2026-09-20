@@ -656,6 +656,15 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
                 }
                 continue
             }
+            // A display formula's picture, once, on its first placeholder row,
+            // centred on the column — vectors, so the PDF gets paths.
+            if let box = rl.math {
+                if rl.mathFirst {
+                    box.draw(in: box.rect(top: rl.mathTop, left: rl.originX + rl.shaped.prefixWidth,
+                                          width: rl.columnWidth - rl.shaped.prefixWidth), ctx: ctx)
+                }
+                continue
+            }
             // The row's bands, not one rect over its whole height: a split row has
             // a sheet edge — or a column gutter — through the middle of it, and a
             // code fill drawn over that would tile the backdrop or the gutter too.

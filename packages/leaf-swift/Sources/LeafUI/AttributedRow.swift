@@ -23,34 +23,70 @@ enum AttributedRow {
     /// colours; the row's own `heading` level sizes the *whole* line (so an inline
     /// `` `code` `` run inside a heading still reads at the heading's size),
     /// mirroring how gpui and the web shape a heading line as one unit.
-    static func make(_ row: Row, theme: EditorTheme) -> NSAttributedString {
-        make(row.runs, row: row, theme: theme)
+    static func make(_ row: Row, theme: EditorTheme, math: [UInt32: MathView] = [:]) -> NSAttributedString {
+        make(row.runs, row: row, theme: theme, math: math)
     }
 
     /// Build the attributed text for `runs` under `row`'s line-level styling. The
     /// runs are usually the row's own; a thematic break passes only its *prefix*
     /// runs, because its `───` glyphs are replaced by a drawn line (see
     /// `Row.isThematicBreak`).
-    static func make(_ runs: [Run], row: Row, theme: EditorTheme) -> NSAttributedString {
+    ///
+    /// `math` is the frame's inline formulas by source offset: a `math` run
+    /// whose `src` names one is drawn as its typeset picture — see
+    /// `mathPiece` — and one that names none (the frame has not caught up, or
+    /// the TeX would not typeset) stays core's own glyph.
+    static func make(_ runs: [Run], row: Row, theme: EditorTheme,
+                     math: [UInt32: MathView] = [:]) -> NSAttributedString {
         let result = NSMutableAttributedString()
         let size = row.heading.map { theme.headingSize(Int($0)) } ?? theme.fontSize
         let isHeadingRow = row.heading != nil
 
         for run in runs {
-            let piece = NSMutableAttributedString(
-                string: run.text,
-                attributes: attributes(
-                    run: run,
-                    size: size,
-                    headingRow: isHeadingRow,
-                    codeRow: row.code,
-                    theme: theme
-                )
+            let attrs = attributes(
+                run: run,
+                size: size,
+                headingRow: isHeadingRow,
+                codeRow: row.code,
+                theme: theme
             )
+            if run.role == "math", let mv = math[run.src],
+               let piece = mathPiece(run, view: mv, attrs: attrs, theme: theme) {
+                result.append(piece)
+                continue
+            }
+            let piece = NSMutableAttributedString(string: run.text, attributes: attrs)
             if run.role == "quote" { kernGutter(piece, theme: theme) }
             result.append(piece)
         }
         return result
+    }
+
+    /// An inline formula's run as its picture: the one character core drew
+    /// replaced by the attachment character — one UTF-16 unit for one, so the
+    /// row's offsets are untouched — carrying a `MathAttachment` for TextKit to
+    /// draw and a run delegate for Core Text to measure by, both the picture's
+    /// size. The picture is set at the run's own size in the theme's ink, so a
+    /// formula in a heading is the heading's size. `nil` when the TeX will not
+    /// typeset, and the caller keeps core's glyph.
+    private static func mathPiece(_ run: Run, view: MathView,
+                                  attrs: [NSAttributedString.Key: Any],
+                                  theme: EditorTheme) -> NSAttributedString? {
+        guard run.text.utf16.count == 1,
+              let font = attrs[.font] as? LeafFont,
+              let glyph = MathStore.glyph(tex: view.tex, display: view.display,
+                                          size: font.pointSize, ink: theme.textColor)
+        else { return nil }
+        var a = attrs
+        a[.attachment] = MathAttachment(glyph: glyph)
+        if let delegate = MathRunDelegate.make(glyph) {
+            a[NSAttributedString.Key(kCTRunDelegateAttributeName as String)] = delegate
+        }
+        // The attachment character draws the picture; nothing else on the
+        // character should show through it.
+        a[.backgroundColor] = nil
+        a[.underlineStyle] = nil
+        return NSAttributedString(string: "\u{FFFC}", attributes: a)
     }
 
     /// Build the attributed text for one line of a table cell. A header cell
@@ -151,6 +187,11 @@ enum AttributedRow {
         // as prose with its scaffolding visible, rather than as source. It keeps
         // the run's own font and emphasis, so a bold run's `**` comes out bold.
         case "delimiter": attrs[.foregroundColor] = theme.secondaryColor
+        // A formula's stand-in glyph, where no picture was drawn for it — the
+        // `∑` of an inline formula the frame has no view for, or a display
+        // block's `∑ tex` placeholder row when its TeX would not typeset.
+        // Secondary, as an image's label is.
+        case "math": attrs[.foregroundColor] = theme.secondaryColor
         case "mark": attrs[.foregroundColor] = theme.textColor
         default: attrs[.foregroundColor] = theme.textColor
         }

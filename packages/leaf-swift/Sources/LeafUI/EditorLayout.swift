@@ -217,6 +217,13 @@ struct RowLayout {
     var mediaTop: CGFloat = 0
     /// The one placeholder row that carries the box's height and paints it.
     var mediaFirst: Bool = false
+    /// The formula box, on every placeholder row of a display formula; `nil`
+    /// for an ordinary row. Collapsed exactly as a media box's rows are.
+    var math: MathLayout? = nil
+    /// The box's top (all of a formula's reserved rows share it).
+    var mathTop: CGFloat = 0
+    /// The one placeholder row that carries the box's height and paints it.
+    var mathFirst: Bool = false
     /// Header space reserved above this row's own text for a directive's audience
     /// label (nonzero only on a directive block's first, labeled row) — keeps the
     /// label from painting over that row's real content. See `EditorTheme.directiveLabelHeight`.
@@ -265,6 +272,7 @@ struct RowLayout {
     var height: CGFloat {
         if let t = table { return tableFirst ? t.height : 0 }
         if let m = media { return mediaFirst ? m.height : 0 }
+        if let m = math { return mathFirst ? m.height : 0 }
         if let gapHeight { return gapHeight }
         guard !lineOrigins.isEmpty else {
             return labelInset + CGFloat(shaped.wrapped.count) * shaped.lineHeight
@@ -294,7 +302,7 @@ struct RowLayout {
     /// media block, or a boundary row occupies, those being placed whole. What a
     /// hit-test searches, since a point resolves to a *line*.
     var lineBoxes: [CGRect] {
-        if table != nil || media != nil || gapHeight != nil {
+        if table != nil || media != nil || math != nil || gapHeight != nil {
             return height > 0
                 ? [CGRect(x: originX, y: top, width: columnWidth, height: height)]
                 : []
@@ -595,6 +603,16 @@ struct EditorLayout {
         var mediaAt: [Int: MediaView] = [:]
         for m in docView.media { mediaAt[Int(m.startRow)] = m }
 
+        // Formulas, two ways: a display block replaces its placeholder rows
+        // with one box the way a media block does, and an inline one is
+        // drawn into its row's text by `AttributedRow` — which finds it by the
+        // source offset its `math` run carries.
+        var mathBlockAt: [Int: MathView] = [:]
+        var mathInline: [UInt32: MathView] = [:]
+        for m in docView.math {
+            if m.inline { mathInline[m.src] = m } else { mathBlockAt[Int(m.startRow)] = m }
+        }
+
         // Which rows are page breaks. A `Row` cannot answer this itself — every
         // leaf directive draws as the same placeholder row, and only the frame's
         // `directives` say which directive a row *is* — so the set is built once
@@ -675,16 +693,45 @@ struct EditorLayout {
                 continue
             }
 
+            if let mv = mathBlockAt[i], let box = MathLayout(mv, contentWidth: wrapWidth, theme: theme) {
+                // The media box's recipe: the placeholder row shaped and kept
+                // (its glyphs are the fallback, its prefix insets the box), the
+                // box atomic, the fillers collapsed under it.
+                let placeholder = docView.rows[i]
+                let shaped = EditorLayout.shape(placeholder, theme: theme, wrapWidth: wrapWidth)
+                flow.fit(box.height)
+                let mathTop = flow.y
+                let mathX = flow.originX(originX)
+                for r in Int(mv.startRow)..<Int(mv.endRow) where r < docView.rows.count {
+                    layouts.append(RowLayout(
+                        row: docView.rows[r],
+                        shaped: r == Int(mv.startRow) ? shaped : emptyShape,
+                        top: mathTop,
+                        originX: mathX, columnWidth: wrapWidth,
+                        math: box, mathTop: mathTop, mathFirst: r == Int(mv.startRow),
+                        page: flow.index
+                    ))
+                }
+                flow.y += box.height
+                i = Int(mv.endRow)
+                continue
+            }
+
             let row = docView.rows[i]
             let isPageBreak = pageBreakRows.contains(i)
             let shaped: ShapedRow
-            if let hit = cache[row] ?? next[row], hit.wrapWidth == wrapWidth {
+            // A row holding an inline formula is shaped fresh each frame and
+            // never cached: the cache is keyed by the row's value, which names
+            // the formula's `∑` and not its TeX, so a reused shape could carry
+            // a picture the document no longer has.
+            let hasMath = row.runs.contains { $0.role == "math" && mathInline[$0.src] != nil }
+            if !hasMath, let hit = cache[row] ?? next[row], hit.wrapWidth == wrapWidth {
                 shaped = hit
             } else {
                 shaped = EditorLayout.shape(row, theme: theme, wrapWidth: wrapWidth,
-                                            pageBreak: isPageBreak)
+                                            pageBreak: isPageBreak, math: mathInline)
             }
-            next[row] = shaped
+            if !hasMath { next[row] = shaped }
 
             // A page break: the page turns here, and the row itself is spent —
             // it keeps its caret home (one empty line, as an empty row does) and
@@ -918,10 +965,10 @@ struct EditorLayout {
     /// thematic break is: the view draws a dashed hairline (or turns the page)
     /// where core's `⧉ page-break` placeholder glyphs would have gone.
     static func shape(_ row: Row, theme: EditorTheme, wrapWidth: CGFloat,
-                      pageBreak: Bool = false) -> ShapedRow {
+                      pageBreak: Bool = false, math: [UInt32: MathView] = [:]) -> ShapedRow {
         let prefix = row.prefixRuns
         let drawn = row.isThematicBreak || pageBreak ? prefix : row.runs
-        let attributed = AttributedRow.make(drawn, row: row, theme: theme)
+        let attributed = AttributedRow.make(drawn, row: row, theme: theme, math: math)
 
         // The prefix's own geometry, measured on its own line: its total width (the
         // hanging indent) and where each level's bar glyph starts.
@@ -1070,6 +1117,7 @@ struct EditorLayout {
         guard rows.indices.contains(row) else { return nil }
         let rl = rows[row]
         if rl.media != nil { return mediaCaretRect(rl, ch: ch) }
+        if rl.math != nil { return mathCaretRect(rl, ch: ch) }
         let lines = rl.wrapped
         for (i, wl) in lines.enumerated() where ch < wl.start + wl.length || i == lines.count - 1 {
             let x = CTLineGetOffsetForStringIndex(wl.line, CFIndex(max(0, ch - wl.start)), nil)
@@ -1096,6 +1144,16 @@ struct EditorLayout {
         // Past the label's last glyph is core's trailing stop. The reserved rows
         // below the first carry no glyphs at all, so they are only ever "after" —
         // which is right: they are the picture's lower half.
+        let after = ch >= rl.attributed.length
+        return CGRect(x: after ? r.maxX - 1.5 : r.minX, y: r.minY, width: 1.5, height: r.height)
+    }
+
+    /// `mediaCaretRect` for a display formula: its two homes are the box's
+    /// edges, for the same reason.
+    private func mathCaretRect(_ rl: RowLayout, ch: Int) -> CGRect? {
+        guard let box = rl.math else { return nil }
+        let r = box.rect(top: rl.mathTop, left: rl.originX + rl.shaped.prefixWidth,
+                         width: rl.columnWidth - rl.shaped.prefixWidth)
         let after = ch >= rl.attributed.length
         return CGRect(x: after ? r.maxX - 1.5 : r.minX, y: r.minY, width: 1.5, height: r.height)
     }
@@ -1357,6 +1415,12 @@ struct EditorLayout {
         // the clamp above lands every point on this row.
         if let box = rl.media {
             let r = box.rect(top: rl.mediaTop, left: rl.originX + rl.shaped.prefixWidth)
+            return (row, point.y < r.midY ? 0 : rl.attributed.length)
+        }
+        // A display formula's picture, likewise: in front of it or past it.
+        if let box = rl.math {
+            let r = box.rect(top: rl.mathTop, left: rl.originX + rl.shaped.prefixWidth,
+                             width: rl.columnWidth - rl.shaped.prefixWidth)
             return (row, point.y < r.midY ? 0 : rl.attributed.length)
         }
         // A table's picture rows are collapsed onto its grid, and only the first

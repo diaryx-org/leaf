@@ -13,11 +13,13 @@ import UIKit
 public typealias LeafColor = UIColor
 public typealias LeafFont = UIFont
 public typealias LeafView = UIView
+public typealias LeafImage = UIImage
 #elseif canImport(AppKit)
 import AppKit
 public typealias LeafColor = NSColor
 public typealias LeafFont = NSFont
 public typealias LeafView = NSView
+public typealias LeafImage = NSImage
 #endif
 
 /// Text insets, kept as a plain struct so the theme doesn't depend on either

@@ -398,6 +398,9 @@ public final class LeafEditorModel: ObservableObject {
     /// Parse `source` as `format` (`"markdown"`, `"djot"`, `"html"`, `"xml"`).
     public init(source: String, format: String = "markdown") throws {
         let doc = try LeafDoc(source: source, format: format)
+        // The views paint a picture in a line, so an inline formula arrives as
+        // one `math` run to draw its typeset picture over — see `MathLayout`.
+        _ = doc.setInlinePictures(on: true)
         self.doc = doc
         self.state = EditorState(doc.view())
     }
