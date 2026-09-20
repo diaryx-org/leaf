@@ -108,6 +108,24 @@ enum PresentationEntry {
         if ratio == 1 { return .absence }
         return .value(.ratio(Double(ratio)))
     }
+
+    /// A colour the system picker is holding: `picked` is the triple behind it,
+    /// `touched` is whether the picker has moved since the field opened, and
+    /// `inForce` is the colour at the caret it was seeded from.
+    ///
+    /// **A picker nobody touched writes nothing.** The field opens seeded — with
+    /// the exact colour at the caret where there is one, and with the ordinary
+    /// ink where there is not — so Set on an untouched picker would write the
+    /// seed, which for a named colour or for no colour at all is the primary
+    /// ink: pressing the default action to dismiss a picker would turn the
+    /// prose black. Nor does it rewrite a colour that is already in force: a
+    /// picker walked around the wheel and back is a gesture that asks for
+    /// nothing, and an undo step for it is one the author did not earn.
+    static func colour(_ picked: TextColor?, touched: Bool,
+                       inForce: TextColor?) -> Meant<TextColor> {
+        guard touched, let picked, picked != inForce else { return .refused }
+        return .value(picked)
+    }
 }
 
 // MARK: - raising the field
@@ -156,7 +174,16 @@ struct PresentationOtherView: View {
     @State private var typed: String = ""
     /// What the colour picker is holding, likewise seeded.
     @State private var picked: Color = .primary
+    /// Whether the picker has been moved since `seed()` put a colour in it —
+    /// what tells Set apart from a Set the author never asked for. Written by
+    /// the picker's own binding rather than watched with `onChange`, which is
+    /// the same thing one platform version later.
+    @State private var pickedSomething = false
     @FocusState private var focused: Bool
+    #if !canImport(UIKit)
+    /// Every family this machine has, read once when the picker opens.
+    @State private var installedFamilies: [String] = []
+    #endif
 
     var body: some View {
         Group {
@@ -233,8 +260,10 @@ struct PresentationOtherView: View {
                            + "replaces the size a heading or a step would give.")
         default:
             return loc("other.spacing.hint",
-                       "A multiple of the theme\u{2019}s line height \u{2014} 0.01 to "
-                           + "655.35. 1 is single spacing, which is the theme\u{2019}s own.")
+                       "A multiple of the theme\u{2019}s line height \u{2014} 0.5 to "
+                           + "655.35. 1 is single spacing, which is the theme\u{2019}s own. "
+                           + "Anything tighter than half is drawn at half, which is as "
+                           + "close as lines lay.")
         }
     }
 
@@ -306,18 +335,24 @@ struct PresentationOtherView: View {
             }
         }
         .padding(16)
-        .onAppear { DispatchQueue.main.async { focused = true } }
+        .onAppear {
+            installedFamilies = NSFontManager.shared.availableFontFamilies
+            DispatchQueue.main.async { focused = true }
+        }
     }
 
-    /// Every family this machine has, narrowed by what has been typed. Asked of
-    /// the font manager each time the search changes rather than held: the list
-    /// is a few hundred strings, and a user who installs a font while the
-    /// popover is open should find it.
+    /// The families in `installedFamilies`, narrowed by what has been typed.
+    ///
+    /// Read from the font manager once, when the picker appears, rather than on
+    /// every keystroke: `body` is evaluated on each character typed, and asking
+    /// the manager to enumerate every family installed on the machine each time
+    /// is work a search field does between one letter and the next. A font
+    /// installed while this popover is open is found by closing and re-opening
+    /// it, which is what every other font list on the machine asks for too.
     private var families: [String] {
-        let all = NSFontManager.shared.availableFontFamilies
         let query = typed.trimmingCharacters(in: .whitespaces)
-        guard !query.isEmpty else { return all }
-        return all.filter { $0.range(of: query, options: .caseInsensitive) != nil }
+        guard !query.isEmpty else { return installedFamilies }
+        return installedFamilies.filter { $0.range(of: query, options: .caseInsensitive) != nil }
     }
     #endif
 
@@ -332,7 +367,12 @@ struct PresentationOtherView: View {
     private var colourPicker: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(field.fieldTitle).font(.headline)
-            ColorPicker(loc("other.colour.pick", "Colour"), selection: $picked,
+            // Through a binding of its own rather than `$picked`, so that the
+            // picker *writing* a colour is what marks one as chosen: seeding is
+            // not choosing, and Set has to be able to tell the two apart.
+            ColorPicker(loc("other.colour.pick", "Colour"),
+                        selection: Binding(get: { picked },
+                                           set: { picked = $0; pickedSomething = true }),
                         supportsOpacity: false)
             Text(loc("other.colour.hint",
                      "An exact colour is painted as written in both the light and the "
@@ -344,16 +384,24 @@ struct PresentationOtherView: View {
                 Spacer()
                 Button(loc("other.set", "Set"), action: commitColour)
                     .keyboardShortcut(.defaultAction)
+                    .disabled(chosenColour == .refused)
             }
         }
         .padding(16)
         .frame(minWidth: 280)
     }
 
+    /// What Set would write — a colour the author picked, or a refusal for a
+    /// picker they never touched and for one holding the colour already in
+    /// force. Set dims on the refusal, the way the number field's does.
+    private var chosenColour: Meant<TextColor> {
+        PresentationEntry.colour(srgb(picked).map { .rgb(r: $0.0, g: $0.1, b: $0.2) },
+                                 touched: pickedSomething, inForce: editor.textColor)
+    }
+
     private func commitColour() {
-        if let rgb = srgb(picked) {
-            editor.setTextColor(.rgb(r: rgb.0, g: rgb.1, b: rgb.2))
-        }
+        guard case let .value(colour) = chosenColour else { return }
+        editor.setTextColor(colour)
         editor.pendingOther = nil
     }
 

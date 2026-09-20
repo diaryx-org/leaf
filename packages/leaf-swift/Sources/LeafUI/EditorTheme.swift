@@ -583,17 +583,21 @@ public struct EditorTheme {
     /// reads — `markBackground(_:)`'s bargain, and for its reason.
     func runSize(base: CGFloat, token: String?) -> CGFloat {
         guard let token else { return base }
-        if let scale = sizeSteps[token], scale > 0 { return base * scale }
-        if let points = PresentationValue.points(size: token) { return points }
-        return base
+        // The ramp first and the grammar second — the order `from_attrs` reads
+        // the two halves in — and through `sizeScale(_:)`, so the ramp is
+        // looked up in exactly one place.
+        let scale = sizeScale(token)
+        if scale != 1 { return base * scale }
+        return PresentationValue.points(size: token) ?? base
     }
 
     /// How much larger a run set to size step `name` is than it would otherwise
     /// be — `1` for no step and for a step this theme's ramp has no entry for.
     ///
-    /// The *name* half alone. An exact size is not a multiple of anything, so
-    /// the question a run actually asks is `runSize(base:token:)`; this stays
-    /// for a caller that wants the ramp itself.
+    /// The *name* half alone, and the one lookup into the ramp — an exact size
+    /// is not a multiple of anything, so the question a run actually asks is
+    /// `runSize(base:token:)`, which asks this one first and reads the grammar
+    /// only where the ramp answers `1`.
     func sizeScale(_ name: String?) -> CGFloat {
         guard let name, let scale = sizeSteps[name], scale > 0 else { return 1 }
         return scale
@@ -609,9 +613,26 @@ public struct EditorTheme {
     /// A ratio the author typed is not the theme's to reinterpret.
     func lineSpacing(_ name: String?) -> CGFloat {
         guard let name else { return 1 }
-        if let ratio = lineSpacings[name], ratio > 0 { return ratio }
-        return PresentationValue.ratio(spacing: name) ?? 1
+        let ratio = lineSpacings[name].flatMap { $0 > 0 ? $0 : nil }
+            ?? PresentationValue.ratio(spacing: name) ?? 1
+        return max(ratio, EditorTheme.tightestLineSpacing)
     }
+
+    /// The tightest multiple a row is ever *laid out* at, however small a ratio
+    /// the document names — half a line box, which is as close as lines go
+    /// before they stop being lines.
+    ///
+    /// The vocabulary carries a ratio down to 0.01, and a row laid at a
+    /// hundredth of its line box is not tight leading: it is a row drawn
+    /// through the three above it, with a caret and a hit test that land on
+    /// none of them. This is the same rule `rowHeight(for:)` already keeps for
+    /// a small run, which opens a line box and never closes one — a floor on
+    /// what is *drawn*, not on what is written. The document keeps its token,
+    /// the query still answers it, and the menu still ticks it; only the
+    /// leading stops shrinking. A floor in the grammar instead would protect
+    /// this editor's own documents and nothing else, and every document here
+    /// arrives from somewhere.
+    static let tightestLineSpacing: CGFloat = 0.5
 
     /// The ink a run coloured `name` is painted in — this theme's entry for one
     /// of the seven names, the triple itself for an exact colour, and
