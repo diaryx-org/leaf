@@ -561,46 +561,91 @@ public struct EditorTheme {
     /// belongs to neither, so the spacing of the one below it is not its business.
     func rowHeight(for row: Row) -> CGFloat {
         guard !row.isBlockGap else { return blockGap }
-        let step = row.runs.reduce(CGFloat(1)) { max($0, sizeScale($1.size)) }
-        return rowHeight(heading: row.heading) * step * lineSpacing(row.lineHeight)
+        // Measured against the size the row's runs would *otherwise* take, so a
+        // step reads as its own multiple and an exact size reads as whatever
+        // multiple of this row it happens to be — 14pt in a 16pt body opens
+        // nothing, and 14pt in an h6 opens the box.
+        let base = row.heading.map { headingSize(Int($0)) } ?? fontSize
+        let grown = row.runs.reduce(CGFloat(1)) { max($0, runSize(base: base, token: $1.size) / base) }
+        return rowHeight(heading: row.heading) * grown * lineSpacing(row.lineHeight)
+    }
+
+    /// The size a run whose `Run.size` is `token` is set at, given the size
+    /// `base` it would otherwise have taken — the body's, or its heading's.
+    ///
+    /// **A name scales the ramp and a value replaces it**, which is the whole of
+    /// the trade the vocabulary's two halves make: `large` on a heading is a
+    /// step up from *that heading* and the same word in prose is a step up from
+    /// the body, where `14pt` is fourteen points wherever it is written. Points
+    /// of the sheet, before the zoom, like every other point size on the page.
+    ///
+    /// `base` for no token and for a token neither the ramp nor the grammar
+    /// reads — `markBackground(_:)`'s bargain, and for its reason.
+    func runSize(base: CGFloat, token: String?) -> CGFloat {
+        guard let token else { return base }
+        if let scale = sizeSteps[token], scale > 0 { return base * scale }
+        if let points = PresentationValue.points(size: token) { return points }
+        return base
     }
 
     /// How much larger a run set to size step `name` is than it would otherwise
     /// be — `1` for no step and for a step this theme's ramp has no entry for.
+    ///
+    /// The *name* half alone. An exact size is not a multiple of anything, so
+    /// the question a run actually asks is `runSize(base:token:)`; this stays
+    /// for a caller that wants the ramp itself.
     func sizeScale(_ name: String?) -> CGFloat {
         guard let name, let scale = sizeSteps[name], scale > 0 else { return 1 }
         return scale
     }
 
-    /// The multiple a block set to line spacing `name` lays its lines at — `1`
-    /// for no spacing and for a token this theme has no entry for.
+    /// The multiple a block set to line spacing `name` lays its lines at — the
+    /// theme's entry for one of the three names, the ratio itself for an exact
+    /// one, and `1` for no spacing and for a token neither reads.
+    ///
+    /// The table wins over the arithmetic where it has an entry, though the
+    /// three tokens happen to be numbers: a theme whose body already sets at
+    /// 1.5 may want *double* to mean something other than twice its leading.
+    /// A ratio the author typed is not the theme's to reinterpret.
     func lineSpacing(_ name: String?) -> CGFloat {
-        guard let name, let ratio = lineSpacings[name], ratio > 0 else { return 1 }
-        return ratio
+        guard let name else { return 1 }
+        if let ratio = lineSpacings[name], ratio > 0 { return ratio }
+        return PresentationValue.ratio(spacing: name) ?? 1
     }
 
-    /// The ink a run coloured `name` is painted in, or `textColor` for no colour
-    /// and for a name outside the palette — `markBackground(_:)`'s bargain, and
-    /// for its reason: a colour a newer core knows draws as ordinary text rather
-    /// than not at all.
+    /// The ink a run coloured `name` is painted in — this theme's entry for one
+    /// of the seven names, the triple itself for an exact colour, and
+    /// `textColor` for no colour and for a name neither reads.
+    ///
+    /// An exact triple is painted as written in *both* appearances, where a
+    /// name is two inks and this theme owns both. That is what "exact" means,
+    /// and the proposal does not soften it with a heuristic.
     func textColor(_ name: String?) -> LeafColor {
-        guard let name, let ink = textColors[name] else { return textColor }
-        return ink
+        guard let name else { return textColor }
+        if let ink = textColors[name] { return ink }
+        return PresentationValue.ink(color: name) ?? textColor
     }
 
     // ── fonts ────────────────────────────────────────────────────────────────
 
-    /// The family this theme sets generic face `name` in — `monoFontName` for
-    /// `monospace`, this theme's answer from `fontFamilies` for the rest, and nil
-    /// for no face and for a generic it doesn't name, which then reads in the
-    /// body face like every run around it.
+    /// The family this theme sets face `name` in — `monoFontName` for
+    /// `monospace`, this theme's answer from `fontFamilies` for the other
+    /// generics, and the family itself where the author named one this machine
+    /// has installed.
+    ///
+    /// Nil for no face, for a generic this theme doesn't name, and for a family
+    /// the machine hasn't got — all three of which then read in the body face
+    /// like every run around them. A document set in a face this machine lacks
+    /// should read as *this* document rather than as one badly reset, which is
+    /// the portability cost a named family buys.
     func fontName(_ name: String?) -> String? {
         guard let name else { return nil }
         if name == "monospace" { return monoFontName }
-        return fontFamilies[name]
+        if let family = fontFamilies[name] { return family }
+        return PresentationValue.family(face: name)
     }
 
-    /// A run's font: the generic face `family` names at `size` with the requested
+    /// A run's font: the face `family` names at `size` with the requested
     /// traits, or the body face when the run asks for none.
     func font(family: String?, size: CGFloat, bold: Bool, italic: Bool) -> LeafFont {
         guard let name = fontName(family) else {

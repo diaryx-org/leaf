@@ -346,6 +346,244 @@ final class PresentationTests: XCTestCase {
         }
     }
 
+    // MARK: the exact half of the vocabulary
+
+    func testTheGrammarReadsWhatCoreWritesAndRefusesWhatItWouldNot() {
+        // The one parse on this side, and core's own grammar: CSS's `<number>`
+        // with digits on whichever side of the point there is, `pt` and no
+        // other unit, and 0.01…655.35 — which is what core's hundredths of a
+        // UInt16 can hold and therefore what a document can carry.
+        XCTAssertEqual(PresentationValue.points(size: "14pt"), 14)
+        XCTAssertEqual(PresentationValue.points(size: "13.5pt"), 13.5)
+        XCTAssertEqual(PresentationValue.points(size: "  14PT "), 14, "CSS reads a unit either way")
+        XCTAssertEqual(PresentationValue.points(size: ".5pt"), 0.5, "digits on one side is a number")
+        XCTAssertNil(PresentationValue.points(size: "large"), "a step is the other half")
+        XCTAssertNil(PresentationValue.points(size: "14px"), "a document is not a screen")
+        XCTAssertNil(PresentationValue.points(size: "14"), "points are the unit, and are spelled")
+        XCTAssertNil(PresentationValue.points(size: "14.pt"), "a trailing bare point is a typo")
+        XCTAssertNil(PresentationValue.points(size: "700pt"), "past what a sheet holds")
+        XCTAssertNil(PresentationValue.points(size: "0pt"))
+        XCTAssertNil(PresentationValue.points(size: "-3pt"))
+        XCTAssertNil(PresentationValue.points(size: "1e2pt"))
+
+        XCTAssertEqual(PresentationValue.ratio(spacing: "1.3"), 1.3)
+        XCTAssertEqual(PresentationValue.ratio(spacing: "2"), 2)
+        XCTAssertNil(PresentationValue.ratio(spacing: "huge"))
+        XCTAssertNil(PresentationValue.ratio(spacing: "1.3em"))
+
+        XCTAssertEqual(PresentationValue.ink(color: "#c03030"), leafColor(hex: "#c03030"))
+        XCTAssertEqual(PresentationValue.ink(color: "#f00"), leafColor(hex: "#ff0000"),
+                       "the shorthand doubles each digit, as CSS expands it")
+        XCTAssertNil(PresentationValue.ink(color: "red"), "a name is the other half")
+        XCTAssertNil(PresentationValue.ink(color: "rgb(1, 2, 3)"))
+
+        // And back: the shortest decimal, which is the spelling core writes, so
+        // a menu row and the document's token read the same.
+        XCTAssertEqual(PresentationValue.spell(14), "14")
+        XCTAssertEqual(PresentationValue.spell(13.5), "13.5")
+        XCTAssertEqual(PresentationValue.spell(1.3), "1.3")
+    }
+
+    func testAnExactSizeReplacesTheRampWhereAStepScalesIt() throws {
+        // The whole of the trade the two halves make: a *name* is a multiple of
+        // whatever the run would otherwise be, and a *value* is the number.
+        XCTAssertEqual(theme.runSize(base: theme.fontSize, token: "large"),
+                       theme.fontSize * 1.125, accuracy: 0.01)
+        XCTAssertEqual(theme.runSize(base: theme.fontSize, token: "14pt"), 14)
+        XCTAssertEqual(theme.runSize(base: theme.headingSize(1), token: "14pt"), 14,
+                       "a heading set to an exact size is that size, not its ramp scaled")
+        XCTAssertEqual(theme.runSize(base: theme.fontSize, token: nil), theme.fontSize)
+        XCTAssertEqual(theme.runSize(base: theme.fontSize, token: "enormous"), theme.fontSize)
+
+        // Down to the glyphs: the attributed run is set at the number.
+        let exact = try XCTUnwrap(attributes(mkRun("x", size: "14pt"))[.font] as? LeafFont)
+        XCTAssertEqual(exact.pointSize, 14, accuracy: 0.01)
+        let run = mkRun("x", size: "14pt")
+        let inHeading = try XCTUnwrap(
+            attributes(run, row: row([run], heading: 1))[.font] as? LeafFont)
+        XCTAssertEqual(inHeading.pointSize, 14, accuracy: 0.01)
+    }
+
+    func testAnExactSpacingOpensTheRowAndAnExactSizeGrowsIt() {
+        // A ratio the theme's table has no entry for is read as the arithmetic
+        // it is, rather than falling back to the theme's own leading.
+        XCTAssertEqual(theme.lineSpacing("1.3"), 1.3)
+        XCTAssertEqual(theme.lineSpacing("huge"), 1)
+        XCTAssertEqual(theme.rowHeight(for: row([mkRun("hello")], lineHeight: "1.3")),
+                       theme.lineHeight * 1.3, accuracy: 0.01)
+        // And a row grows to an exact size the way it grows to a step — by the
+        // multiple of *its own* base size that size happens to be.
+        XCTAssertEqual(theme.rowHeight(for: row([mkRun("a", size: "48pt")])),
+                       theme.lineHeight * 48 / theme.fontSize, accuracy: 0.01)
+        // …and never shrinks to one, for the reason it never shrinks to a step:
+        // a column whose lines drift closer wherever a word is small is broken.
+        XCTAssertEqual(theme.rowHeight(for: row([mkRun("a", size: "4pt")])), theme.lineHeight)
+    }
+
+    func testAnExactColourIsPaintedAsWrittenInBothAppearances() {
+        XCTAssertEqual(theme.textColor("#c03030"), leafColor(hex: "#c03030"))
+        XCTAssertEqual(theme.textColor("#f00"), leafColor(hex: "#ff0000"))
+        // A name the theme knows still wins — the table is the theme's answer,
+        // and only a token it has no entry for is parsed.
+        XCTAssertEqual(theme.textColor("red"), theme.textColors["red"])
+        XCTAssertNotEqual(theme.textColor("#c03030"), theme.textColor, "and it is not plain ink")
+        #if canImport(AppKit)
+        // The cost of exactness, asserted: one ink in both appearances, where
+        // `testEveryInkIsWrittenTwiceOverForTheTwoAppearances` demands two of
+        // every *name*.
+        let exact = theme.textColor("#c03030")
+        var light: LeafColor?
+        var dark: LeafColor?
+        NSAppearance(named: .aqua)?.performAsCurrentDrawingAppearance {
+            light = exact.usingColorSpace(.sRGB)
+        }
+        NSAppearance(named: .darkAqua)?.performAsCurrentDrawingAppearance {
+            dark = exact.usingColorSpace(.sRGB)
+        }
+        XCTAssertEqual(light, dark)
+        #endif
+    }
+
+    func testANamedFaceResolvesThroughTheRegistryAndFallsBackToTheBody() throws {
+        // A family the machine has is that family; one it hasn't is nil, so the
+        // run reads in the theme's body face like the prose around it rather
+        // than in whatever the system would substitute.
+        XCTAssertEqual(theme.fontName("Georgia"), "Georgia")
+        XCTAssertNil(theme.fontName("A Face Nobody Has Installed"))
+        XCTAssertEqual(PresentationValue.family(face: "  Georgia "), "Georgia")
+        XCTAssertNil(PresentationValue.family(face: "   "))
+        let named = try XCTUnwrap(attributes(mkRun("x", font: "Georgia"))[.font] as? LeafFont)
+        XCTAssertEqual(named.familyName, "Georgia")
+        let missing = try XCTUnwrap(
+            attributes(mkRun("x", font: "A Face Nobody Has Installed"))[.font] as? LeafFont)
+        XCTAssertEqual(missing, theme.proportionalFont(size: theme.fontSize, bold: false,
+                                                       italic: false))
+    }
+
+    // MARK: the model's API, over a real document
+
+    func testAnExactValueCrossesTheBindingAsItselfAndComesBackWhole() throws {
+        // The associated-value enums, out through the generated binding and
+        // back — `.points(14)` in, `.points(14)` at the caret, and `"14pt"` on
+        // the run the renderer is handed, which is the token the theme's
+        // fall-through then reads.
+        //
+        // Driven through `LeafDoc` rather than through the model's own
+        // gestures, which route through the platform text view (see `run(_:)`)
+        // and are therefore no-ops in a test that stands none up — the state
+        // `EditorModelTests` is about. The model's side of this is its queries,
+        // asserted below off the same document.
+        let doc = try LeafDoc(source: "hello world\n", format: "markdown")
+        let at = UInt32(try XCTUnwrap(doc.source().range(of: "hello")).lowerBound
+            .utf16Offset(in: doc.source()))
+        let inText = { doc.setSelectionOffsets(anchor: at, focus: at) }
+
+        _ = doc.setFontSize(size: .points(14))
+        inText()
+        XCTAssertEqual(doc.fontSizeAtCaret(), .points(14))
+        _ = doc.setFontFamily(font: .named("Garamond"))
+        inText()
+        XCTAssertEqual(doc.fontFamilyAtCaret(), .named("Garamond"))
+        _ = doc.setTextColor(color: .rgb(r: 0xC0, g: 0x30, b: 0x30))
+        inText()
+        XCTAssertEqual(doc.textColorAtCaret(), .rgb(r: 0xC0, g: 0x30, b: 0x30))
+        let view = doc.setLineSpacing(spacing: .ratio(1.3))
+        XCTAssertEqual(doc.lineSpacingAtCaret(), .ratio(1.3))
+
+        // And the *view* carries each value's own canonical spelling, where it
+        // carried nothing before the types opened.
+        let styled = view.rows.flatMap(\.runs)
+            .filter { !$0.text.trimmingCharacters(in: .whitespaces).isEmpty }
+            .map { [$0.size, $0.font, $0.textColor] }
+        XCTAssertEqual(styled, [["14pt", "Garamond", "#c03030"]])
+        XCTAssertEqual(view.rows.compactMap(\.lineHeight), ["1.3"])
+
+        // A name still crosses as a name: the two halves are one type, and the
+        // menus tick the same property either way.
+        _ = doc.setFontSize(size: .step(.large))
+        inText()
+        XCTAssertEqual(doc.fontSizeAtCaret(), .step(.large))
+        XCTAssertEqual(doc.fontSizeAtCaret()?.stepOnly, .large)
+        XCTAssertNil(doc.fontSizeAtCaret()?.pointsOnly)
+    }
+
+    func testTheModelReadsBothHalvesBackForTheMenus() throws {
+        // The model's four queries, which is what every menu row ticks off.
+        let editor = try LeafEditorModel(source: "hello world\n", format: "markdown")
+        _ = editor.doc.setFontSize(size: .points(14))
+        _ = editor.doc.setLineSpacing(spacing: .ratio(1.3))
+        let at = UInt32(try XCTUnwrap(editor.source().range(of: "hello")).lowerBound
+            .utf16Offset(in: editor.source()))
+        editor.doc.setSelectionOffsets(anchor: at, focus: at)
+
+        XCTAssertEqual(editor.fontSize, .points(14))
+        XCTAssertEqual(editor.lineSpacing, .ratio(1.3))
+        XCTAssertEqual(editor.fontSize?.exactTitle, "14 pt", "and the menu has a row for it")
+        XCTAssertEqual(editor.lineSpacing?.exactTitle, "1.3")
+        // Nothing is pending until a row asks for something.
+        XCTAssertNil(editor.pendingOther)
+    }
+
+    func testBiggerFromAnExactSizeMovesByAPointAndFromAStepWalksTheRamp() {
+        // From an exact size the ramp has no rung to walk to, so the step is a
+        // point — the stepper beside a font panel's own field.
+        XCTAssertEqual(FontSize.stepped(from: .points(14), up: true), .points(15))
+        XCTAssertEqual(FontSize.stepped(from: .points(14), up: false), .points(13))
+        XCTAssertEqual(FontSize.stepped(from: .points(13.5), up: true), .points(14.5),
+                       "a half point stays a half point")
+        XCTAssertEqual(FontSize.stepped(from: .points(1), up: false), .points(1),
+                       "type under a point is not a size anyone means")
+        // From a step, and from no size at all, it is still the ramp — with the
+        // theme's own size in the middle of it.
+        XCTAssertEqual(FontSize.stepped(from: nil, up: true), .step(.large))
+        XCTAssertEqual(FontSize.stepped(from: .step(.small), up: true), nil)
+        XCTAssertEqual(FontSize.stepped(from: .step(.large), up: true), .step(.xLarge))
+        XCTAssertEqual(FontSize.stepped(from: .step(.xxxLarge), up: true), .step(.xxxLarge))
+    }
+
+    func testTheOtherFieldTellsAClearingFromARefusal() {
+        // The field is where a typo is caught, because past it a refusal is a
+        // gesture that quietly writes nothing and looks exactly like a clear.
+        XCTAssertEqual(PresentationEntry.size("14"), .value(.points(14)))
+        XCTAssertEqual(PresentationEntry.size(" 13.5 "), .value(.points(13.5)))
+        XCTAssertEqual(PresentationEntry.size("0"), .refused)
+        XCTAssertEqual(PresentationEntry.size("700"), .refused)
+        XCTAssertEqual(PresentationEntry.size("abc"), .refused)
+        XCTAssertEqual(PresentationEntry.size(""), .refused)
+        XCTAssertEqual(PresentationEntry.size("14."), .refused)
+
+        XCTAssertEqual(PresentationEntry.spacing("1.3"), .value(.ratio(1.3)))
+        XCTAssertEqual(PresentationEntry.spacing("1"), .absence,
+                       "single spacing is the theme's own, and clears the key")
+        XCTAssertEqual(PresentationEntry.spacing("1.00"), .absence)
+        XCTAssertEqual(PresentationEntry.spacing("0"), .refused)
+        XCTAssertEqual(PresentationEntry.spacing("700"), .refused)
+        XCTAssertEqual(PresentationEntry.spacing("abc"), .refused)
+    }
+
+    func testEveryValueHasARowToShowItselfIn() {
+        // The row a menu draws above *Other…* exists exactly when the value at
+        // the caret is an exact one — a permanent "14 pt" over a document set
+        // in none of it would be offering a size nobody chose.
+        XCTAssertEqual(FontSize.points(14).exactTitle, "14 pt")
+        XCTAssertEqual(FontSize.points(13.5).exactTitle, "13.5 pt")
+        XCTAssertNil(FontSize.step(.large).exactTitle)
+        XCTAssertEqual(FontSize.step(.large).title, SizeStep.large.title)
+        XCTAssertEqual(LineHeight.ratio(1.3).exactTitle, "1.3")
+        XCTAssertNil(LineHeight.step(.double).exactTitle)
+        XCTAssertEqual(FontFace.named("Garamond").exactTitle, "Garamond")
+        XCTAssertNil(FontFace.generic(.serif).exactTitle)
+        XCTAssertEqual(TextColor.rgb(r: 0xC0, g: 0x30, b: 0x30).exactTitle, "#c03030",
+                       "the hex is the swatch: it is what the document will carry")
+        XCTAssertNil(TextColor.named(.red).exactTitle)
+        XCTAssertEqual(TextColor.named(.red).title, MarkColor.red.menuTitle)
+        // And all four rows are named, so none of them opens an untitled field.
+        for field in PresentationOther.allCases {
+            XCTAssertFalse(field.label.isEmpty)
+            XCTAssertFalse(field.fieldTitle.isEmpty)
+        }
+    }
+
     func testSteppingTheSizeWalksThroughTheThemesOwnSize() {
         // The ramp has absence in the middle of it, so an author can walk from
         // small text through ordinary text to large without the document ever

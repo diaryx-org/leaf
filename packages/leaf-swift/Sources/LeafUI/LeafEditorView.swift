@@ -501,45 +501,89 @@ public final class LeafEditorModel: ObservableObject {
     /// How the caret's block is aligned, from the published frame.
     public var alignment: Align? { state.align }
 
-    /// Set the caret's block's line spacing, or clear it with nil (single).
-    public func setLineSpacing(_ spacing: LineSpacing?) {
-        run { $0.setLineSpacing(spacing: spacing.map { LineHeight.step($0) }) }
-    }
-    public var lineSpacing: LineSpacing? { doc.lineSpacingAtCaret()?.stepOnly }
+    // Each of the four below takes and answers the binding's *open* type — a
+    // name or a value, `.step(.large)` or `.points(14)` — rather than the
+    // closed enum a menu's named rows offer. One method per property rather
+    // than an overload per half, because `setFontSize(nil)` has to go on
+    // meaning one thing: clear the key. A named row spells itself at the call
+    // site (`editor.setFontSize(.step(step))`), which is a word longer and says
+    // which half it is asking for.
 
-    /// Set the size step of the selection — or of the caret's whole block, with
+    /// Set the caret's block's line spacing — `.step(.oneHalf)` from the menu's
+    /// three, or `.ratio(1.3)` from *Other…* — or clear it with nil (single).
+    ///
+    /// A ratio of 1 clears too: single spacing is the theme's own and has no
+    /// token, so a document should not carry a key that says nothing. A ratio
+    /// outside 0.01…655.35 writes nothing at all and the block's own spacing
+    /// stands — validate the field before calling, which `PresentationEntry`
+    /// is what the *Other…* rows do it with.
+    public func setLineSpacing(_ spacing: LineHeight?) {
+        run { $0.setLineSpacing(spacing: spacing) }
+    }
+    public var lineSpacing: LineHeight? { doc.lineSpacingAtCaret() }
+
+    /// Set the size of the selection — or of the caret's whole block, with
     /// nothing selected — or clear it with nil.
-    public func setFontSize(_ size: SizeStep?) {
-        run { $0.setFontSize(size: size.map { FontSize.step($0) }) }
+    ///
+    /// `.step(.large)` is a step up from whatever the text around it is set at,
+    /// under every theme; `.points(14)` is fourteen points of the sheet and is
+    /// all it is. The name is portable and the value is exact, and the menu row
+    /// that offers the second says so.
+    public func setFontSize(_ size: FontSize?) {
+        run { $0.setFontSize(size: size) }
     }
-    public var fontSize: SizeStep? { doc.fontSizeAtCaret()?.stepOnly }
+    public var fontSize: FontSize? { doc.fontSizeAtCaret() }
 
-    /// One step up or down the size ramp from whatever is at the caret — ⌘⇧+ and
-    /// ⌘⇧-, the pair every Mac text editor binds. Reads the caret's step and
-    /// writes the next one, so it is the same single gesture (and the same single
-    /// undo) as picking that step from the menu.
+    /// One rung up or down from whatever is at the caret — ⌘⇧+ and ⌘⇧-, the
+    /// pair every Mac text editor binds. The same single gesture (and the same
+    /// single undo) as picking the next size from the menu.
+    ///
+    /// From a step, or from no size at all, this walks the ramp, which has the
+    /// theme's own size in the middle of it. **From an exact size it moves by a
+    /// point**, because the ramp has no rung to walk to from fourteen and the
+    /// author who typed a number is working in numbers — which is what a font
+    /// panel's stepper does beside its own field. Which rung is
+    /// `FontSize.stepped(from:up:)`, beside the ramp it walks.
     public func stepFontSize(up: Bool) {
-        let next = SizeStep.stepped(from: fontSize, up: up)
-        run { $0.setFontSize(size: next.map { FontSize.step($0) }) }
+        let next = FontSize.stepped(from: fontSize, up: up)
+        run { $0.setFontSize(size: next) }
     }
 
-    /// Set the face of the selection — or of the caret's whole block — by generic
-    /// family, or clear it with nil (the theme's body face).
-    public func setFontFamily(_ font: FontFamily?) {
-        run { $0.setFontFamily(font: font.map { FontFace.generic($0) }) }
+    /// Set the face of the selection — or of the caret's whole block — by
+    /// generic (`.generic(.serif)`) or by family (`.named("Garamond")`), or
+    /// clear it with nil (the theme's body face).
+    ///
+    /// A generic opens on every machine and a family name does not: a run set
+    /// in a family this machine hasn't got draws in the theme's body face. A
+    /// name that names nothing writes nothing, and the run's own face stands.
+    public func setFontFamily(_ font: FontFace?) {
+        run { $0.setFontFamily(font: font) }
     }
-    public var fontFamily: FontFamily? { doc.fontFamilyAtCaret()?.genericOnly }
+    public var fontFamily: FontFace? { doc.fontFamilyAtCaret() }
 
-    /// Colour the selection's text — or the caret's whole block — by name, or
-    /// clear it with nil (the theme's ink).
+    /// Colour the selection's text — or the caret's whole block — by name
+    /// (`.named(.red)`) or by triple (`.rgb(r:g:b:)`), or clear it with nil
+    /// (the theme's ink).
     ///
     /// The *foreground*, not `highlight(_:)`'s wash, though the two share the
     /// seven names on purpose: a frontend with a red for a highlight has a red
-    /// for text, and both should be that red.
-    public func setTextColor(_ color: MarkColor?) {
-        run { $0.setTextColor(color: color.map { TextColor.named($0) }) }
+    /// for text, and both should be that red. A triple is painted as written in
+    /// both appearances, where a name is two inks and the theme owns both.
+    public func setTextColor(_ color: TextColor?) {
+        run { $0.setTextColor(color: color) }
     }
-    public var textColor: MarkColor? { doc.textColorAtCaret()?.namedOnly }
+    public var textColor: TextColor? { doc.textColorAtCaret() }
+
+    /// Which *Other…* row a menu has just pressed, and so which field or picker
+    /// the editing surface should raise — nil when none is open.
+    ///
+    /// On the model rather than in the bar, because a menu row cannot present
+    /// anything: a `Menu`'s rows are torn down the instant one is chosen, so a
+    /// `.popover` hung on one would be dismissed by the press that asked for
+    /// it. The rows set this, `LeafEditor` watches it, and both surfaces that
+    /// show the rows — the formatting bar's menus and the app's Format menu —
+    /// therefore open the same field over the same document.
+    @Published public var pendingOther: PresentationOther?
 
     /// Write a page break at the caret — `::page-break`, a leaf directive with no
     /// label. The paginated view opens a new sheet there and the continuous one
@@ -746,7 +790,11 @@ public struct LeafEditor: View {
     }
 
     public var body: some View {
-        surface.focusedSceneValue(\.leafEditor, model)
+        surface
+            .focusedSceneValue(\.leafEditor, model)
+            // The one place an *Other…* field is raised, from either surface
+            // that offers the row — see `PresentationOther.swift`.
+            .presentingOtherValues(model)
     }
 }
 
@@ -1017,6 +1065,9 @@ public struct LeafEditor: View {
         LeafEditorSurface(model: model, theme: theme, placeholder: placeholder, page: page,
                           accessory: accessory, header: header)
             .focusedSceneValue(\.leafEditor, model)
+            // The one place an *Other…* field is raised, from either surface
+            // that offers the row — see `PresentationOther.swift`.
+            .presentingOtherValues(model)
     }
 }
 
