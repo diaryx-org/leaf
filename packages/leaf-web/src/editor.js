@@ -49,7 +49,7 @@
 // document surface and exposes commands + a change event, leaving the toolbar,
 // footer, and save affordances to the host app.
 
-import init, { LeafDoc, typeset_math } from "../pkg/leaf_wasm.js";
+import init, { LeafDoc } from "../pkg/leaf_wasm.js";
 
 /**
  * The presentation knobs, mirroring `leaf-gpui`'s `EditorStyle`. Everything here
@@ -109,12 +109,81 @@ const MIN_FIT_PROGRESS = 0.25;
 const ZWSP = "​";
 
 /**
+ * The typesetter is a second wasm module, `leaf-math-wasm`, and it is not
+ * loaded with the editor's own. It is two megabytes of RaTeX and KaTeX's
+ * outlines — a third of what the binding weighed with it inside — and most
+ * documents never show a formula. So the editor's module publishes each
+ * formula as a `MathView` and knows nothing of TeX; the first frame that
+ * carries one starts the fetch (`loadMath`), draws the formula as core's
+ * placeholder meanwhile — the `∑` atom in a line, the `∑ tex` row for a
+ * block — and every editor that was waiting repaints when the module lands.
+ * A host that knows its documents have formulas asks for it up front
+ * (`LeafEditor.init(url, { math: "eager" })`); one that never wants the
+ * weight turns it off (`math: "off"`), and a formula stays its placeholder.
+ *
+ * `mathPolicy` is that choice; `mathUrl` is where the binary is, for a
+ * bundled host that has moved it (`@diaryx/leaf/math/wasm`). `mathModule` is
+ * the loaded module's exports, `mathLoading` the fetch in flight, `mathFailed`
+ * why it did not arrive — after which a formula is drawn as TeX the
+ * typesetter could not read, with that reason in its title, rather than
+ * waited for again.
+ */
+let mathPolicy = "lazy";
+let mathUrl = undefined;
+let mathModule = null;
+let mathLoading = null;
+let mathFailed = null;
+/** Editors with a formula on screen that the module has not reached yet;
+ *  each repaints when it does. @type {Set<LeafEditor>} */
+const MATH_WAITERS = new Set();
+
+/**
+ * Fetch and instantiate the typesetter once. Resolves when `typeset_math` is
+ * callable; rejects — once, and every later call the same way — when the
+ * module could not be fetched or instantiated. Either way the editors that
+ * were waiting are repainted, so a formula settles into a picture or into a
+ * marked fault, never into a placeholder for good.
+ * @returns {Promise<void>}
+ */
+function loadMath() {
+  if (mathModule) return Promise.resolve();
+  if (!mathLoading) {
+    const settle = () => {
+      const waiting = [...MATH_WAITERS];
+      MATH_WAITERS.clear();
+      for (const ed of waiting) ed._mathSettled();
+    };
+    mathLoading = import("../pkg-math/leaf_math_wasm.js")
+      .then((mod) => mod.default(mathUrl ? { module_or_path: mathUrl } : undefined).then(() => mod))
+      .then(
+        (mod) => {
+          mathModule = mod;
+          settle();
+        },
+        (e) => {
+          mathFailed = e instanceof Error ? e : new Error(String(e));
+          mathFailed.message = "the math typesetter did not load: " + mathFailed.message;
+          settle();
+          throw mathFailed;
+        },
+      );
+  }
+  return mathLoading;
+}
+
+/** One word for where the typesetter stands, for a row key to carry: a row
+ *  drawn while it was absent must not be reused once it is here. */
+function mathState() {
+  return mathModule ? "ready" : mathFailed ? "failed" : "absent";
+}
+
+/**
  * Typeset formulas, keyed by everything that changes the picture — the TeX,
  * the style, the size, and the ink — so a frame that shows the same formula
  * as the last one typesets nothing. Shared across editors: a formula is the
- * same picture whichever surface asks. An entry is the wasm's `MathPicture`,
- * or an `Error` for TeX the typesetter could not read, which is cached too so
- * the fault is paid once.
+ * same picture whichever surface asks. An entry is the module's `MathPicture`
+ * copied out to a plain object, or an `Error` for TeX the typesetter could
+ * not read, which is cached too so the fault is paid once.
  * @type {Map<string, {svg: string, width: number, height: number, depth: number} | Error>}
  */
 const MATH_CACHE = new Map();
@@ -122,15 +191,30 @@ const MATH_CACHE_MAX = 512;
 
 /**
  * Typeset `tex` at `size` CSS pixels in `color` (a CSS hex), through the
- * cache. `display` is TeX's display style, the `$$` switch.
+ * cache. `display` is TeX's display style, the `$$` switch. Returns the
+ * picture; an `Error` for TeX the typesetter could not read, or for a
+ * typesetter that could not be loaded; or `null` while the typesetter is
+ * absent — not yet fetched, in flight, or turned off — which is the caller's
+ * cue to draw the placeholder. Under the `lazy` policy the first `null` is
+ * also what starts the fetch.
  */
 function typesetMath(tex, display, size, color) {
+  if (!mathModule) {
+    if (mathFailed) return mathFailed;
+    if (mathPolicy !== "off") loadMath().catch(() => {});
+    return null;
+  }
   const key = (display ? "D" : "T") + size + color + "\u0001" + tex;
   let hit = MATH_CACHE.get(key);
   if (hit === undefined) {
     if (MATH_CACHE.size >= MATH_CACHE_MAX) MATH_CACHE.clear();
     try {
-      hit = typeset_math(tex, display, size, color);
+      // A wasm-bindgen object over the module's heap: copy its four fields
+      // out and free it, so the cache holds plain objects and no SVG stays
+      // in that heap.
+      const p = mathModule.typeset_math(tex, display, size, color);
+      hit = { svg: p.svg, width: p.width, height: p.height, depth: p.depth };
+      p.free();
     } catch (e) {
       hit = e instanceof Error ? e : new Error(String(e));
     }
@@ -234,11 +318,45 @@ export class LeafEditor {
    * fetched from — a bundled host passes the URL it emitted for
    * `@diaryx/leaf/wasm`, since the default is relative to this module and a
    * bundler has moved it.
+   *
+   * The typesetter is a second module, and `opts.math` says when it is
+   * fetched: `"lazy"` (the default) on the first frame that shows a formula,
+   * `"eager"` now, alongside the editor's own — this promise then waits for
+   * both — or `"off"` never, leaving every formula as its placeholder.
+   * `opts.mathUrl` is `wasmUrl`'s counterpart for it, the URL a bundler
+   * emitted for `@diaryx/leaf/math/wasm`. A typesetter that cannot be
+   * fetched does not fail `init`: the editor works without it and draws each
+   * formula as a marked fault with the reason; `loadMath()` is the call that
+   * rejects with it.
    * @param {string | URL} [wasmUrl]
+   * @param {{ math?: "lazy" | "eager" | "off", mathUrl?: string | URL }} [opts]
    */
-  static init(wasmUrl) {
+  static init(wasmUrl, opts = {}) {
+    if (opts.math !== undefined) {
+      if (!["lazy", "eager", "off"].includes(opts.math)) {
+        throw new Error(`math must be "lazy", "eager" or "off", not ${JSON.stringify(opts.math)}`);
+      }
+      mathPolicy = opts.math;
+    }
+    if (opts.mathUrl !== undefined) mathUrl = opts.mathUrl;
     if (!wasmReady) wasmReady = init(wasmUrl ? { module_or_path: wasmUrl } : undefined);
-    return wasmReady.then(() => undefined);
+    const ready =
+      mathPolicy === "eager" ? Promise.all([wasmReady, loadMath().catch(() => {})]) : wasmReady;
+    return ready.then(() => undefined);
+  }
+
+  /**
+   * Fetch the typesetter now rather than on the first formula — what
+   * `init(url, { math: "eager" })` does, for a host that decides later (a
+   * document is about to open that it knows has formulas). Resolves when
+   * formulas can be typeset; rejects if the module could not be loaded, in
+   * which case every formula is drawn as a marked fault with the reason.
+   * @param {string | URL} [url]  where the binary is, as `init`'s `mathUrl`
+   * @returns {Promise<void>}
+   */
+  static loadMath(url) {
+    if (url !== undefined) mathUrl = url;
+    return loadMath();
   }
 
   /**
@@ -314,6 +432,7 @@ export class LeafEditor {
     this._destroyed = true;
     for (const [t, fn, tgt] of this._listeners) tgt.removeEventListener(t, fn);
     this._resizeObs?.disconnect();
+    MATH_WAITERS.delete(this);
     this.doc.free?.();
     this.container.innerHTML = "";
     this.container.classList.remove("leaf-editor");
@@ -854,17 +973,27 @@ export class LeafEditor {
     // a theme change re-typesets through the cache.
     const mathBlockAt = new Map();
     const mathInlineAt = new Map();
+    // Every row a formula stands on, in whatever state its picture is: the
+    // row's key carries the typesetter's state, so a row drawn while the
+    // module was still on its way is rebuilt when it lands.
+    const mathRows = new Set();
     const ink = this._inkColor();
     for (const m of view.math || []) {
+      mathRows.add(m.row);
       if (m.inline) {
         mathInlineAt.set(m.src, m);
-      } else if (!(typesetMath(m.tex, m.display, this.theme.fontSize, ink) instanceof Error)) {
-        // TeX that will not typeset stays core's `∑ tex` placeholder row, drawn
-        // as text with the fault in its title — see `_runEl`.
+        continue;
+      }
+      const pic = typesetMath(m.tex, m.display, this.theme.fontSize, ink);
+      // TeX that will not typeset stays core's `∑ tex` placeholder row, drawn
+      // as text with the fault in its title — see `_runEl`. So does every
+      // block while the typesetter is absent; `_mathSettled` repaints then.
+      if (pic && !(pic instanceof Error)) {
         mathBlockAt.set(m.row, m);
         for (let r = m.row + 1; r < m.row + m.rows; r++) covered.add(r);
       }
     }
+    if (mathRows.size && mathState() === "absent") MATH_WAITERS.add(this);
     this._mathInline = mathInlineAt;
     this._ink = ink;
     // Tables the same way, but replacing the *whole* span rather than the first
@@ -926,7 +1055,7 @@ export class LeafEditor {
           ? mediaKey(media, row)
           : mathBlock
             ? mathBlockKey(mathBlock, row, ink)
-            : rowKey(row, runs, i, view.rows) + mathRowKey(runs, mathInlineAt, ink);
+            : rowKey(row, runs, i, view.rows) + mathRowKey(runs, mathInlineAt, ink, mathRows.has(i));
       let el = take(key);
       if (el) {
         this._adoptRow(el, runs);
@@ -1382,7 +1511,8 @@ export class LeafEditor {
    * A formula on the caret's line never arrives here: core draws it as its
    * TeX in code and delimiter runs. TeX the typesetter cannot read keeps the
    * `∑`, tinted, with the fault in its title — the surface says "this is not
-   * yet a formula" where it stands.
+   * yet a formula" where it stands. So does a formula whose typesetter has
+   * not arrived, untinted, until `_mathSettled` repaints the row.
    */
   _mathRunEl(span, run, fontPx) {
     span.className = "leaf-run leaf-r-math" + (run.bold ? " leaf-b" : "") + (run.italic ? " leaf-i" : "");
@@ -1391,6 +1521,7 @@ export class LeafEditor {
     const m = this._mathInline?.get(run.src);
     if (!m) return span;
     const pic = typesetMath(m.tex, m.display, fontPx, this._ink);
+    if (pic === null) return span; // the typesetter is on its way, or off: the atom stands
     if (pic instanceof Error) {
       span.classList.add("leaf-math-error");
       span.title = pic.message;
@@ -1425,6 +1556,17 @@ export class LeafEditor {
       this._atomWidths.set(key, w);
     }
     return w;
+  }
+
+  /**
+   * The typesetter has arrived, or has failed to: repaint the last frame, so
+   * every formula drawn as a placeholder while it was on its way becomes its
+   * picture — or its marked fault. Only the rows that carried a formula are
+   * rebuilt, because only their keys carry the typesetter's state.
+   */
+  _mathSettled() {
+    if (this._destroyed || !this._lastView) return;
+    this.render(this._lastView);
   }
 
   /**
@@ -2528,16 +2670,19 @@ function mathBlockKey(m, row, ink) {
   return "M" + len + "|" + ink + "|" + (m.display ? "D" : "T") + m.tex;
 }
 
-/** What an ordinary row's key leaves out when it holds inline formulas: their
- *  TeX and the ink, neither of which the `∑` run itself carries. */
-function mathRowKey(runs, mathInlineAt, ink) {
+/** What an ordinary row's key leaves out when it holds a formula: the TeX
+ *  and the ink of each inline one, neither of which the `∑` run itself
+ *  carries, and — for any row a formula stands on, `hasMath`, a block's
+ *  placeholder row included — whether the typesetter was there to draw it. */
+function mathRowKey(runs, mathInlineAt, ink, hasMath) {
+  if (!hasMath) return "";
   let key = "";
   for (const run of runs) {
     if (run.role !== "math") continue;
     const m = mathInlineAt.get(run.src);
     if (m) key += "\u0004" + (m.display ? "D" : "T") + m.tex;
   }
-  return key ? key + "|" + ink : "";
+  return key + "|" + ink + "|" + mathState();
 }
 
 /** `rowKey` for a page break: a rule is a rule, and the only thing that can

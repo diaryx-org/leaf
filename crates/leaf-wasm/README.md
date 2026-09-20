@@ -13,6 +13,7 @@ and forwards input — exactly as the TUI and native GUI do.
 | Layer | File | What it is |
 |-------|------|------------|
 | Model | `crates/leaf-wasm/src/lib.rs` → `pkg/leaf_wasm.js` | `LeafDoc`: parse/edit/caret + a typed `DocView` frame of style runs. wasm-bindgen glue; view types generated from Rust by [tsify](https://github.com/madonoharu/tsify). This crate. |
+| Typesetter | [`crates/leaf-math-wasm`](../leaf-math-wasm) → `pkg-math/leaf_math_wasm.js` | `typeset_math`: TeX to a self-contained SVG with baseline metrics, through `leaf-math`. A module of its own, fetched by the editor on the first formula, because it weighs a third of the binding and most documents never need it. The model publishes *what* to typeset (`MathView`); this does the typesetting. |
 | Editor | [`packages/leaf-web`](../../packages/leaf-web) `src/editor.js` (+ `.d.ts`) | `LeafEditor`: a **framework-agnostic** class that renders those runs to the DOM, places the caret, and routes keys/clicks. The reusable, importable npm-shaped package (not yet published). |
 | Demo | [`apps/leaf-web-demo`](../../apps/leaf-web-demo) `index.html` | A thin host: chrome (toolbar/footer) around a `LeafEditor`. |
 

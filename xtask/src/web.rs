@@ -7,6 +7,11 @@
 //! both outside the demo directory. So the server's document root is the *repo
 //! root* and the page is reached at `/apps/leaf-web-demo/`; rooting it at the
 //! demo directory instead serves an index.html whose every import 404s.
+//!
+//! Two modules are built: `leaf-wasm` into `pkg/`, and `leaf-math-wasm` — the
+//! typesetter, which the editor fetches on the first formula — into
+//! `pkg-math/`. Both under the workspace's `wasm` profile, as `build:wasm`
+//! in the package builds them.
 
 use crate::util::{cmd, require_tool, root, run};
 use anyhow::{Context, Result, bail};
@@ -66,30 +71,48 @@ pub struct Args {
 pub fn run_task(args: Args) -> Result<()> {
     let root = root();
     let pkg = root.join("packages/leaf-web/pkg");
+    // (crate, out-dir, the file whose presence says the out-dir was built)
+    let modules = [
+        ("crates/leaf-wasm", pkg.clone(), "leaf_wasm.js"),
+        (
+            "crates/leaf-math-wasm",
+            root.join("packages/leaf-web/pkg-math"),
+            "leaf_math_wasm.js",
+        ),
+    ];
 
     check_js_syntax(&root)?;
 
     if args.no_build {
-        if !pkg.join("leaf_wasm.js").is_file() {
-            bail!(
-                "--no-build was passed but {} has no wasm-pack output to serve",
-                pkg.display()
-            );
+        for (_, out, built) in &modules {
+            if !out.join(built).is_file() {
+                bail!(
+                    "--no-build was passed but {} has no wasm-pack output to serve",
+                    out.display()
+                );
+            }
         }
     } else {
         require_tool("wasm-pack", "cargo install wasm-pack")?;
-        let mut build = cmd("wasm-pack");
-        build.arg("build").arg(root.join("crates/leaf-wasm"));
-        if args.dev {
-            build.arg("--dev");
+        for (crate_dir, out, _) in &modules {
+            let mut build = cmd("wasm-pack");
+            build.arg("build").arg(root.join(crate_dir));
+            if args.dev {
+                build.arg("--dev");
+            } else {
+                // The workspace's size-tuned profile; wasm-pack's own
+                // `--release` would build under cargo's.
+                build.args(["--profile", "wasm"]);
+            }
+            // `--target web` emits an ES module with an explicit `init()`, which
+            // is what packages/leaf-web/src/index.js expects; the out-dirs are
+            // the `pkg/` and `pkg-math/` the package's `files` field ships. All
+            // of it matches the `build:wasm` script in
+            // packages/leaf-web/package.json — this task is that script plus a
+            // server, not a second opinion about how the binding is built.
+            build.args(["--target", "web"]).arg("--out-dir").arg(out);
+            run(&mut build)?;
         }
-        // `--target web` emits an ES module with an explicit `init()`, which is
-        // what packages/leaf-web/src/index.js expects; the out-dir is the `pkg/`
-        // the package's `files` field ships. Both match the `build:wasm` script
-        // in packages/leaf-web/package.json — this task is that script plus a
-        // server, not a second opinion about how the binding is built.
-        build.args(["--target", "web"]).arg("--out-dir").arg(&pkg);
-        run(&mut build)?;
     }
 
     if args.build_only {

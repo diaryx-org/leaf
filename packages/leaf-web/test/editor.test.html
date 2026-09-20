@@ -1159,7 +1159,31 @@ await test("the exact forms go through the API and come back as written", () => 
   return ed;
 });
 
-await test("an inline formula is a picture the caret sits either side of", () => {
+await test("a formula is its placeholder until the typesetter lands, then its picture", async () => {
+  // The first formula this page shows: the typesetter is a second module
+  // that nothing has fetched yet, and this frame is what starts the fetch.
+  const ed = editor("intro\n\nsay $E = mc^2$ here\n\n$$\n\\int_0^1 x\\,dx\n$$\n\nend\n");
+  const atom = ed.contentEl.querySelector(".leaf-r-math");
+  assert(atom, "no math run");
+  eq(atom.textContent, "∑");
+  assert(!atom.classList.contains("leaf-math"), "a picture was drawn before the typesetter arrived");
+  assert(!atom.classList.contains("leaf-math-error"), "the wait was drawn as a fault");
+  assert(!ed.rowEls.some((r) => r.classList.contains("leaf-math-row")), "a block was drawn before the typesetter arrived");
+  assert(ed.contentEl.textContent.includes("∑ \\int"), "the block is not its placeholder row");
+  const before = ed.rowEls.length;
+  await LeafEditor.loadMath();
+  // Settled, the rows that carried a formula were rebuilt and nothing else
+  // moved: the same row count, pictures where the placeholders stood.
+  eq(ed.rowEls.length, before, "the row count changed");
+  const again = ed.contentEl.querySelector(".leaf-r-math");
+  assert(again.classList.contains("leaf-math"), "the inline formula did not become its picture");
+  assert(ed.rowEls.some((r) => r.classList.contains("leaf-math-row")), "the block did not become its picture");
+  assert(!ed.contentEl.textContent.includes("\\int"), "the placeholder label is still painted");
+  return ed;
+});
+
+await test("an inline formula is a picture the caret sits either side of", async () => {
+  await LeafEditor.loadMath();
   const ed = editor("intro\n\nsay $E = mc^2$ here\n");
   const row = ed.rowEls.find((r) => r.textContent.includes("say"));
   assert(row, "the paragraph did not render");
@@ -1199,7 +1223,8 @@ await test("an inline formula is a picture the caret sits either side of", () =>
   return ed;
 });
 
-await test("a formula on the caret's line is its TeX, and folds back when the caret leaves", () => {
+await test("a formula on the caret's line is its TeX, and folds back when the caret leaves", async () => {
+  await LeafEditor.loadMath();
   const ed = editor("say $x+y$ here\n\nnext\n");
   // The caret opens on the first line: the formula is source, in code style.
   let row = ed.rowEls[0];
@@ -1218,6 +1243,7 @@ await test("a formula on the caret's line is its TeX, and folds back when the ca
 });
 
 await test("a caret move onto a formula's line repaints, through the real selection", async () => {
+  await LeafEditor.loadMath();
   const ed = editor("say $x+y$ here\n\nnext\n");
   const next = ed.rowEls.find((r) => r.textContent === "next");
   place(firstText(next), 0);
@@ -1238,7 +1264,8 @@ await test("a caret move onto a formula's line repaints, through the real select
   return ed;
 });
 
-await test("a display formula is a centred picture in a row of its own", () => {
+await test("a display formula is a centred picture in a row of its own", async () => {
+  await LeafEditor.loadMath();
   const ed = editor("intro\n\n$$\n\\int_0^1 x\\,dx\n$$\n\nend\n");
   const row = ed.rowEls.find((r) => r.classList.contains("leaf-math-row"));
   assert(row, "no math row was drawn");
@@ -1259,7 +1286,8 @@ await test("a display formula is a centred picture in a row of its own", () => {
   return ed;
 });
 
-await test("TeX that will not typeset keeps its atom, tinted, with the fault in its title", () => {
+await test("TeX that will not typeset keeps its atom, tinted, with the fault in its title", async () => {
+  await LeafEditor.loadMath();
   const ed = editor("intro\n\nbad $\\frac{$ here\n\n$$\n\\frac{\n$$\n\nend\n");
   const atom = ed.contentEl.querySelector(".leaf-r-math");
   assert(atom, "no math run");

@@ -4,8 +4,9 @@ The web editor for [leaf](../../README.md): `LeafEditor`, a framework-agnostic
 rich-text editor over `leaf-core`'s document model, compiled to WebAssembly by
 the [`leaf-wasm`](../../crates/leaf-wasm) binding. On npm as
 [`@diaryx/leaf`](https://www.npmjs.com/package/@diaryx/leaf), at the
-workspace's version: an `exports` map, types, and a `pkg/` of wasm-pack output
-that `npm run build:wasm` regenerates and that is never committed. Publishing
+workspace's version: an `exports` map, types, and two directories of wasm-pack
+output — `pkg/`, the editor's module, and `pkg-math/`, the typesetter's — that
+`npm run build:wasm` regenerates and that are never committed. Publishing
 is by hand — `npm run build:wasm && npm publish --access public` — and
 `prepack` refuses a `pkg/` built for another version.
 
@@ -39,9 +40,17 @@ the package exports it as `@diaryx/leaf/wasm` — and hands that to `init`:
 ```js
 import { LeafEditor } from "@diaryx/leaf";
 import wasmUrl from "@diaryx/leaf/wasm?url";        // Vite; other bundlers have their own spelling
+import mathUrl from "@diaryx/leaf/math/wasm?url";
 
-await LeafEditor.init(wasmUrl);
+await LeafEditor.init(wasmUrl, { mathUrl });
 ```
+
+The second URL is the **typesetter**, a wasm module of its own that the editor
+fetches the first time a frame shows a formula — see *Math* below. `init`'s
+second argument also says when: `{ math: "lazy" }` is that default,
+`"eager"` fetches it now and `init` waits for both, `"off"` never fetches it
+and a formula stays its placeholder. `LeafEditor.loadMath()` is `"eager"`
+for a host that decides later.
 
 ## What it does
 
@@ -86,12 +95,26 @@ await LeafEditor.init(wasmUrl);
   many points and not the heading's ramp scaled, and an exact colour is painted
   as written in both appearances: that is what exact means, and it is the
   portability the author traded away.
+- **Math.** A `$…$` formula is its picture in the line, stretched over the
+  one-character atom core counts the row by, and a `$$` block a centred
+  picture in a row of its own — a self-contained SVG from `leaf-math`, the
+  same bytes every leaf frontend draws. TeX the typesetter cannot read keeps
+  its `∑`, tinted, with the fault in its title. The typesetter is a second
+  wasm module, `@diaryx/leaf/math`, that the editor fetches on the first
+  formula: until it lands the formula is drawn as core's placeholder — the
+  atom in a line, the `∑ tex` row for a block — and the rows that carried one
+  repaint when it does. A page with no formulas never loads it; a host that
+  knows its documents have them asks for it up front (`init`'s `math:
+  "eager"`); one that never wants the weight says `"off"`. The module is also
+  importable on its own, for a host that renders leaf documents outside the
+  editor: `typeset_math(tex, display, sizePx, "#rrggbb")` gives the SVG and
+  its baseline metrics.
 - **Syntax highlighting** in a fenced block whose language a grammar knows:
   each run carries a `token` — one of core's eight classes — and arrives as a
   `.leaf-t-<token>` class beside `.leaf-r-code`, coloured by the
   `--leaf-syn-<token>` custom properties in both appearances. A stylesheet
   that knows nothing of them still draws the block as code. The grammars
-  weigh about 0.7 MB of the wasm; build `leaf-wasm` with
+  weigh about 0.7 MB of the editor's module; build `leaf-wasm` with
   `--no-default-features` to leave them out.
 - **Host highlights** (`setHighlights`), a **read-only** gate, **drag and
   drop** of text and files, `load()` for the next document, and `goTo` /
@@ -136,13 +159,37 @@ heading scales the heading; spacing as a multiple of the theme's line height);
 `PRESENTATION_CSS` is the same text as a string, for a host that renders leaf
 documents outside the editor. A test holds the file and the constant level.
 
+## What it weighs
+
+Two modules, so a page pays for math only if it shows some. Measured on
+2026-09-19, at leaf 0.3.1, built as `build:wasm` builds them — the
+workspace's `wasm` profile (`opt-level = "s"`, fat LTO, one codegen unit,
+`panic = "abort"`) and `wasm-opt -Oz`:
+
+| module | file | raw | gzip | brotli |
+|---|---|---|---|---|
+| the editor (`leaf-wasm`, grammars in) | `pkg/leaf_wasm_bg.wasm` | 3.41 MB | 1.78 MB | 1.50 MB |
+| the typesetter (`leaf-math-wasm`) | `pkg-math/leaf_math_wasm_bg.wasm` | 2.77 MB | 1.06 MB | 0.83 MB |
+
+Before the split and the profile, one module carried both at 5.81 MB raw,
+2.66 gzip, 2.15 brotli; and before math, 3.69 MB raw. So a page without a
+formula now fetches 30% less than it did with math inside, and one with a
+formula about 8% more in total — the two modules each carry a copy of the
+runtime they would have shared (std, the regex engine both syntect and RaTeX
+lean on, serde_json), about a megabyte raw between them, which is the price
+of splitting at the module boundary rather than inside one. The profile
+alone took the editor's module from 3.69 to 3.41 MB: the binary is half
+data — fonts, grammars, tables — that no optimiser shrinks. `opt-level =
+"z"` would take another 3–5% off each for an inlining cost the frame path
+should not pay.
+
 ## Building and testing
 
 ```sh
-cargo xtask web              # build the wasm, serve the demo, open it
+cargo xtask web              # build both modules, serve the demo, open it
 cargo xtask web --test       # serve the editor tests instead
 cargo xtask web --headless   # run them in Chrome and exit with the outcome
-npm run build:wasm           # just the wasm (from this directory)
+npm run build:wasm           # just the two modules (from this directory)
 ```
 
 The tests ([`test/editor.test.html`](test/editor.test.html)) run in a real

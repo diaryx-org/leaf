@@ -151,6 +151,29 @@ export interface EditorOptions {
 export type Highlight = HighlightIn;
 
 /**
+ * How the typesetter — a second wasm module, `@diaryx/leaf/math`, two
+ * megabytes most documents never need — is loaded.
+ */
+export interface InitOptions {
+  /**
+   * `"lazy"` (the default): fetched on the first frame that shows a formula,
+   * which is drawn as its placeholder (the `∑` atom, the `∑ tex` row) until
+   * it lands, then repainted. `"eager"`: fetched now, alongside the editor's
+   * own module, and `init` waits for both — though a typesetter that cannot
+   * be fetched does not fail `init`; formulas draw as marked faults, and
+   * `loadMath()` rejects with the reason. `"off"`: never; every formula stays
+   * its placeholder.
+   */
+  math?: "lazy" | "eager" | "off";
+  /**
+   * Where its binary is — `wasmUrl`'s counterpart. By default fetched relative
+   * to the module, which a bundler has moved, so a bundled host passes the URL
+   * it emitted for `@diaryx/leaf/math/wasm`.
+   */
+  mathUrl?: string | URL;
+}
+
+/**
  * A framework-agnostic rich-text editor over a `leaf_core::Doc`, compiled to
  * wasm. Renders proportionally (real body font, sized headings, monospace code)
  * while core stays the authority on text, wrapping, and caret math.
@@ -165,7 +188,16 @@ export class LeafEditor {
    * emitted for `@diaryx/leaf/wasm` (in Vite, `import url from
    * "@diaryx/leaf/wasm?url"`).
    */
-  static init(wasmUrl?: string | URL): Promise<void>;
+  static init(wasmUrl?: string | URL, opts?: InitOptions): Promise<void>;
+
+  /**
+   * Fetch the typesetter now rather than on the first formula — what
+   * `init(url, { math: "eager" })` does, for a host that decides later.
+   * Resolves when formulas can be typeset; rejects if the module could not
+   * be loaded, after which every formula is drawn as a marked fault with the
+   * reason in its title. `url` is `InitOptions.mathUrl`.
+   */
+  static loadMath(url?: string | URL): Promise<void>;
 
   constructor(container: HTMLElement, opts?: EditorOptions);
 

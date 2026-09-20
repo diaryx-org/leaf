@@ -4,8 +4,10 @@
 .playwright-mcp/
 .DS_Store
 # wasm-pack output for the web editor package — regenerated from crates/leaf-wasm
-# by `npm run build:wasm` in packages/leaf-web, never committed.
+# and crates/leaf-math-wasm by `npm run build:wasm` in packages/leaf-web, never
+# committed.
 /packages/leaf-web/pkg/
+/packages/leaf-web/pkg-math/
 
 # SwiftPM/Xcode build dirs for the Swift package, whose manifest lives at the
 # repo root. The UniFFI binding under packages/leaf-swift/uniffi-generated/ is

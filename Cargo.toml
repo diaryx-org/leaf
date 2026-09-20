@@ -51,3 +51,19 @@ leaf-raster = { path = "crates/leaf-raster", version = "0.3.1" }
 # TeX math to a self-contained SVG picture with baseline metrics, through
 # RaTeX; every frontend that paints a formula goes through it.
 leaf-math = { path = "crates/leaf-math", version = "0.3.1" }
+
+# The profile the wasm binding ships under (`wasm-pack build --profile wasm`).
+# `release` is left as cargo defines it, because the TUI and the Swift
+# framework build under it and want speed; this one inherits it and trades
+# some of that for bytes on the wire, which is what a browser pays for. Fat
+# LTO and one codegen unit let the linker drop what RaTeX, syntect and std
+# bring in but the binding never calls; `panic = "abort"` drops the unwinding
+# tables — `console_error_panic_hook` still runs before the trap, so a panic
+# is still a message in the console. What each setting bought is measured in
+# `packages/leaf-web/README.md`.
+[profile.wasm]
+inherits = "release"
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
