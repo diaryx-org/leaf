@@ -48,3 +48,6 @@ leaf-core = { path = "crates/leaf-core", version = "0.3.1" }
 # Backend-neutral CPU rasterization: image decode/fit/path policy plus the
 # oversized-heading rasters with caret/selection painted into the pixels.
 leaf-raster = { path = "crates/leaf-raster", version = "0.3.1" }
+# TeX math to a self-contained SVG picture with baseline metrics, through
+# RaTeX; every frontend that paints a formula goes through it.
+leaf-math = { path = "crates/leaf-math", version = "0.3.1" }

@@ -11,7 +11,8 @@
 //!   loader handles, and where a relative one anchors. One policy, because two
 //!   frontends disagreeing about what loads is a bug report.
 //! - [`load_image`] / [`load_svg`] — file bytes to a decoded [`image`] raster,
-//!   vector pictures included.
+//!   vector pictures included; [`rasterize_svg`] for a vector picture whose
+//!   declared size is meant, such as a typeset formula.
 //! - [`fit_within`] — aspect-preserving containment in pixels, so frontends
 //!   with different display units (cells, points) share the sizing policy and
 //!   only round differently.
@@ -37,6 +38,6 @@ mod path;
 mod text;
 
 pub use fit::fit_within;
-pub use load::{load_image, load_svg};
+pub use load::{load_image, load_svg, rasterize_svg};
 pub use path::resolve_image_path;
 pub use text::{EditingUi, HeadingSpec, Rasterizer};

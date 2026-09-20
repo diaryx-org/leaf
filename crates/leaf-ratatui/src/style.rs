@@ -459,6 +459,11 @@ impl Theme {
             // primitive, so it paints the label — dim magenta to read as a
             // stand-in for content it can't draw, not as prose.
             Role::Image => s.fg(self.image).add_modifier(Modifier::DIM),
+            // A formula's stand-in — the `∑ tex` row a display formula falls
+            // back to where no picture is painted — reads as a placeholder the
+            // way an image's label does. An inline formula is never this on a
+            // terminal: it draws as code.
+            Role::Math => s.fg(self.image).add_modifier(Modifier::DIM),
         }
     }
 

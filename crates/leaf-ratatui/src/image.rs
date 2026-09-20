@@ -13,6 +13,15 @@
 //! raster keyed by resolved path, and hand core the row counts each frame; a
 //! frame that measures the same images it did last time is a no-op on both sides.
 //!
+//! A display formula takes the same road: `leaf-math` typesets its TeX to an
+//! SVG, [`leaf_raster::rasterize_svg`] paints that at the size it was set,
+//! and the picture is measured, reserved through
+//! [`leaf_core::Doc::set_math_rows`], and painted over its rows exactly as an
+//! image is — except that it is centred and gets no frame, since it is text
+//! of a kind and not a picture of something else. An inline formula stays the
+//! code-styled text core draws for it: nothing drawn from cells can share a
+//! row with a graphics-protocol image.
+//!
 //! The decoding, the fit policy, and the heading rasterization itself live in
 //! [`leaf_raster`], the pixel layer shared across frontends; this module owns
 //! only what is terminal-shaped — cells, the protocol picker, and the caches.
@@ -30,7 +39,7 @@ use ratatui_image::{
 
 use leaf_raster::{EditingUi, HeadingSpec, Rasterizer, image, resolve_image_path};
 
-use leaf_core::{ColorScheme, MediaInfo};
+use leaf_core::{ColorScheme, MathInfo, MediaInfo};
 
 use crate::style::detect_color_scheme;
 
@@ -45,6 +54,17 @@ const MAX_IMAGE_ROWS: usize = 30;
 /// (see [`HeadingEntry`]) — so the cap only bounds a session that scrolls
 /// through many headings, and a clear costs one re-raster per visible one.
 const HEADING_CACHE_MAX: usize = 64;
+
+/// How many typeset formulas to hold before the cache is emptied — the
+/// [`HEADING_CACHE_MAX`] rule, for the same reason.
+const MATH_CACHE_MAX: usize = 64;
+
+/// The em a display formula is set at, as a multiple of the terminal's cell
+/// height. The terminal's own text has an em of roughly the cell height over
+/// its line spacing, so `1.0` would read as body size and a display formula
+/// wants to stand a little above the prose around it, as it does on paper;
+/// past about `1.5` a plain `x = y` starts to look like a heading.
+const MATH_EM_PER_CELL: f64 = 1.25;
 
 /// A decoded image plus the box it was last measured into.
 struct Entry {
@@ -92,6 +112,11 @@ pub struct Images {
     /// [`TerminalColor::Reset`] heading to real pixels; `None` falls back to
     /// inferring it from [`Images::scheme`].
     foreground: Option<(u8, u8, u8)>,
+    /// Typeset display formulas, keyed by what changes the picture — the TeX,
+    /// the cell size it was set against, and the ink. A formula that fails to
+    /// typeset is cached as `None`, so the fault is paid once and core's `∑
+    /// tex` placeholder stands for it. Bounded by [`MATH_CACHE_MAX`].
+    math: HashMap<MathKey, Option<Entry>>,
 }
 
 impl Default for Images {
@@ -110,6 +135,7 @@ impl Default for Images {
             raster: Rasterizer::new(),
             scheme: detect_color_scheme(),
             foreground: None,
+            math: HashMap::new(),
         }
     }
 }
@@ -218,6 +244,108 @@ impl Images {
             .get(&path)
             .and_then(|e| e.as_ref())
             .map(|e| e.box_cells)
+    }
+
+    /// Typeset (once) and measure every display formula, returning the row
+    /// count each reserves keyed by its TeX — exactly the map
+    /// [`leaf_core::Doc::set_math_rows`] wants. Only on a terminal with a real
+    /// graphics protocol: a formula in unicode half-blocks is a mosaic of
+    /// something that was already text, so without one nothing is reserved and
+    /// core's `∑ tex` placeholder row stands, the way an oversized heading
+    /// falls back to plain bold. A formula whose TeX will not typeset is left
+    /// out for the same reason. An inline formula (`glyph.is_some()`) is never
+    /// here: it draws as text.
+    pub fn reserve_math(
+        &mut self,
+        math: &[MathInfo],
+        avail_cols: u16,
+        avail_rows: u16,
+    ) -> HashMap<String, usize> {
+        let mut heights = HashMap::new();
+        if !self.supports_graphics() {
+            return heights;
+        }
+        let font = self.picker.font_size();
+        let inner_cols = avail_cols.max(1);
+        let inner_rows = (avail_rows as usize).clamp(1, MAX_IMAGE_ROWS) as u16;
+        for info in math.iter().filter(|m| m.glyph.is_none()) {
+            let Some(entry) = self.math_entry(&info.tex, info.display) else {
+                continue;
+            };
+            let cells = box_cells(entry.intrinsic, inner_cols, inner_rows, font);
+            entry.box_cells = cells;
+            heights.insert(info.tex.clone(), cells.1 as usize);
+        }
+        heights
+    }
+
+    /// The character-cell size `(cols, rows)` of a display formula's picture —
+    /// what `ui` centres and reserves the rows for. `None` when it did not
+    /// typeset, or on a terminal that paints no pictures (so `ui` leaves core's
+    /// placeholder row standing).
+    pub fn math_cells(&self, info: &MathInfo) -> Option<(u16, u16)> {
+        let key = self.math_key(&info.tex, info.display);
+        self.math
+            .get(&key)
+            .and_then(|e| e.as_ref())
+            .map(|e| e.box_cells)
+    }
+
+    /// Paint a display formula's picture into `rect`, on
+    /// [`paint_raster`](Self::paint_raster)'s terms: only once its whole
+    /// reserved span is on screen. `false` when there is nothing to paint.
+    pub fn paint_math(&mut self, f: &mut Frame, info: &MathInfo, rect: Rect) -> bool {
+        let key = self.math_key(&info.tex, info.display);
+        let Some(entry) = self.math.get_mut(&key).and_then(|e| e.as_mut()) else {
+            return false;
+        };
+        f.render_widget(Clear, rect);
+        f.render_stateful_widget(
+            StatefulImage::new().resize(Resize::Fit(None)),
+            rect,
+            &mut entry.protocol,
+        );
+        true
+    }
+
+    /// What identifies a formula's picture on this terminal right now: its
+    /// TeX, whether it is display style, the em it is set at (from the cell
+    /// height), and the ink (the terminal's own text colour). A change to any
+    /// re-typesets on the next frame without anything having to clear.
+    fn math_key(&self, tex: &str, display: bool) -> MathKey {
+        let font = self.picker.font_size();
+        MathKey {
+            tex: tex.to_owned(),
+            display,
+            font: (font.0, font.1),
+            rgb: terminal_rgb(TerminalColor::Reset, self.scheme, self.foreground),
+        }
+    }
+
+    /// The cache entry for a formula, typesetting and rasterizing it on first
+    /// use. `None` (and a cached `None`) when the TeX will not typeset.
+    fn math_entry(&mut self, tex: &str, display: bool) -> Option<&mut Entry> {
+        let key = self.math_key(tex, display);
+        if !self.math.contains_key(&key) {
+            if self.math.len() >= MATH_CACHE_MAX {
+                self.math.clear();
+            }
+            let size = f64::from(key.font.1.max(1)) * MATH_EM_PER_CELL;
+            let (r, g, b) = key.rgb;
+            let entry = leaf_math::typeset(tex, display, size, [r, g, b, 255])
+                .ok()
+                .and_then(|p| leaf_raster::rasterize_svg(p.svg.as_bytes(), 1.0))
+                .map(|img| {
+                    let intrinsic = (img.width(), img.height());
+                    Entry {
+                        protocol: self.picker.new_resize_protocol(img),
+                        intrinsic,
+                        box_cells: (1, 1),
+                    }
+                });
+            self.math.insert(key.clone(), entry);
+        }
+        self.math.get_mut(&key).and_then(|e| e.as_mut())
     }
 
     /// Paint an image's raster into `rect`, the interior of its border box. The
@@ -400,6 +528,17 @@ struct HeadingKey {
     level: u8,
     /// The character-cell box the heading occupies, `(cols, rows)`.
     cells: (u16, u16),
+    /// The terminal's cell size in pixels, `(width, height)`.
+    font: (u16, u16),
+    rgb: (u8, u8, u8),
+}
+
+/// What identifies a typeset formula: its TeX and style, the cell size its em
+/// was taken from, and its ink. See [`Images::math_key`].
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct MathKey {
+    tex: String,
+    display: bool,
     /// The terminal's cell size in pixels, `(width, height)`.
     font: (u16, u16),
     rgb: (u8, u8, u8),
