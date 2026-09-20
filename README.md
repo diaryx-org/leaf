@@ -32,7 +32,9 @@ clipboard, and file I/O.
 | [`leaf-ratatui`](crates/leaf-ratatui) | the **embeddable terminal widget** (ratatui + crossterm): renders the editing surface into a `Rect` and turns key/mouse events into `Doc` edits, returning an `Outcome` for what the host owns (quit, save, clipboard, dialogs). The terminal peer of `leaf-gpui`. |
 | [`leaf-gpui`](crates/leaf-gpui)       | the **embeddable GUI widget** on [gpui](https://github.com/zed-industries/zed): the `Editor` view plus its input, pixel-wrapping renderer, and `register_keybindings`. Renders only the editing surface and leaves window chrome, file I/O, and quit to the host.  |
 | [`leaf-ffi`](crates/leaf-ffi)         | the **UniFFI Rust binding** — wraps the filesystem-free `Doc` behind a C ABI so a native Apple app can drive it. Paired with the `leaf-swift` package.                                                                                                             |
+| [`leaf-math`](crates/leaf-math)       | TeX to a **self-contained SVG picture** with baseline metrics, through RaTeX with KaTeX's outlines embedded — the one door every frontend draws a formula through, so the picture is byte-identical everywhere.                                                    |
 | [`leaf-wasm`](crates/leaf-wasm)       | the **wasm-bindgen Rust binding** — wraps the `Doc` for the browser (`LeafDoc` + a typed `DocView`). Paired with the `leaf-web` package.                                                                                                                           |
+| [`leaf-math-wasm`](crates/leaf-math-wasm) | the **typesetter's own wasm module** — `leaf-math` behind one `typeset_math`, built apart from `leaf-wasm` because it is two megabytes most documents never need; `leaf-web` fetches it on the first formula.                                                   |
 
 ### `packages/` — importable non-Rust widget packages
 

@@ -14,6 +14,10 @@ part_of: '[Proposals](/docs/proposals/proposals.md)'
 rendering in `eaa73b4`; both bindings in `086fd0d`; leaf-ratatui in
 `f112676`; leaf-web in `c4b644e`; leaf-swift in `ac8fae4`. leaf-gpui is not
 done: it is archived, and stays on the code-styled text it drew before.
+The wasm measure below was then answered: the typesetter moved into a module
+of its own, `leaf-math-wasm`, that the web editor fetches on the first
+formula, so a page without one pays nothing for it — the numbers are in
+`packages/leaf-web/README.md`.
 
 Five things the argument did not settle. An inline atom is not on every
 surface — a terminal cannot composite a picture over one cell — so a

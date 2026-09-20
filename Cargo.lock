@@ -1014,6 +1014,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "leaf-math-wasm"
+version = "0.3.1"
+dependencies = [
+ "console_error_panic_hook",
+ "leaf-math",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "leaf-raster"
 version = "0.3.1"
 dependencies = [
@@ -1051,7 +1060,6 @@ version = "0.3.1"
 dependencies = [
  "console_error_panic_hook",
  "leaf-core",
- "leaf-math",
  "serde",
  "serde-wasm-bindgen",
  "tsify-next",

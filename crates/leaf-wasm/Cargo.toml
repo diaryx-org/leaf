@@ -23,10 +23,10 @@ syntax = ["leaf-core/syntax"]
 # the public `source` field + `mark_saved`. `syntax` comes back in through the
 # feature above.
 leaf-core = { path = "../leaf-core", default-features = false }
-# TeX to a self-contained SVG picture with its baseline metrics, for the web
-# renderer to put in a line or over a block's rows. Exposed as `typeset_math`;
-# the fonts ride inside the module, so nothing is fetched at runtime.
-leaf-math = { path = "../leaf-math" }
+# There is no `leaf-math` here. The typesetter is `leaf-math-wasm`, a module
+# of its own that the editor fetches on the first formula, because it weighs
+# a third of this one and most documents never need it. This crate publishes
+# what to typeset (`MathView`); that one does the typesetting.
 
 wasm-bindgen = "0.2"
 # Turns the serde-derived view structs into real JS objects across the boundary
@@ -50,3 +50,10 @@ unicode-segmentation = "1.13.3"
 # Route Rust panics to console.error with a real message + stack instead of the
 # opaque "unreachable executed" a release wasm trap gives.
 console_error_panic_hook = "0.1"
+
+# wasm-pack's post-link pass. `-Oz` is binaryen's size setting; the cargo side
+# of the same trade is `[profile.wasm]` in the workspace manifest. It hangs
+# off `release` because wasm-pack reads its settings under its own three
+# profile names only — a `--profile wasm` build is a release build to it.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-Oz"]

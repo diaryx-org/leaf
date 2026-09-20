@@ -14,20 +14,27 @@
       "default": "./src/editor.js"
     },
     "./presentation.css": "./src/presentation.css",
-    "./wasm": "./pkg/leaf_wasm_bg.wasm"
+    "./wasm": "./pkg/leaf_wasm_bg.wasm",
+    "./math": {
+      "types": "./pkg-math/leaf_math_wasm.d.ts",
+      "default": "./pkg-math/leaf_math_wasm.js"
+    },
+    "./math/wasm": "./pkg-math/leaf_math_wasm_bg.wasm"
   },
   "types": "./src/index.d.ts",
   "files": [
     "src",
-    "pkg"
+    "pkg",
+    "pkg-math"
   ],
   "sideEffects": [
-    "./pkg/*.js"
+    "./pkg/*.js",
+    "./pkg-math/*.js"
   ],
   "scripts": {
-    "build:wasm": "wasm-pack build ../../crates/leaf-wasm --target web --out-dir ../../packages/leaf-web/pkg",
-    "build:wasm:dev": "wasm-pack build ../../crates/leaf-wasm --dev --target web --out-dir ../../packages/leaf-web/pkg",
-    "prepack": "node -e \"const p=require('./package.json'),w=require('./pkg/package.json');if(w.version!==p.version)throw new Error('pkg/ is leaf-wasm '+w.version+', not '+p.version+' - run npm run build:wasm')\" && rm -f pkg/.gitignore"
+    "build:wasm": "wasm-pack build ../../crates/leaf-wasm --profile wasm --target web --out-dir ../../packages/leaf-web/pkg && wasm-pack build ../../crates/leaf-math-wasm --profile wasm --target web --out-dir ../../packages/leaf-web/pkg-math",
+    "build:wasm:dev": "wasm-pack build ../../crates/leaf-wasm --dev --target web --out-dir ../../packages/leaf-web/pkg && wasm-pack build ../../crates/leaf-math-wasm --dev --target web --out-dir ../../packages/leaf-web/pkg-math",
+    "prepack": "node -e \"const p=require('./package.json');for(const d of ['pkg','pkg-math']){const w=require('./'+d+'/package.json');if(w.version!==p.version)throw new Error(d+'/ is '+w.name+' '+w.version+', not '+p.version+' - run npm run build:wasm')}\" && rm -f pkg/.gitignore pkg-math/.gitignore"
   },
   "keywords": [
     "editor",

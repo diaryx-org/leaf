@@ -1,0 +1,30 @@
+[package]
+name = "leaf-math-wasm"
+version.workspace = true
+edition.workspace = true
+description = "WebAssembly binding for leaf-math: TeX to a self-contained SVG picture with baseline metrics, as a module of its own that the web editor fetches on the first formula."
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The typesetter itself — RaTeX with KaTeX's outlines embedded, so the module
+# is the whole of what a formula needs and nothing is fetched at runtime.
+# It rides in a module of its own, apart from `leaf-wasm`, because it is a
+# third of the binding's weight and most documents never open a formula: the
+# editor loads this one the first time a frame shows one. Measured in
+# `packages/leaf-web/README.md`.
+leaf-math = { path = "../leaf-math" }
+
+# No serde and no tsify here, unlike `leaf-wasm`: the one thing that crosses
+# back is four fields, a wasm-bindgen class with getters carries them, and
+# the serializer would have been runtime this module duplicates.
+wasm-bindgen = "0.2"
+# A panic inside the typesetter is a message and a stack in the console, not
+# an "unreachable executed".
+console_error_panic_hook = "0.1"
+
+# wasm-pack's post-link pass, `leaf-wasm`'s setting for the same reason.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-Oz"]
