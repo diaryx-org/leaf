@@ -656,6 +656,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_heading(void*_Nonnull ptr, uint
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_highlights(void*_Nonnull ptr, RustBuffer highlights, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_INLINE_PICTURES
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_INLINE_PICTURES
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_inline_pictures(void*_Nonnull ptr, int8_t on, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_LINE_FLOW
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_LINE_FLOW
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_line_flow(void*_Nonnull ptr, RustBuffer mode, RustCallStatus *_Nonnull out_status
@@ -674,6 +679,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_mark_color(void*_Nonnull ptr, R
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_MARKUP_MODE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_MARKUP_MODE
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_markup_mode(void*_Nonnull ptr, RustBuffer mode, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_MATH_ROWS
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_MATH_ROWS
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_math_rows(void*_Nonnull ptr, RustBuffer heights, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_MEDIA_ROWS
@@ -859,6 +869,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_vertical_offset(void*_Nonnull ptr, 
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_VIEW
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_VIEW
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_view(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_FUNC_TYPESET_MATH
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_FUNC_TYPESET_MATH
+RustBuffer uniffi_leaf_ffi_fn_func_typeset_math(RustBuffer tex, int8_t display, double size, uint8_t r, uint8_t g, uint8_t b, uint8_t a, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_FFI_LEAF_FFI_RUSTBUFFER_ALLOC
@@ -1139,6 +1154,12 @@ void ffi_leaf_ffi_rust_future_free_void(uint64_t handle
 #ifndef UNIFFI_FFIDEF_FFI_LEAF_FFI_RUST_FUTURE_COMPLETE_VOID
 #define UNIFFI_FFIDEF_FFI_LEAF_FFI_RUST_FUTURE_COMPLETE_VOID
 void ffi_leaf_ffi_rust_future_complete_void(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_FUNC_TYPESET_MATH
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_FUNC_TYPESET_MATH
+uint16_t uniffi_leaf_ffi_checksum_func_typeset_math(void
+    
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_ALIGNMENT_AT_CARET
@@ -1609,6 +1630,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_highlights(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_INLINE_PICTURES
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_INLINE_PICTURES
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_inline_pictures(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_LINE_FLOW
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_LINE_FLOW
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_line_flow(void
@@ -1630,6 +1657,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_mark_color(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_MARKUP_MODE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_MARKUP_MODE
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_markup_mode(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_MATH_ROWS
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_MATH_ROWS
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_math_rows(void
     
 );
 #endif

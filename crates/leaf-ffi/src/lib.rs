@@ -73,6 +73,13 @@ pub enum LeafError {
     /// `leaf-core` failed to parse `source` as the requested format.
     #[error("parse error: {message}")]
     Parse { message: String },
+    /// [`typeset_math`] could not read its TeX. `position` is a byte offset
+    /// into the formula's text where the parser gave up, when it can say.
+    #[error("math error: {message}")]
+    Math {
+        message: String,
+        position: Option<u32>,
+    },
 }
 
 /// A selection cited out of the source — the text, a little of what
@@ -415,6 +422,8 @@ pub enum BlockClass {
     Code,
     Table,
     Media,
+    /// A display formula on lines of its own — a `$$…$$` block.
+    Math,
     Directive,
     Rule,
     Footnote,
@@ -433,6 +442,7 @@ impl From<leaf_core::BlockClass> for BlockClass {
             K::Code => BlockClass::Code,
             K::Table => BlockClass::Table,
             K::Media => BlockClass::Media,
+            K::Math => BlockClass::Math,
             K::Directive => BlockClass::Directive,
             K::Rule => BlockClass::Rule,
             K::Footnote => BlockClass::Footnote,
@@ -596,6 +606,71 @@ pub struct MediaHeight {
     pub rows: u32,
 }
 
+/// One formula standing as a picture: what to typeset and where its picture
+/// goes. The peer of [`leaf_core::MathInfo`]. Two shapes:
+///
+/// - **Inline** (`inline == true`): one row, and on it exactly one run with
+///   role `math` whose `src` equals this `src` — a single `∑` standing for the
+///   whole formula. The renderer typesets the TeX at the run's font size
+///   ([`typeset_math`]) and draws the picture in the run's place with the
+///   text baseline through it at the picture's height: a run delegate on
+///   Apple. The run is a caret stop at the formula's start; the one after it
+///   is the next run's first character.
+/// - **Block** (`inline == false`): the rows in `start_row..end_row` are the
+///   placeholder, exactly a [`MediaView`]'s shape — the renderer **skips
+///   them** and lays the typeset picture over them, centred on the measure.
+///
+/// A formula on the caret's line is not here: there it is its TeX, drawn as
+/// `code` runs between `delimiter` runs, in every markup mode.
+#[derive(uniffi::Record)]
+pub struct MathView {
+    /// The [`DocView::rows`] indices the formula occupies — its own row for an
+    /// inline one, the placeholder and its fillers for a block.
+    pub start_row: u32,
+    pub end_row: u32,
+    /// Whether this is an atom in a line of text, or a block of its own.
+    pub inline: bool,
+    /// The TeX between the delimiters, verbatim. What [`typeset_math`] takes.
+    pub tex: String,
+    /// Display style (limits above and below, full-height fractions) rather
+    /// than text style — a `$$…$$`, inline or not.
+    pub display: bool,
+    /// The formula's source start: what the `math` run's `src` carries, and
+    /// where a click on the picture lands the caret.
+    pub src: u32,
+}
+
+/// A per-formula measured height, the way a renderer that reserves rows
+/// (rather than laying pictures out in its own units) reports one back — the
+/// input half of the loop [`LeafDoc::set_math_rows`] closes. The Swift views
+/// lay a formula out in points and never need this.
+#[derive(uniffi::Record)]
+pub struct MathHeight {
+    /// The formula's `tex` as [`MathView`] handed it over.
+    pub tex: String,
+    /// How many visual rows the picture needs.
+    pub rows: u32,
+}
+
+/// A typeset formula: a standalone SVG document and where its baseline is.
+/// The peer of `leaf_math::MathPicture`; see [`typeset_math`].
+#[derive(uniffi::Record)]
+pub struct MathPicture {
+    /// A self-contained SVG — every glyph an outline, no font to find. Its
+    /// `viewBox`, `width` and `height` are in pixels at the size it was
+    /// typeset at, so drawn at its intrinsic size the glyphs land at that
+    /// font size.
+    pub svg: String,
+    /// The picture's advance width, in em of the size it was typeset at.
+    pub width: f64,
+    /// How far it rises above its baseline, in em — the ascent a run
+    /// delegate reports, so the text baseline passes through the picture
+    /// here.
+    pub height: f64,
+    /// How far it reaches below its baseline, in em — the descent.
+    pub depth: f64,
+}
+
 /// A whole rendered frame: the rows to paint, where the caret sits, and the
 /// toolbar state — everything the Swift side needs for one repaint, in one value.
 /// Returned by every view-producing method.
@@ -616,6 +691,11 @@ pub struct DocView {
     /// painting the placeholder glyphs. Empty in the source view, where the
     /// `![](…)` or `<video>` markup is the literal text being edited.
     pub media: Vec<MediaView>,
+    /// Formulas standing as pictures — each inline atom and each display
+    /// block — for a frontend that typesets and draws them in place of the
+    /// `math` run or the placeholder rows. Empty in the source view, and
+    /// empty of any formula on the caret's line, which is its TeX there.
+    pub math: Vec<MathView>,
     /// The caret's row: an index into [`Self::rows`].
     pub caret_row: u32,
     /// The caret's display *column* within its row — core's grid position. Kept
@@ -1613,6 +1693,12 @@ impl Inner {
             View::Source => Vec::new(),
         };
 
+        // Formulas, likewise: pictures stand in only in the rich view.
+        let math = match self.doc.view {
+            View::Wysiwyg => wysiwyg_math(&self.doc.vmap),
+            View::Source => Vec::new(),
+        };
+
         let (caret_row, caret_col) = self.doc.caret_pos();
         // Map the caret's display column to a UTF-16 text offset so a native
         // renderer can place it past wide glyphs (see [`DocView::caret_ch`]).
@@ -1641,6 +1727,7 @@ impl Inner {
             tables,
             directives,
             media,
+            math,
             caret_row: caret_row as u32,
             caret_col: caret_col as u32,
             caret_ch: caret_ch as u32,
@@ -1658,6 +1745,38 @@ impl Inner {
             mark_color,
         }
     }
+}
+
+/// Typeset `tex` — the text between a formula's delimiters, as a [`MathView`]
+/// hands it over — to a picture. `display` is the view's `display`; `size` is
+/// the font size in points the formula is set at (an inline formula takes the
+/// run's, a block the body's); `r`, `g`, `b`, `a` are the ink, as bytes. A
+/// theme change is a re-render with a new colour.
+///
+/// Pure layout over fonts embedded in the binary — no I/O, fast enough to
+/// call from a layout pass — so a renderer caches by `(tex, display, size,
+/// colour)` and nothing more. TeX the typesetter cannot read is a
+/// [`LeafError::Math`]; the renderer shows the revealed source in its place.
+#[uniffi::export]
+pub fn typeset_math(
+    tex: String,
+    display: bool,
+    size: f64,
+    r: u8,
+    g: u8,
+    b: u8,
+    a: u8,
+) -> Result<MathPicture, LeafError> {
+    let p = leaf_math::typeset(&tex, display, size, [r, g, b, a]).map_err(|e| LeafError::Math {
+        message: e.message,
+        position: e.position.map(|p| p as u32),
+    })?;
+    Ok(MathPicture {
+        svg: p.svg,
+        width: p.width,
+        height: p.height,
+        depth: p.depth,
+    })
 }
 
 #[uniffi::export]
@@ -1750,6 +1869,34 @@ impl LeafDoc {
                 .map(|h| (h.destination, h.rows.max(1) as usize))
                 .collect(),
         );
+        g.view()
+    }
+
+    /// Report how many visual rows each display formula needs, keyed by its
+    /// TeX as [`MathView`] handed it over — [`set_media_rows`]'s peer for a
+    /// renderer that reserves rows. One that lays a formula out in its own
+    /// units, as the Swift views do, never calls this.
+    ///
+    /// [`set_media_rows`]: Self::set_media_rows
+    pub fn set_math_rows(&self, heights: Vec<MathHeight>) -> DocView {
+        let mut g = self.lock();
+        g.doc.set_math_rows(
+            heights
+                .into_iter()
+                .map(|h| (h.tex, h.rows.max(1) as usize))
+                .collect(),
+        );
+        g.view()
+    }
+
+    /// Say whether the renderer can paint a picture *inside* a line of text.
+    /// When it can, an inline formula arrives as one `math` run and a
+    /// [`MathView`] with `inline` set, for the renderer to draw its typeset
+    /// picture over; when it cannot, as the code-styled TeX it always was.
+    /// Off until called, so a host that has not caught up sees what it saw.
+    pub fn set_inline_pictures(&self, on: bool) -> DocView {
+        let mut g = self.lock();
+        g.doc.set_inline_pictures(on);
         g.view()
     }
 
@@ -3019,6 +3166,11 @@ fn role_name(r: Role) -> String {
         Role::QuoteGutter => "quote".into(),
         Role::Rule => "rule".into(),
         Role::Image => "image".into(),
+        // A formula's stand-in: the one-character atom run an inline formula
+        // renders to, or a display block's placeholder label. A renderer pairs
+        // a `math` run with its [`MathView`] by `src` and draws the picture in
+        // its place — see [`DocView::math`].
+        Role::Math => "math".into(),
         Role::Delimiter => "delimiter".into(),
     }
 }
@@ -3227,6 +3379,23 @@ fn wysiwyg_media(vmap: &VisualMap, scheme: ColorScheme) -> Vec<MediaView> {
                     mime: s.mime.clone(),
                 })
                 .collect(),
+        })
+        .collect()
+}
+
+/// The formulas of a WYSIWYG frame — each atom and each display block, with
+/// the `rows` span it occupies and the TeX to typeset. The peer of
+/// [`wysiwyg_media`].
+fn wysiwyg_math(vmap: &VisualMap) -> Vec<MathView> {
+    vmap.math
+        .iter()
+        .map(|m| MathView {
+            start_row: m.rows_span.start as u32,
+            end_row: m.rows_span.end as u32,
+            inline: m.glyph.is_some(),
+            tex: m.tex.clone(),
+            display: m.display,
+            src: m.src as u32,
         })
         .collect()
 }
@@ -4800,5 +4969,87 @@ mod tests {
         d.select_range(0, 10);
         let s = d.selection_counts().expect("a selection");
         assert_eq!((s.words, s.characters, s.paragraphs), (2, 6, 1));
+    }
+
+    #[test]
+    fn an_inline_formula_is_a_math_run_paired_with_its_view_by_src() {
+        // Off until the renderer says it paints in a line: the TeX as code.
+        let d = doc("say $x+y$ here\n\nnext\n");
+        d.set_selection_offsets(16, 16);
+        let v = d.view();
+        assert!(v.math.is_empty());
+        assert!(
+            v.rows[0]
+                .runs
+                .iter()
+                .any(|r| r.role == "code" && r.text == "x+y")
+        );
+        // On: one `math` run, one character, and a view whose `src` is its.
+        let v = d.set_inline_pictures(true);
+        assert_eq!(v.math.len(), 1);
+        let m = &v.math[0];
+        assert!(m.inline);
+        assert_eq!((m.start_row, m.end_row), (0, 1));
+        assert_eq!(m.tex, "x+y");
+        assert!(!m.display);
+        assert_eq!(m.src, 4);
+        let run = v.rows[0]
+            .runs
+            .iter()
+            .find(|r| r.role == "math")
+            .expect("a math run");
+        assert_eq!(run.text, "∑");
+        assert_eq!(run.src, m.src);
+    }
+
+    #[test]
+    fn a_formula_on_the_caret_line_is_its_tex_and_no_view() {
+        let d = doc("say $x+y$ here\n\nnext\n");
+        d.set_inline_pictures(true);
+        let v = d.set_selection_offsets(0, 0);
+        assert!(v.math.is_empty());
+        let text: String = v.rows[0].runs.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(text, "say $x+y$ here");
+        assert!(
+            v.rows[0]
+                .runs
+                .iter()
+                .any(|r| r.role == "delimiter" && r.text == "$")
+        );
+    }
+
+    #[test]
+    fn a_display_block_is_rows_to_lay_over_and_measured_heights_grow_them() {
+        let d = doc("$$\n\\int_0^1 x\n$$\n\nend\n");
+        let v = d.set_selection_offsets(17, 17);
+        assert_eq!(v.math.len(), 1);
+        let m = &v.math[0];
+        assert!(!m.inline);
+        assert!(m.display);
+        assert_eq!((m.start_row, m.end_row), (0, 1));
+        assert_eq!(m.tex, "\n\\int_0^1 x\n");
+        assert_eq!(m.src, 0);
+        let after = d.set_math_rows(vec![MathHeight {
+            tex: m.tex.clone(),
+            rows: 4,
+        }]);
+        assert_eq!((after.math[0].start_row, after.math[0].end_row), (0, 4));
+    }
+
+    #[test]
+    fn typeset_math_hands_back_a_picture_and_names_a_fault() {
+        let p = typeset_math("E = mc^2".into(), false, 16.0, 0, 0, 0, 255).unwrap();
+        assert!(p.svg.starts_with("<svg"));
+        assert!(p.width > 3.0);
+        assert!(p.height > 0.5);
+        assert_eq!(p.depth, 0.0);
+        match typeset_math("\\frac{".into(), true, 16.0, 0, 0, 0, 255) {
+            Err(LeafError::Math { message, position }) => {
+                assert!(!message.is_empty());
+                assert!(position.is_some());
+            }
+            Err(other) => panic!("expected a math error, got {other}"),
+            Ok(_) => panic!("expected a math error, got a picture"),
+        }
     }
 }
