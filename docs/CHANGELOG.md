@@ -45,12 +45,17 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 - **leaf-ratatui** — a display formula is pixels over its rows, centred and unframed ([`7957102`](https://github.com/diaryx-org/leaf/commit/7957102b8ef77a4182dd78fef07e7d91028a9936))
 - **leaf-web** — a formula is its picture in the line, and a caret move onto it repaints ([`7f3a520`](https://github.com/diaryx-org/leaf/commit/7f3a520ae0a8afdb316aded934478ed7516e5bad))
 - **leaf-swift** — a formula is its picture in the line and a centred block, on the Mac and on iOS ([`1522f21`](https://github.com/diaryx-org/leaf/commit/1522f217f0fc5ed2acd236e7433cc6ba4f011e80))
+- **leaf-web** — the typesetter is a second wasm module, fetched on the first formula ([`9c4d384`](https://github.com/diaryx-org/leaf/commit/9c4d3840a6138f072e7f4d2f5763b79e85b6b615))
 
 ### Behavioural changes
 
 - every Markdown document leaf opens now parses `$…$` as inline math and `$$…$$` as display math; `$5 and $6` stays prose, since twig never opens math on a dollar followed by whitespace.
 
 - `wysiwyg::build`, `build_cached` and `build_spliced` take a `&Surface` where they took `&HashMap<String, usize>`, and an `Option<Reveal>` where they took `Option<Range<usize>>`; `Role` gains `Math` and `BlockClass` gains `Math`, which an exhaustive match must add; `VRow` and `VisualMap` gain a `math` field; `Doc::counts` no longer counts the TeX of an inline formula as words.
+
+- `typeset_math` and `MathPicture` are no longer exported from `@diaryx/leaf`'s `pkg/leaf_wasm.js`; they are `@diaryx/leaf/math`, where `MathPicture` is a wasm-bindgen class with getters and `free()`, not a plain object.
+
+- a formula is drawn as its placeholder (the `∑` atom, the `∑ tex` row) on the first frame and becomes its picture once the typesetter module has been fetched, unless `init` was given `math: "eager"`.
 
 <!-- git-cliff:end -->
 
