@@ -37,6 +37,75 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.3.0 — 2026-09-19
+
+### Breaking
+
+- **leaf-swift** — zoom is the model's, with a pinch, View ▸ Zoom, and fits, on the Mac and on iOS ([`1874ce4`](https://github.com/diaryx-org/leaf/commit/1874ce47d8acf15af00b492333c5a522585caf59))
+- **core** — a presentation value beside every presentation name ([`4ef4973`](https://github.com/diaryx-org/leaf/commit/4ef49735dc35d33a2d8af38274560cfcea96cbb7))
+- **ffi,wasm** — the bindings learn the value beside the name ([`c980d2c`](https://github.com/diaryx-org/leaf/commit/c980d2c5bc9239467e3e6e82ee585d4a5128e9f3))
+
+### Added
+
+- **leaf-swift** — a theme fitted to a page sets the flow's measure into the sheet's column ([`323394e`](https://github.com/diaryx-org/leaf/commit/323394e9213593ead2168d2355e695a5a64c1630))
+- **leaf-swift** — the theme reads a value, and four menus grow a row that writes one ([`512e5c8`](https://github.com/diaryx-org/leaf/commit/512e5c8f876e886a192fdce2707ab7079ae51f96))
+- **leaf-ratatui** — an exact colour is a truecolour cell, and the terminal degrades it ([`b71caf7`](https://github.com/diaryx-org/leaf/commit/b71caf79a47f663bf006bea109bc2c0ee0e0d18d))
+- **leaf-web** — an exact value draws inline, beside the token the document carries ([`b3818a1`](https://github.com/diaryx-org/leaf/commit/b3818a1eaa112ce7e66c8cbcf2b5e121641d184a))
+
+### Fixed
+
+- **core** — the delete that empties an attributed paragraph takes its div or `{…}` line with the letter ([`f92fe08`](https://github.com/diaryx-org/leaf/commit/f92fe087153c1be8705885c0cde737c0a6778c34))
+- **core** — a line height of 1 is absence, a trailing point is a typo, a generic is a keyword ([`83003b7`](https://github.com/diaryx-org/leaf/commit/83003b7e69d1a52517d0d10a19d6f0c88a547e97))
+- **ffi,wasm** — a value outside the vocabulary is refused, not a clearing ([`8958590`](https://github.com/diaryx-org/leaf/commit/8958590d4126d431f0d399ca005f550ca56e721e))
+- **leaf-swift** — Set writes what was chosen, and no row lays closer than half a line ([`fb6af4b`](https://github.com/diaryx-org/leaf/commit/fb6af4b5d80f99cb3452b1ced67838cded6a60e0))
+
+### Behavioural changes
+
+- The Backspace or Delete that takes the last character of a Markdown paragraph that is alone in a `<div>` removes the div with it, and in djot removes the `{…}` block-attribute line above the paragraph. The letter went alone before, leaving an empty div or a dangling attribute line.
+
+- a paginated `LeafEditor` opens at fit-width rather than at
+100%. A host that wants the old size sets `model.zoom = .actualSize`.
+
+- on iOS a two-finger drag no longer scrolls; two fingers
+pinch, one finger scrolls.
+
+- `Style::size` is `Option<FontSize>`, `Style::font` is `Option<FaceRef>`, `Style::color` is `Option<TextColor>` and `VRow::line_height` is `Option<LineHeight>`; the four gestures and four queries take and answer the open types. A caller matching on `Some(SizeStep::Large)` now matches `Some(FontSize::Step(SizeStep::Large))`, and reads a named family's string through `VisualMap::face_name`.
+
+- a `data-size="14pt"` drew at the theme's own size and now draws at 14 points; a `data-color="#c03030"` drew in the theme's ink and now draws in that red; a `data-line-height="1.3"` drew at the theme's spacing and now sets 1.3; a `data-font="Garamond"` reached the glyph as nothing and now reaches it as a named face. A document from elsewhere carrying any of those changes appearance on this upgrade.
+
+- `font_size_at_caret`, `line_spacing_at_caret`, `text_color_at_caret` and `font_family_at_caret` answer `Some` where they answered `None` for an exact value at the caret, so a menu that ticked *Default* over a `14pt` run now has a value to show.
+
+- `LineHeight::from_attr("1")` and `LineHeight::ratio(1.0)` answer `None` where they answered `Some(Ratio(1))`, so `Doc::set_line_spacing` given a ratio of one clears the key rather than writing it.
+
+- `FontFamily::from_attr` and `FontFace::from_attr` read the four generics without regard to case, so a `data-font="Serif"` that reached a glyph as `FaceRef::Named` now reaches it as `FaceRef::Generic(Serif)`.
+
+- a `data-size="14."`-shaped value — a decimal with a trailing bare point, at `data-size` or `data-line-height` — is no longer read, and is carried untouched as any value outside the grammar is.
+
+- leaf-ffi's four gesture and four query signatures take and answer the open types. `setFontSize(size: .large)` is now `setFontSize(size: .step(.large))`, and likewise `setLineSpacing`, `setFontFamily` and `setTextColor`; `fontSizeAtCaret()` answers `FontSize?` and its three peers answer `LineHeight?`, `FontFace?` and `TextColor?`. A caller that wants only the names narrows with a `case .step` / `case .generic` / `case .named`.
+
+- `Run.size`, `Run.font`, `Run.text_color` and `Row.line_height` carry a token where they carried nil for an exact value — a run at `data-size="14pt"` reports `"14pt"` rather than nothing, and a `data-font="Garamond"` reports `"Garamond"`. A renderer whose theme table has no entry for a token must fall through to parsing it (a `pt` suffix, a hex triple, a decimal) or it will draw the theme's default where it drew the theme's default before — the same picture, but now with the information to do better.
+
+- leaf-wasm's `setFontSize`, `setFontFamily`, `setTextColor` and `setLineSpacing` accept the exact forms and no longer throw on them, so a host that relied on `"14pt"` being refused is now writing it to the document.
+
+- `LeafDoc::set_font_size`, `set_line_spacing` and `set_font_family` given a value outside the vocabulary now leave the document untouched where they cleared the key — a `.points(0)`, a `.points(700)`, a `.ratio(0)` or a `.named("   ")` writes nothing at all, and whatever the run or block already said stands. `nil` is the argument that clears, and a ratio of 1 still clears because single spacing is absence. A caller that relied on an out-of-range number to clear must pass `nil`.
+
+- leaf-wasm's `setLineSpacing("1")` clears the key and answers the new view where it threw `unknown line spacing: 1` — `"1"` is single spacing, which is the theme's own, and is what the method's own documentation already promised. Every other token outside the grammar still throws.
+
+- `LeafEditorModel`'s four presentation gestures and four queries take and answer the binding's open types. `setFontSize(.large)` is now `setFontSize(.step(.large))`, and likewise `setLineSpacing`, `setFontFamily` and `setTextColor`; `fontSize` answers `FontSize?` and its three peers answer `LineHeight?`, `FontFace?` and `TextColor?`. There is no overload taking the closed enum, because `setFontSize(nil)` would then be ambiguous. A caller that wants only the names narrows with `stepOnly` / `genericOnly` / `namedOnly`, which are still there.
+
+- `EditorTheme.sizeScale(_:)` is no longer what sizes a run — it answers the ramp's multiple and nothing else, and `runSize(base:token:)` is the question, because an exact size replaces the run's size rather than scaling it. A host that overrode row heights or drew its own runs through `sizeScale` draws an exact size at the theme's size; call `runSize(base:token:)` instead.
+
+- `EditorTheme.lineSpacing(_:)`, `textColor(_:)` and `fontName(_:)` answer a value where they answered the theme's default — a `"1.3"` is now 1.3 rather than 1, a `"#c03030"` is that ink rather than the body ink, and a `"Garamond"` is Garamond where the machine has it rather than nil. A theme whose table deliberately swallowed a token it did not name no longer does.
+
+- a run carrying an exact `data-color="#rrggbb"` now draws in that colour as a truecolour cell, in both the light and the dark scheme; it drew in the theme's own ink before.
+
+- A run or block carrying an exact presentation value (`data-size="14pt"`, `data-font="Garamond"`, `data-color="#c03030"`, `data-line-height="1.3"`) now draws at that value in the editor, where it drew at the theme's default before.
+
+- A block whose `data-line-height` is under 0.5 is drawn at 0.5 — `EditorTheme.lineSpacing(_:)` floors the multiple it answers, and `rowHeight(for:)` with it — where it was drawn at the ratio itself and its rows overlapped the rows above them. The document is untouched: the token is kept, the query answers it, and the menu still ticks it.
+
+- A value with a third decimal digit is rounded on the digits rather than through a binary float, so a `data-size="13.455pt"` draws at 13.46pt where it drew at 13.45pt, and a spacing field's `1.005` sets 1.01 where it cleared the key. This is `leaf_core::style::Hundredths::parse`'s own answer, which is what the document is written with.
+
+
 ## v0.2.1 — 2026-09-19
 
 ### Fixed

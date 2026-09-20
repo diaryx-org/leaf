@@ -1,6 +1,6 @@
 {
   "name": "@diaryx/leaf",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Framework-agnostic rich-text editor for the web: a proportional WYSIWYG surface over leaf-core's caret model, compiled to WebAssembly.",
   "type": "module",
   "license": "MIT",
