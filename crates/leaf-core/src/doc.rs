@@ -42,7 +42,7 @@ use crate::counts::{self, TextCounts};
 use crate::html;
 use crate::source::{self, SourceMap};
 use crate::style::{Align, FontFace, FontSize, LineHeight, MarkColor, TextColor};
-use crate::wysiwyg::{self, MediaKind, MediaStop, VisualMap};
+use crate::wysiwyg::{self, MediaKind, MediaStop, Reveal, VisualMap};
 
 /// Which view the body shows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -532,7 +532,7 @@ impl<'a> HighlightCursor<'a> {
 /// line, and a frontend holding one copy of a map across the two would take
 /// the second's key for the first's and paint the wrong document.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct VisualKey(u64, Option<(u64, Option<usize>, Option<Range<usize>>)>);
+pub struct VisualKey(u64, Option<(u64, Option<usize>, Option<Reveal>)>);
 
 pub struct Doc {
     editor: Editor,
@@ -659,7 +659,7 @@ pub struct Doc {
     /// The reveal line ([`Doc::reveal_line`]) is the caret's, and is `None` in
     /// every mode but [`MarkupMode::Full`] — so outside that mode the key is
     /// text and width alone, and a caret motion still rebuilds nothing.
-    vmap_key: Option<(u64, Option<usize>, Option<Range<usize>>)>,
+    vmap_key: Option<(u64, Option<usize>, Option<Reveal>)>,
     /// Which `Doc` this is, distinct from every other one built in this
     /// process. Folded into [`VisualKey`] so that a map stashed by a frontend
     /// can never be mistaken for another document's — see
@@ -670,14 +670,14 @@ pub struct Doc {
     /// the rest are reused shifted (see [`wysiwyg::BlockCache`]). Persists across
     /// builds; a pure accelerator, so it's never read for correctness.
     block_cache: wysiwyg::BlockCache,
-    /// How many visual rows each block image reserves, keyed by its destination —
-    /// set by the frontend through [`Doc::set_media_rows`] once it has decoded and
-    /// measured the pictures. Core does no image I/O, so this is the only way it
-    /// learns a picture's height; a destination not in the map reserves the bare
-    /// one-row placeholder. Threaded into the builder so [`wysiwyg::build_cached`]
-    /// sizes each placeholder, and folded into `vmap_key` so a height change
-    /// rebuilds the map.
-    media_rows: HashMap<String, usize>,
+    /// What the frontend has said about itself — how tall its pictures came
+    /// out, keyed by destination or by TeX, and whether it paints a picture in
+    /// a line — set through [`Doc::set_media_rows`], [`Doc::set_math_rows`] and
+    /// [`Doc::set_inline_pictures`]. Core does no I/O and lays out in glyphs,
+    /// so this is the only way it learns a height or a capability. Threaded
+    /// into every build; a change drops both caches, since none of it is in a
+    /// block's bytes.
+    surface: wysiwyg::Surface,
 
     // View geometry the renderer stamps each frame, so mouse events can map a
     // screen cell back to a byte offset.
@@ -1133,7 +1133,7 @@ impl Doc {
             vmap_key: None,
             identity: NEXT_IDENTITY.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             block_cache: wysiwyg::BlockCache::default(),
-            media_rows: HashMap::new(),
+            surface: wysiwyg::Surface::default(),
             scroll: 0,
             body_origin: (0, 0),
             body_width: 0,
@@ -1184,9 +1184,19 @@ impl Doc {
         self.block_cache = wysiwyg::BlockCache::default();
     }
 
-    /// The source byte range of the line the caret sits on, when that line
-    /// should render its raw delimiters — `None` in every mode and view that
-    /// hides them, which is what the builder reads as "reveal nothing".
+    /// The line the caret sits on, when that line should render something
+    /// raw — `None` when nothing on it would, which is what the builder reads
+    /// as "reveal nothing" and what keeps caret motion from costing a build.
+    ///
+    /// Two things ask for it. Under [`MarkupMode::Full`] every delimiter on
+    /// the caret's line shows ([`Reveal::full`]). In the two hidden modes a
+    /// *formula* on it still shows its TeX ([`Reveal::math`]), because a
+    /// formula's content is not its picture and hiding the `$` alone would
+    /// leave nothing to edit; there the line is threaded through only when it
+    /// meets a block that holds one, which the last build's layout knows
+    /// ([`wysiwyg::BlockCache::math_meets`]) — so a document with no math
+    /// keeps the `None` it always had, and one with math pays a rebuild only
+    /// while the caret is in the formula's block.
     ///
     /// A *source* line (newline to newline), not a visual row: a wrapped
     /// paragraph and a `LineFlow::Preserve` soft break both split one source
@@ -1197,11 +1207,17 @@ impl Doc {
     ///
     /// Only in [`View::Wysiwyg`]: source view already shows every byte, so
     /// there is nothing there to reveal.
-    pub(crate) fn reveal_line(&self) -> Option<Range<usize>> {
-        if !self.markup_mode.reveals_caret_line() || self.view != View::Wysiwyg {
+    pub(crate) fn reveal_line(&self) -> Option<Reveal> {
+        if self.view != View::Wysiwyg {
             return None;
         }
-        Some(source_line_range(&self.source, self.caret))
+        let line = source_line_range(&self.source, self.caret);
+        if self.markup_mode.reveals_caret_line() {
+            return Some(Reveal::full(line));
+        }
+        self.block_cache
+            .math_meets(&line)
+            .then_some(Reveal::math(line))
     }
 
     /// The current soft-break flow preference (see [`LineFlow`]).
@@ -1313,14 +1329,48 @@ impl Doc {
     /// block's bytes and so wouldn't otherwise re-render it). Steady state is a
     /// no-op, so a frontend can just hand over its current measurements each frame.
     pub fn set_media_rows(&mut self, rows: HashMap<String, usize>) {
-        if self.media_rows == rows {
+        if self.surface.media_rows == rows {
             return;
         }
-        self.media_rows = rows;
-        // A height lives outside the block's source bytes, so the content-keyed
-        // block cache would hand back the old-height rows on a hit. Drop it (and
-        // the splice layout it carries) so the next build re-renders every block
-        // at the new heights, and force that build by clearing the map key.
+        self.surface.media_rows = rows;
+        self.surface_changed();
+    }
+
+    /// Tell the model how many visual rows each display formula should
+    /// reserve, keyed by the formula's TeX exactly as the map's
+    /// [`MathInfo::tex`](wysiwyg::MathInfo::tex) handed it over. The peer of
+    /// [`set_media_rows`](Self::set_media_rows) for the terminal, which
+    /// typesets the picture, measures it in cells, and reports back; a
+    /// frontend that lays formulas out in pixels never calls this and gets
+    /// the one-row placeholder to paint over.
+    pub fn set_math_rows(&mut self, rows: HashMap<String, usize>) {
+        if self.surface.math_rows == rows {
+            return;
+        }
+        self.surface.math_rows = rows;
+        self.surface_changed();
+    }
+
+    /// Tell the model whether the frontend can paint a picture *inside* a line
+    /// of text. When it can, an inline formula renders to one atom glyph the
+    /// frontend draws its typeset picture over — see
+    /// [`MathInfo`](wysiwyg::MathInfo) — and when it cannot (a terminal), to
+    /// the code-styled TeX it always showed. Off until a frontend says
+    /// otherwise, so a host that has not caught up sees what it saw.
+    pub fn set_inline_pictures(&mut self, on: bool) {
+        if self.surface.inline_pictures == on {
+            return;
+        }
+        self.surface.inline_pictures = on;
+        self.surface_changed();
+    }
+
+    /// A height or a capability lives outside a block's source bytes, so the
+    /// content-keyed block cache would hand back the old rows on a hit. Drop
+    /// it (and the splice layout it carries) so the next build re-renders
+    /// every block against the new surface, and force that build by clearing
+    /// the map key.
+    fn surface_changed(&mut self) {
         self.block_cache = wysiwyg::BlockCache::default();
         self.vmap_key = None;
     }
@@ -1371,6 +1421,30 @@ impl Doc {
         let reveal = self.reveal_line();
         let key = (self.revision, wrap, reveal.clone());
         if self.vmap_key.as_ref() != Some(&key) {
+            self.build_map_with(wrap, reveal);
+            self.vmap_key = Some(key);
+            // In a hidden mode the reveal line was decided from the *previous*
+            // build's layout, whose spans are stale across an edit: the
+            // keystroke that closes a new `$…$` on the caret's line asked "is
+            // there math here?" of a layout that had none, and the formula
+            // would snap to its picture under the caret until the next
+            // motion. Ask again of the layout just built, and go once more if
+            // the answer moved. Between edits the first answer is exact and
+            // this is one comparison.
+            let again = self.reveal_line();
+            if again != self.vmap_key.as_ref().and_then(|k| k.2.clone()) {
+                self.build_map_with(wrap, again.clone());
+                self.vmap_key = Some((self.revision, wrap, again));
+            }
+        }
+        self.clamp_caret();
+    }
+
+    /// One build of the map at `wrap` under `reveal`, incremental where it can
+    /// be — the body of [`build_map`](Self::build_map), which decides whether
+    /// to call it.
+    fn build_map_with(&mut self, wrap: Option<usize>, reveal: Option<Reveal>) {
+        {
             // Enumerate the top-level blocks cheaply — no whole-arena marshal.
             // A subtree is pulled only for the block(s) that actually changed, so
             // the FFI marshal shrinks from O(document) to O(edited block).
@@ -1391,7 +1465,7 @@ impl Doc {
                     let prev = std::mem::take(&mut self.vmap);
                     let source = &self.source;
                     let cache = &mut self.block_cache;
-                    let media_rows = &self.media_rows;
+                    let surface = &self.surface;
                     let editor = &mut self.editor;
                     wysiwyg::build_spliced(
                         prev,
@@ -1400,7 +1474,7 @@ impl Doc {
                         preserve_soft,
                         &top,
                         dirty,
-                        media_rows,
+                        surface,
                         reveal.clone(),
                         cache,
                         |id| editor.subtree(NodeId(id)).unwrap_or_default(),
@@ -1411,14 +1485,14 @@ impl Doc {
             self.vmap = spliced.unwrap_or_else(|| {
                 let source = &self.source;
                 let cache = &mut self.block_cache;
-                let media_rows = &self.media_rows;
+                let surface = &self.surface;
                 let editor = &mut self.editor;
                 wysiwyg::build_cached(
                     &top,
                     source,
                     wrap,
                     preserve_soft,
-                    media_rows,
+                    surface,
                     reveal,
                     cache,
                     |id| editor.subtree(NodeId(id)).unwrap_or_default(),
@@ -1426,9 +1500,7 @@ impl Doc {
             });
             // Acknowledge the dirty range so the next edit's range starts fresh.
             self.editor.clear_dirty();
-            self.vmap_key = Some(key);
         }
-        self.clamp_caret();
     }
 
     fn nodes(&mut self) -> Vec<FlatNode> {
@@ -1633,7 +1705,14 @@ impl Doc {
         let Ok(nodes) = editor.nodes() else {
             return TextCounts::default();
         };
-        let map = wysiwyg::build(&nodes, &self.source, None, false, &HashMap::new(), None);
+        // A surface that paints pictures in a line, so an inline formula is
+        // an atom here and never its TeX: a formula is a picture to a reader
+        // whichever way it is written, and the count says so consistently.
+        let surface = wysiwyg::Surface {
+            inline_pictures: true,
+            ..Default::default()
+        };
+        let map = wysiwyg::build(&nodes, &self.source, None, false, &surface, None);
         counts::tally(&map, range)
     }
 
@@ -11263,10 +11342,7 @@ mod tests {
     /// [`reference_map`] with a reveal line — the ground truth for the
     /// `MarkupMode::Full` builds, where the map is a function of the caret's
     /// line as well as the text.
-    fn reference_map_revealing(
-        source: &str,
-        reveal: Option<Range<usize>>,
-    ) -> crate::wysiwyg::VisualMap {
+    fn reference_map_revealing(source: &str, reveal: Option<Reveal>) -> crate::wysiwyg::VisualMap {
         // The same parse `Doc` uses. With twig's plain defaults instead, the two
         // sides disagree on what the *document* is before the renderer is even
         // reached — a bare `:word` is a text directive to one and prose to the
@@ -11279,7 +11355,7 @@ mod tests {
             source,
             None,
             false,
-            &std::collections::HashMap::new(),
+            &wysiwyg::Surface::default(),
             reveal,
         )
     }
@@ -17388,5 +17464,174 @@ mod tests {
         let after = d.counts();
         assert_eq!(after.paragraphs, wysiwyg.paragraphs + 1);
         assert_eq!(after.words, wysiwyg.words + 2);
+    }
+
+    // ── math ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn a_formula_reveals_on_the_caret_line_in_the_hidden_modes() {
+        // The rule the proposal states: a formula's content is its TeX, not
+        // its picture, so it reveals on the caret's line in *every* mode —
+        // and nothing else on that line does outside `Full`.
+        let mut d = doc_in(
+            View::Wysiwyg,
+            "math_reveal",
+            "*one* $x+y$ here\n\ntwo there\n",
+        );
+        d.set_inline_pictures(true);
+        assert_eq!(d.markup_mode(), MarkupMode::None);
+
+        // Away from the formula's line: the atom, and no reveal at all.
+        caret_at(&mut d, "two");
+        assert!(
+            drawn_rows(&d).iter().any(|r| r == "one ∑ here"),
+            "{:?}",
+            drawn_rows(&d)
+        );
+        assert_eq!(d.vmap.math.len(), 1);
+        assert_eq!(d.reveal_line(), None, "a line with no math keys nothing");
+
+        // On it: the formula is its source, the emphasis is still resolved.
+        caret_at(&mut d, "here");
+        assert!(
+            drawn_rows(&d).iter().any(|r| r == "one $x+y$ here"),
+            "{:?}",
+            drawn_rows(&d)
+        );
+        assert!(d.vmap.math.is_empty());
+        assert_eq!(d.reveal_line(), Some(Reveal::math(0..16)));
+
+        // Off again, and the picture is back.
+        caret_at(&mut d, "two");
+        assert!(drawn_rows(&d).iter().any(|r| r == "one ∑ here"));
+
+        // The same in Shortcuts; and Full reveals the emphasis too.
+        d.set_markup_mode(MarkupMode::Shortcuts);
+        caret_at(&mut d, "here");
+        assert!(drawn_rows(&d).iter().any(|r| r == "one $x+y$ here"));
+        d.set_markup_mode(MarkupMode::Full);
+        caret_at(&mut d, "here");
+        assert!(drawn_rows(&d).iter().any(|r| r == "*one* $x+y$ here"));
+    }
+
+    #[test]
+    fn a_formula_closed_by_typing_reveals_at_once() {
+        // The reveal line is decided from the last build's layout, which
+        // across an edit is stale: the keystroke that closes a `$…$` asks a
+        // layout that knew no math. `build_map` asks again once the new
+        // layout is in, so the formula does not snap to its picture under
+        // the caret.
+        let mut d = doc_in(View::Wysiwyg, "math_typed", "say \n");
+        d.set_inline_pictures(true);
+        d.set_markup_mode(MarkupMode::Shortcuts);
+        d.caret = 4;
+        for ch in ["$", "x", "$"] {
+            d.insert(ch);
+            d.build_visual(80);
+        }
+        assert_eq!(d.source, "say $x$\n");
+        assert_eq!(
+            drawn_rows(&d)[0],
+            "say $x$",
+            "source, not a picture, under the caret"
+        );
+        assert!(d.vmap.math.is_empty());
+        // Leaving the line folds it — there is only one line, so add one.
+        d.newline();
+        d.insert("more");
+        d.build_visual(80);
+        assert_eq!(drawn_rows(&d)[0], "say ∑");
+        assert_eq!(d.vmap.math.len(), 1);
+        // And deleting the formula while revealed drops the reveal with it.
+        d.caret = 7;
+        d.build_visual(80);
+        assert_eq!(drawn_rows(&d)[0], "say $x$");
+        for _ in 0..3 {
+            d.backspace();
+        }
+        d.build_visual(80);
+        assert_eq!(d.source, "say \n\nmore\n");
+        assert_eq!(d.reveal_line(), None);
+    }
+
+    #[test]
+    fn a_display_block_is_edited_where_it_stands() {
+        let mut d = doc_in(
+            View::Wysiwyg,
+            "math_block",
+            "intro\n\n$$\n\\int_0^1 x\n$$\n\nend\n",
+        );
+        caret_at(&mut d, "end");
+        assert_eq!(
+            drawn_rows(&d),
+            vec!["intro", "", "∑ \\int_0^1 x", "", "end"]
+        );
+        // Up from `end` lands on the placeholder, whose glyphs all carry the
+        // block's start — which is on its `$$` line, so the block reveals.
+        d.move_up(false);
+        d.build_visual(80);
+        assert_eq!(d.caret, 7);
+        assert_eq!(
+            drawn_rows(&d),
+            vec!["intro", "", "$$", "\\int_0^1 x", "$$", "", "end"]
+        );
+        // Down walks the source lines, still revealed; typing edits the TeX.
+        d.move_down(false);
+        d.build_visual(80);
+        assert_eq!(d.caret, 10);
+        d.move_end(false);
+        d.insert("^2");
+        d.build_visual(80);
+        assert_eq!(d.source, "intro\n\n$$\n\\int_0^1 x^2\n$$\n\nend\n");
+        assert_eq!(drawn_rows(&d)[3], "\\int_0^1 x^2");
+        // Out below, and it folds to the placeholder with the new TeX.
+        d.move_down(false);
+        d.move_down(false);
+        d.move_down(false);
+        d.build_visual(80);
+        assert_eq!(drawn_rows(&d)[2], "∑ \\int_0^1 x^2");
+        assert_eq!(d.vmap.math[0].tex, "\n\\int_0^1 x^2\n");
+    }
+
+    #[test]
+    fn set_math_rows_reserves_filler_rows_by_tex() {
+        let mut d = doc_in(View::Wysiwyg, "math_rows", "$$\nx\n$$\n\nend\n");
+        caret_at(&mut d, "end");
+        assert_eq!(d.vmap.math[0].rows_span, 0..1);
+        d.set_math_rows(HashMap::from([(d.vmap.math[0].tex.clone(), 3)]));
+        d.build_visual(80);
+        assert_eq!(d.vmap.math[0].rows_span, 0..3);
+        assert_eq!(drawn_rows(&d)[..3], ["∑ x", "", ""]);
+        // Cheap when nothing changed.
+        let key = d.visual_key();
+        d.set_math_rows(HashMap::from([(d.vmap.math[0].tex.clone(), 3)]));
+        d.build_visual(80);
+        assert_eq!(d.visual_key(), key);
+    }
+
+    #[test]
+    fn a_dollar_typed_in_shortcuts_authors_math() {
+        // (In `None` the same keystrokes *also* mint a formula for now: twig's
+        // `insert_literal` does not yet escape `$` under the math extension —
+        // see `docs/tasks/a-typed-dollar-mints-math-in-the-hidden-mode.md`.)
+        let mut d = doc_in(View::Wysiwyg, "math_dollar_sc", "\n");
+        d.set_markup_mode(MarkupMode::Shortcuts);
+        d.caret = 0;
+        d.insert("$x$");
+        assert_eq!(d.source, "$x$\n");
+        d.caret = 1;
+        assert_eq!(d.breadcrumb(), "doc › para › inline_math");
+    }
+
+    #[test]
+    fn counts_see_a_formula_as_a_picture_however_it_is_written() {
+        let c = counts_of(
+            "counts_math",
+            "the sum $\\sum_i x_i$ and\n\n$$\ny = mx + c\n$$\n",
+        );
+        // `the sum … and` is three words; neither formula counts, and the
+        // display block is not a paragraph of text.
+        assert_eq!(c.words, 3);
+        assert_eq!(c.paragraphs, 1);
     }
 }
