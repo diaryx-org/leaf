@@ -331,6 +331,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_click(void*_Nonnull ptr, uint32_t r
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_click_ch(void*_Nonnull ptr, uint32_t row, uint32_t ch, int8_t extend, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_COUNTS
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_COUNTS
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_counts(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_DELETE_FORWARD
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_DELETE_FORWARD
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_delete_forward(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
@@ -604,6 +609,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_select_word_ch(void*_Nonnull ptr, u
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SELECTED_TEXT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SELECTED_TEXT
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_selected_text(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SELECTION_COUNTS
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SELECTION_COUNTS
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_selection_counts(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SELECTION_HTML
@@ -1209,6 +1219,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_click_ch(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_COUNTS
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_COUNTS
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_counts(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_DELETE_FORWARD
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_DELETE_FORWARD
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_delete_forward(void
@@ -1536,6 +1552,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_select_word_ch(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SELECTED_TEXT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SELECTED_TEXT
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_selected_text(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SELECTION_COUNTS
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SELECTION_COUNTS
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_selection_counts(void
     
 );
 #endif

@@ -646,6 +646,23 @@ public protocol LeafDocProtocol : AnyObject {
      */
     func clickCh(row: UInt32, ch: UInt32, extend: Bool)  -> DocView
     
+    /**
+     * Words, characters, and paragraphs over the whole document — the numbers
+     * a status bar or an inspector puts next to a piece of writing.
+     *
+     * Counted over the text a reader sees rather than the markup that spells
+     * it: `**bold**` is one word and four characters, a link is its label and
+     * not its destination, a picture counts nothing, and frontmatter is not
+     * writing. The same in both views — the count reads neither the view nor
+     * the map the host last built. See `leaf_core::Doc::counts`.
+     *
+     * It is O(document) and not free (about 4 ms on a 45 KB file), so ask
+     * when the typing settles rather than on every keystroke; there is no
+     * `DocView` in it, because nothing about the document changes by being
+     * counted.
+     */
+    func counts()  -> TextCounts
+    
     func deleteForward()  -> DocView
     
     func deleteWordBack()  -> DocView
@@ -986,6 +1003,12 @@ public protocol LeafDocProtocol : AnyObject {
      * The selected text, if any — for a clipboard copy/cut.
      */
     func selectedText()  -> String?
+    
+    /**
+     * The same statistics over the selection alone — `None` when nothing is
+     * selected. See `leaf_core::Doc::selection_counts`.
+     */
+    func selectionCounts()  -> TextCounts?
     
     /**
      * The current selection rendered to HTML by twig — the rich flavor a copy
@@ -1556,6 +1579,28 @@ open func clickCh(row: UInt32, ch: UInt32, extend: Bool) -> DocView {
         FfiConverterUInt32.lower(row),
         FfiConverterUInt32.lower(ch),
         FfiConverterBool.lower(extend),$0
+    )
+})
+}
+    
+    /**
+     * Words, characters, and paragraphs over the whole document — the numbers
+     * a status bar or an inspector puts next to a piece of writing.
+     *
+     * Counted over the text a reader sees rather than the markup that spells
+     * it: `**bold**` is one word and four characters, a link is its label and
+     * not its destination, a picture counts nothing, and frontmatter is not
+     * writing. The same in both views — the count reads neither the view nor
+     * the map the host last built. See `leaf_core::Doc::counts`.
+     *
+     * It is O(document) and not free (about 4 ms on a 45 KB file), so ask
+     * when the typing settles rather than on every keystroke; there is no
+     * `DocView` in it, because nothing about the document changes by being
+     * counted.
+     */
+open func counts() -> TextCounts {
+    return try!  FfiConverterTypeTextCounts.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_counts(self.uniffiClonePointer(),$0
     )
 })
 }
@@ -2214,6 +2259,17 @@ open func selectWordCh(row: UInt32, ch: UInt32) -> DocView {
 open func selectedText() -> String? {
     return try!  FfiConverterOptionString.lift(try! rustCall() {
     uniffi_leaf_ffi_fn_method_leafdoc_selected_text(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+    /**
+     * The same statistics over the selection alone — `None` when nothing is
+     * selected. See `leaf_core::Doc::selection_counts`.
+     */
+open func selectionCounts() -> TextCounts? {
+    return try!  FfiConverterOptionTypeTextCounts.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_selection_counts(self.uniffiClonePointer(),$0
     )
 })
 }
@@ -6032,6 +6088,127 @@ public func FfiConverterTypeTableView_lower(_ value: TableView) -> RustBuffer {
     return FfiConverterTypeTableView.lower(value)
 }
 
+
+/**
+ * How much writing there is — over the whole document, or over the
+ * selection. The FFI shape of `leaf_core::TextCounts`; see
+ * [`LeafDoc::counts`] for what is counted and what isn't.
+ */
+public struct TextCounts {
+    /**
+     * Words, by UAX#29 word segmentation: a segment holding at least one
+     * letter or digit, so `don't` is one and a lone dash is none.
+     * A hyphenated compound is two, which is what the algorithm says.
+     */
+    public var words: UInt64
+    /**
+     * Characters as a reader counts them — grapheme clusters, spaces
+     * included. An emoji family and an accented letter are each one.
+     */
+    public var characters: UInt64
+    /**
+     * The same, less every whitespace grapheme.
+     */
+    public var charactersWithoutSpaces: UInt64
+    /**
+     * Block-level containers holding at least one non-whitespace character:
+     * a paragraph, a heading, each list item, each paragraph inside a
+     * blockquote, a whole code block, a whole table.
+     */
+    public var paragraphs: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Words, by UAX#29 word segmentation: a segment holding at least one
+         * letter or digit, so `don't` is one and a lone dash is none.
+         * A hyphenated compound is two, which is what the algorithm says.
+         */words: UInt64, 
+        /**
+         * Characters as a reader counts them — grapheme clusters, spaces
+         * included. An emoji family and an accented letter are each one.
+         */characters: UInt64, 
+        /**
+         * The same, less every whitespace grapheme.
+         */charactersWithoutSpaces: UInt64, 
+        /**
+         * Block-level containers holding at least one non-whitespace character:
+         * a paragraph, a heading, each list item, each paragraph inside a
+         * blockquote, a whole code block, a whole table.
+         */paragraphs: UInt64) {
+        self.words = words
+        self.characters = characters
+        self.charactersWithoutSpaces = charactersWithoutSpaces
+        self.paragraphs = paragraphs
+    }
+}
+
+
+
+extension TextCounts: Equatable, Hashable {
+    public static func ==(lhs: TextCounts, rhs: TextCounts) -> Bool {
+        if lhs.words != rhs.words {
+            return false
+        }
+        if lhs.characters != rhs.characters {
+            return false
+        }
+        if lhs.charactersWithoutSpaces != rhs.charactersWithoutSpaces {
+            return false
+        }
+        if lhs.paragraphs != rhs.paragraphs {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(words)
+        hasher.combine(characters)
+        hasher.combine(charactersWithoutSpaces)
+        hasher.combine(paragraphs)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTextCounts: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TextCounts {
+        return
+            try TextCounts(
+                words: FfiConverterUInt64.read(from: &buf), 
+                characters: FfiConverterUInt64.read(from: &buf), 
+                charactersWithoutSpaces: FfiConverterUInt64.read(from: &buf), 
+                paragraphs: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: TextCounts, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.words, into: &buf)
+        FfiConverterUInt64.write(value.characters, into: &buf)
+        FfiConverterUInt64.write(value.charactersWithoutSpaces, into: &buf)
+        FfiConverterUInt64.write(value.paragraphs, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTextCounts_lift(_ buf: RustBuffer) throws -> TextCounts {
+    return try FfiConverterTypeTextCounts.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTextCounts_lower(_ value: TextCounts) -> RustBuffer {
+    return FfiConverterTypeTextCounts.lower(value)
+}
+
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
@@ -7615,6 +7792,30 @@ fileprivate struct FfiConverterOptionTypeSelectionQuote: FfiConverterRustBuffer 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeTextCounts: FfiConverterRustBuffer {
+    typealias SwiftType = TextCounts?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeTextCounts.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeTextCounts.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeAlign: FfiConverterRustBuffer {
     typealias SwiftType = Align?
 
@@ -8135,6 +8336,9 @@ private var initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_click_ch() != 39201) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_counts() != 50707) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_delete_forward() != 30834) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -8298,6 +8502,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_selected_text() != 14374) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_selection_counts() != 14635) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_selection_html() != 4095) {

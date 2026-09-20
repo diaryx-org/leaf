@@ -13,12 +13,17 @@
 //! are. Both read the same twig AST, so the two views cannot disagree about what
 //! the document is.
 //!
+//! The [`counts`] module reads that same rendering back as numbers — words,
+//! characters, paragraphs — so a host's word count is a count of what the page
+//! shows rather than of the markup underneath it.
+//!
 //! Nothing here depends on a UI toolkit. Glyphs carry a toolkit-agnostic
 //! [`Style`], which a frontend crate (`leaf-tui`, and next `leaf-gui`) maps onto
 //! its own styling. Both frontends share this exact caret math, edit surface,
 //! and offset⇄position mapping — the split is what lets a GUI reuse the hard
 //! parts instead of re-deriving them.
 
+pub mod counts;
 pub mod doc;
 mod html;
 pub mod source;
@@ -27,6 +32,7 @@ pub mod style;
 pub mod syntax;
 pub mod wysiwyg;
 
+pub use counts::TextCounts;
 pub use doc::{
     Capabilities, DiskState, Doc, FootnoteDef, FootnoteRef, Highlight, HighlightCursor,
     InlineMarks, Landing, LineFlow, MarkupMode, PAGE_BREAK, Quote, View, VisualKey,

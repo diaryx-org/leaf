@@ -17,6 +17,41 @@
 import SwiftUI
 import LeafFFI
 
+/// What the document adds up to: the numbers behind a word-count pill in a
+/// status bar, or a statistics panel's table.
+///
+/// Published by `LeafEditorModel.counts` while `countsEnabled` is on, and
+/// `Equatable` so the model can republish only when a number actually moved —
+/// `EditorState`'s rule, and here for a sharper form of its reason. The tally
+/// is redone after the typing settles, and plenty of settles move nothing in
+/// it at all: a caret step, a re-wrap, a picture arriving, a mark toggled over
+/// words already counted.
+public struct EditorCounts: Equatable {
+    /// The whole document. See `LeafDoc.counts()` for what is text and what is
+    /// furniture the renderer drew — a bullet, a quote's gutter, a picture.
+    public var document: TextCounts
+
+    /// The same statistics over the selection, and nil without one — an empty
+    /// selection is no selection, which is what lets a panel show these
+    /// *instead of* the document's numbers exactly when there are some.
+    public var selection: TextCounts?
+
+    /// How many sheets the document lays out to, and nil in the continuous
+    /// flow, where the question has no answer until something prints it.
+    ///
+    /// The one field that is the *surface's* rather than the document's: a page
+    /// count is a fact about a layout at a width and a paper size, so it is nil
+    /// until there is a view to have laid the document out, where `document`
+    /// and `selection` hold from the moment a model exists.
+    public var pages: Int?
+
+    public init(document: TextCounts, selection: TextCounts? = nil, pages: Int? = nil) {
+        self.document = document
+        self.selection = selection
+        self.pages = pages
+    }
+}
+
 /// The observable owner of a document. Hold it with `@StateObject`; bind a
 /// toolbar to `state` and call the command methods from buttons.
 public final class LeafEditorModel: ObservableObject {
@@ -354,7 +389,11 @@ public final class LeafEditorModel: ObservableObject {
     }
 
     let doc: LeafDoc
-    fileprivate weak var textView: LeafTextView?
+    /// The surface this model drives, once SwiftUI has made one. Internal
+    /// rather than private to the file, like `doc` above it: it is the model's
+    /// half of a pair, and a caller inside the module may stand the two up
+    /// without going through a representable.
+    weak var textView: LeafTextView?
 
     /// Parse `source` as `format` (`"markdown"`, `"djot"`, `"html"`, `"xml"`).
     public init(source: String, format: String = "markdown") throws {
@@ -713,6 +752,97 @@ public final class LeafEditorModel: ObservableObject {
         }
     }
 
+    // ── text statistics ───────────────────────────────────────────────────────
+    // Off unless a host asks for them. Counting is O(document) — a reparse and
+    // an unwrapped layout of the whole thing, about 4 ms on 45 KB — and most
+    // windows have nowhere to put the answer, so a model that counted by
+    // default would spend that on nobody's behalf. What a host that *does* ask
+    // gets is a number that follows the typing without riding it: one count per
+    // settle, not one per keystroke.
+
+    /// Whether the model keeps `counts` up to date. Off by default, for the
+    /// price above.
+    ///
+    /// Turning it on counts at once, so a panel the reader just opened has
+    /// something in it rather than a blank waiting out the debounce; turning it
+    /// off drops `counts` to nil and cancels whatever was on the clock.
+    public var countsEnabled: Bool = false {
+        didSet {
+            guard countsEnabled != oldValue else { return }
+            countsWork?.cancel()
+            countsWork = nil
+            // Deferred, because a host flips this from inside its own view code
+            // — a panel's disclosure, an `.onChange` on a menu item — and that
+            // is a SwiftUI update as readily as the one `zoomChanged` dodges.
+            recount(deferred: true)
+        }
+    }
+
+    /// The live statistics: nil while `countsEnabled` is off, and until the
+    /// first count lands. Republished only when a number moved — see
+    /// `EditorCounts`.
+    @Published public private(set) var counts: EditorCounts?
+
+    /// The recount waiting on the typing to settle, cancelled and replaced by
+    /// each repaint — which is what makes a burst of keystrokes one count.
+    private var countsWork: DispatchWorkItem?
+
+    /// How long "settled" is. Long enough that a fast typist's word is one
+    /// count rather than six, short enough that the pill has caught up before
+    /// they look up at it.
+    private static let countsDebounce: TimeInterval = 0.15
+
+    /// Put a recount on the clock. Called after every repaint, unconditionally:
+    /// the chrome state is no guide here, since a paragraph that has gained
+    /// three words moves no mark, no heading, and no dirty flag after its first
+    /// character — the very case a word count exists for.
+    private func scheduleCounts() {
+        guard countsEnabled else { return }
+        countsWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.countsWork = nil
+            // A turn on the clock already, so there is no update to publish
+            // from inside of.
+            self?.recount(deferred: false)
+        }
+        countsWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.countsDebounce, execute: work)
+    }
+
+    /// Count, and hand the answer to `publishCounts`. Asks `countsEnabled`
+    /// itself rather than trusting the caller, so the disable path spells "no
+    /// counts" with the same call the enable path spells "these ones" with.
+    private func recount(deferred: Bool) {
+        guard countsEnabled else { return publishCounts(nil, deferred: deferred) }
+        publishCounts(
+            EditorCounts(document: doc.counts(),
+                         selection: doc.selectionCounts(),
+                         pages: pageCount),
+            deferred: deferred)
+    }
+
+    /// The sheets the surface laid the document onto, and nil off paper or
+    /// before there is a surface — see `EditorCounts.pages`.
+    private var pageCount: Int? {
+        guard let textView, textView.pageSetup != nil else { return nil }
+        return textView.pages.count
+    }
+
+    /// Publish `value`, if it differs from what is published. `deferred` waits
+    /// a turn first, which is what a count triggered from inside a SwiftUI
+    /// update needs: publishing there is what the view system forbids, and
+    /// `zoomChanged` steps around it exactly this way.
+    private func publishCounts(_ value: EditorCounts?, deferred: Bool) {
+        guard deferred else {
+            if counts != value { counts = value }
+            return
+        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.counts != value else { return }
+            self.counts = value
+        }
+    }
+
     // ── markup exposure preference ──────────────────────────────────────────
     // A three-rung ladder, not a pair of toggles. `.none` (the default) is the
     // clean surface Diaryx ships: delimiters hidden, and typed syntax kept
@@ -741,8 +871,13 @@ public final class LeafEditorModel: ObservableObject {
     public var isSource: Bool { state.view == "source" }
 
     /// TEMP DEBUG: seed a selection by source offsets, to inspect highlight alignment.
+    ///
+    /// Through `prefer` rather than `run`, for that method's reason: this one is
+    /// issued by the *host*, which may well not have put the document on screen
+    /// yet, and a selection dropped on the floor there is indistinguishable from
+    /// one that did not take.
     public func debugSelect(anchor: UInt32, focus: UInt32) {
-        run { $0.setSelectionOffsets(anchor: anchor, focus: focus) }
+        prefer { $0.setSelectionOffsets(anchor: anchor, focus: focus) }
     }
 
     private func run(_ op: @escaping (LeafDoc) -> DocView) { textView?.command(op) }
@@ -756,10 +891,30 @@ public final class LeafEditorModel: ObservableObject {
     /// no matter what the app had chosen. Set it on the doc regardless; the text
     /// view seeds itself from the doc when it is finally made.
     private func prefer(_ op: @escaping (LeafDoc) -> DocView) {
-        guard let textView else { _ = op(doc); return }
+        guard let textView else {
+            _ = op(doc)
+            // Nothing is going to repaint, and a repaint is what normally puts
+            // the statistics back on the clock. This is the only path a
+            // view-less document changes by, so it has to do that job too, or
+            // a host counting a document it has not yet put on screen would be
+            // shown the tally from before its own `debugSelect`.
+            scheduleCounts()
+            return
+        }
         textView.command(op)
     }
-    fileprivate func updateState(_ s: EditorState) { if s != state { state = s } }
+
+    /// The surface has repainted. Both halves of what that means to the model:
+    /// take the chrome state it reports, and put the statistics back on the
+    /// clock. One entry point rather than two closures on each platform,
+    /// because the two are one event — and because only one of them is gated on
+    /// the state having changed (see `scheduleCounts`).
+    fileprivate func repainted(_ s: EditorState) {
+        updateState(s)
+        scheduleCounts()
+    }
+
+    private func updateState(_ s: EditorState) { if s != state { state = s } }
 }
 
 #if canImport(AppKit) && !targetEnvironment(macCatalyst)
@@ -943,7 +1098,7 @@ struct LeafEditorSurface: NSViewRepresentable {
         // Defer the publish: `render()` can fire during a SwiftUI layout pass, and
         // mutating an `@Published` mid-update loops the view system.
         textView.onStateChange = { [weak model] s in
-            DispatchQueue.main.async { model?.updateState(s) }
+            DispatchQueue.main.async { model?.repainted(s) }
         }
         // Read through to the model rather than copying its handler across: a
         // host that sets `onOpenLink` after the editor is on screen (the usual
@@ -1375,7 +1530,7 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
         // Defer the publish: `render()` can fire during a SwiftUI layout pass, and
         // mutating an `@Published` mid-update loops the view system.
         textView.onStateChange = { [weak model] s in
-            DispatchQueue.main.async { model?.updateState(s) }
+            DispatchQueue.main.async { model?.repainted(s) }
         }
         // Read through to the model rather than copying its handler across: a
         // host that sets `onOpenLink` after the editor is on screen (the usual
