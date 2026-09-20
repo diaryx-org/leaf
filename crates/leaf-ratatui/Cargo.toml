@@ -15,7 +15,7 @@ default = ["images", "theme-detect"]
 # inline `🖼 alt` placeholder text — the same fallback a terminal with no
 # graphics protocol already gets. Everything else (text, code boxes, selection,
 # input) is unchanged.
-images = ["dep:ratatui-image", "dep:leaf-raster"]
+images = ["dep:ratatui-image", "dep:leaf-raster", "dep:leaf-math"]
 # Ask the terminal whether it is light or dark (an `OSC 11` query) so the
 # palette can match it. On by default: a code panel tinted for the wrong
 # background is the single most visible way the surface can look broken, and
@@ -45,6 +45,11 @@ ratatui-image = { version = "9", default-features = false, features = ["crosster
 # of it — without a graphics protocol the ordinary bold coloured heading and
 # the `🖼 alt` placeholder are the better rendering anyway.
 leaf-raster = { workspace = true, optional = true }
+# TeX to an SVG picture, which leaf-raster then rasterizes for the graphics
+# protocol — a display formula is painted over its rows the way an image is.
+# Rides the `images` feature, since without a protocol there is nothing to
+# paint it with.
+leaf-math = { workspace = true, optional = true }
 # "Is this terminal dark or light?", asked properly: an `OSC 11` query with a
 # timeout, a fast heuristic for terminals that won't answer, no escape sequences
 # at all under `TERM=dumb`, and a guaranteed termios restore even on panic. It

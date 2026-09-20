@@ -32,12 +32,35 @@ pub fn load_image(path: &Path) -> Option<image::DynamicImage> {
 /// consumer upscaling a blurry thumbnail. System fonts are loaded so an SVG that
 /// draws real `<text>` (not outlined paths) still renders its glyphs.
 pub fn load_svg(data: &[u8]) -> Option<image::DynamicImage> {
-    use resvg::{tiny_skia, usvg};
-
     /// The longer side, in pixels, we rasterize an SVG to before the consumer
     /// downscales it — big enough to stay crisp, capped so a huge viewport can't
     /// blow up the allocation.
     const SVG_TARGET_PX: f32 = 640.0;
+
+    let tree = svg_tree(data)?;
+    let size = tree.size();
+    let longest = size.width().max(size.height()).max(1.0);
+    // Scale so the longer side hits the target; clamp so a big SVG scales down
+    // and a small one up, but neither runs away. Never below 1px per side.
+    let scale = (SVG_TARGET_PX / longest).clamp(0.05, 16.0);
+    render_svg(&tree, scale)
+}
+
+/// Rasterize an SVG's bytes at `scale` times its own declared size — the
+/// vector path for a picture whose size is *meant*: a typeset formula
+/// (`leaf-math`) writes its root in pixels at the font size it was set at,
+/// and drawing it at anything else puts the glyphs at the wrong size. Where
+/// [`load_svg`] picks a resolution for a picture of unknown intent, this
+/// takes the picture's word for it. `None` if the document won't parse.
+pub fn rasterize_svg(data: &[u8], scale: f32) -> Option<image::DynamicImage> {
+    let tree = svg_tree(data)?;
+    render_svg(&tree, scale.clamp(0.05, 16.0))
+}
+
+/// Parse an SVG document with the system fonts on hand, so one that draws real
+/// `<text>` (not outlined paths) still renders its glyphs.
+fn svg_tree(data: &[u8]) -> Option<resvg::usvg::Tree> {
+    use resvg::usvg;
 
     // The system font set, enumerated once per process rather than once per
     // SVG — loading it is tens of milliseconds of directory walking, and it
@@ -59,19 +82,21 @@ pub fn load_svg(data: &[u8]) -> Option<image::DynamicImage> {
         fontdb: svg_fontdb(),
         ..Default::default()
     };
-    let tree = usvg::Tree::from_data(data, &opt).ok()?;
+    usvg::Tree::from_data(data, &opt).ok()
+}
+
+/// Paint a parsed SVG at `scale` onto a pixmap and hand the pixels back as
+/// straight-alpha RGBA.
+fn render_svg(tree: &resvg::usvg::Tree, scale: f32) -> Option<image::DynamicImage> {
+    use resvg::tiny_skia;
 
     let size = tree.size();
-    let longest = size.width().max(size.height()).max(1.0);
-    // Scale so the longer side hits the target; clamp so a big SVG scales down
-    // and a small one up, but neither runs away. Never below 1px per side.
-    let scale = (SVG_TARGET_PX / longest).clamp(0.05, 16.0);
     let w = (size.width() * scale).ceil().max(1.0) as u32;
     let h = (size.height() * scale).ceil().max(1.0) as u32;
 
     let mut pixmap = tiny_skia::Pixmap::new(w, h)?;
     resvg::render(
-        &tree,
+        tree,
         tiny_skia::Transform::from_scale(scale, scale),
         &mut pixmap.as_mut(),
     );
@@ -116,5 +141,23 @@ mod tests {
     #[test]
     fn load_svg_rejects_garbage() {
         assert!(load_svg(b"not an svg at all").is_none());
+        assert!(rasterize_svg(b"not an svg at all", 1.0).is_none());
+    }
+
+    #[test]
+    fn rasterize_svg_takes_the_picture_s_own_size_times_the_scale() {
+        let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><rect width="20" height="10" fill="#ff0000"/></svg>"##;
+        let one = rasterize_svg(svg, 1.0).unwrap();
+        assert_eq!((one.width(), one.height()), (20, 10));
+        let two = rasterize_svg(svg, 2.0).unwrap();
+        assert_eq!((two.width(), two.height()), (40, 20));
+        // Outside the drawing the pixels are clear, not painted over.
+        let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><rect width="10" height="10" fill="#ff0000"/></svg>"##;
+        let img = rasterize_svg(svg, 1.0).unwrap().to_rgba8();
+        assert_eq!(
+            img.get_pixel(15, 5).0[3],
+            0,
+            "transparent where nothing is drawn"
+        );
     }
 }

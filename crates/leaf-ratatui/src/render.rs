@@ -148,6 +148,12 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
                 height as u16,
             );
             doc.set_media_rows(heights);
+            // A display formula is typeset, measured, and reserved the same
+            // way; the same second build covers both.
+            let heights = state
+                .images
+                .reserve_math(&doc.vmap.math, width as u16, height as u16);
+            doc.set_math_rows(heights);
             doc.build_visual(width);
         }
     }
@@ -396,6 +402,40 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
             }
         }
 
+        // Each display formula: its picture centred over the rows core reserved,
+        // painted only when the whole span is on screen, for the reason an
+        // image is. No frame — a formula is text of a kind, and a box would
+        // make it a figure. Where nothing was typeset (no graphics protocol,
+        // or TeX that would not parse) core's `∑ tex` row stands as it is.
+        for info in doc.vmap.math.iter().filter(|m| m.glyph.is_none()) {
+            let span = &info.rows_span;
+            let Some((cols, rows)) = state.images.math_cells(info) else {
+                continue;
+            };
+            let fully_visible = span.start >= doc.scroll && span.end <= doc.scroll + height;
+            if !fully_visible {
+                continue;
+            }
+            let cols = cols.min(content_area.width);
+            let rect = Rect {
+                x: content_area.x + (content_area.width - cols) / 2,
+                y: content_area.y + (span.start - doc.scroll) as u16,
+                width: cols,
+                height: rows.min(content_area.height),
+            };
+            if rect.width > 0 && rect.height > 0 {
+                // Wipe the whole reserved band first, so the placeholder label
+                // core drew on the first row does not show beside the picture.
+                let band = Rect {
+                    x: content_area.x,
+                    width: content_area.width,
+                    ..rect
+                };
+                f.render_widget(Clear, band);
+                state.images.paint_math(f, info, rect);
+            }
+        }
+
         // Paint composed H1/H2 blocks last, over the ordinary terminal glyphs.
         // The *active* heading is painted too — its caret (and any selection)
         // is baked into the raster, since nothing drawn from cells can land on
@@ -630,6 +670,10 @@ fn expand_headings(
     }
     for media in &mut vmap.media {
         shift(&mut media.rows_span);
+    }
+    for math in &mut vmap.math {
+        shift(&mut math.rows_span);
+        math.row = boundary[math.row];
     }
     for directive in &mut vmap.directives {
         shift(&mut directive.rows_span);
@@ -1611,5 +1655,120 @@ mod presentation_render_tests {
             .map(|x| buf[(x, 0)].symbol())
             .collect();
         assert_eq!(coloured, "blue");
+    }
+}
+
+#[cfg(test)]
+mod math_render_tests {
+    use super::*;
+    use crate::EditorState;
+    use leaf_core::Doc;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn doc_on_disk(slug: &str, src: &str) -> Doc {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "leaf_ratatui_math_{slug}_{}_{n}.md",
+            std::process::id()
+        ));
+        std::fs::write(&path, src).unwrap();
+        Doc::open(path).unwrap()
+    }
+
+    fn rows_containing(buf: &ratatui::buffer::Buffer, needle: &str) -> Vec<u16> {
+        (0..buf.area.height)
+            .filter(|&y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+                    .contains(needle)
+            })
+            .collect()
+    }
+
+    fn render_to_lines(name: &str, src: &str, w: u16, h: u16) -> Vec<String> {
+        let mut doc = doc_on_disk(name, src);
+        let mut state = EditorState::new();
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| render(f, f.area(), &mut doc, &mut state))
+            .unwrap();
+        let buf = term.backend().buffer();
+        (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    /// Without a graphics protocol a display formula is core's placeholder row
+    /// and an inline one is its TeX in the code style — nothing typeset, nothing
+    /// reserved.
+    #[test]
+    fn without_graphics_a_formula_is_its_placeholder_or_its_text() {
+        // The caret opens on the first line, and a formula on the caret's line
+        // is its TeX; the intro keeps both formulas off it.
+        let src = "intro\n\nsay $x+y$ here\n\n$$\n\\int_0^1 x\n$$\n\nend\n";
+        let lines = render_to_lines("math_plain", src, 40, 12);
+        let joined = lines.join("\n");
+        assert!(joined.contains("say x+y here"), "{joined}");
+        assert!(joined.contains("∑ \\int_0^1 x"), "{joined}");
+        // One row for the placeholder: `end` follows after the one gap row.
+        let block = lines.iter().position(|l| l.contains('∑')).unwrap();
+        assert!(lines[block + 2].contains("end"), "{joined}");
+    }
+
+    /// With one, the display formula is typeset and its rows reserved: the
+    /// placeholder label is wiped, the picture stands in the band, and `end`
+    /// moves down by what the picture measured. The inline one stays text.
+    #[cfg(feature = "images")]
+    #[test]
+    fn with_graphics_a_display_formula_reserves_and_paints_its_picture() {
+        let src = "intro\n\nsay $x+y$ here\n\n$$\n\\int_0^1 x\n$$\n\nend\n";
+        let mut doc = doc_on_disk("math_graphics", src);
+        let mut state = EditorState::default();
+        state.images.assume_graphics();
+        let mut term = Terminal::new(TestBackend::new(40, 16)).unwrap();
+        term.draw(|f| render(f, f.area(), &mut doc, &mut state))
+            .unwrap();
+        let buf = term.backend().buffer();
+        assert!(!rows_containing(buf, "say x+y here").is_empty());
+        assert!(
+            rows_containing(buf, "∑").is_empty(),
+            "the placeholder label is painted over"
+        );
+        let block = &doc.vmap.math[0];
+        assert!(
+            block.rows_span.len() > 1,
+            "rows reserved: {:?}",
+            block.rows_span
+        );
+        assert_eq!(
+            state.images.math_cells(block).map(|c| c.1 as usize),
+            Some(block.rows_span.len())
+        );
+        // The `∫` reaches below its baseline, so the picture is taller than the
+        // one row the label took: `end` stands lower than it did.
+        let end_row = rows_containing(buf, "end")[0] as usize;
+        assert_eq!(end_row, block.rows_span.end + 1);
+    }
+
+    /// TeX the typesetter cannot read reserves nothing, and the placeholder
+    /// stands — the fault is visible where it is, not a blank band.
+    #[cfg(feature = "images")]
+    #[test]
+    fn a_formula_that_will_not_typeset_keeps_its_placeholder() {
+        let mut doc = doc_on_disk("math_bad", "intro\n\n$$\n\\frac{\n$$\n\nend\n");
+        let mut state = EditorState::default();
+        state.images.assume_graphics();
+        let mut term = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        term.draw(|f| render(f, f.area(), &mut doc, &mut state))
+            .unwrap();
+        let buf = term.backend().buffer();
+        assert!(!rows_containing(buf, "∑ \\frac{").is_empty());
+        assert_eq!(doc.vmap.math[0].rows_span.len(), 1);
     }
 }

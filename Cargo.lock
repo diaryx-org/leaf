@@ -1027,6 +1027,7 @@ name = "leaf-ratatui"
 version = "0.3.1"
 dependencies = [
  "leaf-core",
+ "leaf-math",
  "leaf-raster",
  "ratatui",
  "ratatui-image",

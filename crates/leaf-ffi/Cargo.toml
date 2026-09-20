@@ -64,4 +64,4 @@ resvg-uniffi = "0.1"
 # views to draw in a line (a run delegate) or over a block's rows. Exposed as
 # `typeset_math`; the fonts ride inside the crate, so nothing is loaded at
 # runtime.
-leaf-math = { path = "../leaf-math", version = "0.3.1" }
+leaf-math.workspace = true
