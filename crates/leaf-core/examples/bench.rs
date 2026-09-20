@@ -2,7 +2,6 @@
 //!
 //! `cargo run --release -p leaf-core --example bench`
 use leaf_core::{Doc, View, source, wysiwyg};
-use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::time::Instant;
 use twig::{Editor, Format};
@@ -38,7 +37,14 @@ fn main() {
 
         let mut ed = Editor::new_str(&src, Format::Markdown).unwrap();
         let nodes = ed.nodes().unwrap();
-        let map = wysiwyg::build(&nodes, &src, None, false, &HashMap::new(), None);
+        let map = wysiwyg::build(
+            &nodes,
+            &src,
+            None,
+            false,
+            &wysiwyg::Surface::default(),
+            None,
+        );
         println!("  ({} AST nodes, {} map rows)", nodes.len(), map.rows.len());
 
         println!("  -- per edit (unavoidable today) --");
@@ -56,9 +62,16 @@ fn main() {
         let mut ed = Editor::new_str(&src, Format::Markdown).unwrap();
         time("twig nodes() FFI marshal", 5, || ed.nodes().unwrap().len());
         time("wysiwyg::build", 5, || {
-            wysiwyg::build(&nodes, &src, None, false, &HashMap::new(), None)
-                .rows
-                .len()
+            wysiwyg::build(
+                &nodes,
+                &src,
+                None,
+                false,
+                &wysiwyg::Surface::default(),
+                None,
+            )
+            .rows
+            .len()
         });
         // The source view's whole per-edit cost, next to the WYSIWYG view's, so
         // the "cheaper view" claim in `source::build`'s docs is a measured one.
@@ -81,7 +94,7 @@ fn main() {
                 &src,
                 None,
                 false,
-                &HashMap::new(),
+                &wysiwyg::Surface::default(),
                 None,
                 &mut cache,
                 |id| ed.subtree(twig::NodeId(id)).unwrap_or_default(),
@@ -93,7 +106,7 @@ fn main() {
                     &src,
                     None,
                     false,
-                    &HashMap::new(),
+                    &wysiwyg::Surface::default(),
                     None,
                     &mut cache,
                     |id| ed.subtree(twig::NodeId(id)).unwrap_or_default(),

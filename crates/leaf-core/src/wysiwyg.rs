@@ -205,6 +205,43 @@ pub struct VRow {
     /// Source offsets, so [`shift_row`] moves them with the glyphs; empty on
     /// decoration rows and on every row no mark closes on.
     pub mark_ends: Vec<usize>,
+    /// The formulas this row stands in for, in glyph order: one [`MathMark`]
+    /// per inline atom on the row, or the single block mark on the
+    /// placeholder row a display formula renders to. Empty on every other
+    /// row, and on the revealed line, where a formula is its TeX and no
+    /// picture stands for it.
+    ///
+    /// Plain strings and a glyph *index* rather than a source offset, for
+    /// [`media`](Self::media)'s reason: the mark rides [`BlockCache`] reuse and
+    /// [`build_spliced`] untouched, and the glyph it names carries the offset.
+    /// The map's [`math`](VisualMap::math) side-table is derived from these
+    /// once the rows are final.
+    pub math: Vec<MathMark>,
+}
+
+/// One formula a row stands in for — what a picture-capable frontend typesets
+/// and draws in place of the glyph or the rows that hold its spot. See
+/// [`VRow::math`] and, for the frontend's view of the same thing,
+/// [`MathInfo`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MathMark {
+    /// The TeX between the delimiters, verbatim — a display block's keeps its
+    /// newlines. What `leaf-math` typesets.
+    pub tex: String,
+    /// Display style (`$$…$$`) rather than text style (`$…$`). True for every
+    /// block mark, and for a `$$…$$` written inside a line of prose, which is
+    /// display style set inline.
+    pub display: bool,
+    /// The index into [`VRow::glyphs`] of the atom this mark stands behind —
+    /// the one [`Role::Math`] glyph an inline formula renders to. `None` for
+    /// a block mark, whose placeholder is the whole row.
+    pub glyph: Option<usize>,
+    /// How many rows a block formula reserves — the label row plus the blank
+    /// fillers under it, the [`MediaMark::rows`] recipe, and from the same
+    /// door: a terminal frontend that has typeset and measured the picture
+    /// reports its height through [`crate::Doc::set_math_rows`]. `1` for an
+    /// inline atom, which reserves nothing.
+    pub rows: usize,
 }
 
 /// What a drawn block boundary separates: the kinds of the blocks it falls
@@ -249,6 +286,12 @@ pub enum BlockClass {
     /// walk only ever sees the wrapper's kind. [`label_media_boundaries`] reads
     /// it back off the finished rows instead, after the fact.
     Media,
+    /// A display formula on lines of its own — a paragraph holding nothing but
+    /// a `$$…$$`. Never reached through [`from_node_kind`](BlockClass::from_node_kind)
+    /// for [`Media`](BlockClass::Media)'s reason: the walk sees the wrapping
+    /// paragraph, and [`label_media_boundaries`] relabels the gaps around the
+    /// placeholder once the rows are final.
+    Math,
     /// A `:::name{.class}` directive container.
     Directive,
     Rule,
@@ -515,6 +558,15 @@ pub struct VisualMap {
     /// of it. Derived from the per-row [`VRow::leaf_directive`] mark once the
     /// rows are final, exactly as [`media`](VisualMap::media) is.
     pub directives: Vec<DirectiveInfo>,
+    /// Every formula standing as a picture in this map, in row order — each
+    /// inline atom and each display block's placeholder. A frontend that
+    /// paints pictures typesets each one's TeX and draws it over the glyph or
+    /// the rows named. Derived from the per-row [`VRow::math`] marks once the
+    /// rows are final, exactly as [`media`](VisualMap::media) is.
+    ///
+    /// A formula on the revealed line is not here: there it is its own TeX,
+    /// drawn as code, and nothing stands in for it.
+    pub math: Vec<MathInfo>,
     /// Every named font family this map's glyphs are set in, by the
     /// [`FaceId`] they carry — the side table that lets [`Style`] stay `Copy`
     /// while a family name stays a `String`.
@@ -1249,23 +1301,34 @@ fn media_spans(rows: &[VRow]) -> Vec<MediaInfo> {
 /// every one of them the same [`Boundary`]. So the walk crosses those navigable
 /// blanks and relabels the whole run, stopping at the first row that is neither.
 fn label_media_boundaries(rows: &mut [VRow]) {
-    let spans: Vec<Range<usize>> = rows
+    // A display formula's placeholder is promoted from its paragraph exactly
+    // as a picture is, and its gaps are relabelled the same way, as `Math`.
+    let spans: Vec<(Range<usize>, BlockClass)> = rows
         .iter()
         .enumerate()
-        .filter_map(|(i, row)| row.media.as_ref().map(|m| i..i + m.rows.max(1)))
+        .filter_map(|(i, row)| {
+            if let Some(m) = &row.media {
+                Some((i..i + m.rows.max(1), BlockClass::Media))
+            } else {
+                row.math
+                    .iter()
+                    .find(|m| m.glyph.is_none())
+                    .map(|m| (i..i + m.rows.max(1), BlockClass::Math))
+            }
+        })
         .collect();
     // A row inside one gap: a drawn boundary to relabel, or one of the navigable
     // blank lines sitting between two drawn ones. Anything else ends the run.
     fn in_gap(row: &VRow) -> bool {
         row.boundary.is_some() || (!row.decoration && row.glyphs.is_empty())
     }
-    for span in spans {
+    for (span, class) in spans {
         for i in (0..span.start).rev() {
             if !in_gap(&rows[i]) {
                 break;
             }
             if let Some(b) = rows[i].boundary.as_mut() {
-                b.below = BlockClass::Media;
+                b.below = class;
             }
         }
         for row in rows.iter_mut().skip(span.end) {
@@ -1273,7 +1336,7 @@ fn label_media_boundaries(rows: &mut [VRow]) {
                 break;
             }
             if let Some(b) = row.boundary.as_mut() {
-                b.above = BlockClass::Media;
+                b.above = class;
             }
         }
     }
@@ -1293,6 +1356,35 @@ fn directive_spans(rows: &[VRow]) -> Vec<DirectiveInfo> {
                 name: m.name.clone(),
                 attrs: m.attrs.clone(),
                 label: m.label.clone(),
+            })
+        })
+        .collect()
+}
+
+/// Collect one [`MathInfo`] per [`VRow::math`] mark — the peer of
+/// [`media_spans`] and [`directive_spans`], derived from the final rows for the
+/// same reason. A block mark spans its fillers; an atom spans its own row.
+fn math_spans(rows: &[VRow]) -> Vec<MathInfo> {
+    rows.iter()
+        .enumerate()
+        .flat_map(|(i, row)| {
+            row.math.iter().map(move |m| {
+                let src = match m.glyph {
+                    Some(g) => row.glyphs.get(g).map_or(row.end_src, |g| g.src),
+                    None => row
+                        .glyphs
+                        .iter()
+                        .find(|g| g.style.role == Role::Math)
+                        .map_or(row.end_src, |g| g.src),
+                };
+                MathInfo {
+                    rows_span: i..i + m.rows.max(1),
+                    row: i,
+                    glyph: m.glyph,
+                    tex: m.tex.clone(),
+                    display: m.display,
+                    src,
+                }
             })
         })
         .collect()
@@ -1340,6 +1432,86 @@ pub fn code_language(source: &str, block_start: usize) -> Option<String> {
 /// paint or re-wrap, instead of a runaway count from an unbounded wrap width.
 const UNWRAPPED_RULE_WIDTH: usize = 40;
 
+/// The one glyph an inline formula renders to on a surface that paints
+/// pictures in a line — what a plain surface handed such a map would show.
+/// One column wide, so a column-wrapped build's arithmetic still holds; the
+/// frontend that asked for atoms draws the picture as wide as it is.
+const MATH_ATOM: char = '∑';
+
+/// What the surface a map is built for can paint, and how tall its pictures
+/// came out — the things about a frontend that change the rows core lays
+/// down, gathered from the frontend by [`crate::Doc`] and threaded into every
+/// build. The defaults are the plain surface: nothing painted in a line, every
+/// picture a one-row placeholder, which is what every test that passes
+/// `Surface::default()` gets and what every build got before there was one.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Surface {
+    /// How many visual rows each block image reserves, keyed by its
+    /// destination — the frontend's per-image height, set through
+    /// [`crate::Doc::set_media_rows`] so [`Builder::block_media`] can size the
+    /// placeholder without core doing any I/O. A destination absent from the
+    /// map (or a `0`/`1` entry) reserves the bare one-row placeholder.
+    pub media_rows: HashMap<String, usize>,
+    /// The same for each display formula, keyed by its TeX verbatim (the
+    /// [`MathMark::tex`] a frontend was handed) — set through
+    /// [`crate::Doc::set_math_rows`] once the frontend has typeset and
+    /// measured the picture.
+    pub math_rows: HashMap<String, usize>,
+    /// Whether the surface can paint a picture *inside* a line of text, so an
+    /// inline formula may render to one atom glyph it draws over
+    /// ([`MathInfo`]). A pixel-laid-out frontend says yes; a terminal cannot
+    /// composite an image over one cell, and leaves this off to keep an inline
+    /// formula as the code-styled TeX it always showed. Off by default.
+    pub inline_pictures: bool,
+}
+
+/// The one source line rendering its markup raw — the caret's, when the mode
+/// or the content asks for it — and how much of the markup that means. See
+/// [`crate::Doc::reveal_line`], which decides both.
+///
+/// Two grades because two things ask. Under
+/// [`MarkupMode::Full`](crate::MarkupMode::Full) *every* delimiter on the line
+/// comes back (`markup: true`). In the two hidden modes a formula still
+/// reveals — its content is its TeX and not its picture, so hiding is not
+/// enough — and the line is threaded through with `markup: false`: a math node
+/// meeting it shows its source, and an emphasis meeting it hides its
+/// asterisks as it always did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reveal {
+    /// The source byte range of the line, newline excluded — empty but present
+    /// on a blank line.
+    pub line: Range<usize>,
+    /// Whether ordinary inline markup reveals on it too, or only math.
+    pub markup: bool,
+}
+
+impl Reveal {
+    /// The caret's line under `MarkupMode::Full`: everything on it reveals.
+    pub fn full(line: Range<usize>) -> Self {
+        Reveal { line, markup: true }
+    }
+
+    /// The caret's line in a hidden mode, where only a formula reveals.
+    pub fn math(line: Range<usize>) -> Self {
+        Reveal {
+            line,
+            markup: false,
+        }
+    }
+
+    /// Whether `span` meets this line — the test every arm that reveals runs.
+    ///
+    /// Touching at an endpoint counts: an emphasis ending exactly where the
+    /// line does is on that line, and a zero-length reveal range (the caret
+    /// alone on a blank line) still meets a node that starts there. The test
+    /// is deliberately generous — the failure it avoids is revealing one
+    /// delimiter of a pair while hiding the other, which looks like corruption
+    /// rather than like markup.
+    fn meets(&self, span: &Range<usize>) -> bool {
+        span.start <= self.line.end && self.line.start <= span.end
+    }
+}
+
 /// Render the document to a [`VisualMap`]. `wrap` is the column budget for
 /// word-wrapping (`Some` for the monospace TUI), or `None` to emit one row per
 /// block — the GUI does its own proportional pixel wrapping over these rows.
@@ -1350,8 +1522,8 @@ pub fn build(
     source: &str,
     wrap: Option<usize>,
     preserve_soft: bool,
-    media_rows: &HashMap<String, usize>,
-    reveal: Option<Range<usize>>,
+    surface: &Surface,
+    reveal: Option<Reveal>,
 ) -> VisualMap {
     let Some(doc) = nodes.iter().position(|n| n.kind == Kind::Doc) else {
         return VisualMap::default();
@@ -1365,11 +1537,13 @@ pub fn build(
         tables: Vec::new(),
         last_off: 0,
         stepped_over: 0,
-        media_rows,
+        surface,
         break_glyph: Cell::new(' '),
         preserve_soft,
         reveal: reveal.clone(),
         pending_mark_ends: RefCell::new(Vec::new()),
+        pending_math: RefCell::new(Vec::new()),
+        saw_math: Cell::new(false),
         presentation: Presentation::default(),
         faces: RefCell::new(FaceTable::default()),
     };
@@ -1386,6 +1560,7 @@ pub fn build(
     let code_blocks = code_block_spans(&b.rows);
     let media = media_spans(&b.rows);
     let directives = directive_spans(&b.rows);
+    let math = math_spans(&b.rows);
     VisualMap {
         rows: b.rows,
         content_start,
@@ -1395,6 +1570,7 @@ pub fn build(
         code_blocks,
         media,
         directives,
+        math,
         faces: b.faces.into_inner(),
     }
 }
@@ -1420,8 +1596,8 @@ pub fn build_cached(
     source: &str,
     wrap: Option<usize>,
     preserve_soft: bool,
-    media_rows: &HashMap<String, usize>,
-    reveal: Option<Range<usize>>,
+    surface: &Surface,
+    reveal: Option<Reveal>,
     cache: &mut BlockCache,
     mut fetch_subtree: impl FnMut(u32) -> Vec<FlatNode>,
 ) -> VisualMap {
@@ -1451,11 +1627,13 @@ pub fn build_cached(
         tables: Vec::new(),
         last_off: 0,
         stepped_over: 0,
-        media_rows,
+        surface,
         break_glyph: Cell::new(' '),
         preserve_soft,
         reveal: reveal.clone(),
         pending_mark_ends: RefCell::new(Vec::new()),
+        pending_math: RefCell::new(Vec::new()),
+        saw_math: Cell::new(false),
         presentation: Presentation::default(),
         faces: RefCell::new(FaceTable::default()),
     };
@@ -1501,8 +1679,10 @@ pub fn build_cached(
         // Hit: clone the block's rows shifted to its current offset and restore
         // the (shifted) `last_off` so the next separator lands right — no marshal.
         // Only shift-safe blocks are ever cached, so a hit is safe by construction.
+        let mut has_math = false;
         if let Some(hit) = cache.reuse(hash, bytes, &rkey) {
             faces.merge(&hit.faces);
+            has_math = hit.has_math;
             let delta = start as isize - hit.built_start as isize;
             for row in &hit.rows {
                 b.rows.push(shift_row(row, delta));
@@ -1528,11 +1708,13 @@ pub fn build_cached(
                     tables: Vec::new(),
                     last_off: 0,
                     stepped_over: 0,
-                    media_rows,
+                    surface,
                     break_glyph: Cell::new(' '),
                     preserve_soft,
                     reveal: reveal.clone(),
                     pending_mark_ends: RefCell::new(Vec::new()),
+                    pending_math: RefCell::new(Vec::new()),
+                    saw_math: Cell::new(false),
                     presentation: Presentation::default(),
                     faces: RefCell::new(FaceTable::default()),
                 };
@@ -1554,6 +1736,7 @@ pub fn build_cached(
                 // re-emits these rows without walking an attribute again.
                 let block_faces = sub.faces.into_inner();
                 faces.merge(&block_faces);
+                has_math = sub.saw_math.get();
                 // Cache only a block that is table-free AND renders inside its own
                 // span: those two are the conditions for reuse-by-shift to be
                 // correct. A block failing either is re-rendered every build (a
@@ -1568,6 +1751,7 @@ pub fn build_cached(
                             last_off,
                             stepped_over,
                             rkey,
+                            has_math,
                             block_faces,
                         );
                     }
@@ -1607,6 +1791,7 @@ pub fn build_cached(
             kind: block.kind.clone(),
             sep_rows,
             content_rows,
+            has_math,
         });
     }
 
@@ -1649,6 +1834,7 @@ pub fn build_cached(
     let code_blocks = code_block_spans(&b.rows);
     let media = media_spans(&b.rows);
     let directives = directive_spans(&b.rows);
+    let math = math_spans(&b.rows);
     VisualMap {
         rows: b.rows,
         content_start,
@@ -1658,6 +1844,7 @@ pub fn build_cached(
         code_blocks,
         media,
         directives,
+        math,
         faces,
     }
 }
@@ -1697,8 +1884,8 @@ pub fn build_spliced(
     preserve_soft: bool,
     top: &[QueryMatch],
     dirty: Range<usize>,
-    media_rows: &HashMap<String, usize>,
-    reveal: Option<Range<usize>>,
+    surface: &Surface,
+    reveal: Option<Reveal>,
     cache: &mut BlockCache,
     mut fetch_subtree: impl FnMut(u32) -> Vec<FlatNode>,
 ) -> Option<VisualMap> {
@@ -1801,11 +1988,13 @@ pub fn build_spliced(
         tables: Vec::new(),
         last_off: 0,
         stepped_over: 0,
-        media_rows,
+        surface,
         break_glyph: Cell::new(' '),
         preserve_soft,
         reveal: reveal.clone(),
         pending_mark_ends: RefCell::new(Vec::new()),
+        pending_math: RefCell::new(Vec::new()),
+        saw_math: Cell::new(false),
         presentation: Presentation::default(),
         faces: RefCell::new(FaceTable::default()),
     };
@@ -1822,6 +2011,7 @@ pub fn build_spliced(
     // walking the rows this path exists to avoid walking.
     let mut faces = prev.faces;
     faces.merge(&sub.faces.into_inner());
+    let sub_saw_math = sub.saw_math.get();
     let new_content = sub.rows;
     let new_content_len = new_content.len();
     let new_stops = collect_stops(&new_content);
@@ -1878,6 +2068,7 @@ pub fn build_spliced(
         pl.span = m.span.clone();
     }
     new_blocks[k].content_rows = new_content_len;
+    new_blocks[k].has_math = sub_saw_math;
     cache.layout = Layout {
         blocks: new_blocks,
         trailing_rows: prev_layout.trailing_rows,
@@ -1894,6 +2085,7 @@ pub fn build_spliced(
     let code_blocks = code_block_spans(&rows);
     let media = media_spans(&rows);
     let directives = directive_spans(&rows);
+    let math = math_spans(&rows);
     Some(VisualMap {
         rows,
         content_start: blocks[0].span.start,
@@ -1903,6 +2095,7 @@ pub fn build_spliced(
         code_blocks,
         media,
         directives,
+        math,
         faces,
     })
 }
@@ -1976,7 +2169,7 @@ struct Layout {
     /// A splice reuses every row it isn't re-rendering, so a reveal line that
     /// has moved would leave the old line still showing its delimiters and the
     /// new one still hiding them — [`build_spliced`] bails when this changes.
-    reveal: Option<Range<usize>>,
+    reveal: Option<Reveal>,
 }
 
 /// One top-level block's contribution to the last build: its span and kind (for
@@ -1988,6 +2181,8 @@ struct BlockLayout {
     kind: Kind,
     sep_rows: usize,
     content_rows: usize,
+    /// Whether the block holds a formula — see [`BlockCache::math_meets`].
+    has_math: bool,
 }
 
 /// One cached block: the rows it rendered to, plus what a reuse at a new
@@ -2019,6 +2214,9 @@ struct CachedBlock {
     /// no-reveal case — which is why an entry stored under `MarkupMode::None`
     /// keeps hitting for every block that isn't the caret's.
     reveal: Option<Range<usize>>,
+    /// Whether the block holds a formula, so a hit can say so to the layout
+    /// without walking the rows it is re-emitting.
+    has_math: bool,
     /// The named families this block's glyphs are set in — see
     /// [`VisualMap::faces`]. Stored with the rows because a hit re-emits them
     /// without walking a `data-font` again, and the map still has to be able to
@@ -2036,18 +2234,42 @@ struct CachedBlock {
 /// block on every build in the two hidden modes, and all but one of them under
 /// [`crate::MarkupMode::Full`]. So the cache keeps its hit rate as the caret
 /// moves: only the line the caret leaves and the line it arrives at re-render.
-fn reveal_key(reveal: &Option<Range<usize>>, span: &Range<usize>) -> Option<Range<usize>> {
+fn reveal_key(reveal: &Option<Reveal>, span: &Range<usize>) -> Option<Range<usize>> {
     let r = reveal.as_ref()?;
     // The same generous intersection test `Builder::revealed` uses, so a block
     // is keyed as revealed exactly when its glyphs will be built that way.
-    (span.start <= r.end && r.start <= span.end).then(|| {
-        let start = r.start.max(span.start) - span.start;
-        let end = r.end.min(span.end) - span.start;
+    // Whether the line reveals markup or only math is not in the key: that is
+    // a mode, and a mode change empties the cache.
+    r.meets(span).then(|| {
+        let start = r.line.start.max(span.start) - span.start;
+        let end = r.line.end.min(span.end) - span.start;
         start..end
     })
 }
 
 impl BlockCache {
+    /// Whether the caret's `line` meets a top-level block that holds a
+    /// formula, as of the last build — the question [`crate::Doc::reveal_line`]
+    /// asks in the hidden markup modes before it threads the line through, so
+    /// that only a line with something to reveal costs a rebuild.
+    ///
+    /// Answered from the layout rather than from twig because the layout is
+    /// free: every build records per block whether its walk met a formula
+    /// ([`BlockLayout::has_math`]), and a query against the tree is
+    /// O(document) on every frame. Coarse on purpose — a block, not a line —
+    /// since a block with a formula in it is rare, small, and the one thing
+    /// worth re-rendering as the caret moves through it.
+    ///
+    /// Exact between edits, when the spans are the document's. Across an edit
+    /// the spans are the previous revision's, so the caller checks again once
+    /// the new layout is in and rebuilds if the answer changed.
+    pub(crate) fn math_meets(&self, line: &Range<usize>) -> bool {
+        self.layout
+            .blocks
+            .iter()
+            .any(|b| b.has_math && b.span.start <= line.end && line.start <= b.span.end)
+    }
+
     /// Look up a block by hash, verify its bytes and reveal key, and on a hit
     /// stamp it used this build and hand back a borrow to shift-and-clone from.
     /// `None` on a miss (unknown hash, a collision whose bytes differ, or the
@@ -2080,6 +2302,7 @@ impl BlockCache {
         last_off: usize,
         stepped_over: usize,
         reveal: Option<Range<usize>>,
+        has_math: bool,
         faces: FaceTable,
     ) {
         let g = self.generation;
@@ -2092,6 +2315,7 @@ impl BlockCache {
             e.rows = rows;
             e.last_off = last_off;
             e.stepped_over = stepped_over;
+            e.has_math = has_math;
             e.faces = faces;
             e.generation = g;
         } else {
@@ -2102,6 +2326,7 @@ impl BlockCache {
                 last_off,
                 stepped_over,
                 reveal,
+                has_math,
                 faces,
                 generation: g,
             });
@@ -2183,6 +2408,9 @@ fn shift_row(row: &VRow, delta: isize) -> VRow {
         // wherever the edit above moved them to.
         boundary: row.boundary,
         mark_ends: row.mark_ends.iter().map(|&o| shift(o)).collect(),
+        // Strings and a glyph index: the glyph moved, the index into the row
+        // did not.
+        math: row.math.clone(),
     }
 }
 
@@ -2492,7 +2720,7 @@ struct Builder<'a> {
     /// I/O. A destination absent from the map (or a `0`/`1` entry) reserves the
     /// bare one-row placeholder, which is the whole-document default and what
     /// every existing test — passing an empty map — still gets.
-    media_rows: &'a HashMap<String, usize>,
+    surface: &'a Surface,
     /// The glyph a hard break renders as while the current inline run is built:
     /// a space in prose (a break folds into the flow the frontend wraps), but a
     /// newline (`\n`) inside a table cell, where a row is one source line and the
@@ -2518,13 +2746,22 @@ struct Builder<'a> {
     /// because the decision is per-*node*, not per-caret: a node is revealed
     /// when its span meets this line, so `*em*` shows both its asterisks even
     /// with the caret at one end of it.
-    reveal: Option<Range<usize>>,
+    reveal: Option<Reveal>,
     /// The content ends of the hidden marks rendered since the last row was
     /// pushed — recorded as the inline walk meets each mark, and drained onto
     /// the rows as they are emitted (see [`Builder::take_mark_ends`]). A cell
     /// rather than a `&mut`, for the reason `break_glyph` is: the inline walk
     /// borrows the builder shared.
     pending_mark_ends: RefCell<Vec<usize>>,
+    /// The inline atoms rendered since the last row was pushed, keyed by the
+    /// formula's start offset — the offset the atom glyph carries, which is
+    /// how [`Builder::take_math`] pairs each with its glyph once the wrap has
+    /// decided which row it landed on. Drained the way `pending_mark_ends` is.
+    pending_math: RefCell<Vec<(usize, MathMark)>>,
+    /// Whether this walk met a formula at all, atom, block, or revealed — the
+    /// fact [`BlockCache`] keeps per block so [`crate::Doc::reveal_line`] can
+    /// tell whether the caret's line has anything to reveal without walking.
+    saw_math: Cell<bool>,
     /// The presentation vocabulary in force at the block being walked — the
     /// keys the `div`s around it carry, folded together with the nearest
     /// winning, and [`Presentation::default`] at the top level.
@@ -2614,20 +2851,49 @@ impl Builder<'_> {
         *pending = kept;
         taken
     }
+
+    /// The pending inline atoms whose glyph is on the row `glyphs` is about
+    /// to become — each paired with the index of the [`Role::Math`] glyph
+    /// carrying its offset, in glyph order. An atom whose glyph landed on an
+    /// earlier row was taken then; one on a later row is left for it. The
+    /// peer of [`take_mark_ends`](Self::take_mark_ends), and why an atom is
+    /// keyed by offset: the wrap decides the row, and the offset is what the
+    /// glyph still carries once it has.
+    fn take_math(&self, glyphs: &[Glyph]) -> Vec<MathMark> {
+        let mut pending = self.pending_math.borrow_mut();
+        if pending.is_empty() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for (i, g) in glyphs.iter().enumerate() {
+            if g.style.role != Role::Math || !g.stop {
+                continue;
+            }
+            if let Some(at) = pending.iter().position(|(src, _)| *src == g.src) {
+                let (_, mut mark) = pending.remove(at);
+                mark.glyph = Some(i);
+                out.push(mark);
+            }
+        }
+        out
+    }
     /// Whether `span` belongs to the line that is showing its raw markup. True
-    /// only when a reveal line is set (`MarkupMode::Full`) and the two ranges
-    /// actually meet.
-    ///
-    /// Touching at an endpoint counts: an emphasis ending exactly where the line
-    /// does is on that line, and a zero-length reveal range (the caret alone on
-    /// a blank line) still meets a node that starts there. The test is
-    /// deliberately generous — the failure it avoids is revealing one delimiter
-    /// of a pair while hiding the other, which looks like corruption rather than
-    /// like markup.
+    /// only when a reveal line is set *for markup* (`MarkupMode::Full`) and the
+    /// two ranges actually meet — see [`Reveal::meets`] for what meeting is.
     fn revealed(&self, span: &Range<usize>) -> bool {
         self.reveal
             .as_ref()
-            .is_some_and(|r| span.start <= r.end && r.start <= span.end)
+            .is_some_and(|r| r.markup && r.meets(span))
+    }
+
+    /// Whether a formula at `span` shows its TeX rather than its picture: it
+    /// meets the reveal line, in *any* mode. A formula's content is its source
+    /// and not its picture, so for it the choice is not between a clean
+    /// surface and a raw one but between editable and not — which is why this
+    /// does not read [`Reveal::markup`] the way [`revealed`](Self::revealed)
+    /// does.
+    fn math_revealed(&self, span: &Range<usize>) -> bool {
+        self.reveal.as_ref().is_some_and(|r| r.meets(span))
     }
 
     /// The `(opening, closing)` source byte ranges of a node's delimiters — the
@@ -2703,6 +2969,38 @@ impl Builder<'_> {
             Some((_, close)) => self.push_delim(out, close, style),
             // Hidden, so the content's end has no glyph after it: give the
             // caret its home there.
+            None => self.note_mark_end(id),
+        }
+    }
+
+    /// A verbatim span — or a formula drawn as its TeX — in the code style:
+    /// its text at its content's offset, bracketed by its raw delimiters when
+    /// `show` says the line is revealed and by nothing (plus the caret's home
+    /// at the content's end) when it isn't.
+    ///
+    /// Not [`inline_delimited`](Self::inline_delimited): verbatim has no child
+    /// nodes to recurse into — its content is its own `text` — so the fences
+    /// bracket a [`push_text`] instead. The fences themselves keep
+    /// `Role::Code`'s sibling treatment via [`push_delim`]'s role override.
+    ///
+    /// [`push_delim`]: Self::push_delim
+    fn inline_verbatim(&self, id: usize, base: Style, out: &mut Vec<Glyph>, show: bool) {
+        let node = &self.nodes[id];
+        // The interior begins at `content_span.start` — past however many
+        // backticks the fence used, which `span.start + 1` only guessed right
+        // for a single one. Fall back to that guess if it's absent.
+        let at = node
+            .content_span
+            .as_ref()
+            .map_or(node.span.start + 1, |c| c.start);
+        let style = base.role(Role::Code);
+        let show = show.then(|| self.delims(id)).flatten();
+        if let Some((open, _)) = &show {
+            self.push_delim(out, open, style);
+        }
+        push_text(out, node.text.as_deref().unwrap_or(""), at, style);
+        match &show {
+            Some((_, close)) => self.push_delim(out, close, style),
             None => self.note_mark_end(id),
         }
     }
@@ -2900,6 +3198,7 @@ impl Builder<'_> {
                 line_height: None,
                 boundary: drawn.then_some(boundary),
                 mark_ends: Vec::new(),
+                math: Vec::new(),
             });
         }
     }
@@ -3324,6 +3623,13 @@ impl Builder<'_> {
                     self.block_media(m, kind, id, pf);
                     return;
                 }
+                // A display formula on lines of its own — a paragraph whose
+                // only visible content is one `display_math` — promotes the
+                // same way, to a placeholder row and a [`MathMark`].
+                if let Some(m) = self.math_only(id) {
+                    self.block_math(m, pf, pc);
+                    return;
+                }
                 let inline = !kids.is_empty() && kids.iter().all(|&c| is_inline(&self.nodes[c]));
                 if inline || kids.is_empty() {
                     // The block's own attributes over its containers' — the
@@ -3523,6 +3829,7 @@ impl Builder<'_> {
             line_height: None,
             boundary: None,
             mark_ends: Vec::new(),
+            math: Vec::new(),
         });
     }
 
@@ -3605,6 +3912,7 @@ impl Builder<'_> {
                 .find(|g| g.stop)
                 .map_or(fallback, |g| g.src);
             let mark_ends = self.take_mark_ends(end_src);
+            let math = self.take_math(&glyphs);
             self.rows.push(VRow {
                 glyphs,
                 end_src,
@@ -3621,6 +3929,7 @@ impl Builder<'_> {
                 line_height: None,
                 boundary: None,
                 mark_ends,
+                math,
             });
         }
     }
@@ -3690,6 +3999,7 @@ impl Builder<'_> {
         // pixels, an image that didn't resolve, or a plain surface) means the
         // bare one-row placeholder.
         let rows = self
+            .surface
             .media_rows
             .get(&destination)
             .copied()
@@ -3734,6 +4044,7 @@ impl Builder<'_> {
                 line_height: None,
                 boundary: None,
                 mark_ends: Vec::new(),
+                math: Vec::new(),
             });
         }
         self.last_off = end;
@@ -3844,7 +4155,7 @@ impl Builder<'_> {
                 // Text leaves: only non-whitespace counts as visible content.
                 // (Twig keeps the whitespace `str`s between HTML tags — the
                 // newlines and indentation inside a `<picture>` — as real nodes.)
-                "str" | "smart_punctuation" | "verbatim" | "inline_math" => {
+                "str" | "smart_punctuation" | "verbatim" | "inline_math" | "display_math" => {
                     if node.text.as_deref().is_some_and(|t| !t.trim().is_empty()) {
                         *has_text = true;
                     }
@@ -3856,6 +4167,115 @@ impl Builder<'_> {
                 _ => self.scan_visual(c, found, count, has_text),
             }
         }
+    }
+
+    /// The single `display_math` that is all of `id`'s visible content, or
+    /// `None` — [`media_only`](Self::media_only) for a formula. Whitespace-only
+    /// text around it does not count (twig keeps the newlines either side of a
+    /// `$$` on its own lines as `str`s); any other text, or a second formula,
+    /// means the paragraph is prose with math in it, and falls through to the
+    /// inline path.
+    fn math_only(&self, id: usize) -> Option<usize> {
+        let mut found = None;
+        let mut count = 0usize;
+        for c in self.children(id) {
+            let node = &self.nodes[c];
+            match node.kind.as_str() {
+                "display_math" => {
+                    found = Some(c);
+                    count += 1;
+                }
+                "str" | "smart_punctuation" => {
+                    if node.text.as_deref().is_some_and(|t| !t.trim().is_empty()) {
+                        return None;
+                    }
+                }
+                "soft_break" | "hard_break" | "non_breaking_space" => {}
+                _ => return None,
+            }
+        }
+        (count == 1).then(|| found.unwrap())
+    }
+
+    /// A display formula on lines of its own, drawn on
+    /// [`block_media`](Self::block_media)'s recipe: one placeholder row —
+    /// `∑` and the TeX on one line, every glyph [`Role::Math`] at the
+    /// formula's start and a caret stop there, the row ending past the
+    /// formula so the caret can rest after it too — carrying a [`MathMark`]
+    /// for [`math_spans`] to publish, and under it as many blank decoration
+    /// rows as the frontend said the picture is tall
+    /// ([`Surface::math_rows`]).
+    ///
+    /// On the caret's line the block is its source instead: the `$$`
+    /// delimiters in [`Role::Delimiter`] and the TeX between them in
+    /// [`Role::Code`], line for line, the way a fence draws — so a formula is
+    /// edited where it stands and folds back to its picture when the caret
+    /// leaves. That is the same rule an inline formula follows, and it is
+    /// what makes a block-level formula need no equivalent of
+    /// [`VisualMap::block_media_stop`]: both of the placeholder's caret homes
+    /// are on the formula's own lines, and standing on either reveals it.
+    fn block_math(&mut self, math: usize, pf: &[Glyph], pc: &[Glyph]) {
+        self.saw_math.set(true);
+        let node = &self.nodes[math];
+        let (start, end) = (node.span.start, node.span.end);
+        let tex = node.text.clone().unwrap_or_default();
+        if self.math_revealed(&node.span) {
+            let mut glyphs = Vec::new();
+            self.inline_verbatim(math, Style::default(), &mut glyphs, true);
+            self.emit_wrapped(glyphs, start, pf, pc);
+            self.last_off = end;
+            return;
+        }
+        let style = Style::default().role(Role::Math);
+        let mut glyphs = pf.to_vec();
+        // One line of label: the TeX with its newlines folded, so the row
+        // reads as one thing however the source laid it out.
+        let label: String = tex.split_whitespace().collect::<Vec<_>>().join(" ");
+        for ch in format!("{MATH_ATOM} {label}").chars() {
+            glyphs.push(Glyph {
+                ch,
+                style,
+                src: start,
+                stop: true,
+            });
+        }
+        let rows = self
+            .surface
+            .math_rows
+            .get(&tex)
+            .copied()
+            .unwrap_or(1)
+            .max(1);
+        self.push_row_at(glyphs, end);
+        if let Some(row) = self.rows.last_mut() {
+            row.math = vec![MathMark {
+                tex,
+                display: true,
+                glyph: None,
+                rows,
+            }];
+        }
+        for _ in 1..rows {
+            self.rows.push(VRow {
+                glyphs: Vec::new(),
+                end_src: end,
+                decoration: true,
+                code: false,
+                code_lang: None,
+                directive: false,
+                directive_label: None,
+                media: None,
+                task: None,
+                leaf_directive: None,
+                heading: None,
+                align: None,
+                line_height: None,
+                boundary: None,
+                mark_ends: Vec::new(),
+                math: Vec::new(),
+            });
+        }
+        self.last_off = end;
     }
 
     /// A leaf directive (`::name{…}`) as one placeholder row — the
@@ -4065,27 +4485,49 @@ impl Builder<'_> {
             // exactly why this is a `Baseline` and not a `Role`.
             "superscript" => self.inline_delimited(id, base.baseline(Baseline::Super), out),
             "subscript" => self.inline_delimited(id, base.baseline(Baseline::Sub), out),
-            "verbatim" | "inline_math" => {
-                // The interior begins at `content_span.start` — past however many
-                // backticks the fence used, which `span.start + 1` only guessed
-                // right for a single one. Fall back to that guess if it's absent.
-                let at = node
-                    .content_span
-                    .as_ref()
-                    .map_or(node.span.start + 1, |c| c.start);
-                let style = base.role(Role::Code);
-                // Not `inline_delimited`: verbatim has no child nodes to recurse
-                // into — its content is its own `text` — so the fences bracket a
-                // `push_text` instead. The fences themselves keep `Role::Code`'s
-                // sibling treatment via `push_delim`'s role override.
-                let show = self.revealed(&node.span).then(|| self.delims(id)).flatten();
-                if let Some((open, _)) = &show {
-                    self.push_delim(out, open, style);
-                }
-                push_text(out, node.text.as_deref().unwrap_or(""), at, style);
-                match &show {
-                    Some((_, close)) => self.push_delim(out, close, style),
-                    None => self.note_mark_end(id),
+            "verbatim" => self.inline_verbatim(id, base, out, self.revealed(&node.span)),
+            // A formula in a line. Three renderings, in order of preference:
+            //
+            // - On the caret's line it is its TeX in the code style with its
+            //   delimiters shown — in *every* markup mode, because the
+            //   content is not the picture and hiding the `$` alone would
+            //   leave nothing to edit. `math_revealed` is `revealed` without
+            //   the mode gate.
+            // - On a surface that paints pictures in a line it is one atom
+            //   glyph, `stop: true` at the formula's start, standing for the
+            //   whole thing; the [`MathMark`] drained onto the row by
+            //   [`take_math`](Self::take_math) says what the frontend draws
+            //   there. The caret has the stop on the atom and the next glyph's
+            //   past it, and nothing inside the markup.
+            // - Elsewhere — a terminal — it is the code-styled TeX with the
+            //   delimiters hidden, exactly the verbatim treatment, and what
+            //   `inline_math` rendered as before there was anything else.
+            //   `display_math` had no arm at all and fell to the default one,
+            //   which pushed its text at the *node's* start, three bytes short
+            //   of where the text sits.
+            "inline_math" | "display_math" => {
+                self.saw_math.set(true);
+                if self.math_revealed(&node.span) {
+                    self.inline_verbatim(id, base, out, true);
+                } else if self.surface.inline_pictures {
+                    let tex = node.text.clone().unwrap_or_default();
+                    self.pending_math.borrow_mut().push((
+                        node.span.start,
+                        MathMark {
+                            tex,
+                            display: node.kind == Kind::DisplayMath,
+                            glyph: None,
+                            rows: 1,
+                        },
+                    ));
+                    out.push(Glyph {
+                        ch: MATH_ATOM,
+                        style: base.role(Role::Math),
+                        src: node.span.start,
+                        stop: true,
+                    });
+                } else {
+                    self.inline_verbatim(id, base, out, false);
                 }
             }
             // An attributed span — the run-level half of the presentation
@@ -4432,6 +4874,7 @@ impl Builder<'_> {
     fn push_row_at(&mut self, glyphs: Vec<Glyph>, end_src: usize) {
         self.last_off = end_src;
         let mark_ends = self.take_mark_ends(end_src);
+        let math = self.take_math(&glyphs);
         self.rows.push(VRow {
             glyphs,
             end_src,
@@ -4448,6 +4891,7 @@ impl Builder<'_> {
             line_height: None,
             boundary: None,
             mark_ends,
+            math,
         });
     }
 
@@ -4608,6 +5052,7 @@ impl Builder<'_> {
                     below: BlockClass::Paragraph,
                 }),
                 mark_ends: Vec::new(),
+                math: Vec::new(),
             });
         }
     }
@@ -4920,6 +5365,51 @@ pub struct DirectiveInfo {
     /// Its `[label]` text, flattened from its inline children (empty when it has
     /// none) — what the placeholder row shows.
     pub label: String,
+}
+
+/// One formula as a frontend sees it: where its picture goes, and the TeX to
+/// typeset for it. Two shapes, told apart by [`glyph`](MathInfo::glyph):
+///
+/// - An **inline atom** — `$E = mc^2$` in a line of prose — is one
+///   [`Role::Math`] glyph on `row` at index `glyph`, standing for the whole
+///   formula. A frontend that paints pictures in a line typesets the TeX at
+///   the run's font size and draws the picture in the glyph's place, as wide
+///   as the picture is and with the text baseline through it at its height —
+///   a run delegate on Apple, an inline element on the web. The glyph is a
+///   caret stop at the formula's start; the stop after it is the next glyph's.
+/// - A **display block** — a paragraph holding nothing but `$$…$$` — is the
+///   placeholder row (`∑ tex`, every glyph at the formula's start) plus the
+///   blank fillers `rows_span` reserves under it, exactly a [`MediaInfo`]'s
+///   shape. A frontend skips those rows and paints the picture there, centred
+///   on the measure.
+///
+/// Either way the frontend supplies the *width*: core lays out in glyphs and
+/// cannot know how wide a typeset formula is, which is why an inline atom is
+/// one glyph and not a run of them. Only in a **column-wrapped** build does
+/// that matter to the wrap: a terminal never asks for atoms (see
+/// [`Surface::inline_pictures`]), and the web re-fits a row the picture
+/// overflows.
+///
+/// A plain surface paints the glyphs as they are — `∑` for an atom, the
+/// labelled row for a block — and needs none of this. Derived from
+/// [`VRow::math`] by [`math_spans`], so it survives the row reuse of
+/// [`BlockCache`] and [`build_spliced`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MathInfo {
+    /// The [`VisualMap::rows`] rows this formula occupies: `row..row + 1` for
+    /// an atom, the placeholder row and its fillers for a block.
+    pub rows_span: Range<usize>,
+    /// The row the atom glyph, or the block's placeholder label, is on.
+    pub row: usize,
+    /// The atom's index into that row's glyphs, or `None` for a block.
+    pub glyph: Option<usize>,
+    /// The TeX between the delimiters, verbatim.
+    pub tex: String,
+    /// Display style rather than text style — see [`MathMark::display`].
+    pub display: bool,
+    /// The formula's source start: where a click on its picture lands the
+    /// caret, and the same offset every placeholder glyph carries.
+    pub src: usize,
 }
 
 impl DirectiveInfo {
@@ -5734,14 +6224,21 @@ mod tests {
     /// [`map`] with soft breaks preserved (`LineFlow::Preserve`).
     fn map_preserve(src: &str, wrap: Option<usize>) -> VisualMap {
         let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
-        build(&ed.nodes().unwrap(), src, wrap, true, &HashMap::new(), None)
+        build(
+            &ed.nodes().unwrap(),
+            src,
+            wrap,
+            true,
+            &Surface::default(),
+            None,
+        )
     }
 
     /// The cache-free reference [`build`], with no per-image height overrides —
     /// every block image stays its default one-row placeholder. The tests that
     /// need a taller image drive it through [`crate::Doc::set_media_rows`] instead.
     fn build_t(nodes: &[FlatNode], src: &str, wrap: Option<usize>) -> VisualMap {
-        build(nodes, src, wrap, false, &HashMap::new(), None)
+        build(nodes, src, wrap, false, &Surface::default(), None)
     }
 
     /// An arena and a string that disagree — spans reaching past the source they
@@ -5803,10 +6300,10 @@ mod tests {
         cache: &mut BlockCache,
     ) -> (VisualMap, VisualMap) {
         let all = ed.nodes().unwrap();
-        let media_rows = HashMap::new();
-        let plain = build(&all, src, wrap, false, &media_rows, None);
+        let surface = Surface::default();
+        let plain = build(&all, src, wrap, false, &surface, None);
         let top = top_blocks(ed);
-        let cached = build_cached(&top, src, wrap, false, &media_rows, None, cache, |id| {
+        let cached = build_cached(&top, src, wrap, false, &surface, None, cache, |id| {
             ed.subtree(NodeId(id)).unwrap_or_default()
         });
         (plain, cached)
@@ -7632,8 +8129,8 @@ mod tests {
             src,
             Some(80),
             false,
-            &HashMap::new(),
-            Some(0..src.len()),
+            &Surface::default(),
+            Some(Reveal::full(0..src.len())),
         );
         assert!(revealed.mark_ends.is_empty());
         assert!(revealed.stops.contains(&8));
@@ -8973,5 +9470,395 @@ mod tests {
             mark.attrs,
             vec![("class".to_string(), Some("wide".to_string()))]
         );
+    }
+
+    // ── math ─────────────────────────────────────────────────────────────────
+
+    /// [`map_leaf`] on a chosen surface and reveal — the whole of what a math
+    /// rendering turns on.
+    fn map_math(src: &str, format: Format, surface: &Surface, reveal: Option<Reveal>) -> VisualMap {
+        let mut ed =
+            Editor::new_ext(src.as_bytes(), format, crate::doc::parse_extensions()).unwrap();
+        build(&ed.nodes().unwrap(), src, Some(80), false, surface, reveal)
+    }
+
+    fn pictures() -> Surface {
+        Surface {
+            inline_pictures: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn markdown_reads_math_and_a_dollar_before_whitespace_stays_prose() {
+        // The `math` extension is on for every leaf document; twig's own rule
+        // keeps a price out of it.
+        let m = map_leaf("Say $E = mc^2$ for $5 and $6.\n", Format::Markdown);
+        assert_eq!(row_texts(&m), vec!["Say E = mc^2 for $5 and $6."]);
+        let e = m.rows[0].glyphs.iter().find(|g| g.ch == 'E').unwrap();
+        assert_eq!(
+            e.style.role,
+            Role::Code,
+            "the formula's TeX, in the code style"
+        );
+        assert_eq!(e.src, 5, "at its own byte, past the `$`");
+        let five = m.rows[0].glyphs.iter().find(|g| g.ch == '5').unwrap();
+        assert_eq!(five.style.role, Role::Body);
+        assert!(m.math.is_empty(), "no picture stands in on a plain surface");
+    }
+
+    #[test]
+    fn a_plain_surface_draws_inline_math_as_code_with_the_delimiters_hidden() {
+        // The verbatim treatment, in both languages — what `inline_math` always
+        // rendered as — with the caret's home at the content's end.
+        for (src, fmt) in [
+            ("a $x+y$ b\n", Format::Markdown),
+            ("a $`x+y` b\n", Format::Djot),
+        ] {
+            let m = map_leaf(src, fmt);
+            assert_eq!(row_texts(&m), vec!["a x+y b"], "{src:?}");
+            let x = m.rows[0].glyphs.iter().find(|g| g.ch == 'x').unwrap();
+            assert_eq!(x.style.role, Role::Code);
+            assert!(!m.mark_ends.is_empty(), "the content end is a caret home");
+        }
+    }
+
+    #[test]
+    fn display_math_in_a_line_of_prose_puts_its_text_at_the_text_s_own_offset() {
+        // `display_math` had no arm and fell to the default one, which pushed
+        // the text at the *node's* start: three bytes short in djot, past `$$`
+        // and the backtick.
+        let m = map_leaf("Before $$`x`$$ after\n", Format::Djot);
+        let x = m.rows[0].glyphs.iter().find(|g| g.ch == 'x').unwrap();
+        assert_eq!(x.src, "Before $$`".len());
+        assert_eq!(x.style.role, Role::Code);
+        let m = map_leaf("Before $$x$$ after\n", Format::Markdown);
+        let x = m.rows[0].glyphs.iter().find(|g| g.ch == 'x').unwrap();
+        assert_eq!(x.src, "Before $$".len());
+    }
+
+    #[test]
+    fn a_surface_that_paints_in_a_line_gets_one_atom_per_inline_formula() {
+        let src = "Say $E = mc^2$ and $a$.\n";
+        let m = map_math(src, Format::Markdown, &pictures(), None);
+        assert_eq!(row_texts(&m), vec!["Say ∑ and ∑."]);
+        assert_eq!(m.math.len(), 2);
+        let first = &m.math[0];
+        assert_eq!(first.tex, "E = mc^2");
+        assert!(!first.display);
+        assert_eq!(first.row, 0);
+        assert_eq!(first.rows_span, 0..1);
+        assert_eq!(first.glyph, Some(4));
+        assert_eq!(first.src, 4, "the formula's start, where a click lands");
+        let atom = &m.rows[0].glyphs[4];
+        assert_eq!(atom.ch, MATH_ATOM);
+        assert_eq!(atom.style.role, Role::Math);
+        assert!(atom.stop);
+        assert_eq!(atom.src, 4);
+        // The caret has a stop on the atom and the next glyph's past it, and
+        // nothing inside the markup.
+        assert_eq!(m.stop_after(4), Some("Say $E = mc^2$".len()));
+        assert!(m.mark_ends.is_empty(), "no home inside the hidden markup");
+        // The row carries the marks the side-table is derived from.
+        assert_eq!(m.rows[0].math.len(), 2);
+        assert_eq!(m.rows[0].math[1].glyph, Some(m.math[1].glyph.unwrap()));
+        assert_eq!(m.math[1].tex, "a");
+    }
+
+    #[test]
+    fn a_display_formula_written_inline_is_an_atom_in_display_style() {
+        let m = map_math("Before $$x$$ after\n", Format::Markdown, &pictures(), None);
+        assert_eq!(row_texts(&m), vec!["Before ∑ after"]);
+        assert_eq!(m.math.len(), 1);
+        assert!(m.math[0].display);
+        assert_eq!(m.math[0].tex, "x");
+    }
+
+    #[test]
+    fn an_atom_follows_its_glyph_across_a_wrap() {
+        // Fifteen words, then a formula that wraps onto the second row: the
+        // mark is drained onto the row the glyph landed on, at its index there.
+        let src = format!("{}$x$ end\n", "word ".repeat(15));
+        let mut ed = Editor::new_ext(
+            src.as_bytes(),
+            Format::Markdown,
+            crate::doc::parse_extensions(),
+        )
+        .unwrap();
+        let m = build(
+            &ed.nodes().unwrap(),
+            &src,
+            Some(40),
+            false,
+            &pictures(),
+            None,
+        );
+        assert!(m.rows.len() >= 2);
+        assert_eq!(m.math.len(), 1);
+        let info = &m.math[0];
+        let g = &m.rows[info.row].glyphs[info.glyph.unwrap()];
+        assert_eq!(g.ch, MATH_ATOM);
+        assert_eq!(g.src, src.find("$x$").unwrap());
+        assert!(m.rows[..info.row].iter().all(|r| r.math.is_empty()));
+    }
+
+    #[test]
+    fn an_atom_in_a_table_cell_rides_the_cell_s_row() {
+        let m = map_math(
+            "| a | b |\n|---|---|\n| $x$ | c |\n",
+            Format::Markdown,
+            &pictures(),
+            None,
+        );
+        assert_eq!(m.math.len(), 1);
+        let info = &m.math[0];
+        assert_eq!(m.rows[info.row].glyphs[info.glyph.unwrap()].ch, MATH_ATOM);
+    }
+
+    #[test]
+    fn a_display_formula_on_its_own_lines_is_a_block_placeholder_on_every_surface() {
+        for (src, fmt) in [
+            (
+                "intro\n\n$$\n\\int_0^1 x\\,dx\n$$\n\nend\n",
+                Format::Markdown,
+            ),
+            ("intro\n\n$$`\\int_0^1 x\\,dx`\n\nend\n", Format::Djot),
+        ] {
+            for surface in [Surface::default(), pictures()] {
+                let m = map_math(src, fmt, &surface, None);
+                assert_eq!(
+                    row_texts(&m),
+                    vec!["intro", "", "∑ \\int_0^1 x\\,dx", "", "end"],
+                    "{src:?}"
+                );
+                assert_eq!(m.math.len(), 1);
+                let info = &m.math[0];
+                assert!(info.display);
+                assert_eq!(info.glyph, None, "a block, not an atom");
+                assert_eq!(info.rows_span, 2..3);
+                assert_eq!(info.tex.trim(), "\\int_0^1 x\\,dx");
+                let start = src.find("$$").unwrap();
+                let end = start + src[start..].find("\n\nend").unwrap();
+                assert_eq!(info.src, start);
+                // Every label glyph at the formula's start, a stop there and
+                // one past the block, nothing inside — a picture's two homes.
+                let row = &m.rows[2];
+                assert!(
+                    row.glyphs
+                        .iter()
+                        .all(|g| g.src == start && g.style.role == Role::Math)
+                );
+                assert_eq!(row.end_src, end);
+                assert_eq!(m.stop_after(start), Some(end));
+                assert_eq!(m.stop_before(end), Some(start));
+                // The gaps either side are labelled as a formula's.
+                assert_eq!(m.rows[1].boundary.map(|b| b.below), Some(BlockClass::Math));
+                assert_eq!(m.rows[3].boundary.map(|b| b.above), Some(BlockClass::Math));
+            }
+        }
+    }
+
+    #[test]
+    fn a_display_block_reserves_the_rows_the_frontend_measured() {
+        let src = "$$\nx\n$$\n\nend\n";
+        let surface = Surface {
+            math_rows: HashMap::from([("\nx\n".to_string(), 4)]),
+            ..Default::default()
+        };
+        let m = map_math(src, Format::Markdown, &surface, None);
+        assert_eq!(m.math[0].rows_span, 0..4);
+        assert_eq!(row_texts(&m)[..5], ["∑ x", "", "", "", ""]);
+        // The fillers are decoration: drawn, no caret, anchored past the block.
+        for r in &m.rows[1..4] {
+            assert!(r.decoration);
+            assert_eq!(r.end_src, 7);
+        }
+        assert_eq!(m.stop_after(0), Some(7));
+        // A height keyed by TeX that does not match reserves nothing.
+        let surface = Surface {
+            math_rows: HashMap::from([("x".to_string(), 4)]),
+            ..Default::default()
+        };
+        let m = map_math(src, Format::Markdown, &surface, None);
+        assert_eq!(m.math[0].rows_span, 0..1);
+    }
+
+    #[test]
+    fn a_paragraph_with_prose_beside_a_display_formula_is_not_a_block() {
+        let m = map_math("see\n$$\nx\n$$\n", Format::Markdown, &pictures(), None);
+        assert!(
+            m.math.iter().all(|i| i.glyph.is_some()),
+            "an atom, not a placeholder"
+        );
+        let m = map_math(
+            "$$\nx\n$$\n$$\ny\n$$\n",
+            Format::Markdown,
+            &pictures(),
+            None,
+        );
+        assert_eq!(m.math.len(), 2);
+        assert!(
+            m.math.iter().all(|i| i.glyph.is_some()),
+            "two formulas is prose with math in it"
+        );
+    }
+
+    #[test]
+    fn a_formula_on_the_reveal_line_is_its_tex_in_every_mode() {
+        let src = "Say $E = mc^2$ here.\n";
+        // The hidden modes' reveal: only the formula shows its markup.
+        let m = map_math(
+            src,
+            Format::Markdown,
+            &pictures(),
+            Some(Reveal::math(0..src.len() - 1)),
+        );
+        assert_eq!(row_texts(&m), vec!["Say $E = mc^2$ here."]);
+        assert!(
+            m.math.is_empty(),
+            "nothing stands in for a revealed formula"
+        );
+        let dollar = m.rows[0].glyphs.iter().find(|g| g.ch == '$').unwrap();
+        assert_eq!(dollar.style.role, Role::Delimiter);
+        let e = m.rows[0].glyphs.iter().find(|g| g.ch == 'E').unwrap();
+        assert_eq!(e.style.role, Role::Code);
+        // Full's reveal draws the same, and an emphasis beside it reveals too
+        // where the hidden modes' does not.
+        let src = "*a* $x$\n";
+        let hidden = map_math(
+            src,
+            Format::Markdown,
+            &pictures(),
+            Some(Reveal::math(0..src.len() - 1)),
+        );
+        assert_eq!(row_texts(&hidden), vec!["a $x$"]);
+        let full = map_math(
+            src,
+            Format::Markdown,
+            &pictures(),
+            Some(Reveal::full(0..src.len() - 1)),
+        );
+        assert_eq!(row_texts(&full), vec!["*a* $x$"]);
+        // A reveal line that does not meet the formula leaves the atom.
+        let other = map_math(
+            "$x$\n\ntext\n",
+            Format::Markdown,
+            &pictures(),
+            Some(Reveal::math(5..9)),
+        );
+        assert_eq!(row_texts(&other)[0], "∑");
+    }
+
+    #[test]
+    fn a_display_block_on_the_reveal_line_is_its_source_lines_in_the_code_style() {
+        let src = "intro\n\n$$\n\\int_0^1 x\n$$\n\nend\n";
+        // Any line of the block reveals the whole of it: here the middle one.
+        let mid = src.find("\\int").unwrap();
+        let line = mid..mid + "\\int_0^1 x".len();
+        let m = map_math(src, Format::Markdown, &pictures(), Some(Reveal::math(line)));
+        assert_eq!(
+            row_texts(&m),
+            vec!["intro", "", "$$", "\\int_0^1 x", "$$", "", "end"]
+        );
+        assert!(m.math.is_empty());
+        let fence = m.rows[2].glyphs.iter().find(|g| g.ch == '$').unwrap();
+        assert_eq!(fence.style.role, Role::Delimiter);
+        assert_eq!(fence.src, 7);
+        let x = m.rows[3].glyphs.iter().find(|g| g.ch == 'x').unwrap();
+        assert_eq!(x.style.role, Role::Code);
+        assert_eq!(x.src, src.find("x\n$$").unwrap());
+        // Every byte of the source is reachable: a stop on each fence and each
+        // character between.
+        assert!(m.is_stop(7));
+        assert!(m.is_stop(mid));
+        // The closing fence's line too, and the same for djot.
+        let close = src.rfind("$$").unwrap();
+        let m = map_math(
+            src,
+            Format::Markdown,
+            &pictures(),
+            Some(Reveal::math(close..close + 2)),
+        );
+        assert_eq!(row_texts(&m)[2], "$$");
+        let src = "$$`\n\\int\n`\n";
+        let m = map_math(src, Format::Djot, &pictures(), Some(Reveal::math(4..8)));
+        assert_eq!(row_texts(&m), vec!["$$`", "\\int", "`"]);
+    }
+
+    #[test]
+    fn a_block_that_holds_a_formula_says_so_to_the_cache() {
+        let src = "plain\n\nwith $x$ in it\n\n$$\ny\n$$\n";
+        let mut ed = Editor::new_ext(
+            src.as_bytes(),
+            Format::Markdown,
+            crate::doc::parse_extensions(),
+        )
+        .unwrap();
+        let mut cache = BlockCache::default();
+        let top = top_blocks(&mut ed);
+        let _ = build_cached(
+            &top,
+            src,
+            None,
+            false,
+            &pictures(),
+            None,
+            &mut cache,
+            |id| ed.subtree(NodeId(id)).unwrap_or_default(),
+        );
+        assert!(!cache.math_meets(&(0..5)), "the plain paragraph");
+        assert!(cache.math_meets(&(7..21)), "the one with an atom");
+        assert!(
+            cache.math_meets(&(26..27)),
+            "the middle line of the display block"
+        );
+        // A hit carries the answer without a walk: build again from the cache.
+        let _ = build_cached(
+            &top,
+            src,
+            None,
+            false,
+            &pictures(),
+            None,
+            &mut cache,
+            |_| Vec::new(),
+        );
+        assert!(cache.math_meets(&(7..21)));
+        assert!(!cache.math_meets(&(0..5)));
+    }
+
+    #[test]
+    fn incremental_builds_agree_with_the_reference_on_math() {
+        for src in [
+            "a $x$ b\n\n$$\ny\n$$\n\nc\n",
+            "one\n\ntwo $\\frac{a}{b}$ three\n",
+            "$$\n\\int\n$$\n",
+        ] {
+            for surface in [Surface::default(), pictures()] {
+                let mut ed = Editor::new_ext(
+                    src.as_bytes(),
+                    Format::Markdown,
+                    crate::doc::parse_extensions(),
+                )
+                .unwrap();
+                let all = ed.nodes().unwrap();
+                let plain = build(&all, src, Some(80), false, &surface, None);
+                let mut cache = BlockCache::default();
+                let top = top_blocks(&mut ed);
+                let cached = build_cached(
+                    &top,
+                    src,
+                    Some(80),
+                    false,
+                    &surface,
+                    None,
+                    &mut cache,
+                    |id| ed.subtree(NodeId(id)).unwrap_or_default(),
+                );
+                assert_eq!(row_texts(&plain), row_texts(&cached), "{src:?}");
+                assert_eq!(plain.math, cached.math, "{src:?}");
+                assert_eq!(plain.stops, cached.stops, "{src:?}");
+            }
+        }
     }
 }

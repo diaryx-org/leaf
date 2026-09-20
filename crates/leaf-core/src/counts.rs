@@ -159,5 +159,11 @@ fn is_text(role: Role) -> bool {
         // is not a word. (An *inline* image is different: leaf draws its alt
         // text as ordinary prose in the line, and so counts it.)
         Role::Image => false,
+        // A formula's atom or placeholder label, for the same reason: what the
+        // reader sees is a picture, and `Doc::counts` builds its map as a
+        // surface that paints one in a line, so an inline formula is an atom
+        // here and never its TeX. (Its TeX on the revealed line is `Code` and
+        // would count, but the count reveals nothing.)
+        Role::Math => false,
     }
 }

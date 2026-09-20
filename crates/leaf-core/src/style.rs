@@ -87,6 +87,20 @@ pub enum Role {
     /// real picture in its place — the same skip-the-picture contract
     /// [`Role::Rule`] table borders use.
     Image,
+    /// A formula standing in for its picture: the single atom glyph an inline
+    /// `$…$` renders to on a surface that paints pictures in a line, and the
+    /// `∑ tex` placeholder label a display `$$…$$` block renders to on every
+    /// surface. Both are *default* renderings a plain surface paints as-is;
+    /// a picture-capable frontend reads the map's
+    /// [`MathInfo`](crate::wysiwyg::MathInfo) side-table, typesets the TeX
+    /// it names, and draws the picture in the glyph's or the rows' place —
+    /// the [`Role::Image`] contract, one glyph narrower.
+    ///
+    /// Never the formula's *source*: on the caret's line a formula reveals to
+    /// its TeX in [`Role::Code`], with its delimiters in [`Role::Delimiter`],
+    /// in every markup mode — because a formula's content is not its picture,
+    /// and hiding the delimiters alone would leave nothing to edit.
+    Math,
 }
 
 /// The colour an author named on a highlight — the closed vocabulary twig
