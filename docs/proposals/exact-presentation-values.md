@@ -1,6 +1,6 @@
 ---
 title: "Proposal: exact values beside the presentation names"
-status: accepted
+status: implemented
 created: 2026-09-19
 updated: 2026-09-19
 part_of: '[Proposals](/docs/proposals/proposals.md)'
@@ -9,6 +9,22 @@ part_of: '[Proposals](/docs/proposals/proposals.md)'
 # Exact values beside the presentation names
 
 ## Status
+
+`implemented` on 2026-09-19, in the sequence's order and unreleased: core in
+`4ef4973` with a review's fixes in `83003b7`; both bindings in `c980d2c`,
+`aa66afa` and `8958590`; leaf-swift in `512e5c8` and `fb6af4b`; leaf-ratatui
+in `b71caf7`; leaf-web in `b3818a1`. Four things the text below did not
+foresee. A glyph's named face is a `FaceId` that is a hash of the name rather
+than an index into the map's table, because a row reaches a map by a fresh
+walk, a block-cache hit or a splice, and only the first walks a `data-font`.
+A binding handed a value the vocabulary cannot carry (`0pt`, `700pt`, a blank
+name) writes nothing and leaves the run as it was; only a line height of `1`
+clears, because that one *means* the theme's own. leaf-swift floors the
+*drawn* line-spacing multiple at 0.5 so a `data-line-height="0.2"` from
+elsewhere cannot stack rows on each other, while the token itself is kept
+and the menu still ticks it. And the macOS face picker is a searchable list
+of installed families rather than `NSFontPanel`, which offers a weight and a
+size the document cannot carry and outlives the press that opened it.
 
 `accepted` on 2026-09-19. Adam's decision: the vocabulary is extended, not
 reversed. Each menu that offers the names keeps them, first, and grows one
