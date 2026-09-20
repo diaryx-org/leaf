@@ -49,7 +49,7 @@
 // document surface and exposes commands + a change event, leaving the toolbar,
 // footer, and save affordances to the host app.
 
-import init, { LeafDoc } from "../pkg/leaf_wasm.js";
+import init, { LeafDoc, typeset_math } from "../pkg/leaf_wasm.js";
 
 /**
  * The presentation knobs, mirroring `leaf-gpui`'s `EditorStyle`. Everything here
@@ -107,6 +107,50 @@ const MIN_FIT_PROGRESS = 0.25;
  * a picture that is itself not editable. See `_mediaRowEl`.
  */
 const ZWSP = "​";
+
+/**
+ * Typeset formulas, keyed by everything that changes the picture — the TeX,
+ * the style, the size, and the ink — so a frame that shows the same formula
+ * as the last one typesets nothing. Shared across editors: a formula is the
+ * same picture whichever surface asks. An entry is the wasm's `MathPicture`,
+ * or an `Error` for TeX the typesetter could not read, which is cached too so
+ * the fault is paid once.
+ * @type {Map<string, {svg: string, width: number, height: number, depth: number} | Error>}
+ */
+const MATH_CACHE = new Map();
+const MATH_CACHE_MAX = 512;
+
+/**
+ * Typeset `tex` at `size` CSS pixels in `color` (a CSS hex), through the
+ * cache. `display` is TeX's display style, the `$$` switch.
+ */
+function typesetMath(tex, display, size, color) {
+  const key = (display ? "D" : "T") + size + color + "\u0001" + tex;
+  let hit = MATH_CACHE.get(key);
+  if (hit === undefined) {
+    if (MATH_CACHE.size >= MATH_CACHE_MAX) MATH_CACHE.clear();
+    try {
+      hit = typeset_math(tex, display, size, color);
+    } catch (e) {
+      hit = e instanceof Error ? e : new Error(String(e));
+    }
+    MATH_CACHE.set(key, hit);
+  }
+  return hit;
+}
+
+/** A standalone SVG document as a `data:` URL an `<img>` or a background can load. */
+function svgDataUrl(svg) {
+  return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+}
+
+/**
+ * The character an inline formula's run holds — core's one-glyph atom. Its
+ * advance in the row's font is what the run is stretched from to the picture's
+ * width, so the caret's two homes land either side of the picture; see
+ * `_mathRunEl`.
+ */
+const MATH_ATOM = "∑";
 
 let wasmReady = null;
 
@@ -238,6 +282,9 @@ export class LeafEditor {
     this._acceptedOverflow = false;
 
     this.doc = new LeafDoc(opts.source ?? "", opts.format ?? "markdown");
+    // A browser paints a picture in a line, so an inline formula arrives as an
+    // atom to draw over rather than as its TeX — see _mathRunEl.
+    this.doc.set_inline_pictures(true);
 
     ensureStylesheet();
     this._buildDom();
@@ -287,6 +334,7 @@ export class LeafEditor {
     doc.set_markup_mode(old.markup_mode());
     doc.set_line_flow(old.line_flow());
     doc.set_read_only(old.read_only());
+    doc.set_inline_pictures(true);
     if (this._darkQuery) doc.set_color_scheme(this._darkQuery.matches ? "dark" : "light");
     this.doc = doc;
     old.free?.();
@@ -798,6 +846,27 @@ export class LeafEditor {
       mediaAt.set(m.row, m);
       for (let r = m.row + 1; r < m.row + m.rows; r++) covered.add(r);
     }
+    // Formulas, two ways. A display block is a media row's shape — a real
+    // element on the first row, the fillers skipped. An inline atom rides its
+    // row: `_runEl` finds it by the source offset the `math` run carries, and
+    // the row's key carries its TeX so a reused row never shows a stale
+    // picture. What the ink is comes from the surface's own text colour, so
+    // a theme change re-typesets through the cache.
+    const mathBlockAt = new Map();
+    const mathInlineAt = new Map();
+    const ink = this._inkColor();
+    for (const m of view.math || []) {
+      if (m.inline) {
+        mathInlineAt.set(m.src, m);
+      } else if (!(typesetMath(m.tex, m.display, this.theme.fontSize, ink) instanceof Error)) {
+        // TeX that will not typeset stays core's `∑ tex` placeholder row, drawn
+        // as text with the fault in its title — see `_runEl`.
+        mathBlockAt.set(m.row, m);
+        for (let r = m.row + 1; r < m.row + m.rows; r++) covered.add(r);
+      }
+    }
+    this._mathInline = mathInlineAt;
+    this._ink = ink;
     // Tables the same way, but replacing the *whole* span rather than the first
     // row of it: core draws a table as a monospace box-glyph picture, which is
     // exact on a fixed-cell surface and shears in a proportional font — the `│`
@@ -848,19 +917,22 @@ export class LeafEditor {
       }
       const row = view.rows[i];
       const media = mediaAt.get(i) || null;
+      const mathBlock = mathBlockAt.get(i) || null;
       const pageBreak = breakAt.has(i);
       const runs = canonicalRuns(row.runs);
       const key = pageBreak
         ? pageBreakKey(row)
         : media
           ? mediaKey(media, row)
-          : rowKey(row, runs, i, view.rows);
+          : mathBlock
+            ? mathBlockKey(mathBlock, row, ink)
+            : rowKey(row, runs, i, view.rows) + mathRowKey(runs, mathInlineAt, ink);
       let el = take(key);
       if (el) {
         this._adoptRow(el, runs);
         this.rowEls.push(el);
       } else {
-        el = this._rowEl(row, i, view.rows, media, false, runs, pageBreak);
+        el = this._rowEl(row, i, view.rows, media, false, runs, pageBreak, mathBlock);
       }
       keyed.push({ key, el });
     }
@@ -936,13 +1008,23 @@ export class LeafEditor {
    * (`canonicalRuns`), passed in when the caller has already done it.
    * `pageBreak` marks the one leaf directive this frontend draws itself.
    */
-  _rowEl(row, i, rows, media = null, detached = false, runs = null, pageBreak = false) {
+  _rowEl(
+    row,
+    i,
+    rows,
+    media = null,
+    detached = false,
+    runs = null,
+    pageBreak = false,
+    mathBlock = null
+  ) {
     const div = el("div", "leaf-row");
     if (detached) {
       this.rowEls.push(div);
       return div;
     }
     if (media) return this._mediaRowEl(div, media, row);
+    if (mathBlock) return this._mathRowEl(div, mathBlock, row);
     if (pageBreak) return this._pageBreakRowEl(div, row);
     runs ??= canonicalRuns(row.runs);
     // A block-boundary gap row holds no caret. Left editable, the browser's own
@@ -1005,7 +1087,12 @@ export class LeafEditor {
       }
     }
 
-    div._leafRuns = runs.map((run) => div.appendChild(this._runEl(run)));
+    // The row's font size, for an inline formula set at the size of the text
+    // around it — a heading's ramp, else the body's.
+    const fontPx = row.heading
+      ? this.theme.fontSize * this.theme.headingScale[Math.min(row.heading, 6) - 1]
+      : this.theme.fontSize;
+    div._leafRuns = runs.map((run) => div.appendChild(this._runEl(run, fontPx)));
 
     // A contenteditable block needs a placeholder to hold a caret when it has no
     // text of its own (an empty paragraph) — but a non-editable gap row holds no
@@ -1086,6 +1173,33 @@ export class LeafEditor {
     node.addEventListener("error", () => div.classList.add("leaf-media-broken"), { once: true });
     div.appendChild(node);
 
+    div.appendChild(document.createTextNode(ZWSP));
+    this.rowEls.push(div);
+    return div;
+  }
+
+  /**
+   * Build the row for a display formula on lines of its own: the typeset
+   * picture, centred, in place of the `∑ tex` placeholder core drew for a
+   * surface that cannot paint one. The media row's shape exactly — an atom the
+   * caret sits either side of, a zero-width space on each side for it to land
+   * on, and `leafCoreLen` for the offsets to cross by — because that is what a
+   * block formula is to the caret. The picture is set at the body size; the
+   * row grows to fit it, so nothing here calls `set_math_rows`.
+   */
+  _mathRowEl(div, m, row) {
+    div.classList.add("leaf-media-row", "leaf-math-row");
+    div.dataset.leafCoreLen = String((row?.runs || []).reduce((n, r) => n + r.text.length, 0));
+    div.appendChild(document.createTextNode(ZWSP));
+    const pic = typesetMath(m.tex, m.display, this.theme.fontSize, this._ink);
+    const img = el("img", "leaf-media leaf-math-block");
+    img.src = svgDataUrl(pic.svg);
+    img.alt = m.tex.trim();
+    img.setAttribute("contenteditable", "false");
+    // The picture's own size, so it neither scales to the measure nor blurs.
+    img.style.width = (pic.width * this.theme.fontSize).toFixed(2) + "px";
+    img.style.height = ((pic.height + pic.depth) * this.theme.fontSize).toFixed(2) + "px";
+    div.appendChild(img);
     div.appendChild(document.createTextNode(ZWSP));
     this.rowEls.push(div);
     return div;
@@ -1194,8 +1308,9 @@ export class LeafEditor {
    * — thousands of them on a keystroke, for the document to end up looking the
    * same.
    */
-  _runEl(run) {
+  _runEl(run, fontPx = this.theme.fontSize) {
     const span = document.createElement("span");
+    if (run.role === "math") return this._mathRunEl(span, run, fontPx);
     let cls = "leaf-run leaf-r-" + run.role;
     if (run.bold) cls += " leaf-b";
     if (run.italic) cls += " leaf-i";
@@ -1246,6 +1361,82 @@ export class LeafEditor {
     span._src = run.src;
     span.textContent = run.text;
     return span;
+  }
+
+  /**
+   * An inline formula's run: the one-character atom core drew, with its
+   * typeset picture painted where it stands.
+   *
+   * The atom's text stays — a single `∑`, the one UTF-16 unit the row's text
+   * has for the formula, which is what keeps every offset the caret and the
+   * selection cross the row by in step with core's columns. What changes is
+   * how it draws: the glyph is made transparent, its advance is stretched by
+   * `letter-spacing` to the picture's width, and the picture is the span's
+   * background. So the caret's two homes — before the atom and after it — fall
+   * at the picture's left and right edges, native Left and Right step over it
+   * as over any character, and a click on it lands the caret at the formula's
+   * start, exactly as core's `src` says. The span is an inline-block hidden
+   * overflow, whose baseline is its bottom edge, dropped by the formula's
+   * depth so the text baseline runs through the picture where TeX put it.
+   *
+   * A formula on the caret's line never arrives here: core draws it as its
+   * TeX in code and delimiter runs. TeX the typesetter cannot read keeps the
+   * `∑`, tinted, with the fault in its title — the surface says "this is not
+   * yet a formula" where it stands.
+   */
+  _mathRunEl(span, run, fontPx) {
+    span.className = "leaf-run leaf-r-math" + (run.bold ? " leaf-b" : "") + (run.italic ? " leaf-i" : "");
+    span._src = run.src;
+    span.textContent = run.text;
+    const m = this._mathInline?.get(run.src);
+    if (!m) return span;
+    const pic = typesetMath(m.tex, m.display, fontPx, this._ink);
+    if (pic instanceof Error) {
+      span.classList.add("leaf-math-error");
+      span.title = pic.message;
+      return span;
+    }
+    const w = pic.width * fontPx;
+    const h = (pic.height + pic.depth) * fontPx;
+    span.classList.add("leaf-math");
+    span.title = m.tex.trim();
+    span.style.width = w.toFixed(2) + "px";
+    span.style.height = h.toFixed(2) + "px";
+    span.style.verticalAlign = (-pic.depth * fontPx).toFixed(2) + "px";
+    span.style.letterSpacing = (w - this._atomAdvance(fontPx, run.bold)).toFixed(2) + "px";
+    span.style.backgroundImage = "url(\"" + svgDataUrl(pic.svg) + "\")";
+    return span;
+  }
+
+  /**
+   * The advance of the atom character in the body face at `fontPx` — what
+   * `_mathRunEl` subtracts from the picture's width to find the letter-spacing
+   * that stretches the atom to it. Measured once per size on a canvas and
+   * remembered: a frame with a dozen formulas measures nothing.
+   */
+  _atomAdvance(fontPx, bold) {
+    const key = (bold ? "b" : "") + fontPx;
+    this._atomWidths ??= new Map();
+    let w = this._atomWidths.get(key);
+    if (w === undefined) {
+      const ctx = (this._measureCanvas ??= document.createElement("canvas")).getContext("2d");
+      ctx.font = (bold ? "700 " : "") + fontPx + "px " + this.theme.fontFamily;
+      w = ctx.measureText(MATH_ATOM).width;
+      this._atomWidths.set(key, w);
+    }
+    return w;
+  }
+
+  /**
+   * The ink a formula is set in: the surface's own text colour, as a CSS hex
+   * the typesetter reads. Read off the computed style so a host that overrode
+   * `--leaf-text`, or a scheme change, is followed without being told.
+   */
+  _inkColor() {
+    const rgb = getComputedStyle(this.contentEl).color;
+    const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(rgb);
+    if (!m) return "#000000";
+    return "#" + [m[1], m[2], m[3]].map((v) => Number(v).toString(16).padStart(2, "0")).join("");
   }
 
   // ── native selection (model ⇄ browser) ────────────────────────────────────
@@ -1665,7 +1856,14 @@ export class LeafEditor {
       if (!sel || sel.rangeCount === 0) return;
       if (!this.contentEl.contains(sel.getRangeAt(0).commonAncestorContainer)) return;
       const view = this._selectionToCore(sel);
-      if (view) this._emitChange((this._lastView = view));
+      if (!view) return;
+      // A caret move is not an edit, but it can still change what the rows
+      // show: crossing onto a line that reveals its markup — every line under
+      // the "full" markup mode, a formula's line in every mode — or off one.
+      // Core says so through the map's key, and only then is a frame painted;
+      // ordinary motion keeps costing nothing.
+      if (view.map_key !== this._lastView?.map_key) this.render(view);
+      else this._emitChange((this._lastView = view));
     });
 
     // Triple-click: the browser's is a *visual line*; leaf's is the *logical
@@ -2323,6 +2521,25 @@ function mediaKey(media, row) {
   return "m" + len + "|" + JSON.stringify([media.kind, media.src, media.poster, media.alt, media.sources]);
 }
 
+/** `rowKey` for a display formula's row: the picture drawn and the row core
+ *  addresses. The ink is in it because the picture is. */
+function mathBlockKey(m, row, ink) {
+  const len = (row?.runs || []).reduce((n, r) => n + r.text.length, 0);
+  return "M" + len + "|" + ink + "|" + (m.display ? "D" : "T") + m.tex;
+}
+
+/** What an ordinary row's key leaves out when it holds inline formulas: their
+ *  TeX and the ink, neither of which the `∑` run itself carries. */
+function mathRowKey(runs, mathInlineAt, ink) {
+  let key = "";
+  for (const run of runs) {
+    if (run.role !== "math") continue;
+    const m = mathInlineAt.get(run.src);
+    if (m) key += "\u0004" + (m.display ? "D" : "T") + m.tex;
+  }
+  return key ? key + "|" + ink : "";
+}
+
 /** `rowKey` for a page break: a rule is a rule, and the only thing that can
  *  change under it is what core counts the placeholder row as. */
 function pageBreakKey(row) {
@@ -2813,6 +3030,30 @@ const EDITOR_CSS = `
    than something to fit a box. */
 audio.leaf-media { width: 100%; max-width: 420px; border-radius: 999px; }
 img.leaf-media, video.leaf-media { max-height: 60vh; }
+
+/* A display formula: its picture centred on the measure, at its own size. */
+.leaf-math-row { text-align: center; }
+.leaf-math-block { display: inline-block; max-width: 100%; border-radius: 0; }
+
+/* An inline formula: core's one-character atom, drawn as the picture. The
+   character stays for the caret to count by and is stretched to the picture's
+   width (see _mathRunEl); the picture is the background. The baseline of an
+   inline-block with hidden overflow is its bottom edge, which vertical-align
+   then drops by the formula's depth. The caret keeps the text colour: only the
+   glyph's fill goes clear. */
+.leaf-r-math.leaf-math {
+  display: inline-block;
+  overflow: hidden;
+  -webkit-text-fill-color: transparent;
+  background-repeat: no-repeat;
+  background-position: left top;
+  background-size: 100% 100%;
+  white-space: pre;
+}
+/* TeX the typesetter could not read: the atom, tinted, with the fault in its
+   title. Also every math run before the surface has said it paints pictures. */
+.leaf-r-math { color: var(--leaf-muted); }
+.leaf-r-math.leaf-math-error { color: #c0392b; text-decoration: underline wavy; }
 
 /* Didn't load: a missing file would otherwise leave the row blank, with nothing
    to say what was meant to be there. */

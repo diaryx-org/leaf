@@ -1159,6 +1159,119 @@ await test("the exact forms go through the API and come back as written", () => 
   return ed;
 });
 
+await test("an inline formula is a picture the caret sits either side of", () => {
+  const ed = editor("intro\n\nsay $E = mc^2$ here\n");
+  const row = ed.rowEls.find((r) => r.textContent.includes("say"));
+  assert(row, "the paragraph did not render");
+  const atom = row.querySelector(".leaf-r-math");
+  assert(atom, "no math run");
+  assert(atom.classList.contains("leaf-math"), "the run was not drawn as a picture");
+  eq(atom.textContent, "∑", "the atom character is not what core drew");
+  assert(atom.style.backgroundImage.startsWith('url("data:image/svg+xml'), "no picture");
+  const w = parseFloat(atom.style.width);
+  assert(w > 30, `the picture is ${w}px wide`);
+  // Stretched to the picture: the caret's two homes are its two edges.
+  const rect = atom.getBoundingClientRect();
+  place(atom.firstChild, 0);
+  const r0 = window.getSelection().getRangeAt(0).getBoundingClientRect();
+  place(atom.firstChild, 1);
+  const r1 = window.getSelection().getRangeAt(0).getBoundingClientRect();
+  assert(Math.abs(r0.left - rect.left) < 2, `caret before at ${r0.left}, picture at ${rect.left}`);
+  assert(Math.abs(r1.left - rect.right) < 2, `caret after at ${r1.left}, picture ends at ${rect.right}`);
+  // Both map into core at the formula's ends: past the closing `$`, and at
+  // its start. Landing on either puts the caret on the formula's line, which
+  // reveals it in the model — so the picture is put back between the two by
+  // moving away and repainting, as the selectionchange handler would.
+  place(atom.firstChild, 1);
+  ed._syncFromDom();
+  const end = ed._lastView.caret_src;
+  eq(ed.source().slice(end - 2, end), "2$");
+  place(firstText(ed.rowEls[0]), 0);
+  ed._syncFromDom();
+  ed.render(ed.doc.view());
+  const again = ed.rowEls.find((r) => r.textContent.includes("say")).querySelector(".leaf-r-math");
+  assert(again.classList.contains("leaf-math"), "the picture did not come back");
+  place(again.firstChild, 0);
+  ed._syncFromDom();
+  const start = ed._lastView.caret_src;
+  eq(ed.source().slice(start, start + 2), "$E");
+  eq(end, start + "$E = mc^2$".length);
+  return ed;
+});
+
+await test("a formula on the caret's line is its TeX, and folds back when the caret leaves", () => {
+  const ed = editor("say $x+y$ here\n\nnext\n");
+  // The caret opens on the first line: the formula is source, in code style.
+  let row = ed.rowEls[0];
+  assert(!row.querySelector(".leaf-r-math"), "a picture stood in under the caret");
+  eq(row.textContent, "say $x+y$ here");
+  assert(row.querySelector(".leaf-r-delimiter"), "the dollars are not delimiters");
+  // Down to the next paragraph, and it is the picture.
+  const next = ed.rowEls.find((r) => r.textContent === "next");
+  place(firstText(next), 0);
+  ed._syncFromDom();
+  ed.render(ed.doc.view());
+  row = ed.rowEls[0];
+  assert(row.querySelector(".leaf-r-math.leaf-math"), "the formula did not fold to its picture");
+  eq(row.textContent, "say ∑ here");
+  return ed;
+});
+
+await test("a caret move onto a formula's line repaints, through the real selection", async () => {
+  const ed = editor("say $x+y$ here\n\nnext\n");
+  const next = ed.rowEls.find((r) => r.textContent === "next");
+  place(firstText(next), 0);
+  ed._syncFromDom();
+  ed.render(ed.doc.view());
+  eq(ed.rowEls[0].textContent, "say ∑ here", "the picture did not stand in");
+  const key = ed._lastView.map_key;
+  // A native selection change, as a click or an arrow key makes: the handler
+  // sees the map's key move and paints the revealed line.
+  place(ed.rowEls[0].querySelector(".leaf-r-math").firstChild, 0);
+  await new Promise((r) => setTimeout(r, 0));
+  assert(ed._lastView.map_key !== key, "the map did not change under the caret");
+  eq(ed.rowEls[0].textContent, "say $x+y$ here", "the line was not repainted revealed");
+  // And back off it, the picture again — one repaint each way, none between.
+  place(firstText(ed.rowEls.find((r) => r.textContent === "next")), 0);
+  await new Promise((r) => setTimeout(r, 0));
+  eq(ed.rowEls[0].textContent, "say ∑ here", "the line did not fold back");
+  return ed;
+});
+
+await test("a display formula is a centred picture in a row of its own", () => {
+  const ed = editor("intro\n\n$$\n\\int_0^1 x\\,dx\n$$\n\nend\n");
+  const row = ed.rowEls.find((r) => r.classList.contains("leaf-math-row"));
+  assert(row, "no math row was drawn");
+  const img = row.querySelector("img.leaf-math-block");
+  assert(img && img.src.startsWith("data:image/svg+xml"), "no picture in the row");
+  assert(!ed.contentEl.textContent.includes("\\int"), "the placeholder label is still painted");
+  assert(row.classList.contains("leaf-media-row"), "the row is not the media row's shape");
+  // Its two caret homes, as a picture's.
+  place(row.firstChild, 0);
+  ed._syncFromDom();
+  const before = ed._lastView.caret_src;
+  eq(ed.source().slice(before, before + 2), "$$");
+  place(row.lastChild, 1);
+  ed._syncFromDom();
+  const after = ed._lastView.caret_src;
+  eq(ed.source().slice(after - 2, after), "$$");
+  assert(after > before);
+  return ed;
+});
+
+await test("TeX that will not typeset keeps its atom, tinted, with the fault in its title", () => {
+  const ed = editor("intro\n\nbad $\\frac{$ here\n\n$$\n\\frac{\n$$\n\nend\n");
+  const atom = ed.contentEl.querySelector(".leaf-r-math");
+  assert(atom, "no math run");
+  assert(atom.classList.contains("leaf-math-error"), "the fault is not marked");
+  assert(atom.title.length > 0, "no message");
+  eq(atom.textContent, "∑");
+  // The block stays core's placeholder row, as text.
+  assert(!ed.rowEls.some((r) => r.classList.contains("leaf-math-row")), "a broken block was drawn as a picture");
+  assert(ed.contentEl.textContent.includes("∑ \\frac{"), "the placeholder row is gone");
+  return ed;
+});
+
 await test("the injected rules and presentation.css are the same stylesheet", async () => {
   const text = await (await fetch("../src/presentation.css")).text();
   // Comments and whitespace are each file's own; the rules are not.

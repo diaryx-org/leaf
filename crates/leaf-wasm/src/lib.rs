@@ -821,6 +821,17 @@ pub struct DocView {
     /// `math` run or the placeholder rows. Empty in the source view, and
     /// empty of any formula on the caret's line, which is its TeX there.
     math: Vec<MathView>,
+    /// Which built map these rows came from — `leaf_core::Doc::visual_key`,
+    /// spelled as a string the renderer compares and never reads. Two frames
+    /// with the same key have the same rows, so a renderer that repaints only
+    /// when this moves repaints exactly when the rows did.
+    ///
+    /// What it is for: a caret move without an edit still changes the map
+    /// when it crosses onto or off a line that reveals — every line under
+    /// `MarkupMode::Full`, a formula's line in every mode — and a renderer
+    /// that mirrors the native selection into core without repainting would
+    /// keep showing the picture the caret is now standing in the source of.
+    map_key: String,
 }
 
 /// The UTF-16 offset into `text` of display column `col` — the position a DOM
@@ -1210,6 +1221,7 @@ impl LeafDoc {
                 View::Wysiwyg => math_views(&self.doc.vmap),
                 View::Source => Vec::new(),
             },
+            map_key: format!("{:?}", self.doc.visual_key()),
         })
     }
 
@@ -1578,11 +1590,19 @@ impl LeafDoc {
     /// moving the caret. It's what the double/triple-click selectors below anchor
     /// on, and it lets a host implement its own gestures (a context menu placing
     /// the caret, say) without a second boundary crossing.
+    ///
+    /// Resolved against the map as it stands, without moving the caret first:
+    /// moving it could rebuild the map under the second of two ends resolved
+    /// in a row. Under `MarkupMode::Full`, and for a formula in every mode, the
+    /// map is a function of the caret's line, so a click that lands on such a
+    /// line changes the row's text — `say ∑ here` becomes `say $x$ here` —
+    /// and a `ch` read off the old row would then name the wrong glyph in the
+    /// new one. `click` snaps the answer onto a caret stop, so it is not lost
+    /// either: `offset_of_pos` never returns anything else.
     fn offset_at(&mut self, row: usize, ch: usize) -> usize {
         self.sync();
         let col = utf16_to_col(&self.row_text(row), ch);
-        self.doc.click(row, col, false);
-        self.doc.caret
+        self.offset_of_col(row, col)
     }
 
     /// Select the word under a click (row, `ch`) — the double-click gesture.
