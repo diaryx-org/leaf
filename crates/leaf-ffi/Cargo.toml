@@ -59,3 +59,9 @@ unicode-segmentation = "1.13.3"
 # inside the first. The Swift side (`ResvgCoreGraphics`, from the resvg-swift
 # package leaf-swift depends on) finds its `resvg_uniffi` symbols there.
 resvg-uniffi = "0.1"
+
+# TeX to a self-contained SVG picture with its baseline metrics, for the Swift
+# views to draw in a line (a run delegate) or over a block's rows. Exposed as
+# `typeset_math`; the fonts ride inside the crate, so nothing is loaded at
+# runtime.
+leaf-math = { path = "../leaf-math", version = "0.3.1" }

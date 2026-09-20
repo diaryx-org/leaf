@@ -650,6 +650,75 @@ impl From<leaf_core::Capabilities> for CapabilitiesView {
     }
 }
 
+/// One formula standing as a picture: what to typeset and where its picture
+/// goes. The web peer of [`leaf_core::MathInfo`]. Two shapes:
+///
+/// - **Inline** (`inline: true`): one row, and on it exactly one run with
+///   role `math` whose `src` equals this `src` — a single `∑` standing for
+///   the whole formula. The renderer typesets the TeX ([`typeset_math`]) and
+///   puts the SVG in the run's place as an inline element whose baseline is
+///   the picture's (`vertical-align: -depth`), so the text baseline passes
+///   through it where the formula's does.
+/// - **Block** (`inline: false`): the rows in `[row, row + rows)` are the
+///   placeholder, a [`MediaView`]'s shape exactly — the renderer skips them
+///   and positions the picture over them, centred.
+///
+/// A formula on the caret's line is not here: there it is its TeX, drawn as
+/// `code` runs between `delimiter` runs, in every markup mode.
+#[derive(Serialize, Tsify)]
+pub struct MathView {
+    /// The first [`DocView::rows`] row of the formula — the row its atom is
+    /// on, or the placeholder row of a block.
+    row: usize,
+    /// How many rows it spans: `1` for an atom; the placeholder and its
+    /// fillers for a block, which is `1` until [`LeafDoc::set_math_rows`]
+    /// says otherwise.
+    rows: usize,
+    /// Whether this is an atom in a line of text, or a block of its own.
+    inline: bool,
+    /// The TeX between the delimiters, verbatim. What [`typeset_math`] takes.
+    tex: String,
+    /// Display style (limits above and below, full-height fractions) rather
+    /// than text style — a `$$…$$`, inline or not.
+    display: bool,
+    /// The formula's source start: what the `math` run's `src` carries, and
+    /// where a click on the picture lands the caret.
+    src: usize,
+}
+
+/// A per-formula measured height, the way JS reports one back — the input
+/// half of the height loop [`LeafDoc::set_math_rows`] closes. The web
+/// renderer positions a block formula's element over the rows it reserved
+/// and lets the element be as tall as it is, so it seldom needs this.
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+pub struct MathHeight {
+    /// The formula's `tex` as [`MathView`] handed it over.
+    tex: String,
+    /// How many visual rows the rendered picture needs.
+    rows: usize,
+}
+
+/// A typeset formula: a standalone SVG document and where its baseline is.
+/// See [`typeset_math`].
+#[derive(Serialize, Tsify)]
+#[tsify(into_wasm_abi)]
+pub struct MathPicture {
+    /// A self-contained SVG — every glyph an outline, no font to load. Its
+    /// `viewBox`, `width` and `height` are in CSS pixels at the size it was
+    /// typeset at, so dropped into the page at its intrinsic size the glyphs
+    /// land at that font size.
+    svg: String,
+    /// The picture's advance width, in em of the size it was typeset at.
+    width: f64,
+    /// How far it rises above its baseline, in em.
+    height: f64,
+    /// How far it reaches below its baseline, in em — what an inline element
+    /// is shifted down by (`vertical-align: -{depth}em`) so the baselines
+    /// agree.
+    depth: f64,
+}
+
 /// A per-destination measured height, the way JS reports one back — the input
 /// half of the height loop [`LeafDoc::set_media_rows`] closes.
 #[derive(Deserialize, Tsify)]
@@ -747,6 +816,11 @@ pub struct DocView {
     /// the placeholder rows the renderer replaces with real elements. Empty in
     /// the source view, which shows the markup itself and has no placeholders.
     media: Vec<MediaView>,
+    /// Every formula standing as a picture — each inline atom and each
+    /// display block — for the renderer to typeset and draw in place of the
+    /// `math` run or the placeholder rows. Empty in the source view, and
+    /// empty of any formula on the caret's line, which is its TeX there.
+    math: Vec<MathView>,
 }
 
 /// The UTF-16 offset into `text` of display column `col` — the position a DOM
@@ -802,6 +876,11 @@ fn role_name(r: Role) -> String {
         Role::QuoteGutter => "quote".into(),
         Role::Rule => "rule".into(),
         Role::Image => "image".into(),
+        // A formula's stand-in: the one-character atom run an inline formula
+        // renders to, or a display block's placeholder label. The renderer
+        // pairs a `math` run with its [`MathView`] by `src` and draws the
+        // typeset picture in its place — see [`DocView::math`].
+        Role::Math => "math".into(),
         Role::Delimiter => "delimiter".into(),
     }
 }
@@ -820,6 +899,7 @@ fn class_name(c: BlockClass) -> String {
         BlockClass::Code => "code",
         BlockClass::Table => "table",
         BlockClass::Media => "media",
+        BlockClass::Math => "math",
         BlockClass::Directive => "directive",
         BlockClass::Rule => "rule",
         BlockClass::Footnote => "footnote",
@@ -1126,6 +1206,10 @@ impl LeafDoc {
                 View::Wysiwyg => media_views(&self.doc.vmap, self.scheme),
                 View::Source => Vec::new(),
             },
+            math: match self.doc.view {
+                View::Wysiwyg => math_views(&self.doc.vmap),
+                View::Source => Vec::new(),
+            },
         })
     }
 
@@ -1160,6 +1244,27 @@ impl LeafDoc {
                 .map(|h| (h.destination, h.rows))
                 .collect(),
         );
+        self.view()
+    }
+
+    /// Report how many visual rows each display formula needs, keyed by its
+    /// TeX as [`MathView`] handed it over — [`set_media_rows`]'s peer.
+    ///
+    /// [`set_media_rows`]: Self::set_media_rows
+    pub fn set_math_rows(&mut self, heights: Vec<MathHeight>) -> Result<DocView, JsValue> {
+        self.doc
+            .set_math_rows(heights.into_iter().map(|h| (h.tex, h.rows)).collect());
+        self.view()
+    }
+
+    /// Say whether the renderer can paint a picture *inside* a line of text.
+    /// When it can, an inline formula arrives as one `math` run and a
+    /// [`MathView`] with `inline` set, for the renderer to put its typeset
+    /// picture in place of; when it cannot, as the code-styled TeX it always
+    /// was. Off until called, so a host that has not caught up sees what it
+    /// saw.
+    pub fn set_inline_pictures(&mut self, on: bool) -> Result<DocView, JsValue> {
+        self.doc.set_inline_pictures(on);
         self.view()
     }
 
@@ -2276,6 +2381,71 @@ impl LeafDoc {
 /// The WYSIWYG rows: each visual row's glyphs coalesced into maximal runs of
 /// identical `(style, selected)` — the same span merge the TUI does. A glyph is
 /// selected when its source byte lies in `[ss, se)`.
+/// Every formula in `vmap` as the renderer's [`MathView`]s — the peer of
+/// [`media_views`].
+fn math_views(vmap: &VisualMap) -> Vec<MathView> {
+    vmap.math
+        .iter()
+        .map(|m| MathView {
+            row: m.rows_span.start,
+            rows: m.rows_span.len().max(1),
+            inline: m.glyph.is_some(),
+            tex: m.tex.clone(),
+            display: m.display,
+            src: m.src,
+        })
+        .collect()
+}
+
+/// Typeset `tex` — the text between a formula's delimiters, as a
+/// [`MathView`] hands it over — to a picture. `display` is the view's
+/// `display`; `size` is the font size in CSS pixels the formula is set at (an
+/// inline formula takes its run's, a block the body's); `color` is the ink as
+/// CSS hex, `#rgb`, `#rrggbb` or `#rrggbbaa`. A theme change is a re-render
+/// with a new colour.
+///
+/// Pure layout over fonts embedded in the module — no fetch, no font to
+/// load, fast enough to call while painting a frame — so the renderer caches
+/// by `(tex, display, size, colour)` and nothing more. TeX the typesetter
+/// cannot read rejects with its message; the renderer shows the revealed
+/// source in its place.
+#[wasm_bindgen]
+pub fn typeset_math(
+    tex: &str,
+    display: bool,
+    size: f64,
+    color: &str,
+) -> Result<MathPicture, JsValue> {
+    let rgba = parse_hex_color(color)
+        .ok_or_else(|| JsValue::from_str(&format!("not a hex colour: {color}")))?;
+    let p = leaf_math::typeset(tex, display, size, rgba)
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    Ok(MathPicture {
+        svg: p.svg,
+        width: p.width,
+        height: p.height,
+        depth: p.depth,
+    })
+}
+
+/// `#rgb`, `#rrggbb` or `#rrggbbaa` to bytes — the one colour syntax
+/// [`typeset_math`] reads, because it is the one a stylesheet's custom
+/// property most often resolves to and the one JS can produce without a
+/// canvas.
+fn parse_hex_color(s: &str) -> Option<[u8; 4]> {
+    let hex = s.trim().strip_prefix('#')?;
+    let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+    match hex.len() {
+        3 => {
+            let n = |i: usize| u8::from_str_radix(&hex[i..i + 1], 16).ok().map(|v| v * 17);
+            Some([n(0)?, n(1)?, n(2)?, 255])
+        }
+        6 => Some([byte(0)?, byte(2)?, byte(4)?, 255]),
+        8 => Some([byte(0)?, byte(2)?, byte(4)?, byte(6)?]),
+        _ => None,
+    }
+}
+
 /// Every block media in `vmap` as the renderer's [`MediaView`]s, with each URL
 /// already resolved under `scheme`.
 ///
@@ -3378,5 +3548,48 @@ mod tests {
         d.doc.caret = 10;
         let s = d.selection_counts().expect("a selection");
         assert_eq!((s.words, s.characters, s.paragraphs), (2, 6, 1));
+    }
+
+    #[test]
+    fn a_formula_is_a_math_run_and_a_view_paired_by_src() {
+        let mut doc = wysiwyg("say $x+y$ here\n\nnext\n");
+        doc.set_inline_pictures(true);
+        doc.caret = 16;
+        doc.build_visual(80);
+        let views = math_views(&doc.vmap);
+        assert_eq!(views.len(), 1);
+        let m = &views[0];
+        assert!(m.inline);
+        assert_eq!((m.row, m.rows), (0, 1));
+        assert_eq!(m.tex, "x+y");
+        assert!(!m.display);
+        assert_eq!(m.src, 4);
+        let rows = wysiwyg_rows(&doc.vmap, usize::MAX, usize::MAX, &[]);
+        let run = rows[0]
+            .runs
+            .iter()
+            .find(|r| r.role == "math")
+            .expect("a math run");
+        assert_eq!(run.text, "∑");
+        assert_eq!(run.src, m.src);
+        // A display block is rows to lay over, grown by what was measured.
+        let mut doc = wysiwyg("$$\nx\n$$\n\nend\n");
+        doc.caret = 9;
+        doc.build_visual(80);
+        let m = &math_views(&doc.vmap)[0];
+        assert!(!m.inline && m.display);
+        assert_eq!((m.row, m.rows), (0, 1));
+        doc.set_math_rows([(m.tex.clone(), 3)].into_iter().collect());
+        doc.build_visual(80);
+        assert_eq!(math_views(&doc.vmap)[0].rows, 3);
+    }
+
+    #[test]
+    fn hex_colours_read_three_six_and_eight_digits() {
+        assert_eq!(parse_hex_color("#fff"), Some([255, 255, 255, 255]));
+        assert_eq!(parse_hex_color("#1a2B3c"), Some([0x1a, 0x2b, 0x3c, 255]));
+        assert_eq!(parse_hex_color(" #00000080 "), Some([0, 0, 0, 0x80]));
+        assert_eq!(parse_hex_color("red"), None);
+        assert_eq!(parse_hex_color("#12345"), None);
     }
 }

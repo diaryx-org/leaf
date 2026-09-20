@@ -1091,6 +1091,15 @@ public protocol LeafDocProtocol : AnyObject {
     func setHighlights(highlights: [Highlight])  -> DocView
     
     /**
+     * Say whether the renderer can paint a picture *inside* a line of text.
+     * When it can, an inline formula arrives as one `math` run and a
+     * [`MathView`] with `inline` set, for the renderer to draw its typeset
+     * picture over; when it cannot, as the code-styled TeX it always was.
+     * Off until called, so a host that has not caught up sees what it saw.
+     */
+    func setInlinePictures(on: Bool)  -> DocView
+    
+    /**
      * Set the soft-break flow preference. Returns a fresh view so a frontend
      * can repaint: like the markup-exposure preference this one changes rendering
      * immediately, laying preserved soft breaks out as their own rows.
@@ -1128,6 +1137,16 @@ public protocol LeafDocProtocol : AnyObject {
      * default.
      */
     func setMarkupMode(mode: MarkupMode)  -> DocView
+    
+    /**
+     * Report how many visual rows each display formula needs, keyed by its
+     * TeX as [`MathView`] handed it over — [`set_media_rows`]'s peer for a
+     * renderer that reserves rows. One that lays a formula out in its own
+     * units, as the Swift views do, never calls this.
+     *
+     * [`set_media_rows`]: Self::set_media_rows
+     */
+    func setMathRows(heights: [MathHeight])  -> DocView
     
     /**
      * Report how many visual rows each block media actually needs, measured from
@@ -2402,6 +2421,21 @@ open func setHighlights(highlights: [Highlight]) -> DocView {
 }
     
     /**
+     * Say whether the renderer can paint a picture *inside* a line of text.
+     * When it can, an inline formula arrives as one `math` run and a
+     * [`MathView`] with `inline` set, for the renderer to draw its typeset
+     * picture over; when it cannot, as the code-styled TeX it always was.
+     * Off until called, so a host that has not caught up sees what it saw.
+     */
+open func setInlinePictures(on: Bool) -> DocView {
+    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_set_inline_pictures(self.uniffiClonePointer(),
+        FfiConverterBool.lower(on),$0
+    )
+})
+}
+    
+    /**
      * Set the soft-break flow preference. Returns a fresh view so a frontend
      * can repaint: like the markup-exposure preference this one changes rendering
      * immediately, laying preserved soft breaks out as their own rows.
@@ -2460,6 +2494,22 @@ open func setMarkupMode(mode: MarkupMode) -> DocView {
     return try!  FfiConverterTypeDocView.lift(try! rustCall() {
     uniffi_leaf_ffi_fn_method_leafdoc_set_markup_mode(self.uniffiClonePointer(),
         FfiConverterTypeMarkupMode.lower(mode),$0
+    )
+})
+}
+    
+    /**
+     * Report how many visual rows each display formula needs, keyed by its
+     * TeX as [`MathView`] handed it over — [`set_media_rows`]'s peer for a
+     * renderer that reserves rows. One that lays a formula out in its own
+     * units, as the Swift views do, never calls this.
+     *
+     * [`set_media_rows`]: Self::set_media_rows
+     */
+open func setMathRows(heights: [MathHeight]) -> DocView {
+    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_set_math_rows(self.uniffiClonePointer(),
+        FfiConverterSequenceTypeMathHeight.lower(heights),$0
     )
 })
 }
@@ -3648,6 +3698,13 @@ public struct DocView {
      */
     public var media: [MediaView]
     /**
+     * Formulas standing as pictures — each inline atom and each display
+     * block — for a frontend that typesets and draws them in place of the
+     * `math` run or the placeholder rows. Empty in the source view, and
+     * empty of any formula on the caret's line, which is its TeX there.
+     */
+    public var math: [MathView]
+    /**
      * The caret's row: an index into [`Self::rows`].
      */
     public var caretRow: UInt32
@@ -3762,6 +3819,12 @@ public struct DocView {
          * `![](…)` or `<video>` markup is the literal text being edited.
          */media: [MediaView], 
         /**
+         * Formulas standing as pictures — each inline atom and each display
+         * block — for a frontend that typesets and draws them in place of the
+         * `math` run or the placeholder rows. Empty in the source view, and
+         * empty of any formula on the caret's line, which is its TeX there.
+         */math: [MathView], 
+        /**
          * The caret's row: an index into [`Self::rows`].
          */caretRow: UInt32, 
         /**
@@ -3843,6 +3906,7 @@ public struct DocView {
         self.tables = tables
         self.directives = directives
         self.media = media
+        self.math = math
         self.caretRow = caretRow
         self.caretCol = caretCol
         self.caretCh = caretCh
@@ -3875,6 +3939,9 @@ extension DocView: Equatable, Hashable {
             return false
         }
         if lhs.media != rhs.media {
+            return false
+        }
+        if lhs.math != rhs.math {
             return false
         }
         if lhs.caretRow != rhs.caretRow {
@@ -3930,6 +3997,7 @@ extension DocView: Equatable, Hashable {
         hasher.combine(tables)
         hasher.combine(directives)
         hasher.combine(media)
+        hasher.combine(math)
         hasher.combine(caretRow)
         hasher.combine(caretCol)
         hasher.combine(caretCh)
@@ -3960,6 +4028,7 @@ public struct FfiConverterTypeDocView: FfiConverterRustBuffer {
                 tables: FfiConverterSequenceTypeTableView.read(from: &buf), 
                 directives: FfiConverterSequenceTypeDirectiveView.read(from: &buf), 
                 media: FfiConverterSequenceTypeMediaView.read(from: &buf), 
+                math: FfiConverterSequenceTypeMathView.read(from: &buf), 
                 caretRow: FfiConverterUInt32.read(from: &buf), 
                 caretCol: FfiConverterUInt32.read(from: &buf), 
                 caretCh: FfiConverterUInt32.read(from: &buf), 
@@ -3983,6 +4052,7 @@ public struct FfiConverterTypeDocView: FfiConverterRustBuffer {
         FfiConverterSequenceTypeTableView.write(value.tables, into: &buf)
         FfiConverterSequenceTypeDirectiveView.write(value.directives, into: &buf)
         FfiConverterSequenceTypeMediaView.write(value.media, into: &buf)
+        FfiConverterSequenceTypeMathView.write(value.math, into: &buf)
         FfiConverterUInt32.write(value.caretRow, into: &buf)
         FfiConverterUInt32.write(value.caretCol, into: &buf)
         FfiConverterUInt32.write(value.caretCh, into: &buf)
@@ -4449,6 +4519,362 @@ public func FfiConverterTypeLandingView_lift(_ buf: RustBuffer) throws -> Landin
 #endif
 public func FfiConverterTypeLandingView_lower(_ value: LandingView) -> RustBuffer {
     return FfiConverterTypeLandingView.lower(value)
+}
+
+
+/**
+ * A per-formula measured height, the way a renderer that reserves rows
+ * (rather than laying pictures out in its own units) reports one back — the
+ * input half of the loop [`LeafDoc::set_math_rows`] closes. The Swift views
+ * lay a formula out in points and never need this.
+ */
+public struct MathHeight {
+    /**
+     * The formula's `tex` as [`MathView`] handed it over.
+     */
+    public var tex: String
+    /**
+     * How many visual rows the picture needs.
+     */
+    public var rows: UInt32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The formula's `tex` as [`MathView`] handed it over.
+         */tex: String, 
+        /**
+         * How many visual rows the picture needs.
+         */rows: UInt32) {
+        self.tex = tex
+        self.rows = rows
+    }
+}
+
+
+
+extension MathHeight: Equatable, Hashable {
+    public static func ==(lhs: MathHeight, rhs: MathHeight) -> Bool {
+        if lhs.tex != rhs.tex {
+            return false
+        }
+        if lhs.rows != rhs.rows {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(tex)
+        hasher.combine(rows)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMathHeight: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MathHeight {
+        return
+            try MathHeight(
+                tex: FfiConverterString.read(from: &buf), 
+                rows: FfiConverterUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MathHeight, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.tex, into: &buf)
+        FfiConverterUInt32.write(value.rows, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMathHeight_lift(_ buf: RustBuffer) throws -> MathHeight {
+    return try FfiConverterTypeMathHeight.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMathHeight_lower(_ value: MathHeight) -> RustBuffer {
+    return FfiConverterTypeMathHeight.lower(value)
+}
+
+
+/**
+ * A typeset formula: a standalone SVG document and where its baseline is.
+ * The peer of `leaf_math::MathPicture`; see [`typeset_math`].
+ */
+public struct MathPicture {
+    /**
+     * A self-contained SVG — every glyph an outline, no font to find. Its
+     * `viewBox`, `width` and `height` are in pixels at the size it was
+     * typeset at, so drawn at its intrinsic size the glyphs land at that
+     * font size.
+     */
+    public var svg: String
+    /**
+     * The picture's advance width, in em of the size it was typeset at.
+     */
+    public var width: Double
+    /**
+     * How far it rises above its baseline, in em — the ascent a run
+     * delegate reports, so the text baseline passes through the picture
+     * here.
+     */
+    public var height: Double
+    /**
+     * How far it reaches below its baseline, in em — the descent.
+     */
+    public var depth: Double
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * A self-contained SVG — every glyph an outline, no font to find. Its
+         * `viewBox`, `width` and `height` are in pixels at the size it was
+         * typeset at, so drawn at its intrinsic size the glyphs land at that
+         * font size.
+         */svg: String, 
+        /**
+         * The picture's advance width, in em of the size it was typeset at.
+         */width: Double, 
+        /**
+         * How far it rises above its baseline, in em — the ascent a run
+         * delegate reports, so the text baseline passes through the picture
+         * here.
+         */height: Double, 
+        /**
+         * How far it reaches below its baseline, in em — the descent.
+         */depth: Double) {
+        self.svg = svg
+        self.width = width
+        self.height = height
+        self.depth = depth
+    }
+}
+
+
+
+extension MathPicture: Equatable, Hashable {
+    public static func ==(lhs: MathPicture, rhs: MathPicture) -> Bool {
+        if lhs.svg != rhs.svg {
+            return false
+        }
+        if lhs.width != rhs.width {
+            return false
+        }
+        if lhs.height != rhs.height {
+            return false
+        }
+        if lhs.depth != rhs.depth {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(svg)
+        hasher.combine(width)
+        hasher.combine(height)
+        hasher.combine(depth)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMathPicture: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MathPicture {
+        return
+            try MathPicture(
+                svg: FfiConverterString.read(from: &buf), 
+                width: FfiConverterDouble.read(from: &buf), 
+                height: FfiConverterDouble.read(from: &buf), 
+                depth: FfiConverterDouble.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MathPicture, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.svg, into: &buf)
+        FfiConverterDouble.write(value.width, into: &buf)
+        FfiConverterDouble.write(value.height, into: &buf)
+        FfiConverterDouble.write(value.depth, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMathPicture_lift(_ buf: RustBuffer) throws -> MathPicture {
+    return try FfiConverterTypeMathPicture.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMathPicture_lower(_ value: MathPicture) -> RustBuffer {
+    return FfiConverterTypeMathPicture.lower(value)
+}
+
+
+/**
+ * One formula standing as a picture: what to typeset and where its picture
+ * goes. The peer of [`leaf_core::MathInfo`]. Two shapes:
+ *
+ * - **Inline** (`inline == true`): one row, and on it exactly one run with
+ * role `math` whose `src` equals this `src` — a single `∑` standing for the
+ * whole formula. The renderer typesets the TeX at the run's font size
+ * ([`typeset_math`]) and draws the picture in the run's place with the
+ * text baseline through it at the picture's height: a run delegate on
+ * Apple. The run is a caret stop at the formula's start; the one after it
+ * is the next run's first character.
+ * - **Block** (`inline == false`): the rows in `start_row..end_row` are the
+ * placeholder, exactly a [`MediaView`]'s shape — the renderer **skips
+ * them** and lays the typeset picture over them, centred on the measure.
+ *
+ * A formula on the caret's line is not here: there it is its TeX, drawn as
+ * `code` runs between `delimiter` runs, in every markup mode.
+ */
+public struct MathView {
+    /**
+     * The [`DocView::rows`] indices the formula occupies — its own row for an
+     * inline one, the placeholder and its fillers for a block.
+     */
+    public var startRow: UInt32
+    public var endRow: UInt32
+    /**
+     * Whether this is an atom in a line of text, or a block of its own.
+     */
+    public var inline: Bool
+    /**
+     * The TeX between the delimiters, verbatim. What [`typeset_math`] takes.
+     */
+    public var tex: String
+    /**
+     * Display style (limits above and below, full-height fractions) rather
+     * than text style — a `$$…$$`, inline or not.
+     */
+    public var display: Bool
+    /**
+     * The formula's source start: what the `math` run's `src` carries, and
+     * where a click on the picture lands the caret.
+     */
+    public var src: UInt32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The [`DocView::rows`] indices the formula occupies — its own row for an
+         * inline one, the placeholder and its fillers for a block.
+         */startRow: UInt32, endRow: UInt32, 
+        /**
+         * Whether this is an atom in a line of text, or a block of its own.
+         */inline: Bool, 
+        /**
+         * The TeX between the delimiters, verbatim. What [`typeset_math`] takes.
+         */tex: String, 
+        /**
+         * Display style (limits above and below, full-height fractions) rather
+         * than text style — a `$$…$$`, inline or not.
+         */display: Bool, 
+        /**
+         * The formula's source start: what the `math` run's `src` carries, and
+         * where a click on the picture lands the caret.
+         */src: UInt32) {
+        self.startRow = startRow
+        self.endRow = endRow
+        self.inline = inline
+        self.tex = tex
+        self.display = display
+        self.src = src
+    }
+}
+
+
+
+extension MathView: Equatable, Hashable {
+    public static func ==(lhs: MathView, rhs: MathView) -> Bool {
+        if lhs.startRow != rhs.startRow {
+            return false
+        }
+        if lhs.endRow != rhs.endRow {
+            return false
+        }
+        if lhs.inline != rhs.inline {
+            return false
+        }
+        if lhs.tex != rhs.tex {
+            return false
+        }
+        if lhs.display != rhs.display {
+            return false
+        }
+        if lhs.src != rhs.src {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(startRow)
+        hasher.combine(endRow)
+        hasher.combine(inline)
+        hasher.combine(tex)
+        hasher.combine(display)
+        hasher.combine(src)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMathView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MathView {
+        return
+            try MathView(
+                startRow: FfiConverterUInt32.read(from: &buf), 
+                endRow: FfiConverterUInt32.read(from: &buf), 
+                inline: FfiConverterBool.read(from: &buf), 
+                tex: FfiConverterString.read(from: &buf), 
+                display: FfiConverterBool.read(from: &buf), 
+                src: FfiConverterUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MathView, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.startRow, into: &buf)
+        FfiConverterUInt32.write(value.endRow, into: &buf)
+        FfiConverterBool.write(value.inline, into: &buf)
+        FfiConverterString.write(value.tex, into: &buf)
+        FfiConverterBool.write(value.display, into: &buf)
+        FfiConverterUInt32.write(value.src, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMathView_lift(_ buf: RustBuffer) throws -> MathView {
+    return try FfiConverterTypeMathView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMathView_lower(_ value: MathView) -> RustBuffer {
+    return FfiConverterTypeMathView.lower(value)
 }
 
 
@@ -6317,6 +6743,10 @@ public enum BlockClass {
     case code
     case table
     case media
+    /**
+     * A display formula on lines of its own — a `$$…$$` block.
+     */
+    case math
     case directive
     case rule
     case footnote
@@ -6350,13 +6780,15 @@ public struct FfiConverterTypeBlockClass: FfiConverterRustBuffer {
         
         case 8: return .media
         
-        case 9: return .directive
+        case 9: return .math
         
-        case 10: return .rule
+        case 10: return .directive
         
-        case 11: return .footnote
+        case 11: return .rule
         
-        case 12: return .other
+        case 12: return .footnote
+        
+        case 13: return .other
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -6398,20 +6830,24 @@ public struct FfiConverterTypeBlockClass: FfiConverterRustBuffer {
             writeInt(&buf, Int32(8))
         
         
-        case .directive:
+        case .math:
             writeInt(&buf, Int32(9))
         
         
-        case .rule:
+        case .directive:
             writeInt(&buf, Int32(10))
         
         
-        case .footnote:
+        case .rule:
             writeInt(&buf, Int32(11))
         
         
-        case .other:
+        case .footnote:
             writeInt(&buf, Int32(12))
+        
+        
+        case .other:
+            writeInt(&buf, Int32(13))
         
         }
     }
@@ -6715,6 +7151,12 @@ public enum LeafError {
      */
     case Parse(message: String
     )
+    /**
+     * [`typeset_math`] could not read its TeX. `position` is a byte offset
+     * into the formula's text where the parser gave up, when it can say.
+     */
+    case Math(message: String, position: UInt32?
+    )
 }
 
 
@@ -6737,6 +7179,10 @@ public struct FfiConverterTypeLeafError: FfiConverterRustBuffer {
         case 2: return .Parse(
             message: try FfiConverterString.read(from: &buf)
             )
+        case 3: return .Math(
+            message: try FfiConverterString.read(from: &buf), 
+            position: try FfiConverterOptionUInt32.read(from: &buf)
+            )
 
          default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -6757,6 +7203,12 @@ public struct FfiConverterTypeLeafError: FfiConverterRustBuffer {
         case let .Parse(message):
             writeInt(&buf, Int32(2))
             FfiConverterString.write(message, into: &buf)
+            
+        
+        case let .Math(message,position):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(message, into: &buf)
+            FfiConverterOptionUInt32.write(position, into: &buf)
             
         }
     }
@@ -8060,6 +8512,56 @@ fileprivate struct FfiConverterSequenceTypeHighlight: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeMathHeight: FfiConverterRustBuffer {
+    typealias SwiftType = [MathHeight]
+
+    public static func write(_ value: [MathHeight], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeMathHeight.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [MathHeight] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [MathHeight]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeMathHeight.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeMathView: FfiConverterRustBuffer {
+    typealias SwiftType = [MathView]
+
+    public static func write(_ value: [MathView], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeMathView.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [MathView] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [MathView]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeMathView.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeMediaHeight: FfiConverterRustBuffer {
     typealias SwiftType = [MediaHeight]
 
@@ -8281,6 +8783,31 @@ fileprivate struct FfiConverterSequenceTypeTableView: FfiConverterRustBuffer {
         return seq
     }
 }
+/**
+ * Typeset `tex` — the text between a formula's delimiters, as a [`MathView`]
+ * hands it over — to a picture. `display` is the view's `display`; `size` is
+ * the font size in points the formula is set at (an inline formula takes the
+ * run's, a block the body's); `r`, `g`, `b`, `a` are the ink, as bytes. A
+ * theme change is a re-render with a new colour.
+ *
+ * Pure layout over fonts embedded in the binary — no I/O, fast enough to
+ * call from a layout pass — so a renderer caches by `(tex, display, size,
+ * colour)` and nothing more. TeX the typesetter cannot read is a
+ * [`LeafError::Math`]; the renderer shows the revealed source in its place.
+ */
+public func typesetMath(tex: String, display: Bool, size: Double, r: UInt8, g: UInt8, b: UInt8, a: UInt8)throws  -> MathPicture {
+    return try  FfiConverterTypeMathPicture.lift(try rustCallWithError(FfiConverterTypeLeafError.lift) {
+    uniffi_leaf_ffi_fn_func_typeset_math(
+        FfiConverterString.lower(tex),
+        FfiConverterBool.lower(display),
+        FfiConverterDouble.lower(size),
+        FfiConverterUInt8.lower(r),
+        FfiConverterUInt8.lower(g),
+        FfiConverterUInt8.lower(b),
+        FfiConverterUInt8.lower(a),$0
+    )
+})
+}
 
 private enum InitializationResult {
     case ok
@@ -8296,6 +8823,9 @@ private var initializationResult: InitializationResult = {
     let scaffolding_contract_version = ffi_leaf_ffi_uniffi_contract_version()
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_func_typeset_math() != 6497) {
+        return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_alignment_at_caret() != 11833) {
         return InitializationResult.apiChecksumMismatch
@@ -8531,6 +9061,9 @@ private var initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_highlights() != 7876) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_inline_pictures() != 62763) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_line_flow() != 4051) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -8541,6 +9074,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_markup_mode() != 44896) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_math_rows() != 3301) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_media_rows() != 41969) {

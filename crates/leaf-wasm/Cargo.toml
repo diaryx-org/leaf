@@ -23,6 +23,10 @@ syntax = ["leaf-core/syntax"]
 # the public `source` field + `mark_saved`. `syntax` comes back in through the
 # feature above.
 leaf-core = { path = "../leaf-core", default-features = false }
+# TeX to a self-contained SVG picture with its baseline metrics, for the web
+# renderer to put in a line or over a block's rows. Exposed as `typeset_math`;
+# the fonts ride inside the module, so nothing is fetched at runtime.
+leaf-math = { path = "../leaf-math" }
 
 wasm-bindgen = "0.2"
 # Turns the serde-derived view structs into real JS objects across the boundary
