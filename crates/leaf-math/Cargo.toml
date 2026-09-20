@@ -1,0 +1,18 @@
+[package]
+name = "leaf-math"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "TeX math to a self-contained SVG picture with baseline metrics, for leaf frontends to place in a line or a block. A thin door onto RaTeX."
+
+[dependencies]
+# RaTeX, the KaTeX port: parse the TeX, lay it out to a display list, and
+# serialise that list as SVG. `embed-fonts` puts KaTeX's own outlines into the
+# picture as `<path>`s, so what comes out depends on nothing the host has to
+# find or register — the same SVG on every frontend, byte for byte.
+ratex-parser = "0.1.14"
+ratex-layout = "0.1.14"
+ratex-types = "0.1.14"
+ratex-svg = { version = "0.1.14", features = ["embed-fonts"] }
