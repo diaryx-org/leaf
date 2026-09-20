@@ -698,7 +698,7 @@ pub struct Doc {
     pub drawn_caret: Option<usize>,
 }
 
-/// The Markdown extensions every leaf document is parsed with — four of them,
+/// The Markdown extensions every leaf document is parsed with — five of them,
 /// each departing from twig's defaults for a reason leaf can state.
 ///
 /// `html_elements` promotes embedded raw HTML (`<img>`, `<picture>`,
@@ -719,6 +719,15 @@ pub struct Doc {
 /// They are on together because a colour is inert without the highlight itself,
 /// and a document that writes `==🔴 x==` means the colour by it.
 ///
+/// `math` makes Markdown read `$…$` as an `inline_math` node and `$$…$$` as
+/// a `display_math` one — what djot reads natively and what leaf has
+/// somewhere to put: a formula typesets to a picture, or reveals to its TeX
+/// on the caret's line. Without it a `$$` block is a paragraph whose `\,`
+/// twig has already read as an escaped comma, and an author who types a
+/// backslash in it is authoring Markdown, not TeX. The flag is bounded by
+/// twig's own rule that a dollar followed by whitespace never opens math, so
+/// `$5 and $6` stays prose.
+///
 /// Every flag is inert for non-Markdown formats, so it's safe to pass them
 /// unconditionally. Threading this through every constructor (not just `open`)
 /// keeps `from_source`, `blank`, and `reload` parsing the same document the same
@@ -729,7 +738,7 @@ pub(crate) fn parse_extensions() -> MarkdownExtensions {
         directives: true,
         highlight: true,
         highlight_colors: true,
-        ..Default::default()
+        math: true,
     }
 }
 
