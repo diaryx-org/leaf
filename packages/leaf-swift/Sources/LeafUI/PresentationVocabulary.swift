@@ -359,10 +359,11 @@ public extension TextColor {
 /// number in hundredths of a `UInt16`, so a value outside that is one no
 /// document can hold and is not one this reads.
 public enum PresentationValue {
-    /// The smallest and largest number the vocabulary carries — core's
-    /// hundredths, as a Swift reader sees them.
-    static let smallest: CGFloat = 0.01
-    static let largest: CGFloat = 655.35
+    /// The smallest and largest number the vocabulary carries — the ends of
+    /// core's hundredths of a `UInt16`, as a Swift reader sees them, and the
+    /// range [`number(_:)`] holds a value to.
+    static let smallest: CGFloat = 1 / 100
+    static let largest: CGFloat = CGFloat(UInt16.max) / 100
 
     /// The point size `token` names — `"14pt"`, `"13.5PT"` — or nil for a step,
     /// for a unit that is not points, and for a number the vocabulary cannot
@@ -422,6 +423,15 @@ public enum PresentationValue {
     /// Hand-read rather than handed to `Double(_:)`, which takes `"14."`,
     /// `"1e3"`, `"-2"`, `"0x1p3"` and `"nan"` — every one of them a value core
     /// would refuse, and three of them a value it would refuse *silently*.
+    ///
+    /// **Read digit by digit, in hundredths, exactly as `Hundredths::parse`
+    /// reads it**, rather than assembled as a `Double` and rounded. The two
+    /// agree about the third decimal place only if this one counts it the same
+    /// way: `1.005` is a number no binary float holds, so `(1.005 * 100)
+    /// .rounded()` is 100 and core's reading of the digits is 101 — and a
+    /// spacing field that made 1 of what core makes 1.01 would *clear the key*
+    /// where core would set it. So: the whole hundreds, the first two decimal
+    /// digits, and one more hundredth when the third rounds up.
     static func number(_ text: String) -> CGFloat? {
         let parts = text.split(separator: ".", omittingEmptySubsequences: false)
         guard parts.count <= 2 else { return nil }
@@ -434,14 +444,19 @@ public enum PresentationValue {
         guard (whole + fraction).allSatisfy(\.isASCII),
               (whole + fraction).allSatisfy({ $0.isNumber })
         else { return nil }
-        guard let value = Double(whole.isEmpty ? "0" : whole),
-              let frac = Double(fraction.isEmpty ? "0" : fraction)
+        // Out of range before the arithmetic rather than after it, so a
+        // thousand digits of integer part is a nil and not an overflow.
+        guard let units = UInt32(whole.isEmpty ? "0" : whole),
+              units <= UInt32(UInt16.max) / 100
         else { return nil }
-        // Rounded to hundredths the way core rounds, so a field's 1.333 and the
-        // token core writes back agree about which row ticks.
-        let number = ((value + frac / pow(10, Double(fraction.count))) * 100).rounded() / 100
-        guard number >= smallest, number <= largest else { return nil }
-        return CGFloat(number)
+        let digits = Array(fraction.utf8)
+        let digit = { (i: Int) in
+            i < digits.count ? UInt32(digits[i] - UInt8(ascii: "0")) : 0
+        }
+        var hundredths = units * 100 + digit(0) * 10 + digit(1)
+        if digit(2) >= 5 { hundredths += 1 }
+        guard (1...UInt32(UInt16.max)).contains(hundredths) else { return nil }
+        return CGFloat(hundredths) / 100
     }
 
     /// A number as core spells it back: the shortest decimal, so `14` and not

@@ -384,6 +384,29 @@ final class PresentationTests: XCTestCase {
         XCTAssertEqual(PresentationValue.spell(1.3), "1.3")
     }
 
+    func testAThirdDecimalRoundsOnTheDigitsTheWayCoreRoundsIt() {
+        // Core reads the third decimal digit and adds a hundredth for a 5; the
+        // same number assembled as a binary float and rounded does not, because
+        // 1.005 is not a number a `Double` holds — it is a hair under, and
+        // `(1.005 * 100).rounded()` is 100 where `Hundredths::parse` is 101.
+        // The two have to agree, or the spacing field reads a 1 where core
+        // would write 1.01, calls it *absence*, and clears the key instead.
+        XCTAssertEqual(PresentationValue.number("1.005"), 1.01)
+        XCTAssertEqual(PresentationValue.number("13.455"), 13.46)
+        XCTAssertEqual(PresentationValue.number("13.454"), 13.45)
+        XCTAssertEqual(PresentationValue.number("1.0049"), 1)
+        XCTAssertEqual(PresentationEntry.spacing("1.005"), .value(.ratio(1.01)),
+                       "a rounded-up third decimal is a value, not a clearing")
+        // Rounding up is still held inside what a document can carry, and the
+        // arithmetic is done in hundredths, so a long number is a refusal and
+        // never an overflow.
+        XCTAssertEqual(PresentationValue.number("655.354"), 655.35)
+        XCTAssertNil(PresentationValue.number("655.355"), "rounded past the last hundredth")
+        XCTAssertEqual(PresentationValue.number("0.005"), 0.01, "and up into the first one")
+        XCTAssertNil(PresentationValue.number("0.004"))
+        XCTAssertNil(PresentationValue.number("99999999999999999999"))
+    }
+
     func testAnExactSizeReplacesTheRampWhereAStepScalesIt() throws {
         // The whole of the trade the two halves make: a *name* is a multiple of
         // whatever the run would otherwise be, and a *value* is the number.
@@ -418,6 +441,28 @@ final class PresentationTests: XCTestCase {
         // …and never shrinks to one, for the reason it never shrinks to a step:
         // a column whose lines drift closer wherever a word is small is broken.
         XCTAssertEqual(theme.rowHeight(for: row([mkRun("a", size: "4pt")])), theme.lineHeight)
+    }
+
+    func testARowIsNeverLaidCloserThanHalfALineHoweverSmallTheRatio() {
+        // The grammar carries a ratio down to 0.01, and a row laid at a
+        // hundredth of its line box is not tight leading: it is a row drawn
+        // through the three above it, with a caret and a hit test that land on
+        // none of them. So the *drawn* multiple has a floor, where the document
+        // keeps its token and the menu keeps ticking it — the same rule
+        // `rowHeight(for:)` already keeps for a small run, which opens a line
+        // box and never closes one.
+        XCTAssertEqual(theme.lineSpacing("0.2"), EditorTheme.tightestLineSpacing)
+        XCTAssertEqual(theme.lineSpacing("0.01"), EditorTheme.tightestLineSpacing)
+        XCTAssertEqual(theme.lineSpacing("0.5"), 0.5, "the floor itself is a ratio like any other")
+        XCTAssertEqual(theme.lineSpacing("0.9"), 0.9, "and nothing above it moves")
+        XCTAssertEqual(theme.lineSpacing("1.3"), 1.3)
+        XCTAssertEqual(theme.rowHeight(for: row([mkRun("hello")], lineHeight: "0.1")),
+                       theme.lineHeight * EditorTheme.tightestLineSpacing, accuracy: 0.01)
+        // A theme whose own table names a spacing that tight is floored too: the
+        // floor is about the geometry rows are laid in, not about who asked.
+        var cramped = theme
+        cramped.lineSpacings["2"] = 0.1
+        XCTAssertEqual(cramped.lineSpacing("2"), EditorTheme.tightestLineSpacing)
     }
 
     func testAnExactColourIsPaintedAsWrittenInBothAppearances() {
@@ -559,6 +604,24 @@ final class PresentationTests: XCTestCase {
         XCTAssertEqual(PresentationEntry.spacing("0"), .refused)
         XCTAssertEqual(PresentationEntry.spacing("700"), .refused)
         XCTAssertEqual(PresentationEntry.spacing("abc"), .refused)
+
+        // The colour picker is the one of the four with nothing typed in it, so
+        // what it has to tell apart is a colour *chosen* from a picker that was
+        // merely seeded: Set on an untouched picker would write the seed, and
+        // the seed over a document with no exact colour is the primary ink.
+        let red = TextColor.rgb(r: 0xC0, g: 0x30, b: 0x30)
+        let black = TextColor.rgb(r: 0, g: 0, b: 0)
+        XCTAssertEqual(PresentationEntry.colour(black, touched: false, inForce: nil), .refused,
+                       "Return over a picker nobody touched writes no ink")
+        XCTAssertEqual(PresentationEntry.colour(black, touched: false, inForce: .named(.red)),
+                       .refused, "and turns no named colour into a hex")
+        XCTAssertEqual(PresentationEntry.colour(red, touched: true, inForce: nil), .value(red))
+        XCTAssertEqual(PresentationEntry.colour(red, touched: true, inForce: .named(.red)),
+                       .value(red), "an exact colour over a named one is a change")
+        XCTAssertEqual(PresentationEntry.colour(red, touched: true, inForce: red), .refused,
+                       "and a picker walked around the wheel and back asks for nothing")
+        XCTAssertEqual(PresentationEntry.colour(nil, touched: true, inForce: nil), .refused,
+                       "a colour with no place in sRGB is one no #rrggbb spells")
     }
 
     func testEveryValueHasARowToShowItselfIn() {
