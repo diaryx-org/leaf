@@ -1031,7 +1031,8 @@ public protocol LeafDocProtocol : AnyObject {
      *
      * `.generic(.serif)` from the menu's four, or `.named("Garamond")` from
      * the platform's font picker — which draws in that family where it is
-     * installed and in the theme's body face where it is not.
+     * installed and in the theme's body face where it is not. A name that
+     * names nothing (`"   "`) writes nothing, and the run's own face stands.
      */
     func setFontFamily(font: FontFace?)  -> DocView
     
@@ -1046,7 +1047,10 @@ public protocol LeafDocProtocol : AnyObject {
      * nested. Gate on [`Capabilities::font_size`].
      *
      * `.step(.large)` from the menu's seven, or `.points(14)` from an
-     * *Other…* field — a size in points, which is what the paper will show.
+     * *Other…* field — a size in points, which is what the paper will show. A
+     * number of points the vocabulary cannot carry (0.01 to 655.35 is the
+     * range) writes nothing at all, and the run's own size stands: validate
+     * the field before calling, because from here the refusal is silent.
      */
     func setFontSize(size: FontSize?)  -> DocView
     
@@ -1077,7 +1081,9 @@ public protocol LeafDocProtocol : AnyObject {
      *
      * `.step(.oneHalf)` from the menu's three, or `.ratio(1.3)` from an
      * *Other…* field. A ratio that spells one of the three *is* that name, and
-     * a ratio of 1 is single spacing, which is absence and clears the key.
+     * a ratio of 1 is single spacing, which is absence and clears the key. A
+     * ratio the vocabulary cannot carry at all — `0`, `700`, a NaN — writes
+     * nothing, and the block's own spacing stands.
      */
     func setLineSpacing(spacing: LineHeight?)  -> DocView
     
@@ -2279,7 +2285,8 @@ open func setDarkAppearance(dark: Bool) -> DocView {
      *
      * `.generic(.serif)` from the menu's four, or `.named("Garamond")` from
      * the platform's font picker — which draws in that family where it is
-     * installed and in the theme's body face where it is not.
+     * installed and in the theme's body face where it is not. A name that
+     * names nothing (`"   "`) writes nothing, and the run's own face stands.
      */
 open func setFontFamily(font: FontFace?) -> DocView {
     return try!  FfiConverterTypeDocView.lift(try! rustCall() {
@@ -2300,7 +2307,10 @@ open func setFontFamily(font: FontFace?) -> DocView {
      * nested. Gate on [`Capabilities::font_size`].
      *
      * `.step(.large)` from the menu's seven, or `.points(14)` from an
-     * *Other…* field — a size in points, which is what the paper will show.
+     * *Other…* field — a size in points, which is what the paper will show. A
+     * number of points the vocabulary cannot carry (0.01 to 655.35 is the
+     * range) writes nothing at all, and the run's own size stands: validate
+     * the field before calling, because from here the refusal is silent.
      */
 open func setFontSize(size: FontSize?) -> DocView {
     return try!  FfiConverterTypeDocView.lift(try! rustCall() {
@@ -2355,7 +2365,9 @@ open func setLineFlow(mode: LineFlow) -> DocView {
      *
      * `.step(.oneHalf)` from the menu's three, or `.ratio(1.3)` from an
      * *Other…* field. A ratio that spells one of the three *is* that name, and
-     * a ratio of 1 is single spacing, which is absence and clears the key.
+     * a ratio of 1 is single spacing, which is absence and clears the key. A
+     * ratio the vocabulary cannot carry at all — `0`, `700`, a NaN — writes
+     * nothing, and the block's own spacing stands.
      */
 open func setLineSpacing(spacing: LineHeight?) -> DocView {
     return try!  FfiConverterTypeDocView.lift(try! rustCall() {
@@ -6441,7 +6453,7 @@ public enum FontSize {
     case step(SizeStep
     )
     /**
-     * Points. 0.01 to 655.35; anything else is absence — see the note above.
+     * Points. 0.01 to 655.35; anything else is refused — see the note above.
      */
     case points(Double
     )
@@ -6668,7 +6680,8 @@ public enum LineHeight {
     case step(LineSpacing
     )
     /**
-     * A multiple of the theme's line height. 1 is absence.
+     * A multiple of the theme's line height. 1 is absence, and clears; a
+     * number outside 0.01 to 655.35 is refused — see the note above.
      */
     case ratio(Double
     )
@@ -8299,10 +8312,10 @@ private var initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_dark_appearance() != 43306) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_font_family() != 63340) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_font_family() != 57151) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_font_size() != 60203) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_font_size() != 31128) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_heading() != 23018) {
@@ -8314,7 +8327,7 @@ private var initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_line_flow() != 4051) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_line_spacing() != 52812) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_line_spacing() != 55451) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_mark_color() != 43839) {

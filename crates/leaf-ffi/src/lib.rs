@@ -39,14 +39,15 @@
 //! or reads, and returns a fresh [`DocView`] — one boundary crossing both mutates
 //! and repaints, same as the wasm frontend. Drive it from the main thread.
 
+use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
 
 use leaf_core::style::{Baseline, Role, Style as LStyle};
 use leaf_core::wysiwyg::text_width;
 use leaf_core::{
     Align as CoreAlign, Alignment, BlockKind, Capabilities as CoreCapabilities, ColorScheme, Doc,
-    FaceRef as CoreFaceRef, FaceTable as CoreFaceTable, FontFace as CoreFontFace,
-    FontFamily as CoreFontFamily, FontSize as CoreFontSize, Format, InlineKind,
+    FaceTable as CoreFaceTable, FontFace as CoreFontFace, FontFamily as CoreFontFamily,
+    FontSize as CoreFontSize, Format, Hundredths as CoreHundredths, InlineKind,
     LineFlow as CoreLineFlow, LineHeight as CoreLineHeight, LineSpacing as CoreLineSpacing,
     MarkColor as CoreMarkColor, MarkupMode as CoreMarkupMode, MediaKind as CoreMediaKind,
     SizeStep as CoreSizeStep, TextColor as CoreTextColor, View, VisualMap,
@@ -871,13 +872,61 @@ impl From<FontFamily> for CoreFontFamily {
 // divider is the author's to take knowingly. See
 // `docs/proposals/exact-presentation-values.md`.
 //
-// **A value this vocabulary cannot carry is absence.** Each `into_core` below
-// answers `None` for one, and the gesture then *clears* the key rather than
-// writing something the document cannot mean: a ratio of `1` is single spacing,
-// which is the theme's and has no token; a size of `0pt` or `700pt` is not a
-// size a sheet of paper holds; a face named `""` names nothing. A field that
-// offers the author a number should say so before it calls — the range is
-// 0.01 to 655.35 — because from here a refusal and a clear look alike.
+// **A value this vocabulary cannot carry is refused, and the gesture writes
+// nothing at all.** A size of `0pt` or `700pt`, a ratio of `0`, a face named
+// `"   "` — an author who typed one of those asked for something the document
+// cannot hold, and the answer to that is to leave the document as it is. It is
+// emphatically *not* to clear the key: the size that was already on the run is
+// not the author's mistake, and a field that refuses by throwing away what was
+// there is a field that punishes a typo. Validate before calling anyway — the
+// range is 0.01 to 655.35 — because from here a refusal is silent.
+//
+// **One value does mean absence**, and it is the one core already states: a
+// line height of `1` is single spacing, which is the theme's own and has no
+// token, so `.ratio(1)` *clears* the key. That is the author asking for the
+// default, not failing to ask for anything. [`Meant`] is the three answers
+// written down once.
+
+/// What a presentation value a caller handed in comes to — the three answers
+/// the note above states, written down once.
+///
+/// A gesture asks for this and writes `Some(value)`, writes `None`, or writes
+/// nothing at all. The middle one is a *clearing* the author asked for and the
+/// last is a refusal; from the other side of the binding they look alike, which
+/// is why a field that offers a number validates before it calls.
+enum Meant<T> {
+    /// A value core carries. The gesture writes it.
+    Value(T),
+    /// A value that *means* the theme's own. The gesture clears the key — only
+    /// a line height of 1 is one of these.
+    Absence,
+    /// A value outside what the vocabulary carries. The gesture writes nothing,
+    /// and what the run already said stands.
+    Refused,
+}
+
+impl<T> Meant<T> {
+    /// A core constructor's `Option` read as a refusal — the shape three of the
+    /// four conversions below have, since only a spacing has an absence.
+    fn of(value: Option<T>) -> Self {
+        match value {
+            Some(value) => Self::Value(value),
+            None => Self::Refused,
+        }
+    }
+}
+
+/// What a gesture handed `value` writes: `Some(Some(v))` for a value,
+/// `Some(None)` for the clearing both a `nil` argument and an absence mean, and
+/// `None` for a value the vocabulary refuses — which the gesture spells by not
+/// calling core at all.
+fn written<T, C>(value: Option<T>, into_core: impl FnOnce(T) -> Meant<C>) -> Option<Option<C>> {
+    match value.map(into_core) {
+        None | Some(Meant::Absence) => Some(None),
+        Some(Meant::Value(value)) => Some(Some(value)),
+        Some(Meant::Refused) => None,
+    }
+}
 
 /// How large a run is set: a [`SizeStep`] relative to the text around it, or
 /// the point size the author asked for. What [`LeafDoc::set_font_size`] writes
@@ -891,16 +940,17 @@ impl From<FontFamily> for CoreFontFamily {
 #[derive(Clone, Copy, Debug, PartialEq, uniffi::Enum)]
 pub enum FontSize {
     Step(SizeStep),
-    /// Points. 0.01 to 655.35; anything else is absence — see the note above.
+    /// Points. 0.01 to 655.35; anything else is refused — see the note above.
     Points(f64),
 }
 
 impl FontSize {
-    /// The core size this names, or `None` for a number core cannot carry.
-    fn into_core(self) -> Option<CoreFontSize> {
+    /// The core size this names — [`Meant::Refused`] for a number of points
+    /// core cannot carry, which leaves the run's size alone.
+    fn into_core(self) -> Meant<CoreFontSize> {
         match self {
-            FontSize::Step(step) => Some(CoreFontSize::Step(step.into())),
-            FontSize::Points(points) => CoreFontSize::points(points as f32),
+            FontSize::Step(step) => Meant::Value(CoreFontSize::Step(step.into())),
+            FontSize::Points(points) => Meant::of(CoreFontSize::points(points as f32)),
         }
     }
 }
@@ -927,16 +977,29 @@ impl From<CoreFontSize> for FontSize {
 #[derive(Clone, Copy, Debug, PartialEq, uniffi::Enum)]
 pub enum LineHeight {
     Step(LineSpacing),
-    /// A multiple of the theme's line height. 1 is absence.
+    /// A multiple of the theme's line height. 1 is absence, and clears; a
+    /// number outside 0.01 to 655.35 is refused — see the note above.
     Ratio(f64),
 }
 
 impl LineHeight {
-    /// The core spacing this names, or `None` for a ratio core cannot carry.
-    fn into_core(self) -> Option<CoreLineHeight> {
+    /// The core spacing this names — the one [`into_core`](FontSize::into_core)
+    /// here whose answer can be [`Meant::Absence`], because a ratio of 1 is
+    /// single spacing and single spacing has no token.
+    fn into_core(self) -> Meant<CoreLineHeight> {
         match self {
-            LineHeight::Step(step) => Some(CoreLineHeight::Step(step.into())),
-            LineHeight::Ratio(ratio) => CoreLineHeight::ratio(ratio as f32),
+            LineHeight::Step(step) => Meant::Value(CoreLineHeight::Step(step.into())),
+            // A number the vocabulary carries at all is asked first, because
+            // `ratio` answers `None` both for a 1 — which *means* the theme's
+            // own — and for a 0 or a NaN, which mean nothing at all, and the
+            // two have opposite answers.
+            LineHeight::Ratio(ratio) => match CoreHundredths::from_f32(ratio as f32) {
+                None => Meant::Refused,
+                Some(_) => match CoreLineHeight::ratio(ratio as f32) {
+                    Some(height) => Meant::Value(height),
+                    None => Meant::Absence,
+                },
+            },
         }
     }
 }
@@ -964,12 +1027,14 @@ pub enum TextColor {
 }
 
 impl TextColor {
-    /// The core colour this names. Always one — every triple is a colour.
-    fn into_core(self) -> Option<CoreTextColor> {
-        Some(match self {
+    /// The core colour this names. A plain conversion and not a [`Meant`],
+    /// because every triple of bytes is a colour: this is the one of the four
+    /// with nothing to refuse.
+    fn into_core(self) -> CoreTextColor {
+        match self {
             TextColor::Named(color) => CoreTextColor::Named(color.into()),
             TextColor::Rgb { r, g, b } => CoreTextColor::Rgb { r, g, b },
-        })
+        }
     }
 }
 
@@ -998,14 +1063,15 @@ pub enum FontFace {
 }
 
 impl FontFace {
-    /// The core face this names, or `None` for a name that names nothing.
-    fn into_core(self) -> Option<CoreFontFace> {
+    /// The core face this names — [`Meant::Refused`] for a name that names
+    /// nothing, which leaves the run's face alone.
+    fn into_core(self) -> Meant<CoreFontFace> {
         match self {
-            FontFace::Generic(family) => Some(CoreFontFace::Generic(family.into())),
+            FontFace::Generic(family) => Meant::Value(CoreFontFace::Generic(family.into())),
             // Through the parser rather than straight into `Named`, so a name
             // gets the trim and the generic-keyword reading a document's own
-            // `data-font` gets, and an empty one is absence.
-            FontFace::Named(name) => CoreFontFace::from_attr(&name),
+            // `data-font` gets, and an empty one names nothing.
+            FontFace::Named(name) => Meant::of(CoreFontFace::from_attr(&name)),
         }
     }
 }
@@ -2194,11 +2260,14 @@ impl LeafDoc {
     ///
     /// `.step(.oneHalf)` from the menu's three, or `.ratio(1.3)` from an
     /// *Other…* field. A ratio that spells one of the three *is* that name, and
-    /// a ratio of 1 is single spacing, which is absence and clears the key.
+    /// a ratio of 1 is single spacing, which is absence and clears the key. A
+    /// ratio the vocabulary cannot carry at all — `0`, `700`, a NaN — writes
+    /// nothing, and the block's own spacing stands.
     pub fn set_line_spacing(&self, spacing: Option<LineHeight>) -> DocView {
         let mut g = self.lock();
-        g.doc
-            .set_line_spacing(spacing.and_then(LineHeight::into_core));
+        if let Some(spacing) = written(spacing, LineHeight::into_core) {
+            g.doc.set_line_spacing(spacing);
+        }
         g.view()
     }
 
@@ -2212,10 +2281,15 @@ impl LeafDoc {
     /// nested. Gate on [`Capabilities::font_size`].
     ///
     /// `.step(.large)` from the menu's seven, or `.points(14)` from an
-    /// *Other…* field — a size in points, which is what the paper will show.
+    /// *Other…* field — a size in points, which is what the paper will show. A
+    /// number of points the vocabulary cannot carry (0.01 to 655.35 is the
+    /// range) writes nothing at all, and the run's own size stands: validate
+    /// the field before calling, because from here the refusal is silent.
     pub fn set_font_size(&self, size: Option<FontSize>) -> DocView {
         let mut g = self.lock();
-        g.doc.set_font_size(size.and_then(FontSize::into_core));
+        if let Some(size) = written(size, FontSize::into_core) {
+            g.doc.set_font_size(size);
+        }
         g.view()
     }
 
@@ -2225,10 +2299,13 @@ impl LeafDoc {
     ///
     /// `.generic(.serif)` from the menu's four, or `.named("Garamond")` from
     /// the platform's font picker — which draws in that family where it is
-    /// installed and in the theme's body face where it is not.
+    /// installed and in the theme's body face where it is not. A name that
+    /// names nothing (`"   "`) writes nothing, and the run's own face stands.
     pub fn set_font_family(&self, font: Option<FontFace>) -> DocView {
         let mut g = self.lock();
-        g.doc.set_font_family(font.and_then(FontFace::into_core));
+        if let Some(font) = written(font, FontFace::into_core) {
+            g.doc.set_font_family(font);
+        }
         g.view()
     }
 
@@ -2244,7 +2321,7 @@ impl LeafDoc {
     /// what "exact" costs.
     pub fn set_text_color(&self, color: Option<TextColor>) -> DocView {
         let mut g = self.lock();
-        g.doc.set_text_color(color.and_then(TextColor::into_core));
+        g.doc.set_text_color(color.map(TextColor::into_core));
         g.view()
     }
 
@@ -3250,21 +3327,8 @@ fn make_run(
         mark_color: mark_color_name(style.role),
         token: style.token.map(|t| t.name().to_string()),
         size: style.size.map(|s| s.name().to_string()),
-        font: style.font.and_then(|f| face_name(f, faces)),
+        font: style.font.and_then(|f| faces.spell(f).map(Cow::into_owned)),
         text_color: style.color.map(|c| c.name().to_string()),
-    }
-}
-
-/// The face a run is set in, spelled — the generic's CSS keyword, or the family
-/// name the map's table holds for the id the glyph carries.
-///
-/// `None` for an id no table knows, which is an id from another map: a frontend
-/// draws that in the theme's body face, and a face that draws as absence names
-/// itself as absence too.
-fn face_name(face: CoreFaceRef, faces: &CoreFaceTable) -> Option<String> {
-    match face {
-        CoreFaceRef::Generic(generic) => Some(generic.name().to_string()),
-        CoreFaceRef::Named(id) => faces.name(id).map(str::to_string),
     }
 }
 
@@ -3686,12 +3750,38 @@ mod tests {
         assert_eq!(d.line_spacing_at_caret(), Some(LineHeight::Ratio(1.3)));
     }
 
-    /// A value the vocabulary cannot carry is absence, and the gesture clears
-    /// the key rather than writing something the document cannot mean. A field
-    /// that offers a number should say so before it calls — from here a
-    /// refusal and a clear look alike.
+    /// A named face reaching a run **inside a table cell** — the other road a
+    /// run takes to a frontend, and the one an id resolved against the wrong
+    /// table would quietly ruin: a cell's runs come through [`cell_lines`] and
+    /// not through [`wysiwyg_rows`], so the map's [`CoreFaceTable`] has to be
+    /// threaded down both. A grid whose faces all named nothing would draw in
+    /// the body face and look like a theme that simply had no Garamond.
     #[test]
-    fn a_value_outside_the_vocabulary_clears_the_key() {
+    fn a_named_face_reaches_a_run_inside_a_table_cell() {
+        let d = doc("| a | b |\n|---|---|\n| one | two |\n");
+        let at = d.source().find("one").unwrap() as u32;
+        d.set_selection_offsets(at, at + 3);
+        let v = d.set_font_family(Some(FontFace::Named("Garamond".to_string())));
+
+        let faced: Vec<(&str, &str)> = v
+            .tables
+            .iter()
+            .flat_map(|t| t.grid.iter())
+            .flat_map(|r| r.cells.iter())
+            .flat_map(|c| c.lines.iter())
+            .flat_map(|l| l.runs.iter())
+            .filter_map(|r| Some((r.text.trim(), r.font.as_deref()?)))
+            .collect();
+        assert_eq!(faced, [("one", "Garamond")]);
+    }
+
+    /// A value the vocabulary cannot carry writes **nothing at all**, and what
+    /// the run already said stands — a typo in an *Other…* field is not a
+    /// reason to throw away the size the author set a minute ago. The one
+    /// value that clears is the one that *means* the theme's own: a ratio of
+    /// 1, which is single spacing.
+    #[test]
+    fn a_value_outside_the_vocabulary_leaves_the_key_alone() {
         let d = doc("plain\n");
         let in_text = |d: &Arc<LeafDoc>| {
             let at = d.source().find("plain").unwrap() as u32;
@@ -3700,12 +3790,18 @@ mod tests {
         d.set_font_size(Some(FontSize::Points(14.0)));
         in_text(&d);
         assert_eq!(d.font_size_at_caret(), Some(FontSize::Points(14.0)));
-        d.set_font_size(Some(FontSize::Points(700.0)));
-        in_text(&d);
-        assert_eq!(d.font_size_at_caret(), None, "past what a sheet holds");
+        for refused in [700.0, 0.0, -3.0, f64::NAN] {
+            d.set_font_size(Some(FontSize::Points(refused)));
+            in_text(&d);
+            assert_eq!(
+                d.font_size_at_caret(),
+                Some(FontSize::Points(14.0)),
+                "{refused} is not a size, and the author's 14pt is not its casualty"
+            );
+        }
 
         // A ratio of 1 is single spacing, which is the theme's and has no
-        // token: the same clearing, and the one an author actually means.
+        // token: that one *is* absence, and clears. A ratio of 0 is not.
         d.set_line_spacing(Some(LineHeight::Ratio(1.5)));
         in_text(&d);
         assert_eq!(
@@ -3713,12 +3809,20 @@ mod tests {
             Some(LineHeight::Step(LineSpacing::OneHalf)),
             "a ratio that spells a name is that name"
         );
+        d.set_line_spacing(Some(LineHeight::Ratio(0.0)));
+        in_text(&d);
+        assert_eq!(
+            d.line_spacing_at_caret(),
+            Some(LineHeight::Step(LineSpacing::OneHalf)),
+            "nought is not a spacing, and refusing it keeps the block's own"
+        );
         d.set_line_spacing(Some(LineHeight::Ratio(1.0)));
         in_text(&d);
-        assert_eq!(d.line_spacing_at_caret(), None);
+        assert_eq!(d.line_spacing_at_caret(), None, "single is the theme's own");
 
         // And a name that spells a generic is that generic, whatever its case
-        // — the reading a document's own `data-font` gets.
+        // — the reading a document's own `data-font` gets. A name that names
+        // nothing is refused, and the face the run had stands.
         d.set_font_family(Some(FontFace::Named("  Serif ".to_string())));
         in_text(&d);
         assert_eq!(
@@ -3727,6 +3831,16 @@ mod tests {
         );
         d.set_font_family(Some(FontFace::Named("   ".to_string())));
         in_text(&d);
+        assert_eq!(
+            d.font_family_at_caret(),
+            Some(FontFace::Generic(FontFamily::Serif))
+        );
+
+        // `nil` is the argument that clears, and it is the only one.
+        d.set_font_size(None);
+        d.set_font_family(None);
+        in_text(&d);
+        assert_eq!(d.font_size_at_caret(), None);
         assert_eq!(d.font_family_at_caret(), None);
     }
 
