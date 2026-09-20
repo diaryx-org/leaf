@@ -1286,6 +1286,15 @@ public final class LeafTextView: UIView, UITextInput {
                 }
                 continue
             }
+            // A display formula's picture, once, on its first placeholder row,
+            // centred on the column.
+            if let box = rl.math {
+                if rl.mathFirst {
+                    box.draw(in: box.rect(top: rl.mathTop, left: rl.originX + rl.shaped.prefixWidth,
+                                          width: rl.columnWidth - rl.shaped.prefixWidth), ctx: ctx)
+                }
+                continue
+            }
             // The row's bands, not one rect over its whole height: a split row has
             // a sheet edge — or a column gutter — through the middle of it, and a
             // code fill drawn over that would tile the backdrop or the gutter too.
@@ -1866,8 +1875,8 @@ extension LeafTextView: UIAccessibilityReadingContent {
             if rl.row.isBlockGap { continue }
             // A table or a media block is one thing to a reader, spoken once
             // from the row that carries its box.
-            if rl.table != nil || rl.media != nil {
-                guard rl.tableFirst || rl.mediaFirst, let box = rl.lineBoxes.first else { continue }
+            if rl.table != nil || rl.media != nil || rl.math != nil {
+                guard rl.tableFirst || rl.mediaFirst || rl.mathFirst, let box = rl.lineBoxes.first else { continue }
                 let text = rl.attributed.string.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !text.isEmpty { lines.append((text, box)) }
                 continue

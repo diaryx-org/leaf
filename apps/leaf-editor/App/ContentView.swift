@@ -365,6 +365,17 @@ caret model and AST→glyph map the terminal and desktop apps use, on macOS and 
 
 > The document is a live, round-trippable AST the whole time you type.
 
+## Math
+
+A formula in a line, $E = mc^2$, is typeset where it sits, and one on lines \
+of its own is set in display style:
+
+$$
+\\int_0^1 x\\,dx = \\frac{1}{2}
+$$
+
+Put the caret on a formula's line and it shows its TeX, ready to edit.
+
 This paragraph is written in semantic line breaks:
 one clause per source line,
 a soft break after each.
