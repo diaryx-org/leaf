@@ -745,6 +745,24 @@ impl LineHeight {
         Hundredths::from_f32(ratio).and_then(Self::of)
     }
 
+    /// Whether `value` spells the one ratio that is **absence** — `1`, in any
+    /// of its spellings (`1`, `1.0`, `1.00`), which is single spacing and is
+    /// the theme's own.
+    ///
+    /// [`from_attr`](Self::from_attr) answers `None` for it exactly as it does
+    /// for a token outside the grammar, and the two mean opposite things: `1`
+    /// is an author asking for the theme's spacing, and `huge` is a typo. A
+    /// binding that turns the first into a cleared key and the second into a
+    /// refusal asks this to tell them apart — leaf-wasm's `setLineSpacing`
+    /// does.
+    pub fn is_absence(value: &str) -> bool {
+        Hundredths::parse(value.trim()).is_some_and(|r| r.hundredths() == Self::SINGLE)
+    }
+
+    /// Single spacing in hundredths — the ratio that has no token, written
+    /// down once for [`of`](Self::of) and [`is_absence`](Self::is_absence).
+    const SINGLE: u16 = 100;
+
     /// A ratio as the name for it where there is one, and `None` where the
     /// ratio is 1 — see the type's note.
     ///
@@ -752,8 +770,7 @@ impl LineHeight {
     /// and [`LineSpacing::from_attr`], so that reading a spacing does not format
     /// a `String` to throw away.
     fn of(ratio: Hundredths) -> Option<Self> {
-        const SINGLE: u16 = 100;
-        if ratio.hundredths() == SINGLE {
+        if ratio.hundredths() == Self::SINGLE {
             return None;
         }
         let step = LineSpacing::ALL
@@ -1015,6 +1032,24 @@ impl FaceTable {
     pub fn name(&self, id: FaceId) -> Option<&str> {
         let i = self.entries.binary_search_by_key(&id, |(k, _)| *k).ok()?;
         Some(self.entries[i].1.as_str())
+    }
+
+    /// The face a glyph carries, spelled — the generic's CSS keyword, or the
+    /// family name this table holds for the id. The one place a [`FaceRef`]
+    /// becomes the token a `data-font` is written with, which is what every
+    /// frontend wants of it.
+    ///
+    /// `None` for an id no table knows, which is an id from another map: a
+    /// frontend draws that in the theme's body face, and a face that draws as
+    /// absence names itself as absence too.
+    ///
+    /// leaf-ffi's and leaf-wasm's `Run::font` are this; leaf-swift's and
+    /// leaf-ratatui's face resolvers can be.
+    pub fn spell(&self, face: FaceRef) -> Option<Cow<'_, str>> {
+        match face {
+            FaceRef::Generic(generic) => Some(Cow::Borrowed(generic.name())),
+            FaceRef::Named(id) => self.name(id).map(Cow::Borrowed),
+        }
     }
 
     /// Every family in the table, by id — how a frontend warms a font cache
@@ -1635,5 +1670,42 @@ mod tests {
         assert_eq!(merged.len(), 2);
         assert_eq!(merged.name(FaceId::of("Futura")), Some("Futura"));
         assert_eq!(merged.name(FaceId::of("Bodoni")), None);
+    }
+
+    /// `spell` is the one door from what a glyph carries to what a `data-font`
+    /// says — the line every binding and every native resolver would otherwise
+    /// write for itself, and all four would have to agree that an id from
+    /// another map names nothing.
+    #[test]
+    fn a_face_table_spells_the_face_a_glyph_carries() {
+        let mut faces = FaceTable::default();
+        let garamond = faces.intern(&FontFace::Named("Garamond".into()));
+        assert_eq!(faces.spell(garamond).as_deref(), Some("Garamond"));
+        assert_eq!(
+            faces
+                .spell(FaceRef::Generic(FontFamily::SansSerif))
+                .as_deref(),
+            Some("sans-serif"),
+            "a generic names itself, and needs no entry to do it"
+        );
+        assert_eq!(
+            faces.spell(FaceRef::Named(FaceId::of("Bodoni"))),
+            None,
+            "an id from another map draws in the body face and names nothing"
+        );
+    }
+
+    /// The one ratio that is absence, told apart from the ratios that are
+    /// mistakes. `from_attr` answers `None` for both, which is why a binding
+    /// that must clear the key for the first and refuse the second asks this.
+    #[test]
+    fn single_spacing_is_the_one_ratio_that_means_the_theme_s_own() {
+        for single in ["1", "1.0", "1.00", " 1 "] {
+            assert!(LineHeight::is_absence(single), "{single}");
+            assert_eq!(LineHeight::from_attr(single), None, "{single}");
+        }
+        for value in ["1.3", "1.5", "2", "0", "0.5", "huge", "1.", "", "1em"] {
+            assert!(!LineHeight::is_absence(value), "{value}");
+        }
     }
 }

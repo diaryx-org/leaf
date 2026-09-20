@@ -43,10 +43,12 @@
 //! [`Row::heading`] level so the whole line can be sized as one unit, mirroring
 //! how gpui shapes a heading's line at a single larger size.
 
+use std::borrow::Cow;
+
 use leaf_core::style::{
-    Align as CoreAlign, Baseline, FaceRef as CoreFaceRef, FaceTable as CoreFaceTable,
-    FontFace as CoreFontFace, FontSize as CoreFontSize, LineHeight as CoreLineHeight,
-    MarkColor as CoreMarkColor, Role, Style as LStyle, TextColor as CoreTextColor,
+    Align as CoreAlign, Baseline, FaceTable as CoreFaceTable, FontFace as CoreFontFace,
+    FontSize as CoreFontSize, LineHeight as CoreLineHeight, MarkColor as CoreMarkColor, Role,
+    Style as LStyle, TextColor as CoreTextColor,
 };
 use leaf_core::wysiwyg::text_width;
 use leaf_core::{
@@ -1657,7 +1659,7 @@ impl LeafDoc {
     /// an attributed span, or the span it already lies in is re-styled, never
     /// nested.
     pub fn set_font_size(&mut self, size: Option<String>) -> Result<DocView, JsValue> {
-        let size = size_step(size.as_deref())?;
+        let size = font_size(size.as_deref())?;
         self.doc.set_font_size(size);
         self.view()
     }
@@ -2365,74 +2367,77 @@ fn make_run(
         mark_color: mark_color_name(style.role),
         token: style.token.map(|t| t.name().to_string()),
         size: style.size.map(|s| s.name().to_string()),
-        font: style.font.and_then(|f| face_name(f, faces)),
+        font: style.font.and_then(|f| faces.spell(f).map(Cow::into_owned)),
         text_color: style.color.map(|c| c.name().to_string()),
     }
 }
 
-/// The face a run is set in, spelled — the generic's CSS keyword, or the family
-/// name the map's table holds for the id the glyph carries.
+/// A presentation value by the token a document spells it with — the argument
+/// each of the six gestures below takes, and the one shape all six have.
 ///
-/// `None` for an id no table knows, which is an id from another map: a renderer
-/// draws that in the page's own face, and a face that draws as absence names
-/// itself as absence too.
-fn face_name(face: CoreFaceRef, faces: &CoreFaceTable) -> Option<String> {
-    match face {
-        CoreFaceRef::Generic(generic) => Some(generic.name().to_string()),
-        CoreFaceRef::Named(id) => faces.name(id).map(str::to_string),
+/// `parse` says what the token means: `Some(Some(value))` for a value,
+/// `Some(None)` for a token *in* the grammar that means the theme's own (only
+/// a line spacing has one — `"1"` is single, which has no token), and `None`
+/// for a token outside the grammar.
+///
+/// `None` in is the theme's own too, and both clearings answer `Ok(None)`. A
+/// token outside the grammar is an **error** rather than a silent clearing:
+/// the argument that clears is `null`, and the two differ by one typo and mean
+/// opposite things.
+fn presentation<T>(
+    token: Option<&str>,
+    what: &str,
+    parse: impl FnOnce(&str) -> Option<Option<T>>,
+) -> Result<Option<T>, JsValue> {
+    match token {
+        None => Ok(None),
+        Some(token) => {
+            parse(token).ok_or_else(|| JsValue::from_str(&format!("unknown {what}: {token}")))
+        }
     }
 }
 
 /// A highlight colour by the name a document records it under — the argument
 /// `setMarkColor` and `highlight` take. `None` is no colour; a name outside the
-/// palette is an error rather than a silent clearing, since the two arguments
-/// differ by one typo and mean opposite things.
+/// palette is an error, for [`presentation`]'s reason.
 fn mark_color(name: Option<&str>) -> Result<Option<CoreMarkColor>, JsValue> {
-    match name {
-        None => Ok(None),
-        Some(name) => CoreMarkColor::from_attr(name)
-            .map(Some)
-            .ok_or_else(|| JsValue::from_str(&format!("unknown highlight colour: {name}"))),
-    }
+    presentation(name, "highlight colour", |n| {
+        CoreMarkColor::from_attr(n).map(Some)
+    })
 }
 
 /// A block alignment by the `class` token a document spells it with — the
 /// argument `set_alignment` takes. `None` is the theme's default (there is no
 /// `left` token, because absence is left); anything else outside the vocabulary
-/// is an error, for [`mark_color`]'s reason.
+/// is an error.
 fn alignment(token: Option<&str>) -> Result<Option<CoreAlign>, JsValue> {
-    match token {
-        None => Ok(None),
-        Some(token) => CoreAlign::from_token(token)
-            .map(Some)
-            .ok_or_else(|| JsValue::from_str(&format!("unknown alignment: {token}"))),
-    }
+    presentation(token, "alignment", |t| CoreAlign::from_token(t).map(Some))
 }
 
 /// A line spacing by the token a document spells it with — the argument
 /// `set_line_spacing` takes: one of the three names, or any other positive
-/// decimal. `None` is the theme's spacing, which is what `"1"` means and is why
-/// `"1"` is not a value; anything outside the grammar is an error, for
-/// [`mark_color`]'s reason.
+/// decimal. `None` is the theme's spacing, and so is `"1"` — single spacing,
+/// which is the theme's own and has no token of its own.
+///
+/// The one helper here whose grammar holds a value meaning *absence*, which is
+/// why it asks [`CoreLineHeight::is_absence`]: `from_attr` answers `None` for
+/// `"1"` exactly as it does for `"huge"`, and the two mean opposite things —
+/// the first is an author asking for single spacing and clears the key, the
+/// second is a typo and is refused.
 fn line_spacing(name: Option<&str>) -> Result<Option<CoreLineHeight>, JsValue> {
-    match name {
-        None => Ok(None),
-        Some(name) => CoreLineHeight::from_attr(name)
-            .map(Some)
-            .ok_or_else(|| JsValue::from_str(&format!("unknown line spacing: {name}"))),
-    }
+    presentation(name, "line spacing", |n| {
+        match CoreLineHeight::from_attr(n) {
+            Some(height) => Some(Some(height)),
+            None => CoreLineHeight::is_absence(n).then_some(None),
+        }
+    })
 }
 
 /// A size by the token a document spells it with — the argument `set_font_size`
 /// takes: one of CSS's seven keywords, or a `<number>pt`. `None` is the theme's
 /// own size, which is what `"medium"` would mean and is why it is not a value.
-fn size_step(name: Option<&str>) -> Result<Option<CoreFontSize>, JsValue> {
-    match name {
-        None => Ok(None),
-        Some(name) => CoreFontSize::from_attr(name)
-            .map(Some)
-            .ok_or_else(|| JsValue::from_str(&format!("unknown font size: {name}"))),
-    }
+fn font_size(name: Option<&str>) -> Result<Option<CoreFontSize>, JsValue> {
+    presentation(name, "font size", |n| CoreFontSize::from_attr(n).map(Some))
 }
 
 /// A face by the token a document spells it with — the argument
@@ -2441,25 +2446,18 @@ fn size_step(name: Option<&str>) -> Result<Option<CoreFontSize>, JsValue> {
 /// that generic, and a name that is only whitespace names nothing and is an
 /// error.
 fn font_family(name: Option<&str>) -> Result<Option<CoreFontFace>, JsValue> {
-    match name {
-        None => Ok(None),
-        Some(name) => CoreFontFace::from_attr(name)
-            .map(Some)
-            .ok_or_else(|| JsValue::from_str(&format!("unknown font family: {name}"))),
-    }
+    presentation(name, "font family", |n| {
+        CoreFontFace::from_attr(n).map(Some)
+    })
 }
 
 /// A *text* colour by the token a document spells it with — the argument
 /// `set_text_color` takes: one of the seven names, `#rrggbb`, or the `#rgb`
-/// shorthand. `None` is the theme's ink; anything else is an error, for
-/// [`mark_color`]'s reason.
+/// shorthand. `None` is the theme's ink; anything else is an error.
 fn text_color(name: Option<&str>) -> Result<Option<CoreTextColor>, JsValue> {
-    match name {
-        None => Ok(None),
-        Some(name) => CoreTextColor::from_attr(name)
-            .map(Some)
-            .ok_or_else(|| JsValue::from_str(&format!("unknown text colour: {name}"))),
-    }
+    presentation(name, "text colour", |n| {
+        CoreTextColor::from_attr(n).map(Some)
+    })
 }
 
 /// The name of a `mark` role's colour, for [`Run::mark_color`]. `None` for a
@@ -3130,6 +3128,32 @@ mod tests {
         assert_eq!(d.text_color_at_caret().as_deref(), Some("#ff0000"));
     }
 
+    /// A named face reaching a run **inside a table cell** — the other road a
+    /// run takes to a renderer, and the one an id resolved against the wrong
+    /// table would quietly ruin: a cell's runs come through [`cell_lines`] and
+    /// not through [`wysiwyg_rows`], so the map's [`CoreFaceTable`] has to be
+    /// threaded down both. A grid whose faces all named nothing would draw in
+    /// the page's own face and look like a machine that simply had no Garamond.
+    #[test]
+    fn a_named_face_reaches_a_run_inside_a_table_cell() {
+        let mut d = handle("| a | b |\n|---|---|\n| one | two |\n");
+        let at = d.doc.source.find("one").unwrap();
+        d.doc.place_caret(at, false);
+        d.doc.place_caret(at + 3, true);
+        assert!(d.set_font_family(Some("Garamond".into())).is_ok());
+
+        let tables = wysiwyg_tables(&d.doc.vmap, usize::MAX, usize::MAX, &[]);
+        let faced: Vec<(String, String)> = tables
+            .iter()
+            .flat_map(|t| t.grid.iter())
+            .flat_map(|r| r.cells.iter())
+            .flat_map(|c| c.lines.iter())
+            .flat_map(|l| l.runs.iter())
+            .filter_map(|r| Some((r.text.trim().to_string(), r.font.clone()?)))
+            .collect();
+        assert_eq!(faced, [("one".to_string(), "Garamond".to_string())]);
+    }
+
     /// Each vocabulary reads back the name the document carries — and now the
     /// value beside it, since this surface speaks strings both ways and the
     /// grammar is the document's own. A token outside that grammar is refused
@@ -3146,7 +3170,7 @@ mod tests {
             Some(CoreLineHeight::Step(CoreLineSpacing::OneHalf))
         );
         assert_eq!(
-            size_step(Some("large")).unwrap(),
+            font_size(Some("large")).unwrap(),
             Some(CoreFontSize::Step(CoreSizeStep::Large))
         );
         assert_eq!(
@@ -3158,7 +3182,7 @@ mod tests {
             Some(CoreTextColor::Named(CoreMarkColor::Blue))
         );
         // And the exact forms, each spelled the one canonical way back.
-        assert_eq!(size_step(Some("14pt")).unwrap(), CoreFontSize::points(14.0));
+        assert_eq!(font_size(Some("14pt")).unwrap(), CoreFontSize::points(14.0));
         assert_eq!(
             line_spacing(Some("1.3")).unwrap(),
             CoreLineHeight::ratio(1.3)
@@ -3175,12 +3199,18 @@ mod tests {
                 b: 0x30
             })
         );
-        // Absence is the theme's own, and the only way to ask for it.
+        // Absence is the theme's own, and `null` is how to ask for it.
         assert_eq!(alignment(None).unwrap(), None);
         assert_eq!(line_spacing(None).unwrap(), None);
-        assert_eq!(size_step(None).unwrap(), None);
+        assert_eq!(font_size(None).unwrap(), None);
         assert_eq!(font_family(None).unwrap(), None);
         assert_eq!(text_color(None).unwrap(), None);
+        // And so is `"1"`, the one token in a grammar here that *means* the
+        // theme's own: single spacing has no token, so it clears rather than
+        // being refused — which is what the gesture's own note promises.
+        assert_eq!(line_spacing(Some("1")).unwrap(), None);
+        assert_eq!(line_spacing(Some("1.0")).unwrap(), None);
+        assert_eq!(line_spacing(Some(" 1.00 ")).unwrap(), None);
         // A token outside the grammar is an error rather than a clearing —
         // which each helper spells by turning the `None` below into an `Err`.
         // Asked of the core vocabularies rather than of the helpers, because
