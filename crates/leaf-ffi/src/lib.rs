@@ -50,7 +50,8 @@ use leaf_core::{
     FontSize as CoreFontSize, Format, Hundredths as CoreHundredths, InlineKind,
     LineFlow as CoreLineFlow, LineHeight as CoreLineHeight, LineSpacing as CoreLineSpacing,
     MarkColor as CoreMarkColor, MarkupMode as CoreMarkupMode, MediaKind as CoreMediaKind,
-    SizeStep as CoreSizeStep, TextColor as CoreTextColor, View, VisualMap,
+    SizeStep as CoreSizeStep, TextColor as CoreTextColor, TextCounts as CoreTextCounts, View,
+    VisualMap,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -89,6 +90,37 @@ pub struct SelectionQuote {
     pub start: u64,
     /// Byte offset where it ends (exclusive).
     pub end: u64,
+}
+
+/// How much writing there is — over the whole document, or over the
+/// selection. The FFI shape of `leaf_core::TextCounts`; see
+/// [`LeafDoc::counts`] for what is counted and what isn't.
+#[derive(uniffi::Record)]
+pub struct TextCounts {
+    /// Words, by UAX#29 word segmentation: a segment holding at least one
+    /// letter or digit, so `don't` is one and a lone dash is none.
+    /// A hyphenated compound is two, which is what the algorithm says.
+    pub words: u64,
+    /// Characters as a reader counts them — grapheme clusters, spaces
+    /// included. An emoji family and an accented letter are each one.
+    pub characters: u64,
+    /// The same, less every whitespace grapheme.
+    pub characters_without_spaces: u64,
+    /// Block-level containers holding at least one non-whitespace character:
+    /// a paragraph, a heading, each list item, each paragraph inside a
+    /// blockquote, a whole code block, a whole table.
+    pub paragraphs: u64,
+}
+
+impl From<CoreTextCounts> for TextCounts {
+    fn from(c: CoreTextCounts) -> Self {
+        TextCounts {
+            words: c.words as u64,
+            characters: c.characters as u64,
+            characters_without_spaces: c.characters_without_spaces as u64,
+            paragraphs: c.paragraphs as u64,
+        }
+    }
 }
 
 /// A host-painted range of the source — an annotation's footprint, a search
@@ -1772,6 +1804,29 @@ impl LeafDoc {
                 start: q.start as u64,
                 end: q.end as u64,
             })
+    }
+
+    /// Words, characters, and paragraphs over the whole document — the numbers
+    /// a status bar or an inspector puts next to a piece of writing.
+    ///
+    /// Counted over the text a reader sees rather than the markup that spells
+    /// it: `**bold**` is one word and four characters, a link is its label and
+    /// not its destination, a picture counts nothing, and frontmatter is not
+    /// writing. The same in both views — the count reads neither the view nor
+    /// the map the host last built. See `leaf_core::Doc::counts`.
+    ///
+    /// It is O(document) and not free (about 4 ms on a 45 KB file), so ask
+    /// when the typing settles rather than on every keystroke; there is no
+    /// `DocView` in it, because nothing about the document changes by being
+    /// counted.
+    pub fn counts(&self) -> TextCounts {
+        self.lock().doc.counts().into()
+    }
+
+    /// The same statistics over the selection alone — `None` when nothing is
+    /// selected. See `leaf_core::Doc::selection_counts`.
+    pub fn selection_counts(&self) -> Option<TextCounts> {
+        self.lock().doc.selection_counts().map(Into::into)
     }
 
     /// Whether the document refuses to change — see `set_read_only`.
@@ -4722,5 +4777,28 @@ mod tests {
         // A replace with nothing clears the wash.
         let view = d.set_highlights(Vec::new());
         assert!(view.rows[0].runs.iter().all(|r| r.hl.is_none()));
+    }
+
+    /// The whole point of the record is that the numbers cross the boundary,
+    /// so this checks the ones a host would show — and that a selection
+    /// narrows them and no selection answers nothing at all.
+    #[test]
+    fn counts_cross_the_boundary_whole_and_selected() {
+        let d = doc("a **bold** word\n\n- item\n");
+        let c = d.counts();
+        assert_eq!(
+            (
+                c.words,
+                c.characters,
+                c.characters_without_spaces,
+                c.paragraphs
+            ),
+            (4, 15, 13, 2)
+        );
+
+        assert!(d.selection_counts().is_none(), "no selection, no counts");
+        d.select_range(0, 10);
+        let s = d.selection_counts().expect("a selection");
+        assert_eq!((s.words, s.characters, s.paragraphs), (2, 6, 1));
     }
 }

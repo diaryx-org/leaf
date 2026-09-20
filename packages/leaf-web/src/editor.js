@@ -369,6 +369,30 @@ export class LeafEditor {
   }
 
   /**
+   * Words, characters, and paragraphs over the whole document — `{words,
+   * characters, characters_without_spaces, paragraphs}`, the numbers a status
+   * bar or an inspector puts next to a piece of writing.
+   *
+   * Counted over the text a reader sees rather than the markup that spells it:
+   * `**bold**` is one word and four characters, a link is its label and not its
+   * destination, a picture counts nothing, and frontmatter is not writing. The
+   * same answer in both views.
+   *
+   * O(document) and not free (about 4 ms on a 45 KB file), so ask when the
+   * typing settles rather than on every keystroke.
+   */
+  counts() {
+    return this.doc.counts();
+  }
+
+  /** The same statistics over the selection alone — null with nothing
+   *  selected. */
+  selectionCounts() {
+    this._syncFromDom();
+    return this.doc.selection_counts() ?? null;
+  }
+
+  /**
    * Which formatting controls this document's format can actually spell — one
    * flag per toolbar button.
    *
