@@ -28,6 +28,7 @@ contents:
 - '[The rule and table buttons at a paragraph''s end split nothing and leave blank lines behind](rule-and-table-at-a-paragraph-end-split-nothing-and-leave-blank-lines.md)'
 - '[The macOS formatting bar pages by group instead of scrolling](macos-bar-pages-by-group.md)'
 - '[A page break in HTML and AsciiDoc is a row the walker does not draw](page-break-in-html-and-asciidoc.md)'
+- '[A block can be moved — by keyboard, and by dragging it — and an attachment is a block](move-a-block.md)'
 - '[Dynamic Type on paper should be a zoom, not a repagination](ios-dynamic-type-on-paper.md)'
 - '[The Mac app runs unsandboxed and unsigned](sandboxed-mac-app.md)'
 - '[An exported PDF leaves every formula blank](pdf-export-lacks-math.md)'
