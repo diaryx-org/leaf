@@ -21,6 +21,31 @@ private func document(_ data: Data) throws -> CGPDFDocument {
     try XCTUnwrap(CGPDFDocument(CGDataProvider(data: data as CFData)!))
 }
 
+/// A line of prose — where the caret stays, so no formula is on its line and
+/// revealed to its TeX — and then two formulas. Whatever ink the page has
+/// beyond `prose`'s own is theirs.
+private let prose = "Words.\n"
+private let proseThenMath = prose + "\n$$\n\\int_0^1 x\\,dx\n$$\n\n$E = mc^2$\n"
+
+/// How many pixels of `page` are darker than paper, drawn at 1 pt = 1 px on
+/// white. A page that came out blank counts zero.
+private func inkOn(_ page: CGPDFPage) throws -> Int {
+    let w = 612, h = 792
+    let ctx = try XCTUnwrap(CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+    ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+    ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+    ctx.drawPDFPage(page)
+    let cg = try XCTUnwrap(ctx.makeImage())
+    let data = try XCTUnwrap(cg.dataProvider?.data) as Data
+    var dark = 0
+    for y in 0..<h {
+        for x in 0..<w where data[y * cg.bytesPerRow + x * 4] < 200 { dark += 1 }
+    }
+    return dark
+}
+
 #if canImport(AppKit) && !targetEnvironment(macCatalyst)
 import AppKit
 
@@ -134,6 +159,29 @@ final class DocumentPDFTests: XCTestCase {
         XCTAssertNotNil(try pdf("![dot](dot.png)\n").range(of: image), "a PNG is an image on the page")
         XCTAssertEqual(try document(try pdf("![shapes](shapes.svg)\n")).numberOfPages, 1)
     }
+    func testAFormulaIsInkOnThePaperWhateverTheScreensAppearance() throws {
+        // A formula's ink is bytes handed to the typesetter, resolved from the
+        // theme's dynamic colour when the row is laid out — not, like the text's,
+        // when it is drawn. Laid out under a dark screen that is white, and the
+        // paper is white: the export from a dark-mode window was a gap the
+        // shape of each formula. The sheet's own appearance is the one to
+        // resolve under, and this asks for the page from under a dark one.
+        func ink(_ source: String) throws -> Int {
+            var ink = 0
+            NSAppearance(named: .darkAqua)!.performAsCurrentDrawingAppearance {
+                guard let doc = try? LeafDoc(source: source, format: "markdown"),
+                      case _ = doc.setInlinePictures(on: true),
+                      let pdf = try? document(LeafTextView.pdf(of: doc, theme: .default, documentDirectory: nil,
+                                                               page: .usLetter, title: nil)),
+                      let page = pdf.page(at: 1)
+                else { return }
+                ink = (try? inkOn(page)) ?? 0
+            }
+            return ink
+        }
+        XCTAssertGreaterThan(try ink(proseThenMath), try ink(prose) + 100,
+                             "the integral and E = mc² are drawn in ink, not in paper")
+    }
 }
 #elseif canImport(UIKit)
 import UIKit
@@ -218,6 +266,26 @@ final class DocumentPDFTests: XCTestCase {
             }
         }
         XCTAssertGreaterThan(dark, 50)
+    }
+    func testAFormulaIsInkOnThePaperWhateverTheScreensAppearance() throws {
+        // A formula's ink is resolved from the theme's dynamic colour when the
+        // row is laid out, not when it is drawn — and the layout ran under the
+        // screen's traits, where a dark one made white ink for white paper. The
+        // sheet is set light, and its layout has to resolve under that.
+        func ink(_ source: String) throws -> Int {
+            var ink = 0
+            UITraitCollection(userInterfaceStyle: .dark).performAsCurrent {
+                guard let doc = try? LeafDoc(source: source, format: "markdown"),
+                      case _ = doc.setInlinePictures(on: true),
+                      let pdf = try? document(LeafTextView(doc: doc, theme: .default).pdfData(page: .usLetter)),
+                      let page = pdf.page(at: 1)
+                else { return }
+                ink = (try? inkOn(page)) ?? 0
+            }
+            return ink
+        }
+        XCTAssertGreaterThan(try ink(proseThenMath), try ink(prose) + 100,
+                             "the integral and E = mc² are drawn in ink, not in paper")
     }
 }
 #endif

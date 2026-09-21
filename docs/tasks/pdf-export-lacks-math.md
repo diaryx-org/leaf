@@ -1,10 +1,25 @@
 ---
-status: open
+status: done
 created: 2026-09-20
 updated: 2026-09-20
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 # An exported PDF leaves every formula blank
+
+**Status.** Done, in `fix(leaf-swift): a formula's ink on paper is resolved
+under the sheet's appearance, not the screen's` (2026-09-20). The "Why" below
+was a guess and wrong — the typesetter is synchronous, and every picture was
+on the page. It was *white*. A formula's ink is bytes handed to the
+typesetter, resolved from the theme's dynamic `labelColor` when the row is
+laid out, and that resolution read whichever appearance was current — the
+dark-mode window the export was asked from — where the sheet itself is
+`aqua` and its paper white. The text beside it was fine because its colours
+are dynamic and resolve when drawn, under the sheet's own appearance. Both
+views now build their layout under their own appearance (`effectiveAppearance`
+on the Mac, `traitCollection` on iOS, with the iOS sheet overridden light),
+and a light/dark switch on screen is a relayout, since the shaped rows hold
+pictures in the old ink. The assertion is
+`testAFormulaIsInkOnThePaperWhateverTheScreensAppearance`, on both toolkits.
 
 **Where.** `packages/leaf-swift`, `DocumentPDF.swift` and `MathLayout.swift`.
 

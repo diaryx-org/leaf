@@ -32,6 +32,7 @@ contents:
 - '[The Mac app runs unsandboxed and unsigned](sandboxed-mac-app.md)'
 - '[An exported PDF leaves every formula blank](pdf-export-lacks-math.md)'
 - '[The Apple editor does work proportional to the document on every interaction](editor-is-proportional-to-the-document-per-interaction.md)'
+- '[A PDF shows the caret''s line revealed](pdf-reveals-the-carets-line.md)'
 part_of: '[leaf](/README.md)'
 ---
 # Tasks

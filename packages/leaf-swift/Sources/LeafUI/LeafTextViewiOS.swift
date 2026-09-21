@@ -173,6 +173,11 @@ public final class LeafTextView: UIView, UITextInput {
         super.traitCollectionDidChange(previous)
         if traitCollection.preferredContentSizeCategory != previous?.preferredContentSizeCategory {
             applyDynamicType()   // the user changed their text-size setting
+        } else if traitCollection.hasDifferentColorAppearance(comparedTo: previous) {
+            // A formula's picture is set in the ink the layout resolved (see
+            // `render`), so light to dark is a relayout, not just a repaint.
+            shapeCache.removeAll(keepingCapacity: true)
+            relayoutForWidth(force: true)
         }
     }
     public var onStateChange: ((EditorState) -> Void)?
@@ -1152,12 +1157,20 @@ public final class LeafTextView: UIView, UITextInput {
         // The input traits answer differently per view (see `isSourceView`), and
         // UIKit reads them when the keyboard is set up — so set it up again.
         if viewFlipped, isFirstResponder { reloadInputViews() }
-        if reflow {
-            layoutEngine = EditorLayout(view, theme: renderTheme, viewWidth: viewWidth, page: pageSetup,
-                                        cache: &shapeCache, media: mediaStore)
-        } else if change != nil || blocksChanged || layoutEngine.rows.isEmpty {
-            layoutEngine = EditorLayout(view, theme: renderTheme, viewWidth: viewWidth, page: pageSetup,
-                                        cache: &shapeCache, media: mediaStore, previous: layoutEngine)
+        // Under this view's own traits, not whichever are current. The text's
+        // colours are dynamic and resolve when drawn, where UIKit has made the
+        // view's traits current; a formula's ink is resolved *here*, to the
+        // bytes the typesetter is handed. Left to the caller's traits, a paper
+        // sheet (light, whatever the screen) laid out on a dark phone would set
+        // its formulas in white — and print them on white.
+        traitCollection.performAsCurrent {
+            if reflow {
+                layoutEngine = EditorLayout(view, theme: renderTheme, viewWidth: viewWidth, page: pageSetup,
+                                            cache: &shapeCache, media: mediaStore)
+            } else if change != nil || blocksChanged || layoutEngine.rows.isEmpty {
+                layoutEngine = EditorLayout(view, theme: renderTheme, viewWidth: viewWidth, page: pageSetup,
+                                            cache: &shapeCache, media: mediaStore, previous: layoutEngine)
+            }
         }
         let relaid = reflow || change != nil || blocksChanged
         // Installed players follow their boxes; media edited out of the document

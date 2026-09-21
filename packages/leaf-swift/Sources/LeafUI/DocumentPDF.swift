@@ -112,6 +112,10 @@ extension LeafTextView {
                     page: PageSetup, title: String?) -> Data {
         let sheet = LeafTextView(doc: doc, theme: theme)
         sheet.isPaper = true
+        // Light, whatever the screen's: the sheet's layout resolves a formula's
+        // ink under its own traits (the AppKit sheet's `aqua`), and its drawing
+        // below runs under the same. Ink on paper, not a dark window's white.
+        sheet.overrideUserInterfaceStyle = .light
         sheet.documentDirectory = documentDirectory
         sheet.frame = CGRect(origin: .zero, size: CGSize(width: page.size.width, height: 0))
         sheet.pageSetup = page.paper

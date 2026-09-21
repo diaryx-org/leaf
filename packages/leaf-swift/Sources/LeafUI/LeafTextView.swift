@@ -613,12 +613,21 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         let blocksChanged = view.tables != docView.tables || view.media != docView.media
             || view.math != docView.math || view.directives != docView.directives
         docView = view
-        if reflow {
-            layoutEngine = EditorLayout(view, theme: theme, viewWidth: viewWidth, page: pageSetup,
-                                        cache: &shapeCache, media: mediaStore)
-        } else if change != nil || blocksChanged || layoutEngine.rows.isEmpty {
-            layoutEngine = EditorLayout(view, theme: theme, viewWidth: viewWidth, page: pageSetup,
-                                        cache: &shapeCache, media: mediaStore, previous: layoutEngine)
+        // Under this view's own appearance, not whatever happens to be current.
+        // The text's colours are dynamic and resolve when drawn, inside
+        // `draw(_:)`, where AppKit has made the view's appearance current; a
+        // formula's ink is resolved *here*, to the bytes the typesetter is
+        // handed. Left to the caller's appearance, a paper sheet (`aqua`,
+        // whatever the screen) laid out from a dark-mode window would set its
+        // formulas in white — and print them on white.
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            if reflow {
+                layoutEngine = EditorLayout(view, theme: theme, viewWidth: viewWidth, page: pageSetup,
+                                            cache: &shapeCache, media: mediaStore)
+            } else if change != nil || blocksChanged || layoutEngine.rows.isEmpty {
+                layoutEngine = EditorLayout(view, theme: theme, viewWidth: viewWidth, page: pageSetup,
+                                            cache: &shapeCache, media: mediaStore, previous: layoutEngine)
+            }
         }
         let relaid = reflow || change != nil || blocksChanged
         // The misspellings still stand where the text did not change, but the
@@ -2500,6 +2509,15 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         } else {
             indicator.displayMode = .hidden
         }
+    }
+
+    /// A formula's picture is set in the ink the layout resolved (see `render`),
+    /// so a switch between light and dark is a relayout, not just a repaint —
+    /// the shaped rows hold the old ink's pictures.
+    public override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        shapeCache.removeAll(keepingCapacity: true)
+        relayoutForWidth(force: true)
     }
 
     // MARK: window key state — selection emphasis + caret track the key window
