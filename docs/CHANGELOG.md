@@ -33,7 +33,17 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
-_No commits since the last tag._
+### Added
+
+- a click under the last block lands on a fresh paragraph, and a Code Block button ([`e38d59e`](https://github.com/diaryx-org/leaf/commit/e38d59e3f0f88bbeff45cac0d320850511adb87c))
+
+### Fixed
+
+- **core** — a closing fence at the end of the document opens no phantom row ([`a7816cc`](https://github.com/diaryx-org/leaf/commit/a7816ccd8ea7a2f0caa2302ab9a000f6cbb639ef))
+
+### Behavioural changes
+
+- a document ending in a fenced code block (or a setext heading) no longer shows an empty row under it unless the source has a blank line there; a caret that used to land in that row landed inside the fence.
 
 <!-- git-cliff:end -->
 
