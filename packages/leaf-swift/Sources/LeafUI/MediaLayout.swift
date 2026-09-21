@@ -407,17 +407,31 @@ final class MediaStore {
         }
         entries[source] = .pending
         let token = generation
+        // A host may answer before `ask` returns — a source it declines with
+        // one `done(nil)`, or a file it already has. This is asked from inside
+        // a layout, and a repaint from inside a layout is a re-entrant
+        // `render`, which Swift's exclusivity check aborts on. So an answer
+        // that arrives while `ask` is still on the stack is handed back to the
+        // layout that asked, and only a later one repaints.
+        var asking = true
+        var answered: Entry?
         ask(source) { [weak self] url in
             // The host may answer from anywhere; the cache and the repaint both
             // belong to the main thread.
             MediaStore.onMain {
                 guard let self, self.generation == token else { return }
                 let still = url.flatMap(MediaStore.load)
-                self.entries[source] = .ready(file: url, still: still)
-                self.onLoaded?(source)
+                let entry = Entry.ready(file: url, still: still)
+                self.entries[source] = entry
+                if asking {
+                    answered = entry
+                } else {
+                    self.onLoaded?(source)
+                }
             }
         }
-        return .pending
+        asking = false
+        return answered ?? .pending
     }
 
     /// Run `work` on the main thread, now if we are already on it — so a host
