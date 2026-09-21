@@ -2,7 +2,7 @@
 title: Tasks
 description: Deferred work on leaf, one file each — a commitment with a done state
 created: 2026-09-04
-updated: 2026-09-20
+updated: 2026-09-21
 contents:
 - '[Bold inside code inserts visible delimiters](bold-inside-code-inserts-delimiters.md)'
 - '[A typed dollar mints math in the hidden mode](a-typed-dollar-mints-math-in-the-hidden-mode.md)'
@@ -33,6 +33,7 @@ contents:
 - '[An exported PDF leaves every formula blank](pdf-export-lacks-math.md)'
 - '[The Apple editor does work proportional to the document on every interaction](editor-is-proportional-to-the-document-per-interaction.md)'
 - '[A PDF shows the caret''s line revealed](pdf-reveals-the-carets-line.md)'
+- '[A fence inside a quote or list has no language](fence-inside-a-container-has-no-language.md)'
 part_of: '[leaf](/README.md)'
 ---
 # Tasks
