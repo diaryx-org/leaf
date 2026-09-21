@@ -31,6 +31,7 @@ contents:
 - '[Dynamic Type on paper should be a zoom, not a repagination](ios-dynamic-type-on-paper.md)'
 - '[The Mac app runs unsandboxed and unsigned](sandboxed-mac-app.md)'
 - '[An exported PDF leaves every formula blank](pdf-export-lacks-math.md)'
+- '[The Apple editor does work proportional to the document on every interaction](editor-is-proportional-to-the-document-per-interaction.md)'
 part_of: '[leaf](/README.md)'
 ---
 # Tasks
