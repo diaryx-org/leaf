@@ -33,7 +33,17 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
-_No commits since the last tag._
+### Added
+
+- **leaf-core** — a fence's body carries its tokens in the source map ([`fd072ec`](https://github.com/diaryx-org/leaf/commit/fd072ec54e707ef0a4b62e9d074a915622289660))
+- **ffi** — the source view's rows carry the source map's styling ([`178bbc1`](https://github.com/diaryx-org/leaf/commit/178bbc15031f47973725e6ac09329359563f5d86))
+- **leaf-swift,leaf-web** — the source view is monospaced and coloured by its markup ([`1f47d2b`](https://github.com/diaryx-org/leaf/commit/1f47d2bbf73a0e9683a03eb7532ca388198e20a9))
+
+### Behavioural changes
+
+- `SourceMap` runs inside a fenced block in a known language now carry `Style::token`, and split where the tokens change; a painter that coloured by role alone draws the same, one that reads `token` draws the block highlighted.
+
+- in the source view, `DocView.rows` split into runs by role and token where they were one `body` run per line (plus the selection), and host highlights reach them; a renderer that keys anything on a source row being a single run should read the runs.
 
 <!-- git-cliff:end -->
 
