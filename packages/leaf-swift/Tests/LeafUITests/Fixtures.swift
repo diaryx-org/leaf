@@ -157,6 +157,13 @@ func docView(
 ) -> DocView {
     DocView(
         rows: rows,
+        // A whole frame, as every fixture is: the first, against nothing.
+        frame: 1,
+        basis: 0,
+        rowStart: 0,
+        replaced: 0,
+        rowCount: UInt32(rows.count),
+        srcShift: 0,
         tables: tables,
         directives: directives,
         media: media,

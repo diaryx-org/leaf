@@ -586,6 +586,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_replace_range(void*_Nonnull ptr, ui
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_row_range_for(void*_Nonnull ptr, uint32_t start, uint32_t end, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_ROWS
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_ROWS
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_rows(void*_Nonnull ptr, uint32_t from, uint32_t to, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SELECT_ALL
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SELECT_ALL
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_select_all(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
@@ -654,6 +659,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_heading(void*_Nonnull ptr, uint
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_HIGHLIGHTS
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_HIGHLIGHTS
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_highlights(void*_Nonnull ptr, RustBuffer highlights, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_INCREMENTAL_FRAMES
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_INCREMENTAL_FRAMES
+void uniffi_leaf_ffi_fn_method_leafdoc_set_incremental_frames(void*_Nonnull ptr, int8_t on, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_INLINE_PICTURES
@@ -1551,6 +1561,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_row_range_for(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_ROWS
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_ROWS
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_rows(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SELECT_ALL
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SELECT_ALL
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_select_all(void
@@ -1632,6 +1648,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_heading(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_HIGHLIGHTS
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_HIGHLIGHTS
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_highlights(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_INCREMENTAL_FRAMES
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_INCREMENTAL_FRAMES
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_incremental_frames(void
     
 );
 #endif
