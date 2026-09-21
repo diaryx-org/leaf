@@ -264,6 +264,108 @@ await test("a code block's edges follow the block as it grows", () => {
   return ed;
 });
 
+// ── the frame crosses the boundary as a change ────────────────────────────
+
+/** A document of `paragraphs` paragraphs — two rows each, the gap included. */
+function longDocument(paragraphs) {
+  let out = "";
+  for (let i = 0; i < paragraphs; i++) {
+    out += `paragraph ${i} carries \`code\` and **bold** and a [link](https://example.org/${i}) in it\n\n`;
+  }
+  return out;
+}
+
+/** The frames core answered `ed`'s gestures with, before `_whole` applied
+ *  them — what crossed the boundary, as distinct from what was painted. */
+function crossings(ed) {
+  const raw = [];
+  const whole = ed._whole.bind(ed);
+  ed._whole = (view) => { raw.push(view); return whole(view); };
+  return raw;
+}
+
+await test("a keystroke on a long document lifts the rows it changed, not the document", () => {
+  const ed = editor(longDocument(1800));
+  const total = ed._lastView.rows.length;
+  assert(total >= 3600, `${total} rows`);
+  const raw = crossings(ed);
+  const mid = ed.rowEls[Math.floor(total / 2)];
+  place(firstText(mid), 4);
+  ed._syncFromDom();
+  raw.length = 0;
+  input(ed, "insertText", "X");
+  const typed = raw.at(-1);
+  assert(typed.basis > 0, "the keystroke's frame is a change, not a whole frame");
+  eq(typed.rows.length, 1, "the keystroke lifted its own row");
+  eq(typed.replaced, 1);
+  eq(typed.row_count, total);
+  eq(typed.src_shift, 1, "every row below moved one byte");
+  eq(ed._lastView.rows.length, total, "the frame painted is still the whole document");
+  assert(ed._lastView.rows.some((r) => r.runs.some((x) => x.text.includes("X"))), "the edit is in the rows");
+  // A row below the edit still knows where it comes from, one byte on.
+  const lastIdx = ed._lastView.rows.findLastIndex((r) => r.runs.some((x) => x.text.startsWith("paragraph")));
+  const last = ed.rowEls[lastIdx].querySelector(".leaf-run");
+  eq(ed.source().slice(last._src, last._src + 14), "paragraph 1799", "a kept run's offset went stale");
+  // And a caret move lifts no row at all.
+  raw.length = 0;
+  ed.render(ed.doc.move_up(false));
+  eq(raw.at(-1).rows.length, 0, "a caret move lifted a row");
+  eq(raw.at(-1).basis, typed.frame);
+  return ed;
+});
+
+// The count is the measure rather than a clock: the headless driver runs the
+// page under a virtual-time budget, where `performance.now()` stands still.
+// What the lift costs per row is the binding's, and the same for every row;
+// how many rows cross is what this package decides.
+await test("what a keystroke lifts does not grow with the document", () => {
+  const lifted = (paragraphs) => {
+    const ed = editor(longDocument(paragraphs));
+    const raw = crossings(ed);
+    place(firstText(ed.rowEls[2]), 4);
+    ed._syncFromDom();
+    raw.length = 0;
+    input(ed, "insertText", "Y");
+    const rows = raw.at(-1).rows.length;
+    ed.destroy();
+    return rows;
+  };
+  const small = lifted(200);
+  const large = lifted(2000);
+  eq(large, small, "the rows lifted grew with the document");
+  assert(small <= 2, `${small} rows lifted for one keystroke`);
+  return null;
+});
+
+await test("a change against a frame the editor dropped is made whole again", () => {
+  const ed = editor("one\n\ntwo\n\nthree\n");
+  const total = ed._lastView.rows.length;
+  // A frame taken from core and never painted: the editor's copy is now a
+  // frame behind, and the next change names a basis it does not hold.
+  ed.doc.move_right(false);
+  const raw = crossings(ed);
+  ed.render(ed.doc.insert("Q"));
+  assert(raw.at(-1).basis > 0, "the frame was a change");
+  eq(ed._lastView.rows.length, total, "the rows are whole again");
+  eq(ed._lastView.basis, 0);
+  eq(ed.rowEls[0].textContent, "oQne", "and painted from a whole frame asked of core");
+  // From here every change applies again.
+  raw.length = 0;
+  input(ed, "insertText", "R");
+  eq(raw.at(-1).rows.length, 1);
+  eq(ed.rowEls[0].textContent, "oQRne");
+  return ed;
+});
+
+await test("a loaded document starts its frames afresh", () => {
+  const ed = editor("first\n");
+  ed.load("alpha\n\nbeta\n");
+  eq(ed._lastView.rows.length, 3);
+  input(ed, "insertText", "Z");
+  eq(ed.rowEls[0].textContent, "Zalpha");
+  return ed;
+});
+
 // ── the caret, in and out of a grid ───────────────────────────────────────
 
 await test("a point in a cell maps to the source byte under it", () => {
