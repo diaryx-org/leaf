@@ -33,19 +33,34 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
+_No commits since the last tag._
+
+<!-- git-cliff:end -->
+
+## v0.4.2 — 2026-09-21
+
 ### Added
 
 - a click under the last block lands on a fresh paragraph, and a Code Block button ([`e38d59e`](https://github.com/diaryx-org/leaf/commit/e38d59e3f0f88bbeff45cac0d320850511adb87c))
+- **swift** — a checkbox is clickable, and the toolbar and Format menu carry the task pair ([`0152799`](https://github.com/diaryx-org/leaf/commit/015279966fa9f74aef788c5fc1d7140c507f460f))
 
 ### Fixed
 
 - **core** — a closing fence at the end of the document opens no phantom row ([`a7816cc`](https://github.com/diaryx-org/leaf/commit/a7816ccd8ea7a2f0caa2302ab9a000f6cbb639ef))
+- **swift** — sign a device build, so Leaf installs on a real iPhone ([`939e3e9`](https://github.com/diaryx-org/leaf/commit/939e3e976d3fce56ee514901e67e4af874aad457))
+- **swift** — an editing command with no surface on screen reaches the document ([`00847f7`](https://github.com/diaryx-org/leaf/commit/00847f79f052878d445a87995963c3581abae88b))
 
 ### Behavioural changes
 
 - a document ending in a fenced code block (or a setext heading) no longer shows an empty row under it unless the source has a blank line there; a caret that used to land in that row landed inside the fence.
 
-<!-- git-cliff:end -->
+- leaf-swift: a plain click or tap on a task item's ☐/☑ now ticks it and leaves the caret where it was, where it used to place the caret at the item's start.
+
+- a `LeafEditorModel` command (`insertMedia`,
+`insertLink`, `toggleMark`, …) issued while no `LeafEditor` view is on
+screen now edits the document, marks `state.dirty`, and calls `onEdit`;
+it used to be silently ignored.
+
 
 ## v0.4.1 — 2026-09-21
 
