@@ -403,6 +403,10 @@ export class LeafEditor {
     // A browser paints a picture in a line, so an inline formula arrives as an
     // atom to draw over rather than as its TeX — see _mathRunEl.
     this.doc.set_inline_pictures(true);
+    // Every frame after the first is the change since the frame before —
+    // the rows that differ, and where they go — spliced into the last whole
+    // one by `_whole`. See `render`.
+    this.doc.set_incremental_frames(true);
 
     ensureStylesheet();
     this._buildDom();
@@ -454,8 +458,11 @@ export class LeafEditor {
     doc.set_line_flow(old.line_flow());
     doc.set_read_only(old.read_only());
     doc.set_inline_pictures(true);
+    doc.set_incremental_frames(true);
     if (this._darkQuery) doc.set_color_scheme(this._darkQuery.matches ? "dark" : "light");
     this.doc = doc;
+    // A frame of the new document is no change to the old one's rows.
+    this._lastView = null;
     old.free?.();
     // A new document is a new measure: the surrender to an unwrappable row
     // belonged to the old one.
@@ -925,6 +932,7 @@ export class LeafEditor {
    */
   render(view) {
     if (!view) return; // an unhandled key returns undefined; nothing to repaint
+    view = this._whole(view);
     this._lastView = view;
 
     // The previous frame's elements, pooled under the key each was built from.
@@ -1072,6 +1080,40 @@ export class LeafEditor {
     this._scrollCaretIntoView(view);
     this._emitChange(view);
     this._checkFit();
+  }
+
+  /**
+   * The frame as the whole document. Core answers every gesture with the
+   * change since the frame before — the rows that differ, `row_start` and
+   * `replaced` for where they go, and `src_shift` for how far the source of
+   * every row below moved (`set_incremental_frames`) — because lifting every
+   * row of a long document across the wasm boundary on every keystroke cost
+   * more than the repaint. A change is spliced into the last whole frame,
+   * which is `_lastView`; a whole frame (`basis` of 0) is itself. A change
+   * against a frame this editor did not keep — a gesture whose frame was
+   * dropped on the floor, as a drop's own reselection is — means the rows
+   * here have lost step, and core is asked for a whole frame instead.
+   *
+   * The rows before the span are the same objects as before, and the rows
+   * after it are too, moved in place: each run's `src` is the offset the
+   * renderer refreshes on a reused element (`_adoptRow`), and nothing else
+   * about those rows changed.
+   * @param {import("../pkg/leaf_wasm.js").DocView} view
+   * @returns {import("../pkg/leaf_wasm.js").DocView}
+   */
+  _whole(view) {
+    if (!view.basis) return view;
+    const last = this._lastView;
+    if (!last || last.frame !== view.basis) return this.doc.view();
+    const start = view.row_start;
+    const rows = last.rows.slice(0, start);
+    for (const row of view.rows) rows.push(row);
+    const kept = last.rows.slice(start + view.replaced);
+    if (view.src_shift) {
+      for (const row of kept) for (const run of row.runs) run.src += view.src_shift;
+    }
+    for (const row of kept) rows.push(row);
+    return { ...view, rows, basis: 0, row_start: 0, replaced: 0, src_shift: 0 };
   }
 
   /**
@@ -1682,7 +1724,7 @@ export class LeafEditor {
     if (!this.contentEl.contains(r.commonAncestorContainer)) return false;
     const view = this._selectionToCore(sel);
     if (!view) return false;
-    this._lastView = view;
+    this._lastView = this._whole(view);
     return true;
   }
 
@@ -2005,7 +2047,7 @@ export class LeafEditor {
       // Core says so through the map's key, and only then is a frame painted;
       // ordinary motion keeps costing nothing.
       if (view.map_key !== this._lastView?.map_key) this.render(view);
-      else this._emitChange((this._lastView = view));
+      else this._emitChange((this._lastView = this._whole(view)));
     });
 
     // Triple-click: the browser's is a *visual line*; leaf's is the *logical
@@ -2358,7 +2400,7 @@ export class LeafEditor {
     const view = this._pointsToCore(
       range.startContainer, range.startOffset, range.endContainer, range.endOffset
     );
-    if (view) this._lastView = view;
+    if (view) this._lastView = this._whole(view);
   }
 
   /**
