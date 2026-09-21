@@ -6,6 +6,7 @@
 //! cargo run -p leaf-ffi --example bench              # dev profile, generated document
 //! cargo run -p leaf-ffi --example bench --release    # what a shipping app sees
 //! cargo run -p leaf-ffi --example bench -- path.md   # a document of your own
+//! cargo run -p leaf-ffi --example bench -- --dump path.md   # write the generated one out
 //! ```
 //!
 //! Both profiles matter: a debug build is what a developer drives the app with
@@ -24,8 +25,16 @@ use std::time::{Duration, Instant};
 use leaf_ffi::LeafDoc;
 
 fn main() {
-    let source = match std::env::args().nth(1) {
-        Some(path) => std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}")),
+    let mut args = std::env::args().skip(1);
+    let source = match args.next().as_deref() {
+        // The generated document, written out — to open in the app, or to
+        // concatenate with itself and see which rows grow with it.
+        Some("--dump") => {
+            let path = args.next().expect("--dump takes a path");
+            std::fs::write(&path, generated()).unwrap_or_else(|e| panic!("{path}: {e}"));
+            return;
+        }
+        Some(path) => std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}")),
         None => generated(),
     };
     let words = source.split_whitespace().count();
@@ -96,6 +105,13 @@ fn main() {
     doc.click_ch(mid_row, 3, false);
     row("insert one character", || {
         std::hint::black_box(doc.insert("x".into()));
+    });
+    // The UTF-16 table is derived on the first lookup after a map rebuild,
+    // so the first conversion after a keystroke pays for it; every later one
+    // is the lookup alone.
+    row("utf16_index_for_offset (first after an edit)", || {
+        doc.insert("x".into());
+        doc.utf16_index_for_offset(mid);
     });
     row("newline", || {
         std::hint::black_box(doc.newline());
