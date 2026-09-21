@@ -392,15 +392,39 @@ final class MediaLayoutTests: XCTestCase {
         var announced: [String] = []
         let store = MediaStore()
         store.onLoaded = { announced.append($0) }
-        // A host that answers immediately — the completion runs inline, so no
-        // expectation/wait is needed and the test stays synchronous.
-        store.onResolveMedia = { _, done in done(file) }
+        // A host that answers later — the usual shape, a fetch.
+        var pending: ((URL?) -> Void)?
+        store.onResolveMedia = { _, done in pending = done }
 
         let remote = mkMedia("https://example.com/cat.png")
         XCTAssertNil(store.still(for: remote), "nothing to draw on the first pass")
+        XCTAssertTrue(announced.isEmpty)
+        pending?(file)
         XCTAssertEqual(announced, ["https://example.com/cat.png"],
                        "the view is told to repaint when the answer lands")
         XCTAssertNotNil(store.still(for: remote), "and now it has a picture")
+    }
+
+    func testASynchronousAnswerIsHandedToTheLayoutThatAsked() throws {
+        // `still(for:)` is called from inside a layout, and a repaint from
+        // inside a layout re-enters the view's render. A host that answers
+        // before `ask` returns — declining with `done(nil)`, or handing over a
+        // file it already has — therefore gets no announcement: the layout in
+        // progress takes the answer itself.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("dot.png")
+        try onePixelPNG().write(to: file)
+
+        var announced: [String] = []
+        let store = MediaStore()
+        store.onLoaded = { announced.append($0) }
+        store.onResolveMedia = { _, done in done(file) }
+
+        XCTAssertNotNil(store.still(for: mkMedia("https://example.com/cat.png")),
+                        "the picture is there on the first pass")
+        XCTAssertTrue(announced.isEmpty, "no repaint from inside the layout that asked")
+        XCTAssertFalse(store.isResolving("https://example.com/cat.png"))
     }
 
     func testAResolvedFileIsAlsoWhatPlaybackStreamsFrom() throws {
@@ -413,8 +437,6 @@ final class MediaLayoutTests: XCTestCase {
 
         let store = MediaStore()
         store.onResolveMedia = { _, done in done(file) }
-        XCTAssertNil(store.playableURL(for: "https://example.com/clip.mp4"),
-                     "not yet — the host has only just been asked")
         XCTAssertEqual(store.playableURL(for: "https://example.com/clip.mp4"), file)
     }
 
@@ -468,9 +490,9 @@ final class MediaLayoutTests: XCTestCase {
         let store = MediaStore(baseURL: dir)
         store.onResolveMedia = { src, done in asked.append(src); done(elsewhere) }
 
-        XCTAssertNil(store.still(for: mkMedia("img/cat.png")), "nothing to draw on the first pass")
+        XCTAssertNotNil(store.still(for: mkMedia("img/cat.png")),
+                        "the host answered at once, so the first pass has the picture")
         XCTAssertEqual(asked, ["img/cat.png"], "asked with the src as written")
-        XCTAssertNotNil(store.still(for: mkMedia("img/cat.png")), "and now it has a picture")
     }
 
     func testTheHostsOwnSpellingIsReadAtOnceWithoutARoundTrip() throws {
@@ -598,9 +620,8 @@ final class MediaLayoutTests: XCTestCase {
 
         allow = true
         store.forget("https://example.com/cat.png")
-        XCTAssertNil(store.still(for: remote), "asked again — and, as on any first pass, nothing yet")
+        XCTAssertNotNil(store.still(for: remote), "asked again, and this time the answer was a file")
         XCTAssertEqual(asked, 2)
-        XCTAssertNotNil(store.still(for: remote), "and this time the answer was a file")
     }
 
     func testForgetLeavesASourceInFlightAlone() {
