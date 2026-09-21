@@ -33,6 +33,12 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
+_No commits since the last tag._
+
+<!-- git-cliff:end -->
+
+## v0.4.1 — 2026-09-21
+
 ### Added
 
 - **leaf-core** — a fence's body carries its tokens in the source map ([`c867945`](https://github.com/diaryx-org/leaf/commit/c8679452713fd0fb11bad9e9f317a6283c9c758f))
@@ -45,7 +51,6 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 
 - in the source view, `DocView.rows` split into runs by role and token where they were one `body` run per line (plus the selection), and host highlights reach them; a renderer that keys anything on a source row being a single run should read the runs.
 
-<!-- git-cliff:end -->
 
 ## v0.4.0 — 2026-09-20
 
