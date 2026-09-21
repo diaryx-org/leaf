@@ -636,6 +636,35 @@ final class EditorLayoutTests: XCTestCase {
         XCTAssertEqual(editor.layoutEngine.rows[2].row.runs.map(\.text).joined(), "foxuyr five six")
         XCTAssertEqual(editor.layoutEngine.rows.map(\.row), doc.view().rows)
     }
+
+    func testAnEditThatShowsNoRowIsStillAnEdit() throws {
+        // A comment pasted between two paragraphs is source with no row to
+        // show: core answers with no rows, nothing replaced, and every row
+        // below moved by the comment's length. The host still has a document
+        // to save, the find bar and the checker still hold offsets into a
+        // text that changed under them, and the layout's rows are still to
+        // be in step with core's, offsets and all.
+        let doc = try LeafDoc(source: "one two three\n\nfour five six\n", format: "markdown")
+        let editor = LeafTextView(doc: doc, theme: .default)
+        editor.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        editor.layoutSubtreeIfNeeded()
+        var edits = 0
+        editor.onEdit = { edits += 1 }
+        editor.command { $0.clickCh(row: 2, ch: 0, extend: false) }
+        XCTAssertEqual(edits, 0, "a click is not an edit")
+        let generation = editor.spellCheckGeneration
+        var crossed: DocView?
+        editor.command { crossed = $0.paste(text: "<!-- c -->\n\n"); return crossed! }
+        let frame = try XCTUnwrap(crossed)
+        XCTAssertTrue(frame.isChange)
+        XCTAssertEqual(frame.rows.count, 0, "the comment shows no row")
+        XCTAssertEqual(frame.replaced, 0)
+        XCTAssertEqual(frame.srcShift, 12, "and moved the paragraph below it")
+        XCTAssertTrue(doc.source().contains("<!-- c -->"))
+        XCTAssertEqual(edits, 1, "the host is told of the edit")
+        XCTAssertGreaterThan(editor.spellCheckGeneration, generation, "the checker is asked again")
+        XCTAssertEqual(editor.layoutEngine.rows.map(\.row), doc.view().rows, "in step with core, offsets and all")
+    }
     #endif
 
     // MARK: what a frame changed — the rows, and whether the text among them
@@ -740,6 +769,17 @@ final class EditorLayoutTests: XCTestCase {
         XCTAssertEqual(grew?.old, 4..<5)
         XCTAssertEqual(was.count, 1)
         XCTAssertEqual(whole.rows.count, 7)
+        // Source with no row to show — a comment pasted above the last
+        // paragraph: nothing replaced, and the rows below moved. Not a caret
+        // move: the rows from the span are different values by their
+        // offsets, and a `nil` would say they are the same rows.
+        let hidden = change([], basis: 4, start: 6, replaced: 0, count: 7, shift: 12)
+        let (moved2, nothing2) = whole.apply(hidden)
+        XCTAssertEqual(moved2?.new, 6..<6)
+        XCTAssertEqual(moved2?.old, 6..<6)
+        XCTAssertTrue(nothing2.isEmpty)
+        XCTAssertEqual(whole.rows[6], row([mkRun("ma", src: 30)]), "the row below moved on")
+        XCTAssertEqual(whole.rows[4], row([mkRun("gam", src: 14)]), "the row above stands")
     }
 
     func testAChangeIsNarrowedByShapeOnlyOverItsSpan() {

@@ -1156,13 +1156,17 @@ public final class LeafTextView: UIView, UITextInput {
         let viewFlipped = frame.view != docView.view
         // The document changed, as distinct from what is shown of it: the flip
         // rewrites every row and edits nothing, and a selection changes what is
-        // shown of the text, not the text — see `Row.sameText`.
+        // shown of the text, not the text — see `Row.sameText`. A change that
+        // moved the rows below its span edited the source whatever the span
+        // holds — a comment pasted between two paragraphs shows no row — and
+        // the host has a document to save.
         let change: RowChange?
         let edited: Bool
         if frame.isChange {
+            let shifted = frame.srcShift != 0
             let (span, replaced) = docView.apply(frame)
             change = span
-            edited = !viewFlipped && !frame.rows.sameText(as: replaced)
+            edited = !viewFlipped && (shifted || !frame.rows.sameText(as: replaced))
         } else {
             change = frame.rows.changedRange(from: docView.rows)
             edited = !viewFlipped && !frame.rows.sameText(as: docView.rows, over: change)
