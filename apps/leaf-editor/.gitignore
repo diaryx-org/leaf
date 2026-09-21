@@ -4,3 +4,5 @@
 build/
 DerivedData/
 .DS_Store
+# Written by xcodegen from project.yml's `info:` block, alongside the project.
+App/Info.plist

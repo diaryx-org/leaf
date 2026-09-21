@@ -6,7 +6,7 @@
 #      packages/leaf-swift/uniffi-generated/ (scripts/gen-bindings.sh — after an
 #      API change, `git diff` shows the binding move and the change is committed
 #      with it; CI diffs the two, so a stale binding cannot merge)
-#   2. run `xcodegen generate` to (re)create LeafEditorApp.xcodeproj
+#   2. run `xcodegen generate` to (re)create Leaf.xcodeproj
 #
 # The Rust *staticlib* for mac/simulator/device is NOT built here — the Xcode
 # project's pre-build script (see project.yml) does that on every build, so
@@ -25,8 +25,8 @@ cd "$HERE" && xcodegen generate
 
 echo "✓ Ready."
 echo "  Run on macOS:"
-echo "    xcodebuild -project $HERE/LeafEditorApp.xcodeproj -scheme LeafEditorApp \\"
+echo "    xcodebuild -project $HERE/Leaf.xcodeproj -scheme Leaf \\"
 echo "      -destination 'platform=macOS' -derivedDataPath build/DD build"
 echo "  Run in the iOS simulator:"
-echo "    xcodebuild -project $HERE/LeafEditorApp.xcodeproj -scheme LeafEditorApp \\"
+echo "    xcodebuild -project $HERE/Leaf.xcodeproj -scheme Leaf \\"
 echo "      -destination 'platform=iOS Simulator,name=iPhone 17' -derivedDataPath build/DD build"

@@ -7,23 +7,35 @@ import AppKit
 import UIKit
 #endif
 
-/// A minimal cross-platform host for the `LeafUI` editor: the package's
-/// formatting bar with the demo's display menus added to it, and the
-/// `LeafEditor` surface below. Everything — caret math, wrapping, selection,
-/// WYSIWYG resolution — comes from leaf-core over the FFI; this file is only
-/// chrome. The same view builds for macOS and iOS because
-/// `LeafEditor`/`LeafTextView` carry both surfaces.
+/// One document's window: the package's formatting bar with the app's display
+/// menus added to it, and the `LeafEditor` surface below. Everything — caret
+/// math, wrapping, selection, WYSIWYG resolution — comes from leaf-core over the
+/// FFI; this file is only chrome. The same view builds for macOS and iOS
+/// because `LeafEditor`/`LeafTextView` carry both surfaces.
 struct ContentView: View {
-    @StateObject private var editor = makeEditor()
+    /// The document's model, owned by its `LeafDocument`; this view wires the
+    /// host hooks onto it and shows it.
+    @ObservedObject var model: LeafEditorModel
+    /// Where the file is, or nil until it is first saved. Relative images and
+    /// media resolve against its folder.
+    let fileURL: URL?
+
+    /// The scene's undo manager is the document's: telling it of a change is
+    /// how a `ReferenceFileDocument` says it is edited, which is what enables
+    /// Save, shows the dot in the close button, and starts the autosave clock.
+    @Environment(\.undoManager) private var undoManager
+
     /// The soft-break flow shown in the dropdown. Held here (not read back off the
     /// model each paint) because flipping it doesn't change the toolbar's other
-    /// state, so this is what drives the menu's checkmark.
+    /// state, so this is what drives the menu's checkmark. Its opening value is
+    /// the setting's; the toolbar then moves it for this window only.
     @State private var flowPreserved = false
-    /// The reader's display choices. These are the host's to own — `LeafUI` takes
-    /// a whole `EditorTheme` and doesn't remember one — so a real app would
-    /// persist them (`@AppStorage`) rather than reset them each launch.
-    @State private var columnWidth: ColumnWidth = .medium
-    @State private var textSize: TextSize = .medium
+    /// The reader's display choices, shared by every window and remembered
+    /// across launches — the Settings window edits the same keys.
+    @AppStorage(DisplayChoice.columnWidthKey) private var columnWidth: ColumnWidth = .medium
+    @AppStorage(DisplayChoice.textSizeKey) private var textSize: TextSize = .medium
+    @AppStorage(DisplayChoice.paperKey) private var paper: Paper = .usLetter
+    @AppStorage(DisplayChoice.flowKey) private var flowSetting = false
     /// The paginated view: nil is the continuous flow, a `PageSetup` puts the
     /// document on paper. The zoom is not here — it is the model's, because the
     /// surface moves it too (a pinch, View ▸ Zoom), and this view only reads it
@@ -34,13 +46,72 @@ struct ContentView: View {
         VStack(spacing: 0) {
             toolbar
             Divider()
-            LeafEditor(model: editor, theme: theme, page: page)
+            LeafEditor(model: model, theme: theme, page: page)
                 .background(page == nil ? editorBackground : Color.clear)
             #if os(macOS)
             if page != nil { zoomBar }
             #endif
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)
+        .onAppear {
+            flowPreserved = flowSetting
+            if flowPreserved { model.setLineFlow(.preserve) }
+            wire()
+        }
+        // Save As moves the file, and its images with it.
+        .onChange(of: fileURL) { _ in wire() }
+        .onChange(of: undoManager) { _ in wire() }
+    }
+
+    /// The host's half of the model: where its files are, and what to do with
+    /// what the editor cannot do itself. Set whenever the answers change.
+    private func wire() {
+        // Core resolves no path itself — it does no I/O and knows no paths. A
+        // saved document's attachments live beside it; an unsaved one has no
+        // beside, and the bundle is where the sample's media lives.
+        model.documentDirectory = fileURL?.deletingLastPathComponent() ?? Bundle.main.resourceURL
+        model.onEdit = { [weak model, weak undoManager] in
+            // A no-op registration: the document system reads it as "changed"
+            // and does the rest. The edit itself is twig's to undo, through the
+            // text view's own manager — see LeafUI's `UndoBridge.swift`.
+            guard let model else { return }
+            undoManager?.registerUndo(withTarget: model) { _ in }
+        }
+        // With the default `.inline` playback the editor plays media itself, so
+        // this is only reached for a source its local-file loader can't resolve
+        // — a remote URL. Hand it to the system.
+        model.onOpenMedia = { src in
+            guard let url = URL(string: src) else { return }
+            #if canImport(AppKit)
+            NSWorkspace.shared.open(url)
+            #else
+            UIApplication.shared.open(url)
+            #endif
+        }
+        // The editor never touches the network. It hands us a source it can't
+        // read and we answer with a local file: fetched into the caches folder,
+        // from whatever thread the download finishes on.
+        model.onResolveMedia = { src, done in
+            guard let url = URL(string: src), let scheme = url.scheme,
+                  scheme == "http" || scheme == "https"
+            else { return done(nil) }
+            URLSession.shared.downloadTask(with: url) { temp, _, _ in
+                guard let temp else { return done(nil) }
+                let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+                let kept = caches.appendingPathComponent(url.lastPathComponent)
+                try? FileManager.default.removeItem(at: kept)
+                done((try? FileManager.default.moveItem(at: temp, to: kept)) == nil ? nil : kept)
+            }.resume()
+        }
+        // Both the toolbar's Link button and the context menu's "Edit Link…" ask
+        // the *host* for the destination — the editor ships no prompt of its own.
+        // A plain text field is the app's answer. `current` is empty when the
+        // caret is in no link, which is the "make one" case.
+        model.onEditLink = { [weak model] current in
+            promptForLink(seed: current) { destination in
+                model?.insertLink(destination)
+            }
+        }
     }
 
     #if os(macOS)
@@ -53,12 +124,12 @@ struct ContentView: View {
         HStack(spacing: 10) {
             Spacer()
             Image(systemName: "minus.magnifyingglass").foregroundStyle(.secondary)
-            Slider(value: Binding(get: { editor.zoomScale }, set: { editor.zoom = .scale($0) }),
+            Slider(value: Binding(get: { model.zoomScale }, set: { model.zoom = .scale($0) }),
                    in: Zoom.range)
                 .frame(width: 180)
                 .accessibilityLabel("zoom")
             Image(systemName: "plus.magnifyingglass").foregroundStyle(.secondary)
-            Button("\(Int((editor.zoomScale * 100).rounded()))%") { editor.actualSize() }
+            Button("\(Int((model.zoomScale * 100).rounded()))%") { model.actualSize() }
                 .buttonStyle(.plain)
                 .monospacedDigit()
                 .frame(width: 44, alignment: .trailing)
@@ -71,30 +142,8 @@ struct ContentView: View {
     }
     #endif
 
-    /// The two display choices resolved into a theme. Everything else stays at
-    /// the default — the point of the measure being counted in *characters* is
-    /// that width and text size compose without a table of point widths: pick a
-    /// size, and the column that holds ~65 characters of it follows.
-    ///
-    /// On paper the column is the sheet's, so the equation runs the other way:
-    /// `fitted(to:)` sets the type so the chosen measure fills the column — the
-    /// default 16 points sets a Letter column only 58 characters wide, shorter
-    /// than the flow's 68 — and the text-size choice then scales from there, so
-    /// both menus still mean something on a page. How big that reads on screen
-    /// is the zoom's business, which opens at fit-width.
     private var theme: EditorTheme {
-        var t = EditorTheme.default
-        if let page {
-            t = t.fitted(to: page, measure: columnWidth.measure ?? 88)
-            let factor = textSize.points / TextSize.medium.points
-            t.fontSize *= factor
-            t.lineHeight *= factor
-        } else {
-            t.fontSize = textSize.points
-            t.lineHeight = textSize.points * 1.5
-        }
-        t.measure = columnWidth.measure
-        return t
+        DisplayChoice.theme(columnWidth: columnWidth, textSize: textSize, page: page)
     }
 
     /// The package's own bar — scrolling on iOS, paged by group on macOS —
@@ -102,13 +151,13 @@ struct ContentView: View {
     /// the source toggle, the flow and appearance menus, and the page menu
     /// where there is a paginated view to choose.
     private var toolbar: some View {
-        LeafFormattingToolbar(editor: editor, tools: hostTools)
+        LeafFormattingToolbar(editor: model, tools: hostTools)
     }
 
     private var hostTools: [LeafFormattingToolbar.Tool] {
         var tools: [LeafFormattingToolbar.Tool] = [
-            .button("view", systemImage: editor.isSource ? "doc.richtext" : "chevron.left.slash.chevron.right",
-                    label: "view", active: editor.isSource) { editor.toggleView() },
+            .button("view", systemImage: model.isSource ? "doc.richtext" : "chevron.left.slash.chevron.right",
+                    label: "view", active: model.isSource) { model.toggleView() },
             .menu("flow", systemImage: "arrow.turn.down.left", label: "line flow",
                   active: flowPreserved) { flowRows },
             .menu("appearance", systemImage: "textformat.size", label: "appearance") { appearanceRows },
@@ -164,11 +213,10 @@ struct ContentView: View {
         }
         Divider()
         Text("Paper")
-        Button { setPaper(.usLetter) } label: {
-            Label("US Letter", systemImage: paperIs(.usLetter) ? "checkmark" : "")
-        }
-        Button { setPaper(.a4) } label: {
-            Label("A4", systemImage: paperIs(.a4) ? "checkmark" : "")
+        ForEach(Paper.allCases) { choice in
+            Button { setPaper(choice) } label: {
+                Label(choice.label, systemImage: paperIs(choice) ? "checkmark" : "")
+            }
         }
         Divider()
         Text("Columns")
@@ -180,25 +228,27 @@ struct ContentView: View {
         }
         .disabled(page == nil)
         Divider()
-        Text("Zoom — \(Int((editor.zoomScale * 100).rounded()))%")
-        Button { editor.zoomIn() } label: { Label("Zoom In", systemImage: "plus.magnifyingglass") }
-        Button { editor.zoomOut() } label: { Label("Zoom Out", systemImage: "minus.magnifyingglass") }
-        Button { editor.actualSize() } label: {
-            Label("Actual Size", systemImage: editor.zoom == .actualSize ? "checkmark" : "")
+        Text("Zoom — \(Int((model.zoomScale * 100).rounded()))%")
+        Button { model.zoomIn() } label: { Label("Zoom In", systemImage: "plus.magnifyingglass") }
+        Button { model.zoomOut() } label: { Label("Zoom Out", systemImage: "minus.magnifyingglass") }
+        Button { model.actualSize() } label: {
+            Label("Actual Size", systemImage: model.zoom == .actualSize ? "checkmark" : "")
         }
-        Button { editor.zoom = .fitWidth } label: {
-            Label("Fit Width", systemImage: editor.zoom == .fitWidth ? "checkmark" : "")
+        Button { model.zoom = .fitWidth } label: {
+            Label("Fit Width", systemImage: model.zoom == .fitWidth ? "checkmark" : "")
         }
-        Button { editor.zoom = .fitPage } label: {
-            Label("Fit Page", systemImage: editor.zoom == .fitPage ? "checkmark" : "")
+        Button { model.zoom = .fitPage } label: {
+            Label("Fit Page", systemImage: model.zoom == .fitPage ? "checkmark" : "")
         }
     }
     /// Paper and column count are separate choices on one `PageSetup`, so
-    /// switching the sheet keeps the columns and vice versa.
-    private func paperIs(_ paper: PageSetup) -> Bool { page?.size == paper.size }
+    /// switching the sheet keeps the columns and vice versa. The paper chosen
+    /// is remembered, and is what Export as PDF prints on.
+    private func paperIs(_ choice: Paper) -> Bool { page?.size == choice.setup.size }
 
-    private func setPaper(_ paper: PageSetup) {
-        page = paper.columned(page?.columns ?? 1)
+    private func setPaper(_ choice: Paper) {
+        paper = choice
+        page = choice.setup.columned(page?.columns ?? 1)
     }
 
     private func setColumns(_ n: Int) {
@@ -208,57 +258,7 @@ struct ContentView: View {
 
     private func setFlow(_ preserve: Bool) {
         flowPreserved = preserve
-        editor.setLineFlow(preserve ? .preserve : .fold)
-    }
-}
-
-/// How wide the text column may run, in characters of the body font — the
-/// typographic "measure". The named tiers are what a reader actually chooses
-/// between; 45–75 characters is the comfortable range for continuous prose, and
-/// `.full` is the escape hatch for anyone who'd rather fill the window.
-private enum ColumnWidth: String, CaseIterable, Identifiable {
-    case narrow, medium, wide, full
-    var id: String { rawValue }
-
-    var measure: CGFloat? {
-        switch self {
-        case .narrow: return 52
-        case .medium: return 68
-        case .wide:   return 88
-        case .full:   return nil
-        }
-    }
-
-    var label: String {
-        switch self {
-        case .narrow: return "Narrow"
-        case .medium: return "Medium"
-        case .wide:   return "Wide"
-        case .full:   return "Full width"
-        }
-    }
-}
-
-/// The body point size. Everything else in the theme is derived from it — the
-/// line height here, and the column width through the character-counted measure.
-private enum TextSize: String, CaseIterable, Identifiable {
-    case small, medium, large
-    var id: String { rawValue }
-
-    var points: CGFloat {
-        switch self {
-        case .small:  return 14
-        case .medium: return 16
-        case .large:  return 19
-        }
-    }
-
-    var label: String {
-        switch self {
-        case .small:  return "Small"
-        case .medium: return "Medium"
-        case .large:  return "Large"
-        }
+        model.setLineFlow(preserve ? .preserve : .fold)
     }
 }
 
@@ -270,44 +270,6 @@ private var editorBackground: Color {
     #else
     Color(nsColor: .textBackgroundColor)
     #endif
-}
-
-private func makeEditor() -> LeafEditorModel {
-    // The sample is valid Markdown, so parsing cannot fail here.
-    let model = try! LeafEditorModel(source: sampleMarkdown, format: "markdown")
-    // The sample's attachments are relative paths, and core resolves none of them
-    // — it does no I/O and knows no paths. For this demo the "document directory"
-    // is the app bundle, which is where the sample's media actually lives; a real
-    // host would point this at the file's own directory.
-    model.documentDirectory = Bundle.main.resourceURL
-    // With the default `.inline` playback the editor plays media itself, so this
-    // is only reached for a source its local-file loader can't resolve — a remote
-    // URL, say. A real app would fetch and present one; the demo just reports it.
-    model.onOpenMedia = { src in
-        NSLog("leaf-editor: play %@", src)
-    }
-    // The editor never touches the network. It hands us a source it can't read
-    // and we answer with a local file — here by pretending to fetch and handing
-    // back a bundled one, which is exactly the shape a real download-and-cache
-    // takes: answer whenever you have it, from whatever thread you are on.
-    model.onResolveMedia = { src, done in
-        NSLog("leaf-editor: resolve %@", src)
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.4) {
-            done(Bundle.main.url(forResource: "clip", withExtension: "mp4"))
-        }
-    }
-    // Both the toolbar's Link button and the context menu's "Edit Link…" ask the
-    // *host* for the destination — the editor ships no prompt of its own, so a
-    // host that leaves this nil gets no such menu item (the toolbar button falls
-    // back to a field of its own). A plain text field is the demo's answer; a note
-    // app would offer its own document picker here instead. `current` is empty
-    // when the caret is in no link, which is the "make one" case.
-    model.onEditLink = { [weak model] current in
-        promptForLink(seed: current) { destination in
-            model?.insertLink(destination)
-        }
-    }
-    return model
 }
 
 /// Ask for a link destination, seeded with the current one, and call back with
@@ -343,70 +305,3 @@ private func promptForLink(seed: String, done: @escaping (String) -> Void) {
     root.present(alert, animated: true)
     #endif
 }
-
-private let sampleMarkdown = """
-# leaf, natively
-
-A native **SwiftUI** front end driving *leaf-core* over the FFI — the same \
-caret model and AST→glyph map the terminal and desktop apps use, on macOS and iOS.
-
-## What's live
-
-- WYSIWYG rendering with `inline code`
-- **Bold**, *italic*, and ==highlight==
-- Click (or tap) to place the caret, drag to select
-- A [link](https://example.invalid/docs) you edit by clicking into it — \
-⌘-click or right-click to follow it
-
-| Feature | Status |
-| --- | :---: |
-| Tables | editable |
-| Lists | nesting |
-
-> The document is a live, round-trippable AST the whole time you type.
-
-## Math
-
-A formula in a line, $E = mc^2$, is typeset where it sits, and one on lines \
-of its own is set in display style:
-
-$$
-\\int_0^1 x\\,dx = \\frac{1}{2}
-$$
-
-Put the caret on a formula's line and it shows its TeX, ready to edit.
-
-This paragraph is written in semantic line breaks:
-one clause per source line,
-a soft break after each.
-Toggle the ⏎ menu to fold them into flowing prose or preserve them as written.
-
-```rust
-fn main() {
-    println!("rendered by leaf-core");
-}
-```
-
-## Attachments
-
-Images draw inline. Video and audio show a still and a play badge until you
-tap one, and then play right where they sit.
-
-![the leaf banner](banner.png)
-
-<video src="clip.mp4" poster="banner.png" controls></video>
-
-<audio src="take.mp3" controls></audio>
-
-A `data:` picture carries its own bytes, so it needs neither a document
-directory nor the app — the editor decodes it:
-
-![a dot](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAIAAABt+uBvAAAACXBIWXMAAAABAAAAAQBPJcTWAAAA2ElEQVR4nO3QQQ3AIADAQEgwO5+IQM4ULH2yx52CpvPsZ/Bt3Q74O4OCQcGgYFAwKBgUDAoGBYOCQcGgYFAwKBgUDAoGBYOCQcGgYFAwKBgUDAoGBYOCQcGgYFAwKBgUDAoGBYOCQcGgYFAwKBgUDAoGBYOCQcGgYFAwKBgUDAoGBYOCQcGgYFAwKBgUDAoGBYOCQcGgYFAwKBgUDAoGBYOCQcGgYFAwKBgUDAoGBYOCQcGgYFAwKBgUDAoGBYOCQcGgYFAwKBgUDAoGBYOCQcGgYFAwKBgUXjPZA4Om5tBAAAAAAElFTkSuQmCC)
-
-And a source the editor can't read itself is handed to the app, which
-fetches it and answers with a file:
-
-<video src="https://example.invalid/remote.mp4" controls></video>
-
-Try the toolbar, or the keyboard's arrows and ⌘B / ⌘I.
-"""

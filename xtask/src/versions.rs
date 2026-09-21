@@ -1,19 +1,26 @@
 //! `cargo xtask sync-versions` — write the workspace version into the files no
 //! manifest parser will ever find, and the CI check that they agree.
 //!
-//! The one such file today is `packages/leaf-web/package.json`. The release
-//! tooling moves every Cargo manifest and the lockfile, and knows nothing about
-//! an npm manifest — so the package sat at 0.1.2 through three releases of the
-//! crates it wraps. `.config/release.toml` names this task as the bump's
-//! `post_bump` and lists the file among `extra_version_files`, so a release
-//! commit carries it.
+//! Two such files today: `packages/leaf-web/package.json`, and the Mac app's
+//! `MARKETING_VERSION` in `apps/leaf-editor/project.yml`. The release tooling
+//! moves every Cargo manifest and the lockfile, and knows nothing about an npm
+//! manifest or an Xcode setting — so the package sat at 0.1.2 through three
+//! releases of the crates it wraps. `.config/release.toml` names this task as
+//! the bump's `post_bump` and lists the files among `extra_version_files`, so
+//! a release commit carries them.
 
 use crate::util::{read, root};
 use anyhow::{Context, Result, bail};
 
 /// The files that follow the workspace version without a manifest parser
 /// reaching them, as (path, the line prefix that finds the version).
-const FOLLOWERS: &[(&str, &str)] = &[("packages/leaf-web/package.json", "  \"version\": \"")];
+const FOLLOWERS: &[(&str, &str)] = &[
+    ("packages/leaf-web/package.json", "  \"version\": \""),
+    (
+        "apps/leaf-editor/project.yml",
+        "        MARKETING_VERSION: \"",
+    ),
+];
 
 /// The version `[workspace.package]` states.
 fn workspace_version() -> Result<String> {

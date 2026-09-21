@@ -2,7 +2,7 @@
 title: Tasks
 description: Deferred work on leaf, one file each — a commitment with a done state
 created: 2026-09-04
-updated: 2026-09-19
+updated: 2026-09-20
 contents:
 - '[Bold inside code inserts visible delimiters](bold-inside-code-inserts-delimiters.md)'
 - '[A typed dollar mints math in the hidden mode](a-typed-dollar-mints-math-in-the-hidden-mode.md)'
@@ -29,6 +29,8 @@ contents:
 - '[The macOS formatting bar pages by group instead of scrolling](macos-bar-pages-by-group.md)'
 - '[A page break in HTML and AsciiDoc is a row the walker does not draw](page-break-in-html-and-asciidoc.md)'
 - '[Dynamic Type on paper should be a zoom, not a repagination](ios-dynamic-type-on-paper.md)'
+- '[The Mac app runs unsandboxed and unsigned](sandboxed-mac-app.md)'
+- '[An exported PDF leaves every formula blank](pdf-export-lacks-math.md)'
 part_of: '[leaf](/README.md)'
 ---
 # Tasks

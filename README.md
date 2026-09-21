@@ -50,7 +50,7 @@ clipboard, and file I/O.
 | [`leaf-tui`](apps/leaf-tui) | the terminal editor (binary `leaf`) — a thin host around `leaf-ratatui` wiring a terminal, clipboard, and dialogs. The workspace default `cargo run`. |
 | [`leaf`](apps/leaf) | the standalone gpui **application** (binary `leaf-gui`) — a thin host around `leaf-gpui`. A standalone workspace, like `leaf-ios`. |
 | [`leaf-ios`](apps/leaf-ios) | the gpui iOS host (a standalone workspace on the gpui-mobile platform). |
-| [`leaf-editor`](apps/leaf-editor) | the cross-platform (macOS + iOS) AppKit/UIKit/UniFFI demo app, consuming `packages/leaf-swift`. |
+| [`leaf-editor`](apps/leaf-editor) | **Leaf**, the macOS + iOS document app (`Leaf.app`, `org.diaryx.leaf`), consuming `packages/leaf-swift`. Opens, edits and saves `.md`, `.dj` and `.html` through the document system — Finder's Open With, autosave, Versions, the Files app — with an icon, a Settings window, and Export as PDF. |
 | [`leaf-web-demo`](apps/leaf-web-demo) | the web demo page, consuming `packages/leaf-web`. Published from each release tag at **<https://diaryx-org.github.io/leaf/>** by [`pages.yml`](.github/workflows/pages.yml). |
 
 ```sh
@@ -68,8 +68,9 @@ wasm build behind a static server. Both are one word through the task runner in
 [`xtask/`](xtask):
 
 ```sh
-cargo xtask swift        # build + launch apps/leaf-editor on macOS
-cargo xtask swift --ios  # …on its own `iPhone 17 (leaf)` simulator (--device for another)
+cargo xtask swift            # build + launch Leaf on macOS, with a copy of the sample open
+cargo xtask swift notes.md   # …with a document of your own
+cargo xtask swift --ios      # …on its own `iPhone 17 (leaf)` simulator (--device for another)
 cargo xtask web            # build the wasm, serve apps/leaf-web-demo, open it
 cargo xtask web --test     # …serve the leaf-web editor tests instead
 cargo xtask web --headless # …run those tests in Chrome and exit with the outcome

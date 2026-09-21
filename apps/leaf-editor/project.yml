@@ -1,14 +1,15 @@
-name: LeafEditorApp
+name: Leaf
 options:
-  bundleIdPrefix: dev.leaf
+  bundleIdPrefix: org.diaryx
   deploymentTarget:
     iOS: "16.0"
     macOS: "12.0"
   createIntermediateGroups: true
 
-# One cross-platform host for the `LeafUI` editor — the same SwiftUI sources build
-# for macOS (AppKit surface) and iOS (UIKit surface); `LeafUI` already carries
-# both renderers, so `App/` is chrome only. Supersedes the old iOS-only demo.
+# Leaf, the document app — one cross-platform host for the `LeafUI` editor. The
+# same SwiftUI sources build for macOS (AppKit surface) and iOS (UIKit surface);
+# `LeafUI` already carries both renderers, so `App/` is chrome only: the
+# document classes, the menus, the settings, and the display choices.
 #
 # The editor is consumed as a local Swift package: `LeafUI` (the renderer) →
 # `LeafFFI` (the generated binding, built from source) → the C module in
@@ -23,7 +24,7 @@ packages:
     path: ../..
 
 targets:
-  LeafEditorApp:
+  Leaf:
     type: application
     # A single multiplatform target: Xcode builds it for whichever destination is
     # selected (My Mac / an iOS simulator / a device). `LeafUI` compiles the
@@ -31,22 +32,64 @@ targets:
     supportedDestinations: [macOS, iOS]
     sources:
       - path: App
-        excludes: [Media]
-      # The sample document's attachments, copied into the bundle so the demo has
-      # real files to resolve `documentDirectory`-relative sources against.
+        excludes: [Media, Sample.md, Icon.svg, Info.plist]
+      # The sample document and its attachments, copied into the bundle so Help ▸
+      # Open Sample Document has real files to resolve its relative sources
+      # against.
+      - path: App/Sample.md
+        buildPhase: resources
       - path: App/Media
         buildPhase: resources
     dependencies:
       - package: LeafFFI
         product: LeafUI
+    # The document types, which is what puts Leaf in Finder's Open With and the
+    # Files app's share sheet, and lets the Open panel enable a `.md`. xcodegen
+    # writes these into App/Info.plist (git-ignored, regenerated with the
+    # project); the INFOPLIST_KEY_* settings below merge into it at build time.
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Markdown Document
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Alternate
+            LSItemContentTypes: [net.daringfireball.markdown]
+          - CFBundleTypeName: Djot Document
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Owner
+            LSItemContentTypes: [org.djot.djot]
+          - CFBundleTypeName: HTML Document
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Alternate
+            LSItemContentTypes: [public.html]
+        # Djot has no system type. Imported rather than exported: Leaf is not
+        # the format's owner, only a reader that needs `.dj` to mean something.
+        UTImportedTypeDeclarations:
+          - UTTypeIdentifier: org.djot.djot
+            UTTypeDescription: Djot Document
+            UTTypeConformsTo: [public.plain-text]
+            UTTypeTagSpecification:
+              public.filename-extension: [dj, djot]
+        # A document app on iOS opens to the browser; without this key it opens
+        # to a blank scene.
+        UISupportsDocumentBrowser: true
+        LSSupportsOpeningDocumentsInPlace: true
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.leaf.editor.ui
-        PRODUCT_NAME: LeafEditorApp
-        # Let Xcode synthesize Info.plist; per-key values (incl. iOS-only ones)
-        # come from INFOPLIST_KEY_* below, SDK-conditional where they differ.
+        PRODUCT_BUNDLE_IDENTIFIER: org.diaryx.leaf
+        PRODUCT_NAME: Leaf
+        # The workspace version, written here by `cargo xtask sync-versions`
+        # as part of a release bump; the build number is a timestamp so a
+        # rebuild of the same version still reads as a newer bundle.
+        MARKETING_VERSION: "0.3.1"
+        CURRENT_PROJECT_VERSION: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # Per-key values (incl. iOS-only ones) come from INFOPLIST_KEY_* below,
+        # SDK-conditional where they differ, and merge into App/Info.plist.
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: Leaf
+        INFOPLIST_KEY_NSHumanReadableCopyright: "MIT or Apache-2.0"
         "INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphoneos*]": YES
         "INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]": YES
         "INFOPLIST_KEY_UISupportedInterfaceOrientations[sdk=iphoneos*]": "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
@@ -62,8 +105,10 @@ targets:
         CODE_SIGNING_ALLOWED: NO
         CODE_SIGNING_REQUIRED: NO
         CODE_SIGN_IDENTITY: ""
-        # macOS won't launch a sandboxed app that isn't signed; this host is a local
-        # test harness, so run it unsandboxed.
+        # macOS won't launch a sandboxed app that isn't signed, and a sandboxed
+        # document app cannot read the images beside a file it was handed
+        # without asking for the folder — see docs/tasks/sandboxed-mac-app.md.
+        # Until both are answered it runs unsandboxed.
         "ENABLE_APP_SANDBOX[sdk=macosx*]": NO
         # Force-load the Rust staticlib the pre-build script produces. The path is
         # SDK-conditional (mac vs sim vs device); $(LEAF_STATIC_LIB) picks the match.
@@ -110,27 +155,27 @@ targets:
   # drives the double-tap, the handles and the edit menu through the
   # `UITextInput` conformance. Nothing about that is reachable from a unit test,
   # so this target taps the real thing on a simulator. iOS only.
-  LeafEditorUITests:
+  LeafUITests:
     type: bundle.ui-testing
     supportedDestinations: [iOS]
     sources: [UITests]
     dependencies:
-      - target: LeafEditorApp
+      - target: Leaf
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.leaf.editor.ui.uitests
+        PRODUCT_BUNDLE_IDENTIFIER: org.diaryx.leaf.uitests
         CODE_SIGNING_ALLOWED: NO
         CODE_SIGNING_REQUIRED: NO
         CODE_SIGN_IDENTITY: ""
-        TEST_TARGET_NAME: LeafEditorApp
+        TEST_TARGET_NAME: Leaf
 
 schemes:
-  LeafEditorApp:
+  Leaf:
     build:
       targets:
-        LeafEditorApp: all
+        Leaf: all
     run:
       config: Debug
     test:
       config: Debug
-      targets: [LeafEditorUITests]
+      targets: [LeafUITests]
