@@ -384,6 +384,14 @@ for row in frame.rows {
 // place the caret at (frame.caretRow, frame.caretCh)   [UTF-16 offset]
 ```
 
+A renderer that keeps its own copy of the rows can ask for each frame as
+the *change* since the frame before — `doc.setIncrementalFrames(on: true)` —
+after which `frame.rows` are only the rows that changed, with `rowStart`,
+`replaced` and `srcShift` saying where they go; a click lifts no row and a
+keystroke lifts one, however long the document. `LeafUI`'s views do this
+(`DocView.apply` is the splice), and `doc.view()` is a whole frame at any
+time. `DocView`'s docs in `crates/leaf-ffi/src/lib.rs` have the shape.
+
 ### Renderer responsibilities
 
 Core hands you *what* to draw; you own *how*. The map to build on the Swift side:

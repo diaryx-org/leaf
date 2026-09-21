@@ -119,7 +119,9 @@ for a host that decides later.
 - **Host highlights** (`setHighlights`), a **read-only** gate, **drag and
   drop** of text and files, `load()` for the next document, and `goTo` /
   `reveal` for landing a reader somewhere.
-- **Incremental repaint.** A frame reuses every row it did not change.
+- **Incremental repaint.** A frame reuses every row it did not change, and
+  crosses the wasm boundary as only the rows that did (`set_incremental_frames`
+  in `leaf-wasm`; a caret move lifts none, a keystroke lifts one).
 
 The keyboard mirrors leaf-gpui: ⌘B/I/U, ⌘⇧C code, ⌘⇧M highlight, ⌘⌥0–6
 paragraph and headings, ⌘⇧7/8 lists, ⌘[ / ⌘] outdent and indent, ⌘E toggles
