@@ -40,13 +40,17 @@
 //! [`crate::wysiwyg`] threads a `base` down the tree — which is what keeps
 //! `*em*` inside a heading both heading-colored and italic.
 //!
-//! # What it does not do
+//! # The one thing read off a second parser
 //!
 //! **The inner language of a fenced code block.** ` ```rust ` gets
-//! [`Role::Code`] over the whole body; twig knows the fence and the info string,
-//! not Rust. Highlighting *that* is the one job an external highlighter is
-//! actually right for, and it belongs in the frontends that can afford the
-//! dependency — not in a core that also ships to wasm and iOS.
+//! [`Role::Code`] over the whole body from twig, which knows the fence and the
+//! info string but not Rust. The Rust is [`crate::syntax`]'s — the same
+//! grammars and the same eight-way [`crate::style::Token`] the rendered view colours a block
+//! with — laid over the body a token per byte range, so ⌘E leaves a fenced
+//! block's keywords where they were. Without the `syntax` feature the body
+//! stays plain [`Role::Code`], as it does in the rendered view.
+//!
+//! # What it does not do
 //!
 //! **Bytes no node covers.** A link-reference definition and a footnote
 //! definition hang off no parent (see `Editor::definitions`), and twig leaves
@@ -200,6 +204,9 @@ pub fn build(nodes: &[FlatNode], source: &str) -> SourceMap {
             fill_markup(&mut paint, source, &(node.span.start..content.start), delim);
             fill_markup(&mut paint, source, &(content.end..node.span.end), delim);
         }
+        if node.kind == Kind::CodeBlock {
+            fill_tokens(&mut paint, source, node, style);
+        }
 
         let mut child = node.first_child;
         while let Some(cid) = child {
@@ -246,6 +253,78 @@ fn fill_markup(paint: &mut [Style], source: &str, span: &Range<usize>, style: St
         fill(paint, span, style);
     }
 }
+
+/// Lay a fenced block's syntax highlighting over its body: the
+/// [`crate::style::Token`] of
+/// each range [`crate::syntax::highlight`] reports, on top of the [`Role::Code`]
+/// `style` the body already wears — exactly what `wysiwyg::push_code_text`
+/// does to the same block's glyphs, so a keyword is the same colour in both
+/// views.
+///
+/// The grammar is fed the block's *text* (`FlatNode::text`, the lines with
+/// their container prefixes and indentation stripped), not the raw source
+/// lines: a block inside a quote spells every line `> `, and the Rust grammar
+/// would read that as a shift. Each highlighted line is then placed back at
+/// the end of the source line it came from — `content_span` runs 1:1 with the
+/// text's lines, and anchoring at the end lands past whatever prefix was
+/// stripped without knowing how wide it was, as `code_line_offsets` does for
+/// the rendered view. A body whose lines don't line up that way keeps its
+/// plain code colour; so does a fence naming no grammar, and any block at all
+/// without the `syntax` feature.
+///
+/// Every block is re-highlighted on every build, which is once per revision:
+/// the rendered view keeps a block's rows across edits elsewhere and this map
+/// has no such cache, so a keystroke in a document that is mostly code costs
+/// the grammar over all of it. It is the same door `Doc::build_source` leaves
+/// open for the walk itself, and nothing has needed it yet.
+#[cfg(feature = "syntax")]
+fn fill_tokens(paint: &mut [Style], source: &str, node: &FlatNode, style: Style) {
+    let Some(content) = &node.content_span else {
+        return;
+    };
+    let Some(lang) = crate::wysiwyg::code_language(source, node.span.start) else {
+        return;
+    };
+    let text = node.text.as_deref().unwrap_or_default();
+    // The block's terminator and no more — a last line left empty is a second
+    // `\n`, and its own line, as the rendered view also counts it.
+    let lines: Vec<&str> = text
+        .strip_suffix('\n')
+        .unwrap_or(text)
+        .split('\n')
+        .collect();
+    let Some(body) = source.get(content.start..content.end) else {
+        return;
+    };
+    let mut at = content.start;
+    let src_lines: Vec<(usize, &str)> = body
+        .split('\n')
+        .map(|l| {
+            let start = at;
+            at += l.len() + 1;
+            (start, l)
+        })
+        .collect();
+    if src_lines.len() != lines.len() {
+        return;
+    }
+    let Some(tokens) = crate::syntax::highlight(&lang, &lines) else {
+        return;
+    };
+    for ((line, (start, src_line)), spans) in lines.iter().zip(&src_lines).zip(&tokens) {
+        let at = start + src_line.len().saturating_sub(line.len());
+        for (range, token) in spans {
+            fill(
+                paint,
+                &(at + range.start..at + range.end),
+                style.token(Some(*token)),
+            );
+        }
+    }
+}
+
+#[cfg(not(feature = "syntax"))]
+fn fill_tokens(_paint: &mut [Style], _source: &str, _node: &FlatNode, _style: Style) {}
 
 /// Collapse the per-byte buffer into ascending runs, dropping the [`Role::Body`]
 /// stretches — those are the default the map's gaps already mean.
@@ -459,6 +538,66 @@ mod tests {
             Role::Delimiter,
             "and so is the closing one"
         );
+    }
+
+    /// The body of a fence in a known language carries the grammar's tokens,
+    /// beside the code role rather than instead of it — the same pairing the
+    /// rendered view's glyphs make, so a keyword reads the same colour in both.
+    #[cfg(feature = "syntax")]
+    #[test]
+    fn a_fence_in_a_known_language_carries_tokens() {
+        use crate::style::Token;
+        let src = "```rust\nlet x = \"s\"; // c\n```\n";
+        let m = md(src);
+        let at = |needle: &str| src.find(needle).unwrap();
+        assert_eq!(m.style_at(at("let")).role, Role::Code, "still code");
+        assert_eq!(m.style_at(at("let")).token, Some(Token::Keyword));
+        assert_eq!(m.style_at(at("\"s\"")).token, Some(Token::String));
+        assert_eq!(m.style_at(at("// c")).token, Some(Token::Comment));
+        assert_eq!(
+            m.style_at(0).token,
+            None,
+            "the fence itself is markup, not a token"
+        );
+        assert_eq!(m.style_at(0).role, Role::Delimiter);
+    }
+
+    /// The grammar sees the block's *text*, not the source lines: a fence
+    /// indented two spaces has two stripped from every body line, and the
+    /// highlighting has to land past them. The indent carries no token, the
+    /// `let` after it is a keyword.
+    ///
+    /// (A fence inside a quote or a list item strips its container's prefix the
+    /// same way, but has no language in either view yet — `code_language` reads
+    /// the fence at the block's start and finds the `> ` — so it is not the
+    /// case tested here.)
+    #[cfg(feature = "syntax")]
+    #[test]
+    fn an_indented_fence_is_highlighted_past_its_indent() {
+        use crate::style::Token;
+        let src = "  ```rust\n  let x = 1;\n  ```\n";
+        let m = md(src);
+        let at = |needle: &str| src.find(needle).unwrap();
+        assert_eq!(m.style_at(at("let")).token, Some(Token::Keyword));
+        assert_eq!(m.style_at(at("1")).token, Some(Token::Constant));
+        assert_eq!(
+            m.style_at(at("let") - 1).token,
+            None,
+            "the indent carries none"
+        );
+    }
+
+    /// A fence in no known language, or with no language at all, is plain code
+    /// — as the rendered view draws it.
+    #[cfg(feature = "syntax")]
+    #[test]
+    fn a_fence_in_an_unknown_language_is_plain_code() {
+        for src in ["```nosuchlang\nlet x\n```\n", "```\nlet x\n```\n"] {
+            let m = md(src);
+            let at = src.find("let").unwrap();
+            assert_eq!(m.style_at(at).role, Role::Code, "{src:?}");
+            assert_eq!(m.style_at(at).token, None, "{src:?}");
+        }
     }
 
     #[test]
