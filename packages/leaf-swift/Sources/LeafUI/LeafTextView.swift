@@ -298,7 +298,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             guard newValue != mediaStore.baseURL else { return }
             mediaStore.baseURL = newValue
             mediaStore.flush()          // every relative path now points elsewhere
-            render(docView)
+            render(docView, reflow: true)
         }
     }
 
@@ -319,7 +319,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// See `LeafEditorModel.reloadMedia`.
     public func reloadMedia(_ src: String?) {
         mediaStore.forget(src)
-        render(docView)
+        render(docView, reflow: true)
     }
 
     /// A cue shown while the document is empty — "Start writing…" — drawn where
@@ -364,7 +364,8 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     private var pendingMediaActivation: String?
 
     private var docView: DocView
-    private var layoutEngine: EditorLayout
+    /// Readable by the tests, which check that a caret move keeps it.
+    private(set) var layoutEngine: EditorLayout
     /// The view width the current layout was built for. The text column inside it
     /// — where it starts, how wide it wraps — is the theme's to decide (see
     /// `EditorTheme.column(in:)`), and the layout carries the answer.
@@ -459,7 +460,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // the picture used to wait, invisible, for whatever relayout came next.
         mediaStore.onLoaded = { [weak self] src in
             guard let self else { return }
-            self.render(self.docView, keepVerticalGoal: true)
+            self.render(self.docView, keepVerticalGoal: true, reflow: true)
             self.playIfAwaited(src)
         }
         // Seed with the initial caret so the first reflow opens at the top rather
@@ -533,7 +534,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             viewWidth = w
             // Re-wrap the current frame at the new pixel width — the unwrapped map is
             // width-independent, so no round trip to core is needed.
-            render(docView, keepVerticalGoal: true)
+            render(docView, keepVerticalGoal: true, reflow: true)
         }
     }
 
@@ -571,7 +572,14 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     // MARK: applying a frame
 
-    private func render(_ view: DocView, keepVerticalGoal: Bool = false) {
+    /// Install `view` as the frame and lay it out. The layout is the frame
+    /// before's wherever the rows are: kept whole when nothing changed but the
+    /// caret, which is the plain click; rebuilt from the first changed row on,
+    /// with the rows before it as they were and the rows after it re-placed in
+    /// their old shapes, for a keystroke or a drag. `reflow` says the geometry
+    /// under the rows moved — the width, the theme, the page, a picture that
+    /// arrived — and every row is laid out again.
+    private func render(_ view: DocView, keepVerticalGoal: Bool = false, reflow: Bool = false) {
         if !keepVerticalGoal { verticalGoalX = nil }
         // Whatever the peek was pointing at has just moved, changed or gone: an
         // edit reflowed the line under it, or a relayout put the reference
@@ -586,30 +594,41 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // shown of the text, not the text, and neither the find bar, the spell
         // checker nor the host is told of an edit by one.
         let viewFlipped = view.view != docView.view
-        let textChanged = viewFlipped || !view.rows.sameText(as: docView.rows)
+        let change = view.rows.changedRange(from: docView.rows)
+        let textChanged = viewFlipped || !view.rows.sameText(as: docView.rows, over: change)
         if textChanged {
             textFinder.noteClientStringWillChange()
         }
         // The document changed, as distinct from what is shown of it: a toggle
         // between source and rendered rewrites every row and edits nothing.
         let edited = !viewFlipped && textChanged
+        // The frame's blocks that render as a thing rather than as rows — a
+        // table's cells, a formula's TeX — can change under rows that did not.
+        let blocksChanged = view.tables != docView.tables || view.media != docView.media
+            || view.math != docView.math || view.directives != docView.directives
         docView = view
-        layoutEngine = EditorLayout(view, theme: theme, viewWidth: viewWidth, page: pageSetup,
-                                    cache: &shapeCache, media: mediaStore)
+        if reflow {
+            layoutEngine = EditorLayout(view, theme: theme, viewWidth: viewWidth, page: pageSetup,
+                                        cache: &shapeCache, media: mediaStore)
+        } else if change != nil || blocksChanged || layoutEngine.rows.isEmpty {
+            layoutEngine = EditorLayout(view, theme: theme, viewWidth: viewWidth, page: pageSetup,
+                                        cache: &shapeCache, media: mediaStore, previous: layoutEngine)
+        }
+        let relaid = reflow || change != nil || blocksChanged
         // The misspellings still stand where the text did not change, but the
         // layout under them is new: map them onto it again. A text change
         // clears them instead, below, and asks the checker afresh.
-        if !textChanged, !misspelledRanges.isEmpty {
+        if relaid, !textChanged, !misspelledRanges.isEmpty {
             misspelledRects = mapMisspellings()
         }
         // Installed players follow their boxes: the layout just moved every one
         // of them, and any media edited out of the document is gone from the
         // rects, which is what stops its playback. Skipped entirely when nothing
         // is installed, which is the overwhelmingly common case.
-        if !mediaPlayers.isEmpty {
+        if relaid, !mediaPlayers.isEmpty {
             mediaPlayers.reposition(layoutEngine.mediaRects())
         }
-        applyContentSize()
+        if relaid { applyContentSize() }
         needsDisplay = true
         resetBlink()
         // Only follow the caret when it actually moved (typing, motion, click), not
