@@ -356,6 +356,23 @@ public final class LeafEditorModel: ObservableObject {
     /// surface and leaves what it can't reach to the app around it.
     public var onOpenMedia: ((String) -> Void)?
 
+    /// Called after every edit that changed the document's text — a keystroke,
+    /// a paste, a mark toggled, an undo — and not after a caret step, a reflow,
+    /// or a switch between the source and rendered views.
+    ///
+    /// For the host that owns a *file*. `state.dirty` says whether the text
+    /// differs from what was last `markSaved()`, which is the right question for
+    /// a "● modified" in a title bar and the wrong one for a document system:
+    /// `NSDocument` and `UIDocument` autosave on each change they are told of,
+    /// and a flag that stays up from the first keystroke tells them of one. A
+    /// SwiftUI `ReferenceFileDocument` says it changed by registering with the
+    /// scene's undo manager, and this is where to do that.
+    ///
+    /// The editor's own history is twig's, reached through the responder chain's
+    /// undo manager (see `UndoBridge.swift`); nothing here registers with it.
+    /// Called on the main actor, after the surface has repainted.
+    public var onEdit: (() -> Void)?
+
     /// Called when the reader asks to be taken to an attachment itself, with its
     /// raw `src` — the contextual menu's "Show Attachment" (macOS) or the edit
     /// menu's (iOS), and ⌘-click on a picture that has loaded.
@@ -1110,6 +1127,9 @@ struct LeafEditorSurface: NSViewRepresentable {
         textView.onOpenLink = { [weak model] destination in
             model?.onOpenLink?(destination) ?? false
         }
+        textView.onEdit = { [weak model] in
+            DispatchQueue.main.async { model?.onEdit?() }
+        }
         // The two the menus *gate* on, through the bridges that keep "is a host
         // listening?" answerable — see `editBridge`.
         textView.onEditLink = model.editBridge
@@ -1541,6 +1561,9 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
         // where the view is composed) still gets its links.
         textView.onOpenLink = { [weak model] destination in
             model?.onOpenLink?(destination) ?? false
+        }
+        textView.onEdit = { [weak model] in
+            DispatchQueue.main.async { model?.onEdit?() }
         }
         // The two the menus *gate* on, through the bridges that keep "is a host
         // listening?" answerable — see `editBridge`.

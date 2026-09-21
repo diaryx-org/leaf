@@ -197,6 +197,10 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     }
     /// Fired after every repaint so a host can update a toolbar/footer.
     public var onStateChange: ((EditorState) -> Void)?
+    /// Fired after a repaint whose text is not the last one's — an edit, an
+    /// undo, a paste — and not after a caret step, a reflow or a view toggle.
+    /// See `LeafEditorModel.onEdit`.
+    public var onEdit: (() -> Void)?
     /// Host hook for link activation. Called with the link's raw destination
     /// before the view falls back to opening it with the system; return `true`
     /// to claim it. This is how a host resolves destinations only *it* can make
@@ -574,6 +578,9 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         if textChanged {
             textFinder.noteClientStringWillChange()
         }
+        // The document changed, as distinct from what is shown of it: a toggle
+        // between source and rendered rewrites every row and edits nothing.
+        let edited = view.view == docView.view && view.rows != docView.rows
         docView = view
         layoutEngine = EditorLayout(view, theme: theme, viewWidth: viewWidth, page: pageSetup,
                                     cache: &shapeCache, media: mediaStore)
@@ -596,6 +603,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         }
         if textChanged { scheduleSpellCheck() }
         onStateChange?(EditorState(view))
+        if edited { onEdit?() }
     }
 
     // MARK: drawing
