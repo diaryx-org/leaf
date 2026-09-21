@@ -1154,6 +1154,10 @@ public final class LeafTextView: UIView, UITextInput {
         let blocksChanged = frame.tables != docView.tables || frame.media != docView.media
             || frame.math != docView.math || frame.directives != docView.directives
         let viewFlipped = frame.view != docView.view
+        // A flip shapes every row afresh: the cache is keyed by the row's
+        // value, and a line that reads the same in both views — plain prose —
+        // is set in the body face in one and the mono face in the other.
+        if viewFlipped { shapeCache.removeAll(keepingCapacity: true) }
         // The document changed, as distinct from what is shown of it: the flip
         // rewrites every row and edits nothing, and a selection changes what is
         // shown of the text, not the text — see `Row.sameText`. A change that

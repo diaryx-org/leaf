@@ -934,6 +934,12 @@ export class LeafEditor {
     if (!view) return; // an unhandled key returns undefined; nothing to repaint
     view = this._whole(view);
     this._lastView = view;
+    // Which surface this is, for the stylesheet: the source view sets every
+    // row in the mono family at one size, and colours by role the way a
+    // fenced block colours by token. A class on the container rather than on
+    // each row, so the rows the pool reuses across the flip are right as they
+    // stand.
+    this.container.classList.toggle("leaf-source", view.view === "source");
 
     // The previous frame's elements, pooled under the key each was built from.
     // A row whose key comes up again is reused as it stands, moved if it has to
@@ -3180,16 +3186,31 @@ const EDITOR_CSS = `
   border-bottom-left-radius: 6px; border-bottom-right-radius: 6px; margin-bottom: 4px;
 }
 /* Syntax highlighting: a code run's token picks its ink, inside a fenced block
-   only — core puts a token on nothing else, and scoping it keeps that so. A
-   comment is italic on top. */
-.leaf-row.code .leaf-t-punctuation { color: var(--leaf-syn-punctuation); }
-.leaf-row.code .leaf-t-keyword { color: var(--leaf-syn-keyword); }
-.leaf-row.code .leaf-t-entity { color: var(--leaf-syn-entity); }
-.leaf-row.code .leaf-t-support { color: var(--leaf-syn-support); }
-.leaf-row.code .leaf-t-constant { color: var(--leaf-syn-constant); }
-.leaf-row.code .leaf-t-string { color: var(--leaf-syn-string); }
-.leaf-row.code .leaf-t-comment { color: var(--leaf-syn-comment); font-style: italic; }
-.leaf-row.code .leaf-t-invalid { color: var(--leaf-syn-invalid); }
+   — or anywhere on the source surface, where a fence's body is the same code
+   with its fences showing. Core puts a token on nothing else, and scoping it
+   keeps that so. A comment is italic on top. */
+:is(.leaf-row.code, .leaf-source) .leaf-t-punctuation { color: var(--leaf-syn-punctuation); }
+:is(.leaf-row.code, .leaf-source) .leaf-t-keyword { color: var(--leaf-syn-keyword); }
+:is(.leaf-row.code, .leaf-source) .leaf-t-entity { color: var(--leaf-syn-entity); }
+:is(.leaf-row.code, .leaf-source) .leaf-t-support { color: var(--leaf-syn-support); }
+:is(.leaf-row.code, .leaf-source) .leaf-t-constant { color: var(--leaf-syn-constant); }
+:is(.leaf-row.code, .leaf-source) .leaf-t-string { color: var(--leaf-syn-string); }
+:is(.leaf-row.code, .leaf-source) .leaf-t-comment { color: var(--leaf-syn-comment); font-style: italic; }
+:is(.leaf-row.code, .leaf-source) .leaf-t-invalid { color: var(--leaf-syn-invalid); }
+
+/* The source view: the document as written, set in the mono family at one
+   size so its columns line up — a code editor's surface, with the markup
+   coloured by what it is. A heading's text is bold, as its row is in the
+   rendered view; nothing is sized, because a source line is a line. The
+   inline-code pill comes off: a fence's body arrives as a code run per line
+   here, and a pill per line is a ladder, not a block. The ink stays. */
+.leaf-editor.leaf-source { font-family: var(--leaf-mono); }
+.leaf-source :is(.leaf-r-h1, .leaf-r-h2, .leaf-r-h3, .leaf-r-h4, .leaf-r-h5, .leaf-r-h6) {
+  font-weight: 700;
+}
+.leaf-source .leaf-row:not(.code) .leaf-r-code {
+  font-size: inherit; background: none; border-radius: 0; padding: 0;
+}
 .leaf-code-lang {
   position: absolute; right: 6px; top: 1px;
   font-size: 11px; color: var(--leaf-muted); font-family: var(--leaf-font);

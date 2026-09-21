@@ -640,6 +640,56 @@ await test("a coloured highlight keeps the mark class and swaps only the wash", 
   return ed;
 });
 
+// ── the source view ───────────────────────────────────────────────────────
+
+await test("the source view is monospaced and coloured by what the markup is", () => {
+  const ed = editor("# Title\n\nsee [here](https://x.dev) `c`\n\n```rust\nlet x = 1;\n```\n");
+  const bodyFamily = getComputedStyle(ed.contentEl).fontFamily;
+  ed.toggleView();
+  eq(ed.viewName(), "source");
+  assert(ed.container.classList.contains("leaf-source"), "the surface is not classed as source");
+  const monoFamily = getComputedStyle(ed.contentEl).fontFamily;
+  assert(monoFamily !== bodyFamily, "the source view kept the body face");
+  assert(/mono|Menlo|Consolas/i.test(monoFamily), `not a mono family: ${monoFamily}`);
+
+  // The markup arrives as delimiter runs, the heading text as a heading run
+  // — bold, as its row is in the rendered view — and neither is resized.
+  const rows = ed.rowEls;
+  const hash = rows[0].querySelector(".leaf-r-delimiter");
+  assert(hash && hash.textContent === "# ", "the heading's `# ` is not a delimiter");
+  const title = rows[0].querySelector(".leaf-r-h1");
+  assert(title && title.textContent === "Title", "the heading's text is not a heading");
+  eq(getComputedStyle(title).fontWeight, "700", "the heading text is not bold");
+  eq(getComputedStyle(title).fontSize, getComputedStyle(hash).fontSize, "the heading was resized");
+  assert(getComputedStyle(hash).color !== getComputedStyle(title).color, "the markup is not dimmed");
+
+  // A link's label is a link, its destination is markup.
+  const link = rows[2].querySelector(".leaf-r-link");
+  assert(link && link.textContent === "here", "the link label is not a link");
+  const dest = [...rows[2].querySelectorAll(".leaf-r-delimiter")].map((e) => e.textContent);
+  eq(dest, ["[", "](https://x.dev)", "`", "`"], "the link's and code's markup");
+
+  // Inline code keeps its ink and loses its pill; a fence's body is
+  // highlighted by token, as it is in the rendered view.
+  const code = rows[2].querySelector(".leaf-r-code");
+  assert(code && code.textContent === "c", "the inline code is not a code run");
+  eq(getComputedStyle(code).backgroundColor, "rgba(0, 0, 0, 0)", "the pill stayed on in the source view");
+  const keyword = rows[5].querySelector(".leaf-t-keyword");
+  assert(keyword && keyword.textContent === "let", "the fence's `let` is not a keyword");
+  assert(
+    getComputedStyle(keyword).color !== getComputedStyle(code).color,
+    "the keyword draws in the plain code ink"
+  );
+  assert(rows[4].querySelector(".leaf-r-delimiter"), "the fence line is not markup");
+
+  // And back: the class comes off with the view.
+  ed.toggleView();
+  eq(ed.viewName(), "wysiwyg");
+  assert(!ed.container.classList.contains("leaf-source"), "the source class outlived the view");
+  eq(getComputedStyle(ed.contentEl).fontFamily, bodyFamily, "the body face did not come back");
+  return ed;
+});
+
 // ── syntax highlighting ───────────────────────────────────────────────────
 
 await test("a fenced block in a known language is classed by token", () => {
