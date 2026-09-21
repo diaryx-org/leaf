@@ -577,8 +577,11 @@ final class EditorLayoutTests: XCTestCase {
         editor.layoutSubtreeIfNeeded()
         let before = editor.layoutEngine
         XCTAssertGreaterThan(before.rows.count, 1)
+        var relaid = 0
+        editor.onLayoutChange = { relaid += 1 }
         // The plain click: nothing changed but the caret.
         editor.command { $0.clickCh(row: 2, ch: 2, extend: false) }
+        XCTAssertEqual(relaid, 0, "a caret move lays nothing out again, and puts no recount on the clock")
         let clicked = editor.layoutEngine
         for (a, b) in zip(before.rows, clicked.rows) {
             XCTAssertTrue(a.attributed === b.attributed, "a caret move keeps every row's shape")
@@ -591,6 +594,9 @@ final class EditorLayoutTests: XCTestCase {
         XCTAssertEqual(dragged.rows[0].top, before.rows[0].top)
         XCTAssertFalse(dragged.rows[4].attributed === before.rows[4].attributed, "a selected row is shaped with its selection")
         XCTAssertEqual(dragged.contentHeight, before.contentHeight, "nothing moved")
+        XCTAssertEqual(relaid, 1, "a selection is a change to the rows, and to the selection's count")
+        editor.command { $0.insert(text: "x") }
+        XCTAssertEqual(relaid, 2, "and so is an edit")
     }
     #endif
 

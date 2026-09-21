@@ -197,6 +197,12 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     }
     /// Fired after every repaint so a host can update a toolbar/footer.
     public var onStateChange: ((EditorState) -> Void)?
+    /// Fired after a repaint that laid the frame out again — its rows changed,
+    /// by an edit or a selection, or the geometry under them did, by a width
+    /// or a page — and not after one that only moved the caret. What a count
+    /// hangs on: a caret move changed no count, and a recount of a long
+    /// document is not free. See `LeafEditorModel.scheduleCounts`.
+    public var onLayoutChange: (() -> Void)?
     /// Fired after a repaint whose text is not the last one's — an edit, an
     /// undo, a paste — and not after a caret step, a reflow or a view toggle.
     /// See `LeafEditorModel.onEdit`.
@@ -640,6 +646,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         }
         if textChanged { scheduleSpellCheck() }
         onStateChange?(EditorState(view))
+        if relaid { onLayoutChange?() }
         if edited { onEdit?() }
     }
 
