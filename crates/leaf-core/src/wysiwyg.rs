@@ -23,6 +23,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ops::Range;
+use std::sync::OnceLock;
 
 use twig::{Alignment, ContainerOrigin, DirectiveForm, Editor, FlatNode, Kind, QueryMatch};
 use unicode_segmentation::UnicodeSegmentation;
@@ -580,6 +581,33 @@ pub struct VisualMap {
     /// [`FaceId`] is derived from the name rather than being an index, which is
     /// what makes those three agree glyph for glyph; see the type's note.
     faces: FaceTable,
+    /// The visible text tabulated over the stops — see [`Spelling`]. Derived
+    /// on the first lookup that asks for it rather than by the build paths,
+    /// since a map that is only ever drawn never needs it, and a splice
+    /// would otherwise have to patch it the way it patches the stops.
+    spelling: OnceLock<Spelling>,
+}
+
+/// The visible text ([`VisualMap::visible_text`]) as a table over the stops:
+/// for stop `i`, the character the text spells it with — `None` for the
+/// `'\n'` of a stop that draws no glyph — and the UTF-16 length of the text
+/// before it. A UTF-16 index and a stop then find each other by binary
+/// search, where they used to find each other by walking every character of
+/// the document from the top: a frontend converts an `NSRange` end per
+/// selection change and per misspelled word, and each conversion was a whole
+/// document's work.
+///
+/// Built once per map and never maintained. The stops are private and fixed
+/// for the map's life; the rows only lend the character each stop draws, and
+/// a frontend that reshapes the rows after the build (the terminal inserts
+/// blank filler rows) neither changes those characters nor asks this.
+#[derive(Clone, Default)]
+struct Spelling {
+    /// Parallel to [`VisualMap::stops`].
+    chars: Vec<Option<char>>,
+    /// One longer than `chars`: `utf16[i]` is the UTF-16 length of the text
+    /// before stop `i`, and the last entry the length of the whole text.
+    utf16: Vec<usize>,
 }
 
 impl VisualMap {
@@ -626,40 +654,75 @@ impl VisualMap {
     /// never sent, and resolving upstream into it is what pinned Down at the
     /// first wrap of a paragraph: it aimed at the row below's column 0, landed
     /// on the offset it already had, and read that back as the row above's end.
+    ///
+    /// The walk is over the rows, not their text: a row before `off` is
+    /// dismissed by looking at where it opens and where it reaches — its first
+    /// stop and its last — rather than at every glyph between, so the cost of
+    /// a lookup mid-document is a few hundred rows' worth of two glyphs each,
+    /// and the one row that holds the answer is the only one read through.
+    /// It used to read every row through, and worse: the row's end candidate
+    /// was built eagerly, and building it measured the row's width, which
+    /// segments the row's whole text into grapheme clusters — so every row
+    /// before `off` paid a full cluster walk to learn it held nothing, and a
+    /// document of long paragraphs paid milliseconds per caret placement.
+    ///
+    /// Not a binary search, though the rows' opening stops ascend. A table's
+    /// wrapped cells put several rows before the one an offset opens on that
+    /// can still hold it, and `end_src` does not ascend across those rows at
+    /// all, so a search would need a prefix table over the rows — and
+    /// [`rows`](Self::rows) is public, reshaped by a frontend after the build
+    /// (the terminal inserts filler rows under a heading), which is exactly
+    /// what a table over it could not survive. The walk needs no table.
     pub fn pos_of_offset(&self, off: usize) -> (usize, usize) {
-        let mut best: Option<(usize, usize, usize)> = None; // (src, row, col)
+        // (src, row, the glyph — or `None` for the caret past the row's end)
+        let mut best: Option<(usize, usize, Option<usize>)> = None;
         for (r, row) in self.rows.iter().enumerate() {
             if row.decoration {
                 continue;
-            }
-            // Offsets ascend *within* a row, so its first stop at or past `off`
-            // is the best this row has to offer.
-            let cand = row
-                .glyphs
-                .iter()
-                .enumerate()
-                .find(|(_, g)| g.stop && g.src >= off)
-                .map(|(i, g)| (g.src, r, row.col_of_glyph(i)))
-                .or_else(|| (row.end_src >= off).then_some((row.end_src, r, row.width())));
-            if let Some(c) = cand {
-                // `<=`, so a tie goes to the later row: the only offset two rows
-                // both hold is a wrap boundary, and it belongs to the row below.
-                if best.is_none_or(|b| c.0 <= b.0) {
-                    best = Some(c);
-                }
             }
             // A row's *first* stop never decreases from one row to the next —
             // true even across a table's wrapped cells, since a cell's lines run
             // downward. So once a row opens past the best found so far, no later
             // row can beat it and the scan stays proportional to `off`.
-            if let (Some(b), Some(first)) = (best, row.glyphs.iter().find(|g| g.stop))
-                && first.src > b.0
-            {
+            let open = row
+                .glyphs
+                .iter()
+                .find(|g| g.stop)
+                .map_or(row.end_src, |g| g.src);
+            if best.is_some_and(|b| open > b.0) {
                 break;
+            }
+            // Offsets ascend *within* a row, so its last stop or its end is as
+            // far as it reaches: a row that reaches short of `off` has nothing
+            // to offer, and says so from its two ends.
+            let reach = row
+                .glyphs
+                .iter()
+                .rev()
+                .find(|g| g.stop)
+                .map_or(row.end_src, |g| g.src.max(row.end_src));
+            if reach < off {
+                continue;
+            }
+            // And so its first stop at or past `off` is the best it has.
+            let cand = row
+                .glyphs
+                .iter()
+                .enumerate()
+                .find(|(_, g)| g.stop && g.src >= off)
+                .map(|(i, g)| (g.src, r, Some(i)))
+                .or_else(|| (row.end_src >= off).then_some((row.end_src, r, None)));
+            // `<=`, so a tie goes to the later row: the only offset two rows
+            // both hold is a wrap boundary, and it belongs to the row below.
+            if let Some(c) = cand
+                && best.is_none_or(|b| c.0 <= b.0)
+            {
+                best = Some(c);
             }
         }
         match best {
-            Some((_, r, c)) => (r, c),
+            Some((_, r, Some(i))) => (r, self.rows[r].col_of_glyph(i)),
+            Some((_, r, None)) => (r, self.rows[r].width()),
             None => {
                 let r = self.last_stop_row();
                 (r, self.row_width(r))
@@ -1084,10 +1147,9 @@ impl VisualMap {
     /// string `visible_text(0, end)` returns, which is exactly what the system
     /// will index into.
     pub fn visible_utf16_len(&self, from: usize, to: usize) -> usize {
-        self.visible_items(from, to)
-            .into_iter()
-            .map(|(_, ch)| ch.map_or(1, char::len_utf16))
-            .sum()
+        let (lo, hi) = self.visible_span(from, to);
+        let utf16 = &self.spelling().utf16;
+        utf16[hi] - utf16[lo]
     }
 
     /// The inverse of `visible_utf16_len(0, ·)`: the source offset of the
@@ -1099,15 +1161,13 @@ impl VisualMap {
     /// is spelled with resolves to that end stop — a caret home, so a caller
     /// placing a caret there needs no snap.
     pub fn offset_at_visible_utf16(&self, to: usize, index: usize) -> Option<usize> {
-        let mut seen = 0usize;
-        for (src, ch) in self.visible_items(0, to) {
-            let len = ch.map_or(1, char::len_utf16);
-            if index < seen + len {
-                return Some(src);
-            }
-            seen += len;
-        }
-        None
+        let (lo, hi) = self.visible_span(0, to);
+        let utf16 = &self.spelling().utf16;
+        // The stop whose text ends past the index is the one it lands on; a
+        // stop whose text ends at or before it lies wholly before it.
+        let target = utf16[lo] + index;
+        let i = lo + utf16[lo + 1..=hi].partition_point(|&end| end <= target);
+        (i < hi).then(|| self.stops[i])
     }
 
     /// The items `visible_text` spells, in order — one per caret stop in
@@ -1116,59 +1176,83 @@ impl VisualMap {
     /// text spells `'\n'`. See [`visible_text`](Self::visible_text) for which
     /// stops those are and why.
     fn visible_items(&self, from: usize, to: usize) -> Vec<(usize, Option<char>)> {
+        let (lo, hi) = self.visible_span(from, to);
+        self.stops[lo..hi]
+            .iter()
+            .copied()
+            .zip(self.spelling().chars[lo..hi].iter().copied())
+            .collect()
+    }
+
+    /// The stops `visible_text(from, to)` spells, as a range into the stop
+    /// table: from the glyph stop `from` snaps to, up to but excluding the
+    /// first stop at or past `to`.
+    fn visible_span(&self, from: usize, to: usize) -> (usize, usize) {
         let from = self.snap_to_glyph_stop(from);
         let lo = self.stops.partition_point(|&s| s < from);
         // The document's last stop is the end of the text, not a character in
         // it: `distance_offset` has no hop past it to pair one with.
         let last = self.stops.len().saturating_sub(1);
         let hi = self.stops.partition_point(|&s| s < to).min(last).max(lo);
-        let stops = &self.stops[lo..hi];
+        (lo, hi)
+    }
 
-        // The glyph each stop draws — the first at its offset in row order,
-        // since a media row's label glyphs all share the media's offset and a
-        // wrapped line's end is the next line's first glyph. Sorted because
-        // row order only follows source order outside a table's wrapped
-        // cells (see `pos_of_offset`); the sort is stable, so "first" holds.
-        let mut glyphs: Vec<(usize, char)> = self
-            .rows
-            .iter()
-            .filter(|r| !r.decoration)
-            .flat_map(|r| r.glyphs.iter())
-            .filter(|g| g.stop && g.src >= from && g.src < to)
-            .map(|g| (g.src, g.ch))
-            .collect();
-        glyphs.sort_by_key(|&(src, _)| src);
-        glyphs.dedup_by_key(|&mut (src, _)| src);
-
-        // A cell's end stop has a glyph (the gutter space) but is spelled as
-        // a line end; the structural grid is where the cells' offsets live.
-        let mut cell_ends: Vec<usize> = self
-            .tables
-            .iter()
-            .flat_map(|t| t.grid.iter())
-            .flat_map(|r| r.cells.iter())
-            .map(|c| c.end)
-            .filter(|&e| e >= from && e < to)
-            .collect();
-        cell_ends.sort_unstable();
-        cell_ends.dedup();
-
-        let mut gi = 0;
-        stops
-            .iter()
-            .map(|&s| {
-                while gi < glyphs.len() && glyphs[gi].0 < s {
-                    gi += 1;
-                }
-                let ch = match glyphs.get(gi) {
-                    Some(&(src, ch)) if src == s && cell_ends.binary_search(&s).is_err() => {
-                        Some(ch)
+    /// The [`Spelling`] of this map's stops, tabulated on first use.
+    fn spelling(&self) -> &Spelling {
+        self.spelling.get_or_init(|| {
+            // The glyph each stop draws — the first at its offset in row
+            // order, since a media row's label glyphs all share the media's
+            // offset and a wrapped line's end is the next line's first glyph.
+            // Row order only follows source order outside a table's wrapped
+            // cells (see `pos_of_offset`), which is why each glyph looks its
+            // stop up rather than the two being walked side by side.
+            //
+            // Within a row offsets ascend, so a cursor into the stop table
+            // walks forward with the row's glyphs and the whole pass is a
+            // read of the glyphs plus one search per row — a keystroke's
+            // first conversion pays for this, so it is kept to that. The
+            // search is repeated only if a row's offsets step back, which
+            // none does; the walk is correct either way.
+            let stops = &self.stops;
+            let mut chars: Vec<Option<char>> = vec![None; stops.len()];
+            for row in self.rows.iter().filter(|r| !r.decoration) {
+                let mut i = 0;
+                let mut prev = usize::MAX;
+                for g in row.glyphs.iter().filter(|g| g.stop) {
+                    if prev == usize::MAX || g.src < prev {
+                        i = stops.partition_point(|&s| s < g.src);
+                    } else {
+                        while i < stops.len() && stops[i] < g.src {
+                            i += 1;
+                        }
                     }
-                    _ => None,
-                };
-                (s, ch)
-            })
-            .collect()
+                    prev = g.src;
+                    if i < stops.len() && stops[i] == g.src && chars[i].is_none() {
+                        chars[i] = Some(g.ch);
+                    }
+                }
+            }
+            // A cell's end stop has a glyph (the gutter space) but is spelled
+            // as a line end; the structural grid is where the cells' offsets
+            // live.
+            for cell in self
+                .tables
+                .iter()
+                .flat_map(|t| t.grid.iter())
+                .flat_map(|r| r.cells.iter())
+            {
+                if let Ok(i) = self.stops.binary_search(&cell.end) {
+                    chars[i] = None;
+                }
+            }
+            let mut utf16 = Vec::with_capacity(chars.len() + 1);
+            utf16.push(0);
+            for ch in &chars {
+                let before = *utf16.last().unwrap_or(&0);
+                utf16.push(before + ch.map_or(1, char::len_utf16));
+            }
+            Spelling { chars, utf16 }
+        })
     }
 }
 
@@ -1572,6 +1656,7 @@ pub fn build(
         directives,
         math,
         faces: b.faces.into_inner(),
+        spelling: OnceLock::new(),
     }
 }
 
@@ -1846,6 +1931,7 @@ pub fn build_cached(
         directives,
         math,
         faces,
+        spelling: OnceLock::new(),
     }
 }
 
@@ -2097,6 +2183,7 @@ pub fn build_spliced(
         directives,
         math,
         faces,
+        spelling: OnceLock::new(),
     })
 }
 
@@ -6555,6 +6642,162 @@ mod tests {
         let total = m.visible_utf16_len(0, end);
         assert_eq!(total, text.encode_utf16().count());
         assert_eq!(m.offset_at_visible_utf16(end, total), None);
+    }
+
+    /// The documents the lookups are checked against their reference scans
+    /// on: every shape that puts rows out of source order or a stop out of
+    /// step with a glyph. A wrapped table, whose cells' second lines sit
+    /// below the next column's first; a wide grapheme and an emoji outside
+    /// the BMP; hidden delimiters and a link's hidden destination; a list
+    /// with synthetic markers; a code block; an image row whose label glyphs
+    /// all share one offset; an empty paragraph, a heading, and a wrapped
+    /// paragraph — at a narrow width so the table and the prose both wrap,
+    /// and unwrapped, which is how a GUI builds it.
+    fn lookup_maps() -> Vec<(String, VisualMap)> {
+        let table = "| left cell that wraps | right |\n|---|---|\n| a longer cell than the column can hold | b |\n| `k` | 你好 |\n\n";
+        let srcs = [
+            "hello world\n",
+            "a **b\u{1F600}** c\n\nd\n",
+            "- one *two*\n- three\n\n\n# Title\n\nend [link](https://e.org/x) tail\n",
+            &format!("{table}```\nx\ny\n```\n\n![alt](a.png)\n\ntail 你好 **bold** here\n"),
+            "one two three four five six seven eight nine ten eleven twelve thirteen\n\n| a | b |\n|-|-|\n| c d e f g h | i |\n",
+        ];
+        let mut out = Vec::new();
+        for src in srcs {
+            for wrap in [Some(14), None] {
+                out.push((format!("{src:?} at {wrap:?}"), map_at(src, wrap)));
+            }
+        }
+        out
+    }
+
+    /// `pos_of_offset` as it was written before the walk learnt to dismiss a
+    /// row from its ends: every row read through, the nearest stop kept.
+    fn pos_of_offset_by_scan(m: &VisualMap, off: usize) -> (usize, usize) {
+        let mut best: Option<(usize, usize, usize)> = None;
+        for (r, row) in m.rows.iter().enumerate() {
+            if row.decoration {
+                continue;
+            }
+            let cand = row
+                .glyphs
+                .iter()
+                .enumerate()
+                .find(|(_, g)| g.stop && g.src >= off)
+                .map(|(i, g)| (g.src, r, row.col_of_glyph(i)))
+                .or_else(|| (row.end_src >= off).then_some((row.end_src, r, row.width())));
+            if let Some(c) = cand
+                && best.is_none_or(|b| c.0 <= b.0)
+            {
+                best = Some(c);
+            }
+        }
+        match best {
+            Some((_, r, c)) => (r, c),
+            None => {
+                let r = m.last_stop_row();
+                (r, m.row_width(r))
+            }
+        }
+    }
+
+    /// `visible_items` as it was written before the spelling was tabulated:
+    /// every stop glyph in the range gathered, sorted, and paired up.
+    fn visible_items_by_scan(m: &VisualMap, from: usize, to: usize) -> Vec<(usize, Option<char>)> {
+        let (lo, hi) = m.visible_span(from, to);
+        let from = m.snap_to_glyph_stop(from);
+        let mut glyphs: Vec<(usize, char)> = m
+            .rows
+            .iter()
+            .filter(|r| !r.decoration)
+            .flat_map(|r| r.glyphs.iter())
+            .filter(|g| g.stop && g.src >= from && g.src < to)
+            .map(|g| (g.src, g.ch))
+            .collect();
+        glyphs.sort_by_key(|&(src, _)| src);
+        glyphs.dedup_by_key(|&mut (src, _)| src);
+        let cell_ends: Vec<usize> = m
+            .tables
+            .iter()
+            .flat_map(|t| t.grid.iter())
+            .flat_map(|r| r.cells.iter())
+            .map(|c| c.end)
+            .collect();
+        m.stops[lo..hi]
+            .iter()
+            .map(|&s| {
+                let ch = glyphs
+                    .iter()
+                    .find(|&&(src, _)| src == s)
+                    .filter(|_| !cell_ends.contains(&s))
+                    .map(|&(_, ch)| ch);
+                (s, ch)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn pos_of_offset_agrees_with_reading_every_row_through() {
+        for (name, m) in lookup_maps() {
+            let len = m.rows.iter().map(|r| r.end_src).max().unwrap_or(0) + 2;
+            for off in 0..=len {
+                assert_eq!(
+                    m.pos_of_offset(off),
+                    pos_of_offset_by_scan(&m, off),
+                    "offset {off} of {name}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_tabulated_spelling_agrees_with_gathering_the_glyphs() {
+        for (name, m) in lookup_maps() {
+            let end = m.stops.last().copied().unwrap_or(0);
+            // Whole text, and every window a frontend might ask for.
+            let mut spans = vec![(0, end)];
+            for &a in m.stops.iter().step_by(3) {
+                spans.push((a, end));
+                spans.push((0, a));
+                spans.push((a, (a + 5).min(end)));
+            }
+            for (from, to) in spans {
+                let items = visible_items_by_scan(&m, from, to);
+                assert_eq!(
+                    m.visible_items(from, to),
+                    items,
+                    "items {from}..{to} of {name}"
+                );
+                let utf16: usize = items
+                    .iter()
+                    .map(|(_, ch)| ch.map_or(1, char::len_utf16))
+                    .sum();
+                assert_eq!(
+                    m.visible_utf16_len(from, to),
+                    utf16,
+                    "utf16 {from}..{to} of {name}"
+                );
+            }
+            // And back: every UTF-16 index in the text resolves to the stop
+            // that spells it, as the scan would have found it.
+            let items = visible_items_by_scan(&m, 0, end);
+            let mut seen = 0;
+            for (src, ch) in &items {
+                for u in seen..seen + ch.map_or(1, char::len_utf16) {
+                    assert_eq!(
+                        m.offset_at_visible_utf16(end, u),
+                        Some(*src),
+                        "index {u} of {name}"
+                    );
+                }
+                seen += ch.map_or(1, char::len_utf16);
+            }
+            assert_eq!(
+                m.offset_at_visible_utf16(end, seen),
+                None,
+                "past the end of {name}"
+            );
+        }
     }
 
     #[test]

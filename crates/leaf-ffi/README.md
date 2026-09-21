@@ -30,6 +30,7 @@ generated 14,000-word document or one you name, and prints a table:
 cargo run -p leaf-ffi --example bench              # dev profile
 cargo run -p leaf-ffi --example bench --release    # what a shipping app sees
 cargo run -p leaf-ffi --example bench -- path.md   # your own document
+cargo run -p leaf-ffi --example bench -- --dump path.md   # write the generated one out
 ```
 
 Run it in both profiles: the dev build is what the app is driven with while
