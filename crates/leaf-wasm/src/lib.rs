@@ -63,7 +63,7 @@ use wasm_bindgen::prelude::*;
 
 /// One maximal span of same-styled glyphs on a visual row — the unit the JS
 /// renderer turns into a single styled DOM node.
-#[derive(Serialize, Tsify)]
+#[derive(Clone, Debug, PartialEq, Serialize, Tsify)]
 pub struct Run {
     /// The run's text, glyphs concatenated in column order.
     text: String,
@@ -329,7 +329,7 @@ pub struct DirectiveView {
 /// as renderer class ids (`paragraph`, `heading`, `list`, `list-item`, `quote`,
 /// `code`, `table`, `media`, `directive`, `rule`, `footnote`, `other`). The pair
 /// a frontend multiplies by its own spacing. See [`leaf_core::Boundary`].
-#[derive(Serialize, Tsify)]
+#[derive(Clone, Debug, PartialEq, Serialize, Tsify)]
 pub struct BoundaryView {
     above: String,
     below: String,
@@ -337,7 +337,8 @@ pub struct BoundaryView {
 
 /// One visual line: its styled runs plus the row-level flags a frontend draws
 /// chrome from.
-#[derive(Serialize, Tsify)]
+#[derive(Clone, Debug, PartialEq, Serialize, Tsify)]
+#[tsify(into_wasm_abi)]
 pub struct Row {
     runs: Vec<Run>,
     /// Drawn but holds no caret (a table rule, a block-gap blank line): the
@@ -711,19 +712,70 @@ pub struct MediaHeight {
     rows: usize,
 }
 
-/// A whole rendered frame: the rows to paint, where the caret sits, and the
+/// A rendered frame: the rows to paint, where the caret sits, and the
 /// toolbar state — everything the JS side needs for one repaint, in one object.
 ///
 /// `into_wasm_abi` makes this the *return type* of every view-producing method:
 /// the generated `.d.ts` types those methods as `DocView` rather than `any`, so
 /// the JS renderer sees the full shape.
+///
+/// ## Whole or a change
+///
+/// By default every frame is whole: `rows` is every row of the document, and
+/// the frame before it is forgotten. After [`LeafDoc::set_incremental_frames`]
+/// the same methods answer with a frame whose `rows` are only the rows that
+/// changed since the frame before — a caret move lifts none, a keystroke lifts
+/// the row it landed on — and the five fields after `rows` say where they go.
+/// Which kind a frame is, it says itself: `basis` is `0` on a whole frame and
+/// the frame before's number on a change. A caller applies a change to the
+/// frame it holds (see `rows`), and one that holds a frame other than `basis`
+/// has lost step and asks [`LeafDoc::view`] for a whole one, which every
+/// change after that is against. The rest of the frame — the caret, the
+/// selection, the toolbar state, `tables`, `directives`, `media` and `math` —
+/// is complete on every frame of either kind.
 #[derive(Serialize, Tsify)]
 #[tsify(into_wasm_abi)]
 pub struct DocView {
+    /// The rows to paint: every row of the document on a whole frame, and on
+    /// a change (`basis != 0`) the rows that replace `replaced` of the frame
+    /// before's from `row_start`, after which the rows that follow are the
+    /// frame before's with `src_shift` added to every `Run::src` they carry.
+    /// So a frame is applied as: splice `rows` over `row_start..row_start +
+    /// replaced`, then move the offsets of the rows after the splice. An
+    /// empty `rows` with `replaced == 0` is a frame that changed no row.
     rows: Vec<Row>,
+    /// This frame's number: one more than the frame before's, from `1` at
+    /// the first. What a change names as its `basis`.
+    frame: u32,
+    /// The number of the frame these `rows` are a change against, or `0` when
+    /// they are the whole document. A change is applied only to a copy of
+    /// exactly that frame; see the type's docs.
+    basis: u32,
+    /// Where `rows` begin, as an index into the document's rows — the
+    /// frame before's and, since a change never moves the rows above it, this
+    /// one's. `0` on a whole frame.
+    row_start: usize,
+    /// How many of the frame before's rows, from `row_start`, `rows` replace.
+    /// `0` on a whole frame.
+    replaced: usize,
+    /// How many rows the document has once this frame is applied — what
+    /// `rows.length` is on a whole frame, so a caller sizing a scroll view
+    /// reads this on either kind.
+    row_count: usize,
+    /// The byte offset every `Run::src` in a row *after* the replaced span
+    /// moved by — an edit shifts the source of everything below it, and
+    /// those rows are otherwise the frame before's, so they are kept and
+    /// moved rather than lifted. `0` on a whole frame, and on a change that
+    /// moved nothing. A 32-bit number rather than the 64-bit one serde would
+    /// hand JS as a `BigInt`.
+    src_shift: i32,
     /// Tables described structurally, for the proportional renderer that draws
     /// its own grid instead of painting the box-glyph rows. Empty in the source
-    /// view. Each names the `rows` span its picture occupies, to be skipped.
+    /// view. Each names the span of the *document's* rows its picture
+    /// occupies, to be skipped — an index into a whole frame's `rows`, and
+    /// into the rows a change has been applied to. These lists (and
+    /// `directives`, `media`, `math`) are small and ride every frame
+    /// complete, so no frame has to say whether they changed.
     tables: Vec<TableView>,
     /// Leaf directives (`::name{…}`) described structurally, for a renderer that
     /// paints what the host app's vocabulary makes of them instead of the `⧉`
@@ -813,6 +865,84 @@ pub struct DocView {
     /// that mirrors the native selection into core without repainting would
     /// keep showing the picture the caret is now standing in the source of.
     map_key: String,
+}
+
+/// Whether `b` is `a` with every `Run::src` moved by `shift` — the row
+/// equality [`leaf_core::row_delta`] matches the frame before's suffix on. Every
+/// field is named so that a field added to [`Row`] or [`Run`] is a compile
+/// error here rather than a row the delta silently ignores.
+fn same_row_shifted(a: &Row, b: &Row, shift: i64) -> bool {
+    let Row {
+        runs,
+        decoration,
+        code,
+        code_lang,
+        directive,
+        directive_label,
+        boundary,
+        heading,
+        align,
+        line_height,
+    } = a;
+    *decoration == b.decoration
+        && *code == b.code
+        && *code_lang == b.code_lang
+        && *directive == b.directive
+        && *directive_label == b.directive_label
+        && *boundary == b.boundary
+        && *heading == b.heading
+        && *align == b.align
+        && *line_height == b.line_height
+        && runs.len() == b.runs.len()
+        && runs
+            .iter()
+            .zip(&b.runs)
+            .all(|(x, y)| same_run_shifted(x, y, shift))
+}
+
+fn same_run_shifted(a: &Run, b: &Run, shift: i64) -> bool {
+    let Run {
+        text,
+        role,
+        bold,
+        italic,
+        underline,
+        strike,
+        sup,
+        sub,
+        src,
+        sel,
+        hl,
+        hl_color,
+        mark_color,
+        token,
+        size,
+        font,
+        text_color,
+    } = a;
+    *src as i64 + shift == b.src as i64
+        && *text == b.text
+        && *role == b.role
+        && *bold == b.bold
+        && *italic == b.italic
+        && *underline == b.underline
+        && *strike == b.strike
+        && *sup == b.sup
+        && *sub == b.sub
+        && *sel == b.sel
+        && *hl == b.hl
+        && *hl_color == b.hl_color
+        && *mark_color == b.mark_color
+        && *token == b.token
+        && *size == b.size
+        && *font == b.font
+        && *text_color == b.text_color
+}
+
+/// The shift `b`'s offsets stand at from `a`'s, read off the first run — or
+/// `None` for a row with no run to read it off, which matches at any shift.
+fn shift_between_rows(a: &Row, b: &Row) -> Option<i64> {
+    Some(b.runs.first()?.src as i64 - a.runs.first()?.src as i64)
 }
 
 /// The UTF-16 offset into `text` of display column `col` — the position a DOM
@@ -929,6 +1059,15 @@ pub struct LeafDoc {
     /// defaults to [`ColorScheme::Light`], the web's own default, until the host
     /// calls [`set_color_scheme`](LeafDoc::set_color_scheme).
     scheme: ColorScheme,
+    /// Whether a frame is the change since the frame before rather than the
+    /// whole document — see [`LeafDoc::set_incremental_frames`].
+    incremental: bool,
+    /// The rows of the last frame handed out, kept only while `incremental`
+    /// so the next frame can be the difference from them; `None` makes the
+    /// next frame whole. Whenever it is `Some`, it is frame `frame`'s rows.
+    last_rows: Option<Vec<Row>>,
+    /// The number of the last frame handed out — `0` before the first.
+    frame: u32,
 }
 
 #[wasm_bindgen]
@@ -951,6 +1090,9 @@ impl LeafDoc {
             doc,
             width: 80,
             scheme: ColorScheme::Light,
+            incremental: false,
+            last_rows: None,
+            frame: 0,
         })
     }
 
@@ -1122,10 +1264,79 @@ impl LeafDoc {
         }
     }
 
-    /// Resolve the current document to a renderable frame of style runs. Called
-    /// for the first paint, on resize, and returned by every mutating method so
-    /// one boundary crossing both edits and repaints.
+    /// Resolve the current document to a whole frame — the first paint, and
+    /// the frame a renderer taking changes ([`set_incremental_frames`]) is
+    /// brought back into step by: every change after this is against it.
+    ///
+    /// [`set_incremental_frames`]: Self::set_incremental_frames
     pub fn view(&mut self) -> Result<DocView, JsValue> {
+        let v = self.whole();
+        self.frame = v.frame;
+        self.last_rows = self.incremental.then(|| v.rows.clone());
+        Ok(v)
+    }
+
+    /// Whether the frame every method answers with is the change since the
+    /// frame before rather than the whole document — see [`DocView`] for the
+    /// shape, and for what a renderer does with one. Off by default, so a
+    /// renderer that reads `rows` as the document goes on getting it; one
+    /// that keeps its own copy of the rows turns it on once and splices each
+    /// frame into that copy, which makes a caret move lift no row across the
+    /// boundary and a keystroke lift the row it changed.
+    ///
+    /// The first frame after turning it on is whole (there is no frame before
+    /// to be a change from), and [`view`](Self::view) is whole at any time.
+    pub fn set_incremental_frames(&mut self, on: bool) {
+        self.incremental = on;
+        self.last_rows = None;
+    }
+
+    /// The document's rows `from..to`, as the last frame had them — for a
+    /// renderer that wants a window of rows back without a whole frame,
+    /// having applied every change so far or not. Clamped to the document;
+    /// empty when `from >= to`. Costs the rows of the document to build and
+    /// the window to lift, so it is the occasional resynchronisation, not the
+    /// per-gesture path.
+    pub fn rows(&mut self, from: usize, to: usize) -> Vec<Row> {
+        let mut rows = self.whole().rows;
+        let to = to.min(rows.len());
+        let from = from.min(to);
+        rows.truncate(to);
+        rows.drain(..from);
+        rows
+    }
+
+    /// The frame every mutating method answers with, so one boundary crossing
+    /// both edits and repaints: whole unless the renderer asked for changes,
+    /// and then the rows that differ from the frame before's — found by
+    /// comparing them in memory, which costs microseconds and lifts nothing —
+    /// with the frame before's rows kept for the next one.
+    fn frame(&mut self) -> Result<DocView, JsValue> {
+        let mut v = self.whole();
+        self.frame = v.frame;
+        if !self.incremental {
+            return Ok(v);
+        }
+        let Some(old) = self.last_rows.take() else {
+            self.last_rows = Some(v.rows.clone());
+            return Ok(v);
+        };
+        let rows = std::mem::take(&mut v.rows);
+        let d = leaf_core::row_delta(&old, &rows, same_row_shifted, shift_between_rows);
+        v.basis = v.frame - 1;
+        v.row_start = d.start;
+        v.replaced = d.replaced;
+        v.src_shift = d.src_shift as i32;
+        v.rows = rows[d.start..d.start + d.len].to_vec();
+        self.last_rows = Some(rows);
+        Ok(v)
+    }
+
+    /// Resolve the current document to a whole frame of style runs, numbered
+    /// as the next one. What both [`view`](Self::view) and
+    /// [`frame`](Self::frame) start from; neither the frame count nor the
+    /// rows kept for the next change are touched here.
+    fn whole(&mut self) -> DocView {
         self.sync();
 
         let (ss, se) = self.doc.selection().unwrap_or((usize::MAX, usize::MAX));
@@ -1165,8 +1376,15 @@ impl LeafDoc {
             .map(|k| mark_id(k).to_string())
             .collect();
 
-        Ok(DocView {
+        let row_count = rows.len();
+        DocView {
             rows,
+            frame: self.frame + 1,
+            basis: 0,
+            row_start: 0,
+            replaced: 0,
+            row_count,
+            src_shift: 0,
             // Both are structural alternatives to rows the WYSIWYG map drew as a
             // picture; the source view has no picture, only the markup itself.
             tables: match self.doc.view {
@@ -1203,7 +1421,7 @@ impl LeafDoc {
                 View::Source => Vec::new(),
             },
             map_key: format!("{:?}", self.doc.visual_key()),
-        })
+        }
     }
 
     /// Tell core which colour scheme the page is in (`"dark"` / `"light"`), so a
@@ -1218,7 +1436,7 @@ impl LeafDoc {
             "dark" => ColorScheme::Dark,
             _ => ColorScheme::Light,
         };
-        self.view()
+        self.frame()
     }
 
     /// Report how many visual rows each block media actually needs, measured
@@ -1237,7 +1455,7 @@ impl LeafDoc {
                 .map(|h| (h.destination, h.rows))
                 .collect(),
         );
-        self.view()
+        self.frame()
     }
 
     /// Report how many visual rows each display formula needs, keyed by its
@@ -1247,7 +1465,7 @@ impl LeafDoc {
     pub fn set_math_rows(&mut self, heights: Vec<MathHeight>) -> Result<DocView, JsValue> {
         self.doc
             .set_math_rows(heights.into_iter().map(|h| (h.tex, h.rows)).collect());
-        self.view()
+        self.frame()
     }
 
     /// Say whether the renderer can paint a picture *inside* a line of text.
@@ -1258,7 +1476,7 @@ impl LeafDoc {
     /// saw.
     pub fn set_inline_pictures(&mut self, on: bool) -> Result<DocView, JsValue> {
         self.doc.set_inline_pictures(on);
-        self.view()
+        self.frame()
     }
 
     /// Insert a block-level image, video, or audio at the caret — `kind` is
@@ -1277,13 +1495,13 @@ impl LeafDoc {
             other => return Err(JsValue::from_str(&format!("unknown media kind: {other}"))),
         };
         self.doc.insert_media(kind, destination, alt);
-        self.view()
+        self.frame()
     }
 
     /// Set the wrap width (in columns) the viewport implies and repaint.
     pub fn set_width(&mut self, cols: usize) -> Result<DocView, JsValue> {
         self.width = cols.max(1);
-        self.view()
+        self.frame()
     }
 
     /// The current source text — for a "save" (download / localStorage / PUT) or
@@ -1348,7 +1566,7 @@ impl LeafDoc {
     /// its input chrome is polishing, not protecting.
     pub fn set_read_only(&mut self, on: bool) -> Result<DocView, JsValue> {
         self.doc.set_read_only(on);
-        self.view()
+        self.frame()
     }
 
     /// Replace the host-painted source ranges wholesale and repaint — see
@@ -1367,7 +1585,7 @@ impl LeafDoc {
                 })
                 .collect(),
         );
-        self.view()
+        self.frame()
     }
 
     /// The id of the highlight covering source `offset`, if one does — what a
@@ -1419,58 +1637,58 @@ impl LeafDoc {
     /// way — clears the dirty flag without touching a filesystem.
     pub fn mark_saved(&mut self) -> Result<DocView, JsValue> {
         self.doc.mark_saved();
-        self.view()
+        self.frame()
     }
 
     // ── text input ──────────────────────────────────────────────────────────
 
     pub fn insert(&mut self, text: &str) -> Result<DocView, JsValue> {
         self.doc.insert(text);
-        self.view()
+        self.frame()
     }
 
     pub fn paste(&mut self, text: &str) -> Result<DocView, JsValue> {
         self.doc.paste(text);
-        self.view()
+        self.frame()
     }
 
     pub fn newline(&mut self) -> Result<DocView, JsValue> {
         self.doc.newline();
-        self.view()
+        self.frame()
     }
 
     /// Tab: indent the caret's line (or the selected lines) one level, nesting a
     /// list item under its sibling.
     pub fn indent(&mut self) -> Result<DocView, JsValue> {
         self.doc.indent();
-        self.view()
+        self.frame()
     }
 
     /// Shift+Tab: take one indent level back off the caret's line (or the
     /// selected lines), unnesting a list item.
     pub fn outdent(&mut self) -> Result<DocView, JsValue> {
         self.doc.outdent();
-        self.view()
+        self.frame()
     }
 
     pub fn backspace(&mut self) -> Result<DocView, JsValue> {
         self.doc.backspace();
-        self.view()
+        self.frame()
     }
 
     pub fn delete_forward(&mut self) -> Result<DocView, JsValue> {
         self.doc.delete_forward();
-        self.view()
+        self.frame()
     }
 
     pub fn delete_word_back(&mut self) -> Result<DocView, JsValue> {
         self.doc.delete_word_back();
-        self.view()
+        self.frame()
     }
 
     pub fn delete_word_forward(&mut self) -> Result<DocView, JsValue> {
         self.doc.delete_word_forward();
-        self.view()
+        self.frame()
     }
 
     // ── caret movement ──────────────────────────────────────────────────────
@@ -1480,66 +1698,66 @@ impl LeafDoc {
     pub fn move_left(&mut self, extend: bool) -> Result<DocView, JsValue> {
         self.sync();
         self.doc.move_left(extend);
-        self.view()
+        self.frame()
     }
 
     pub fn move_right(&mut self, extend: bool) -> Result<DocView, JsValue> {
         self.sync();
         self.doc.move_right(extend);
-        self.view()
+        self.frame()
     }
 
     pub fn move_up(&mut self, extend: bool) -> Result<DocView, JsValue> {
         self.sync();
         self.doc.move_up(extend);
-        self.view()
+        self.frame()
     }
 
     pub fn move_down(&mut self, extend: bool) -> Result<DocView, JsValue> {
         self.sync();
         self.doc.move_down(extend);
-        self.view()
+        self.frame()
     }
 
     pub fn move_word_left(&mut self, extend: bool) -> Result<DocView, JsValue> {
         self.sync();
         self.doc.move_word_left(extend);
-        self.view()
+        self.frame()
     }
 
     pub fn move_word_right(&mut self, extend: bool) -> Result<DocView, JsValue> {
         self.sync();
         self.doc.move_word_right(extend);
-        self.view()
+        self.frame()
     }
 
     pub fn move_home(&mut self, extend: bool) -> Result<DocView, JsValue> {
         self.sync();
         self.doc.move_home(extend);
-        self.view()
+        self.frame()
     }
 
     pub fn move_end(&mut self, extend: bool) -> Result<DocView, JsValue> {
         self.sync();
         self.doc.move_end(extend);
-        self.view()
+        self.frame()
     }
 
     pub fn move_doc_start(&mut self, extend: bool) -> Result<DocView, JsValue> {
         self.sync();
         self.doc.move_doc_start(extend);
-        self.view()
+        self.frame()
     }
 
     pub fn move_doc_end(&mut self, extend: bool) -> Result<DocView, JsValue> {
         self.sync();
         self.doc.move_doc_end(extend);
-        self.view()
+        self.frame()
     }
 
     pub fn select_all(&mut self) -> Result<DocView, JsValue> {
         self.doc.select_all();
-        self.view()
+        self.frame()
     }
 
     /// Place the caret from a click, in core's column grid: `row` indexes the
@@ -1550,7 +1768,7 @@ impl LeafDoc {
     pub fn click(&mut self, row: usize, col: usize, extend: bool) -> Result<DocView, JsValue> {
         self.sync();
         self.doc.click(row, col, extend);
-        self.view()
+        self.frame()
     }
 
     /// Place the caret from a click whose horizontal position is a **UTF-16
@@ -1563,7 +1781,7 @@ impl LeafDoc {
         self.sync();
         let col = utf16_to_col(&self.row_text(row), ch);
         self.doc.click(row, col, extend);
-        self.view()
+        self.frame()
     }
 
     /// The source offset under a click at row `row`, `ch` UTF-16 units in — the
@@ -1591,7 +1809,7 @@ impl LeafDoc {
     pub fn select_word_ch(&mut self, row: usize, ch: usize) -> Result<DocView, JsValue> {
         let off = self.offset_at(row, ch);
         self.doc.select_word_at(off);
-        self.view()
+        self.frame()
     }
 
     /// Select the whole logical text block under a click (row, `ch`) — the
@@ -1600,7 +1818,7 @@ impl LeafDoc {
     pub fn select_block_ch(&mut self, row: usize, ch: usize) -> Result<DocView, JsValue> {
         let off = self.offset_at(row, ch);
         self.doc.select_block_at(off);
-        self.view()
+        self.frame()
     }
 
     /// Mirror a native browser selection into the model: `[anchor, focus]` given
@@ -1622,7 +1840,7 @@ impl LeafDoc {
         if anchor != focus {
             self.doc.place_caret(focus, true);
         }
-        self.view()
+        self.frame()
     }
 
     // ── rich clipboard (mirrors leaf-tui / leaf-gpui) ────────────────────────
@@ -1643,29 +1861,29 @@ impl LeafDoc {
         if !took {
             self.doc.paste(text);
         }
-        self.view()
+        self.frame()
     }
 
     // ── formatting commands (mirror leaf-gpui's EditorCommand) ───────────────
 
     pub fn toggle_bold(&mut self) -> Result<DocView, JsValue> {
         self.doc.toggle(InlineKind::Strong);
-        self.view()
+        self.frame()
     }
 
     pub fn toggle_italic(&mut self) -> Result<DocView, JsValue> {
         self.doc.toggle(InlineKind::Emph);
-        self.view()
+        self.frame()
     }
 
     pub fn toggle_code(&mut self) -> Result<DocView, JsValue> {
         self.doc.toggle(InlineKind::Verbatim);
-        self.view()
+        self.frame()
     }
 
     pub fn toggle_mark(&mut self) -> Result<DocView, JsValue> {
         self.doc.toggle(InlineKind::Mark);
-        self.view()
+        self.frame()
     }
 
     /// Whether the caret stands in a highlight — what a colour control enables
@@ -1689,7 +1907,7 @@ impl LeafDoc {
     /// highlight from bare text is `toggleMark` and then this.
     pub fn set_mark_color(&mut self, color: Option<String>) -> Result<DocView, JsValue> {
         self.doc.set_mark_color(mark_color(color.as_deref())?);
-        self.view()
+        self.frame()
     }
 
     /// One press of a colour swatch: colour the highlight at the caret, or —
@@ -1702,58 +1920,58 @@ impl LeafDoc {
     /// over an unhighlighted selection means simply "highlight this".
     pub fn highlight(&mut self, color: Option<String>) -> Result<DocView, JsValue> {
         self.doc.highlight(mark_color(color.as_deref())?);
-        self.view()
+        self.frame()
     }
 
     pub fn toggle_underline(&mut self) -> Result<DocView, JsValue> {
         self.doc.toggle(InlineKind::Insert);
-        self.view()
+        self.frame()
     }
 
     pub fn toggle_strike(&mut self) -> Result<DocView, JsValue> {
         self.doc.toggle(InlineKind::Delete);
-        self.view()
+        self.frame()
     }
 
     pub fn set_paragraph(&mut self) -> Result<DocView, JsValue> {
         self.doc.set_block(BlockKind::Paragraph);
-        self.view()
+        self.frame()
     }
 
     /// Toggle the current block to a heading of `level` (1–6); toggling the
     /// active level off returns it to a paragraph, per core.
     pub fn set_heading(&mut self, level: u32) -> Result<DocView, JsValue> {
         self.doc.toggle_heading(level);
-        self.view()
+        self.frame()
     }
 
     pub fn toggle_blockquote(&mut self) -> Result<DocView, JsValue> {
         self.doc.toggle_blockquote();
-        self.view()
+        self.frame()
     }
 
     pub fn toggle_list(&mut self, ordered: bool) -> Result<DocView, JsValue> {
         self.doc.toggle_list(ordered);
-        self.view()
+        self.frame()
     }
 
     /// Tick or untick the task item at the caret.
     pub fn toggle_task_checked(&mut self) -> Result<DocView, JsValue> {
         self.doc.toggle_task_checked();
-        self.view()
+        self.frame()
     }
 
     /// Tick or untick the task item covering `offset` — a click on a rendered
     /// checkbox, which leaves the caret where it was.
     pub fn toggle_task_at(&mut self, offset: usize) -> Result<DocView, JsValue> {
         self.doc.toggle_task_at(offset);
-        self.view()
+        self.frame()
     }
 
     /// Give the list item at the caret a checkbox, or take its checkbox away.
     pub fn toggle_task_item(&mut self) -> Result<DocView, JsValue> {
         self.doc.toggle_task_item();
-        self.view()
+        self.frame()
     }
 
     /// Whether the item at the caret has a box, and which way it faces.
@@ -1792,7 +2010,7 @@ impl LeafDoc {
     pub fn set_alignment(&mut self, align: Option<String>) -> Result<DocView, JsValue> {
         let align = alignment(align.as_deref())?;
         self.doc.set_alignment(align);
-        self.view()
+        self.frame()
     }
 
     /// Set the line spacing of the caret's block — one of the menu's three
@@ -1806,7 +2024,7 @@ impl LeafDoc {
     pub fn set_line_spacing(&mut self, spacing: Option<String>) -> Result<DocView, JsValue> {
         let spacing = line_spacing(spacing.as_deref())?;
         self.doc.set_line_spacing(spacing);
-        self.view()
+        self.frame()
     }
 
     /// Set the size of the selected run, or of the caret's whole block when
@@ -1823,7 +2041,7 @@ impl LeafDoc {
     pub fn set_font_size(&mut self, size: Option<String>) -> Result<DocView, JsValue> {
         let size = font_size(size.as_deref())?;
         self.doc.set_font_size(size);
-        self.view()
+        self.frame()
     }
 
     /// Set the face of the selected run, or of the caret's whole block — one of
@@ -1837,7 +2055,7 @@ impl LeafDoc {
     pub fn set_font_family(&mut self, font: Option<String>) -> Result<DocView, JsValue> {
         let font = font_family(font.as_deref())?;
         self.doc.set_font_family(font);
-        self.view()
+        self.frame()
     }
 
     /// Set the *text* colour of the selected run, or of the caret's whole block
@@ -1851,7 +2069,7 @@ impl LeafDoc {
     pub fn set_text_color(&mut self, color: Option<String>) -> Result<DocView, JsValue> {
         let color = text_color(color.as_deref())?;
         self.doc.set_text_color(color);
-        self.view()
+        self.frame()
     }
 
     /// Insert a page break at the caret — a leaf directive with no label, placed
@@ -1863,7 +2081,7 @@ impl LeafDoc {
     /// is.
     pub fn insert_page_break(&mut self) -> Result<DocView, JsValue> {
         self.doc.insert_page_break();
-        self.view()
+        self.frame()
     }
 
     /// The alignment in force at the caret, or `undefined` for the theme's
@@ -1913,23 +2131,23 @@ impl LeafDoc {
 
     pub fn insert_link(&mut self, destination: &str) -> Result<DocView, JsValue> {
         self.doc.insert_link(destination);
-        self.view()
+        self.frame()
     }
 
     pub fn undo(&mut self) -> Result<DocView, JsValue> {
         self.doc.undo();
-        self.view()
+        self.frame()
     }
 
     pub fn redo(&mut self) -> Result<DocView, JsValue> {
         self.doc.redo();
-        self.view()
+        self.frame()
     }
 
     /// Switch between the rendered WYSIWYG surface and the raw source.
     pub fn toggle_view(&mut self) -> Result<DocView, JsValue> {
         self.doc.toggle_view();
-        self.view()
+        self.frame()
     }
 
     /// The current markup-exposure preference as `"none"`, `"shortcuts"` or
@@ -1954,7 +2172,7 @@ impl LeafDoc {
             "full" => self.doc.set_markup_mode(CoreMarkupMode::Full),
             _ => {}
         }
-        self.view()
+        self.frame()
     }
 
     /// The current soft-break flow preference as `"fold"` or `"preserve"`.
@@ -1975,7 +2193,7 @@ impl LeafDoc {
             "preserve" => self.doc.set_line_flow(CoreLineFlow::Preserve),
             _ => {}
         }
-        self.view()
+        self.frame()
     }
 
     // ── offsets ─────────────────────────────────────────────────────────────
@@ -2184,7 +2402,7 @@ impl LeafDoc {
         if focus != anchor {
             self.doc.place_caret(focus, true);
         }
-        self.view()
+        self.frame()
     }
 
     /// Select the exact source range `[start, end)`, snapping neither end to a
@@ -2197,7 +2415,7 @@ impl LeafDoc {
     /// is the word and not one byte short of it.
     pub fn select_range(&mut self, start: usize, end: usize) -> Result<DocView, JsValue> {
         self.doc.select_range(start, end);
-        self.view()
+        self.frame()
     }
 
     /// Replace the source range `[from, to)` with `text`.
@@ -2212,7 +2430,7 @@ impl LeafDoc {
             self.doc.place_caret(to, true);
         }
         self.doc.insert(text);
-        self.view()
+        self.frame()
     }
 
     /// Stop wrapping: lay every logical line out unbroken, for a surface that
@@ -2221,7 +2439,7 @@ impl LeafDoc {
         // Core takes a column budget, not an option, so "unwrapped" is a budget
         // no line can reach.
         self.width = usize::MAX;
-        self.view()
+        self.frame()
     }
 
     // ── links and footnotes ─────────────────────────────────────────────────
@@ -2259,7 +2477,7 @@ impl LeafDoc {
     /// Write a footnote reference at the caret and the definition it needs.
     pub fn insert_footnote(&mut self) -> Result<DocView, JsValue> {
         self.doc.insert_footnote();
-        self.view()
+        self.frame()
     }
 
     /// The footnote reference at `off` and the note it names, or `undefined` if
@@ -2288,7 +2506,7 @@ impl LeafDoc {
     /// Write a thematic break (`---`) at the caret.
     pub fn insert_thematic_break(&mut self) -> Result<DocView, JsValue> {
         self.doc.insert_thematic_break();
-        self.view()
+        self.frame()
     }
 
     // ── tables ──────────────────────────────────────────────────────────────
@@ -2305,32 +2523,32 @@ impl LeafDoc {
 
     pub fn table_insert_row(&mut self, below: bool) -> Result<DocView, JsValue> {
         self.doc.table_insert_row(below);
-        self.view()
+        self.frame()
     }
 
     pub fn table_delete_row(&mut self) -> Result<DocView, JsValue> {
         self.doc.table_delete_row();
-        self.view()
+        self.frame()
     }
 
     pub fn table_insert_column(&mut self, right: bool) -> Result<DocView, JsValue> {
         self.doc.table_insert_column(right);
-        self.view()
+        self.frame()
     }
 
     pub fn table_delete_column(&mut self) -> Result<DocView, JsValue> {
         self.doc.table_delete_column();
-        self.view()
+        self.frame()
     }
 
     pub fn table_move_row(&mut self, down: bool) -> Result<DocView, JsValue> {
         self.doc.table_move_row(down);
-        self.view()
+        self.frame()
     }
 
     pub fn table_move_column(&mut self, right: bool) -> Result<DocView, JsValue> {
         self.doc.table_move_column(right);
-        self.view()
+        self.frame()
     }
 
     /// Insert a fresh table at the caret — one header row, `rows` empty body
@@ -2338,7 +2556,7 @@ impl LeafDoc {
     /// Needs no table under the caret; gate it on `capabilities().table`.
     pub fn insert_table(&mut self, rows: u32, cols: u32) -> Result<DocView, JsValue> {
         self.doc.insert_table(rows as usize, cols as usize);
-        self.view()
+        self.frame()
     }
 
     /// Set the caret's column alignment — `"left"`, `"right"`, `"center"`, or
@@ -2352,7 +2570,7 @@ impl LeafDoc {
             other => return Err(JsValue::from_str(&format!("unknown alignment: {other}"))),
         };
         self.doc.table_set_alignment(a);
-        self.view()
+        self.frame()
     }
 
     /// Tab inside a table: to the next (or previous) cell, adding a row when it
@@ -2360,7 +2578,7 @@ impl LeafDoc {
     /// can fall through to its ordinary Tab (indent).
     pub fn cell_tab(&mut self, forward: bool) -> Result<Option<DocView>, JsValue> {
         if self.doc.cell_tab(forward) {
-            self.view().map(Some)
+            self.frame().map(Some)
         } else {
             Ok(None)
         }
@@ -2370,7 +2588,7 @@ impl LeafDoc {
     /// `undefined` when the caret isn't in a table.
     pub fn cell_return(&mut self) -> Result<Option<DocView>, JsValue> {
         if self.doc.cell_return() {
-            self.view().map(Some)
+            self.frame().map(Some)
         } else {
             Ok(None)
         }
@@ -2380,7 +2598,7 @@ impl LeafDoc {
     /// new row. `undefined` when the caret isn't in a table.
     pub fn cell_line_break(&mut self) -> Result<Option<DocView>, JsValue> {
         if self.doc.cell_line_break() {
-            self.view().map(Some)
+            self.frame().map(Some)
         } else {
             Ok(None)
         }
@@ -3542,5 +3760,106 @@ mod tests {
         doc.set_math_rows([(m.tex.clone(), 3)].into_iter().collect());
         doc.build_visual(80);
         assert_eq!(math_views(&doc.vmap)[0].rows, 3);
+    }
+
+    // ── frames as changes ────────────────────────────────────────────────
+
+    /// A `LeafDoc` built off wasm: the constructor installs the panic hook,
+    /// which wants a JS console, so the struct is put together by hand here.
+    fn binding(source: &str) -> LeafDoc {
+        LeafDoc {
+            doc: Doc::from_source(source.to_string(), Format::Markdown).unwrap(),
+            width: 80,
+            scheme: ColorScheme::Light,
+            incremental: false,
+            last_rows: None,
+            frame: 0,
+        }
+    }
+
+    /// Apply `frame`, a change, to `rows` — what `editor.js` does with one.
+    fn apply(rows: &mut Vec<Row>, frame: &DocView) {
+        let d = leaf_core::RowDelta {
+            start: frame.row_start,
+            replaced: frame.replaced,
+            len: frame.rows.len(),
+            src_shift: frame.src_shift as i64,
+        };
+        leaf_core::apply_row_delta(rows, d, &frame.rows, |row, by| {
+            for run in &mut row.runs {
+                run.src = (run.src as i64 + by) as usize;
+            }
+        });
+        assert_eq!(rows.len(), frame.row_count);
+    }
+
+    #[test]
+    fn changes_applied_in_order_are_the_whole_frame_and_a_click_lifts_none() {
+        let src: String = (0..40)
+            .map(|i| format!("paragraph {i} with `code` and **bold** words in it\n\n"))
+            .collect::<Vec<_>>()
+            .concat()
+            + "| a | b |\n|---|---|\n| 1 | 2 |\n\nafter $x$ math\n";
+        let mut a = binding(&src);
+        let mut b = binding(&src);
+        a.set_incremental_frames(true);
+        let first = a.set_unwrapped().unwrap();
+        b.set_unwrapped().unwrap();
+        assert_eq!(first.basis, 0);
+        let mut rows = first.rows.clone();
+        let n = rows.len();
+
+        let moved = a.click_ch(n / 2, 3, false).unwrap();
+        b.click_ch(n / 2, 3, false).unwrap();
+        assert_eq!(moved.basis, first.frame);
+        assert!(moved.rows.is_empty(), "a click lifts no row");
+        apply(&mut rows, &moved);
+
+        let typed = a.insert("x").unwrap();
+        let whole = b.insert("x").unwrap();
+        assert_eq!(typed.rows.len(), 1, "a keystroke lifts the row it changed");
+        assert_eq!(typed.src_shift, 1);
+        apply(&mut rows, &typed);
+        assert!(rows == whole.rows);
+
+        let mut seed = 7u64;
+        for step in 0..60 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let extend = (seed >> 40).is_multiple_of(3);
+            let (fa, fb) = match (seed >> 33) % 8 {
+                0 => (a.insert("y").unwrap(), b.insert("y").unwrap()),
+                1 => (a.backspace().unwrap(), b.backspace().unwrap()),
+                2 => (a.newline().unwrap(), b.newline().unwrap()),
+                3 => (a.move_up(extend).unwrap(), b.move_up(extend).unwrap()),
+                4 => (a.move_down(extend).unwrap(), b.move_down(extend).unwrap()),
+                5 => (a.toggle_bold().unwrap(), b.toggle_bold().unwrap()),
+                6 => (a.undo().unwrap(), b.undo().unwrap()),
+                _ => (
+                    a.move_word_right(extend).unwrap(),
+                    b.move_word_right(extend).unwrap(),
+                ),
+            };
+            apply(&mut rows, &fa);
+            assert!(rows == fb.rows, "step {step}");
+        }
+        let v = a.view().unwrap();
+        assert_eq!(v.basis, 0);
+        assert!(v.rows == rows);
+        assert_eq!(a.rows(2, 4), rows[2..4].to_vec());
+    }
+
+    #[test]
+    fn frames_are_whole_unless_asked_for() {
+        let mut d = binding("one\n\ntwo\n");
+        let v = d.set_unwrapped().unwrap();
+        assert_eq!((v.frame, v.basis, v.row_count), (1, 0, 3));
+        let v = d.move_right(false).unwrap();
+        assert_eq!((v.frame, v.basis, v.rows.len()), (2, 0, 3));
+        d.set_incremental_frames(true);
+        assert_eq!(d.move_right(false).unwrap().basis, 0, "the first is whole");
+        let v = d.move_right(false).unwrap();
+        assert_eq!((v.basis, v.rows.len()), (3, 0));
+        d.set_incremental_frames(false);
+        assert_eq!(d.move_right(false).unwrap().rows.len(), 3);
     }
 }

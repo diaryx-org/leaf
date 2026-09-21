@@ -974,6 +974,16 @@ public protocol LeafDocProtocol : AnyObject {
      */
     func rowRangeFor(start: UInt32, end: UInt32)  -> RowRange
     
+    /**
+     * The document's rows `from..to`, as the last frame had them — for a
+     * frontend that wants a window of rows back without a whole frame,
+     * having applied every change so far or not. Clamped to the document;
+     * empty when `from >= to`. Costs the rows of the document to build and
+     * the window to lift, so it is the occasional resynchronisation, not the
+     * per-gesture path.
+     */
+    func rows(from: UInt32, to: UInt32)  -> [Row]
+    
     func selectAll()  -> DocView
     
     /**
@@ -1089,6 +1099,20 @@ public protocol LeafDocProtocol : AnyObject {
      * [`Highlight`] for what one is.
      */
     func setHighlights(highlights: [Highlight])  -> DocView
+    
+    /**
+     * Whether the frame every method answers with is the change since the
+     * frame before rather than the whole document — see [`DocView`] for the
+     * shape, and for what a frontend does with one. Off by default, so a
+     * frontend that reads `rows` as the document goes on getting it; a
+     * frontend that keeps its own copy of the rows turns it on once and
+     * splices each frame into that copy, which makes a caret move lift no
+     * row across the binding and a keystroke lift the row it changed.
+     *
+     * The first frame after turning it on is whole (there is no frame before
+     * to be a change from), and [`view`](Self::view) is whole at any time.
+     */
+    func setIncrementalFrames(on: Bool) 
     
     /**
      * Say whether the renderer can paint a picture *inside* a line of text.
@@ -1369,7 +1393,11 @@ public protocol LeafDocProtocol : AnyObject {
     func verticalOffset(off: UInt32, down: Bool)  -> UInt32?
     
     /**
-     * Resolve the current document to a renderable frame — the first paint.
+     * Resolve the current document to a whole frame — the first paint, and
+     * the frame a frontend taking changes ([`set_incremental_frames`]) is
+     * brought back into step by: every change after this is against it.
+     *
+     * [`set_incremental_frames`]: Self::set_incremental_frames
      */
     func view()  -> DocView
     
@@ -2229,6 +2257,23 @@ open func rowRangeFor(start: UInt32, end: UInt32) -> RowRange {
 })
 }
     
+    /**
+     * The document's rows `from..to`, as the last frame had them — for a
+     * frontend that wants a window of rows back without a whole frame,
+     * having applied every change so far or not. Clamped to the document;
+     * empty when `from >= to`. Costs the rows of the document to build and
+     * the window to lift, so it is the occasional resynchronisation, not the
+     * per-gesture path.
+     */
+open func rows(from: UInt32, to: UInt32) -> [Row] {
+    return try!  FfiConverterSequenceTypeRow.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_rows(self.uniffiClonePointer(),
+        FfiConverterUInt32.lower(from),
+        FfiConverterUInt32.lower(to),$0
+    )
+})
+}
+    
 open func selectAll() -> DocView {
     return try!  FfiConverterTypeDocView.lift(try! rustCall() {
     uniffi_leaf_ffi_fn_method_leafdoc_select_all(self.uniffiClonePointer(),$0
@@ -2426,6 +2471,25 @@ open func setHighlights(highlights: [Highlight]) -> DocView {
         FfiConverterSequenceTypeHighlight.lower(highlights),$0
     )
 })
+}
+    
+    /**
+     * Whether the frame every method answers with is the change since the
+     * frame before rather than the whole document — see [`DocView`] for the
+     * shape, and for what a frontend does with one. Off by default, so a
+     * frontend that reads `rows` as the document goes on getting it; a
+     * frontend that keeps its own copy of the rows turns it on once and
+     * splices each frame into that copy, which makes a caret move lift no
+     * row across the binding and a keystroke lift the row it changed.
+     *
+     * The first frame after turning it on is whole (there is no frame before
+     * to be a change from), and [`view`](Self::view) is whole at any time.
+     */
+open func setIncrementalFrames(on: Bool) {try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_set_incremental_frames(self.uniffiClonePointer(),
+        FfiConverterBool.lower(on),$0
+    )
+}
 }
     
     /**
@@ -2954,7 +3018,11 @@ open func verticalOffset(off: UInt32, down: Bool) -> UInt32? {
 }
     
     /**
-     * Resolve the current document to a renderable frame — the first paint.
+     * Resolve the current document to a whole frame — the first paint, and
+     * the frame a frontend taking changes ([`set_incremental_frames`]) is
+     * brought back into step by: every change after this is against it.
+     *
+     * [`set_incremental_frames`]: Self::set_incremental_frames
      */
 open func view() -> DocView {
     return try!  FfiConverterTypeDocView.lift(try! rustCall() {
@@ -3693,16 +3761,79 @@ public func FfiConverterTypeDirectiveView_lower(_ value: DirectiveView) -> RustB
 
 
 /**
- * A whole rendered frame: the rows to paint, where the caret sits, and the
+ * A rendered frame: the rows to paint, where the caret sits, and the
  * toolbar state — everything the Swift side needs for one repaint, in one value.
  * Returned by every view-producing method.
+ *
+ * ## Whole or a change
+ *
+ * By default every frame is whole: `rows` is every row of the document, and
+ * the frame before it is forgotten. After [`LeafDoc::set_incremental_frames`]
+ * the same methods answer with a frame whose `rows` are only the rows that
+ * changed since the frame before — a caret move lifts none, a keystroke lifts
+ * the row it landed on — and the five fields after `rows` say where they go.
+ * Which kind a frame is, it says itself: `basis` is `0` on a whole frame and
+ * the frame before's number on a change. A caller applies a change to the
+ * frame it holds (see `rows`), and one that holds a frame other than `basis`
+ * has lost step and asks [`LeafDoc::view`] for a whole one, which every
+ * change after that is against. The rest of the frame — the caret, the
+ * selection, the toolbar state, `tables`, `directives`, `media` and `math` —
+ * is complete on every frame of either kind.
  */
 public struct DocView {
+    /**
+     * The rows to paint: every row of the document on a whole frame, and on
+     * a change (`basis != 0`) the rows that replace `replaced` of the frame
+     * before's from `row_start`, after which the rows that follow are the
+     * frame before's with `src_shift` added to every `Run::src` they carry.
+     * So a frame is applied as: splice `rows` over `row_start..row_start +
+     * replaced`, then move the offsets of the rows after the splice. An
+     * empty `rows` with `replaced == 0` is a frame that changed no row.
+     */
     public var rows: [Row]
+    /**
+     * This frame's number: one more than the frame before's, from `1` at
+     * the first. What a change names as its `basis`.
+     */
+    public var frame: UInt32
+    /**
+     * The number of the frame these `rows` are a change against, or `0` when
+     * they are the whole document. A change is applied only to a copy of
+     * exactly that frame; see the type's docs.
+     */
+    public var basis: UInt32
+    /**
+     * Where `rows` begin, as an index into the document's rows — the
+     * frame before's and, since a change never moves the rows above it, this
+     * one's. `0` on a whole frame.
+     */
+    public var rowStart: UInt32
+    /**
+     * How many of the frame before's rows, from `row_start`, `rows` replace.
+     * `0` on a whole frame.
+     */
+    public var replaced: UInt32
+    /**
+     * How many rows the document has once this frame is applied — what
+     * `rows.len()` is on a whole frame, so a caller sizing a scroll view
+     * reads this on either kind.
+     */
+    public var rowCount: UInt32
+    /**
+     * The byte offset every `Run::src` in a row *after* the replaced span
+     * moved by — an edit shifts the source of everything below it, and
+     * those rows are otherwise the frame before's, so they are kept and
+     * moved rather than lifted. `0` on a whole frame, and on a change that
+     * moved nothing.
+     */
+    public var srcShift: Int32
     /**
      * Tables described structurally, for a frontend that draws its own grid
      * instead of painting the box-glyph rows. Empty in the source view. Each
-     * names the `rows` span its picture occupies, to be skipped.
+     * names the span of the *document's* rows its picture occupies, to be
+     * skipped — an index into a whole frame's `rows`, and into the rows a
+     * change has been applied to. These lists are small and ride every
+     * frame complete, so no frame has to say whether they changed.
      */
     public var tables: [TableView]
     /**
@@ -3822,11 +3953,53 @@ public struct DocView {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(rows: [Row], 
+    public init(
+        /**
+         * The rows to paint: every row of the document on a whole frame, and on
+         * a change (`basis != 0`) the rows that replace `replaced` of the frame
+         * before's from `row_start`, after which the rows that follow are the
+         * frame before's with `src_shift` added to every `Run::src` they carry.
+         * So a frame is applied as: splice `rows` over `row_start..row_start +
+         * replaced`, then move the offsets of the rows after the splice. An
+         * empty `rows` with `replaced == 0` is a frame that changed no row.
+         */rows: [Row], 
+        /**
+         * This frame's number: one more than the frame before's, from `1` at
+         * the first. What a change names as its `basis`.
+         */frame: UInt32, 
+        /**
+         * The number of the frame these `rows` are a change against, or `0` when
+         * they are the whole document. A change is applied only to a copy of
+         * exactly that frame; see the type's docs.
+         */basis: UInt32, 
+        /**
+         * Where `rows` begin, as an index into the document's rows — the
+         * frame before's and, since a change never moves the rows above it, this
+         * one's. `0` on a whole frame.
+         */rowStart: UInt32, 
+        /**
+         * How many of the frame before's rows, from `row_start`, `rows` replace.
+         * `0` on a whole frame.
+         */replaced: UInt32, 
+        /**
+         * How many rows the document has once this frame is applied — what
+         * `rows.len()` is on a whole frame, so a caller sizing a scroll view
+         * reads this on either kind.
+         */rowCount: UInt32, 
+        /**
+         * The byte offset every `Run::src` in a row *after* the replaced span
+         * moved by — an edit shifts the source of everything below it, and
+         * those rows are otherwise the frame before's, so they are kept and
+         * moved rather than lifted. `0` on a whole frame, and on a change that
+         * moved nothing.
+         */srcShift: Int32, 
         /**
          * Tables described structurally, for a frontend that draws its own grid
          * instead of painting the box-glyph rows. Empty in the source view. Each
-         * names the `rows` span its picture occupies, to be skipped.
+         * names the span of the *document's* rows its picture occupies, to be
+         * skipped — an index into a whole frame's `rows`, and into the rows a
+         * change has been applied to. These lists are small and ride every
+         * frame complete, so no frame has to say whether they changed.
          */tables: [TableView], 
         /**
          * Leaf directives (`::name{…}`) described structurally, for a frontend that
@@ -3925,6 +4098,12 @@ public struct DocView {
          * swatch anyone can press.
          */markColor: MarkColor?) {
         self.rows = rows
+        self.frame = frame
+        self.basis = basis
+        self.rowStart = rowStart
+        self.replaced = replaced
+        self.rowCount = rowCount
+        self.srcShift = srcShift
         self.tables = tables
         self.directives = directives
         self.media = media
@@ -3952,6 +4131,24 @@ public struct DocView {
 extension DocView: Equatable, Hashable {
     public static func ==(lhs: DocView, rhs: DocView) -> Bool {
         if lhs.rows != rhs.rows {
+            return false
+        }
+        if lhs.frame != rhs.frame {
+            return false
+        }
+        if lhs.basis != rhs.basis {
+            return false
+        }
+        if lhs.rowStart != rhs.rowStart {
+            return false
+        }
+        if lhs.replaced != rhs.replaced {
+            return false
+        }
+        if lhs.rowCount != rhs.rowCount {
+            return false
+        }
+        if lhs.srcShift != rhs.srcShift {
             return false
         }
         if lhs.tables != rhs.tables {
@@ -4016,6 +4213,12 @@ extension DocView: Equatable, Hashable {
 
     public func hash(into hasher: inout Hasher) {
         hasher.combine(rows)
+        hasher.combine(frame)
+        hasher.combine(basis)
+        hasher.combine(rowStart)
+        hasher.combine(replaced)
+        hasher.combine(rowCount)
+        hasher.combine(srcShift)
         hasher.combine(tables)
         hasher.combine(directives)
         hasher.combine(media)
@@ -4047,6 +4250,12 @@ public struct FfiConverterTypeDocView: FfiConverterRustBuffer {
         return
             try DocView(
                 rows: FfiConverterSequenceTypeRow.read(from: &buf), 
+                frame: FfiConverterUInt32.read(from: &buf), 
+                basis: FfiConverterUInt32.read(from: &buf), 
+                rowStart: FfiConverterUInt32.read(from: &buf), 
+                replaced: FfiConverterUInt32.read(from: &buf), 
+                rowCount: FfiConverterUInt32.read(from: &buf), 
+                srcShift: FfiConverterInt32.read(from: &buf), 
                 tables: FfiConverterSequenceTypeTableView.read(from: &buf), 
                 directives: FfiConverterSequenceTypeDirectiveView.read(from: &buf), 
                 media: FfiConverterSequenceTypeMediaView.read(from: &buf), 
@@ -4071,6 +4280,12 @@ public struct FfiConverterTypeDocView: FfiConverterRustBuffer {
 
     public static func write(_ value: DocView, into buf: inout [UInt8]) {
         FfiConverterSequenceTypeRow.write(value.rows, into: &buf)
+        FfiConverterUInt32.write(value.frame, into: &buf)
+        FfiConverterUInt32.write(value.basis, into: &buf)
+        FfiConverterUInt32.write(value.rowStart, into: &buf)
+        FfiConverterUInt32.write(value.replaced, into: &buf)
+        FfiConverterUInt32.write(value.rowCount, into: &buf)
+        FfiConverterInt32.write(value.srcShift, into: &buf)
         FfiConverterSequenceTypeTableView.write(value.tables, into: &buf)
         FfiConverterSequenceTypeDirectiveView.write(value.directives, into: &buf)
         FfiConverterSequenceTypeMediaView.write(value.media, into: &buf)
@@ -9066,6 +9281,9 @@ private var initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_row_range_for() != 48420) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_rows() != 4986) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_select_all() != 40746) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -9106,6 +9324,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_highlights() != 7876) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_incremental_frames() != 12112) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_inline_pictures() != 62763) {
@@ -9237,7 +9458,7 @@ private var initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_vertical_offset() != 6159) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_view() != 64540) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_view() != 59140) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_constructor_leafdoc_new() != 29760) {

@@ -17,6 +17,10 @@
 //! characters, paragraphs — so a host's word count is a count of what the page
 //! shows rather than of the markup underneath it.
 //!
+//! The [`frame`] module is for the bindings that hand that rendering across a
+//! boundary: it says which rows one frame changed from the frame before, so a
+//! binding can cross only those.
+//!
 //! Nothing here depends on a UI toolkit. Glyphs carry a toolkit-agnostic
 //! [`Style`], which a frontend crate (`leaf-tui`, and next `leaf-gui`) maps onto
 //! its own styling. Both frontends share this exact caret math, edit surface,
@@ -25,6 +29,7 @@
 
 pub mod counts;
 pub mod doc;
+pub mod frame;
 mod html;
 pub mod source;
 pub mod style;
@@ -37,6 +42,7 @@ pub use doc::{
     Capabilities, DiskState, Doc, FootnoteDef, FootnoteRef, Highlight, HighlightCursor,
     InlineMarks, Landing, LineFlow, MarkupMode, PAGE_BREAK, Quote, View, VisualKey,
 };
+pub use frame::{RowDelta, apply_row_delta, row_delta};
 pub use source::{SourceMap, StyledRun};
 pub use style::{
     Align, Baseline, FaceId, FaceRef, FaceTable, FontFace, FontFamily, FontSize, Hundredths,
