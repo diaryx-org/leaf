@@ -139,7 +139,10 @@ title the prompt for both.
 
 `LeafEditorModel` exposes every formatting command (`toggleBold`, `setHeading`,
 `toggleList`, `insertLink`, `undo`, …), `source()` / `markSaved()` for
-persistence, and a `@Published state` (active marks, heading, dirty, view, the
+persistence — with `onEdit`, called after each edit that changed the text,
+which is where a `ReferenceFileDocument` registers with the scene's undo
+manager so the document system autosaves (`apps/leaf-editor` is the worked
+example) — and a `@Published state` (active marks, heading, dirty, view, the
 caret link's destination, the caret highlight's colour, and whether there is
 anything to undo or redo) for toolbar binding. Keyboard (typing, arrows/word/line/doc motion with shift-select,
 delete/word-delete, ⌘B/I/U/E, ⇧⌘V), mouse (click, shift-click,

@@ -176,6 +176,10 @@ public final class LeafTextView: UIView, UITextInput {
         }
     }
     public var onStateChange: ((EditorState) -> Void)?
+    /// Fired after a repaint whose text is not the last one's — an edit, an
+    /// undo, a paste — and not after a caret step, a reflow or a view toggle.
+    /// See `LeafEditorModel.onEdit`.
+    public var onEdit: (() -> Void)?
 
     /// The sheet this document is laid onto, or `nil` (the default) for the
     /// continuous scrolling flow — the same mode the AppKit peer offers, and the
@@ -1125,6 +1129,9 @@ public final class LeafTextView: UIView, UITextInput {
         // the reference out from under it.
         footnotePeek.hide()
         let viewFlipped = view.view != docView.view
+        // The document changed, as distinct from what is shown of it: the flip
+        // rewrites every row and edits nothing.
+        let edited = !viewFlipped && view.rows != docView.rows
         docView = view
         readingLines = nil
         // The input traits answer differently per view (see `isSourceView`), and
@@ -1148,6 +1155,7 @@ public final class LeafTextView: UIView, UITextInput {
             scrollCaretToVisible()
         }
         onStateChange?(EditorState(view))
+        if edited { onEdit?() }
     }
 
     /// Put the caret at `offset` and land the reader on it — how a host arrives
