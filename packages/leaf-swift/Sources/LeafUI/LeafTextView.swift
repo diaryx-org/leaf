@@ -393,6 +393,13 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     }
     private let spellDocumentTag = NSSpellChecker.uniqueSpellDocumentTag()
     private var misspelledRanges: [NSRange] = []
+    /// The boxes the reported ranges occupy, in layout coordinates — mapped
+    /// once when the checker answers and again when the layout is rebuilt,
+    /// never in `draw`. Mapping a range is four crossings of the binding (both
+    /// ends to bytes, both bytes to positions); with a hundred or two words
+    /// the checker does not know, mapping them on every repaint was what made a
+    /// scroll of a long document beach-ball.
+    private var misspelledRects: [CGRect] = []
     private var spellCheckWork: DispatchWorkItem?
     private var spellCheckGeneration = 0
 
@@ -573,17 +580,28 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         dismissFootnotePeek()
         // The find bar caches the string and its matches; an edit — or a view
         // toggle, which changes what the visible text *is* — invalidates both.
-        // Rows compare cheaply, and a motion or a selection leaves them equal.
-        let textChanged = view.view != docView.view || view.rows != docView.rows
+        // Rows compare cheaply, and a motion leaves them equal. A selection
+        // does not — it splits the runs it covers — so the rows it touched are
+        // read back with it forgotten (`sameText`): a drag changes what is
+        // shown of the text, not the text, and neither the find bar, the spell
+        // checker nor the host is told of an edit by one.
+        let viewFlipped = view.view != docView.view
+        let textChanged = viewFlipped || !view.rows.sameText(as: docView.rows)
         if textChanged {
             textFinder.noteClientStringWillChange()
         }
         // The document changed, as distinct from what is shown of it: a toggle
         // between source and rendered rewrites every row and edits nothing.
-        let edited = view.view == docView.view && view.rows != docView.rows
+        let edited = !viewFlipped && textChanged
         docView = view
         layoutEngine = EditorLayout(view, theme: theme, viewWidth: viewWidth, page: pageSetup,
                                     cache: &shapeCache, media: mediaStore)
+        // The misspellings still stand where the text did not change, but the
+        // layout under them is new: map them onto it again. A text change
+        // clears them instead, below, and asks the checker afresh.
+        if !textChanged, !misspelledRanges.isEmpty {
+            misspelledRects = mapMisspellings()
+        }
         // Installed players follow their boxes: the layout just moved every one
         // of them, and any media edited out of the document is gone from the
         // rects, which is what stops its playback. Skipped entirely when nothing
@@ -707,7 +725,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         }
 
         if printing { return }
-        drawMisspellings(in: ctx)
+        drawMisspellings(in: ctx, dirtyRect: band)
         if markedByteRange != nil { drawMarkedUnderline(in: ctx) }
 
         // Before the caret, never after: the caret stands at the cue's first
@@ -725,33 +743,45 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         drawHighlightMarkers()
     }
 
-    /// Paint the familiar red wave under each range the system checker reported.
-    /// The ranges stay in AppKit's UTF-16 space until this boundary, then use the
-    /// same source-offset mapping as Find, accessibility, and text input.
-    private func drawMisspellings(in ctx: CGContext) {
-        guard isContinuousSpellCheckingEnabled, docView.view != "source" else { return }
+    /// Paint the familiar red wave under each box of `misspelledRects` that
+    /// touches the dirty band. The ranges the checker reported stay in AppKit's
+    /// UTF-16 space until `mapMisspellings` maps them, through the same
+    /// source-offset mapping as Find, accessibility, and text input; this only
+    /// draws what that mapped.
+    private func drawMisspellings(in ctx: CGContext, dirtyRect band: CGRect) {
+        guard isContinuousSpellCheckingEnabled, docView.view != "source",
+              !misspelledRects.isEmpty else { return }
         ctx.saveGState()
         defer { ctx.restoreGState() }
         ctx.setStrokeColor(NSColor.systemRed.cgColor)
         ctx.setLineWidth(0.8)
         ctx.setLineCap(.round)
-        for range in misspelledRanges {
-            let (from, to) = byteBounds(range)
-            for rect in rangeRects(fromByte: from, toByte: to) where rect.width > 0 {
-                let y = rect.maxY - 1.5
-                let path = CGMutablePath()
-                path.move(to: CGPoint(x: rect.minX, y: y))
-                var x = rect.minX
-                var high = true
-                while x < rect.maxX {
-                    x = min(x + 2, rect.maxX)
-                    path.addLine(to: CGPoint(x: x, y: y + (high ? -1 : 1)))
-                    high.toggle()
-                }
-                ctx.addPath(path)
+        for rect in misspelledRects where rect.maxY > band.minY && rect.minY < band.maxY {
+            let y = rect.maxY - 1.5
+            let path = CGMutablePath()
+            path.move(to: CGPoint(x: rect.minX, y: y))
+            var x = rect.minX
+            var high = true
+            while x < rect.maxX {
+                x = min(x + 2, rect.maxX)
+                path.addLine(to: CGPoint(x: x, y: y + (high ? -1 : 1)))
+                high.toggle()
             }
+            ctx.addPath(path)
         }
         ctx.strokePath()
+    }
+
+    /// The boxes every reported range occupies in the current layout — what
+    /// `drawMisspellings` paints from. Called when the checker answers and
+    /// whenever the layout is rebuilt under ranges that are still current; a
+    /// frame whose text changed clears the ranges instead and asks again.
+    private func mapMisspellings() -> [CGRect] {
+        guard !misspelledRanges.isEmpty else { return [] }
+        return misspelledRanges.flatMap { range -> [CGRect] in
+            let (from, to) = byteBounds(range)
+            return rangeRects(fromByte: from, toByte: to).filter { $0.width > 0 }
+        }
     }
 
     // MARK: printing — the document on the printer's paper
@@ -2581,6 +2611,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         spellCheckWork?.cancel()
         spellCheckGeneration += 1
         misspelledRanges.removeAll()
+        misspelledRects.removeAll()
         needsDisplay = true
         guard isContinuousSpellCheckingEnabled, docView.view != "source" else { return }
         let generation = spellCheckGeneration
@@ -2612,6 +2643,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
                     .filter { $0.resultType.contains(.spelling) }
                     .map(\.range)
                     .filter { !self.isHyphenatedCompound($0, in: text) }
+                self.misspelledRects = self.mapMisspellings()
                 self.needsDisplay = true
             }
         }
@@ -2670,23 +2702,25 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// fenced and inline code never reach the checker, nor do list/quote chrome.
     /// Structural table cells are copied over their box-picture rows so their
     /// words retain the source offsets used for drawing corrections.
+    ///
+    /// Every prose run's place in that space is asked of core in one crossing
+    /// (`utf16IndicesForOffsets`), not one per run: a long document has
+    /// thousands of runs, and a call across the binding for each was most of
+    /// what an edit cost once the typing settled.
     internal func spellCheckingText() -> String {
         let visible = fullText() as NSString
         let masked = NSMutableString(
             string: String(repeating: " ", count: visible.length))
 
-        func insert(_ run: Run) {
+        var prose: [Run] = []
+        func collect(_ run: Run) {
             guard run.role != "code",
                   run.role != "list",
                   run.role != "quote",
-                  run.role != "rule"
+                  run.role != "rule",
+                  !run.text.isEmpty
             else { return }
-            let location = Int(doc.utf16IndexForOffset(off: run.src))
-            let length = (run.text as NSString).length
-            guard length > 0, location >= 0, location + length <= masked.length else { return }
-            masked.replaceCharacters(
-                in: NSRange(location: location, length: length),
-                with: run.text)
+            prose.append(run)
         }
 
         var replacedRows = IndexSet()
@@ -2695,7 +2729,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             for row in table.grid {
                 for cell in row.cells {
                     for line in cell.lines {
-                        for run in line.runs { insert(run) }
+                        for run in line.runs { collect(run) }
                     }
                 }
             }
@@ -2708,7 +2742,17 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         }
         for (index, row) in docView.rows.enumerated()
             where !replacedRows.contains(index) && !row.code && !row.decoration {
-            for run in row.runs { insert(run) }
+            for run in row.runs { collect(run) }
+        }
+
+        let locations = doc.utf16IndicesForOffsets(offs: prose.map(\.src))
+        for (run, location) in zip(prose, locations) {
+            let location = Int(location)
+            let length = (run.text as NSString).length
+            guard location + length <= masked.length else { continue }
+            masked.replaceCharacters(
+                in: NSRange(location: location, length: length),
+                with: run.text)
         }
         return masked as String
     }

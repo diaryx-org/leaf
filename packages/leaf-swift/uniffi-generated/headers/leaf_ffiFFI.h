@@ -861,6 +861,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_undo(void*_Nonnull ptr, RustCallSta
 uint32_t uniffi_leaf_ffi_fn_method_leafdoc_utf16_index_for_offset(void*_Nonnull ptr, uint32_t off, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_UTF16_INDICES_FOR_OFFSETS
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_UTF16_INDICES_FOR_OFFSETS
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_utf16_indices_for_offsets(void*_Nonnull ptr, RustBuffer offs, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_VERTICAL_OFFSET
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_VERTICAL_OFFSET
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_vertical_offset(void*_Nonnull ptr, uint32_t off, int8_t down, RustCallStatus *_Nonnull out_status
@@ -1873,6 +1878,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_undo(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_UTF16_INDEX_FOR_OFFSET
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_UTF16_INDEX_FOR_OFFSET
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_utf16_index_for_offset(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_UTF16_INDICES_FOR_OFFSETS
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_UTF16_INDICES_FOR_OFFSETS
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_utf16_indices_for_offsets(void
     
 );
 #endif

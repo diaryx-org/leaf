@@ -472,6 +472,51 @@ final class EditorLayoutTests: XCTestCase {
         XCTAssertFalse(wide.rows[0].attributed === narrow.rows[0].attributed, "a resize re-shapes the row")
     }
 
+    // MARK: what a frame changed — the rows, and whether the text among them
+
+    func testASelectionSplitsARowsRunsButLeavesItsText() {
+        // Core parts a run at the selection's ends and flags the middle. The
+        // parts differ from the whole in `sel` and in where each begins.
+        let whole = row([mkRun("hello world", src: 10)])
+        let dragged = row([mkRun("hel", src: 10), mkRun("lo wo", src: 13, sel: true),
+                           mkRun("rld", src: 18)])
+        XCTAssertNotEqual(whole, dragged)
+        XCTAssertTrue(whole.sameText(as: dragged))
+        XCTAssertTrue(dragged.sameText(as: whole))
+        // A mark, a letter, or a row fact is a change to the text.
+        XCTAssertFalse(whole.sameText(as: row([mkRun("hello world", bold: true, src: 10)])))
+        XCTAssertFalse(whole.sameText(as: row([mkRun("hello worlds", src: 10)])))
+        XCTAssertFalse(whole.sameText(as: row([mkRun("hello world", src: 10)], heading: 2)))
+        // And so is the same text in two runs of different marks, which no
+        // selection parts a run into.
+        XCTAssertFalse(whole.sameText(as: row([mkRun("hello ", src: 10), mkRun("world", italic: true, src: 16)])))
+    }
+
+    func testChangedRangeIsTheRowsOutsideTheCommonPrefixAndSuffix() {
+        let a = row([mkRun("a")]), b = row([mkRun("b")]), c = row([mkRun("c")]), d = row([mkRun("d")])
+        XCTAssertNil([a, b, c].changedRange(from: [a, b, c]))
+        // One row edited in place.
+        let edited = [a, d, c].changedRange(from: [a, b, c])
+        XCTAssertEqual(edited?.new, 1..<2)
+        XCTAssertEqual(edited?.old, 1..<2)
+        // One inserted, one removed: the range is empty on the side that lost.
+        let inserted = [a, b, d, c].changedRange(from: [a, b, c])
+        XCTAssertEqual(inserted?.new, 2..<3)
+        XCTAssertEqual(inserted?.old, 2..<2)
+        let removed = [a, c].changedRange(from: [a, b, c])
+        XCTAssertEqual(removed?.new, 1..<1)
+        XCTAssertEqual(removed?.old, 1..<2)
+        // A repeated row is matched from one end only, so the two never overlap.
+        let doubled = [a, a].changedRange(from: [a])
+        XCTAssertEqual(doubled?.new, 1..<2)
+        XCTAssertEqual(doubled?.old, 1..<1)
+        // The array form of `sameText` reads only the changed rows.
+        let selected = row([mkRun("b", sel: true)])
+        XCTAssertTrue([a, selected, c].sameText(as: [a, b, c]))
+        XCTAssertFalse([a, d, c].sameText(as: [a, b, c]))
+        XCTAssertFalse([a, c].sameText(as: [a, b, c]))
+    }
+
     // MARK: pixel wrapping
 
     func testLongRowWrapsIntoMultipleVisualLines() {

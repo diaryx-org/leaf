@@ -1623,6 +1623,20 @@ impl Inner {
         }
     }
 
+    /// The UTF-16 index of source offset `off` in the visible text — the
+    /// body of [`LeafDoc::utf16_index_for_offset`], for the one call and for
+    /// the many.
+    fn utf16_index_of(&self, off: u32) -> u32 {
+        let off = (off as usize).min(self.doc.source.len());
+        match self.doc.view {
+            View::Wysiwyg => self.doc.vmap.visible_utf16_len(0, off) as u32,
+            View::Source => {
+                let off = self.snap_stop(off);
+                self.doc.source[..off].encode_utf16().count() as u32
+            }
+        }
+    }
+
     /// [`snap_stop`](Self::snap_stop) for the walks that pair stops with
     /// characters — `step_offset` and `distance_offset`, which a system text
     /// input counts against the text it was shown. The caret's home at the
@@ -2980,14 +2994,17 @@ impl LeafDoc {
     pub fn utf16_index_for_offset(&self, off: u32) -> u32 {
         let mut g = self.lock();
         g.sync();
-        let off = (off as usize).min(g.doc.source.len());
-        match g.doc.view {
-            View::Wysiwyg => g.doc.vmap.visible_utf16_len(0, off) as u32,
-            View::Source => {
-                let off = g.snap_stop(off);
-                g.doc.source[..off].encode_utf16().count() as u32
-            }
-        }
+        g.utf16_index_of(off)
+    }
+
+    /// `utf16_index_for_offset` over many offsets in one crossing — the index
+    /// of each, in the order given. For a caller that converts every run of
+    /// the frame at once, as a spell checker masking the visible text does:
+    /// thousands of runs, and a call across the binding for each was the cost.
+    pub fn utf16_indices_for_offsets(&self, offs: Vec<u32>) -> Vec<u32> {
+        let mut g = self.lock();
+        g.sync();
+        offs.into_iter().map(|off| g.utf16_index_of(off)).collect()
     }
 
     /// The inverse of `utf16_index_for_offset`: the source offset of the
@@ -4737,6 +4754,15 @@ mod tests {
             "a **b\u{1F600}** ".encode_utf16().count() as u32
         );
         assert_eq!(d.offset_for_utf16_index(d.utf16_index_for_offset(c)), c);
+        // The batch form is the one call, many times, in the order asked.
+        assert_eq!(
+            d.utf16_indices_for_offsets(vec![c, 0, end]),
+            vec![
+                d.utf16_index_for_offset(c),
+                d.utf16_index_for_offset(0),
+                d.utf16_index_for_offset(end)
+            ]
+        );
         // Inside the emoji's surrogate pair resolves to the emoji itself.
         let emoji = "a **b".len() as u32;
         assert_eq!(
