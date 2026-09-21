@@ -75,7 +75,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -86,7 +86,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -597,7 +597,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -981,7 +981,7 @@ dependencies = [
 
 [[package]]
 name = "leaf-core"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "syntect",
@@ -993,7 +993,7 @@ dependencies = [
 
 [[package]]
 name = "leaf-ffi"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "leaf-core",
  "leaf-math",
@@ -1005,7 +1005,7 @@ dependencies = [
 
 [[package]]
 name = "leaf-math"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "ratex-layout",
  "ratex-parser",
@@ -1015,7 +1015,7 @@ dependencies = [
 
 [[package]]
 name = "leaf-math-wasm"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "console_error_panic_hook",
  "leaf-math",
@@ -1024,7 +1024,7 @@ dependencies = [
 
 [[package]]
 name = "leaf-raster"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "cosmic-text",
  "image",
@@ -1033,7 +1033,7 @@ dependencies = [
 
 [[package]]
 name = "leaf-ratatui"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "leaf-core",
  "leaf-math",
@@ -1045,7 +1045,7 @@ dependencies = [
 
 [[package]]
 name = "leaf-tui"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -1056,7 +1056,7 @@ dependencies = [
 
 [[package]]
 name = "leaf-wasm"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "console_error_panic_hook",
  "leaf-core",
@@ -1852,7 +1852,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2866,7 +2866,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3126,7 +3126,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3196,3 +3196,11 @@ checksum = "27bc9d5b815bc103f142aa054f561d9187d191692ec7c2d1e2b4737f8dbd7296"
 dependencies = [
  "zune-core",
 ]
+
+[[patch.unused]]
+name = "thorn-svg-core"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "thorn-svg-ffi"
+version = "0.1.0"

@@ -33,6 +33,12 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
+_No commits since the last tag._
+
+<!-- git-cliff:end -->
+
+## v0.4.0 — 2026-09-20
+
 ### Breaking
 
 - **core** — Markdown reads math ([`d4485c2`](https://github.com/diaryx-org/leaf/commit/d4485c2c5e565f1ae940f4fb266f37cd72e70240))
@@ -82,7 +88,6 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 
 - DocView carries frame, basis, row_start, replaced, row_count and src_shift; a DocView literal in Swift needs all six, and a frame from a caller that has not opted in has basis 0 and rows as before.
 
-<!-- git-cliff:end -->
 
 ## v0.3.1 — 2026-09-19
 
