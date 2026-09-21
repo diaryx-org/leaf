@@ -50,8 +50,8 @@ use leaf_core::{
     FontSize as CoreFontSize, Format, Hundredths as CoreHundredths, InlineKind,
     LineFlow as CoreLineFlow, LineHeight as CoreLineHeight, LineSpacing as CoreLineSpacing,
     MarkColor as CoreMarkColor, MarkupMode as CoreMarkupMode, MediaKind as CoreMediaKind,
-    SizeStep as CoreSizeStep, TextColor as CoreTextColor, TextCounts as CoreTextCounts, View,
-    VisualMap,
+    SizeStep as CoreSizeStep, SourceMap, TextColor as CoreTextColor, TextCounts as CoreTextCounts,
+    View, VisualMap,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -1524,6 +1524,11 @@ impl Inner {
             Some(w) => self.doc.build_visual(w),
             None => self.doc.build_visual_unwrapped(),
         }
+        // The source view's styling, keyed on the revision alone — a no-op on
+        // every call that isn't the first after an edit, like the map above.
+        if self.doc.view == View::Source {
+            self.doc.build_source();
+        }
     }
 
     /// The plain text of visual row `row` in the active view — the string the
@@ -1743,7 +1748,13 @@ impl Inner {
         // so the rows must too or the caret lands on the wrong text.
         let rows = match self.doc.view {
             View::Wysiwyg => wysiwyg_rows(&self.doc.vmap, ss, se, self.doc.highlights()),
-            View::Source => source_rows(&self.doc.source, ss, se),
+            View::Source => source_rows(
+                &self.doc.source,
+                &self.doc.smap,
+                ss,
+                se,
+                self.doc.highlights(),
+            ),
         };
         // Structural tables, for a proportional renderer that draws its own grid;
         // none in the source view (the caret rides raw pipe text there).
@@ -3699,58 +3710,68 @@ fn align_name(a: Alignment) -> String {
     .to_string()
 }
 
-/// The source rows: the raw document split on `'\n'`, every line plain body text
-/// with the `[ss, se)` selection carved out as its own run. Backs the source
-/// view, whose caret rides raw byte offsets.
-fn source_rows(source: &str, ss: usize, se: usize) -> Vec<Row> {
+/// The source rows: the raw document split on `'\n'`, each line cut into runs
+/// wherever its styling changes — the markup `smap` colours, the `[ss, se)`
+/// selection, and the host's highlights — the native counterpart of the TUI's
+/// `build_lines`. Backs the source view, whose caret rides raw byte offsets.
+///
+/// An empty `smap` — a frontend that never built one, a document with no
+/// markup — paints every line as plain text, which is what this did before
+/// the map reached it.
+fn source_rows(
+    source: &str,
+    smap: &SourceMap,
+    ss: usize,
+    se: usize,
+    hls: &[leaf_core::Highlight],
+) -> Vec<Row> {
     // Raw text carries no attributed span, so no run of it names a family and
     // the table it would be read out of is empty.
     let faces = CoreFaceTable::default();
-    let body = LStyle::default();
     let mut rows = Vec::new();
     let mut byte = 0usize;
+    // Reused across lines rather than allocated per line: a document is a few
+    // thousand of them and this is rebuilt on every whole frame.
+    let mut cuts: Vec<usize> = Vec::new();
+    // Which highlight covers a byte — first by start when several overlap,
+    // matching `Doc::highlight_at` and `runs_of` above.
+    let hl_of = |src: usize| hls.iter().position(|h| h.start <= src && src < h.end);
 
     for raw in source.split('\n') {
         let start = byte;
         let end = start + raw.len();
-        // Selection overlap with this line, in line-local byte coordinates.
-        let a = ss.clamp(start, end) - start;
-        let b = se.clamp(start, end) - start;
 
-        // The source view's rows are split from raw text, so a run's offset is
-        // simply where its slice starts — no glyphs to read one off.
-        let mut runs = Vec::new();
-        if a < b {
-            if a > 0 {
-                runs.push(make_run(
-                    raw[..a].to_string(),
-                    body,
-                    false,
-                    None,
-                    start,
-                    &faces,
-                ));
+        // Where the styling can change within this line, in document offsets:
+        // its two ends, every selection and highlight edge inside it, and every
+        // edge of the syntax map's runs. No style edge falls strictly inside a
+        // run by construction, so one probe at each run's first byte answers
+        // for all of it.
+        cuts.clear();
+        cuts.push(start);
+        cuts.push(end);
+        for at in [ss, se]
+            .into_iter()
+            .chain(hls.iter().flat_map(|h| [h.start, h.end]))
+        {
+            if at > start && at < end {
+                cuts.push(at);
             }
+        }
+        smap.edges_in(start..end, &mut cuts);
+        cuts.sort_unstable();
+        cuts.dedup();
+
+        let mut runs = Vec::new();
+        for pair in cuts.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
             runs.push(make_run(
-                raw[a..b].to_string(),
-                body,
-                true,
-                None,
-                start + a,
+                raw[a - start..b - start].to_string(),
+                smap.style_at(a),
+                a >= ss && a < se,
+                hl_of(a).map(|i| &hls[i]),
+                a,
                 &faces,
             ));
-            if b < raw.len() {
-                runs.push(make_run(
-                    raw[b..].to_string(),
-                    body,
-                    false,
-                    None,
-                    start + b,
-                    &faces,
-                ));
-            }
-        } else if !raw.is_empty() {
-            runs.push(make_run(raw.to_string(), body, false, None, start, &faces));
         }
 
         rows.push(Row {
@@ -3817,6 +3838,105 @@ mod tests {
 
     fn doc(src: &str) -> Arc<LeafDoc> {
         LeafDoc::new(src.to_string(), "markdown".to_string()).unwrap()
+    }
+
+    /// The source view's rows carry the markup's styling: a heading's `# ` is
+    /// a delimiter run, its text a heading run, and the rows split exactly at
+    /// the map's edges — the same runs the TUI paints from the same map.
+    #[test]
+    fn source_rows_carry_the_source_maps_styling() {
+        let d = doc("# Title\n\nsee [here](https://x.dev) now\n");
+        let v = d.toggle_view();
+        assert_eq!(v.view, "source");
+        fn roles(row: &Row) -> Vec<(&str, &str)> {
+            row.runs
+                .iter()
+                .map(|r| (r.text.as_str(), r.role.as_str()))
+                .collect()
+        }
+        assert_eq!(
+            roles(&v.rows[0]),
+            vec![("# ", "delimiter"), ("Title", "h1")]
+        );
+        assert_eq!(
+            roles(&v.rows[2]),
+            vec![
+                ("see ", "body"),
+                ("[", "delimiter"),
+                ("here", "link"),
+                ("](https://x.dev)", "delimiter"),
+                (" now", "body"),
+            ]
+        );
+        // Every run knows where it came from, as the rendered rows' do.
+        let src = d.source();
+        assert_eq!(v.rows[2].runs[2].src as usize, src.find("here").unwrap());
+        // The text is whole: the runs concatenate back to the line.
+        let joined: String = v.rows[2].runs.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(joined, "see [here](https://x.dev) now");
+    }
+
+    /// The selection and a host highlight split a source row on their own
+    /// edges, on top of the map's, and neither loses the styling under it.
+    #[test]
+    fn source_rows_split_on_selection_and_highlight_edges_too() {
+        let d = doc("a **bold** b\n");
+        d.toggle_view();
+        let src = d.source();
+        let b = src.find("bold").unwrap() as u32;
+        // Select "ol" — inside the bold run.
+        d.set_selection_offsets(b + 1, b + 3);
+        let v = d.set_highlights(vec![Highlight {
+            start: 0,
+            end: 3, // "a *"
+            id: "h".into(),
+            color: None,
+            marker: None,
+        }]);
+        let runs: Vec<(String, String, bool, bool, Option<String>)> = v.rows[0]
+            .runs
+            .iter()
+            .map(|r| (r.text.clone(), r.role.clone(), r.bold, r.sel, r.hl.clone()))
+            .collect();
+        let expect = |t: &str, role: &str, bold: bool, sel: bool, hl: Option<&str>| {
+            (
+                t.to_string(),
+                role.to_string(),
+                bold,
+                sel,
+                hl.map(str::to_string),
+            )
+        };
+        assert_eq!(
+            runs,
+            vec![
+                expect("a ", "body", false, false, Some("h")),
+                expect("*", "delimiter", true, false, Some("h")),
+                expect("*", "delimiter", true, false, None),
+                expect("b", "body", true, false, None),
+                expect("ol", "body", true, true, None),
+                expect("d", "body", true, false, None),
+                expect("**", "delimiter", true, false, None),
+                expect(" b", "body", false, false, None),
+            ]
+        );
+    }
+
+    /// A fenced block's body in the source view carries the grammar's tokens,
+    /// as the rendered view's does — the same `let` is a keyword in both.
+    #[cfg(feature = "syntax")]
+    #[test]
+    fn source_rows_carry_fence_tokens() {
+        let d = doc("```rust\nlet x = 1;\n```\n");
+        let v = d.toggle_view();
+        let kw = v.rows[1]
+            .runs
+            .iter()
+            .find(|r| r.text == "let")
+            .expect("a run for the keyword");
+        assert_eq!(kw.role, "code");
+        assert_eq!(kw.token.as_deref(), Some("keyword"));
+        assert_eq!(v.rows[0].runs[0].role, "delimiter", "the fence is markup");
     }
 
     /// A token splits a run the way a style does — it *is* part of the style
