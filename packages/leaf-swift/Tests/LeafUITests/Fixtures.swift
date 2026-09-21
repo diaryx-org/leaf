@@ -155,7 +155,10 @@ func docView(
     // The colour of the highlight at the caret — what a colour menu ticks.
     markColor: MarkColor? = nil,
     // Whether the caret stands in a code block — what lights the Code Block button.
-    codeBlock: Bool = false
+    codeBlock: Bool = false,
+    // Whether the caret's item has a box, and which way it faces — what lights
+    // the Checklist button.
+    task: Bool? = nil
 ) -> DocView {
     DocView(
         rows: rows,
@@ -183,6 +186,7 @@ func docView(
         view: view,
         heading: heading,
         codeBlock: codeBlock,
+        task: task,
         active: active,
         link: link,
         markColor: markColor

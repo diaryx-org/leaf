@@ -434,6 +434,30 @@ final class EditorLayoutTests: XCTestCase {
         XCTAssertLessThanOrEqual(ch, "hello".utf16.count, "hit clamps past end-of-line to the line length")
     }
 
+    // MARK: task boxes
+
+    /// A task item's box is core's `☐ ` list marker, and only its own glyphs
+    /// answer: a click on the item's text places the caret like any other, and
+    /// a plain bullet answers nothing at all.
+    func testTaskBoxAnswersOnlyOnItsOwnGlyphs() throws {
+        let layout = EditorLayout(docView([
+            row([mkRun("☐ ", role: "list", src: 0), mkRun("todo", src: 6)]),
+            row([mkRun("• ", role: "list", src: 11), mkRun("plain", src: 13)]),
+        ]), theme: theme)
+        let boxLeft = try XCTUnwrap(layout.rect(row: 0, ch: 0))
+        let boxRight = try XCTUnwrap(layout.rect(row: 0, ch: 1))
+        let onBox = CGPoint(x: (boxLeft.minX + boxRight.minX) / 2, y: boxLeft.midY)
+        XCTAssertEqual(layout.taskBox(at: onBox), 0, "the box's own glyph ticks the item it marks")
+
+        let textStart = try XCTUnwrap(layout.rect(row: 0, ch: 4))
+        let onText = CGPoint(x: textStart.minX + 8, y: textStart.midY)
+        XCTAssertNil(layout.taskBox(at: onText), "the item's text is for the caret")
+
+        let bullet = try XCTUnwrap(layout.rect(row: 1, ch: 0))
+        let onBullet = CGPoint(x: bullet.minX + 2, y: bullet.midY)
+        XCTAssertNil(layout.taskBox(at: onBullet), "a plain bullet has no box to tick")
+    }
+
     // MARK: incremental shaping cache
 
     func testCacheReusesUnchangedRowAndReshapesChangedRow() {

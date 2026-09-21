@@ -825,6 +825,14 @@ public final class LeafTextView: UIView, UITextInput {
             _ = activateMedia(hit)
             return
         }
+        // A tap on a task item's box ticks it. `textInteraction` still places
+        // its caret for the same tap — at the item's start, which is where core
+        // maps the marker's glyphs — and the tick does not move it again: core's
+        // `toggle_task_at` goes by the tap's own offset, not the caret's.
+        if !isSourceView, let box = layoutEngine.taskBox(at: point) {
+            command { $0.toggleTaskAt(offset: UInt64(box)) }
+            return
+        }
         // A tap under the last block is on nothing: the caret goes onto an
         // empty paragraph under it, opened if the document has none — the way
         // out from under a fence Return cannot leave. `textInteraction` places

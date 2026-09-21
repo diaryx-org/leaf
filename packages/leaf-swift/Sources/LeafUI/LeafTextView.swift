@@ -1333,6 +1333,19 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: false))
             return
         }
+        // A plain click on a task item's box ticks it, and is consumed whole:
+        // the caret stays where it was, because ticking a box three paragraphs
+        // away should not take the cursor with it (core's `toggle_task_at`,
+        // which is why the click carries its own offset rather than going by
+        // the caret). Only the box's own glyphs answer — a click on the item's
+        // text places the caret like any other — and only the plain click, so
+        // a shift-click still extends the selection across it.
+        if event.clickCount == 1, !event.modifierFlags.contains(.shift),
+           !event.modifierFlags.contains(.command),
+           docView.view != "source", let box = layoutEngine.taskBox(at: p) {
+            render(doc.toggleTaskAt(offset: UInt64(box)))
+            return
+        }
         // A plain click under the last block is on nothing: the caret goes onto
         // an empty paragraph under it, opened if the document has none —
         // wherever the pointer was horizontally — which is also the way out

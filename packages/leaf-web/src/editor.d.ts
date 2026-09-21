@@ -49,6 +49,12 @@ export interface EditorState {
   heading: number | null;
   /** Whether the caret stands in a code block — what lights a Code Block button. */
   codeBlock: boolean;
+  /**
+   * Whether the list item at the caret carries a checkbox, and which way it
+   * faces — `true` ticked, `false` empty, null for a plain item or no item at
+   * all. What lights a Checklist button, and ticks a Checked one.
+   */
+  task: boolean | null;
   /** Inline marks active at the caret (`"bold"`, `"italic"`, `"code"`, …). */
   active: string[];
   /** Destination of the link the caret stands in, or null. */
@@ -344,7 +350,16 @@ export class LeafEditor {
   toggleCodeBlock(): void;
   toggleList(ordered: boolean): void;
   insertLink(dest: string): void;
+  /**
+   * Give the list item at the caret a checkbox, or take its away. Gate on
+   * `capabilities().task`; `EditorState.task` is non-null while the caret
+   * stands in one.
+   */
   toggleTaskItem(): void;
+  /**
+   * Tick or untick the task item at the caret — the keyboard half of the
+   * click a rendered checkbox already answers. A no-op outside a task item.
+   */
   toggleTaskChecked(): void;
   /** Write a footnote reference at the caret, and the definition it needs. */
   insertFootnote(): void;
