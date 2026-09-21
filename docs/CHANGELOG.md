@@ -48,10 +48,12 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 - **leaf-swift** — a formula is its picture in the line and a centred block, on the Mac and on iOS ([`ac8fae4`](https://github.com/diaryx-org/leaf/commit/ac8fae499b4b82b06afeb1bce165c8fe99297792))
 - **leaf-web** — the typesetter is a second wasm module, fetched on the first formula ([`072c037`](https://github.com/diaryx-org/leaf/commit/072c0373d9edef38266b0adac7f438cd2f519842))
 - **leaf-swift** — onEdit, for a host that owns a document ([`3ccd78d`](https://github.com/diaryx-org/leaf/commit/3ccd78d5280e42156435a2bae3e75b8bbd235192))
+- **ffi** — a frame can be the change since the frame before, in both bindings ([`52d81fc`](https://github.com/diaryx-org/leaf/commit/52d81fcf8b3dcd4c0c2d70b460ce08feef4c84c4))
 
 ### Fixed
 
 - **leaf-swift** — a media answer that arrives inside the layout is handed to it, not repainted ([`42339ca`](https://github.com/diaryx-org/leaf/commit/42339cacfc0c29ff9e0ebd0fc1ccc6e9dfdd70f6))
+- **leaf-swift** — a formula's ink on paper is resolved under the sheet's appearance, not the screen's ([`d0d3303`](https://github.com/diaryx-org/leaf/commit/d0d330327d0d5ad5bcf451d76647ae25f0d66ed7))
 
 ### Changed
 
@@ -60,6 +62,8 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 - **leaf-swift** — a frame's layout is the frame before's wherever the rows are ([`cec7d32`](https://github.com/diaryx-org/leaf/commit/cec7d329d94b7fa6f89ab16043de957dbc84dad0))
 - **leaf-swift** — no recount after a repaint that only moved the caret ([`17a5060`](https://github.com/diaryx-org/leaf/commit/17a5060b5a85b818a655d8ff780da6cd5959293c))
 - **leaf-swift** — a row below a keystroke keeps its shape ([`02290d4`](https://github.com/diaryx-org/leaf/commit/02290d4ab0a17b0d046cca2a056579f85ade0982))
+- **leaf-web** — the editor takes each frame as the change since the last ([`e22b4e8`](https://github.com/diaryx-org/leaf/commit/e22b4e8d1dc47702cc8b6d65d48188d1d68b733e))
+- **leaf-swift** — a gesture's frame crosses the binding as the change since the last ([`cd707c3`](https://github.com/diaryx-org/leaf/commit/cd707c32530180cd408689dc97f9ffad505ff1f7))
 
 ### Behavioural changes
 
@@ -74,6 +78,8 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 - a host that answers onResolveMedia synchronously now sees its picture on the first layout and gets no onLoaded for it, where before the first pass drew nothing and a repaint followed.
 
 - onEdit no longer fires after a selection change; a drag or a shift-click changes what is shown of the text, not the text.
+
+- DocView carries frame, basis, row_start, replaced, row_count and src_shift; a DocView literal in Swift needs all six, and a frame from a caller that has not opted in has basis 0 and rows as before.
 
 <!-- git-cliff:end -->
 
