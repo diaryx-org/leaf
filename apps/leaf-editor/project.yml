@@ -32,7 +32,7 @@ targets:
     supportedDestinations: [macOS, iOS]
     sources:
       - path: App
-        excludes: [Media, Sample.md, Icon.svg, Info.plist]
+        excludes: [Media, Sample.md, Info.plist]
       # The sample document and its attachments, copied into the bundle so Help ▸
       # Open Sample Document has real files to resolve its relative sources
       # against.
@@ -84,7 +84,12 @@ targets:
         # rebuild of the same version still reads as a newer bundle.
         MARKETING_VERSION: "0.4.2"
         CURRENT_PROJECT_VERSION: "1"
-        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # App icon, from the Icon Composer source at App/leaf.icon (picked up
+        # automatically — it's a normal member of the App/ sources path above).
+        # actool compiles it straight into every icon size/appearance for both
+        # platforms, no .xcassets entry needed.
+        ASSETCATALOG_COMPILER_APPICON_NAME: leaf
+        ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS: YES
         # Per-key values (incl. iOS-only ones) come from INFOPLIST_KEY_* below,
         # SDK-conditional where they differ, and merge into App/Info.plist.
         GENERATE_INFOPLIST_FILE: YES
