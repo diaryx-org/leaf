@@ -625,6 +625,10 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // the checker hold offsets into has changed under them, and the host
         // has a document to save.
         let viewFlipped = frame.view != docView.view
+        // A flip shapes every row afresh: the cache is keyed by the row's
+        // value, and a line that reads the same in both views — plain prose —
+        // is set in the body face in one and the mono face in the other.
+        if viewFlipped { shapeCache.removeAll(keepingCapacity: true) }
         let change: RowChange?
         let textChanged: Bool
         if frame.isChange {

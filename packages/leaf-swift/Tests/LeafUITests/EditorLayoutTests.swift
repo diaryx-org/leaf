@@ -489,6 +489,31 @@ final class EditorLayoutTests: XCTestCase {
         XCTAssertEqual(cache.count, 3, "the cache still holds exactly the rows the frame used")
     }
 
+    /// A flip to the source view is a new surface, not a change to some rows:
+    /// a line that reads the same in both — plain prose — is shaped in the
+    /// body face in one and the mono face in the other, so nothing of the
+    /// frame before is reused across it, and the source's rows are mono.
+    func testAViewFlipReshapesEveryRowInTheMonoFace() {
+        let rows = [row([mkRun("alpha")]), row([mkRun("# T", role: "delimiter")])]
+        var cache: [Row: ShapedRow] = [:]
+        let rich = EditorLayout(docView(rows), theme: theme, wrapWidth: 400, cache: &cache)
+        XCTAssertFalse(rich.isSource)
+        // The text views empty the cache on a flip; a layout built on the
+        // frame before must not reach it either.
+        var fresh: [Row: ShapedRow] = [:]
+        let source = EditorLayout(docView(rows, view: "source"), theme: theme, wrapWidth: 400,
+                                  cache: &fresh, previous: rich)
+        XCTAssertTrue(source.isSource)
+        for (a, b) in zip(rich.rows, source.rows) {
+            XCTAssertFalse(a.attributed === b.attributed, "a row was carried across the flip")
+        }
+        let font = source.rows[0].attributed.attributes(at: 0, effectiveRange: nil)[.font] as! LeafFont
+        XCTAssertEqual(font.fontName, theme.monospaceFont(size: theme.fontSize, bold: false, italic: false).fontName,
+                       "the source view's prose is not in the mono face")
+        let body = rich.rows[0].attributed.attributes(at: 0, effectiveRange: nil)[.font] as! LeafFont
+        XCTAssertNotEqual(font.fontName, body.fontName)
+    }
+
     func testAChangedRowReflowsItselfAndWhatFollowsAndKeepsWhatCame() {
         var cache: [Row: ShapedRow] = [:]
         let long = "the quick brown fox jumps over the lazy dog and then keeps on running"

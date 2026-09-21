@@ -23,8 +23,12 @@ enum AttributedRow {
     /// colours; the row's own `heading` level sizes the *whole* line (so an inline
     /// `` `code` `` run inside a heading still reads at the heading's size),
     /// mirroring how gpui and the web shape a heading line as one unit.
-    static func make(_ row: Row, theme: EditorTheme, math: [UInt32: MathView] = [:]) -> NSAttributedString {
-        make(row.runs, row: row, theme: theme, math: math)
+    ///
+    /// `source` is the source view: every run in the mono family at the body
+    /// size, coloured by what its markup *is* — see `attributes(source:)`.
+    static func make(_ row: Row, theme: EditorTheme, math: [UInt32: MathView] = [:],
+                     source: Bool = false) -> NSAttributedString {
+        make(row.runs, row: row, theme: theme, math: math, source: source)
     }
 
     /// Build the attributed text for `runs` under `row`'s line-level styling. The
@@ -37,7 +41,7 @@ enum AttributedRow {
     /// `mathPiece` — and one that names none (the frame has not caught up, or
     /// the TeX would not typeset) stays core's own glyph.
     static func make(_ runs: [Run], row: Row, theme: EditorTheme,
-                     math: [UInt32: MathView] = [:]) -> NSAttributedString {
+                     math: [UInt32: MathView] = [:], source: Bool = false) -> NSAttributedString {
         let result = NSMutableAttributedString()
         let size = row.heading.map { theme.headingSize(Int($0)) } ?? theme.fontSize
         let isHeadingRow = row.heading != nil
@@ -48,7 +52,8 @@ enum AttributedRow {
                 size: size,
                 headingRow: isHeadingRow,
                 codeRow: row.code,
-                theme: theme
+                theme: theme,
+                source: source
             )
             if run.role == "math", let mv = math[run.src],
                let piece = mathPiece(run, view: mv, attrs: attrs, theme: theme) {
@@ -113,15 +118,26 @@ enum AttributedRow {
     }
 
     /// The AppKit attributes for a single run.
+    ///
+    /// Under `source` the run is a piece of the document as written, and this
+    /// is a code editor's surface: every run takes the mono family at the
+    /// body size, so columns line up and a line is a line. What the markup
+    /// *is* still colours it — a delimiter recedes, a link is a link, a fence's
+    /// body takes its tokens' inks — and a heading's text is bold, as its row
+    /// is in the rendered view. The inline-code pill comes off: a fence's body
+    /// arrives as a code run per line here, and a pill per line is a ladder.
     private static func attributes(
         run: Run,
         size: CGFloat,
         headingRow: Bool,
         codeRow: Bool,
-        theme: EditorTheme
+        theme: EditorTheme,
+        source: Bool = false
     ) -> [NSAttributedString.Key: Any] {
         // A heading's whole line is bold; a run's own `**bold**` adds to that.
-        let bold = run.bold || headingRow
+        // In the source view the heading is a run, not a row — `# Title` is a
+        // delimiter and a heading run on one line — so the role carries it.
+        let bold = run.bold || headingRow || (source && isHeadingRole(run.role))
         let isCode = run.role == "code"
 
         // A raised or lowered run — a footnote reference's `[1]`, an author's
@@ -153,7 +169,7 @@ enum AttributedRow {
         // glyphs *are*, and a face named on top of that is a face for the prose
         // around them. Everything else takes the generic family the run names
         // (`serif`, `cursive`, `monospace`…) and the body face when it names none.
-        attrs[.font] = isCode
+        attrs[.font] = isCode || source
             ? theme.monospaceFont(size: runSize, bold: bold, italic: italic)
             : theme.font(family: run.font, size: runSize, bold: bold, italic: run.italic)
         if run.sup {
@@ -213,7 +229,7 @@ enum AttributedRow {
         // Backgrounds honoured by `NSAttributedString.draw(with:)`. Inline `code`
         // gets a faint panel; a code *row* is drawn its own panel by the view, so
         // don't double it there. `==mark==` always gets its highlight.
-        if run.role == "code" && !codeRow {
+        if run.role == "code" && !codeRow && !source {
             attrs[.backgroundColor] = theme.codeBackground
         } else if run.role == "mark" {
             attrs[.backgroundColor] = theme.markBackground(run.markColor)
@@ -234,6 +250,11 @@ enum AttributedRow {
             attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
         }
         return attrs
+    }
+
+    /// Whether `role` is a heading's — `h1` through `h6`, as core spells them.
+    static func isHeadingRole(_ role: String) -> Bool {
+        role.count == 2 && role.hasPrefix("h") && ("1"..."6").contains(role.suffix(1))
     }
 
     /// Kern a `│ `-per-level gutter run to exactly `theme.quoteIndent` per level

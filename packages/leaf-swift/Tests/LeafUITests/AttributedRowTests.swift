@@ -108,6 +108,65 @@ final class AttributedRowTests: XCTestCase {
         XCTAssertFalse((string[.font] as! LeafFont).fontDescriptor.symbolicTraits.contains(italicTrait))
     }
 
+    // MARK: the source view
+
+    /// Attributes at index 0 of a single-run row shaped for the source view.
+    private func sourceAttrs(_ r: Run) -> [NSAttributedString.Key: Any] {
+        let s = AttributedRow.make(row([r]), theme: theme, source: true)
+        XCTAssertGreaterThan(s.length, 0)
+        return s.attributes(at: 0, effectiveRange: nil)
+    }
+
+    private func isMono(_ font: LeafFont) -> Bool {
+        font.fontName.contains("Menlo") || font.fontDescriptor.symbolicTraits.contains(monoTrait)
+    }
+
+    func testSourceViewSetsEveryRunInTheMonoFaceAtBodySize() {
+        for role in ["body", "delimiter", "link", "h1", "mark", "rule"] {
+            let font = sourceAttrs(mkRun("x", role: role))[.font] as! LeafFont
+            XCTAssertTrue(isMono(font), "\(role) is not monospaced in the source view")
+            XCTAssertEqual(font.pointSize, theme.fontSize, "\(role) was resized in the source view")
+        }
+        // And not in the rendered one, where prose is the body face.
+        XCTAssertFalse(isMono(attrs(mkRun("x"))[.font] as! LeafFont))
+    }
+
+    func testSourceViewColoursByRoleAndBoldsAHeadingsText() {
+        // The `# ` recedes; the `Title` after it is bold, as its row is rendered.
+        XCTAssertEqual(sourceAttrs(mkRun("# ", role: "delimiter"))[.foregroundColor] as? LeafColor,
+                       theme.secondaryColor)
+        let title = sourceAttrs(mkRun("Title", role: "h1"))
+        XCTAssertTrue((title[.font] as! LeafFont).fontDescriptor.symbolicTraits.contains(boldTrait))
+        XCTAssertEqual(title[.foregroundColor] as? LeafColor, theme.textColor)
+        for level in 2...6 {
+            let font = sourceAttrs(mkRun("t", role: "h\(level)"))[.font] as! LeafFont
+            XCTAssertTrue(font.fontDescriptor.symbolicTraits.contains(boldTrait), "h\(level) is not bold")
+        }
+        // A link is a link, underlined and in its colour.
+        let link = sourceAttrs(mkRun("here", role: "link"))
+        XCTAssertEqual(link[.foregroundColor] as? LeafColor, theme.linkColor)
+        XCTAssertEqual(link[.underlineStyle] as? Int, NSUnderlineStyle.single.rawValue)
+    }
+
+    func testSourceViewDropsTheCodePillAndKeepsTheTokensInk() {
+        // A fence's body is a code run per line here; no pill under each.
+        let plain = sourceAttrs(mkRun("x", role: "code"))
+        XCTAssertNil(plain[.backgroundColor])
+        XCTAssertEqual(plain[.foregroundColor] as? LeafColor, theme.codeColor)
+        let keyword = sourceAttrs(mkRun("let", role: "code", token: "keyword"))
+        XCTAssertNil(keyword[.backgroundColor])
+        XCTAssertEqual(keyword[.foregroundColor] as? LeafColor, theme.syntaxColors["keyword"])
+        // The rendered view's inline code keeps its pill.
+        XCTAssertEqual(attrs(mkRun("x", role: "code"))[.backgroundColor] as? LeafColor, theme.codeBackground)
+    }
+
+    func testSourceViewOffsetsStillAlignWithTheRunText() {
+        let s = AttributedRow.make(
+            row([mkRun("# ", role: "delimiter"), mkRun("Tïtle", role: "h1"), mkRun(" 🍃")]),
+            theme: theme, source: true)
+        XCTAssertEqual(s.length, "# Tïtle 🍃".utf16.count)
+    }
+
     func testStrikeGetsStrikethrough() {
         XCTAssertEqual(attrs(mkRun("x", strike: true))[.strikethroughStyle] as? Int, NSUnderlineStyle.single.rawValue)
     }

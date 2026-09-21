@@ -708,6 +708,11 @@ struct EditorLayout {
     /// The text column's width — what rows wrap to, and how far a thematic break
     /// or a directive outline runs.
     let columnWidth: CGFloat
+    /// Whether this is the source view's frame — every row shaped in the mono
+    /// family, coloured by its markup (see `AttributedRow.make(source:)`). Part
+    /// of what makes one layout's rows reusable by the next: a row equal in
+    /// both views is shaped differently in each.
+    let isSource: Bool
     /// Every sheet's frame, top to bottom, in layout coordinates — what the view
     /// paints the paper and its shadow onto. Empty in the continuous flow.
     let pages: [CGRect]
@@ -784,6 +789,8 @@ struct EditorLayout {
         self.columnWidth = max(0, columnWidth)
         self.setup = page
         self.sheetX = sheetX
+        let isSource = docView.view == "source"
+        self.isSource = isSource
         self.tables = docView.tables
         self.media = docView.media
         self.math = docView.math
@@ -810,7 +817,7 @@ struct EditorLayout {
         // its shape and is placed again — which after a keystroke is every row
         // below it, each of them a different value by its offsets alone.
         let previous = previous.flatMap { $0.same(column: originX, width: columnWidth,
-                                                   page: page, sheetX: sheetX) ? $0 : nil }
+                                                   page: page, sheetX: sheetX, source: isSource) ? $0 : nil }
         // Where the rows differ: as the caller read it off the frame, or by
         // comparing — and either way, narrowed by shape only over the span,
         // so a frame that changed one row compares one row.
@@ -993,7 +1000,7 @@ struct EditorLayout {
                 shaped = hit
             } else {
                 shaped = EditorLayout.shape(row, theme: theme, wrapWidth: wrapWidth,
-                                            pageBreak: isPageBreak, math: mathInline)
+                                            pageBreak: isPageBreak, math: mathInline, source: isSource)
             }
             if !hasMath { next[row] = shaped }
 
@@ -1153,8 +1160,10 @@ struct EditorLayout {
     /// of whether its rows can stand in a frame laid into it. The theme is the
     /// caller's to compare: it clears the shape cache and passes no previous
     /// frame when its metrics move.
-    private func same(column originX: CGFloat, width: CGFloat, page: PageSetup?, sheetX: CGFloat) -> Bool {
+    private func same(column originX: CGFloat, width: CGFloat, page: PageSetup?, sheetX: CGFloat,
+                      source: Bool) -> Bool {
         originX == self.originX && max(0, width) == columnWidth && page == setup && sheetX == self.sheetX
+            && source == isSource
     }
 
     /// How many of this frame's leading rows the next one, laying out
@@ -1274,11 +1283,14 @@ struct EditorLayout {
     /// A `pageBreak` row is shaped from its prefix alone for the same reason a
     /// thematic break is: the view draws a dashed hairline (or turns the page)
     /// where core's `⧉ page-break` placeholder glyphs would have gone.
+    ///
+    /// `source` shapes the row for the source view — see `AttributedRow.make`.
     static func shape(_ row: Row, theme: EditorTheme, wrapWidth: CGFloat,
-                      pageBreak: Bool = false, math: [UInt32: MathView] = [:]) -> ShapedRow {
+                      pageBreak: Bool = false, math: [UInt32: MathView] = [:],
+                      source: Bool = false) -> ShapedRow {
         let prefix = row.prefixRuns
         let drawn = row.isThematicBreak || pageBreak ? prefix : row.runs
-        let attributed = AttributedRow.make(drawn, row: row, theme: theme, math: math)
+        let attributed = AttributedRow.make(drawn, row: row, theme: theme, math: math, source: source)
 
         // The prefix's own geometry, measured on its own line: its total width (the
         // hanging indent) and where each level's bar glyph starts.
