@@ -54,6 +54,7 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 
 - **leaf-swift** — a media answer that arrives inside the layout is handed to it, not repainted ([`42339ca`](https://github.com/diaryx-org/leaf/commit/42339cacfc0c29ff9e0ebd0fc1ccc6e9dfdd70f6))
 - **leaf-swift** — a formula's ink on paper is resolved under the sheet's appearance, not the screen's ([`d0d3303`](https://github.com/diaryx-org/leaf/commit/d0d330327d0d5ad5bcf451d76647ae25f0d66ed7))
+- **leaf-swift** — an edit that shows no row is still an edit ([`bfac87f`](https://github.com/diaryx-org/leaf/commit/bfac87f886be00d6cf6ba7cea94f96db89d2d9e1))
 
 ### Changed
 
