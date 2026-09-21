@@ -33,4 +33,35 @@ final class EditorModelTests: XCTestCase {
         let roles = model.doc.setUnwrapped().rows.flatMap { $0.runs }.map(\.role)
         XCTAssertTrue(roles.contains("delimiter"), "expected revealed `*`, got roles \(roles)")
     }
+
+    /// An *edit* issued while no view exists reaches the doc too, and the
+    /// model does the view's bookkeeping in its place: the state goes dirty
+    /// and the host hears `onEdit`. The case is a host that imports a picture
+    /// asynchronously and inserts it on return — by then a picker sheet or a
+    /// push may have taken the surface down — and the insert used to vanish.
+    func testEditsApplyBeforeTheViewExists() throws {
+        let model = try LeafEditorModel(source: "A line.\n")
+        var edits = 0
+        model.onEdit = { edits += 1 }
+        XCTAssertFalse(model.state.dirty)
+
+        model.insertMedia(.image, destination: "attachments/photo.jpg")
+
+        XCTAssertTrue(model.source().contains("attachments/photo.jpg"), model.source())
+        XCTAssertTrue(model.state.dirty)
+        XCTAssertEqual(edits, 1)
+    }
+
+    /// A command that changes nothing is not an edit: no `onEdit`, and the
+    /// state is simply republished.
+    func testANoOpCommandIsNotAnEdit() throws {
+        let model = try LeafEditorModel(source: "A line.\n")
+        var edits = 0
+        model.onEdit = { edits += 1 }
+
+        model.tableDeleteRow()   // no table under the caret
+
+        XCTAssertEqual(edits, 0)
+        XCTAssertFalse(model.state.dirty)
+    }
 }
