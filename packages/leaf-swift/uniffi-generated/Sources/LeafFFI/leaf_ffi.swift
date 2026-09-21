@@ -1355,6 +1355,14 @@ public protocol LeafDocProtocol : AnyObject {
     func utf16IndexForOffset(off: UInt32)  -> UInt32
     
     /**
+     * `utf16_index_for_offset` over many offsets in one crossing — the index
+     * of each, in the order given. For a caller that converts every run of
+     * the frame at once, as a spell checker masking the visible text does:
+     * thousands of runs, and a call across the binding for each was the cost.
+     */
+    func utf16IndicesForOffsets(offs: [UInt32])  -> [UInt32]
+    
+    /**
      * The offset one navigable row up/down from `off`, keeping its column —
      * `position(from:in: .up/.down)`. `None` at the top/bottom edge.
      */
@@ -2914,6 +2922,20 @@ open func utf16IndexForOffset(off: UInt32) -> UInt32 {
     return try!  FfiConverterUInt32.lift(try! rustCall() {
     uniffi_leaf_ffi_fn_method_leafdoc_utf16_index_for_offset(self.uniffiClonePointer(),
         FfiConverterUInt32.lower(off),$0
+    )
+})
+}
+    
+    /**
+     * `utf16_index_for_offset` over many offsets in one crossing — the index
+     * of each, in the order given. For a caller that converts every run of
+     * the frame at once, as a spell checker masking the visible text does:
+     * thousands of runs, and a call across the binding for each was the cost.
+     */
+open func utf16IndicesForOffsets(offs: [UInt32]) -> [UInt32] {
+    return try!  FfiConverterSequenceUInt32.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_utf16_indices_for_offsets(self.uniffiClonePointer(),
+        FfiConverterSequenceUInt32.lower(offs),$0
     )
 })
 }
@@ -8412,6 +8434,31 @@ fileprivate struct FfiConverterOptionTypeTextColor: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceUInt32: FfiConverterRustBuffer {
+    typealias SwiftType = [UInt32]
+
+    public static func write(_ value: [UInt32], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterUInt32.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [UInt32] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [UInt32]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterUInt32.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
     typealias SwiftType = [String]
 
@@ -9182,6 +9229,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_utf16_index_for_offset() != 5751) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_utf16_indices_for_offsets() != 33925) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_vertical_offset() != 6159) {

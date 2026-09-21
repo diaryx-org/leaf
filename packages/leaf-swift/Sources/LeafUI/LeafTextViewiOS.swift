@@ -1130,8 +1130,9 @@ public final class LeafTextView: UIView, UITextInput {
         footnotePeek.hide()
         let viewFlipped = view.view != docView.view
         // The document changed, as distinct from what is shown of it: the flip
-        // rewrites every row and edits nothing.
-        let edited = !viewFlipped && view.rows != docView.rows
+        // rewrites every row and edits nothing, and a selection changes what is
+        // shown of the text, not the text — see `Row.sameText`.
+        let edited = !viewFlipped && !view.rows.sameText(as: docView.rows)
         docView = view
         readingLines = nil
         // The input traits answer differently per view (see `isSourceView`), and

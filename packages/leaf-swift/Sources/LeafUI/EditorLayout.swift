@@ -123,6 +123,77 @@ extension Row {
             run.role == "rule" && !run.text.isEmpty && run.text.allSatisfy { $0 == "─" }
         }
     }
+
+    /// Whether this row is `other` but for the selection: the same text in the
+    /// same marks, whether or not any of it is selected. `==` says no to a row
+    /// a drag has just crossed — the selection splits its runs and flags them —
+    /// and a view reading `==` as "the text changed" would re-check the
+    /// spelling of the whole document, and tell its host of an edit, on every
+    /// step of the drag. This is the question those want answered.
+    ///
+    /// Read by merging each row's runs back together with the selection
+    /// forgotten: two runs the selection parted differ from the one they were
+    /// only in `sel` and in the second's `src`, which is the first's plus its
+    /// text. So a run whose every other field matches its predecessor's is
+    /// its predecessor's text continued.
+    func sameText(as other: Row) -> Bool {
+        var mine = self, theirs = other
+        mine.runs = []
+        theirs.runs = []
+        guard mine == theirs else { return false }
+        return Row.mergedRuns(runs) == Row.mergedRuns(other.runs)
+    }
+
+    private static func mergedRuns(_ runs: [Run]) -> [Run] {
+        var out: [Run] = []
+        out.reserveCapacity(runs.count)
+        for var run in runs {
+            run.sel = false
+            if var last = out.last {
+                var next = run
+                next.text = last.text
+                next.src = last.src
+                if next == last {
+                    last.text += run.text
+                    out[out.count - 1] = last
+                    continue
+                }
+            }
+            out.append(run)
+        }
+        return out
+    }
+}
+
+extension Array where Element == Row {
+    /// Where these rows differ from `old`, as the range of each that is
+    /// outside their common prefix and suffix — the rows an edit or a
+    /// selection touched — or `nil` when they are the same rows. What a frame
+    /// reuses of the frame before is everything outside this.
+    ///
+    /// A row inside the range may still be `==` to the one it stands
+    /// opposite: the suffix is matched from the end and the prefix from the
+    /// start, and a change in the middle leaves the rows between as changed.
+    func changedRange(from old: [Row]) -> (new: Range<Int>, old: Range<Int>)? {
+        var prefix = 0
+        let shortest = Swift.min(count, old.count)
+        while prefix < shortest && self[prefix] == old[prefix] { prefix += 1 }
+        if prefix == count && prefix == old.count { return nil }
+        var suffix = 0
+        while suffix < shortest - prefix
+            && self[count - 1 - suffix] == old[old.count - 1 - suffix] {
+            suffix += 1
+        }
+        return (prefix..<(count - suffix), prefix..<(old.count - suffix))
+    }
+
+    /// Whether these rows are `old` but for the selection — `Row.sameText`
+    /// over the rows `changedRange` names, since the rest are `==` already.
+    func sameText(as old: [Row]) -> Bool {
+        guard let (new, was) = changedRange(from: old) else { return true }
+        guard new.count == was.count else { return false }
+        return zip(self[new], old[was]).allSatisfy { $0.sameText(as: $1) }
+    }
 }
 
 /// One pixel-wrapped visual line within a logical row. Its `CTLine` is built over

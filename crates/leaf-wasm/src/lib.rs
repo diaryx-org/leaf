@@ -2114,6 +2114,14 @@ impl LeafDoc {
         }
     }
 
+    /// `utf16_index_for_offset` over many offsets in one crossing — the index
+    /// of each, in the order given. See `leaf-ffi`'s method of the same name.
+    pub fn utf16_indices_for_offsets(&mut self, offs: Vec<u32>) -> Vec<u32> {
+        offs.into_iter()
+            .map(|off| self.utf16_index_for_offset(off as usize) as u32)
+            .collect()
+    }
+
     /// The inverse of `utf16_index_for_offset`: the source offset (a caret stop)
     /// of the visible character at UTF-16 `index`, or the document's end stop at
     /// or past the end of the text.
