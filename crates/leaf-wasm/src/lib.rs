@@ -53,7 +53,7 @@ use leaf_core::style::{
 use leaf_core::wysiwyg::text_width;
 use leaf_core::{
     Alignment, BlockClass, BlockKind, ColorScheme, Doc, Format, Glyph, Highlight as CoreHighlight,
-    InlineKind, LineFlow as CoreLineFlow, MarkupMode as CoreMarkupMode, MediaKind,
+    InlineKind, LineFlow as CoreLineFlow, MarkupMode as CoreMarkupMode, MediaKind, SourceMap,
     TextCounts as CoreTextCounts, View, VisualMap,
 };
 use serde::{Deserialize, Serialize};
@@ -1101,6 +1101,11 @@ impl LeafDoc {
     /// grid regardless of the order JS calls them in.
     fn sync(&mut self) {
         self.doc.build_visual(self.width);
+        // The source view's styling, keyed on the revision alone — a no-op on
+        // every call that isn't the first after an edit, like the map above.
+        if self.doc.view == View::Source {
+            self.doc.build_source();
+        }
     }
 
     /// The plain text of visual row `row` in the active view — the same string
@@ -1347,7 +1352,13 @@ impl LeafDoc {
         // text. See `Doc::caret_pos`.
         let rows = match self.doc.view {
             View::Wysiwyg => wysiwyg_rows(&self.doc.vmap, ss, se, self.doc.highlights()),
-            View::Source => source_rows(&self.doc.source, ss, se),
+            View::Source => source_rows(
+                &self.doc.source,
+                &self.doc.smap,
+                ss,
+                se,
+                self.doc.highlights(),
+            ),
         };
 
         let (caret_row, caret_col) = self.doc.caret_pos();
@@ -2696,36 +2707,69 @@ fn wysiwyg_rows(vmap: &VisualMap, ss: usize, se: usize, hls: &[CoreHighlight]) -
         .collect()
 }
 
-/// The source rows: the raw document split on `'\n'`, every line plain body text
-/// with the `[ss, se)` selection carved out as its own run — the browser
-/// counterpart of the TUI's `build_lines`. This is what backs the source view,
-/// whose caret rides raw byte offsets (see `Doc::caret_pos`).
-fn source_rows(source: &str, ss: usize, se: usize) -> Vec<Row> {
+/// The source rows: the raw document split on `'\n'`, each line cut into runs
+/// wherever its styling changes — the markup `smap` colours, the `[ss, se)`
+/// selection, and the host's highlights — the browser counterpart of the TUI's
+/// `build_lines`. This is what backs the source view, whose caret rides raw
+/// byte offsets (see `Doc::caret_pos`).
+///
+/// An empty `smap` — a frontend that never built one, a document with no
+/// markup — paints every line as plain text, which is what this did before
+/// the map reached it.
+fn source_rows(
+    source: &str,
+    smap: &SourceMap,
+    ss: usize,
+    se: usize,
+    hls: &[CoreHighlight],
+) -> Vec<Row> {
     // Raw text carries no attributed span, so no run of it names a family and
     // the table it would be read out of is empty.
     let faces = CoreFaceTable::default();
-    let body = LStyle::default();
     let mut rows = Vec::new();
     let mut byte = 0usize;
+    // Reused across lines rather than allocated per line: a document is a few
+    // thousand of them and this is rebuilt on every whole frame.
+    let mut cuts: Vec<usize> = Vec::new();
+    // Which highlight covers a byte — first by start when several overlap,
+    // matching `Doc::highlight_at` and `runs_of` above.
+    let hl_of = |src: usize| hls.iter().position(|h| h.start <= src && src < h.end);
 
     for raw in source.split('\n') {
         let start = byte;
         let end = start + raw.len();
-        // Selection overlap with this line, in line-local byte coordinates.
-        let a = ss.clamp(start, end) - start;
-        let b = se.clamp(start, end) - start;
+
+        // Where the styling can change within this line, in document offsets:
+        // its two ends, every selection and highlight edge inside it, and every
+        // edge of the syntax map's runs. No style edge falls strictly inside a
+        // run by construction, so one probe at each run's first byte answers
+        // for all of it.
+        cuts.clear();
+        cuts.push(start);
+        cuts.push(end);
+        for at in [ss, se]
+            .into_iter()
+            .chain(hls.iter().flat_map(|h| [h.start, h.end]))
+        {
+            if at > start && at < end {
+                cuts.push(at);
+            }
+        }
+        smap.edges_in(start..end, &mut cuts);
+        cuts.sort_unstable();
+        cuts.dedup();
 
         let mut runs = Vec::new();
-        if a < b {
-            if a > 0 {
-                runs.push(make_run(raw[..a].to_string(), body, false, None, 0, &faces));
-            }
-            runs.push(make_run(raw[a..b].to_string(), body, true, None, 0, &faces));
-            if b < raw.len() {
-                runs.push(make_run(raw[b..].to_string(), body, false, None, 0, &faces));
-            }
-        } else if !raw.is_empty() {
-            runs.push(make_run(raw.to_string(), body, false, None, 0, &faces));
+        for pair in cuts.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            runs.push(make_run(
+                raw[a - start..b - start].to_string(),
+                smap.style_at(a),
+                a >= ss && a < se,
+                hl_of(a).map(|i| &hls[i]),
+                a,
+                &faces,
+            ));
         }
 
         rows.push(Row {
@@ -3059,6 +3103,77 @@ mod tests {
         let mut doc = Doc::from_source(source.to_string(), Format::Markdown).unwrap();
         doc.build_visual(80);
         doc
+    }
+
+    /// The source view's rows carry the markup's styling and split at its
+    /// edges, the selection's and a highlight's — the same runs the FFI hands
+    /// Swift and the TUI paints, from the same map.
+    #[test]
+    fn source_rows_carry_the_source_maps_styling() {
+        let mut doc = Doc::from_source("a **bold** b\n".to_string(), Format::Markdown).unwrap();
+        doc.build_source();
+        let src = doc.source.clone();
+        let b = src.find("bold").unwrap();
+        let hls = [CoreHighlight {
+            start: 0,
+            end: 3, // "a *"
+            id: "h".into(),
+            color: None,
+            marker: None,
+        }];
+        // The selection is "ol", inside the bold run.
+        let rows = source_rows(&src, &doc.smap, b + 1, b + 3, &hls);
+        let runs: Vec<(&str, &str, bool, bool, Option<&str>)> = rows[0]
+            .runs
+            .iter()
+            .map(|r| {
+                (
+                    r.text.as_str(),
+                    r.role.as_str(),
+                    r.bold,
+                    r.sel,
+                    r.hl.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            runs,
+            vec![
+                ("a ", "body", false, false, Some("h")),
+                ("*", "delimiter", true, false, Some("h")),
+                ("*", "delimiter", true, false, None),
+                ("b", "body", true, false, None),
+                ("ol", "body", true, true, None),
+                ("d", "body", true, false, None),
+                ("**", "delimiter", true, false, None),
+                (" b", "body", false, false, None),
+            ]
+        );
+        // Every run knows where it came from, as the rendered rows' do.
+        assert_eq!(rows[0].runs[4].src, b + 1);
+        // And an empty map paints plain text, as this always did.
+        let plain = source_rows(&src, &SourceMap::default(), 0, 0, &[]);
+        assert_eq!(plain[0].runs.len(), 1);
+        assert_eq!(plain[0].runs[0].role, "body");
+    }
+
+    /// A fenced block's body carries the grammar's tokens in the source view
+    /// as it does in the rendered one.
+    #[cfg(feature = "syntax")]
+    #[test]
+    fn source_rows_carry_fence_tokens() {
+        let mut doc =
+            Doc::from_source("```rust\nlet x = 1;\n```\n".to_string(), Format::Markdown).unwrap();
+        doc.build_source();
+        let rows = source_rows(&doc.source, &doc.smap, 0, 0, &[]);
+        let kw = rows[1]
+            .runs
+            .iter()
+            .find(|r| r.text == "let")
+            .expect("a run for the keyword");
+        assert_eq!(kw.role, "code");
+        assert_eq!(kw.token.as_deref(), Some("keyword"));
+        assert_eq!(rows[0].runs[0].role, "delimiter", "the fence is markup");
     }
 
     #[test]
