@@ -647,6 +647,15 @@ public protocol LeafDocProtocol : AnyObject {
     func clickCh(row: UInt32, ch: UInt32, extend: Bool)  -> DocView
     
     /**
+     * A click in the blank space under the last row — the caret goes onto an
+     * empty paragraph under the last block, opening one if the document does
+     * not end with one, wherever the pointer was horizontally. See
+     * [`leaf_core::Doc::click_past_end`]. The frontend decides "under": the
+     * point is below every line box it laid out.
+     */
+    func clickPastEnd()  -> DocView
+    
+    /**
      * Words, characters, and paragraphs over the whole document — the numbers
      * a status bar or an inspector puts next to a piece of writing.
      *
@@ -1330,6 +1339,14 @@ public protocol LeafDocProtocol : AnyObject {
     
     func toggleCode()  -> DocView
     
+    /**
+     * Toggle a fenced code block over the selection or the block at the caret;
+     * on a blank line, open an empty one with the caret inside. See
+     * [`leaf_core::Doc::toggle_code_block`]. Gate on
+     * [`Capabilities::code_block`]; light from [`DocView::code_block`].
+     */
+    func toggleCodeBlock()  -> DocView
+    
     func toggleItalic()  -> DocView
     
     func toggleList(ordered: Bool)  -> DocView
@@ -1634,6 +1651,20 @@ open func clickCh(row: UInt32, ch: UInt32, extend: Bool) -> DocView {
         FfiConverterUInt32.lower(row),
         FfiConverterUInt32.lower(ch),
         FfiConverterBool.lower(extend),$0
+    )
+})
+}
+    
+    /**
+     * A click in the blank space under the last row — the caret goes onto an
+     * empty paragraph under the last block, opening one if the document does
+     * not end with one, wherever the pointer was horizontally. See
+     * [`leaf_core::Doc::click_past_end`]. The frontend decides "under": the
+     * point is below every line box it laid out.
+     */
+open func clickPastEnd() -> DocView {
+    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_click_past_end(self.uniffiClonePointer(),$0
     )
 })
 }
@@ -2884,6 +2915,19 @@ open func toggleCode() -> DocView {
 })
 }
     
+    /**
+     * Toggle a fenced code block over the selection or the block at the caret;
+     * on a blank line, open an empty one with the caret inside. See
+     * [`leaf_core::Doc::toggle_code_block`]. Gate on
+     * [`Capabilities::code_block`]; light from [`DocView::code_block`].
+     */
+open func toggleCodeBlock() -> DocView {
+    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_toggle_code_block(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
 open func toggleItalic() -> DocView {
     return try!  FfiConverterTypeDocView.lift(try! rustCall() {
     uniffi_leaf_ffi_fn_method_leafdoc_toggle_italic(self.uniffiClonePointer(),$0
@@ -3208,6 +3252,12 @@ public struct Capabilities {
      * not, so the button goes rather than dims into a refusal.
      */
     public var footnote: Bool
+    /**
+     * [`LeafDoc::toggle_code_block`]. Markdown and djot spell the fence; HTML
+     * rebuilds the block as `<pre><code>`. Pair with [`DocView::code_block`]
+     * for the button's lit state.
+     */
+    public var codeBlock: Bool
     public var codeLanguage: Bool
     /**
      * The grid controls. Gate them on this *and* [`LeafDoc::caret_in_table`]:
@@ -3284,7 +3334,12 @@ public struct Capabilities {
         /**
          * [`LeafDoc::insert_footnote`]. Markdown and djot spell the pair; HTML does
          * not, so the button goes rather than dims into a refusal.
-         */footnote: Bool, codeLanguage: Bool, 
+         */footnote: Bool, 
+        /**
+         * [`LeafDoc::toggle_code_block`]. Markdown and djot spell the fence; HTML
+         * rebuilds the block as `<pre><code>`. Pair with [`DocView::code_block`]
+         * for the button's lit state.
+         */codeBlock: Bool, codeLanguage: Bool, 
         /**
          * The grid controls. Gate them on this *and* [`LeafDoc::caret_in_table`]:
          * this asks whether the format's tables are editable, that whether the
@@ -3344,6 +3399,7 @@ public struct Capabilities {
         self.image = image
         self.thematicBreak = thematicBreak
         self.footnote = footnote
+        self.codeBlock = codeBlock
         self.codeLanguage = codeLanguage
         self.table = table
         self.cellLineBreak = cellLineBreak
@@ -3414,6 +3470,9 @@ extension Capabilities: Equatable, Hashable {
         if lhs.footnote != rhs.footnote {
             return false
         }
+        if lhs.codeBlock != rhs.codeBlock {
+            return false
+        }
         if lhs.codeLanguage != rhs.codeLanguage {
             return false
         }
@@ -3463,6 +3522,7 @@ extension Capabilities: Equatable, Hashable {
         hasher.combine(image)
         hasher.combine(thematicBreak)
         hasher.combine(footnote)
+        hasher.combine(codeBlock)
         hasher.combine(codeLanguage)
         hasher.combine(table)
         hasher.combine(cellLineBreak)
@@ -3501,6 +3561,7 @@ public struct FfiConverterTypeCapabilities: FfiConverterRustBuffer {
                 image: FfiConverterBool.read(from: &buf), 
                 thematicBreak: FfiConverterBool.read(from: &buf), 
                 footnote: FfiConverterBool.read(from: &buf), 
+                codeBlock: FfiConverterBool.read(from: &buf), 
                 codeLanguage: FfiConverterBool.read(from: &buf), 
                 table: FfiConverterBool.read(from: &buf), 
                 cellLineBreak: FfiConverterBool.read(from: &buf), 
@@ -3532,6 +3593,7 @@ public struct FfiConverterTypeCapabilities: FfiConverterRustBuffer {
         FfiConverterBool.write(value.image, into: &buf)
         FfiConverterBool.write(value.thematicBreak, into: &buf)
         FfiConverterBool.write(value.footnote, into: &buf)
+        FfiConverterBool.write(value.codeBlock, into: &buf)
         FfiConverterBool.write(value.codeLanguage, into: &buf)
         FfiConverterBool.write(value.table, into: &buf)
         FfiConverterBool.write(value.cellLineBreak, into: &buf)
@@ -3913,6 +3975,13 @@ public struct DocView {
      */
     public var heading: UInt32?
     /**
+     * Whether the caret stands in a code block — the toolbar lights its Code
+     * Block button from it. Rides the frame for `heading`'s reason: walking
+     * the caret into a fence changes no mark, and a button asking for itself
+     * would never be told.
+     */
+    public var codeBlock: Bool
+    /**
      * The inline marks active at the caret (`bold`, `italic`, `code`, …) — the
      * toolbar lights the matching buttons.
      */
@@ -4063,6 +4132,12 @@ public struct DocView {
          * The heading level at the caret, if any — a toolbar lights H1…H6 from it.
          */heading: UInt32?, 
         /**
+         * Whether the caret stands in a code block — the toolbar lights its Code
+         * Block button from it. Rides the frame for `heading`'s reason: walking
+         * the caret into a fence changes no mark, and a button asking for itself
+         * would never be told.
+         */codeBlock: Bool, 
+        /**
          * The inline marks active at the caret (`bold`, `italic`, `code`, …) — the
          * toolbar lights the matching buttons.
          */active: [String], 
@@ -4120,6 +4195,7 @@ public struct DocView {
         self.canRedo = canRedo
         self.view = view
         self.heading = heading
+        self.codeBlock = codeBlock
         self.active = active
         self.link = link
         self.markColor = markColor
@@ -4199,6 +4275,9 @@ extension DocView: Equatable, Hashable {
         if lhs.heading != rhs.heading {
             return false
         }
+        if lhs.codeBlock != rhs.codeBlock {
+            return false
+        }
         if lhs.active != rhs.active {
             return false
         }
@@ -4235,6 +4314,7 @@ extension DocView: Equatable, Hashable {
         hasher.combine(canRedo)
         hasher.combine(view)
         hasher.combine(heading)
+        hasher.combine(codeBlock)
         hasher.combine(active)
         hasher.combine(link)
         hasher.combine(markColor)
@@ -4272,6 +4352,7 @@ public struct FfiConverterTypeDocView: FfiConverterRustBuffer {
                 canRedo: FfiConverterBool.read(from: &buf), 
                 view: FfiConverterString.read(from: &buf), 
                 heading: FfiConverterOptionUInt32.read(from: &buf), 
+                codeBlock: FfiConverterBool.read(from: &buf), 
                 active: FfiConverterSequenceString.read(from: &buf), 
                 link: FfiConverterOptionString.read(from: &buf), 
                 markColor: FfiConverterOptionTypeMarkColor.read(from: &buf)
@@ -4302,6 +4383,7 @@ public struct FfiConverterTypeDocView: FfiConverterRustBuffer {
         FfiConverterBool.write(value.canRedo, into: &buf)
         FfiConverterString.write(value.view, into: &buf)
         FfiConverterOptionUInt32.write(value.heading, into: &buf)
+        FfiConverterBool.write(value.codeBlock, into: &buf)
         FfiConverterSequenceString.write(value.active, into: &buf)
         FfiConverterOptionString.write(value.link, into: &buf)
         FfiConverterOptionTypeMarkColor.write(value.markColor, into: &buf)
@@ -9128,6 +9210,9 @@ private var initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_click_ch() != 39201) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_click_past_end() != 4646) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_counts() != 50707) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -9417,6 +9502,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_toggle_code() != 58218) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_toggle_code_block() != 14995) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_toggle_italic() != 51327) {

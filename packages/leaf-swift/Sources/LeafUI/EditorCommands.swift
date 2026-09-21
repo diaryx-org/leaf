@@ -172,6 +172,14 @@ private struct FormatMenuItems: View {
         Button(loc("menu.blockQuote", "Block Quote")) { editor.toggleBlockquote() }
             .keyboardShortcut("9", modifiers: [.command, .shift])
             .disabled(!editable)
+        // Ticked while the caret stands in one, the way the marks above are:
+        // this is the rich view's one door into a code block (a typed backtick
+        // is escaped there), and a menu item that only ever said "make one"
+        // would leave no sign that the caret was already in one.
+        Toggle(loc("menu.codeBlock", "Code Block"),
+               isOn: block(editor.state.codeBlock) { editor.toggleCodeBlock() })
+            .keyboardShortcut("c", modifiers: [.command, .option])
+            .disabled(!editable || !editor.capabilities.codeBlock)
         Button(loc("menu.indent", "Indent")) { editor.indent() }
             .keyboardShortcut("]", modifiers: .command)
             .disabled(!editable)
@@ -271,6 +279,7 @@ private struct FormatMenuItems: View {
             Button(loc("menu.bulletList", "Bullet List")) {}.keyboardShortcut("8", modifiers: [.command, .shift])
             Button(loc("menu.numberedList", "Numbered List")) {}.keyboardShortcut("7", modifiers: [.command, .shift])
             Button(loc("menu.blockQuote", "Block Quote")) {}.keyboardShortcut("9", modifiers: [.command, .shift])
+            Toggle(loc("menu.codeBlock", "Code Block"), isOn: .constant(false)).keyboardShortcut("c", modifiers: [.command, .option])
             Button(loc("menu.indent", "Indent")) {}.keyboardShortcut("]", modifiers: .command)
             Button(loc("menu.outdent", "Outdent")) {}.keyboardShortcut("[", modifiers: .command)
             Divider()

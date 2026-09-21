@@ -823,6 +823,17 @@ public final class LeafTextView: UIView, UITextInput {
         // picture box asks the host for it.
         if let hit = layoutEngine.mediaBox(at: point) {
             _ = activateMedia(hit)
+            return
+        }
+        // A tap under the last block is on nothing: the caret goes onto an
+        // empty paragraph under it, opened if the document has none — the way
+        // out from under a fence Return cannot leave. `textInteraction` places
+        // its caret through `closestPosition(to:)`, which answers the
+        // document's end for the same point, so the two land in the same place
+        // whichever runs first: at the end that already was, or at the end
+        // this just opened.
+        if !isSourceView, layoutEngine.isPastEnd(point) {
+            command { $0.clickPastEnd() }
         }
     }
 
@@ -1881,6 +1892,12 @@ public final class LeafTextView: UIView, UITextInput {
         // offset; elsewhere it's the plain row/ch hit-test.
         if let off = layoutEngine.tableHitOffset(point) {
             return LeafTextPosition(off)
+        }
+        // Under the last block the nearest position is the document's end,
+        // wherever the finger is horizontally — see `handleMediaTap`, which
+        // opens the paragraph there when a plain tap asks for it.
+        if !isSourceView, layoutEngine.isPastEnd(point) {
+            return LeafTextPosition(Int(doc.docEndOffset()))
         }
         let (row, ch) = layoutEngine.hit(point)
         return LeafTextPosition(Int(doc.offsetForPos(row: UInt32(row), ch: UInt32(ch))))

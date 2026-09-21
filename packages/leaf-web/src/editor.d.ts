@@ -47,6 +47,8 @@ export interface EditorState {
   readOnly: boolean;
   /** Heading level at the caret (1–6), or null outside a heading. */
   heading: number | null;
+  /** Whether the caret stands in a code block — what lights a Code Block button. */
+  codeBlock: boolean;
   /** Inline marks active at the caret (`"bold"`, `"italic"`, `"code"`, …). */
   active: string[];
   /** Destination of the link the caret stands in, or null. */
@@ -334,6 +336,12 @@ export class LeafEditor {
   /** Toggle the block to a heading of `level` (1–6); the active level toggles off. */
   setHeading(level: number): void;
   toggleBlockquote(): void;
+  /**
+   * Toggle a fenced code block over the selection or the block at the caret; on
+   * a blank line, open an empty one with the caret inside. Gate on
+   * `capabilities().code_block`; `EditorState.codeBlock` lights the button.
+   */
+  toggleCodeBlock(): void;
   toggleList(ordered: boolean): void;
   insertLink(dest: string): void;
   toggleTaskItem(): void;
@@ -415,6 +423,7 @@ export class LeafEditor {
 // hosts drive selection through the caret/command API above.
 //
 // Keyboard: ⌘B/I/U, ⌘⇧C code, ⌘⇧M highlight, ⌘⇧X strike, ⌘⌥0–6 paragraph and
-// headings, ⌘⇧7/8 lists, ⌘[ / ⌘] outdent/indent, ⌘E view, ⌘Z/⌘⇧Z/⌘Y history,
+// headings, ⌘⌥C code block, ⌘⇧7/8 lists, ⌘[ / ⌘] outdent/indent, ⌘E view,
+// ⌘Z/⌘⇧Z/⌘Y history,
 // ⌘⇧V paste as plain text, Tab/⇧Tab indent or the next cell. Ctrl for ⌘ off a
 // Mac. ⌘-click follows a link or a footnote.

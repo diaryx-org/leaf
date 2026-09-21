@@ -153,7 +153,9 @@ func docView(
     canUndo: Bool = false,
     canRedo: Bool = false,
     // The colour of the highlight at the caret — what a colour menu ticks.
-    markColor: MarkColor? = nil
+    markColor: MarkColor? = nil,
+    // Whether the caret stands in a code block — what lights the Code Block button.
+    codeBlock: Bool = false
 ) -> DocView {
     DocView(
         rows: rows,
@@ -180,6 +182,7 @@ func docView(
         canRedo: canRedo,
         view: view,
         heading: heading,
+        codeBlock: codeBlock,
         active: active,
         link: link,
         markColor: markColor

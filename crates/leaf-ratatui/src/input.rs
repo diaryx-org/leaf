@@ -192,6 +192,9 @@ pub fn handle_key(doc: &mut Doc, key: KeyEvent, _state: &mut EditorState) -> Out
             // line across the prose and ⌥⇧R rules one across the paper, which is
             // the relation the shift is standing for.
             KeyCode::Char('R') => doc.insert_page_break(),
+            // ⌥⇧C: a code block, shifted onto the ⌥c that marks inline code —
+            // the same relation, a span's mark to the block's.
+            KeyCode::Char('C') => doc.toggle_code_block(),
             // ⌥g: follow whatever the caret is standing on — a footnote
             // reference to its note, a note back to its reference, a `#fragment`
             // link to the heading it names.
@@ -284,15 +287,15 @@ fn asks_to_edit(key: &KeyEvent) -> bool {
             // ⌥←/⌥→ are word *motion* and stay; the two word deletes beside
             // them, and the in-cell line break, do not.
             KeyCode::Backspace | KeyCode::Delete | KeyCode::Enter => true,
-            // The formatting toolbar, the block family, the task pair, plain
-            // paste, the three prompts that insert something, and the two
-            // presentation verbs (⌥a alignment, ⌥⇧R a page break). What is
-            // missing from this list is the whole of the reading half: ⌥w,
-            // ⌥⇧W, ⌥⇧F, ⌥g, ⌥p, ⌥h.
+            // The formatting toolbar, the block family (⌥⇧C the code block
+            // among it), the task pair, plain paste, the three prompts that
+            // insert something, and the two presentation verbs (⌥a alignment,
+            // ⌥⇧R a page break). What is missing from this list is the whole
+            // of the reading half: ⌥w, ⌥⇧W, ⌥⇧F, ⌥g, ⌥p, ⌥h.
             KeyCode::Char(c) => matches!(
                 c,
                 'b' | 'i' | 'c' | 'm' | 'd' | 'u' | '0'
-                    ..='9' | 'x' | 't' | 'v' | 'k' | 'l' | 'e' | 'f' | 'r' | 'a' | 'R'
+                    ..='9' | 'x' | 't' | 'v' | 'k' | 'l' | 'e' | 'f' | 'r' | 'a' | 'R' | 'C'
             ),
             _ => false,
         };
@@ -384,6 +387,16 @@ pub fn handle_mouse(doc: &mut Doc, m: MouseEvent, state: &mut EditorState) -> Mo
             // from the same `click_at` hit-test so the position → offset mapping
             // lives in one place. The block, not the source line: a paragraph
             // broken over several lines is one paragraph.
+            // A plain click under the last row is on nothing: the caret goes
+            // onto an empty paragraph under the last block, opened if the
+            // document has none — whichever column the pointer was in — which
+            // is also the way out from under a fence Enter cannot leave. The
+            // rich view only; the source view is a text editor, and a click
+            // under its last line lands on that line.
+            if !shift && count == 1 && doc.view == View::Wysiwyg && row >= doc.vmap.rows.len() {
+                doc.click_past_end();
+                return MouseOutcome::Continue;
+            }
             click_at(doc, state, row, col, shift);
             match count {
                 2 => doc.select_word_at(doc.caret),
@@ -974,6 +987,46 @@ mod tests {
         let mut state = EditorState::new();
         handle_key(&mut d, alt('a'), &mut state);
         assert_eq!(d.source, "hi\n");
+    }
+
+    /// ⌥⇧C fences the block, beside the ⌥c that marks a span as code.
+    #[test]
+    fn alt_shift_c_fences_the_block() {
+        let mut d = doc("plain\n");
+        let mut state = EditorState::new();
+        d.caret = 2;
+        handle_key(
+            &mut d,
+            KeyEvent::new(KeyCode::Char('C'), KeyModifiers::ALT | KeyModifiers::SHIFT),
+            &mut state,
+        );
+        assert_eq!(d.source, "```\nplain\n```\n");
+    }
+
+    /// A click under the last row opens an empty paragraph there, whatever the
+    /// column, rather than landing on the last line at that column.
+    #[test]
+    fn a_click_under_the_last_row_opens_a_paragraph() {
+        let mut d = doc("```\ncode\n```\n");
+        d.view = View::Wysiwyg;
+        d.build_visual(40);
+        d.body_origin = (0, 0);
+        d.body_height = 20;
+        d.body_width = 40;
+        let mut state = EditorState::new();
+        let rows = d.vmap.rows.len() as u16;
+        handle_mouse(
+            &mut d,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 30,
+                row: rows + 5,
+                modifiers: KeyModifiers::NONE,
+            },
+            &mut state,
+        );
+        assert_eq!(d.source, "```\ncode\n```\n\n");
+        assert_eq!(d.caret, d.source.len());
     }
 
     /// ⌥⇧R writes a page break, beside the ⌥r that writes a thematic break.

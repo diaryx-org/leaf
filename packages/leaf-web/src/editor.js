@@ -761,6 +761,14 @@ export class LeafEditor {
   setHeading(level) { this._command((d) => d.set_heading(level)); }
   toggleBlockquote() { this._command((d) => d.toggle_blockquote()); }
   toggleList(ordered) { this._command((d) => d.toggle_list(!!ordered)); }
+  /**
+   * Toggle a fenced code block over the selection or the block at the caret —
+   * the rich view's one door into a code block, since a typed backtick is
+   * escaped there. On a blank line it opens an empty block with the caret
+   * inside. Gate on `capabilities().code_block`; `EditorState.codeBlock` is
+   * lit while the caret stands in one.
+   */
+  toggleCodeBlock() { this._command((d) => d.toggle_code_block()); }
   insertLink(dest) { this._command((d) => d.insert_link(dest)); }
   toggleTaskItem() { this._command((d) => d.toggle_task_item()); }
   toggleTaskChecked() { this._command((d) => d.toggle_task_checked()); }
@@ -1858,6 +1866,23 @@ export class LeafEditor {
     return null;
   }
 
+  /**
+   * Whether `clientY` is under every row drawn — the blank space the surface's
+   * `min-height` and padding leave under the document, where a click lands on
+   * no row at all. Measured against the lowest row rather than the last one: a
+   * table's picture rows share one grid element, and a row a frame hid
+   * measures nothing.
+   */
+  _isPastEnd(clientY) {
+    let bottom = -Infinity;
+    for (const el of this.rowEls) {
+      if (!el || !el.isConnected) continue;
+      const r = el.getBoundingClientRect();
+      if (r.height > 0 && r.bottom > bottom) bottom = r.bottom;
+    }
+    return Number.isFinite(bottom) && clientY >= bottom;
+  }
+
   // ── wrap width ────────────────────────────────────────────────────────────
   //
   // Core wraps to a *column* budget; the browser shapes the result in pixels.
@@ -2065,6 +2090,24 @@ export class LeafEditor {
       e.preventDefault();
       this.focus();
       this.render(this.doc.select_block_ch(hit.row, hit.ch));
+    });
+
+    // A plain click under the last row is on nothing: the caret goes onto an
+    // empty paragraph under the last block, opened if the document has none —
+    // wherever the pointer was horizontally — which is also the way out from
+    // under a fenced code block, where Enter is a literal newline. Left to
+    // itself the browser would put the caret at the pointer's x on the last
+    // line, which is what a click on that line means and not what a click under
+    // it does. Only the plain click: a shift-click extends to the end through
+    // the browser's own gesture, and a double- or triple-click still selects.
+    // And only in the rich view — the source view is a text editor, where a
+    // click under the last line lands on it at the pointer's x.
+    on(ce, "mousedown", (e) => {
+      if (e.button !== 0 || e.detail !== 1 || e.shiftKey || primaryModifier(e)) return;
+      if (this.viewName() === "source" || !this._isPastEnd(e.clientY)) return;
+      e.preventDefault();
+      this.focus();
+      this.render(this.doc.click_past_end());
     });
 
     on(ce, "focus", () => this.container.classList.add("leaf-focus"));
@@ -2462,6 +2505,8 @@ export class LeafEditor {
     const d = this.doc;
     const key = e.key.toLowerCase();
     if (e.altKey && !e.shiftKey) {
+      // ⌘⌥C: a code block — the block peer of ⌘⇧C's inline code.
+      if (e.code === "KeyC") return () => d.toggle_code_block();
       // ⌘⌥0–6: paragraph, then heading levels — the web-editor convention.
       const m = /^Digit([0-6])$/.exec(e.code);
       if (!m) return null;
@@ -2503,6 +2548,9 @@ export class LeafEditor {
       canRedo: view.can_redo,
       readOnly: this.doc.read_only(),
       heading: view.heading ?? null,
+      // Rides the frame for `heading`'s reason: walking the caret into a fence
+      // changes no mark, so a button asking for itself would never be told.
+      codeBlock: view.code_block,
       active: view.active,
       // Rides the frame rather than being a query the host makes for itself: a
       // toolbar redraws on state change, and walking the caret out of a link
@@ -2530,6 +2578,7 @@ export class LeafEditor {
  * @property {boolean} canRedo  there is an undone edit to redo
  * @property {boolean} readOnly the document refuses edits — see `setReadOnly`
  * @property {number | null} heading  heading level at the caret, or null
+ * @property {boolean} codeBlock  the caret stands in a code block
  * @property {string[]} active  inline marks active at the caret
  * @property {string | null} link  destination of the link at the caret, or null
  * @property {string | null} markColor  colour of the highlight at the caret

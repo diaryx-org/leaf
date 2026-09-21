@@ -223,12 +223,13 @@ shut — so this is a guarantee rather than a suppressed keyboard.
 | `⌥Enter` | an in-cell line break (the terminal's spelling of `⇧Enter`, which a terminal can't tell from `Enter`) |
 | arrows / `Home` / `End` | move the caret |
 | `Shift`+move | extend the selection |
-| click / drag | place / drag the caret |
+| click / drag | place / drag the caret — a click under the last block lands on a blank line beneath it, opening one if need be |
 | `⌥b` / `⌥i` / `⌥c` | toggle **bold** / *italic* / `code` on the selection |
 | `⌥m` / `⌥d` / `⌥u` | toggle highlight / strikethrough / underline (underline is Djot's alone) |
 | `⌥1`…`⌥6` | make the block at the caret a heading of that level |
 | `⌥0` | make it a paragraph |
 | `⌥7` / `⌥8` / `⌥9` | numbered list / bulleted list / quote |
+| `⌥⇧c` | make the block at the caret a code block — or open an empty one on a blank line |
 | `⌥t` / `⌥x` | give the item at the caret a checkbox / tick the box |
 | `⌥k` / `⌥l` | set the link destination / the code block's language |
 | `⌥e` / `⌥f` / `⌥r` | insert an image / a footnote / a horizontal rule |

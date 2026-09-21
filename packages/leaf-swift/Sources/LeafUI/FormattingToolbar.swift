@@ -315,7 +315,7 @@ public struct LeafFormattingToolbar: View {
     private var groups: [ToolGroup] {
         var groups = [
             ToolGroup(id: "inline", count: 7, content: AnyView(inlineMarks)),
-            ToolGroup(id: "block", count: 9, content: AnyView(blockStyles)),
+            ToolGroup(id: "block", count: 10, content: AnyView(blockStyles)),
             ToolGroup(id: "presentation", count: 9, content: AnyView(presentationTools)),
             ToolGroup(id: "indent", count: 2, content: AnyView(indentTools)),
             ToolGroup(id: "history", count: 2, content: AnyView(historyTools)),
@@ -389,13 +389,21 @@ public struct LeafFormattingToolbar: View {
             .popover(isPresented: $askingForDestination) { destinationField }
     }
 
-    /// Nine tools: H1, H2, body, quote, the two lists, the rule, Footnote, Table.
+    /// Ten tools: H1, H2, body, quote, code block, the two lists, the rule,
+    /// Footnote, Table.
     private var blockStyles: some View {
         HStack(spacing: metrics.spacing) {
             textTool("H1", "Heading 1", active: editor.state.heading == 1) { editor.setHeading(1) }
             textTool("H2", "Heading 2", active: editor.state.heading == 2) { editor.setHeading(2) }
             tool("paragraphsign", "Body text", active: editor.state.heading == nil) { editor.setParagraph() }
             tool("quote.opening", "Quote") { editor.toggleBlockquote() }
+            // Beside Quote because it is the same kind of thing — a block the
+            // caret's paragraph becomes — and lit while the caret stands in one
+            // for the same reason Bold is lit inside bold text. The braces
+            // rather than the angle-bracket glyph inline Code wears, so the two
+            // read as different tools and not as one button drawn twice.
+            tool("curlybraces", "Code Block", active: editor.state.codeBlock,
+                 enabled: editor.capabilities.codeBlock) { editor.toggleCodeBlock() }
             tool("list.bullet", "Bulleted list") { editor.toggleList(ordered: false) }
             tool("list.number", "Numbered list") { editor.toggleList(ordered: true) }
             tool("rectangle.compress.vertical", "Horizontal Rule") { editor.insertThematicBreak() }
