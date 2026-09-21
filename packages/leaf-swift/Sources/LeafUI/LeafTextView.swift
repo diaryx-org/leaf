@@ -443,6 +443,11 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     public init(doc: LeafDoc, theme: EditorTheme = .default) {
         self.doc = doc
         self.theme = theme
+        // Every frame after the first is the change since the frame before —
+        // the rows that differ, and where they go — which `render` splices
+        // into `docView`. Lifting every row of a long document into Swift
+        // records on every click was most of what a click cost.
+        doc.setIncrementalFrames(on: true)
         // Switch core to unwrapped layout (one row per block); the view soft-wraps
         // each row at its own pixel width.
         let first = doc.setUnwrapped()
@@ -578,41 +583,59 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     // MARK: applying a frame
 
-    /// Install `view` as the frame and lay it out. The layout is the frame
-    /// before's wherever the rows are: kept whole when nothing changed but the
-    /// caret, which is the plain click; rebuilt from the first changed row on,
-    /// with the rows before it as they were and the rows after it re-placed in
-    /// their old shapes, for a keystroke or a drag. `reflow` says the geometry
-    /// under the rows moved — the width, the theme, the page, a picture that
-    /// arrived — and every row is laid out again.
-    private func render(_ view: DocView, keepVerticalGoal: Bool = false, reflow: Bool = false) {
+    /// Install `frame` and lay it out. The frame is the change since the
+    /// frame before — the rows that differ and where they go, which is what
+    /// core answers every gesture with — or the whole document, and either
+    /// way `docView` ends up whole: a change is spliced into it (`DocView.apply`),
+    /// and a change against a frame this view does not hold, which cannot
+    /// happen unless a frame was dropped on the floor, is replaced by a whole
+    /// one asked of core. The layout is the frame before's wherever the rows
+    /// are: kept whole when nothing changed but the caret, which is the plain
+    /// click; rebuilt from the first changed row on, with the rows before it
+    /// as they were and the rows after it re-placed in their old shapes, for a
+    /// keystroke or a drag. `reflow` says the geometry under the rows moved —
+    /// the width, the theme, the page, a picture that arrived — and every row
+    /// is laid out again.
+    private func render(_ frame: DocView, keepVerticalGoal: Bool = false, reflow: Bool = false) {
         if !keepVerticalGoal { verticalGoalX = nil }
         // Whatever the peek was pointing at has just moved, changed or gone: an
         // edit reflowed the line under it, or a relayout put the reference
         // somewhere else. It is chrome about a position, and the positions are
         // being rebuilt.
         dismissFootnotePeek()
+        let frame = frame.isChange && frame.basis != docView.frame ? doc.view() : frame
+        // The frame's blocks that render as a thing rather than as rows — a
+        // table's cells, a formula's TeX — can change under rows that did not.
+        // Complete on every frame, so compared before the rows are touched.
+        let blocksChanged = frame.tables != docView.tables || frame.media != docView.media
+            || frame.math != docView.math || frame.directives != docView.directives
         // The find bar caches the string and its matches; an edit — or a view
         // toggle, which changes what the visible text *is* — invalidates both.
         // Rows compare cheaply, and a motion leaves them equal. A selection
         // does not — it splits the runs it covers — so the rows it touched are
         // read back with it forgotten (`sameText`): a drag changes what is
         // shown of the text, not the text, and neither the find bar, the spell
-        // checker nor the host is told of an edit by one.
-        let viewFlipped = view.view != docView.view
-        let change = view.rows.changedRange(from: docView.rows)
-        let textChanged = viewFlipped || !view.rows.sameText(as: docView.rows, over: change)
+        // checker nor the host is told of an edit by one. A change says which
+        // rows those are; a whole frame is compared to find them.
+        let viewFlipped = frame.view != docView.view
+        let change: RowChange?
+        let textChanged: Bool
+        if frame.isChange {
+            let (span, replaced) = docView.apply(frame)
+            change = span
+            textChanged = viewFlipped || !frame.rows.sameText(as: replaced)
+        } else {
+            change = frame.rows.changedRange(from: docView.rows)
+            textChanged = viewFlipped || !frame.rows.sameText(as: docView.rows, over: change)
+            docView = frame
+        }
+        let view = docView
         if textChanged {
             textFinder.noteClientStringWillChange()
         }
         // The document changed, as distinct from what is shown of it: a toggle
         // between source and rendered rewrites every row and edits nothing.
         let edited = !viewFlipped && textChanged
-        // The frame's blocks that render as a thing rather than as rows — a
-        // table's cells, a formula's TeX — can change under rows that did not.
-        let blocksChanged = view.tables != docView.tables || view.media != docView.media
-            || view.math != docView.math || view.directives != docView.directives
-        docView = view
         // Under this view's own appearance, not whatever happens to be current.
         // The text's colours are dynamic and resolve when drawn, inside
         // `draw(_:)`, where AppKit has made the view's appearance current; a
@@ -626,7 +649,8 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
                                             cache: &shapeCache, media: mediaStore)
             } else if change != nil || blocksChanged || layoutEngine.rows.isEmpty {
                 layoutEngine = EditorLayout(view, theme: theme, viewWidth: viewWidth, page: pageSetup,
-                                            cache: &shapeCache, media: mediaStore, previous: layoutEngine)
+                                            cache: &shapeCache, media: mediaStore, previous: layoutEngine,
+                                            change: change)
             }
         }
         let relaid = reflow || change != nil || blocksChanged
