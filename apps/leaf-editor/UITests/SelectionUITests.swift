@@ -19,12 +19,25 @@ final class SelectionUITests: XCTestCase {
     /// that the system drew a highlight.
     func testDoubleTapSelectsAWordAndOffersCopy() {
         let app = XCUIApplication()
+        // A document app opens to the browser; Create makes the sample under
+        // this argument (see `SampleDocument`), so there is text to select.
+        app.launchArguments = ["--sample"]
         app.launch()
+        let create = app.buttons["Create Document"]
+        XCTAssertTrue(create.waitForExistence(timeout: 10), "no document browser")
+        create.tap()
         let window = app.windows.firstMatch
         XCTAssertTrue(window.waitForExistence(timeout: 10))
 
-        // Into the opening paragraph — above the keyboard, well inside the text.
-        let word = window.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.16))
+        // Into the opening paragraph — below the navigation bar and the
+        // formatting bar, above the keyboard, well inside the text.
+        // The surface is one accessibility element whose value is its text.
+        let document = app.textViews["Document"]
+        XCTAssertTrue(document.waitForExistence(timeout: 20),
+                      "no editor surface in:\n\(app.debugDescription)")
+        XCTAssertTrue((document.value as? String)?.contains("leaf, natively") == true,
+                      "the sample did not open")
+        let word = document.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.06))
         word.doubleTap()
 
         XCTAssertTrue(app.menuItems["Copy"].waitForExistence(timeout: 5),

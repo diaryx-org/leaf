@@ -1,5 +1,5 @@
-//! `cargo xtask swift` — build and launch the AppKit/UIKit app in
-//! `apps/leaf-editor`, the host for the `packages/leaf-swift` editor.
+//! `cargo xtask swift` — build and launch Leaf, the AppKit/UIKit document app
+//! in `apps/leaf-editor`, the host for the `packages/leaf-swift` editor.
 //!
 //! The chain behind that one word is four toolchains deep: cargo builds
 //! `crates/leaf-ffi`, uniffi-bindgen turns it into Swift, xcodegen turns
@@ -16,8 +16,8 @@ use std::process::Stdio;
 
 /// Matches `PRODUCT_BUNDLE_IDENTIFIER` in `apps/leaf-editor/project.yml`; the
 /// simulator addresses an installed app by id, not by path.
-const BUNDLE_ID: &str = "dev.leaf.editor.ui";
-const SCHEME: &str = "LeafEditorApp";
+const BUNDLE_ID: &str = "org.diaryx.leaf";
+const SCHEME: &str = "Leaf";
 
 /// The simulator `--ios` runs on when `--device` names none: leaf's own,
 /// created from [`DEVICE_TYPE`] on first use. A stock `iPhone 17` is shared
@@ -62,6 +62,11 @@ pub struct Args {
     /// Let xcodebuild log at full volume.
     #[arg(long)]
     verbose: bool,
+
+    /// A document to open in the app once it is running (macOS only). Without
+    /// one the app opens a copy of the bundled sample, from `target/`.
+    #[arg(value_name = "FILE")]
+    file: Option<std::path::PathBuf>,
 }
 
 pub fn run_task(args: Args) -> Result<()> {
@@ -138,8 +143,29 @@ pub fn run_task(args: Args) -> Result<()> {
 
     match device {
         Some(device) => launch_simulator(&device, &product),
-        None => launch_macos(&product),
+        None => {
+            let file = match args.file {
+                Some(file) => file,
+                None => sample_copy(&root, &app_dir)?,
+            };
+            launch_macos(&product, &file)
+        }
     }
+}
+
+/// The bundled sample and its media, copied to `target/leaf-sample/` so the
+/// app can open it as a file — a document app with nothing to open shows the
+/// Open panel at launch, and a copy is one the developer can edit and save.
+fn sample_copy(root: &Path, app_dir: &Path) -> Result<std::path::PathBuf> {
+    let dir = root.join("target/leaf-sample");
+    std::fs::create_dir_all(&dir)?;
+    let app = app_dir.join("App");
+    std::fs::copy(app.join("Sample.md"), dir.join("Sample.md"))?;
+    for entry in std::fs::read_dir(app.join("Media"))? {
+        let entry = entry?;
+        std::fs::copy(entry.path(), dir.join(entry.file_name()))?;
+    }
+    Ok(dir.join("Sample.md"))
 }
 
 /// A simulator as `simctl` knows it. Every `simctl` verb and xcodebuild's
@@ -186,13 +212,17 @@ fn find_simulator(name: &str) -> Result<Option<String>> {
     }))
 }
 
-fn launch_macos(product: &Path) -> Result<()> {
+fn launch_macos(product: &Path, file: &Path) -> Result<()> {
     // `open` on a bundle that is already running only raises its window, which
     // would silently show the *previous* build. Retiring the old instance first
     // makes "run" mean the thing that was just built.
     run_ignoring_failure(cmd("pkill").args(["-x", SCHEME]));
-    run(cmd("open").arg(product))?;
-    println!("✓ Running {SCHEME} on macOS");
+    // Through the document system, as a double-click in the Finder would.
+    let file = file
+        .canonicalize()
+        .with_context(|| format!("no such document: {}", file.display()))?;
+    run(cmd("open").arg("-a").arg(product).arg(&file))?;
+    println!("✓ Running {SCHEME} on macOS, with {}", file.display());
     Ok(())
 }
 
@@ -219,12 +249,15 @@ fn launch_simulator(device: &Simulator, product: &Path) -> Result<()> {
     }
     run(cmd("xcrun").args(["simctl", "install", udid]).arg(product))
         .with_context(|| format!("could not install onto the `{name}` simulator"))?;
+    // `--sample` reaches the app as a launch argument: the browser's Create
+    // then makes the sample rather than an empty document.
     run(cmd("xcrun").args([
         "simctl",
         "launch",
         "--terminate-running-process",
         udid,
         BUNDLE_ID,
+        "--sample",
     ]))?;
     println!("✓ Running {SCHEME} on the `{name}` simulator");
     Ok(())
