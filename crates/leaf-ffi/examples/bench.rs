@@ -56,9 +56,9 @@ fn main() {
     let first_view = first.elapsed();
     let runs: usize = view.rows.iter().map(|r| r.runs.len()).sum();
     println!("rows: {} · runs: {runs}", view.rows.len());
-    println!("{:<44} {:>10}", "open (twig parse)", fmt(opened));
+    println!("{:<52} {:>10}", "open (twig parse)", fmt(opened));
     println!(
-        "{:<44} {:>10}",
+        "{:<52} {:>10}",
         "first view (build the map + the frame)",
         fmt(first_view)
     );
@@ -116,6 +116,37 @@ fn main() {
     row("newline", || {
         std::hint::black_box(doc.newline());
     });
+
+    // The same gestures on a document answering with changes rather than
+    // whole frames (`set_incremental_frames`): what a frontend that keeps its
+    // own copy of the rows pays. The rows each lifts are in the label, since
+    // that is the number that must not grow with the document.
+    let inc = LeafDoc::new(source, "markdown".into()).expect("parse");
+    inc.set_incremental_frames(true);
+    let _ = inc.set_unwrapped();
+    let lifted = inc.click_ch(mid_row, 3, false).rows.len();
+    row(
+        &format!("click_ch, as a change ({lifted} rows lifted)"),
+        || {
+            std::hint::black_box(inc.click_ch(mid_row, 3, false));
+        },
+    );
+    let lifted = inc.insert("x".into()).rows.len();
+    row(
+        &format!("insert one character, as a change ({lifted} rows lifted)"),
+        || {
+            std::hint::black_box(inc.insert("x".into()));
+        },
+    );
+    inc.click_ch(mid_row, 0, false);
+    let lifted = inc.click_ch(mid_row + 4, 0, true).rows.len();
+    row(
+        &format!("click_ch extend, as a change ({lifted} rows lifted)"),
+        || {
+            inc.click_ch(mid_row, 0, false);
+            std::hint::black_box(inc.click_ch(mid_row + 4, 0, true));
+        },
+    );
 }
 
 /// Time `f` a handful of times and print the median.
@@ -128,7 +159,7 @@ fn row(label: &str, mut f: impl FnMut()) {
         })
         .collect();
     samples.sort();
-    println!("{label:<44} {:>10}", fmt(samples[samples.len() / 2]));
+    println!("{label:<52} {:>10}", fmt(samples[samples.len() / 2]));
 }
 
 fn fmt(d: Duration) -> String {

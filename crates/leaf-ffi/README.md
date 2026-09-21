@@ -36,4 +36,8 @@ cargo run -p leaf-ffi --example bench -- --dump path.md   # write the generated 
 Run it in both profiles: the dev build is what the app is driven with while
 developing, and it is ten times slower on exactly the scans the table shows.
 A row that grows with the document is the finding; the Swift renderer's own
-per-interaction cost sits above these numbers, not in them.
+per-interaction cost sits above these numbers, not in them. The last rows
+time the same gestures on a document answering with *changes* rather than
+whole frames (`set_incremental_frames`), with the rows each lifts in the
+label — the number that must not grow when the document is concatenated
+with itself (`--dump` it, then `cat` two copies and name the result).

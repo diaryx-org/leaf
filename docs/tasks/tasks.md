@@ -18,7 +18,7 @@ contents:
 - '[Find on iOS](ios-find-interaction.md)'
 - '[Right-to-left text](right-to-left-text.md)'
 - '[A host hook for directives in the web editor](web-directive-hook.md)'
-- '[The frame crosses the wasm boundary whole on every keystroke](wasm-frame-crosses-whole.md)'
+- '[The frame crosses the binding whole on every keystroke](wasm-frame-crosses-whole.md)'
 - '[An empty last line in a fence has no row](empty-last-line-in-a-fence-has-no-row.md)'
 - '[SVG through resvg-swift](svg-through-resvg-swift.md)'
 - '[A link reference definition''s lines are drawn as blank rows](link-definitions-are-blank-rows.md)'
