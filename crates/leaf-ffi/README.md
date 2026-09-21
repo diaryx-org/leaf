@@ -19,3 +19,20 @@ The Swift bindings are (re)generated from this crate by
 checkout, so the binding must build as-is. CI diffs the committed binding
 against this crate on every push; regenerate and commit after changing the FFI
 surface.
+
+## How long the calls take
+
+`examples/bench.rs` times the calls a native frontend makes per interaction —
+the frame, the offset lookups, a click, a keystroke, the counts — on a
+generated 14,000-word document or one you name, and prints a table:
+
+```sh
+cargo run -p leaf-ffi --example bench              # dev profile
+cargo run -p leaf-ffi --example bench --release    # what a shipping app sees
+cargo run -p leaf-ffi --example bench -- path.md   # your own document
+```
+
+Run it in both profiles: the dev build is what the app is driven with while
+developing, and it is ten times slower on exactly the scans the table shows.
+A row that grows with the document is the finding; the Swift renderer's own
+per-interaction cost sits above these numbers, not in them.
