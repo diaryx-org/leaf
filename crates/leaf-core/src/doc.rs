@@ -5867,6 +5867,44 @@ impl Doc {
         self.edit(start, end, &markup);
     }
 
+    /// Append media at the **end** of the document, as a block of its own —
+    /// the verb for a picture that *arrives* rather than one the writer
+    /// places: an attachment imported while the caret was wherever it last
+    /// was, a drawing placed from a tray under the body. At the caret it
+    /// would land inline in front of whatever word the caret happened to be
+    /// beside, which for an editor nobody has tapped yet is the first word
+    /// of the document.
+    ///
+    /// The document is ended with a blank line first, where it does not
+    /// already end with one, so the media is a paragraph of its own rather
+    /// than a lazy continuation of the last one; an empty document needs no
+    /// separator. Then [`insert_media`](Self::insert_media) at the new end,
+    /// with everything that means: the same markup per kind, the same
+    /// refusal on a format without images. The selection is dropped — the
+    /// verb is about the end of the document, not about what was selected —
+    /// and the caret is left past the media, as `insert_media` leaves it.
+    pub fn append_media(&mut self, kind: MediaKind, destination: &str, alt: &str) {
+        if self.read_only || self.refuse_unsupported("media", Gesture::InsertImage) {
+            return;
+        }
+        let separator = if self.source.is_empty() || self.source.ends_with("\n\n") {
+            ""
+        } else if self.source.ends_with('\n') {
+            "\n"
+        } else {
+            "\n\n"
+        };
+        let end = self.source.len();
+        self.anchor = None;
+        self.caret = end;
+        if !separator.is_empty() {
+            self.edit(end, end, separator);
+        }
+        self.anchor = None;
+        self.caret = self.source.len();
+        self.insert_media(kind, destination, alt);
+    }
+
     /// Insert a thematic break at the caret — the toolbar's Horizontal Rule
     /// button. Spelling and placement are both twig's; leaf used to write `---`
     /// itself, which was the Markdown spelling in a djot document too.
@@ -9908,6 +9946,36 @@ mod tests {
         d.caret = 0;
         d.insert_image("logo.svg", "");
         assert_eq!(d.source, "![](logo.svg)\n");
+    }
+
+    #[test]
+    fn append_media_lands_at_the_end_as_its_own_block() {
+        let mut d = doc_with("append_mid", "first word and more\n");
+        d.caret = 0; // an editor nobody has tapped: the caret is at the start
+        d.append_media(MediaKind::Image, "cat.png", "");
+        assert_eq!(d.source, "first word and more\n\n![](cat.png)");
+        assert_eq!(d.selection(), None);
+        assert_eq!(d.caret, "first word and more\n\n![](cat.png)".len());
+    }
+
+    #[test]
+    fn append_media_needs_no_separator_after_a_blank_line_or_in_an_empty_document() {
+        let mut d = doc_with("append_blank", "para\n\n");
+        d.append_media(MediaKind::Image, "a.png", "");
+        assert_eq!(d.source, "para\n\n![](a.png)");
+
+        let mut e = doc_with("append_empty", "");
+        e.append_media(MediaKind::Image, "b.png", "");
+        assert_eq!(e.source, "![](b.png)");
+
+        let mut f = doc_with("append_noeol", "no newline at end");
+        f.anchor = Some(0);
+        f.caret = 2; // a selection, which the verb ignores
+        f.append_media(MediaKind::Video, "clip.mp4", "");
+        assert_eq!(
+            f.source,
+            "no newline at end\n\n<video src=\"clip.mp4\" controls></video>"
+        );
     }
 
     #[test]

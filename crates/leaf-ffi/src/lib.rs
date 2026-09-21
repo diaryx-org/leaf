@@ -2189,6 +2189,20 @@ impl LeafDoc {
         g.frame()
     }
 
+    /// Append an image, video, or audio at the end of the document, as a
+    /// block of its own — for media that *arrives* rather than media the
+    /// writer places at the caret. See [`leaf_core::Doc::append_media`].
+    pub fn append_media(&self, kind: MediaKind, destination: String, alt: String) -> DocView {
+        let mut g = self.lock();
+        let kind = match kind {
+            MediaKind::Image => CoreMediaKind::Image,
+            MediaKind::Video => CoreMediaKind::Video,
+            MediaKind::Audio => CoreMediaKind::Audio,
+        };
+        g.doc.append_media(kind, &destination, &alt);
+        g.frame()
+    }
+
     /// Insert a thematic break (`---`) at the caret — the toolbar's Horizontal
     /// Rule button. See [`leaf_core::Doc::insert_thematic_break`] for how it
     /// handles a selection, a blank line, and the caret sitting mid-paragraph,

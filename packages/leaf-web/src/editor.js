@@ -790,6 +790,9 @@ export class LeafEditor {
   insertMedia(kind, destination, alt = "") {
     this._command((d) => d.insert_media(kind, destination, alt));
   }
+  appendMedia(kind, destination, alt = "") {
+    this._command((d) => d.append_media(kind, destination, alt));
+  }
   // ── the presentation vocabulary ───────────────────────────────────────────
   // Alignment and spacing are the block's; size, face and colour are the
   // selection's, or the block's with no selection. Each takes one of the
