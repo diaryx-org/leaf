@@ -568,6 +568,13 @@ public protocol LeafDocProtocol : AnyObject {
     func anchorOffset()  -> UInt32
     
     /**
+     * Append an image, video, or audio at the end of the document, as a
+     * block of its own — for media that *arrives* rather than media the
+     * writer places at the caret. See [`leaf_core::Doc::append_media`].
+     */
+    func appendMedia(kind: MediaKind, destination: String, alt: String)  -> DocView
+    
+    /**
      * Whether this document's format offers *any* door in — `false` only for a
      * wholly parse-only one (XML), where an app may as well open the file
      * read-only and hide the formatting section outright. For anything finer,
@@ -1510,6 +1517,21 @@ open func alignmentAtCaret() -> Align? {
 open func anchorOffset() -> UInt32 {
     return try!  FfiConverterUInt32.lift(try! rustCall() {
     uniffi_leaf_ffi_fn_method_leafdoc_anchor_offset(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+    /**
+     * Append an image, video, or audio at the end of the document, as a
+     * block of its own — for media that *arrives* rather than media the
+     * writer places at the caret. See [`leaf_core::Doc::append_media`].
+     */
+open func appendMedia(kind: MediaKind, destination: String, alt: String) -> DocView {
+    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_append_media(self.uniffiClonePointer(),
+        FfiConverterTypeMediaKind.lower(kind),
+        FfiConverterString.lower(destination),
+        FfiConverterString.lower(alt),$0
     )
 })
 }
@@ -9201,6 +9223,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_anchor_offset() != 45633) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_append_media() != 2756) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_authorable() != 41474) {

@@ -686,6 +686,15 @@ public final class LeafEditorModel: ObservableObject {
         run { $0.insertMedia(kind: kind, destination: destination, alt: alt) }
     }
 
+    /// Append media at the end of the document, as a block of its own — for
+    /// media that *arrives* rather than media the writer places: an import
+    /// that lands after a picker sheet, an attachment placed from a tray
+    /// under the body. At the caret it would go inline beside whatever word
+    /// the caret was last left at. See `leaf_core::Doc::append_media`.
+    public func appendMedia(_ kind: MediaKind, destination: String, alt: String = "") {
+        run { $0.appendMedia(kind: kind, destination: destination, alt: alt) }
+    }
+
     /// Insert a thematic break (`---`) at the caret — the toolbar's Horizontal
     /// Rule button. Splits a paragraph if the caret sits mid-text, and exits a
     /// list or block quote rather than nesting inside it; see

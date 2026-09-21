@@ -366,6 +366,12 @@ export class LeafEditor {
   insertThematicBreak(): void;
   /** Insert block media; any selection becomes the alt text. */
   insertMedia(kind: "image" | "video" | "audio", destination: string, alt?: string): void;
+  /**
+   * Append media at the end of the document, as a block of its own — for
+   * media that arrives (an import, a placed attachment) rather than media the
+   * writer puts at the caret.
+   */
+  appendMedia(kind: "image" | "video" | "audio", destination: string, alt?: string): void;
   // ── the presentation vocabulary ────────────────────────────────────────
   // Alignment and spacing are the caret's block; size, face and colour are the
   // selection, or the block with no selection. `null` clears the key and

@@ -1528,6 +1528,24 @@ impl LeafDoc {
         self.frame()
     }
 
+    /// Append media at the end of the document as a block of its own — the
+    /// same kinds as `insert_media`. See [`leaf_core::Doc::append_media`].
+    pub fn append_media(
+        &mut self,
+        kind: &str,
+        destination: &str,
+        alt: &str,
+    ) -> Result<DocView, JsValue> {
+        let kind = match kind.to_ascii_lowercase().as_str() {
+            "image" | "img" => MediaKind::Image,
+            "video" => MediaKind::Video,
+            "audio" => MediaKind::Audio,
+            other => return Err(JsValue::from_str(&format!("unknown media kind: {other}"))),
+        };
+        self.doc.append_media(kind, destination, alt);
+        self.frame()
+    }
+
     /// Set the wrap width (in columns) the viewport implies and repaint.
     pub fn set_width(&mut self, cols: usize) -> Result<DocView, JsValue> {
         self.width = cols.max(1);

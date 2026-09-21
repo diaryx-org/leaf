@@ -276,6 +276,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_alignment_at_caret(void*_Nonnull pt
 uint32_t uniffi_leaf_ffi_fn_method_leafdoc_anchor_offset(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_APPEND_MEDIA
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_APPEND_MEDIA
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_append_media(void*_Nonnull ptr, RustBuffer kind, RustBuffer destination, RustBuffer alt, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_AUTHORABLE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_AUTHORABLE
 int8_t uniffi_leaf_ffi_fn_method_leafdoc_authorable(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
@@ -1196,6 +1201,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_alignment_at_caret(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_ANCHOR_OFFSET
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_ANCHOR_OFFSET
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_anchor_offset(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_APPEND_MEDIA
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_APPEND_MEDIA
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_append_media(void
     
 );
 #endif
