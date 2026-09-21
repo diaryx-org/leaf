@@ -53,6 +53,14 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 
 - **leaf-swift** — a media answer that arrives inside the layout is handed to it, not repainted ([`b393d12`](https://github.com/diaryx-org/leaf/commit/b393d12ee3441d7d50baa265a37288284baa3a26))
 
+### Changed
+
+- **leaf-core** — offset lookups that do not read the document through ([`58bd552`](https://github.com/diaryx-org/leaf/commit/58bd552a1a4bd15bad6a25c2caa744c7acb3df2a))
+- **leaf-swift** — misspellings mapped once, culled in draw, masked in one crossing ([`38d91ad`](https://github.com/diaryx-org/leaf/commit/38d91ad4764b778df17e69450a6a46fb9a20fde8))
+- **leaf-swift** — a frame's layout is the frame before's wherever the rows are ([`111e7d1`](https://github.com/diaryx-org/leaf/commit/111e7d122e3b2bf5add5a782fde66b5fa3b28f32))
+- **leaf-swift** — no recount after a repaint that only moved the caret ([`1281a01`](https://github.com/diaryx-org/leaf/commit/1281a018cf19abf2981166532748a13b2d1f994f))
+- **leaf-swift** — a row below a keystroke keeps its shape ([`90326b1`](https://github.com/diaryx-org/leaf/commit/90326b19528b51040398dbc2da13960b65486851))
+
 ### Behavioural changes
 
 - every Markdown document leaf opens now parses `$…$` as inline math and `$$…$$` as display math; `$5 and $6` stays prose, since twig never opens math on a dollar followed by whitespace.
@@ -64,6 +72,8 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 - a formula is drawn as its placeholder (the `∑` atom, the `∑ tex` row) on the first frame and becomes its picture once the typesetter module has been fetched, unless `init` was given `math: "eager"`.
 
 - a host that answers onResolveMedia synchronously now sees its picture on the first layout and gets no onLoaded for it, where before the first pass drew nothing and a repaint followed.
+
+- onEdit no longer fires after a selection change; a drag or a shift-click changes what is shown of the text, not the text.
 
 <!-- git-cliff:end -->
 
