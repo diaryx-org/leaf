@@ -5088,11 +5088,21 @@ impl Builder<'_> {
         //
         // Or past the last hidden block, if that is later: a closing comment
         // draws no row, and its lines are not blank lines the author opened.
+        //
+        // Or past the last byte of content, if *that* is later: a fenced code
+        // block's last row ends at its last line of code, and the closing
+        // fence under it is markup with no row of its own — so counted from
+        // the row, the fence's own line and terminator read as two blank lines
+        // and opened a phantom empty paragraph whose offset was *inside* the
+        // fence. Typing on it broke the fence. (A setext heading's underline
+        // was the same shape.) Trailing whitespace is not content, so a line
+        // of spaces still counts as the blank line it looks like.
         let last_end = self
             .rows
             .last()
             .map_or(hidden_end, |r| r.end_src)
-            .max(self.stepped_over);
+            .max(self.stepped_over)
+            .max(self.source.trim_end().len());
         if last_end >= self.source.len() {
             return;
         }
@@ -9087,7 +9097,7 @@ mod tests {
     #[test]
     fn a_boundary_says_which_blocks_it_divides() {
         use BlockClass::*;
-        let m = map("one\n\ntwo\n\n# Head\n\ntail\n\n> quoted\n\n```\ncode\n```\n");
+        let m = map("one\n\ntwo\n\n# Head\n\ntail\n\n> quoted\n\n```\ncode\n```\n\n");
         assert_eq!(
             boundaries(&m),
             vec![
@@ -9096,12 +9106,44 @@ mod tests {
                 (Heading, Paragraph),
                 (Paragraph, Quote),
                 (Quote, Code),
-                // The blank the document trails off with is a boundary too — it
-                // closes the last block above the empty paragraph the caret rests
-                // on. See `emit_trailing_blank_lines`.
+                // The blank line the document trails off with is a boundary too
+                // — it closes the last block above the empty paragraph the caret
+                // rests on. See `emit_trailing_blank_lines`.
                 (Code, Paragraph),
             ],
             "each gap names the pair it falls between, in document order"
+        );
+    }
+
+    #[test]
+    fn a_closing_fence_at_the_end_of_the_document_opens_no_phantom_row() {
+        // The code block's last row ends at its last line of code; the closing
+        // fence under it has no row. Counted from the row, the fence's line read
+        // as a trailing blank line and opened an empty paragraph whose offset
+        // was inside the fence — typing on it wrote into the backticks.
+        let m = map("para\n\n```\ncode\n```\n");
+        let texts: Vec<String> = m
+            .rows
+            .iter()
+            .map(|r| r.glyphs.iter().map(|g| g.ch).collect())
+            .collect();
+        assert_eq!(texts, vec!["para", "", "code"], "a row under the fence");
+        assert!(
+            m.rows.last().is_some_and(|r| r.code),
+            "the last row is the code"
+        );
+        // One more newline is the real empty paragraph, past the fence.
+        let m = map("para\n\n```\ncode\n```\n\n");
+        let last = m.rows.last().expect("a trailing row");
+        assert_eq!(last.end_src, 20, "the trailing row stands past the fence");
+        assert!(!last.decoration, "the trailing row is somewhere to type");
+        // A setext underline is the same shape: markup under the last row.
+        let m = map("Head\n====\n");
+        assert_eq!(
+            m.rows.len(),
+            1,
+            "a row under the underline: {:?}",
+            m.rows.len()
         );
     }
 
