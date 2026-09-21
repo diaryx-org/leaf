@@ -921,24 +921,45 @@ public final class LeafEditorModel: ObservableObject {
         prefer { $0.setSelectionOffsets(anchor: anchor, focus: focus) }
     }
 
-    private func run(_ op: @escaping (LeafDoc) -> DocView) { textView?.command(op) }
+    /// Run an editing command — whether or not a surface is on screen.
+    ///
+    /// With a view, the view runs it and repaints. Without one, the command
+    /// goes to the document directly, and the model does the view's other
+    /// jobs itself: republish the state (so a host's dirty flag is told), put
+    /// the counts back on the clock, and report the edit. A view made later
+    /// seeds itself from the doc, so what was inserted is there when it is.
+    ///
+    /// This used to be `textView?.command(op)` — a command with nowhere to
+    /// paint was dropped, on the reasoning that nobody could have issued it.
+    /// Not so for a command that *arrives*: a host that imports a picture
+    /// asynchronously and then calls `insertMedia` gets back to the main actor
+    /// after whatever covered or replaced the surface — a picker sheet, a push
+    /// to the drawing just made — and the insert vanished with no error. The
+    /// file was in the vault and the body never referred to it.
+    private func run(_ op: @escaping (LeafDoc) -> DocView) {
+        guard let textView else {
+            let before = doc.source()
+            let view = op(doc)
+            updateState(EditorState(view))
+            scheduleCounts()
+            if doc.source() != before { onEdit?() }
+            return
+        }
+        textView.command(op)
+    }
 
     /// Apply a *preference* — one of the rendering modes above — whether or not
-    /// the view exists yet. A command dropped because there is nothing on screen
-    /// to repaint is no loss (nobody could have issued it), but a preference is
-    /// set by the host as it builds the model, one line after `init` and long
-    /// before SwiftUI makes the text view: routing it through `run` left it on
-    /// the floor, so every freshly opened document rendered at the default mode
-    /// no matter what the app had chosen. Set it on the doc regardless; the text
-    /// view seeds itself from the doc when it is finally made.
+    /// the view exists yet. Set by the host as it builds the model, one line
+    /// after `init` and long before SwiftUI makes the text view; set on the doc
+    /// regardless, and the text view seeds itself from the doc when it is
+    /// finally made. The same shape as `run` now, and kept apart from it
+    /// because a preference is not an edit: it moves no dirty flag and is
+    /// nothing to tell `onEdit` about.
     private func prefer(_ op: @escaping (LeafDoc) -> DocView) {
         guard let textView else {
             _ = op(doc)
             // Nothing is going to repaint, and a repaint is what normally puts
-            // the statistics back on the clock. This is the only path a
-            // view-less document changes by, so it has to do that job too, or
-            // a host counting a document it has not yet put on screen would be
-            // shown the tally from before its own `debugSelect`.
+            // the statistics back on the clock — see `run`.
             scheduleCounts()
             return
         }
