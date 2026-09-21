@@ -587,16 +587,26 @@ final class EditorLayoutTests: XCTestCase {
             XCTAssertTrue(a.attributed === b.attributed, "a caret move keeps every row's shape")
             XCTAssertEqual(a.top, b.top)
         }
-        // A drag: the rows it crosses are shaped again, the rest stand.
+        // A drag: the rows it crosses carry their selection now, which the
+        // layout paints from the row and not from the shape — so nothing is
+        // shaped again, though the frame is laid out again to carry them.
         editor.command { $0.clickCh(row: 4, ch: 3, extend: true) }
         let dragged = editor.layoutEngine
         XCTAssertTrue(dragged.rows[0].attributed === before.rows[0].attributed, "a row above the selection stands")
         XCTAssertEqual(dragged.rows[0].top, before.rows[0].top)
-        XCTAssertFalse(dragged.rows[4].attributed === before.rows[4].attributed, "a selected row is shaped with its selection")
+        XCTAssertTrue(dragged.rows[4].attributed === before.rows[4].attributed, "a selected row keeps its shape")
+        XCTAssertTrue(dragged.rows[4].row.runs.contains { $0.sel }, "…and carries its selection")
         XCTAssertEqual(dragged.contentHeight, before.contentHeight, "nothing moved")
         XCTAssertEqual(relaid, 1, "a selection is a change to the rows, and to the selection's count")
+        // A keystroke: the row it lands on is shaped afresh; every row below it
+        // is a different value by its offsets alone, and keeps its shape.
+        editor.command { $0.clickCh(row: 2, ch: 0, extend: false) }
         editor.command { $0.insert(text: "x") }
-        XCTAssertEqual(relaid, 2, "and so is an edit")
+        XCTAssertEqual(relaid, 3, "and so is an edit")
+        let typed = editor.layoutEngine
+        XCTAssertFalse(typed.rows[2].attributed === before.rows[2].attributed, "the edited row is shaped again")
+        XCTAssertTrue(typed.rows[4].attributed === before.rows[4].attributed, "a row below the edit keeps its shape")
+        XCTAssertNotEqual(typed.rows[4].row, before.rows[4].row, "though its offsets moved")
     }
     #endif
 
@@ -618,6 +628,11 @@ final class EditorLayoutTests: XCTestCase {
         // And so is the same text in two runs of different marks, which no
         // selection parts a run into.
         XCTAssertFalse(whole.sameText(as: row([mkRun("hello ", src: 10), mkRun("world", italic: true, src: 16)])))
+        // A shape forgets the offsets too — the row moved, and shapes the same.
+        XCTAssertFalse(whole.sameText(as: row([mkRun("hello world", src: 11)])))
+        XCTAssertTrue(whole.sameShape(as: row([mkRun("hello world", src: 11)])))
+        XCTAssertTrue(whole.sameShape(as: dragged))
+        XCTAssertFalse(whole.sameShape(as: row([mkRun("hello world", bold: true, src: 10)])))
     }
 
     func testChangedRangeIsTheRowsOutsideTheCommonPrefixAndSuffix() {

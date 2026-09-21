@@ -137,18 +137,36 @@ extension Row {
     /// text. So a run whose every other field matches its predecessor's is
     /// its predecessor's text continued.
     func sameText(as other: Row) -> Bool {
+        sameRuns(as: other, placed: true)
+    }
+
+    /// Whether this row shapes as `other` does: `sameText`, and further
+    /// forgetting where each run came from. A keystroke moves the source
+    /// offset of every run after it, and a `Row` carrying its offsets is a
+    /// different value on every row below the edit — so keyed by value, the
+    /// shape cache missed on all of them and half the document was shaped
+    /// again per character typed. Shaping reads a run's text and marks, never
+    /// its offset or its selection, so this is what says a shape still fits.
+    func sameShape(as other: Row) -> Bool {
+        sameRuns(as: other, placed: false)
+    }
+
+    private func sameRuns(as other: Row, placed: Bool) -> Bool {
         var mine = self, theirs = other
         mine.runs = []
         theirs.runs = []
         guard mine == theirs else { return false }
-        return Row.mergedRuns(runs) == Row.mergedRuns(other.runs)
+        return Row.mergedRuns(runs, placed: placed) == Row.mergedRuns(other.runs, placed: placed)
     }
 
-    private static func mergedRuns(_ runs: [Run]) -> [Run] {
+    /// The runs with the selection forgotten and, unless `placed`, their
+    /// offsets too — merged back together where the selection parted them.
+    private static func mergedRuns(_ runs: [Run], placed: Bool) -> [Run] {
         var out: [Run] = []
         out.reserveCapacity(runs.count)
         for var run in runs {
             run.sel = false
+            if !placed { run.src = 0 }
             if var last = out.last {
                 var next = run
                 next.text = last.text
@@ -174,14 +192,18 @@ extension Array where Element == Row {
     /// A row inside the range may still be `==` to the one it stands
     /// opposite: the suffix is matched from the end and the prefix from the
     /// start, and a change in the middle leaves the rows between as changed.
-    func changedRange(from old: [Row]) -> (new: Range<Int>, old: Range<Int>)? {
+    ///
+    /// `same` is what makes two rows the same row — `==` unless a caller has
+    /// a looser question, as the layout does of a shape.
+    func changedRange(from old: [Row],
+                      by same: (Row, Row) -> Bool = { $0 == $1 }) -> (new: Range<Int>, old: Range<Int>)? {
         var prefix = 0
         let shortest = Swift.min(count, old.count)
-        while prefix < shortest && self[prefix] == old[prefix] { prefix += 1 }
+        while prefix < shortest && same(self[prefix], old[prefix]) { prefix += 1 }
         if prefix == count && prefix == old.count { return nil }
         var suffix = 0
         while suffix < shortest - prefix
-            && self[count - 1 - suffix] == old[old.count - 1 - suffix] {
+            && same(self[count - 1 - suffix], old[old.count - 1 - suffix]) {
             suffix += 1
         }
         return (prefix..<(count - suffix), prefix..<(old.count - suffix))
@@ -697,12 +719,18 @@ struct EditorLayout {
 
         // What the frame before laid out that this one can keep. Its rows up to
         // `kept` are taken as they are — their layout, and their shape into
-        // `next`, one hash each and no shaping. Past the change, a row that is
-        // the same row further down the document (an edit above it added or
-        // took a line) keeps its shape and is placed again.
+        // `next`, one hash each and no shaping. Past the change, a row that
+        // shapes the same (`Row.sameShape`: the text and marks, wherever they
+        // now sit in the source and whether or not they are selected) keeps
+        // its shape and is placed again — which after a keystroke is every row
+        // below it, each of them a different value by its offsets alone.
         let previous = previous.flatMap { $0.same(column: originX, width: columnWidth,
                                                    page: page, sheetX: sheetX) ? $0 : nil }
-        let change = previous.flatMap { docView.rows.changedRange(from: $0.rows.map(\.row)) }
+        let old = previous.map { $0.rows.map(\.row) } ?? []
+        let change = previous.flatMap { _ in docView.rows.changedRange(from: old) }
+        let shapeChange = previous.flatMap { _ in
+            docView.rows.changedRange(from: old) { $0 == $1 || $0.sameShape(as: $1) }
+        }
         let kept = previous.map { $0.reusableRows(for: docView, change: change) } ?? 0
         if let previous, kept > 0 {
             layouts.append(contentsOf: previous.rows[..<kept])
@@ -715,22 +743,22 @@ struct EditorLayout {
             }
         }
         /// The shape the frame before gave the row now at `i`, where that row
-        /// is one it laid out — before the change at the same index, after it
-        /// at the index that stands opposite. Not for a row a block renders
-        /// over: those are laid out from the block.
+        /// shapes as one it laid out — before the change at the same index,
+        /// after it at the index that stands opposite. Not for a row a block
+        /// renders over: those are laid out from the block.
         func unchanged(_ i: Int) -> ShapedRow? {
             guard let previous else { return nil }
             var j = i
-            if let change {
-                if i >= change.new.upperBound {
-                    j = i - change.new.upperBound + change.old.upperBound
-                } else if i >= change.new.lowerBound {
+            if let shapeChange {
+                if i >= shapeChange.new.upperBound {
+                    j = i - shapeChange.new.upperBound + shapeChange.old.upperBound
+                } else if i >= shapeChange.new.lowerBound {
                     return nil
                 }
             }
             guard j < previous.rows.count else { return nil }
             let rl = previous.rows[j]
-            guard rl.table == nil, rl.media == nil, rl.math == nil, rl.row == docView.rows[i] else { return nil }
+            guard rl.table == nil, rl.media == nil, rl.math == nil else { return nil }
             return rl.shaped
         }
 
