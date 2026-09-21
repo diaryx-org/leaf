@@ -608,6 +608,34 @@ final class EditorLayoutTests: XCTestCase {
         XCTAssertTrue(typed.rows[4].attributed === before.rows[4].attributed, "a row below the edit keeps its shape")
         XCTAssertNotEqual(typed.rows[4].row, before.rows[4].row, "though its offsets moved")
     }
+
+    func testTheViewTakesEachGestureAsTheChangeSinceTheFrameBefore() throws {
+        // What crosses the binding for a gesture is the change — no row for a
+        // click, one for a keystroke — and the view's frame is whole after
+        // each, in step with what core would answer outright.
+        let doc = try LeafDoc(source: "one two three\n\nfour five six\n\nseven eight nine\n", format: "markdown")
+        let editor = LeafTextView(doc: doc, theme: .default)
+        editor.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        editor.layoutSubtreeIfNeeded()
+        var crossed: [DocView] = []
+        editor.command { crossed.append($0.clickCh(row: 2, ch: 2, extend: false)); return crossed[0] }
+        XCTAssertTrue(crossed[0].isChange, "the view opted in")
+        XCTAssertEqual(crossed[0].rows.count, 0, "a click lifts no row")
+        editor.command { crossed.append($0.insert(text: "x")); return crossed[1] }
+        XCTAssertEqual(crossed[1].rows.count, 1, "a keystroke lifts its row")
+        XCTAssertEqual(crossed[1].srcShift, 1)
+        XCTAssertEqual(editor.layoutEngine.rows.count, 5, "the view lays out the whole document")
+        XCTAssertEqual(editor.layoutEngine.rows[2].row.runs.map(\.text).joined(), "foxur five six")
+        let whole = doc.view()
+        XCTAssertEqual(editor.layoutEngine.rows.map(\.row), whole.rows, "in step with core, offsets and all")
+        // A frame dropped on the floor puts the view a frame behind; the next
+        // gesture's change names a basis it does not hold, and the view asks
+        // core for the whole document rather than splice onto the wrong rows.
+        _ = doc.moveRight(extend: false)
+        editor.command { $0.insert(text: "y") }
+        XCTAssertEqual(editor.layoutEngine.rows[2].row.runs.map(\.text).joined(), "foxuyr five six")
+        XCTAssertEqual(editor.layoutEngine.rows.map(\.row), doc.view().rows)
+    }
     #endif
 
     // MARK: what a frame changed — the rows, and whether the text among them
@@ -658,6 +686,100 @@ final class EditorLayoutTests: XCTestCase {
         XCTAssertTrue([a, selected, c].sameText(as: [a, b, c]))
         XCTAssertFalse([a, d, c].sameText(as: [a, b, c]))
         XCTAssertFalse([a, c].sameText(as: [a, b, c]))
+    }
+
+    // MARK: a frame that is the change since the frame before
+
+    /// A frame as core answers a gesture after `setIncrementalFrames`: the
+    /// rows that replace `replaced` of frame `basis`'s from `start`, and the
+    /// offset every run below moved by.
+    private func change(_ rows: [Row], basis: UInt32, start: Int, replaced: Int,
+                        count: Int, shift: Int32 = 0) -> DocView {
+        var v = docView(rows)
+        v.frame = basis + 1
+        v.basis = basis
+        v.rowStart = UInt32(start)
+        v.replaced = UInt32(replaced)
+        v.rowCount = UInt32(count)
+        v.srcShift = shift
+        return v
+    }
+
+    func testAChangeAppliedIsTheWholeFrameWithTheRowsBelowMoved() {
+        // Three paragraphs; a keystroke in the second replaces its row and
+        // moves the source of everything after it by one byte.
+        let a = row([mkRun("alpha", src: 0)]), gap = gapRow(.paragraph, .paragraph)
+        let b = row([mkRun("beta", src: 7)]), c = row([mkRun("gamma", src: 13)])
+        var whole = docView([a, gap, b, gap, c])
+        XCTAssertFalse(whole.isChange)
+        let typed = row([mkRun("betax", src: 7)])
+        let frame = change([typed], basis: 1, start: 2, replaced: 1, count: 5, shift: 1)
+        XCTAssertTrue(frame.isChange)
+        let (span, replaced) = whole.apply(frame)
+        XCTAssertEqual(span?.new, 2..<3)
+        XCTAssertEqual(span?.old, 2..<3)
+        XCTAssertEqual(replaced, [b], "the rows the span replaced, for sameText")
+        XCTAssertEqual(whole.rows, [a, gap, typed, gap, row([mkRun("gamma", src: 14)])])
+        XCTAssertFalse(whole.isChange, "applied, the frame is whole")
+        XCTAssertEqual(whole.frame, 2)
+        XCTAssertEqual(whole.rowStart, 0)
+        XCTAssertEqual(whole.replaced, 0)
+        XCTAssertEqual(whole.srcShift, 0)
+        XCTAssertEqual(whole.rowCount, 5)
+        // A caret move: no rows, nothing replaced, and no change to report.
+        let moved = change([], basis: 2, start: 5, replaced: 0, count: 5)
+        let (none, nothing) = whole.apply(moved)
+        XCTAssertNil(none)
+        XCTAssertTrue(nothing.isEmpty)
+        XCTAssertEqual(whole.rows.count, 5)
+        // A split: two rows where one was, and the rows below moved on.
+        let split = change([row([mkRun("gam", src: 14)]), gap, row([mkRun("ma", src: 18)])],
+                           basis: 3, start: 4, replaced: 1, count: 7, shift: 1)
+        let (grew, was) = whole.apply(split)
+        XCTAssertEqual(grew?.new, 4..<7)
+        XCTAssertEqual(grew?.old, 4..<5)
+        XCTAssertEqual(was.count, 1)
+        XCTAssertEqual(whole.rows.count, 7)
+    }
+
+    func testAChangeIsNarrowedByShapeOnlyOverItsSpan() {
+        let a = row([mkRun("a", src: 0)]), b = row([mkRun("b", src: 2)]), c = row([mkRun("c", src: 4)])
+        let old = [a, b, c]
+        // The selection crossed b: the same shape, so the span narrows to nothing.
+        let selected = [a, row([mkRun("b", src: 2, sel: true)]), c]
+        let sel = selected.changedRange(from: old)
+        XCTAssertEqual(sel?.new, 1..<2)
+        XCTAssertNil(selected.narrowed(sel!, from: { old[$0] }) { $0 == $1 || $0.sameShape(as: $1) })
+        // b edited: the span stays.
+        let edited = [a, row([mkRun("bx", src: 2)]), c]
+        let ed = edited.changedRange(from: old)
+        let narrowed = edited.narrowed(ed!, from: { old[$0] }) { $0 == $1 || $0.sameShape(as: $1) }
+        XCTAssertEqual(narrowed?.new, 1..<2)
+        XCTAssertEqual(narrowed?.old, 1..<2)
+        // Narrowing a wide span finds what changedRange with the looser
+        // question would have, without reading outside it.
+        let wide: RowChange = (0..<3, 0..<3)
+        let byNarrowing = edited.narrowed(wide, from: { old[$0] }) { $0 == $1 || $0.sameShape(as: $1) }
+        let byComparing = edited.changedRange(from: old) { $0 == $1 || $0.sameShape(as: $1) }
+        XCTAssertEqual(byNarrowing?.new, byComparing?.new)
+        XCTAssertEqual(byNarrowing?.old, byComparing?.old)
+    }
+
+    func testALayoutGivenTheChangeKeepsAndReusesAsOneThatFoundItWould() {
+        var cache: [Row: ShapedRow] = [:]
+        let a = row([mkRun("a", src: 0)]), b = row([mkRun("b", src: 2)])
+        let c = row([mkRun("c", src: 4)]), d = row([mkRun("d", src: 6)])
+        let l1 = EditorLayout(docView([a, b, c, d]), theme: theme, wrapWidth: 400, cache: &cache)
+        // A keystroke in b: its row is new, and c and d moved a byte on.
+        let typed = docView([a, row([mkRun("bx", src: 2)]), row([mkRun("c", src: 5)]), row([mkRun("d", src: 7)])])
+        let l2 = EditorLayout(typed, theme: theme, wrapWidth: 400, cache: &cache, previous: l1,
+                              change: (1..<2, 1..<2))
+        XCTAssertTrue(l1.rows[0].attributed === l2.rows[0].attributed, "the row before is kept")
+        XCTAssertFalse(l1.rows[1].attributed === l2.rows[1].attributed, "the typed row is shaped again")
+        XCTAssertTrue(l1.rows[2].attributed === l2.rows[2].attributed, "a moved row keeps its shape")
+        XCTAssertTrue(l1.rows[3].attributed === l2.rows[3].attributed)
+        XCTAssertEqual(l2.rows[2].row, typed.rows[2], "and carries its new offsets")
+        XCTAssertEqual(l2.rows.map(\.top), EditorLayout(typed, theme: theme, wrapWidth: 400, cache: &cache).rows.map(\.top))
     }
 
     // MARK: pixel wrapping

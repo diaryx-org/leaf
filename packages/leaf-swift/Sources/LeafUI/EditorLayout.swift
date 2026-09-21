@@ -183,6 +183,63 @@ extension Row {
     }
 }
 
+/// Where one frame's rows differ from the frame before's: the range of each
+/// outside their common prefix and suffix — the rows an edit or a selection
+/// touched. `nil` in a caller's hand means they are the same rows. Found by
+/// `changedRange` when two whole frames are in hand, and read straight off a
+/// frame core answered as a change (`DocView.apply`).
+typealias RowChange = (new: Range<Int>, old: Range<Int>)
+
+extension DocView {
+    /// Whether this frame is the change since the frame before rather than
+    /// the whole document — core's `basis` names the frame the change is
+    /// against, and is zero on a whole one. See `LeafDoc.setIncrementalFrames`.
+    var isChange: Bool { basis != 0 }
+
+    /// Apply `change`, a frame core answered as the change since this one —
+    /// which has to be the frame it names as its `basis` — so that this
+    /// becomes the whole frame it stands for: its rows spliced over the ones
+    /// they replace, every run after them moved by `srcShift` (an edit moves
+    /// the source of everything below it, and those rows are otherwise the
+    /// frame before's), and the rest of the frame — the caret, the selection,
+    /// the blocks — taken as it came, since it is complete on every frame.
+    /// O(the span) plus a move of the rows, and no row outside the span is
+    /// lifted, hashed or compared.
+    ///
+    /// Returns where the rows differ, in `changedRange`'s terms, and the rows
+    /// the span replaced — what `Row.sameText` reads to tell an edit from a
+    /// selection — since after this they are gone.
+    mutating func apply(_ change: DocView) -> (change: RowChange?, replaced: [Row]) {
+        precondition(change.basis == frame, "a change against frame \(change.basis) applied to frame \(frame)")
+        let start = Int(change.rowStart)
+        let span = start..<(start + Int(change.replaced))
+        // Taken out of this frame first, so the array is ours alone and the
+        // splice and the move happen in place rather than on a copy.
+        var rows = self.rows
+        self.rows = []
+        let replaced = Array(rows[span])
+        rows.replaceSubrange(span, with: change.rows)
+        if change.srcShift != 0 {
+            let shift = Int(change.srcShift)
+            for i in (start + change.rows.count)..<rows.count {
+                for j in rows[i].runs.indices {
+                    rows[i].runs[j].src = UInt32(Int(rows[i].runs[j].src) + shift)
+                }
+            }
+        }
+        var whole = change
+        whole.rows = rows
+        whole.basis = 0
+        whole.rowStart = 0
+        whole.replaced = 0
+        whole.srcShift = 0
+        self = whole
+        let changed: RowChange? = change.rows.isEmpty && span.isEmpty
+            ? nil : (start..<(start + change.rows.count), span)
+        return (changed, replaced)
+    }
+}
+
 extension Array where Element == Row {
     /// Where these rows differ from `old`, as the range of each that is
     /// outside their common prefix and suffix — the rows an edit or a
@@ -196,7 +253,7 @@ extension Array where Element == Row {
     /// `same` is what makes two rows the same row — `==` unless a caller has
     /// a looser question, as the layout does of a shape.
     func changedRange(from old: [Row],
-                      by same: (Row, Row) -> Bool = { $0 == $1 }) -> (new: Range<Int>, old: Range<Int>)? {
+                      by same: (Row, Row) -> Bool = { $0 == $1 }) -> RowChange? {
         var prefix = 0
         let shortest = Swift.min(count, old.count)
         while prefix < shortest && same(self[prefix], old[prefix]) { prefix += 1 }
@@ -209,6 +266,25 @@ extension Array where Element == Row {
         return (prefix..<(count - suffix), prefix..<(old.count - suffix))
     }
 
+    /// `change`, found by `==`, narrowed by a looser question: the rows at
+    /// either end of the span that are `same` as the ones they stand opposite
+    /// (`old(i)` is the frame before's row `i`) are taken out of it, and `nil`
+    /// is a span with nothing left in it. What `changedRange(from:by:)` with
+    /// the same question finds, without a walk over the rows outside the span.
+    func narrowed(_ change: RowChange, from old: (Int) -> Row,
+                  by same: (Row, Row) -> Bool) -> RowChange? {
+        var (new, was) = change
+        while !new.isEmpty, !was.isEmpty, same(self[new.lowerBound], old(was.lowerBound)) {
+            new = (new.lowerBound + 1)..<new.upperBound
+            was = (was.lowerBound + 1)..<was.upperBound
+        }
+        while !new.isEmpty, !was.isEmpty, same(self[new.upperBound - 1], old(was.upperBound - 1)) {
+            new = new.lowerBound..<(new.upperBound - 1)
+            was = was.lowerBound..<(was.upperBound - 1)
+        }
+        return new.isEmpty && was.isEmpty ? nil : (new, was)
+    }
+
     /// Whether these rows are `old` but for the selection — `Row.sameText`
     /// over the rows `changedRange` names, since the rest are `==` already.
     func sameText(as old: [Row]) -> Bool {
@@ -216,7 +292,7 @@ extension Array where Element == Row {
     }
 
     /// `sameText(as:)` for a caller that has `changedRange(from: old)` in hand.
-    func sameText(as old: [Row], over change: (new: Range<Int>, old: Range<Int>)?) -> Bool {
+    func sameText(as old: [Row], over change: RowChange?) -> Bool {
         guard let (new, was) = change else { return true }
         guard new.count == was.count else { return false }
         return zip(self[new], old[was]).allSatisfy { $0.sameText(as: $1) }
@@ -671,17 +747,21 @@ struct EditorLayout {
     /// passes it only when nothing but the frame changed: a theme, a width,
     /// a page or a picture that changed under the rows means every row is
     /// laid out again, and the previous frame is no guide.
+    /// `change` is where `docView`'s rows differ from `previous`'s when the
+    /// caller already knows — read off a frame core answered as a change —
+    /// so that no row outside it is compared; `nil` finds it by comparing.
     init(_ docView: DocView, theme: EditorTheme, viewWidth: CGFloat, page: PageSetup? = nil,
-         cache: inout [Row: ShapedRow], media: MediaStore? = nil, previous: EditorLayout? = nil) {
+         cache: inout [Row: ShapedRow], media: MediaStore? = nil, previous: EditorLayout? = nil,
+         change: RowChange? = nil) {
         if let page {
             let x = page.sheetX(in: viewWidth)
             self.init(docView, theme: theme, originX: x + page.margins.left,
                       columnWidth: page.columnWidth, page: page, sheetX: x,
-                      cache: &cache, media: media, previous: previous)
+                      cache: &cache, media: media, previous: previous, change: change)
         } else {
             let column = theme.column(in: viewWidth)
             self.init(docView, theme: theme, originX: column.originX, columnWidth: column.width,
-                      cache: &cache, media: media, previous: previous)
+                      cache: &cache, media: media, previous: previous, change: change)
         }
     }
 
@@ -693,7 +773,8 @@ struct EditorLayout {
     /// nothing else passes them.
     init(_ docView: DocView, theme: EditorTheme, originX: CGFloat, columnWidth: CGFloat,
          page: PageSetup? = nil, sheetX: CGFloat = 0,
-         cache: inout [Row: ShapedRow], media: MediaStore? = nil, previous: EditorLayout? = nil) {
+         cache: inout [Row: ShapedRow], media: MediaStore? = nil, previous: EditorLayout? = nil,
+         change known: RowChange? = nil) {
         let wrapWidth = columnWidth
         self.originX = originX
         self.columnWidth = max(0, columnWidth)
@@ -726,10 +807,16 @@ struct EditorLayout {
         // below it, each of them a different value by its offsets alone.
         let previous = previous.flatMap { $0.same(column: originX, width: columnWidth,
                                                    page: page, sheetX: sheetX) ? $0 : nil }
-        let old = previous.map { $0.rows.map(\.row) } ?? []
-        let change = previous.flatMap { _ in docView.rows.changedRange(from: old) }
-        let shapeChange = previous.flatMap { _ in
-            docView.rows.changedRange(from: old) { $0 == $1 || $0.sameShape(as: $1) }
+        // Where the rows differ: as the caller read it off the frame, or by
+        // comparing — and either way, narrowed by shape only over the span,
+        // so a frame that changed one row compares one row.
+        let change = previous.flatMap { p in
+            known ?? docView.rows.changedRange(from: p.rows.map(\.row))
+        }
+        let shapeChange = previous.flatMap { p in
+            change.flatMap { c in
+                docView.rows.narrowed(c, from: { p.rows[$0].row }) { $0 == $1 || $0.sameShape(as: $1) }
+            }
         }
         let kept = previous.map { $0.reusableRows(for: docView, change: change) } ?? 0
         if let previous, kept > 0 {
@@ -1078,7 +1165,7 @@ struct EditorLayout {
     /// fewer than the change, since a heading reads two rows ahead to keep
     /// itself with what it introduces; and backed off to a row the walk began
     /// an iteration at, since an iteration is what is re-run.
-    private func reusableRows(for docView: DocView, change: (new: Range<Int>, old: Range<Int>)?) -> Int {
+    private func reusableRows(for docView: DocView, change: RowChange?) -> Int {
         guard !docView.rows.isEmpty else { return 0 }
         var kept = min(rows.count, change.map { max(0, $0.new.lowerBound - 2) } ?? docView.rows.count)
         kept = min(kept, firstDiffering(docView.tables, tables, \.startRow))
@@ -1146,9 +1233,10 @@ struct EditorLayout {
     /// column stated directly rather than worked back out of a view width and a
     /// measure. Convenience for tests.
     init(_ docView: DocView, theme: EditorTheme, wrapWidth: CGFloat,
-         cache: inout [Row: ShapedRow], media: MediaStore? = nil, previous: EditorLayout? = nil) {
+         cache: inout [Row: ShapedRow], media: MediaStore? = nil, previous: EditorLayout? = nil,
+         change: RowChange? = nil) {
         self.init(docView, theme: theme, originX: theme.padding.left, columnWidth: wrapWidth,
-                  cache: &cache, media: media, previous: previous)
+                  cache: &cache, media: media, previous: previous, change: change)
     }
 
     /// The same with no cross-frame cache — every row shaped fresh.

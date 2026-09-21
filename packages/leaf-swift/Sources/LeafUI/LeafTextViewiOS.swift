@@ -699,6 +699,9 @@ public final class LeafTextView: UIView, UITextInput {
         self.doc = doc
         self.hostTheme = theme
         self.renderTheme = theme
+        // Every frame after the first is the change since the frame before,
+        // spliced into `docView` by `render` — the AppKit peer's rule.
+        doc.setIncrementalFrames(on: true)
         // Unwrapped layout (one row per block); the view soft-wraps at pixel width.
         let first = doc.setUnwrapped()
         self.docView = first
@@ -1135,24 +1138,37 @@ public final class LeafTextView: UIView, UITextInput {
     /// Install a fresh `DocView` and repaint. The system re-reads `selectedTextRange`
     /// and re-lays its selection overlays afterward.
     ///
-    /// The layout is the frame before's wherever the rows are — kept whole when
+    /// The frame is the change since the frame before, spliced into `docView`
+    /// (`DocView.apply`), or the whole document; a change against a frame
+    /// this view does not hold is replaced by a whole one asked of core. The
+    /// layout is the frame before's wherever the rows are — kept whole when
     /// nothing changed but the caret, rebuilt from the first changed row on
     /// otherwise; `reflow` says the geometry under the rows moved and every row
     /// is laid out again. The AppKit peer's rule; see its `render`.
-    private func render(_ view: DocView, reflow: Bool = false) {
+    private func render(_ frame: DocView, reflow: Bool = false) {
         // A peek is chrome anchored to a position, and the positions are being
         // rebuilt — an edit reflowed the line it points at, or a relayout moved
         // the reference out from under it.
         footnotePeek.hide()
-        let viewFlipped = view.view != docView.view
-        let change = view.rows.changedRange(from: docView.rows)
+        let frame = frame.isChange && frame.basis != docView.frame ? doc.view() : frame
+        let blocksChanged = frame.tables != docView.tables || frame.media != docView.media
+            || frame.math != docView.math || frame.directives != docView.directives
+        let viewFlipped = frame.view != docView.view
         // The document changed, as distinct from what is shown of it: the flip
         // rewrites every row and edits nothing, and a selection changes what is
         // shown of the text, not the text — see `Row.sameText`.
-        let edited = !viewFlipped && !view.rows.sameText(as: docView.rows, over: change)
-        let blocksChanged = view.tables != docView.tables || view.media != docView.media
-            || view.math != docView.math || view.directives != docView.directives
-        docView = view
+        let change: RowChange?
+        let edited: Bool
+        if frame.isChange {
+            let (span, replaced) = docView.apply(frame)
+            change = span
+            edited = !viewFlipped && !frame.rows.sameText(as: replaced)
+        } else {
+            change = frame.rows.changedRange(from: docView.rows)
+            edited = !viewFlipped && !frame.rows.sameText(as: docView.rows, over: change)
+            docView = frame
+        }
+        let view = docView
         readingLines = nil
         // The input traits answer differently per view (see `isSourceView`), and
         // UIKit reads them when the keyboard is set up — so set it up again.
@@ -1169,7 +1185,8 @@ public final class LeafTextView: UIView, UITextInput {
                                             cache: &shapeCache, media: mediaStore)
             } else if change != nil || blocksChanged || layoutEngine.rows.isEmpty {
                 layoutEngine = EditorLayout(view, theme: renderTheme, viewWidth: viewWidth, page: pageSetup,
-                                            cache: &shapeCache, media: mediaStore, previous: layoutEngine)
+                                            cache: &shapeCache, media: mediaStore, previous: layoutEngine,
+                                            change: change)
             }
         }
         let relaid = reflow || change != nil || blocksChanged
