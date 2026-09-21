@@ -1237,6 +1237,7 @@ public struct LeafEditor: View {
     private let page: PageSetup?
     private let accessory: AnyView?
     private var header: AnyView?
+    private var footer: AnyView?
 
     /// `placeholder` is the cue shown while the document is empty, drawn where
     /// its first character will go — see `LeafTextView.placeholder`. `page`
@@ -1287,9 +1288,24 @@ public struct LeafEditor: View {
         return copy
     }
 
+    /// With a view laid under the last line, *inside* the scroll — the
+    /// header's twin at the other end: what is attached to the document, a
+    /// row of related pages, anything that belongs to the end of the document
+    /// rather than to the screen. Reached by scrolling past the prose, and
+    /// no earlier: the fill that keeps a short document's paper tappable to
+    /// the bottom of the viewport is the text view's, so the footer sits
+    /// below the fold on a short document rather than riding up under its
+    /// last line. Same reasons as `header` for being a modifier, and for
+    /// being inside the scroll rather than stacked under it by the host.
+    public func footer<Footer: View>(@ViewBuilder _ content: () -> Footer) -> LeafEditor {
+        var copy = self
+        copy.footer = AnyView(content())
+        return copy
+    }
+
     public var body: some View {
         LeafEditorSurface(model: model, theme: theme, placeholder: placeholder, page: page,
-                          accessory: accessory, header: header)
+                          accessory: accessory, header: header, footer: footer)
             .focusedSceneValue(\.leafEditor, model)
             // The one place an *Other…* field is raised, from either surface
             // that offers the row — see `PresentationOther.swift`.
@@ -1320,8 +1336,8 @@ public struct LeafEditor: View {
 /// that still shrinks the frame gets an overlap of zero and nothing changes.
 final class LeafEditorController: UIViewController {
     let scroll = UIScrollView()
-    /// `content.height >= frame.height - insets`, the fill `pin(_:into:header:)`
-    /// installs. The constant is the adjusted insets, so a short document fills
+    /// `text.bottom - content.top >= frame.height - insets`, the fill
+    /// `pin(_:into:header:footer:)` installs. The constant is the adjusted insets, so a short document fills
     /// what is *visible* — under a bar, above a keyboard — and no further: at
     /// the frame's full height it could be pulled up into blank paper by the
     /// height of whatever covers the edges.
@@ -1403,11 +1419,13 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
     private let accessory: AnyView?
     /// The view above the first line, inside the scroll — see `LeafEditor.header`.
     private let header: AnyView?
+    /// The view below the last line, inside the scroll — see `LeafEditor.footer`.
+    private let footer: AnyView?
 
     init(model: LeafEditorModel, theme: EditorTheme, placeholder: String?, page: PageSetup?,
-         accessory: AnyView?, header: AnyView?) {
+         accessory: AnyView?, header: AnyView?, footer: AnyView?) {
         self.model = model; self.theme = theme; self.placeholder = placeholder; self.page = page
-        self.accessory = accessory; self.header = header
+        self.accessory = accessory; self.header = header; self.footer = footer
     }
 
     public func makeCoordinator() -> Coordinator { Coordinator() }
@@ -1423,6 +1441,8 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
         /// would drop whatever the header had in flight — a sheet it presents,
         /// a field mid-edit.
         var headerHosting: UIHostingController<AnyView>?
+        /// The footer's, for the same reason again.
+        var footerHosting: UIHostingController<AnyView>?
         /// The view the accessory hangs off, so a resize can ask *it* to re-read
         /// its input views — `reloadInputViews()` is the first responder's call,
         /// and the hosting controller isn't one.
@@ -1479,7 +1499,8 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
         // once. (A pan already under way on the first finger is the pinch's
         // to cancel — see `handlePinch`.)
         scroll.panGestureRecognizer.maximumNumberOfTouches = 1
-        pin(textView, into: controller, header: makeHeader(context: context))
+        pin(textView, into: controller, header: makeHeader(context: context),
+            footer: makeFooter(context: context))
 
         // A reader is opened to be read — see the AppKit peer.
         if !model.isReadOnly {
@@ -1498,14 +1519,16 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
         // forever (the bug this fixes; hosts no longer need `.id(...)`).
         guard model.textView === hosted else {
             hosted.zoomHost?.removeFromSuperview() // also tears down its own constraints
-            if let header = context.coordinator.headerHosting {
-                header.willMove(toParent: nil)
-                header.view.removeFromSuperview()
-                header.removeFromParent()
+            for hosted in [context.coordinator.headerHosting, context.coordinator.footerHosting] {
+                guard let hosted else { continue }
+                hosted.willMove(toParent: nil)
+                hosted.view.removeFromSuperview()
+                hosted.removeFromParent()
             }
             let textView = makeTextView()
             attachAccessory(to: textView, context: context)
-            pin(textView, into: controller, header: makeHeader(context: context))
+            pin(textView, into: controller, header: makeHeader(context: context),
+                footer: makeFooter(context: context))
             // `doc.view()` is a read-only snapshot — routing it through `command`
             // forces an immediate render → `onStateChange`, rather than waiting on
             // whatever layout pass happens to come next.
@@ -1548,6 +1571,7 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
         // The header's height is its content's (`sizingOptions`), so a swap that
         // changes it re-lays the scroll's content out by itself.
         if let header { context.coordinator.headerHosting?.rootView = header }
+        if let footer { context.coordinator.footerHosting?.rootView = footer }
     }
 
     /// The header as a controller to pin over the text, or nil when the host
@@ -1563,6 +1587,17 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
         hosting.view.backgroundColor = .clear
         hosting.sizingOptions = .intrinsicContentSize
         context.coordinator.headerHosting = hosting
+        return hosting
+    }
+
+    /// The footer as a controller to pin under the text, or nil when the host
+    /// set none — `makeHeader`'s twin, sized the same way.
+    private func makeFooter(context: Context) -> UIHostingController<AnyView>? {
+        guard let footer else { return nil }
+        let hosting = UIHostingController(rootView: footer)
+        hosting.view.backgroundColor = .clear
+        hosting.sizingOptions = .intrinsicContentSize
+        context.coordinator.footerHosting = hosting
         return hosting
     }
 
@@ -1666,7 +1701,8 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
     /// the zoom is the text view's transform, which constraints do not see, and
     /// the wrapper is what carries the scaled size to the scroll view.
     private func pin(_ textView: LeafTextView, into controller: LeafEditorController,
-                     header: UIHostingController<AnyView>?) {
+                     header: UIHostingController<AnyView>?,
+                     footer: UIHostingController<AnyView>? = nil) {
         let scroll = controller.scroll
         let zoomed = LeafZoomView(textView: textView)
         scroll.addSubview(zoomed)
@@ -1683,8 +1719,15 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
         // document scrolled by exactly the header's height into blank paper. The
         // constant is the controller's to keep — the visible height, not the
         // frame's, see `LeafEditorController.fill`.
-        let fill = scroll.contentLayoutGuide.heightAnchor.constraint(
-            greaterThanOrEqualTo: scroll.frameLayoutGuide.heightAnchor)
+        //
+        // From the content's top to the *text view's* bottom, not the content's
+        // height: a footer is outside the fill, so on a short document it sits
+        // under the fold, reached by scrolling past the prose, rather than
+        // riding up to the bottom of the viewport — which with the keyboard up
+        // would be the top of the keyboard, in the space a fresh note is
+        // written in. Without a footer the two are the same measure.
+        let fill = scroll.contentLayoutGuide.topAnchor.anchorWithOffset(to: zoomed.bottomAnchor)
+            .constraint(greaterThanOrEqualTo: scroll.frameLayoutGuide.heightAnchor)
         controller.fill = fill
         // The width is the viewport's — except on paper, where a sheet wider
         // than the screen keeps its width (the wrapper's intrinsic width, at a
@@ -1695,11 +1738,29 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
         var constraints = [
             zoomed.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
             zoomed.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
-            zoomed.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
             zoomed.widthAnchor.constraint(greaterThanOrEqualTo: scroll.frameLayoutGuide.widthAnchor),
             width,
             fill,
         ]
+        if let footer {
+            controller.addChild(footer)
+            scroll.addSubview(footer.view)
+            footer.didMove(toParent: controller)
+            footer.view.translatesAutoresizingMaskIntoConstraints = false
+            // Hugs, as the header does, so the fill's slack stays the text
+            // view's: on a short document the footer sits under the fold and
+            // the paper above it is tappable to the bottom of the screen.
+            footer.view.setContentHuggingPriority(.required, for: .vertical)
+            zoomed.setContentHuggingPriority(.defaultLow, for: .vertical)
+            constraints += [
+                footer.view.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+                footer.view.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+                footer.view.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+                zoomed.bottomAnchor.constraint(equalTo: footer.view.topAnchor),
+            ]
+        } else {
+            constraints.append(zoomed.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor))
+        }
         if let header {
             controller.addChild(header)
             scroll.addSubview(header.view)
