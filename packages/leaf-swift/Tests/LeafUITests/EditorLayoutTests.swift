@@ -472,6 +472,128 @@ final class EditorLayoutTests: XCTestCase {
         XCTAssertFalse(wide.rows[0].attributed === narrow.rows[0].attributed, "a resize re-shapes the row")
     }
 
+    // MARK: reusing the frame before
+
+    func testTheSameRowsKeepTheirLayoutWithoutReshaping() {
+        var cache: [Row: ShapedRow] = [:]
+        let dv = docView([row([mkRun("alpha")]), gapRow(.paragraph, .paragraph), row([mkRun("beta")])])
+        let l1 = EditorLayout(dv, theme: theme, wrapWidth: 400, cache: &cache)
+        let l2 = EditorLayout(dv, theme: theme, wrapWidth: 400, cache: &cache, previous: l1)
+        XCTAssertEqual(l2.rows.count, l1.rows.count)
+        for (a, b) in zip(l1.rows, l2.rows) {
+            XCTAssertTrue(a.attributed === b.attributed, "the shape is the frame before's")
+            XCTAssertEqual(a.top, b.top)
+            XCTAssertEqual(a.height, b.height)
+        }
+        XCTAssertEqual(l2.contentHeight, l1.contentHeight)
+        XCTAssertEqual(cache.count, 3, "the cache still holds exactly the rows the frame used")
+    }
+
+    func testAChangedRowReflowsItselfAndWhatFollowsAndKeepsWhatCame() {
+        var cache: [Row: ShapedRow] = [:]
+        let long = "the quick brown fox jumps over the lazy dog and then keeps on running"
+        let a = row([mkRun("a")]), b = row([mkRun("b")]), c = row([mkRun("c")]), d = row([mkRun("d")])
+        let l1 = EditorLayout(docView([a, b, c, d]), theme: theme, wrapWidth: 160, cache: &cache)
+        // Row 2 grows into a wrapped paragraph: rows 0 and 1 stand, row 3 moves.
+        let l2 = EditorLayout(docView([a, b, row([mkRun(long)]), d]), theme: theme, wrapWidth: 160,
+                              cache: &cache, previous: l1)
+        XCTAssertTrue(l1.rows[0].attributed === l2.rows[0].attributed)
+        XCTAssertTrue(l1.rows[1].attributed === l2.rows[1].attributed)
+        XCTAssertEqual(l1.rows[1].top, l2.rows[1].top)
+        XCTAssertFalse(l1.rows[2].attributed === l2.rows[2].attributed, "the changed row is shaped afresh")
+        XCTAssertGreaterThan(l2.rows[2].wrapped.count, 1, "the fixture must wrap")
+        XCTAssertTrue(l1.rows[3].attributed === l2.rows[3].attributed, "a row after the change keeps its shape")
+        XCTAssertGreaterThan(l2.rows[3].top, l1.rows[3].top, "…and is placed under the taller row")
+        XCTAssertEqual(l2.rows[3].top, l2.rows[2].top + l2.rows[2].height, accuracy: 0.5)
+        XCTAssertGreaterThan(l2.contentHeight, l1.contentHeight)
+    }
+
+    func testARowInsertedAboveMovesTheRestWithTheirShapes() {
+        var cache: [Row: ShapedRow] = [:]
+        let a = row([mkRun("a")]), b = row([mkRun("b")]), c = row([mkRun("c")])
+        let l1 = EditorLayout(docView([a, b, c]), theme: theme, wrapWidth: 400, cache: &cache)
+        let l2 = EditorLayout(docView([a, row([mkRun("new")]), b, c]), theme: theme, wrapWidth: 400,
+                              cache: &cache, previous: l1)
+        XCTAssertEqual(l2.rows.count, 4)
+        XCTAssertTrue(l1.rows[0].attributed === l2.rows[0].attributed)
+        XCTAssertTrue(l1.rows[1].attributed === l2.rows[2].attributed, "b moved down with its shape")
+        XCTAssertTrue(l1.rows[2].attributed === l2.rows[3].attributed)
+        XCTAssertEqual(l2.rows[2].top, l1.rows[1].top + l2.rows[1].height, accuracy: 0.5)
+        XCTAssertEqual(l2.contentHeight, l1.contentHeight + l2.rows[1].height, accuracy: 0.5)
+    }
+
+    func testAHeadingIsNotKeptWhenWhatItIntroducesChanged() throws {
+        // Paginated, a heading reads two rows ahead to stay with its text; so
+        // it is laid out again when those rows changed, though it did not.
+        var cache: [Row: ShapedRow] = [:]
+        let page = PageSetup.a4
+        let title = row([mkRun("Title")], heading: 1)
+        let gap = gapRow(.heading, .paragraph)
+        let l1 = EditorLayout(docView([row([mkRun("a")]), title, gap, row([mkRun("b")])]),
+                              theme: theme, viewWidth: 900, page: page, cache: &cache)
+        let l2 = EditorLayout(docView([row([mkRun("a")]), title, gap, row([mkRun("changed")])]),
+                              theme: theme, viewWidth: 900, page: page, cache: &cache, previous: l1)
+        XCTAssertEqual(l2.rows.count, 4)
+        XCTAssertEqual(l2.rows[1].top, l1.rows[1].top, "the same place, found again")
+        XCTAssertTrue(l1.rows[0].attributed === l2.rows[0].attributed)
+        XCTAssertTrue(l1.rows[1].attributed === l2.rows[1].attributed, "its shape is kept, from the cache")
+        XCTAssertFalse(l1.rows[3].attributed === l2.rows[3].attributed)
+    }
+
+    func testATableWhoseCellsChangedIsLaidOutAgainThoughItsRowsDidNot() throws {
+        // A table's picture rows are the same rows whatever its cells say —
+        // the grid is laid out from the structural cells, so a change there
+        // has to reach the layout although no row changed.
+        var cache: [Row: ShapedRow] = [:]
+        let picture = [row([mkRun("┌───┐")], decoration: true), row([mkRun("│ a │")]),
+                       row([mkRun("└───┘")], decoration: true)]
+        let short = mkTable([mkTableRow([mkCell("a")])], startRow: 1, endRow: 4)
+        let tall = mkTable([mkTableRow([mkCellLines([("a", 0, 1), ("b", 2, 3), ("c", 4, 5)])])],
+                           startRow: 1, endRow: 4)
+        let rows = [row([mkRun("before")])] + picture + [row([mkRun("after")])]
+        let l1 = EditorLayout(docView(rows, tables: [short]), theme: theme, wrapWidth: 400, cache: &cache)
+        let l2 = EditorLayout(docView(rows, tables: [tall]), theme: theme, wrapWidth: 400,
+                              cache: &cache, previous: l1)
+        XCTAssertTrue(l1.rows[0].attributed === l2.rows[0].attributed, "the row before the table stands")
+        XCTAssertGreaterThan(try XCTUnwrap(l2.rows[1].table).height, try XCTUnwrap(l1.rows[1].table).height)
+        XCTAssertGreaterThan(l2.rows[4].top, l1.rows[4].top, "the row after moves down under the taller grid")
+    }
+
+    func testAFrameLaidIntoAnotherColumnIsNoGuide() {
+        var cache: [Row: ShapedRow] = [:]
+        let r = row([mkRun("the quick brown fox jumps over the lazy dog")])
+        let wide = EditorLayout(docView([r]), theme: theme, wrapWidth: 4000, cache: &cache)
+        let narrow = EditorLayout(docView([r]), theme: theme, wrapWidth: 80, cache: &cache, previous: wide)
+        XCTAssertFalse(wide.rows[0].attributed === narrow.rows[0].attributed, "a resize re-shapes the row")
+        XCTAssertGreaterThan(narrow.rows[0].wrapped.count, 1)
+    }
+
+    #if canImport(AppKit) && !targetEnvironment(macCatalyst)
+    func testTheViewKeepsItsLayoutAcrossACaretMoveAndReusesItAcrossADrag() throws {
+        let editor = LeafTextView(
+            doc: try LeafDoc(source: "one two three\n\nfour five six\n\nseven eight nine\n", format: "markdown"),
+            theme: .default)
+        editor.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        editor.layoutSubtreeIfNeeded()
+        let before = editor.layoutEngine
+        XCTAssertGreaterThan(before.rows.count, 1)
+        // The plain click: nothing changed but the caret.
+        editor.command { $0.clickCh(row: 2, ch: 2, extend: false) }
+        let clicked = editor.layoutEngine
+        for (a, b) in zip(before.rows, clicked.rows) {
+            XCTAssertTrue(a.attributed === b.attributed, "a caret move keeps every row's shape")
+            XCTAssertEqual(a.top, b.top)
+        }
+        // A drag: the rows it crosses are shaped again, the rest stand.
+        editor.command { $0.clickCh(row: 4, ch: 3, extend: true) }
+        let dragged = editor.layoutEngine
+        XCTAssertTrue(dragged.rows[0].attributed === before.rows[0].attributed, "a row above the selection stands")
+        XCTAssertEqual(dragged.rows[0].top, before.rows[0].top)
+        XCTAssertFalse(dragged.rows[4].attributed === before.rows[4].attributed, "a selected row is shaped with its selection")
+        XCTAssertEqual(dragged.contentHeight, before.contentHeight, "nothing moved")
+    }
+    #endif
+
     // MARK: what a frame changed — the rows, and whether the text among them
 
     func testASelectionSplitsARowsRunsButLeavesItsText() {

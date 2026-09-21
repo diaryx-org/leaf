@@ -576,7 +576,7 @@ public final class LeafTextView: UIView, UITextInput {
             guard newValue != mediaStore.baseURL else { return }
             mediaStore.baseURL = newValue
             mediaStore.flush()          // every relative path now points elsewhere
-            render(docView)
+            render(docView, reflow: true)
         }
     }
 
@@ -587,7 +587,7 @@ public final class LeafTextView: UIView, UITextInput {
     /// See `LeafEditorModel.reloadMedia`.
     public func reloadMedia(_ src: String?) {
         mediaStore.forget(src)
-        render(docView)
+        render(docView, reflow: true)
     }
 
     /// A cue shown while the document is empty — "Start writing…" — drawn where
@@ -701,7 +701,7 @@ public final class LeafTextView: UIView, UITextInput {
         // was laid out with, so a repaint alone would leave a chip-height row.
         mediaStore.onLoaded = { [weak self] src in
             guard let self else { return }
-            self.render(self.docView)
+            self.render(self.docView, reflow: true)
             self.playIfAwaited(src)
         }
         backgroundColor = .clear
@@ -1115,7 +1115,7 @@ public final class LeafTextView: UIView, UITextInput {
         if force || abs(w - viewWidth) > 0.5 {
             viewWidth = w
             // Re-wrap the current frame at the new pixel width — no round trip to core.
-            render(docView)
+            render(docView, reflow: true)
         }
     }
 
@@ -1123,31 +1123,47 @@ public final class LeafTextView: UIView, UITextInput {
 
     /// Install a fresh `DocView` and repaint. The system re-reads `selectedTextRange`
     /// and re-lays its selection overlays afterward.
-    private func render(_ view: DocView) {
+    ///
+    /// The layout is the frame before's wherever the rows are — kept whole when
+    /// nothing changed but the caret, rebuilt from the first changed row on
+    /// otherwise; `reflow` says the geometry under the rows moved and every row
+    /// is laid out again. The AppKit peer's rule; see its `render`.
+    private func render(_ view: DocView, reflow: Bool = false) {
         // A peek is chrome anchored to a position, and the positions are being
         // rebuilt — an edit reflowed the line it points at, or a relayout moved
         // the reference out from under it.
         footnotePeek.hide()
         let viewFlipped = view.view != docView.view
+        let change = view.rows.changedRange(from: docView.rows)
         // The document changed, as distinct from what is shown of it: the flip
         // rewrites every row and edits nothing, and a selection changes what is
         // shown of the text, not the text — see `Row.sameText`.
-        let edited = !viewFlipped && !view.rows.sameText(as: docView.rows)
+        let edited = !viewFlipped && !view.rows.sameText(as: docView.rows, over: change)
+        let blocksChanged = view.tables != docView.tables || view.media != docView.media
+            || view.math != docView.math || view.directives != docView.directives
         docView = view
         readingLines = nil
         // The input traits answer differently per view (see `isSourceView`), and
         // UIKit reads them when the keyboard is set up — so set it up again.
         if viewFlipped, isFirstResponder { reloadInputViews() }
-        layoutEngine = EditorLayout(view, theme: renderTheme, viewWidth: viewWidth, page: pageSetup,
-                                    cache: &shapeCache, media: mediaStore)
+        if reflow {
+            layoutEngine = EditorLayout(view, theme: renderTheme, viewWidth: viewWidth, page: pageSetup,
+                                        cache: &shapeCache, media: mediaStore)
+        } else if change != nil || blocksChanged || layoutEngine.rows.isEmpty {
+            layoutEngine = EditorLayout(view, theme: renderTheme, viewWidth: viewWidth, page: pageSetup,
+                                        cache: &shapeCache, media: mediaStore, previous: layoutEngine)
+        }
+        let relaid = reflow || change != nil || blocksChanged
         // Installed players follow their boxes; media edited out of the document
         // is absent from the rects, which is what stops its playback.
-        if !mediaPlayers.isEmpty {
+        if relaid, !mediaPlayers.isEmpty {
             mediaPlayers.reposition(layoutEngine.mediaRects())
         }
-        invalidateIntrinsicContentSize()
-        // The scroll view reads the wrapper's size, not this view's.
-        zoomHost?.invalidateIntrinsicContentSize()
+        if relaid {
+            invalidateIntrinsicContentSize()
+            // The scroll view reads the wrapper's size, not this view's.
+            zoomHost?.invalidateIntrinsicContentSize()
+        }
         setNeedsDisplay()
         // Only follow the caret when it actually moved, not on a passive reflow.
         let caret = doc.caretOffset()

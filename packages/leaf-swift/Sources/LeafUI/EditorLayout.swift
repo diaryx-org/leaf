@@ -190,7 +190,12 @@ extension Array where Element == Row {
     /// Whether these rows are `old` but for the selection — `Row.sameText`
     /// over the rows `changedRange` names, since the rest are `==` already.
     func sameText(as old: [Row]) -> Bool {
-        guard let (new, was) = changedRange(from: old) else { return true }
+        sameText(as: old, over: changedRange(from: old))
+    }
+
+    /// `sameText(as:)` for a caller that has `changedRange(from: old)` in hand.
+    func sameText(as old: [Row], over change: (new: Range<Int>, old: Range<Int>)?) -> Bool {
+        guard let (new, was) = change else { return true }
         guard new.count == was.count else { return false }
         return zip(self[new], old[was]).allSatisfy { $0.sameText(as: $1) }
     }
@@ -609,6 +614,21 @@ struct EditorLayout {
     /// source, so it costs a walk over rows already in hand instead of
     /// serializing the document to ask whether it is empty.
     let isEmpty: Bool
+    /// The flow's state before the walk's iteration that emitted each row, and
+    /// after the last — one entry more than `rows` — so a later frame that keeps
+    /// this one's rows up to some index resumes the walk from where it stood.
+    /// Nil on a row an iteration emitted after its first (a table's or a media
+    /// box's later rows, collapsed under the block), since an iteration is the
+    /// unit re-run, and on the line box an empty document is given.
+    private let flowBefore: [Flow?]
+    /// The frame's blocks that render as a thing rather than as their rows,
+    /// kept so a later frame can tell whether the rows it would keep were laid
+    /// out under the same ones — a table whose cells changed keeps its picture
+    /// rows, and a formula's row names its `∑` and not its TeX.
+    private let tables: [TableView]
+    private let media: [MediaView]
+    private let math: [MathView]
+    private let directives: [DirectiveView]
 
     /// Lay out `docView` in a view `viewWidth` points wide, wrapping each row to
     /// the text column `theme` puts inside it (see `EditorTheme.column(in:)`).
@@ -624,17 +644,22 @@ struct EditorLayout {
     /// sheets and wrap to the sheet's margins rather than to the theme's
     /// `measure`, which a page supersedes. `nil` (the default) is the continuous
     /// scrolling flow.
+    /// `previous` is the frame before, whose laid-out rows this one keeps
+    /// wherever its own rows are the same — see `reusableRows`. The caller
+    /// passes it only when nothing but the frame changed: a theme, a width,
+    /// a page or a picture that changed under the rows means every row is
+    /// laid out again, and the previous frame is no guide.
     init(_ docView: DocView, theme: EditorTheme, viewWidth: CGFloat, page: PageSetup? = nil,
-         cache: inout [Row: ShapedRow], media: MediaStore? = nil) {
+         cache: inout [Row: ShapedRow], media: MediaStore? = nil, previous: EditorLayout? = nil) {
         if let page {
             let x = page.sheetX(in: viewWidth)
             self.init(docView, theme: theme, originX: x + page.margins.left,
                       columnWidth: page.columnWidth, page: page, sheetX: x,
-                      cache: &cache, media: media)
+                      cache: &cache, media: media, previous: previous)
         } else {
             let column = theme.column(in: viewWidth)
             self.init(docView, theme: theme, originX: column.originX, columnWidth: column.width,
-                      cache: &cache, media: media)
+                      cache: &cache, media: media, previous: previous)
         }
     }
 
@@ -646,12 +671,16 @@ struct EditorLayout {
     /// nothing else passes them.
     init(_ docView: DocView, theme: EditorTheme, originX: CGFloat, columnWidth: CGFloat,
          page: PageSetup? = nil, sheetX: CGFloat = 0,
-         cache: inout [Row: ShapedRow], media: MediaStore? = nil) {
+         cache: inout [Row: ShapedRow], media: MediaStore? = nil, previous: EditorLayout? = nil) {
         let wrapWidth = columnWidth
         self.originX = originX
         self.columnWidth = max(0, columnWidth)
         self.setup = page
         self.sheetX = sheetX
+        self.tables = docView.tables
+        self.media = docView.media
+        self.math = docView.math
+        self.directives = docView.directives
         // Every glyph the reader can see is a run's text, including the ones a
         // surface redraws as graphics — a table's box picture, a media row's
         // `🖼 alt`, a break's `───`. So one pass over the runs answers this for
@@ -659,10 +688,51 @@ struct EditorLayout {
         self.isEmpty = docView.rows.allSatisfy { row in row.runs.allSatisfy { $0.text.isEmpty } }
         var layouts: [RowLayout] = []
         layouts.reserveCapacity(docView.rows.count)
+        var flowBefore: [Flow?] = []
+        flowBefore.reserveCapacity(docView.rows.count + 1)
         var next = Dictionary<Row, ShapedRow>(minimumCapacity: docView.rows.count)
         // The continuous flow opens under the theme's top padding; the paginated
         // one at the first column's top margin, which is the padding's counterpart.
         var flow = Flow(page: page, sheetX: sheetX, y: page?.contentTop(0) ?? theme.padding.top)
+
+        // What the frame before laid out that this one can keep. Its rows up to
+        // `kept` are taken as they are — their layout, and their shape into
+        // `next`, one hash each and no shaping. Past the change, a row that is
+        // the same row further down the document (an edit above it added or
+        // took a line) keeps its shape and is placed again.
+        let previous = previous.flatMap { $0.same(column: originX, width: columnWidth,
+                                                   page: page, sheetX: sheetX) ? $0 : nil }
+        let change = previous.flatMap { docView.rows.changedRange(from: $0.rows.map(\.row)) }
+        let kept = previous.map { $0.reusableRows(for: docView, change: change) } ?? 0
+        if let previous, kept > 0 {
+            layouts.append(contentsOf: previous.rows[..<kept])
+            flowBefore.append(contentsOf: previous.flowBefore[..<kept])
+            // The walk resumes where the frame before stood at that row.
+            flow = previous.flowBefore[kept]!
+            for rl in layouts where rl.table == nil && rl.media == nil && rl.math == nil
+                && !rl.row.runs.contains(where: { $0.role == "math" }) {
+                next[rl.row] = rl.shaped
+            }
+        }
+        /// The shape the frame before gave the row now at `i`, where that row
+        /// is one it laid out — before the change at the same index, after it
+        /// at the index that stands opposite. Not for a row a block renders
+        /// over: those are laid out from the block.
+        func unchanged(_ i: Int) -> ShapedRow? {
+            guard let previous else { return nil }
+            var j = i
+            if let change {
+                if i >= change.new.upperBound {
+                    j = i - change.new.upperBound + change.old.upperBound
+                } else if i >= change.new.lowerBound {
+                    return nil
+                }
+            }
+            guard j < previous.rows.count else { return nil }
+            let rl = previous.rows[j]
+            guard rl.table == nil, rl.media == nil, rl.math == nil, rl.row == docView.rows[i] else { return nil }
+            return rl.shaped
+        }
 
         // A table's box-glyph picture rows are replaced by one grid element that
         // stands in for the whole `[startRow, endRow)` span.
@@ -705,8 +775,9 @@ struct EditorLayout {
             wrapWidth: wrapWidth
         )
 
-        var i = 0
+        var i = kept
         while i < docView.rows.count {
+            flowBefore.append(flow)
             // Fitted to the text column — its columns squeezed and its cells
             // wrapped until the grid is no wider than the prose around it.
             if let t = tableAt[i], let grid = TableLayout(t, theme: theme, availableWidth: wrapWidth) {
@@ -720,6 +791,7 @@ struct EditorLayout {
                 // collapse them onto the grid: the first carries its height, the
                 // rest are zero-height, and all defer drawing/caret to the grid.
                 for r in Int(t.startRow)..<Int(t.endRow) where r < docView.rows.count {
+                    if r > i { flowBefore.append(nil) }
                     layouts.append(RowLayout(
                         row: docView.rows[r], shaped: emptyShape, top: tableTop,
                         originX: tableX, columnWidth: wrapWidth,
@@ -750,6 +822,7 @@ struct EditorLayout {
                 let mediaTop = flow.y
                 let mediaX = flow.originX(originX)
                 for r in Int(mv.startRow)..<Int(mv.endRow) where r < docView.rows.count {
+                    if r > i { flowBefore.append(nil) }
                     layouts.append(RowLayout(
                         row: docView.rows[r],
                         shaped: r == Int(mv.startRow) ? shaped : emptyShape,
@@ -774,6 +847,7 @@ struct EditorLayout {
                 let mathTop = flow.y
                 let mathX = flow.originX(originX)
                 for r in Int(mv.startRow)..<Int(mv.endRow) where r < docView.rows.count {
+                    if r > i { flowBefore.append(nil) }
                     layouts.append(RowLayout(
                         row: docView.rows[r],
                         shaped: r == Int(mv.startRow) ? shaped : emptyShape,
@@ -796,7 +870,7 @@ struct EditorLayout {
             // the formula's `∑` and not its TeX, so a reused shape could carry
             // a picture the document no longer has.
             let hasMath = row.runs.contains { $0.role == "math" && mathInline[$0.src] != nil }
-            if !hasMath, let hit = cache[row] ?? next[row], hit.wrapWidth == wrapWidth {
+            if !hasMath, let hit = unchanged(i) ?? cache[row] ?? next[row], hit.wrapWidth == wrapWidth {
                 shaped = hit
             } else {
                 shaped = EditorLayout.shape(row, theme: theme, wrapWidth: wrapWidth,
@@ -926,6 +1000,7 @@ struct EditorLayout {
         // row into being. The same reason `wrap` gives an empty row one empty
         // line: a caret needs somewhere to be.
         if layouts.isEmpty {
+            flowBefore.append(nil)
             layouts.append(RowLayout(row: Row(runs: [], decoration: false, code: false,
                                               codeLang: nil, directive: false,
                                               directiveLabel: nil, heading: nil,
@@ -935,7 +1010,9 @@ struct EditorLayout {
                                      originX: originX, columnWidth: wrapWidth))
             flow.y += theme.lineHeight
         }
+        flowBefore.append(flow)
         rows = layouts
+        self.flowBefore = flowBefore
         if let page {
             // Every sheet the walk touched, including any an oversized block spilled
             // across — `flow.index` is where the cursor ended, `index(at:)` catches
@@ -951,6 +1028,48 @@ struct EditorLayout {
             contentWidth = 0
         }
         cache = next
+    }
+
+    /// Whether this frame was laid into the column described — the one test
+    /// of whether its rows can stand in a frame laid into it. The theme is the
+    /// caller's to compare: it clears the shape cache and passes no previous
+    /// frame when its metrics move.
+    private func same(column originX: CGFloat, width: CGFloat, page: PageSetup?, sheetX: CGFloat) -> Bool {
+        originX == self.originX && max(0, width) == columnWidth && page == setup && sheetX == self.sheetX
+    }
+
+    /// How many of this frame's leading rows the next one, laying out
+    /// `docView` with `change` between the two (`changedRange`), takes as they
+    /// are.
+    ///
+    /// The rows before the change are `==` the ones they stand opposite, but
+    /// a row is its text and marks, not its picture: the blocks that render
+    /// over rows — tables, media, formulas, directives — have to be the same
+    /// blocks up to there too, since a table whose cells changed keeps its
+    /// picture rows and a formula's row names its `∑` and not its TeX. Two
+    /// fewer than the change, since a heading reads two rows ahead to keep
+    /// itself with what it introduces; and backed off to a row the walk began
+    /// an iteration at, since an iteration is what is re-run.
+    private func reusableRows(for docView: DocView, change: (new: Range<Int>, old: Range<Int>)?) -> Int {
+        guard !docView.rows.isEmpty else { return 0 }
+        var kept = min(rows.count, change.map { max(0, $0.new.lowerBound - 2) } ?? docView.rows.count)
+        kept = min(kept, firstDiffering(docView.tables, tables, \.startRow))
+        kept = min(kept, firstDiffering(docView.media, media, \.startRow))
+        kept = min(kept, firstDiffering(docView.math, math, \.startRow))
+        kept = min(kept, firstDiffering(docView.directives, directives, \.startRow))
+        while kept > 0 && flowBefore[kept] == nil { kept -= 1 }
+        return kept
+    }
+
+    /// The first row on which the blocks of two frames part company — where
+    /// the first block one has and the other has not opens — or past every row
+    /// when they agree. Both lists are in row order.
+    private func firstDiffering<T: Equatable>(_ a: [T], _ b: [T], _ startRow: (T) -> UInt32) -> Int {
+        var i = 0
+        while i < a.count && i < b.count && a[i] == b[i] { i += 1 }
+        let ra = i < a.count ? Int(startRow(a[i])) : Int.max
+        let rb = i < b.count ? Int(startRow(b[i])) : Int.max
+        return min(ra, rb)
     }
 
     /// The media whose box contains `point`, of any kind, or `nil`. `point` is in
@@ -999,9 +1118,9 @@ struct EditorLayout {
     /// column stated directly rather than worked back out of a view width and a
     /// measure. Convenience for tests.
     init(_ docView: DocView, theme: EditorTheme, wrapWidth: CGFloat,
-         cache: inout [Row: ShapedRow], media: MediaStore? = nil) {
+         cache: inout [Row: ShapedRow], media: MediaStore? = nil, previous: EditorLayout? = nil) {
         self.init(docView, theme: theme, originX: theme.padding.left, columnWidth: wrapWidth,
-                  cache: &cache, media: media)
+                  cache: &cache, media: media, previous: previous)
     }
 
     /// The same with no cross-frame cache — every row shaped fresh.
