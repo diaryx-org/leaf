@@ -315,7 +315,7 @@ public struct LeafFormattingToolbar: View {
     private var groups: [ToolGroup] {
         var groups = [
             ToolGroup(id: "inline", count: 7, content: AnyView(inlineMarks)),
-            ToolGroup(id: "block", count: 10, content: AnyView(blockStyles)),
+            ToolGroup(id: "block", count: 11, content: AnyView(blockStyles)),
             ToolGroup(id: "presentation", count: 9, content: AnyView(presentationTools)),
             ToolGroup(id: "indent", count: 2, content: AnyView(indentTools)),
             ToolGroup(id: "history", count: 2, content: AnyView(historyTools)),
@@ -389,8 +389,8 @@ public struct LeafFormattingToolbar: View {
             .popover(isPresented: $askingForDestination) { destinationField }
     }
 
-    /// Ten tools: H1, H2, body, quote, code block, the two lists, the rule,
-    /// Footnote, Table.
+    /// Eleven tools: H1, H2, body, quote, code block, the two lists, Checklist,
+    /// the rule, Footnote, Table.
     private var blockStyles: some View {
         HStack(spacing: metrics.spacing) {
             textTool("H1", "Heading 1", active: editor.state.heading == 1) { editor.setHeading(1) }
@@ -406,6 +406,12 @@ public struct LeafFormattingToolbar: View {
                  enabled: editor.capabilities.codeBlock) { editor.toggleCodeBlock() }
             tool("list.bullet", "Bulleted list") { editor.toggleList(ordered: false) }
             tool("list.number", "Numbered list") { editor.toggleList(ordered: true) }
+            // The third list, lit while the caret's item has a box for the
+            // reason Code Block is lit inside a fence. Ticking the box is not a
+            // tool here: a click or a tap on the box itself does that, and the
+            // Format menu's Checked item is the keyboard's way.
+            tool("checklist", "Checklist", active: editor.state.task != nil,
+                 enabled: editor.capabilities.task) { editor.toggleTaskItem() }
             tool("rectangle.compress.vertical", "Horizontal Rule") { editor.insertThematicBreak() }
             // Beside the rule rather than among the inline marks: a footnote is
             // not a mark over the selection, it's a thing written into the

@@ -661,6 +661,16 @@ public final class LeafEditorModel: ObservableObject {
     /// `state.codeBlock` lights the button while the caret is in one. See
     /// `leaf_core::Doc::toggle_code_block`.
     public func toggleCodeBlock() { run { $0.toggleCodeBlock() } }
+    /// Give the list item at the caret a checkbox, or take its checkbox away —
+    /// the toolbar's Checklist button and the Format menu's item of the same
+    /// name. A new box arrives unticked; `state.task` is non-nil while the caret
+    /// stands in one. Gate on `capabilities.task`. See
+    /// `leaf_core::Doc::toggle_task_item`.
+    public func toggleTaskItem() { run { $0.toggleTaskItem() } }
+    /// Tick or untick the task item at the caret — the keyboard half of the
+    /// click a rendered box already answers in the views. A no-op outside a
+    /// task item; `state.task` says which way the box faces.
+    public func toggleTaskChecked() { run { $0.toggleTaskChecked() } }
     public func indent()  { run { $0.indent() } }
     public func outdent() { run { $0.outdent() } }
     public func insertLink(_ destination: String) { run { $0.insertLink(destination: destination) } }

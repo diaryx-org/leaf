@@ -824,6 +824,12 @@ pub struct DocView {
     /// into a fence changes no mark, so a button asking for itself would never
     /// be told.
     code_block: bool,
+    /// Whether the list item at the caret carries a checkbox, and which way it
+    /// faces — `Some(true)` ticked, `Some(false)` empty, `None` for a plain
+    /// item or no item at all. Rides the frame for `heading`'s reason: stepping
+    /// the caret from a bullet into a task item changes no mark, so a button
+    /// asking for itself would never be told.
+    task: Option<bool>,
     /// The inline marks active at the caret (`bold`, `italic`, `code`, …) — the
     /// toolbar lights the matching buttons, the same state the TUI prints in its
     /// footer.
@@ -1386,6 +1392,7 @@ impl LeafDoc {
         };
         let heading = self.doc.current_heading_level();
         let code_block = self.doc.caret_in_code_block();
+        let task = self.doc.task_checked_at_caret();
         // Read before the frame is assembled: it needs `&mut self`, which the
         // struct literal's other fields are already borrowing out of.
         let link = self.doc.link_destination_at_caret();
@@ -1428,6 +1435,7 @@ impl LeafDoc {
             view: self.doc.view_name().to_string(),
             heading,
             code_block,
+            task,
             active,
             caret_src: self.doc.caret,
             link,

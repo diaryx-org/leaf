@@ -785,6 +785,14 @@ pub struct DocView {
     /// the caret into a fence changes no mark, and a button asking for itself
     /// would never be told.
     pub code_block: bool,
+    /// Whether the list item at the caret carries a checkbox, and which way it
+    /// faces — `Some(true)` ticked, `Some(false)` empty, `None` for a plain
+    /// item or no item at all. A toolbar lights its Checklist button from the
+    /// first question and ticks its Checked item from the second. Rides the
+    /// frame for `heading`'s reason: stepping the caret from a bullet into a
+    /// task item changes no mark, and a button asking for itself would never
+    /// be told.
+    pub task: Option<bool>,
     /// The inline marks active at the caret (`bold`, `italic`, `code`, …) — the
     /// toolbar lights the matching buttons.
     pub active: Vec<String>,
@@ -1808,6 +1816,7 @@ impl Inner {
         };
         let heading = self.doc.current_heading_level();
         let code_block = self.doc.caret_in_code_block();
+        let task = self.doc.task_checked_at_caret();
         let active = self
             .doc
             .active_inline_marks()
@@ -1843,6 +1852,7 @@ impl Inner {
             view: self.doc.view_name().to_string(),
             heading,
             code_block,
+            task,
             active,
             link,
             mark_color,

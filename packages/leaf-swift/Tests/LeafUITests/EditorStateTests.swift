@@ -67,6 +67,19 @@ final class EditorStateTests: XCTestCase {
         XCTAssertNotEqual(inside, outside)
     }
 
+    /// Stepping from a bullet into a task item — and ticking the box the caret
+    /// stands in — are changes the toolbar has to be told about, for the same
+    /// reason: nothing else on the state moves.
+    func testSteppingIntoATaskItemIsAChangedState() {
+        let plain = EditorState(docView([row([mkRun("x")])], task: nil))
+        let unticked = EditorState(docView([row([mkRun("x")])], task: false))
+        let ticked = EditorState(docView([row([mkRun("x")])], task: true))
+        XCTAssertNil(plain.task)
+        XCTAssertEqual(unticked.task, false)
+        XCTAssertNotEqual(plain, unticked)
+        XCTAssertNotEqual(unticked, ticked)
+    }
+
     /// The memberwise initializer keeps compiling for a host that wrote one out
     /// before there was a destination on it.
     func testLinkDefaultsToNone() {

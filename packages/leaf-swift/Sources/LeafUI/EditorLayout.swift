@@ -65,19 +65,25 @@ public struct EditorState: Equatable {
     /// a fence moves no mark and no heading, so a button asking core for itself
     /// would never be republished.
     public var codeBlock: Bool
+    /// Whether the list item at the caret carries a checkbox, and which way it
+    /// faces — `true` ticked, `false` empty, nil for a plain item or no item at
+    /// all. What lights the toolbar's Checklist button and ticks the Format
+    /// menu's Checked item. Here for `codeBlock`'s reason: stepping the caret
+    /// from a bullet into a task item moves no mark and no heading.
+    public var task: Bool?
 
-    /// `link`, `markColor`, `hasSelection`, `align` and `codeBlock` default so
-    /// a host that built a state by hand before any of them existed still
-    /// compiles; the frame-projecting initializer below is the real path.
+    /// `link`, `markColor`, `hasSelection`, `align`, `codeBlock` and `task`
+    /// default so a host that built a state by hand before any of them existed
+    /// still compiles; the frame-projecting initializer below is the real path.
     public init(view: String, dirty: Bool, heading: UInt32?, active: [String], link: String? = nil,
                 canUndo: Bool = false, canRedo: Bool = false,
                 markColor: MarkColor? = nil, hasSelection: Bool = false,
-                align: Align? = nil, codeBlock: Bool = false) {
+                align: Align? = nil, codeBlock: Bool = false, task: Bool? = nil) {
         self.view = view; self.dirty = dirty; self.heading = heading
         self.active = active; self.link = link
         self.canUndo = canUndo; self.canRedo = canRedo
         self.markColor = markColor; self.hasSelection = hasSelection
-        self.align = align; self.codeBlock = codeBlock
+        self.align = align; self.codeBlock = codeBlock; self.task = task
     }
 
     /// Project a full `DocView` down to the chrome-facing state.
@@ -89,7 +95,7 @@ public struct EditorState: Equatable {
                   canUndo: v.canUndo, canRedo: v.canRedo,
                   markColor: v.markColor, hasSelection: v.hasSelection,
                   align: v.rows.indices.contains(caretRow) ? Align(name: v.rows[caretRow].align) : nil,
-                  codeBlock: v.codeBlock)
+                  codeBlock: v.codeBlock, task: v.task)
     }
 }
 
@@ -112,6 +118,22 @@ extension Row {
     /// the run of leading `quote`/`list` runs.
     var prefixRuns: [Run] {
         Array(runs.prefix { $0.role == "quote" || $0.role == "list" })
+    }
+
+    /// The task checkbox this row draws, as core's `☐ `/`☑ ` list marker and
+    /// the UTF-16 offset it starts at — nil on every row that carries no box,
+    /// a plain bullet's included. Core puts the box in the marker's place on a
+    /// task item's first row, so it is one of the prefix runs above, and its
+    /// `src` is the item's own: what `toggleTaskAt` wants.
+    var taskMarker: (run: Run, start: Int)? {
+        var start = 0
+        for run in prefixRuns {
+            if run.role == "list", let first = run.text.first, first == "☐" || first == "☑" {
+                return (run, start)
+            }
+            start += run.text.utf16.count
+        }
+        return nil
     }
 
     /// Whether this row is a thematic break — a `---` drawn as a line across the
@@ -1218,6 +1240,26 @@ struct EditorLayout {
             guard rl.mediaFirst, let box = rl.media else { continue }
             let r = box.rect(top: rl.mediaTop, left: rl.originX + rl.shaped.prefixWidth)
             if r.contains(point) { return box.media }
+        }
+        return nil
+    }
+
+    /// The source offset of the task checkbox drawn at `point`, or nil when no
+    /// box is there — the hit-test a click runs before it is treated as a caret
+    /// placement, and the proportional peer of core's `task_box_at`.
+    ///
+    /// Only the box's own glyphs answer, on the item's first line: a click on
+    /// the item's *text* places the caret like any other, so the box is a target
+    /// aimed at rather than something tripped over while editing. The slop is
+    /// what makes a glyph-sized target reachable with a finger.
+    func taskBox(at point: CGPoint) -> UInt32? {
+        for (index, rl) in rows.enumerated() {
+            guard let marker = rl.row.taskMarker,
+                  let a = rect(row: index, ch: marker.start),
+                  let b = rect(row: index, ch: marker.start + marker.run.text.utf16.count)
+            else { continue }
+            let box = a.union(b).insetBy(dx: -2, dy: 0)
+            if box.contains(point) { return marker.run.src }
         }
         return nil
     }

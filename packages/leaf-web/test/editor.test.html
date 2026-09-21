@@ -581,6 +581,22 @@ await test("the code block command fences the caret's paragraph and lights the s
   return ed;
 });
 
+await test("the task commands box the caret's item and the state says which way it faces", () => {
+  const ed = editor("- plain\n");
+  let state = null;
+  ed.onChange((s) => { state = s; });
+  ed.toggleTaskItem();
+  eq(ed.source(), "- [ ] plain\n", "the item got no box");
+  eq(state && state.task, false, "the state did not say the new box is empty");
+  ed.toggleTaskChecked();
+  eq(ed.source(), "- [x] plain\n", "the box was not ticked");
+  eq(state && state.task, true, "the state did not say the box is ticked");
+  ed.toggleTaskItem();
+  eq(ed.source(), "- plain\n", "the box was not taken away");
+  eq(state && state.task, null, "the state still claims a box");
+  return ed;
+});
+
 await test("a link follows only with the platform modifier held", () => {
   const ed = editor("see [the docs](https://example.com/x) now\n");
   let followed = null;

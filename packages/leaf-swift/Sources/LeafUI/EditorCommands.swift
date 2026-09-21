@@ -180,6 +180,20 @@ private struct FormatMenuItems: View {
                isOn: block(editor.state.codeBlock) { editor.toggleCodeBlock() })
             .keyboardShortcut("c", modifiers: [.command, .option])
             .disabled(!editable || !editor.capabilities.codeBlock)
+        // The task pair, beside the lists they belong to, on Notes' bindings.
+        // Checklist is ticked while the caret's item carries a box, whichever
+        // way it faces; Checked is ticked while that box is, and offered only
+        // when there is one — outside a task item it would have nothing to
+        // tick. Dimmed where the format spells no box (HTML) rather than
+        // failing on the press.
+        Toggle(loc("menu.checklist", "Checklist"),
+               isOn: block(editor.state.task != nil) { editor.toggleTaskItem() })
+            .keyboardShortcut("l", modifiers: [.command, .shift])
+            .disabled(!editable || !editor.capabilities.task)
+        Toggle(loc("menu.checked", "Checked"),
+               isOn: block(editor.state.task == true) { editor.toggleTaskChecked() })
+            .keyboardShortcut("u", modifiers: [.command, .shift])
+            .disabled(!editable || editor.state.task == nil)
         Button(loc("menu.indent", "Indent")) { editor.indent() }
             .keyboardShortcut("]", modifiers: .command)
             .disabled(!editable)
@@ -280,6 +294,8 @@ private struct FormatMenuItems: View {
             Button(loc("menu.numberedList", "Numbered List")) {}.keyboardShortcut("7", modifiers: [.command, .shift])
             Button(loc("menu.blockQuote", "Block Quote")) {}.keyboardShortcut("9", modifiers: [.command, .shift])
             Toggle(loc("menu.codeBlock", "Code Block"), isOn: .constant(false)).keyboardShortcut("c", modifiers: [.command, .option])
+            Toggle(loc("menu.checklist", "Checklist"), isOn: .constant(false)).keyboardShortcut("l", modifiers: [.command, .shift])
+            Toggle(loc("menu.checked", "Checked"), isOn: .constant(false)).keyboardShortcut("u", modifiers: [.command, .shift])
             Button(loc("menu.indent", "Indent")) {}.keyboardShortcut("]", modifiers: .command)
             Button(loc("menu.outdent", "Outdent")) {}.keyboardShortcut("[", modifiers: .command)
             Divider()

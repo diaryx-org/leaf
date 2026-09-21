@@ -770,7 +770,17 @@ export class LeafEditor {
    */
   toggleCodeBlock() { this._command((d) => d.toggle_code_block()); }
   insertLink(dest) { this._command((d) => d.insert_link(dest)); }
+  /**
+   * Give the list item at the caret a checkbox, or take its away. Gate on
+   * `capabilities().task`; `EditorState.task` is non-null while the caret
+   * stands in one.
+   */
   toggleTaskItem() { this._command((d) => d.toggle_task_item()); }
+  /**
+   * Tick or untick the task item at the caret — the keyboard half of the click
+   * a rendered checkbox already answers (see `_onClick`). A no-op outside a
+   * task item.
+   */
   toggleTaskChecked() { this._command((d) => d.toggle_task_checked()); }
   /** Write a footnote reference at the caret, and the definition it needs. */
   insertFootnote() { this._command((d) => d.insert_footnote()); }
@@ -2551,6 +2561,8 @@ export class LeafEditor {
       // Rides the frame for `heading`'s reason: walking the caret into a fence
       // changes no mark, so a button asking for itself would never be told.
       codeBlock: view.code_block,
+      // Likewise: stepping from a bullet into a task item changes no mark.
+      task: view.task ?? null,
       active: view.active,
       // Rides the frame rather than being a query the host makes for itself: a
       // toolbar redraws on state change, and walking the caret out of a link
@@ -2579,6 +2591,8 @@ export class LeafEditor {
  * @property {boolean} readOnly the document refuses edits — see `setReadOnly`
  * @property {number | null} heading  heading level at the caret, or null
  * @property {boolean} codeBlock  the caret stands in a code block
+ * @property {boolean | null} task  the task item at the caret is ticked
+ *   (`true`) or not (`false`); null for a plain item or no item at all
  * @property {string[]} active  inline marks active at the caret
  * @property {string | null} link  destination of the link at the caret, or null
  * @property {string | null} markColor  colour of the highlight at the caret

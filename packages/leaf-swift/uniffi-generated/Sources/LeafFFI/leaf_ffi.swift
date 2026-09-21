@@ -3982,6 +3982,16 @@ public struct DocView {
      */
     public var codeBlock: Bool
     /**
+     * Whether the list item at the caret carries a checkbox, and which way it
+     * faces — `Some(true)` ticked, `Some(false)` empty, `None` for a plain
+     * item or no item at all. A toolbar lights its Checklist button from the
+     * first question and ticks its Checked item from the second. Rides the
+     * frame for `heading`'s reason: stepping the caret from a bullet into a
+     * task item changes no mark, and a button asking for itself would never
+     * be told.
+     */
+    public var task: Bool?
+    /**
      * The inline marks active at the caret (`bold`, `italic`, `code`, …) — the
      * toolbar lights the matching buttons.
      */
@@ -4138,6 +4148,15 @@ public struct DocView {
          * would never be told.
          */codeBlock: Bool, 
         /**
+         * Whether the list item at the caret carries a checkbox, and which way it
+         * faces — `Some(true)` ticked, `Some(false)` empty, `None` for a plain
+         * item or no item at all. A toolbar lights its Checklist button from the
+         * first question and ticks its Checked item from the second. Rides the
+         * frame for `heading`'s reason: stepping the caret from a bullet into a
+         * task item changes no mark, and a button asking for itself would never
+         * be told.
+         */task: Bool?, 
+        /**
          * The inline marks active at the caret (`bold`, `italic`, `code`, …) — the
          * toolbar lights the matching buttons.
          */active: [String], 
@@ -4196,6 +4215,7 @@ public struct DocView {
         self.view = view
         self.heading = heading
         self.codeBlock = codeBlock
+        self.task = task
         self.active = active
         self.link = link
         self.markColor = markColor
@@ -4278,6 +4298,9 @@ extension DocView: Equatable, Hashable {
         if lhs.codeBlock != rhs.codeBlock {
             return false
         }
+        if lhs.task != rhs.task {
+            return false
+        }
         if lhs.active != rhs.active {
             return false
         }
@@ -4315,6 +4338,7 @@ extension DocView: Equatable, Hashable {
         hasher.combine(view)
         hasher.combine(heading)
         hasher.combine(codeBlock)
+        hasher.combine(task)
         hasher.combine(active)
         hasher.combine(link)
         hasher.combine(markColor)
@@ -4353,6 +4377,7 @@ public struct FfiConverterTypeDocView: FfiConverterRustBuffer {
                 view: FfiConverterString.read(from: &buf), 
                 heading: FfiConverterOptionUInt32.read(from: &buf), 
                 codeBlock: FfiConverterBool.read(from: &buf), 
+                task: FfiConverterOptionBool.read(from: &buf), 
                 active: FfiConverterSequenceString.read(from: &buf), 
                 link: FfiConverterOptionString.read(from: &buf), 
                 markColor: FfiConverterOptionTypeMarkColor.read(from: &buf)
@@ -4384,6 +4409,7 @@ public struct FfiConverterTypeDocView: FfiConverterRustBuffer {
         FfiConverterString.write(value.view, into: &buf)
         FfiConverterOptionUInt32.write(value.heading, into: &buf)
         FfiConverterBool.write(value.codeBlock, into: &buf)
+        FfiConverterOptionBool.write(value.task, into: &buf)
         FfiConverterSequenceString.write(value.active, into: &buf)
         FfiConverterOptionString.write(value.link, into: &buf)
         FfiConverterOptionTypeMarkColor.write(value.markColor, into: &buf)
