@@ -408,7 +408,9 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// scroll of a long document beach-ball.
     private var misspelledRects: [CGRect] = []
     private var spellCheckWork: DispatchWorkItem?
-    private var spellCheckGeneration = 0
+    /// Advanced by every `scheduleSpellCheck` — an older answer is dropped
+    /// against it. Readable so a test can see that a frame asked again.
+    private(set) var spellCheckGeneration = 0
 
     /// One correction captured when its menu is built. Keeping the original word
     /// lets the action reject a range made stale while the menu was open.
@@ -616,14 +618,20 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // read back with it forgotten (`sameText`): a drag changes what is
         // shown of the text, not the text, and neither the find bar, the spell
         // checker nor the host is told of an edit by one. A change says which
-        // rows those are; a whole frame is compared to find them.
+        // rows those are; a whole frame is compared to find them. A change
+        // that moved the rows below its span is an edit whatever the span
+        // holds: a comment pasted between two paragraphs is source with no
+        // row to show, and the span is empty — but the text the find bar and
+        // the checker hold offsets into has changed under them, and the host
+        // has a document to save.
         let viewFlipped = frame.view != docView.view
         let change: RowChange?
         let textChanged: Bool
         if frame.isChange {
+            let shifted = frame.srcShift != 0
             let (span, replaced) = docView.apply(frame)
             change = span
-            textChanged = viewFlipped || !frame.rows.sameText(as: replaced)
+            textChanged = viewFlipped || shifted || !frame.rows.sameText(as: replaced)
         } else {
             change = frame.rows.changedRange(from: docView.rows)
             textChanged = viewFlipped || !frame.rows.sameText(as: docView.rows, over: change)

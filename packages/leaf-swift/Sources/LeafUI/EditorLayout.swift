@@ -208,7 +208,11 @@ extension DocView {
     ///
     /// Returns where the rows differ, in `changedRange`'s terms, and the rows
     /// the span replaced — what `Row.sameText` reads to tell an edit from a
-    /// selection — since after this they are gone.
+    /// selection — since after this they are gone. A change that replaced no
+    /// row but moved the rows below it — a comment pasted between two
+    /// paragraphs is source with no row to show — is an empty span at
+    /// `rowStart`, not `nil`: the rows from there are different values by
+    /// their offsets, and `nil` says they are the same rows.
     mutating func apply(_ change: DocView) -> (change: RowChange?, replaced: [Row]) {
         precondition(change.basis == frame, "a change against frame \(change.basis) applied to frame \(frame)")
         let start = Int(change.rowStart)
@@ -234,7 +238,7 @@ extension DocView {
         whole.replaced = 0
         whole.srcShift = 0
         self = whole
-        let changed: RowChange? = change.rows.isEmpty && span.isEmpty
+        let changed: RowChange? = change.rows.isEmpty && span.isEmpty && change.srcShift == 0
             ? nil : (start..<(start + change.rows.count), span)
         return (changed, replaced)
     }
