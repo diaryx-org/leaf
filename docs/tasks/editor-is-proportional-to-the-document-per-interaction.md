@@ -1,10 +1,32 @@
 ---
-status: open
+status: done
 created: 2026-09-20
 updated: 2026-09-20
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 # The Apple editor does work proportional to the document on every interaction
+
+**Status: done**, in five commits: `58bd552` (the core lookups —
+`pos_of_offset` dismisses a row from its two ends, and the map tabulates
+its spelling once so the UTF-16 conversions are binary searches),
+`38d91ad` (misspellings mapped once and culled in `draw`; the mask built
+from one `utf16_indices_for_offsets` crossing; a selection is no longer an
+edit), `111e7d1` and `90326b1` (`EditorLayout` keeps the frame before's
+rows wherever the rows are, and aligns shapes by `Row.sameShape`, which
+forgets offsets and selection — a keystroke had been re-shaping every row
+below it, since each was a different value by its offsets alone), and
+`1281a01` (no recount after a repaint that only moved the caret).
+
+After, on the bench's document, dev / release: `pos_for_offset`
+9077 µs → ~150 µs / 763 → 10 µs; `utf16_index_for_offset` 6506 µs → 1 µs /
+340 → 0; `offset_for_utf16_index` 12.7 ms → 2 µs / 708 → 0; and on the
+document concatenated with itself none of the three grows. In the macOS
+view (debug build, timed against `LeafTextView` on the same document): a
+repaint with 150 misspellings 6.8 s → 4 ms; `spellCheckingText` 29.8 s →
+14 ms; a click 72 → 54 ms, a drag step 81 → 63 ms, a keystroke 136 → 76 ms
+— each of which is now the frame's crossing of the binding (`view()`
+lifted into Swift records, 53 ms of the click) plus a few milliseconds,
+which is the wasm task's half of the problem and not this one's.
 
 **Where.** `packages/leaf-swift`, `LeafTextView` (macOS) and `EditorLayout`;
 `crates/leaf-core/src/wysiwyg.rs`, `VisualMap`; `crates/leaf-ffi`.
