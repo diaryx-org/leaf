@@ -92,6 +92,7 @@
     <button data-cmd="setHeading" data-arg="2" data-cap="heading" id="b-h2">H2</button>
     <button data-cmd="setHeading" data-arg="3" data-cap="heading" id="b-h3">H3</button>
     <button data-cmd="toggleBlockquote" data-cap="blockquote">❝</button>
+    <button data-cmd="toggleCodeBlock" data-cap="code_block" id="b-codeblock" title="code block (⌘⌥C)">{ }</button>
     <button data-cmd="toggleList" data-arg="false" data-cap="bullet_list">• List</button>
     <button data-cmd="toggleList" data-arg="true" data-cap="ordered_list">1. List</button>
     <div class="sep"></div>
@@ -365,6 +366,7 @@ function syncChrome(state) {
   for (const lvl of [1,2,3]) {
     document.getElementById("b-h"+lvl).classList.toggle("on", state.heading === lvl);
   }
+  document.getElementById("b-codeblock").classList.toggle("on", state.codeBlock);
   document.getElementById("marks").textContent =
     (state.heading ? "H"+state.heading+"  " : "") + [...on].join("  ");
 

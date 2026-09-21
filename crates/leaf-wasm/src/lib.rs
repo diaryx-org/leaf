@@ -584,6 +584,9 @@ pub struct CapabilitiesView {
     thematic_break: bool,
     /// The footnote button — writes the `[^1]` and the definition it needs.
     footnote: bool,
+    /// The code-block button — `toggleCodeBlock`. Pair with the frame's
+    /// `code_block` for its lit state.
+    code_block: bool,
     code_language: bool,
     /// The grid controls. Gate them on this *and* `caretInTable`: this asks
     /// whether the format's tables are editable, that whether the caret is in
@@ -638,6 +641,7 @@ impl From<leaf_core::Capabilities> for CapabilitiesView {
             image: c.image,
             thematic_break: c.thematic_break,
             footnote: c.footnote,
+            code_block: c.code_block,
             code_language: c.code_language,
             table: c.table,
             cell_line_break: c.cell_line_break,
@@ -815,6 +819,11 @@ pub struct DocView {
     view: String,
     /// The heading level at the caret, if any — a toolbar lights H1…H6 from it.
     heading: Option<u32>,
+    /// Whether the caret stands in a code block — the toolbar lights its Code
+    /// Block button from it. Rides the frame for `heading`'s reason: walking
+    /// into a fence changes no mark, so a button asking for itself would never
+    /// be told.
+    code_block: bool,
     /// The inline marks active at the caret (`bold`, `italic`, `code`, …) — the
     /// toolbar lights the matching buttons, the same state the TUI prints in its
     /// footer.
@@ -1376,6 +1385,7 @@ impl LeafDoc {
             None => (false, caret_row, caret_ch),
         };
         let heading = self.doc.current_heading_level();
+        let code_block = self.doc.caret_in_code_block();
         // Read before the frame is assembled: it needs `&mut self`, which the
         // struct literal's other fields are already borrowing out of.
         let link = self.doc.link_destination_at_caret();
@@ -1417,6 +1427,7 @@ impl LeafDoc {
             can_redo: self.doc.can_redo(),
             view: self.doc.view_name().to_string(),
             heading,
+            code_block,
             active,
             caret_src: self.doc.caret,
             link,
@@ -1795,6 +1806,17 @@ impl LeafDoc {
         self.frame()
     }
 
+    /// A click in the blank space under the last row: the caret goes onto an
+    /// empty paragraph under the last block, opening one if the document does
+    /// not end with one, wherever the pointer was horizontally. The renderer
+    /// decides "under" — the point is below every block it laid out. See
+    /// `leaf_core::Doc::click_past_end`.
+    pub fn click_past_end(&mut self) -> Result<DocView, JsValue> {
+        self.sync();
+        self.doc.click_past_end();
+        self.frame()
+    }
+
     /// The source offset under a click at row `row`, `ch` UTF-16 units in — the
     /// same resolution [`click_ch`] does, but returning the offset instead of
     /// moving the caret. It's what the double/triple-click selectors below anchor
@@ -1958,6 +1980,14 @@ impl LeafDoc {
 
     pub fn toggle_blockquote(&mut self) -> Result<DocView, JsValue> {
         self.doc.toggle_blockquote();
+        self.frame()
+    }
+
+    /// Toggle a fenced code block over the selection or the block at the caret;
+    /// on a blank line, open an empty one with the caret inside. Gate on
+    /// `capabilities().code_block`; light from the frame's `code_block`.
+    pub fn toggle_code_block(&mut self) -> Result<DocView, JsValue> {
+        self.doc.toggle_code_block();
         self.frame()
     }
 

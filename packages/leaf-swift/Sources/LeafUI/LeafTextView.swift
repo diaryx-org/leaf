@@ -1333,6 +1333,20 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: false))
             return
         }
+        // A plain click under the last block is on nothing: the caret goes onto
+        // an empty paragraph under it, opened if the document has none —
+        // wherever the pointer was horizontally — which is also the way out
+        // from under a fence Enter cannot leave. Only the plain click: a
+        // shift-click extends to the document's end through the ordinary path,
+        // and a double- or triple-click still selects on the last line. And
+        // only in the rich view: the source view is a text editor, where a
+        // click under the last line lands on it at the pointer's x.
+        if event.clickCount == 1, !event.modifierFlags.contains(.shift),
+           !event.modifierFlags.contains(.command),
+           docView.view != "source", layoutEngine.isPastEnd(p) {
+            render(doc.clickPastEnd())
+            return
+        }
         let (row, ch) = hitRowCh(p)
         // ⌘-click opens a link under the pointer (the native convention), leaving the
         // caret there. A plain click still places the caret to edit the link text.
@@ -1373,6 +1387,10 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     public override func mouseUp(with event: NSEvent) {
         guard let candidate = dragCandidate else { return super.mouseUp(with: event) }
         dragCandidate = nil
+        if docView.view != "source", layoutEngine.isPastEnd(candidate.point) {
+            render(doc.clickPastEnd())
+            return
+        }
         let (row, ch) = hitRowCh(candidate.point)
         render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: false))
     }

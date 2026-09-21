@@ -843,6 +843,10 @@ pub struct Capabilities {
     /// the pair; HTML has no footnote of its own, so the button goes away rather
     /// than writing brackets that would render as brackets.
     pub footnote: bool,
+    /// The code-block button — [`Doc::toggle_code_block`], twig's
+    /// `Gesture::ToggleCodeBlock`. Markdown and djot spell the fence; HTML
+    /// rebuilds the block as `<pre><code>`.
+    pub code_block: bool,
     /// Setting a fenced block's language — a control only ever offered with the
     /// caret already in a fence.
     pub code_language: bool,
@@ -926,6 +930,7 @@ impl Capabilities {
             image: supports(Gesture::InsertImage),
             thematic_break: supports(Gesture::InsertThematicBreak),
             footnote: supports(Gesture::InsertFootnote),
+            code_block: supports(Gesture::ToggleCodeBlock),
             code_language: supports(Gesture::SetCodeLanguage),
             table: spells_pipe_tables(format),
             cell_line_break: supports(Gesture::InsertLineBreak),
@@ -5247,6 +5252,160 @@ impl Doc {
         });
     }
 
+    /// Toggle a fenced code block over the selection, or over the block at the
+    /// caret — the toolbar's Code Block button, and the only way the rich view
+    /// offers to open one: a typed backtick is escaped there, since it is a
+    /// character the author wrote and not markup they meant.
+    ///
+    /// Fencing is twig's ([`Editor::toggle_code_block`]): it measures the fence
+    /// against the body, keeps a quote's `> ` on every line, and peels a fence
+    /// (or dedents an indented block) on the way back. What is leaf's is the
+    /// shape twig declines: a blank line holds no block to fence, and the
+    /// gesture nobody should have to learn is "type something first" — so leaf
+    /// spells the empty fence itself, with the caret on the empty line inside it
+    /// and a blank line either side, which is what typing into a new block and
+    /// then Backspacing out of it would have left.
+    ///
+    /// Inside a list item twig refuses in both directions (a fence at column
+    /// zero would swallow the item's marker), and the refusal is reported rather
+    /// than worked around.
+    pub fn toggle_code_block(&mut self) {
+        // The read-only gate — this door reaches twig without the splice.
+        if self.read_only {
+            return;
+        }
+        if self.refuse_unsupported("code block", Gesture::ToggleCodeBlock) {
+            return;
+        }
+        let selected = self.selection();
+        // The caret at a code block's rows resolves to its *content*, and twig
+        // finds the block from any offset inside its span — but a caret parked
+        // on the closing fence's own line end is past it, so the block's start
+        // is handed over whenever the caret is in one at all.
+        let (start, end) = match selected {
+            Some(range) => range,
+            None => match self.code_block_start_at_caret() {
+                Some(start) => (start, start),
+                None => match self.block_offset_for_caret() {
+                    Some(off) => (off, off),
+                    None => return self.open_empty_code_block(),
+                },
+            },
+        };
+        self.record_caret();
+        match self.editor.toggle_code_block(start, end, None) {
+            Ok(change) => {
+                // Read the caret's place out of the *pre-edit* source, before
+                // `refresh` swaps it out — and how many lines the region held,
+                // which is what says whether a fence line went in above the
+                // caret's line or came off it.
+                let place = selected
+                    .is_none()
+                    .then(|| self.caret_line_tail(&change.old));
+                let old_lines = self.source[change.old.clone()].matches('\n').count();
+                self.last_edit_kind = None; // structural edit is its own undo step
+                self.refresh();
+                match place {
+                    // From a selection: keep the block selected, so a second
+                    // press reverses the first (twig unfences from any offset in
+                    // the fence's span, the region's start included).
+                    None => {
+                        self.anchor = Some(change.new.start);
+                        self.caret = change.new.end;
+                    }
+                    // From a caret: the same line, the same distance from its
+                    // end, shifted by the opening fence that was written above
+                    // it (or peeled off). Dedenting an indented block keeps the
+                    // lines one-to-one, and shifts nothing.
+                    Some((line, tail)) => {
+                        let new_lines = self.source[change.new.start.min(self.source.len())
+                            ..change.new.end.min(self.source.len())]
+                            .matches('\n')
+                            .count();
+                        let line = match new_lines.cmp(&old_lines) {
+                            std::cmp::Ordering::Greater => line + 1,
+                            std::cmp::Ordering::Less => line.saturating_sub(1),
+                            std::cmp::Ordering::Equal => line,
+                        };
+                        self.anchor = None;
+                        self.caret = self.line_tail_offset(&change.new, (line, tail));
+                    }
+                }
+                self.dirty = self.source != self.clean_source;
+                self.status = None;
+                self.clamp_caret();
+                self.record_caret();
+            }
+            Err(e) => self.status = Some(format!("code block: {e}")),
+        }
+    }
+
+    /// Write an empty fenced block on the blank line the caret stands on, and
+    /// put the caret on the empty line inside it — the half of
+    /// [`toggle_code_block`](Self::toggle_code_block) that is leaf's, because
+    /// twig reports `NotFound` for a range no block covers.
+    ///
+    /// Inside a quote the fence lines and the empty line keep the quote's
+    /// prefix, as twig's own fencing does. A blank line goes in on whichever
+    /// side has text against it, since a fence may interrupt a paragraph in
+    /// Markdown but a block standing tight against its neighbours is not the
+    /// document any editor writes.
+    fn open_empty_code_block(&mut self) {
+        let caret = self.caret.min(self.source.len());
+        let prefix = self.quote_prefix_at(caret);
+        let line_start = self.source[..caret].rfind('\n').map_or(0, |i| i + 1);
+        let line_end = self.source[caret..]
+            .find('\n')
+            .map_or(self.source.len(), |i| caret + i);
+        let prev_blank = line_start == 0
+            || self.source[..line_start - 1]
+                .rsplit('\n')
+                .next()
+                .is_some_and(|l| l.trim_start_matches(['>', ' ']).is_empty());
+        let next_blank = line_end >= self.source.len()
+            || self.source[line_end + 1..]
+                .split('\n')
+                .next()
+                .is_some_and(|l| l.trim_start_matches(['>', ' ']).is_empty());
+        // A blank line inside a quote is a bare `>`: the space after it is
+        // the content's, and there is none.
+        let blank = prefix.trim_end();
+        let mut text = String::new();
+        if !prev_blank {
+            text.push_str(blank);
+            text.push('\n');
+        }
+        text.push_str(&prefix);
+        text.push_str("```\n");
+        text.push_str(&prefix);
+        let inside = text.len();
+        text.push('\n');
+        text.push_str(&prefix);
+        text.push_str("```");
+        if !next_blank {
+            text.push('\n');
+            text.push_str(blank);
+        }
+        // Over whatever the blank line held (its quote prefix, trailing
+        // spaces), so the block's own prefix is the one twig will read back.
+        let at = line_start;
+        if !self.splice(at, line_end, &text, EditKind::Other) {
+            return;
+        }
+        self.caret = at + inside;
+        self.anchor = None;
+        self.clamp_caret();
+        self.record_caret();
+    }
+
+    /// Whether the caret stands in a code block, fenced or indented — what
+    /// lights the Code Block button. Wider than
+    /// [`caret_in_fenced_code`](Self::caret_in_fenced_code), which asks the
+    /// narrower question a language prompt needs.
+    pub fn caret_in_code_block(&mut self) -> bool {
+        self.code_block_start_at_caret().is_some()
+    }
+
     // ── Task list items ──────────────────────────────────────────────────────
     // The checkbox in `- [x] done`. twig owns all three gestures: the box is
     // inline content of the item's first paragraph rather than part of its
@@ -7442,6 +7601,82 @@ impl Doc {
         let before = self.caret;
         self.move_to(target, extend);
         self.debug_assert_on_a_stop(before);
+    }
+
+    /// A click in the blank space under the document's last block.
+    ///
+    /// Not a click *on* anything, so it lands on nothing in particular: the
+    /// caret goes onto an empty paragraph under the last block, wherever the
+    /// pointer was horizontally — and if the document does not end with one,
+    /// one is opened, which is the only way to get out from under a block Enter
+    /// cannot leave. Enter inside a fenced code block is a literal newline (see
+    /// [`newline`](Self::newline)), so a document that *ends* in a fence had no
+    /// way out at all; and a click under any last block used to land at the
+    /// pointer's x on the block's last line, which is what a click on that line
+    /// means and not what a click under it does.
+    ///
+    /// "Ends with an empty paragraph" is two trailing newlines: the first closes
+    /// the last line and the second opens the blank line the visual map lays
+    /// out as a navigable empty row (see `emit_trailing_blank_lines`). A
+    /// document ending inside an *unclosed* fence gets the fence closed first,
+    /// since a newline written there would only be another line of code. An
+    /// empty document has nothing to be under, and the caret simply goes to its
+    /// start.
+    ///
+    /// In the source view the gesture is the ordinary one: the caret goes to the
+    /// end of the source, and nothing is written. A read-only document likewise.
+    pub fn click_past_end(&mut self) {
+        self.goal_col = None;
+        let len = self.source.len();
+        if self.view == View::Source || self.read_only || self.source.trim().is_empty() {
+            self.move_to(len, false);
+            return;
+        }
+        let mut tail = String::new();
+        if let Some(fence) = self.unclosed_fence_at_end() {
+            if !self.source.ends_with('\n') {
+                tail.push('\n');
+            }
+            tail.push_str(&fence);
+            tail.push('\n');
+        }
+        let joined = format!("{}{tail}", self.source);
+        let trailing = joined.len() - joined.trim_end_matches('\n').len();
+        for _ in trailing..2 {
+            tail.push('\n');
+        }
+        if !tail.is_empty() && !self.splice(len, len, &tail, EditKind::Other) {
+            return;
+        }
+        let end = self.source.len();
+        self.move_to(end, false);
+    }
+
+    /// The closing fence a document ending inside an unclosed fenced code block
+    /// needs — the opening fence's own run, behind the quote prefix the block
+    /// wears — or `None` when the last block is closed, indented, or not a code
+    /// block at all.
+    ///
+    /// Unclosed is when twig's content span reaches the block's end: a closing
+    /// fence line would lie between the two. `code_info_span`'s read of the
+    /// fence is not used because it starts at the block's span, which inside a
+    /// quote is the quote marker rather than the fence.
+    fn unclosed_fence_at_end(&mut self) -> Option<String> {
+        let content_end = self.source.trim_end_matches('\n').len();
+        let block = self
+            .nodes()
+            .into_iter()
+            .filter(|n| n.kind == Kind::CodeBlock && n.span.end >= content_end)
+            .max_by_key(|n| n.span.start)?;
+        if block.content_span.as_ref()?.end < block.span.end {
+            return None;
+        }
+        let line = self.source[block.span.start..].lines().next()?;
+        let opening = line.trim_start_matches(['>', ' ', '\t']);
+        let fence = opening.chars().next().filter(|c| matches!(c, '`' | '~'))?;
+        let run: String = opening.chars().take_while(|&c| c == fence).collect();
+        let prefix = self.quote_prefix_at(block.span.start);
+        Some(format!("{prefix}{run}"))
     }
 
     /// Settle `scroll` for a frame about to be drawn: follow the caret onto the
@@ -14607,6 +14842,228 @@ mod tests {
             "typing at the end merged into A: {:?}",
             d.source
         );
+    }
+
+    // ── click_past_end ───────────────────────────────────────────────────────
+
+    /// [`Doc::click_past_end`] on `body`, and the source it left, with the caret
+    /// rendered as `|`.
+    fn past_end(name: &str, body: &str) -> (Doc, String) {
+        let mut d = wysiwyg_doc(name, body);
+        d.click_past_end();
+        let out = render_caret(&d);
+        (d, out)
+    }
+
+    #[test]
+    fn click_past_end_opens_an_empty_paragraph_under_the_last_block() {
+        let (mut d, out) = past_end("pe_para", "A\n");
+        assert_eq!(out, "A\n\n|");
+        d.build_visual(80);
+        let (row, _) = d.caret_pos();
+        assert!(
+            d.vmap.row_is_navigable(row),
+            "the caret landed on a gap row"
+        );
+        d.insert("x");
+        assert_eq!(d.source, "A\n\nx", "typing merged into A");
+    }
+
+    #[test]
+    fn click_past_end_writes_both_newlines_when_the_file_has_none() {
+        assert_eq!(past_end("pe_bare", "A").1, "A\n\n|");
+    }
+
+    #[test]
+    fn click_past_end_is_only_a_caret_move_when_the_paragraph_is_already_there() {
+        let (d, out) = past_end("pe_there", "A\n\n");
+        assert_eq!(out, "A\n\n|");
+        assert!(!d.dirty, "a click wrote to a document it did not need to");
+        assert!(
+            !d.can_undo(),
+            "a click that changed nothing left an undo step"
+        );
+    }
+
+    #[test]
+    fn click_past_end_leaves_a_closed_fence() {
+        let (mut d, out) = past_end("pe_fence", "```\ncode\n```\n");
+        assert_eq!(out, "```\ncode\n```\n\n|");
+        d.build_visual(80);
+        let (row, _) = d.caret_pos();
+        assert!(!d.vmap.rows[row].code, "the caret is still on a code row");
+        d.insert("x");
+        assert_eq!(d.source, "```\ncode\n```\n\nx");
+    }
+
+    #[test]
+    fn click_past_end_closes_an_unclosed_fence_first() {
+        assert_eq!(past_end("pe_open", "```\ncode\n").1, "```\ncode\n```\n\n|");
+        assert_eq!(
+            past_end("pe_open2", "````\ncode").1,
+            "````\ncode\n````\n\n|"
+        );
+        assert_eq!(past_end("pe_tilde", "~~~\ncode\n").1, "~~~\ncode\n~~~\n\n|");
+        assert_eq!(
+            past_end("pe_quoted", "> ```\n> code\n").1,
+            "> ```\n> code\n> ```\n\n|"
+        );
+    }
+
+    #[test]
+    fn click_past_end_does_not_close_an_indented_block() {
+        assert_eq!(past_end("pe_indent", "    code\n").1, "    code\n\n|");
+    }
+
+    #[test]
+    fn click_past_end_under_a_list_and_a_table_leaves_them() {
+        let (mut d, out) = past_end("pe_list", "- a\n- b\n");
+        assert_eq!(out, "- a\n- b\n\n|");
+        d.insert("x");
+        assert_eq!(d.source, "- a\n- b\n\nx", "typed into the list");
+        assert_eq!(
+            past_end("pe_table", "| a |\n|---|\n| b |\n").1,
+            "| a |\n|---|\n| b |\n\n|"
+        );
+    }
+
+    #[test]
+    fn click_past_end_on_an_empty_document_writes_nothing() {
+        let (d, out) = past_end("pe_empty", "");
+        assert_eq!(out, "|");
+        assert!(!d.dirty);
+    }
+
+    #[test]
+    fn click_past_end_is_one_undo_step() {
+        let (mut d, _) = past_end("pe_undo", "A\n");
+        d.undo();
+        assert_eq!(d.source, "A\n");
+    }
+
+    #[test]
+    fn click_past_end_in_the_source_view_only_moves_the_caret() {
+        let mut d = doc_with("pe_source", "A\n");
+        d.click_past_end();
+        assert_eq!(render_caret(&d), "A\n|");
+        assert!(!d.dirty);
+    }
+
+    #[test]
+    fn click_past_end_on_a_read_only_document_only_moves_the_caret() {
+        let mut d = wysiwyg_doc("pe_ro", "A\n");
+        d.set_read_only(true);
+        d.click_past_end();
+        assert_eq!(render_caret(&d), "A\n|");
+    }
+
+    // ── toggle_code_block ────────────────────────────────────────────────────
+
+    #[test]
+    fn toggle_code_block_fences_the_paragraph_at_the_caret_and_reverses() {
+        let g = |n, m| golden_in(View::Wysiwyg, n, m, |d| d.toggle_code_block());
+        assert_eq!(g("cb_on", "hel|lo\n"), "```\nhel|lo\n```\n");
+        assert_eq!(g("cb_off", "```\nhel|lo\n```\n"), "hel|lo\n");
+        assert_eq!(g("cb_end", "hello|\n"), "```\nhello|\n```\n");
+        assert_eq!(
+            g("cb_wrap", "aaa\nb|bb\nccc\n"),
+            "```\naaa\nb|bb\nccc\n```\n"
+        );
+        assert_eq!(
+            g("cb_unwrap", "```\naaa\nb|bb\nccc\n```\n"),
+            "aaa\nb|bb\nccc\n"
+        );
+        // An indented block dedents, and the lines stay one-to-one.
+        assert_eq!(g("cb_indent", "    co|de\n"), "co|de\n");
+        // A quote's marker is kept on every line, the fence's included.
+        assert_eq!(g("cb_quote", "> hel|lo\n"), "> ```\n> hel|lo\n> ```\n");
+    }
+
+    #[test]
+    fn toggle_code_block_on_a_blank_line_opens_an_empty_fence() {
+        let g = |n, m| golden_in(View::Wysiwyg, n, m, |d| d.toggle_code_block());
+        assert_eq!(g("cb_blank", "A\n\n|"), "A\n\n```\n|\n```");
+        assert_eq!(
+            g("cb_blank_mid", "A\n\n|\n\nB\n"),
+            "A\n\n```\n|\n```\n\nB\n"
+        );
+        // Tight against a neighbour, a blank line goes in on that side.
+        assert_eq!(g("cb_blank_tight", "A\n|\nB\n"), "A\n\n```\n|\n```\n\nB\n");
+        // Inside a quote, on a quoted blank line.
+        assert_eq!(
+            g("cb_blank_quote", "> A\n>\n> |\n"),
+            "> A\n>\n> ```\n> |\n> ```\n"
+        );
+    }
+
+    #[test]
+    fn toggle_code_block_from_a_blank_line_is_a_block_the_caret_can_type_into() {
+        let mut d = wysiwyg_doc("cb_type", "A\n\n");
+        d.click_past_end();
+        d.toggle_code_block();
+        assert!(
+            d.caret_in_code_block(),
+            "the caret is not in the block it opened"
+        );
+        d.insert("let x = 1;");
+        d.newline();
+        d.insert("x");
+        assert_eq!(d.source, "A\n\n```\nlet x = 1;\nx\n```");
+        d.build_visual(80);
+        let (row, _) = d.caret_pos();
+        assert!(d.vmap.rows[row].code, "typed text is not on a code row");
+        // And back out: the button reverses what it did, text kept.
+        d.toggle_code_block();
+        assert_eq!(d.source, "A\n\nlet x = 1;\nx\n");
+        assert!(!d.caret_in_code_block());
+    }
+
+    #[test]
+    fn toggle_code_block_over_a_selection_fences_it_whole_and_keeps_it_selected() {
+        let mut d = wysiwyg_doc("cb_sel", "one\n\ntwo\n\nthree\n");
+        d.anchor = Some(1);
+        d.caret = 7;
+        d.toggle_code_block();
+        assert_eq!(d.source, "```\none\n\ntwo\n```\n\nthree\n");
+        assert!(d.selection().is_some(), "the block came back unselected");
+        d.toggle_code_block();
+        assert_eq!(
+            d.source, "one\n\ntwo\n\nthree\n",
+            "a second press did not reverse the first"
+        );
+    }
+
+    #[test]
+    fn toggle_code_block_inside_a_list_item_is_refused_and_reported() {
+        let mut d = wysiwyg_doc("cb_list", "- it|em\n".replace('|', "").as_str());
+        d.caret = 3;
+        d.toggle_code_block();
+        assert_eq!(d.source, "- item\n");
+        assert!(
+            d.status
+                .as_deref()
+                .is_some_and(|s| s.starts_with("code block:"))
+        );
+    }
+
+    #[test]
+    fn caret_in_code_block_reads_fenced_and_indented_blocks() {
+        let mut d = wysiwyg_doc("cb_in", "para\n\n```\ncode\n```\n\n    more\n");
+        d.caret = 2;
+        assert!(!d.caret_in_code_block());
+        d.caret = 11;
+        assert!(d.caret_in_code_block());
+        d.caret = 25;
+        assert!(d.caret_in_code_block(), "an indented block is a code block");
+    }
+
+    #[test]
+    fn toggle_code_block_is_one_undo_step() {
+        let mut d = wysiwyg_doc("cb_undo", "hello\n");
+        d.caret = 2;
+        d.toggle_code_block();
+        d.undo();
+        assert_eq!(render_caret(&d), "he|llo\n");
     }
 
     #[test]

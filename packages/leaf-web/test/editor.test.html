@@ -543,6 +543,44 @@ await test("clicking a task box ticks it", () => {
   return ed;
 });
 
+await test("a click under the last row lands on a fresh paragraph, wherever it is horizontally", () => {
+  const ed = editor("first\n\n```\ncode\n```\n");
+  const rows = ed.contentEl.querySelectorAll(".leaf-row");
+  const last = rows[rows.length - 1].getBoundingClientRect();
+  // Well under the last row, and far to the right — where a caret placed at
+  // the pointer's x would have gone to the end of the code line.
+  ed.contentEl.dispatchEvent(new MouseEvent("mousedown", {
+    bubbles: true, cancelable: true, button: 0, detail: 1,
+    clientX: last.right - 4, clientY: last.bottom + 40,
+  }));
+  eq(ed.source(), "first\n\n```\ncode\n```\n\n", "no paragraph was opened under the fence");
+  // A second click under it finds the paragraph already there and opens
+  // nothing more.
+  const rows2 = ed.contentEl.querySelectorAll(".leaf-row");
+  const last2 = rows2[rows2.length - 1].getBoundingClientRect();
+  ed.contentEl.dispatchEvent(new MouseEvent("mousedown", {
+    bubbles: true, cancelable: true, button: 0, detail: 1,
+    clientX: last2.left + 2, clientY: last2.bottom + 40,
+  }));
+  eq(ed.source(), "first\n\n```\ncode\n```\n\n", "a click on the paragraph already there wrote something");
+  input(ed, "insertText", "after");
+  eq(ed.source(), "first\n\n```\ncode\n```\n\nafter", "typing did not land in the new paragraph");
+  return ed;
+});
+
+await test("the code block command fences the caret's paragraph and lights the state", () => {
+  const ed = editor("plain\n");
+  let state = null;
+  ed.onChange((s) => { state = s; });
+  ed.toggleCodeBlock();
+  eq(ed.source(), "```\nplain\n```\n", "the paragraph was not fenced");
+  eq(state && state.codeBlock, true, "the state did not light for a caret in the block");
+  ed.toggleCodeBlock();
+  eq(ed.source(), "plain\n", "a second press did not unfence");
+  eq(state && state.codeBlock, false, "the state stayed lit outside the block");
+  return ed;
+});
+
 await test("a link follows only with the platform modifier held", () => {
   const ed = editor("see [the docs](https://example.com/x) now\n");
   let followed = null;

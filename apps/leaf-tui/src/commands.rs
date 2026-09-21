@@ -101,6 +101,10 @@ pub enum Command {
     BulletList,
     NumberedList,
     Quote,
+    /// A fenced code block over the selection or the block at the caret — or an
+    /// empty one on a blank line, since the rich view escapes a typed backtick
+    /// and offers no other way in. Its language is [`Command::CodeLanguage`].
+    CodeBlock,
     TaskItem,
     TaskChecked,
     /// Step the alignment of the block at the caret one notch — the *key's*
@@ -195,6 +199,7 @@ impl Command {
             BulletList => "Bulleted List",
             NumberedList => "Numbered List",
             Quote => "Quote",
+            CodeBlock => "Code Block",
             TaskItem => "Checklist Item",
             TaskChecked => "Tick Checkbox",
             // "Text", against the `Align Column …` rows a table offers: the two
@@ -294,6 +299,9 @@ impl Command {
             NumberedList => "⌥7",
             BulletList => "⌥8",
             Quote => "⌥9",
+            // Shifted onto inline code's key, the way ⌥⇧r is shifted onto ⌥r's:
+            // ⌥c marks a span as code, ⌥⇧c makes the block one.
+            CodeBlock => "⌥⇧c",
             TaskItem => "⌥t",
             TaskChecked => "⌥x",
             CycleAlign => "⌥a",
@@ -364,6 +372,7 @@ impl Command {
             BulletList => c.bullet_list,
             NumberedList => c.ordered_list,
             Quote => c.blockquote,
+            CodeBlock => c.code_block,
             TaskItem | TaskChecked => c.task,
             CycleAlign => c.alignment,
 
@@ -474,6 +483,7 @@ impl Command {
             BulletList => doc.toggle_list(false),
             NumberedList => doc.toggle_list(true),
             Quote => doc.toggle_blockquote(),
+            CodeBlock => doc.toggle_code_block(),
             TaskItem => doc.toggle_task_item(),
             TaskChecked => doc.toggle_task_checked(),
             CycleAlign => leaf_ratatui::cycle_alignment(doc),
@@ -572,6 +582,7 @@ const BLOCK: &[Command] = &[
     Command::BulletList,
     Command::NumberedList,
     Command::Quote,
+    Command::CodeBlock,
     Command::TaskItem,
     Command::TaskChecked,
     Command::CycleAlign,

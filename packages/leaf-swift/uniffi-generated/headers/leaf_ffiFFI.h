@@ -331,6 +331,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_click(void*_Nonnull ptr, uint32_t r
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_click_ch(void*_Nonnull ptr, uint32_t row, uint32_t ch, int8_t extend, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_CLICK_PAST_END
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_CLICK_PAST_END
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_click_past_end(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_COUNTS
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_COUNTS
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_counts(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
@@ -816,6 +821,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_bold(void*_Nonnull ptr, Rust
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_code(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TOGGLE_CODE_BLOCK
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TOGGLE_CODE_BLOCK
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_code_block(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TOGGLE_ITALIC
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TOGGLE_ITALIC
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_italic(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
@@ -1252,6 +1262,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_click(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_CLICK_CH
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_CLICK_CH
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_click_ch(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_CLICK_PAST_END
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_CLICK_PAST_END
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_click_past_end(void
     
 );
 #endif
@@ -1834,6 +1850,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_toggle_bold(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_TOGGLE_CODE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_TOGGLE_CODE
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_toggle_code(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_TOGGLE_CODE_BLOCK
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_TOGGLE_CODE_BLOCK
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_toggle_code_block(void
     
 );
 #endif

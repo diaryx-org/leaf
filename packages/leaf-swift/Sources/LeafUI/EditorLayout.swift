@@ -60,19 +60,24 @@ public struct EditorState: Equatable {
     /// then (`LeafEditorModel.fontSize` and its siblings). A segmented control is
     /// on screen the whole time and has nothing to ask.
     public var align: Align?
+    /// Whether the caret stands in a code block — what lights the toolbar's
+    /// Code Block button. Here for `heading`'s reason: walking the caret into
+    /// a fence moves no mark and no heading, so a button asking core for itself
+    /// would never be republished.
+    public var codeBlock: Bool
 
-    /// `link`, `markColor`, `hasSelection` and `align` default so a host that
-    /// built a state by hand before any of them existed still compiles; the
-    /// frame-projecting initializer below is the real path.
+    /// `link`, `markColor`, `hasSelection`, `align` and `codeBlock` default so
+    /// a host that built a state by hand before any of them existed still
+    /// compiles; the frame-projecting initializer below is the real path.
     public init(view: String, dirty: Bool, heading: UInt32?, active: [String], link: String? = nil,
                 canUndo: Bool = false, canRedo: Bool = false,
                 markColor: MarkColor? = nil, hasSelection: Bool = false,
-                align: Align? = nil) {
+                align: Align? = nil, codeBlock: Bool = false) {
         self.view = view; self.dirty = dirty; self.heading = heading
         self.active = active; self.link = link
         self.canUndo = canUndo; self.canRedo = canRedo
         self.markColor = markColor; self.hasSelection = hasSelection
-        self.align = align
+        self.align = align; self.codeBlock = codeBlock
     }
 
     /// Project a full `DocView` down to the chrome-facing state.
@@ -83,7 +88,8 @@ public struct EditorState: Equatable {
         self.init(view: v.view, dirty: v.dirty, heading: v.heading, active: v.active, link: v.link,
                   canUndo: v.canUndo, canRedo: v.canRedo,
                   markColor: v.markColor, hasSelection: v.hasSelection,
-                  align: v.rows.indices.contains(caretRow) ? Align(name: v.rows[caretRow].align) : nil)
+                  align: v.rows.indices.contains(caretRow) ? Align(name: v.rows[caretRow].align) : nil,
+                  codeBlock: v.codeBlock)
     }
 }
 
@@ -1723,6 +1729,25 @@ struct EditorLayout {
         // end of the content before it — which is what a click into a column the
         // document never reached should mean.
         return above ?? first ?? before ?? (0, 0)
+    }
+
+    /// Whether `point` lies under everything laid out — below the last line's
+    /// box in its own slot, or in a slot past it (the second column of a sheet
+    /// the text never reached). A click there is on nothing, and the view asks
+    /// core for `clickPastEnd` — the caret onto an empty paragraph under the
+    /// last block, opened if need be — rather than a caret at the pointer's x on
+    /// the last line, which is what `hit` answers for want of anything nearer.
+    ///
+    /// The last *boxed* line rather than `rows.last`: a table's rows past its
+    /// first carry no box of their own (the grid is placed whole on the first),
+    /// and a boundary row collapsed to nothing has none either.
+    func isPastEnd(_ point: CGPoint) -> Bool {
+        guard let box = rows.reversed().lazy.compactMap({ $0.lineBoxes.last }).first else {
+            return false
+        }
+        let target = slot(at: point)
+        let last = slot(at: CGPoint(x: box.midX, y: box.midY))
+        return target > last || (target == last && point.y >= box.maxY)
     }
 
     func hit(_ point: CGPoint) -> (row: Int, ch: Int) {

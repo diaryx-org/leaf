@@ -654,6 +654,13 @@ public final class LeafEditorModel: ObservableObject {
     public func setHeading(_ level: UInt32) { run { $0.setHeading(level: level) } }
     public func toggleBlockquote() { run { $0.toggleBlockquote() } }
     public func toggleList(ordered: Bool) { run { $0.toggleList(ordered: ordered) } }
+    /// Toggle a fenced code block over the selection or the block at the caret
+    /// — the toolbar's Code Block button, and the rich view's one way to open
+    /// one, since a typed backtick is escaped there. On a blank line it opens an
+    /// empty block with the caret inside, ready for the first line of code;
+    /// `state.codeBlock` lights the button while the caret is in one. See
+    /// `leaf_core::Doc::toggle_code_block`.
+    public func toggleCodeBlock() { run { $0.toggleCodeBlock() } }
     public func indent()  { run { $0.indent() } }
     public func outdent() { run { $0.outdent() } }
     public func insertLink(_ destination: String) { run { $0.insertLink(destination: destination) } }

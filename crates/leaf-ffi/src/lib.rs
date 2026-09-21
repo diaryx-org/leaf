@@ -780,6 +780,11 @@ pub struct DocView {
     pub view: String,
     /// The heading level at the caret, if any — a toolbar lights H1…H6 from it.
     pub heading: Option<u32>,
+    /// Whether the caret stands in a code block — the toolbar lights its Code
+    /// Block button from it. Rides the frame for `heading`'s reason: walking
+    /// the caret into a fence changes no mark, and a button asking for itself
+    /// would never be told.
+    pub code_block: bool,
     /// The inline marks active at the caret (`bold`, `italic`, `code`, …) — the
     /// toolbar lights the matching buttons.
     pub active: Vec<String>,
@@ -1313,6 +1318,10 @@ pub struct Capabilities {
     /// [`LeafDoc::insert_footnote`]. Markdown and djot spell the pair; HTML does
     /// not, so the button goes rather than dims into a refusal.
     pub footnote: bool,
+    /// [`LeafDoc::toggle_code_block`]. Markdown and djot spell the fence; HTML
+    /// rebuilds the block as `<pre><code>`. Pair with [`DocView::code_block`]
+    /// for the button's lit state.
+    pub code_block: bool,
     pub code_language: bool,
     /// The grid controls. Gate them on this *and* [`LeafDoc::caret_in_table`]:
     /// this asks whether the format's tables are editable, that whether the
@@ -1373,6 +1382,7 @@ impl From<CoreCapabilities> for Capabilities {
             image: c.image,
             thematic_break: c.thematic_break,
             footnote: c.footnote,
+            code_block: c.code_block,
             code_language: c.code_language,
             table: c.table,
             cell_line_break: c.cell_line_break,
@@ -1797,6 +1807,7 @@ impl Inner {
             None => (false, caret_row, caret_ch),
         };
         let heading = self.doc.current_heading_level();
+        let code_block = self.doc.caret_in_code_block();
         let active = self
             .doc
             .active_inline_marks()
@@ -1831,6 +1842,7 @@ impl Inner {
             can_redo: self.doc.can_redo(),
             view: self.doc.view_name().to_string(),
             heading,
+            code_block,
             active,
             link,
             mark_color,
@@ -2508,6 +2520,18 @@ impl LeafDoc {
         g.frame()
     }
 
+    /// A click in the blank space under the last row — the caret goes onto an
+    /// empty paragraph under the last block, opening one if the document does
+    /// not end with one, wherever the pointer was horizontally. See
+    /// [`leaf_core::Doc::click_past_end`]. The frontend decides "under": the
+    /// point is below every line box it laid out.
+    pub fn click_past_end(&self) -> DocView {
+        let mut g = self.lock();
+        g.sync();
+        g.doc.click_past_end();
+        g.frame()
+    }
+
     /// Mirror a native selection into the model: `[anchor, focus]` given as
     /// row + UTF-16 offset pairs. Each is resolved to a source offset the way a
     /// click is, then set as the selection's fixed and moving ends. A collapsed
@@ -2646,6 +2670,16 @@ impl LeafDoc {
     pub fn toggle_list(&self, ordered: bool) -> DocView {
         let mut g = self.lock();
         g.doc.toggle_list(ordered);
+        g.frame()
+    }
+
+    /// Toggle a fenced code block over the selection or the block at the caret;
+    /// on a blank line, open an empty one with the caret inside. See
+    /// [`leaf_core::Doc::toggle_code_block`]. Gate on
+    /// [`Capabilities::code_block`]; light from [`DocView::code_block`].
+    pub fn toggle_code_block(&self) -> DocView {
+        let mut g = self.lock();
+        g.doc.toggle_code_block();
         g.frame()
     }
 

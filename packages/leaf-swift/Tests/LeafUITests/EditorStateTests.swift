@@ -58,6 +58,15 @@ final class EditorStateTests: XCTestCase {
         XCTAssertNotEqual(inALink, elsewhere)
     }
 
+    /// Stepping into a code block is a change the toolbar has to be told about
+    /// for `link`'s reason: nothing else on the state moves with the caret.
+    func testSteppingIntoACodeBlockIsAChangedState() {
+        let inside = EditorState(docView([row([mkRun("x")])], codeBlock: true))
+        let outside = EditorState(docView([row([mkRun("x")])], codeBlock: false))
+        XCTAssertTrue(inside.codeBlock)
+        XCTAssertNotEqual(inside, outside)
+    }
+
     /// The memberwise initializer keeps compiling for a host that wrote one out
     /// before there was a destination on it.
     func testLinkDefaultsToNone() {
