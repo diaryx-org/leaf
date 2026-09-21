@@ -37,6 +37,7 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 
 - **core** — Markdown reads math ([`d9c145c`](https://github.com/diaryx-org/leaf/commit/d9c145c5deea603de569e7bb34f4beee385930ca))
 - **core** — a formula is a picture that reveals to its TeX on the caret's line ([`e6df368`](https://github.com/diaryx-org/leaf/commit/e6df368aa4ed0cf9912126639a20193abe8d27ac))
+- **leaf-editor** — Leaf is a document app ([`6f2050c`](https://github.com/diaryx-org/leaf/commit/6f2050cd4177ab89b98b8dfc1e421aec38a6456e))
 
 ### Added
 
@@ -46,6 +47,11 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 - **leaf-web** — a formula is its picture in the line, and a caret move onto it repaints ([`7f3a520`](https://github.com/diaryx-org/leaf/commit/7f3a520ae0a8afdb316aded934478ed7516e5bad))
 - **leaf-swift** — a formula is its picture in the line and a centred block, on the Mac and on iOS ([`1522f21`](https://github.com/diaryx-org/leaf/commit/1522f217f0fc5ed2acd236e7433cc6ba4f011e80))
 - **leaf-web** — the typesetter is a second wasm module, fetched on the first formula ([`9c4d384`](https://github.com/diaryx-org/leaf/commit/9c4d3840a6138f072e7f4d2f5763b79e85b6b615))
+- **leaf-swift** — onEdit, for a host that owns a document ([`87e9ffa`](https://github.com/diaryx-org/leaf/commit/87e9ffa4d0573ea18c94b21fa644c1565bbaf9d2))
+
+### Fixed
+
+- **leaf-swift** — a media answer that arrives inside the layout is handed to it, not repainted ([`b393d12`](https://github.com/diaryx-org/leaf/commit/b393d12ee3441d7d50baa265a37288284baa3a26))
 
 ### Behavioural changes
 
@@ -56,6 +62,8 @@ it is at `e32cc88`, the same day. Everything from `v0.2.0` on goes up through
 - `typeset_math` and `MathPicture` are no longer exported from `@diaryx/leaf`'s `pkg/leaf_wasm.js`; they are `@diaryx/leaf/math`, where `MathPicture` is a wasm-bindgen class with getters and `free()`, not a plain object.
 
 - a formula is drawn as its placeholder (the `∑` atom, the `∑ tex` row) on the first frame and becomes its picture once the typesetter module has been fetched, unless `init` was given `math: "eager"`.
+
+- a host that answers onResolveMedia synchronously now sees its picture on the first layout and gets no onLoaded for it, where before the first pass drew nothing and a repaint followed.
 
 <!-- git-cliff:end -->
 
