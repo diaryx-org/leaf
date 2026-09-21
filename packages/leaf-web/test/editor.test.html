@@ -314,6 +314,33 @@ await test("a keystroke on a long document lifts the rows it changed, not the do
   return ed;
 });
 
+await test("an edit that shows no row still moves the rows below it and reaches the host", () => {
+  // A comment pasted between two paragraphs is source with no row to show:
+  // the frame lifts no row and replaces none, and says only how far the
+  // rows below moved. The host still hears of the edit, and a kept run
+  // still knows where it comes from, the comment's length on.
+  let state = null;
+  const ed = editor("first paragraph\n\nsecond paragraph\n", { onChange: (s) => { state = s; } });
+  const raw = crossings(ed);
+  const lastIdx = ed._lastView.rows.findIndex((r) => r.runs.some((x) => x.text.includes("second")));
+  const last = ed.rowEls[lastIdx];
+  place(firstText(last), 0);
+  ed._syncFromDom();
+  state = null;
+  ed.render(ed.doc.paste("<!-- c -->\n\n"));
+  const pasted = raw.at(-1);
+  assert(pasted.basis > 0, "the paste's frame is a change");
+  eq(pasted.rows.length, 0, "the comment shows no row");
+  eq(pasted.replaced, 0);
+  eq(pasted.src_shift, 12, "the paragraph below moved by the comment's length");
+  assert(ed.source().includes("<!-- c -->"), "the paste did not land");
+  assert(state && state.dirty, "the host was not told of the edit");
+  assert(ed.rowEls[lastIdx] === last, "the row below was rebuilt");
+  const span = last.querySelector(".leaf-run");
+  eq(ed.source().slice(span._src, span._src + 6), "second", "a kept run's offset went stale");
+  return ed;
+});
+
 // The count is the measure rather than a clock: the headless driver runs the
 // page under a virtual-time budget, where `performance.now()` stands still.
 // What the lift costs per row is the binding's, and the same for every row;
