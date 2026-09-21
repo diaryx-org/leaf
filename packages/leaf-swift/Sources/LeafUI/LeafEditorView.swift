@@ -812,10 +812,14 @@ public final class LeafEditorModel: ObservableObject {
     /// they look up at it.
     private static let countsDebounce: TimeInterval = 0.15
 
-    /// Put a recount on the clock. Called after every repaint, unconditionally:
-    /// the chrome state is no guide here, since a paragraph that has gained
-    /// three words moves no mark, no heading, and no dirty flag after its first
-    /// character — the very case a word count exists for.
+    /// Put a recount on the clock. Called after every repaint that laid the
+    /// frame out again (`onLayoutChange`), whatever the chrome state did: the
+    /// state is no guide here, since a paragraph that has gained three words
+    /// moves no mark, no heading, and no dirty flag after its first character
+    /// — the very case a word count exists for. A repaint that only moved the
+    /// caret changed no count and is not on the clock: the document's tally
+    /// is the rows', the selection's is the selection's and the selection is
+    /// in the rows, and the page count is the layout's.
     private func scheduleCounts() {
         guard countsEnabled else { return }
         countsWork?.cancel()
@@ -924,13 +928,16 @@ public final class LeafEditorModel: ObservableObject {
         textView.command(op)
     }
 
-    /// The surface has repainted. Both halves of what that means to the model:
-    /// take the chrome state it reports, and put the statistics back on the
-    /// clock. One entry point rather than two closures on each platform,
-    /// because the two are one event — and because only one of them is gated on
-    /// the state having changed (see `scheduleCounts`).
+    /// The surface has repainted: take the chrome state it reports. The
+    /// statistics are the other half of a repaint, and go back on the clock
+    /// from `relaid` — a separate closure on each platform, because a repaint
+    /// that only moved the caret reports its state and changed no count.
     fileprivate func repainted(_ s: EditorState) {
         updateState(s)
+    }
+
+    /// The surface laid its frame out again — see `scheduleCounts`.
+    fileprivate func relaid() {
         scheduleCounts()
     }
 
@@ -1119,6 +1126,9 @@ struct LeafEditorSurface: NSViewRepresentable {
         // mutating an `@Published` mid-update loops the view system.
         textView.onStateChange = { [weak model] s in
             DispatchQueue.main.async { model?.repainted(s) }
+        }
+        textView.onLayoutChange = { [weak model] in
+            DispatchQueue.main.async { model?.relaid() }
         }
         // Read through to the model rather than copying its handler across: a
         // host that sets `onOpenLink` after the editor is on screen (the usual
@@ -1554,6 +1564,9 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
         // mutating an `@Published` mid-update loops the view system.
         textView.onStateChange = { [weak model] s in
             DispatchQueue.main.async { model?.repainted(s) }
+        }
+        textView.onLayoutChange = { [weak model] in
+            DispatchQueue.main.async { model?.relaid() }
         }
         // Read through to the model rather than copying its handler across: a
         // host that sets `onOpenLink` after the editor is on screen (the usual
