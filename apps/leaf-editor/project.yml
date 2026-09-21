@@ -101,10 +101,23 @@ targets:
         SWIFT_VERSION: "5.0"
         ENABLE_BITCODE: NO
         ONLY_ACTIVE_ARCH: YES
-        # Simulator/local run needs no signing — no Apple developer team required.
-        CODE_SIGNING_ALLOWED: NO
-        CODE_SIGNING_REQUIRED: NO
-        CODE_SIGN_IDENTITY: ""
+        # Simulator/local run needs no signing — no Apple developer team
+        # required, and `cargo xtask swift` builds on a machine without one.
+        "CODE_SIGNING_ALLOWED[sdk=macosx*]": NO
+        "CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]": NO
+        "CODE_SIGNING_REQUIRED[sdk=macosx*]": NO
+        "CODE_SIGNING_REQUIRED[sdk=iphonesimulator*]": NO
+        "CODE_SIGN_IDENTITY[sdk=macosx*]": ""
+        "CODE_SIGN_IDENTITY[sdk=iphonesimulator*]": ""
+        # A real iPhone refuses an unsigned binary ("The executable is not
+        # codesigned"), and a device build needs a provisioning profile, which
+        # needs a team — automatic signing then mints and renews the profile
+        # itself. Set here rather than in Xcode's Signing & Capabilities pane:
+        # the .xcodeproj is gitignored and regenerated, so a change made in the
+        # UI is lost at the next `xcodegen generate`. Same team and reasoning
+        # as diaryx's apps/swift/project.yml.
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: V4322HH5HU
         # macOS won't launch a sandboxed app that isn't signed, and a sandboxed
         # document app cannot read the images beside a file it was handed
         # without asking for the folder — see docs/tasks/sandboxed-mac-app.md.
