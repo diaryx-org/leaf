@@ -3139,6 +3139,13 @@ impl Doc {
         if self.view != View::Source && self.backspace_at_table_end() {
             return;
         }
+        // WYSIWYG: a table cell's start is a wall. The bytes behind it are the
+        // padding and the `|` that make the grid, and taking them merges two
+        // cells — a structural edit nobody asked for, and one no table editor
+        // gives the key. Tab and Shift+Tab are how the caret leaves a cell.
+        if self.view != View::Source && self.at_cell_wall(BreakEdge::Backward) {
+            return;
+        }
         // WYSIWYG: at the start of a block's content, the byte behind the caret
         // is a block boundary, and Backspace over one is a join — twig's, so
         // that what a join is in each format is not this file's to know. After
@@ -3889,6 +3896,47 @@ impl Doc {
         true
     }
 
+    /// Whether the caret stands at a table cell's wall on the `edge` side — at
+    /// or before its first caret stop for Backspace, at or past its last for
+    /// Delete — where the only bytes between it and the neighbouring cell are
+    /// the padding and the `|` the rich view draws as the grid. The padding
+    /// counts as the cell's: a caret placed between `| ` and the text is at the
+    /// same wall, so the first press cannot eat the space either. An in-cell
+    /// `<br>` at the edge is not a wall; the delete takes it whole, as ever.
+    fn at_cell_wall(&mut self, edge: BreakEdge) -> bool {
+        // The map answers about offsets, so it has to be this revision's.
+        self.rebuild_map();
+        if self.cell_break_at(edge).is_some() {
+            return false;
+        }
+        let caret = self.caret;
+        let src = self.source.as_bytes();
+        let pad = |b: &u8| *b == b' ' || *b == b'\t';
+        self.vmap
+            .tables
+            .iter()
+            .flat_map(|t| &t.grid)
+            .flat_map(|row| &row.cells)
+            .any(|cell| {
+                let lo = cell.start
+                    - src[..cell.start]
+                        .iter()
+                        .rev()
+                        .take_while(|b| pad(b))
+                        .count();
+                let hi = cell.end + src[cell.end..].iter().take_while(|b| pad(b)).count();
+                (lo..=hi).contains(&caret)
+                    && match edge {
+                        BreakEdge::Backward => {
+                            self.vmap.stop_before(caret).is_none_or(|s| s < cell.start)
+                        }
+                        BreakEdge::Forward => {
+                            self.vmap.stop_after(caret).is_none_or(|s| s > cell.end)
+                        }
+                    }
+            })
+    }
+
     /// Whether the caret's own source line holds nothing but whitespace — an
     /// empty paragraph, or the blank line a block boundary is spelled with. The
     /// test for [`backspace`](Self::backspace)'s stop-wise delete: such a line has
@@ -4028,6 +4076,11 @@ impl Doc {
             // The mirror of Backspace's: forward-delete in front of a picture
             // would eat the `!` off its markup and leave a link where a photo was.
             if self.view != View::Source && self.delete_around_block_media(true) {
+                return;
+            }
+            // And of Backspace's cell wall: Delete at a cell's end would take
+            // the padding and the `|` after it.
+            if self.view != View::Source && self.at_cell_wall(BreakEdge::Forward) {
                 return;
             }
             // And of Backspace's join: at the end of a block's content, Delete
@@ -13205,6 +13258,73 @@ mod tests {
             "the cell is back to one line: {}",
             d.source
         );
+    }
+
+    #[test]
+    fn backspace_at_a_cell_start_is_a_wall() {
+        // The task's repro: two presses used to take the padding and then the
+        // `|`, merging `d` into `c`'s cell and leaving the row a column short.
+        let src = "| a | b |\n| - | - |\n| c | d |\n";
+        let mut d = wysiwyg_doc("tbl_wall_bs", src);
+        d.place_caret(src.find("d |").unwrap(), false);
+        for _ in 0..3 {
+            d.backspace();
+        }
+        assert_eq!(d.source, src);
+        // Inside the padding too — right after the `|`, before the space. Set
+        // directly: `place_caret` would snap it onto the stop past the space.
+        d.caret = src.find("| d").unwrap() + 1;
+        d.backspace();
+        assert_eq!(d.source, src);
+        // The row's first cell, and an empty one, are walls the same.
+        d.place_caret(src.find("c |").unwrap(), false);
+        d.backspace();
+        assert_eq!(d.source, src);
+        // A cell that opens on hidden markup: the wall is the first letter
+        // drawn, not the `**` in front of it.
+        let bold = "| a | b |\n| - | - |\n| c | **d** |\n";
+        let mut d = wysiwyg_doc("tbl_wall_bs_bold", bold);
+        d.place_caret(bold.find("d**").unwrap(), false);
+        d.backspace();
+        assert_eq!(d.source, bold);
+        let empty = "| a | b |\n| - | - |\n| c |   |\n";
+        let mut d = wysiwyg_doc("tbl_wall_bs_empty", empty);
+        d.place_caret(empty.find("|   |").unwrap() + 2, false);
+        d.backspace();
+        assert_eq!(d.source, empty);
+    }
+
+    #[test]
+    fn backspace_inside_a_cell_still_deletes_a_character() {
+        let src = "| a | b |\n| - | - |\n| c | de |\n";
+        let mut d = wysiwyg_doc("tbl_wall_bs_mid", src);
+        d.place_caret(src.find("e |").unwrap(), false);
+        d.backspace();
+        assert_eq!(d.source, "| a | b |\n| - | - |\n| c | e |\n");
+    }
+
+    #[test]
+    fn delete_at_a_cell_end_is_a_wall() {
+        // The mirror: Delete at `c`'s end would take the padding, then the `|`.
+        let src = "| a | b |\n| - | - |\n| c | d |\n";
+        let mut d = wysiwyg_doc("tbl_wall_del", src);
+        d.place_caret(src.find("c |").unwrap() + 1, false);
+        for _ in 0..3 {
+            d.delete_forward();
+        }
+        assert_eq!(d.source, src);
+        // And inside the trailing padding, set directly past the snap.
+        d.caret = src.find("c |").unwrap() + 2;
+        d.delete_forward();
+        assert_eq!(d.source, src);
+        // The row's last cell is a wall on its closing `|` as well.
+        d.place_caret(src.find("d |").unwrap() + 1, false);
+        d.delete_forward();
+        assert_eq!(d.source, src);
+        // Mid-cell Delete is untouched.
+        d.place_caret(src.find("c |").unwrap(), false);
+        d.delete_forward();
+        assert_eq!(d.source, "| a | b |\n| - | - |\n|  | d |\n");
     }
 
     #[test]

@@ -218,7 +218,7 @@ shut — so this is a guarantee rather than a suppressed keyboard.
 | key | action |
 |-----|--------|
 | *(printable)* | insert at the caret (replacing any selection) |
-| `Enter` / `Backspace` / `Delete` | the usual — `Enter` in a table drops to the cell below, growing the table when there isn't one |
+| `Enter` / `Backspace` / `Delete` | the usual — `Enter` in a table drops to the cell below, growing the table when there isn't one, and `Backspace` at a cell's start or `Delete` at its end does nothing rather than merge two cells |
 | `Tab` / `⇧Tab` | indent / outdent — in a table, walk the cells, appending a row off the last one |
 | `⌥Enter` | an in-cell line break (the terminal's spelling of `⇧Enter`, which a terminal can't tell from `Enter`) |
 | arrows / `Home` / `End` | move the caret |
