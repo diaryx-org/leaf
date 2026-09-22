@@ -1356,6 +1356,15 @@ public protocol LeafDocProtocol : AnyObject {
     func stepOffset(off: UInt32, delta: Int32)  -> UInt32
     
     /**
+     * Replace the source range `[from, to)` with `text` behind the caret — an
+     * automatic substitution as the user types (a correction, a text
+     * replacement, a smart quote or dash). The caret and selection stay where
+     * they were, and the substitution is an undo step of its own. See
+     * `Doc::substitute`.
+     */
+    func substitute(from: UInt32, to: UInt32, text: String)  -> DocView
+    
+    /**
      * Delete the caret's column (unless it is the only one).
      */
     func tableDeleteColumn()  -> DocView
@@ -3006,6 +3015,23 @@ open func stepOffset(off: UInt32, delta: Int32) -> UInt32 {
     uniffi_leaf_ffi_fn_method_leafdoc_step_offset(self.uniffiClonePointer(),
         FfiConverterUInt32.lower(off),
         FfiConverterInt32.lower(delta),$0
+    )
+})
+}
+    
+    /**
+     * Replace the source range `[from, to)` with `text` behind the caret — an
+     * automatic substitution as the user types (a correction, a text
+     * replacement, a smart quote or dash). The caret and selection stay where
+     * they were, and the substitution is an undo step of its own. See
+     * `Doc::substitute`.
+     */
+open func substitute(from: UInt32, to: UInt32, text: String) -> DocView {
+    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_substitute(self.uniffiClonePointer(),
+        FfiConverterUInt32.lower(from),
+        FfiConverterUInt32.lower(to),
+        FfiConverterString.lower(text),$0
     )
 })
 }
@@ -10015,6 +10041,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_step_offset() != 50224) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_substitute() != 40269) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_table_delete_column() != 21726) {

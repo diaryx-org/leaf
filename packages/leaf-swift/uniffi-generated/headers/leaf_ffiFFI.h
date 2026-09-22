@@ -811,6 +811,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_source(void*_Nonnull ptr, RustCallS
 uint32_t uniffi_leaf_ffi_fn_method_leafdoc_step_offset(void*_Nonnull ptr, uint32_t off, int32_t delta, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SUBSTITUTE
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SUBSTITUTE
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_substitute(void*_Nonnull ptr, uint32_t from, uint32_t to, RustBuffer text, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TABLE_DELETE_COLUMN
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TABLE_DELETE_COLUMN
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_table_delete_column(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
@@ -1893,6 +1898,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_source(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_STEP_OFFSET
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_STEP_OFFSET
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_step_offset(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SUBSTITUTE
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SUBSTITUTE
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_substitute(void
     
 );
 #endif

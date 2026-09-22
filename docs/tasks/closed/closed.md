@@ -27,6 +27,7 @@ contents:
 - '[Dynamic Type on paper should be a zoom, not a repagination](/docs/tasks/closed/ios-dynamic-type-on-paper.md)'
 - '[Find on iOS](/docs/tasks/closed/ios-find-interaction.md)'
 - '[Replace All is one undo step](/docs/tasks/closed/replace-all-is-one-undo-step.md)'
+- '[Automatic correction and substitutions in the macOS view](/docs/tasks/closed/macos-text-checking.md)'
 ---
 
 # Closed tasks

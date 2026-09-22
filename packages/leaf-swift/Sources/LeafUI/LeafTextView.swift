@@ -446,6 +446,44 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         }
     }
 
+    // MARK: automatic substitution — what the system does *to* text as it is typed
+
+    /// Correct Spelling Automatically, for this view: a misspelled word is
+    /// replaced by the checker's correction as the character that ends it is
+    /// typed. Seeded from the user's system setting and following it when it
+    /// changes, as `NSTextView`'s is; Edit ▸ Spelling and Grammar toggles it
+    /// per view. The rendered view only — see `substitutionsApply`.
+    public var isAutomaticSpellingCorrectionEnabled = NSSpellChecker.isAutomaticSpellingCorrectionEnabled
+    /// The user's text replacements (System Settings ▸ Keyboard ▸ Text
+    /// Replacements), expanded as the word that triggers one ends.
+    public var isAutomaticTextReplacementEnabled = NSSpellChecker.isAutomaticTextReplacementEnabled
+    /// Smart quotes: a straight `"` or `'` is curled as it is typed.
+    public var isAutomaticQuoteSubstitutionEnabled = NSSpellChecker.isAutomaticQuoteSubstitutionEnabled
+    /// Smart dashes: `--` becomes an em dash once the character after it is typed.
+    public var isAutomaticDashSubstitutionEnabled = NSSpellChecker.isAutomaticDashSubstitutionEnabled
+
+    /// A correction made while typing that can still be taken back: the range
+    /// the corrected word occupies in `fullText()`, and both spellings. Drawn
+    /// with the blue underline `NSTextView` gives one, and offered back through
+    /// the system's reversion indicator when the caret comes to rest on it.
+    /// Dropped once the text under the range is no longer the correction.
+    struct Autocorrection: Equatable {
+        var range: NSRange
+        let original: String
+        let replacement: String
+    }
+    private(set) var autocorrections: [Autocorrection] = []
+    /// The boxes `autocorrections` occupy, mapped when they change or the
+    /// layout does — never in `draw`, for `misspelledRects`' reason.
+    private var autocorrectionRects: [CGRect] = []
+    /// The correction the reversion indicator is up for, so a caret that
+    /// stays on it does not raise the indicator again at every frame.
+    private var offeredReversion: Autocorrection?
+    /// Whether a reverted correction is reported to the checker, which learns
+    /// from it — for every app on the Mac, not this document alone. Off only
+    /// in tests, which must not teach the user's checker anything.
+    var recordsCorrectionResponses = true
+
     private var caretVisible = true
     private var blinkTimer: Timer?
     private var isFocused = false
@@ -500,6 +538,15 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // than scrolling to wherever the caret happens to start.
         lastCaretOffset = doc.caretOffset()
         scheduleSpellCheck()
+        // The user's system settings, followed as they change — `NSTextView`
+        // takes each new value over its own.
+        for name in [NSSpellChecker.didChangeAutomaticSpellingCorrectionNotification,
+                     NSSpellChecker.didChangeAutomaticTextReplacementNotification,
+                     NSSpellChecker.didChangeAutomaticQuoteSubstitutionNotification,
+                     NSSpellChecker.didChangeAutomaticDashSubstitutionNotification] {
+            NotificationCenter.default.addObserver(
+                self, selector: #selector(systemSubstitutionSettingChanged(_:)), name: name, object: nil)
+        }
     }
 
     @available(*, unavailable)
@@ -719,6 +766,8 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             scrollCaretToVisible()
         }
         if textChanged { scheduleSpellCheck() }
+        if textChanged || relaid { refreshAutocorrections(textChanged: textChanged) }
+        if !textChanged { offerReversionAtCaret() }
         onStateChange?(EditorState(view))
         if relaid { onLayoutChange?() }
         if edited { onEdit?() }
@@ -826,6 +875,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
         if printing { return }
         drawMisspellings(in: ctx, dirtyRect: band)
+        drawAutocorrections(in: ctx, dirtyRect: band)
         if markedByteRange != nil { drawMarkedUnderline(in: ctx) }
 
         // Before the caret, never after: the caret stands at the cue's first
@@ -2125,6 +2175,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         }
         guard !text.isEmpty else { return }
         render(doc.insert(text: text))
+        substituteAfterTyping(text)
     }
 
     public override func doCommand(by selector: Selector) {
@@ -2308,6 +2359,17 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             guard let tag = (item as? NSMenuItem)?.tag, let action = NSTextFinder.Action(rawValue: tag) else { return false }
             return textFinder.validateAction(action)
         case #selector(centerSelectionInVisibleArea(_:)): return true
+        case #selector(toggleContinuousSpellChecking(_:)):
+            (item as? NSMenuItem)?.state = isContinuousSpellCheckingEnabled ? .on : .off
+            return true
+        case #selector(toggleAutomaticSpellingCorrection(_:)):
+            return validateSubstitution(item, on: isAutomaticSpellingCorrectionEnabled)
+        case #selector(toggleAutomaticTextReplacement(_:)):
+            return validateSubstitution(item, on: isAutomaticTextReplacementEnabled)
+        case #selector(toggleAutomaticQuoteSubstitution(_:)):
+            return validateSubstitution(item, on: isAutomaticQuoteSubstitutionEnabled)
+        case #selector(toggleAutomaticDashSubstitution(_:)):
+            return validateSubstitution(item, on: isAutomaticDashSubstitutionEnabled)
         case #selector(printView(_:)), #selector(printDocument(_:)): return !docView.rows.isEmpty
         // Anything else is enabled by whether the view answers it at all — what
         // AppKit does for a responder with no validation of its own.
@@ -2950,6 +3012,290 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// Standard Edit-menu action: enable/disable checking while typing.
     @objc public func toggleContinuousSpellChecking(_ sender: Any?) {
         isContinuousSpellCheckingEnabled.toggle()
+    }
+
+    // MARK: automatic substitution
+
+    /// Edit ▸ Spelling and Grammar ▸ Correct Spelling Automatically, under
+    /// `NSTextView`'s selector so a host's nib-built menu reaches it too.
+    @objc public func toggleAutomaticSpellingCorrection(_ sender: Any?) {
+        isAutomaticSpellingCorrectionEnabled.toggle()
+    }
+    /// Edit ▸ Substitutions ▸ Text Replacement.
+    @objc public func toggleAutomaticTextReplacement(_ sender: Any?) {
+        isAutomaticTextReplacementEnabled.toggle()
+    }
+    /// Edit ▸ Substitutions ▸ Smart Quotes.
+    @objc public func toggleAutomaticQuoteSubstitution(_ sender: Any?) {
+        isAutomaticQuoteSubstitutionEnabled.toggle()
+    }
+    /// Edit ▸ Substitutions ▸ Smart Dashes.
+    @objc public func toggleAutomaticDashSubstitution(_ sender: Any?) {
+        isAutomaticDashSubstitutionEnabled.toggle()
+    }
+
+    /// A substitution toggle's checkmark, and whether it can be changed here:
+    /// not in the source view, where nothing is substituted, nor on a reader.
+    private func validateSubstitution(_ item: NSValidatedUserInterfaceItem, on: Bool) -> Bool {
+        (item as? NSMenuItem)?.state = on ? .on : .off
+        return substitutionsApply
+    }
+
+    /// Whether anything is substituted here at all: the rendered view of an
+    /// editable document. In the source view a straight quote or a `--` is
+    /// markup, and a word is whatever the markup needs it to be — the rule the
+    /// iOS view's text input traits keep too.
+    var substitutionsApply: Bool { docView.view != "source" && !isReadOnly }
+
+    @objc private func systemSubstitutionSettingChanged(_ note: Notification) {
+        switch note.name {
+        case NSSpellChecker.didChangeAutomaticSpellingCorrectionNotification:
+            isAutomaticSpellingCorrectionEnabled = NSSpellChecker.isAutomaticSpellingCorrectionEnabled
+        case NSSpellChecker.didChangeAutomaticTextReplacementNotification:
+            isAutomaticTextReplacementEnabled = NSSpellChecker.isAutomaticTextReplacementEnabled
+        case NSSpellChecker.didChangeAutomaticQuoteSubstitutionNotification:
+            isAutomaticQuoteSubstitutionEnabled = NSSpellChecker.isAutomaticQuoteSubstitutionEnabled
+        case NSSpellChecker.didChangeAutomaticDashSubstitutionNotification:
+            isAutomaticDashSubstitutionEnabled = NSSpellChecker.isAutomaticDashSubstitutionEnabled
+        default: break
+        }
+    }
+
+    /// One substitution the checker proposed for what was just typed, in
+    /// `fullText()`'s UTF-16 units.
+    struct Substitution: Equatable {
+        let range: NSRange
+        let replacement: String
+        /// A spelling correction, which gets the underline and the reversion.
+        let isCorrection: Bool
+    }
+
+    /// What the system would substitute now that `typed` has been typed at
+    /// the caret, over `text` as `spellCheckingText()` masks it (so nothing in
+    /// code is touched). Only the substitutions the keystroke itself
+    /// completes, the way `NSTextView` makes them:
+    ///
+    /// - a straight quote is curled as it is typed, by what stands before it;
+    /// - a `--` becomes a dash once the character after it is typed, and that
+    ///   character is not another hyphen, so `---` is left for the rule it is;
+    /// - a word is corrected, or a text replacement expanded, as the character
+    ///   that ends it is typed — a space or punctuation, not an apostrophe or
+    ///   a hyphen inside it.
+    ///
+    /// Anything the checker reports elsewhere in the paragraph is left alone: a
+    /// quote someone straightened again, or a misspelling they walked past.
+    func substitutions(afterTyping typed: String, in text: String, caret: Int) -> [Substitution] {
+        let ns = text as NSString
+        let typedLength = (typed as NSString).length
+        guard typedLength > 0, caret >= typedLength, caret <= ns.length else { return [] }
+        let typedStart = caret - typedLength
+        let typedRange = NSRange(location: typedStart, length: typedLength)
+        let endsWord = Self.endsWord(typed)
+        let checker = NSSpellChecker.shared
+        let language = checker.language()
+        let correcting = endsWord && isAutomaticSpellingCorrectionEnabled
+            && !checker.preventsAutocorrection(before: typed, language: language)
+        var types: NSTextCheckingResult.CheckingType = []
+        if isAutomaticQuoteSubstitutionEnabled { types.insert(.quote) }
+        if isAutomaticDashSubstitutionEnabled { types.insert(.dash) }
+        if endsWord && isAutomaticTextReplacementEnabled { types.insert(.replacement) }
+        if correcting { types.formUnion([.spelling, .correction]) }
+        guard !types.isEmpty else { return [] }
+
+        let paragraph = ns.paragraphRange(for: NSRange(location: typedStart, length: 0))
+        let checked = NSRange(location: paragraph.location, length: caret - paragraph.location)
+        let results = checker.check(text, range: checked, types: types.rawValue, options: nil,
+                                    inSpellDocumentWithTag: spellDocumentTag,
+                                    orthography: nil, wordCount: nil)
+        let firstTyped = typed.first
+        var found: [Substitution] = []
+        // A text replacement is what the user asked for by name, so it wins over
+        // a correction proposed for the same word.
+        var wordTaken = false
+        for result in results where result.resultType == .replacement || result.resultType == .quote
+            || result.resultType == .dash {
+            let r = result.range
+            guard let replacement = result.replacementString, !replacement.isEmpty else { continue }
+            switch result.resultType {
+            case .quote:
+                guard NSIntersectionRange(r, typedRange).length > 0 else { continue }
+            case .dash:
+                // Two hyphens exactly: a third either side is a rule, or
+                // someone's ASCII art, and not a dash.
+                guard NSMaxRange(r) == typedStart, firstTyped != "-", ns.substring(with: r) == "--",
+                      r.location == 0 || ns.substring(with: NSRange(location: r.location - 1, length: 1)) != "-"
+                else { continue }
+            case .replacement:
+                guard NSMaxRange(r) == typedStart else { continue }
+                wordTaken = true
+            default: continue
+            }
+            found.append(Substitution(range: r, replacement: replacement, isCorrection: false))
+        }
+        if correcting, !wordTaken {
+            // The checker reports a word it would correct as a correction where
+            // the system's own setting is on, and as a plain misspelling where
+            // it is off; the correction for the latter is asked of it by word.
+            for result in results where NSMaxRange(result.range) == typedStart {
+                let word = result.range
+                let replacement: String?
+                if result.resultType == .correction {
+                    replacement = result.replacementString
+                } else if result.resultType == .spelling, !isHyphenatedCompound(word, in: text) {
+                    replacement = checker.correction(forWordRange: word, in: text, language: language,
+                                                     inSpellDocumentWithTag: spellDocumentTag)
+                } else {
+                    continue
+                }
+                guard let replacement, !replacement.isEmpty,
+                      replacement != ns.substring(with: word) else { continue }
+                found.append(Substitution(range: word, replacement: replacement, isCorrection: true))
+                break
+            }
+        }
+        return found.sorted { $0.range.location > $1.range.location }
+    }
+
+    /// Whether typing `typed` ends the word before it: a space or punctuation,
+    /// not an apostrophe or a hyphen, which a word goes on through.
+    static func endsWord(_ typed: String) -> Bool {
+        typed.first.map { c in
+            (c.isWhitespace || c.isPunctuation || c.isSymbol) && !"'’-‐".contains(c)
+        } ?? false
+    }
+
+    /// Make the substitutions the keystroke `typed` completes — see
+    /// `substitutions(afterTyping:in:caret:)` — through core's `substitute`,
+    /// which leaves the caret where the typing left it. All of one
+    /// keystroke's substitutions are one undo step, and a step apart from the
+    /// typing: ⌘Z puts back exactly what was typed, as it does in `NSTextView`.
+    private func substituteAfterTyping(_ typed: String) {
+        guard substitutionsApply, markedByteRange == nil, !hasSelection else { return }
+        // Most keystrokes are letters, which complete nothing; only a quote or
+        // the end of a word is worth the document's text.
+        let mayQuote = isAutomaticQuoteSubstitutionEnabled && typed.contains(where: { $0 == "\"" || $0 == "'" })
+        let mayWord = Self.endsWord(typed)
+            && (isAutomaticTextReplacementEnabled || isAutomaticSpellingCorrectionEnabled)
+        // A dash completes on whatever follows the `--`, a letter included: a
+        // look at the few characters behind the caret, not at the document.
+        let mayDash = isAutomaticDashSubstitutionEnabled && typed.first != "-" && {
+            let back = Int32(typed.count + 2)
+            let from = doc.stepOffset(off: UInt32(caretByte), delta: -back)
+            return doc.textInRange(from: from, to: UInt32(caretByte)).contains("--")
+        }()
+        guard mayQuote || mayWord || mayDash else { return }
+        let visible = fullText() as NSString
+        let caret = utf16Range(fromByte: caretByte, toByte: caretByte).location
+        let found = substitutions(afterTyping: typed, in: spellCheckingText(), caret: caret)
+        guard !found.isEmpty else { return }
+        doc.beginUndoGroup()
+        defer { doc.endUndoGroup() }
+        for sub in found {
+            // The exact bytes the checker's characters are, snapping neither
+            // end — and only if they are those characters. A range that crosses
+            // hidden markup, or text core spelled with an escape, is not one
+            // this can replace without breaking what it stands in.
+            let (from, to) = doc.matchBounds(sub.range)
+            let original = visible.substring(with: sub.range)
+            guard from < to, sourceBytes(from, to) == original else { continue }
+            render(doc.substitute(from: UInt32(from), to: UInt32(to), text: sub.replacement))
+            if sub.isCorrection {
+                let now = utf16Range(fromByte: from, toByte: from + sub.replacement.utf8.count)
+                autocorrections.removeAll { NSIntersectionRange($0.range, now).length > 0 }
+                autocorrections.append(Autocorrection(range: now, original: original,
+                                                      replacement: sub.replacement))
+            }
+        }
+        refreshAutocorrections(textChanged: false)
+    }
+
+    /// The source text of `[from, to)`, or nil when that is not a range of it.
+    private func sourceBytes(_ from: Int, _ to: Int) -> String? {
+        let bytes = Array(doc.source().utf8)
+        guard from >= 0, from <= to, to <= bytes.count else { return nil }
+        return String(decoding: bytes[from..<to], as: UTF8.self)
+    }
+
+    /// Keep only the corrections the text still holds, and map them onto the
+    /// layout. A correction an edit before it has moved is dropped with the
+    /// ones an edit has changed: its range no longer reads as the correction.
+    private func refreshAutocorrections(textChanged: Bool) {
+        guard !autocorrections.isEmpty || !autocorrectionRects.isEmpty else { return }
+        if textChanged {
+            NSSpellChecker.shared.dismissCorrectionIndicator(for: self)
+            offeredReversion = nil
+        }
+        let text = fullText() as NSString
+        autocorrections.removeAll {
+            !substitutionsApply || NSMaxRange($0.range) > text.length
+                || text.substring(with: $0.range) != $0.replacement
+        }
+        autocorrectionRects = autocorrections.flatMap { c -> [CGRect] in
+            let (from, to) = byteBounds(c.range)
+            return rangeRects(fromByte: from, toByte: to).filter { $0.width > 0 }
+        }
+        needsDisplay = true
+    }
+
+    /// The blue underline `NSTextView` draws under a word it corrected.
+    private func drawAutocorrections(in ctx: CGContext, dirtyRect band: CGRect) {
+        guard !autocorrectionRects.isEmpty, substitutionsApply else { return }
+        ctx.saveGState()
+        defer { ctx.restoreGState() }
+        ctx.setStrokeColor(NSColor.systemBlue.withAlphaComponent(0.8).cgColor)
+        ctx.setLineWidth(1)
+        for rect in autocorrectionRects where rect.maxY > band.minY && rect.minY < band.maxY {
+            ctx.move(to: CGPoint(x: rect.minX, y: rect.maxY - 1))
+            ctx.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - 1))
+        }
+        ctx.strokePath()
+    }
+
+    /// The correction the caret stands in or at the end of, if any.
+    func autocorrectionAtCaret() -> Autocorrection? {
+        guard substitutionsApply, !hasSelection else { return nil }
+        let caret = utf16Range(fromByte: caretByte, toByte: caretByte).location
+        return autocorrections.last { caret >= $0.range.location && caret <= NSMaxRange($0.range) }
+    }
+
+    /// When the caret comes to rest on a corrected word, offer the original
+    /// back through the system's reversion indicator — what `NSTextView` does.
+    private func offerReversionAtCaret() {
+        guard let correction = autocorrectionAtCaret() else {
+            if offeredReversion != nil {
+                offeredReversion = nil
+                NSSpellChecker.shared.dismissCorrectionIndicator(for: self)
+            }
+            return
+        }
+        guard correction != offeredReversion, window != nil else { return }
+        offeredReversion = correction
+        let (from, to) = byteBounds(correction.range)
+        let boxes = rangeRects(fromByte: from, toByte: to)
+        guard let first = boxes.first else { return }
+        let rect = viewRect(boxes.dropFirst().reduce(first) { $0.union($1) })
+        NSSpellChecker.shared.showCorrectionIndicator(
+            of: .reversion, primaryString: correction.original,
+            alternativeStrings: [], forStringIn: rect, view: self
+        ) { [weak self] accepted in
+            guard let accepted else { return }
+            DispatchQueue.main.async { self?.revert(correction, to: accepted) }
+        }
+    }
+
+    /// Put a correction's original back, as its own undo step, and tell the
+    /// checker the user did — it learns from a reverted correction.
+    func revert(_ correction: Autocorrection, to original: String) {
+        guard let live = autocorrections.first(where: { $0 == correction }) else { return }
+        let (from, to) = doc.matchBounds(live.range)
+        guard sourceBytes(from, to) == live.replacement else { return }
+        autocorrections.removeAll { $0 == live }
+        offeredReversion = nil
+        render(doc.substitute(from: UInt32(from), to: UInt32(to), text: original))
+        guard recordsCorrectionResponses else { return }
+        NSSpellChecker.shared.record(
+            .reverted, toCorrection: live.replacement, forWord: live.original,
+            language: NSSpellChecker.shared.language(), inSpellDocumentWithTag: spellDocumentTag)
     }
 
     /// Standard Edit-menu action: select the next misspelling, wrapping once.

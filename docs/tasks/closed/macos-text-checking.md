@@ -1,10 +1,30 @@
 ---
-status: open
+status: done
 created: 2026-09-04
 updated: 2026-09-22
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 # Automatic correction and substitutions in the macOS view
+
+**Status.** Done, in `feat(swift): the macOS view corrects spelling, expands
+text replacements, and curls quotes and dashes as prose is typed`. The view
+has `NSTextView`'s four per-view flags, seeded from `NSSpellChecker`'s
+`isAutomatic…Enabled` and following the system's change notifications, and
+its four `toggleAutomatic…:` actions, validated with a checkmark and
+disabled in the source view and on a reader. The SwiftUI Edit menu carries
+Correct Spelling Automatically and a Substitutions menu. When a keystroke
+completes a substitution, the checker is asked about that keystroke's
+paragraph, with code masked. A quote is curled as it is typed, a `--`
+becomes a dash when the next character is not a hyphen, and a word is
+corrected or expanded when the character that ends it is typed. Each is
+made through core's new `Doc::substitute`, which leaves the caret where the
+typing left it and is an undo step of its own. It replaces the checker's
+characters only when they are exactly those bytes in the source, so a
+substitution cannot reach into hidden markup. A corrected word is underlined
+in blue, and the system's reversion indicator offers the original back when
+the caret rests on it. Two differences from `NSTextView`: there is no
+suggestion bubble before a word is committed, and text committed by an IME
+or dictation is not substituted.
 
 **Where.** `packages/leaf-swift`, `LeafTextView` (macOS).
 
