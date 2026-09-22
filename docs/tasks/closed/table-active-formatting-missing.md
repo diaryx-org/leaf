@@ -3,7 +3,7 @@ title: Table cells omit active formatting from the toolbar
 status: done
 created: 2026-09-16
 updated: 2026-09-16
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 # Table cells omit active formatting from the toolbar
 

@@ -27,7 +27,7 @@ core's, folded into the rows before the view sees them.
 in place of `view()` — `set_unwrapped` is the shape — that builds with
 `reveal: None`, keyed apart in the caches so it does not evict the screen's
 build. Both bindings, since the web's print path has the same need. Noticed
-while closing [An exported PDF leaves every formula blank](pdf-export-lacks-math.md),
+while closing [An exported PDF leaves every formula blank](/docs/tasks/closed/pdf-export-lacks-math.md),
 whose test keeps its caret on a line of prose for exactly this reason.
 
 **Repro.** Open the sample, click into a formula, File ▸ Export as PDF….

@@ -24,6 +24,6 @@ breadcrumb reads `doc › para › inline_math`.
 
 Leaf does not paper over it: the escaping is positional and per-format,
 and `insert_literal`'s own docs say it is not the caller's to reproduce.
-The fix is twig's — `twig/docs/tasks/insert-literal-does-not-escape-a-dollar-under-the-math-extension.md`
+The fix is twig's — `twig/docs/tasks/closed/insert-literal-does-not-escape-a-dollar-under-the-math-extension.md`
 — and this closes when leaf's `twig-doc` pin carries it, with the
 `None`-mode half of `a_dollar_typed_in_shortcuts_authors_math` restored.

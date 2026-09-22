@@ -3,7 +3,7 @@ title: Bold inside code inserts visible delimiters
 status: done
 created: 2026-09-16
 updated: 2026-09-16
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 # Bold inside code inserts visible delimiters
 

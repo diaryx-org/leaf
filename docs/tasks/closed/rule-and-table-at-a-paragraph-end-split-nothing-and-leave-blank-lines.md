@@ -3,7 +3,7 @@ title: The rule and table buttons at a paragraph's end split nothing and leave b
 status: done
 created: 2026-09-18
 updated: 2026-09-18
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 # The rule and table buttons at a paragraph's end split nothing and leave blank lines behind
 
@@ -50,7 +50,7 @@ commonest caret of all — the end of what was just typed — so Markdown is
 affected in practice as much as djot.
 
 **Why not twig.** This is twig's
-[block-inserted-after-a-split-at-paragraph-end-leaves-two-blank-lines](https://github.com/diaryx-org/twig/blob/main/docs/tasks/block-inserted-after-a-split-at-paragraph-end-leaves-two-blank-lines.md),
+[block-inserted-after-a-split-at-paragraph-end-leaves-two-blank-lines](https://github.com/diaryx-org/twig/blob/main/docs/tasks/closed/block-inserted-after-a-split-at-paragraph-end-leaves-two-blank-lines.md),
 closed there as `dropped` in favour of this one. The alternative was for
 twig's `insertBlockAfter` to fold a run of blank lines under the block to
 one, which edits spacing an author may have written and the gesture was not

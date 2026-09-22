@@ -2,7 +2,7 @@
 status: done
 created: 2026-09-12
 updated: 2026-09-13
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 # SVG through resvg-swift
 
@@ -19,7 +19,7 @@ to draw. The PDF assertion is `testAnSVGReachesThePageAsPathsAndAPNGAsAnImage`.
 **What.** An SVG `![…](x.svg)` shows the dashed broken-image chip in both
 Apple views, because `MediaStore` decodes stills through ImageIO and ImageIO
 has no SVG codec. The proposal
-[SVG as vectors in leaf-swift, through usvg](../proposals/svg-as-vectors-on-apple.md)
+[SVG as vectors in leaf-swift, through usvg](/docs/proposals/svg-as-vectors-on-apple.md)
 settles how: the [resvg-swift](https://github.com/diaryx-org/resvg-swift)
 package, whose `SVGPicture` parses with usvg and draws vector into a
 `CGContext`.
