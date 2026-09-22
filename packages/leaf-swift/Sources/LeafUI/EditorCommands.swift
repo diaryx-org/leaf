@@ -16,6 +16,9 @@
 
 import LeafFFI
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 /// The editor a scene's menus act on. Published by `LeafEditor`; read by
 /// `LeafEditorCommands`, or by a host's own `Commands` through
@@ -99,6 +102,22 @@ public struct LeafEditorCommands: Commands {
                 if let editor { SubstitutionToggles(editor: editor) }
             }
             .disabled(editor == nil)
+            if #available(macOS 15.2, *), NSWritingToolsCoordinator.isWritingToolsAvailable {
+                // The system's own items — their titles, and the tags that say
+                // which tool — each sent from the editor.
+                let tools = NSMenuItem.writingToolsItems
+                Menu(tools.first?.title ?? loc("menu.writingTools", "Writing Tools")) {
+                    let items = tools.first?.submenu?.items ?? []
+                    ForEach(items.indices, id: \.self) { i in
+                        if items[i].isSeparatorItem {
+                            Divider()
+                        } else {
+                            Button(items[i].title) { editor?.showWritingTools(items[i]) }
+                        }
+                    }
+                }
+                .disabled(editor == nil || editor?.isReadOnly == true)
+            }
         }
         #else
         // The same Find items on an iPad, driving the system find panel

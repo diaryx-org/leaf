@@ -1,10 +1,38 @@
 ---
-status: open
+status: in-progress
 created: 2026-09-04
 updated: 2026-09-22
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 # Writing Tools in the Apple views
+
+**Status.** Implemented, not yet seen working end to end, in
+`feat(swift): inline Writing Tools in both views through the system's coordinator`.
+Both views install a coordinator (`NSWritingToolsCoordinator` on macOS 15.2,
+`UIWritingToolsCoordinator` on iOS 18.2) and fall back to the panel path
+below that. The shared mapping is in `WritingTools.swift`:
+- the context is the visible text, widened to paragraphs;
+- ranges cross into the source through `matchBounds`;
+- rewrites go through `replaceRange`, with a paragraph break written as a
+  blank line;
+- a session is one core undo group (`Doc::begin_undo_group`), open from the
+  moment the coordinator leaves `inactive` until it returns.
+
+Geometry and previews come from `EditorLayout.rangeRects`, and animated text
+is hidden or dimmed under a clip. The Mac's Edit menu and context menu carry
+the system's Writing Tools items. `WritingToolsTests` covers the delegate's
+answers without Apple Intelligence.
+
+What remains is to watch it work. On the Mac this was written on, the
+coordinator took over as it should: the inline Proofread bar, contexts,
+animations and previews all arrived. Writing Tools then answered "Writing
+Tools Unavailable", and TextEdit showed no Writing Tools menu at all, so no
+suggestion was ever delivered. Close this once, on a Mac or iPhone where
+Writing Tools returns results, inline Proofread shows its suggestions in the
+text, each can be accepted or rejected, and accepting all is one undo. One
+thing to check then: after that failed session, the spelling underline stayed
+missing until the next redraw of the rows, although the view's misspellings
+were intact.
 
 **Where.** `packages/leaf-swift`, both `LeafTextView`s.
 
