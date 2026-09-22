@@ -1,10 +1,18 @@
 ---
-status: open
+status: done
 created: 2026-09-18
-updated: 2026-09-18
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+updated: 2026-09-22
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 # A page break in HTML and AsciiDoc is a row the walker does not draw
+
+**Status.** Done, in `feat(core): a page break in HTML and AsciiDoc draws
+the placeholder row, and the button is offered there`. The walker has an
+arm for an empty container named `page-break` with no directive form —
+HTML's element and AsciiDoc's `<<<` — that draws the same placeholder and
+`DirectiveMark` as Markdown and djot; `page_break` is
+`supports(Gesture::InsertDirective)` alone, and
+`a_page_break_reads_the_same_in_every_format` covers all four.
 
 **Where.** `crates/leaf-core`, the visual map's directive arms
 (`block` in `wysiwyg.rs`) and `Capabilities::page_break` in `doc.rs`.

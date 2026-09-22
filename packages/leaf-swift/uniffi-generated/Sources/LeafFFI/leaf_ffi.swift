@@ -3475,10 +3475,9 @@ public struct Capabilities {
      */
     public var textColor: Bool
     /**
-     * The page-break button — [`LeafDoc::insert_page_break`]. Markdown and djot
-     * and no others, though twig spells the gesture in HTML and AsciiDoc too:
-     * the flag describes what leaf can *show*, and the walker draws neither of
-     * those spellings yet.
+     * The page-break button — [`LeafDoc::insert_page_break`]. Markdown, djot,
+     * HTML and AsciiDoc, each spelling it its own way and each drawn as the
+     * same placeholder row.
      */
     public var pageBreak: Bool
     /**
@@ -3555,10 +3554,9 @@ public struct Capabilities {
          * foreground and rides an attributed span.
          */textColor: Bool, 
         /**
-         * The page-break button — [`LeafDoc::insert_page_break`]. Markdown and djot
-         * and no others, though twig spells the gesture in HTML and AsciiDoc too:
-         * the flag describes what leaf can *show*, and the walker draws neither of
-         * those spellings yet.
+         * The page-break button — [`LeafDoc::insert_page_break`]. Markdown, djot,
+         * HTML and AsciiDoc, each spelling it its own way and each drawn as the
+         * same placeholder row.
          */pageBreak: Bool, 
         /**
          * Moving a block — [`LeafDoc::move_block`] and the
