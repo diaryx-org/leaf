@@ -766,6 +766,19 @@ public final class LeafEditorModel: ObservableObject {
 
     public func checkSpelling() { textView?.checkSpelling(nil) }
 
+    /// Edit ▸ Writing Tools: the system's Writing Tools for the selection,
+    /// inline in the editor (macOS 15.2 and later). `item` is one of the
+    /// system's own `NSMenuItem.writingToolsItems` — Proofread, Rewrite, … —
+    /// which is how the system tells the tools apart; nil shows them all.
+    /// Sent up the responder chain from the editor, which is where the system
+    /// answers it for a view with a coordinator.
+    @available(macOS 15.2, *)
+    public func showWritingTools(_ item: NSMenuItem? = nil) {
+        guard let textView else { return }
+        textView.window?.makeFirstResponder(textView)
+        NSApp.sendAction(#selector(NSResponder.showWritingTools(_:)), to: nil, from: item)
+    }
+
     /// Whether the macOS editor makes `substitution` as prose is typed — the
     /// per-view toggles under Edit ▸ Substitutions and Correct Spelling
     /// Automatically, seeded from the user's system settings.

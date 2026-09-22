@@ -578,6 +578,7 @@ public final class LeafTextView: UIView, UITextInput {
             textInteraction = interaction
             addInteraction(interaction)
             if isFirstResponder { reloadInputViews() }
+            if #available(iOS 18.2, *) { updateWritingToolsBehavior() }
         }
     }
 
@@ -782,6 +783,19 @@ public final class LeafTextView: UIView, UITextInput {
     /// its own afterwards, and an invalidation on top of that leaves it with
     /// no results.
     private var replacingFoundText = false
+
+    // MARK: Writing Tools state — see the Writing Tools extension below
+
+    /// The coordinator (an interaction on this view) and its delegate, which
+    /// the coordinator holds weakly; `AnyObject` because both are newer than
+    /// the package's floor.
+    var writingToolsCoordinatorObject: AnyObject?
+    var writingToolsDelegate: AnyObject?
+    /// The contexts, animation effects, and undo group of a Writing Tools
+    /// session — see WritingTools.swift.
+    let writingTools = WritingToolsSession()
+    /// Whether a Writing Tools session holds a core undo group open.
+    var writingToolsGroupOpen: Bool { writingTools.groupOpen }
     /// The panel's last search, to run again when the text changes under it.
     private var lastFindQuery: (query: String, options: UITextSearchOptions)?
 
@@ -818,6 +832,9 @@ public final class LeafTextView: UIView, UITextInput {
         addGestureRecognizer(pinch)
         addInteraction(editMenu)
         addInteraction(findInteraction)
+        // The inline Writing Tools experience, where the system has it; below
+        // that, Writing Tools works through its panel over `UITextInput`.
+        if #available(iOS 18.2, *) { installWritingToolsCoordinator() }
         // Seed with the initial caret so the first reflow opens at the top.
         lastCaretOffset = doc.caretOffset()
         applyDynamicType()   // scale type to the current trait environment
@@ -1325,6 +1342,9 @@ public final class LeafTextView: UIView, UITextInput {
             lastCaretOffset = caret
             scrollCaretToVisible()
         }
+        if #available(iOS 18.2, *), edited || relaid {
+            writingToolsTextMoved(edited: edited && !writingTools.applying)
+        }
         onStateChange?(EditorState(view))
         if relaid { onLayoutChange?() }
         if edited {
@@ -1446,6 +1466,9 @@ public final class LeafTextView: UIView, UITextInput {
         // One pass for the quote bars (a run of quoted rows merges into a single
         // bar), before the rows, exactly as the AppKit surface orders it.
         BlockChrome.drawQuoteBars(layoutEngine.rows, theme: renderTheme, in: ctx)
+        // What Writing Tools is animating over: hidden under its preview, or
+        // greyed while it waits. Nothing, and no work, the rest of the time.
+        let effects = isPaper ? (hidden: [], dimmed: []) : writingToolsEffectRects()
 
         for rl in layoutEngine.rows {
             // Cull to the dirty band, so a scroll repaints only the visible rows.
@@ -1499,15 +1522,23 @@ public final class LeafTextView: UIView, UITextInput {
             BlockChrome.drawPageBreak(rl, theme: renderTheme, selColor: nil, in: ctx)
             // Draw each wrapped visual line's substring on its own line box, hung
             // at the row's indent (zero on the first line, the prefix width after).
-            for (i, wl) in rl.wrapped.enumerated() {
-                // `continue`, not `break`: a row's lines run down one column and
-                // then back up to the top of the next, so passing the dirty band
-                // once says nothing about the lines after it.
-                let o = rl.lineOrigin(i)
-                if o.y >= rect.maxY || o.y + rl.lineHeight <= rect.minY { continue }
-                wl.attributed.draw(with: CGRect(x: o.x + wl.offset, y: o.y,
-                                                width: rl.columnWidth - wl.indent, height: rl.lineHeight),
-                                   options: [.usesLineFragmentOrigin], context: nil)
+            let drawLines = {
+                for (i, wl) in rl.wrapped.enumerated() {
+                    // `continue`, not `break`: a row's lines run down one column and
+                    // then back up to the top of the next, so passing the dirty band
+                    // once says nothing about the lines after it.
+                    let o = rl.lineOrigin(i)
+                    if o.y >= rect.maxY || o.y + rl.lineHeight <= rect.minY { continue }
+                    wl.attributed.draw(with: CGRect(x: o.x + wl.offset, y: o.y,
+                                                    width: rl.columnWidth - wl.indent, height: rl.lineHeight),
+                                       options: [.usesLineFragmentOrigin], context: nil)
+                }
+            }
+            if effects.hidden.isEmpty && effects.dimmed.isEmpty {
+                drawLines()
+            } else {
+                WritingToolsSession.drawMasked(hidden: effects.hidden, dimmed: effects.dimmed, band: rect,
+                                               in: ctx, drawLines)
             }
         }
 
@@ -1663,6 +1694,7 @@ public final class LeafTextView: UIView, UITextInput {
     public var hasText: Bool { true }
 
     public func insertText(_ text: String) {
+        closeIdleWritingToolsGroup()
         if let m = marked {
             marked = nil
             render(doc.replaceRange(from: UInt32(m.from.offset), to: UInt32(m.to.offset), text: text))
@@ -1679,6 +1711,7 @@ public final class LeafTextView: UIView, UITextInput {
     }
 
     public func deleteBackward() {
+        closeIdleWritingToolsGroup()
         if let m = marked {
             marked = nil
             render(doc.replaceRange(from: UInt32(m.from.offset), to: UInt32(m.to.offset), text: ""))
@@ -2405,6 +2438,274 @@ extension LeafTextView: UITextSearching {
                 render(doc.replaceRange(from: UInt32(r.from.offset), to: UInt32(r.to.offset), text: replacementText))
             }
         }
+    }
+}
+
+// MARK: - Writing Tools, inline
+//
+// The AppKit peer's coordinator, on iOS 18.2 and later: the rewrite animating
+// in place, proofreading marks in the text. Below 18.2, Writing Tools works
+// through its panel over `UITextInput` (`text(in:)`, `replace(_:withText:)`).
+// The text is the visible text, the geometry `EditorLayout.rangeRects`, a
+// rewrite goes back through `replaceRange`, and a session is one undo step —
+// see WritingTools.swift.
+
+extension LeafTextView {
+    /// The boxes the session's animation effects cover now, in layout coordinates.
+    func writingToolsEffectRects() -> (hidden: [CGRect], dimmed: [CGRect]) {
+        writingTools.effectRects(doc: doc, layout: layoutEngine)
+    }
+
+    /// Close a session's group that its end never closed, before the user's
+    /// next edit can fold into it. Nothing while Writing Tools is still at work.
+    func closeIdleWritingToolsGroup() {
+        guard writingTools.groupOpen else { return }
+        if #available(iOS 18.2, *), let coordinator = writingToolsCoordinatorObject as? UIWritingToolsCoordinator,
+           coordinator.state != .inactive {
+            return
+        }
+        writingTools.closeGroup(doc)
+    }
+
+    /// The words of `boxes` (layout coordinates, which are this view's), drawn
+    /// into an image with a transparent background.
+    func snapshotText(clippedTo boxes: [CGRect]) -> (image: UIImage, frame: CGRect)? {
+        guard let first = boxes.first else { return nil }
+        let frame = boxes.dropFirst().reduce(first) { $0.union($1) }.integral
+        guard frame.width > 0, frame.height > 0 else { return nil }
+        let format = UIGraphicsImageRendererFormat.preferred()
+        format.opaque = false
+        let image = UIGraphicsImageRenderer(bounds: frame, format: format).image { renderer in
+            let ctx = renderer.cgContext
+            ctx.clip(to: boxes)
+            traitCollection.performAsCurrent {
+                for rl in layoutEngine.rows where rl.table == nil && rl.media == nil && rl.math == nil {
+                    for (i, wl) in rl.wrapped.enumerated() {
+                        let o = rl.lineOrigin(i)
+                        guard o.y < frame.maxY, o.y + rl.lineHeight > frame.minY else { continue }
+                        wl.attributed.draw(with: CGRect(x: o.x + wl.offset, y: o.y,
+                                                        width: rl.columnWidth - wl.indent, height: rl.lineHeight),
+                                           options: [.usesLineFragmentOrigin], context: nil)
+                    }
+                }
+            }
+        }
+        return (image, frame)
+    }
+}
+
+@available(iOS 18.2, *)
+extension LeafTextView {
+    typealias WTCoordinator = UIWritingToolsCoordinator
+
+    var writingToolsCoordinator: UIWritingToolsCoordinator? {
+        writingToolsCoordinatorObject as? UIWritingToolsCoordinator
+    }
+
+    func installWritingToolsCoordinator() {
+        let delegate = LeafWritingToolsDelegate(view: self)
+        let coordinator = UIWritingToolsCoordinator(delegate: delegate)
+        coordinator.decorationContainerView = self
+        coordinator.effectContainerView = self
+        // Words, not attributes: a rewrite is applied as plain text through
+        // core, which keeps the markup around it.
+        coordinator.preferredResultOptions = [.plainText]
+        writingToolsDelegate = delegate
+        writingToolsCoordinatorObject = coordinator
+        addInteraction(coordinator)
+        updateWritingToolsBehavior()
+    }
+
+    /// The whole inline experience on an editable document, and none on a reader.
+    func updateWritingToolsBehavior() {
+        writingToolsCoordinator?.preferredBehavior = isReadOnly ? UIWritingToolsBehavior.none : .complete
+    }
+
+    /// The text changed or moved under a session. An edit Writing Tools did
+    /// not make ends it; a reflow only moves its geometry.
+    func writingToolsTextMoved(edited: Bool) {
+        guard let coordinator = writingToolsCoordinator, coordinator.state != .inactive else { return }
+        if edited {
+            coordinator.stopWritingTools()
+        } else {
+            for id in writingTools.origins.keys { coordinator.updateForReflowedTextInContextWithIdentifier(id) }
+        }
+    }
+
+    /// The visible text's range on screen, in UTF-16 units.
+    private var visibleUTF16Range: NSRange {
+        let shown = enclosingScrollView().map { convert($0.bounds, from: $0) } ?? bounds
+        let top = layoutEngine.hit(CGPoint(x: shown.minX, y: shown.minY))
+        let bottom = layoutEngine.hit(CGPoint(x: shown.maxX, y: shown.maxY))
+        let from = Int(doc.offsetForPos(row: UInt32(top.row), ch: UInt32(top.ch)))
+        let to = Int(doc.offsetForPos(row: UInt32(bottom.row), ch: UInt32(bottom.ch)))
+        return doc.utf16Range(fromByte: min(from, to), toByte: max(from, to))
+    }
+
+    // MARK: the delegate's answers
+
+    func writingToolsContexts(for scope: WTCoordinator.ContextScope) -> [WTCoordinator.Context] {
+        let text = doc.visibleText()
+        let kind: WritingToolsText.Scope = switch scope {
+        case .userSelection: .selection
+        case .visibleArea: .visible
+        default: .document
+        }
+        let (lo, hi) = (min(Int(doc.anchorOffset()), Int(doc.caretOffset())),
+                        max(Int(doc.anchorOffset()), Int(doc.caretOffset())))
+        let span = WritingToolsText.span(for: kind, in: text, selection: doc.utf16Range(fromByte: lo, toByte: hi),
+                                         visible: visibleUTF16Range)
+        let string = (text as NSString).substring(with: NSRange(location: span.origin, length: span.length))
+        let font = UIFont(name: renderTheme.bodyFontName, size: renderTheme.fontSize)
+            ?? .systemFont(ofSize: renderTheme.fontSize)
+        let context = WTCoordinator.Context(
+            attributedString: NSAttributedString(string: string, attributes: [.font: font]), range: span.range)
+        writingTools.origins = [context.identifier: span.origin]
+        return [context]
+    }
+
+    func writingToolsReplace(_ range: NSRange, in context: WTCoordinator.Context,
+                             with text: NSAttributedString) -> NSAttributedString? {
+        guard !isReadOnly, let origin = writingTools.origins[context.identifier] else { return nil }
+        writingTools.openGroup(doc)
+        writingTools.applying = true
+        defer { writingTools.applying = false }
+        command { $0.applyWritingTools(range, origin: origin, text: text.string) }
+        return text
+    }
+
+    func writingToolsSelect(_ ranges: [NSValue], in context: WTCoordinator.Context) {
+        guard let origin = writingTools.origins[context.identifier], let range = ranges.first?.rangeValue else { return }
+        let (from, to) = doc.writingToolsBytes(range, origin: origin)
+        command { $0.selectRange(start: UInt32(from), end: UInt32(max(from, to))) }
+    }
+
+    /// The boxes a range of a context occupies — layout coordinates, which on
+    /// iOS are this view's own.
+    func writingToolsBoxes(_ range: NSRange, in context: WTCoordinator.Context) -> [CGRect] {
+        guard let origin = writingTools.origins[context.identifier] else { return [] }
+        let (from, to) = doc.byteBounds(WritingToolsText.visibleRange(range, origin: origin))
+        return layoutEngine.rangeRects(fromByte: from, toByte: to, in: doc).filter { $0.width > 0 }
+    }
+
+    func writingToolsBoundingPaths(_ range: NSRange, in context: WTCoordinator.Context) -> [UIBezierPath] {
+        writingToolsBoxes(range, in: context).map { UIBezierPath(rect: $0) }
+    }
+
+    func writingToolsUnderlinePaths(_ range: NSRange, in context: WTCoordinator.Context) -> [UIBezierPath] {
+        writingToolsBoxes(range, in: context).map {
+            UIBezierPath(rect: CGRect(x: $0.minX, y: $0.maxY - 2, width: $0.width, height: 1.5))
+        }
+    }
+
+    func writingToolsPrepare(_ animation: WTCoordinator.TextAnimation, for range: NSRange,
+                             in context: WTCoordinator.Context) {
+        // Every animation UIKit has plays over the text it names, which hides
+        // under the preview until the animation finishes.
+        guard let origin = writingTools.origins[context.identifier] else { return }
+        writingTools.effects[WritingToolsSession.effectKey(animation.rawValue, range, context.identifier)] =
+            (WritingToolsText.visibleRange(range, origin: origin), false)
+        setNeedsDisplay()
+    }
+
+    func writingToolsFinish(_ animation: WTCoordinator.TextAnimation, for range: NSRange,
+                            in context: WTCoordinator.Context) {
+        writingTools.effects[WritingToolsSession.effectKey(animation.rawValue, range, context.identifier)] = nil
+        setNeedsDisplay()
+    }
+
+    /// The range's words in an image view over them, targeted at this view,
+    /// with their line boxes as the preview's shape.
+    func writingToolsPreview(of range: NSRange, in context: WTCoordinator.Context) -> UITargetedPreview? {
+        // A preview target raises an exception for a container out of a window.
+        guard window != nil else { return nil }
+        let boxes = writingToolsBoxes(range, in: context)
+        guard let (image, frame) = snapshotText(clippedTo: boxes) else { return nil }
+        let imageView = UIImageView(image: image)
+        imageView.frame = frame
+        let parameters = UIPreviewParameters(textLineRects: boxes.map { NSValue(cgRect: $0) })
+        parameters.backgroundColor = .clear
+        return UITargetedPreview(view: imageView, parameters: parameters,
+                                 target: UIPreviewTarget(container: self, center: CGPoint(x: frame.midX, y: frame.midY)))
+    }
+
+    /// A session is one undo step — see the AppKit peer.
+    func writingToolsWillChange(to state: WTCoordinator.State) {
+        if state == .inactive {
+            writingTools.closeGroup(doc)
+            writingTools.effects.removeAll()
+            setNeedsDisplay()
+        } else if !isReadOnly {
+            writingTools.openGroup(doc)
+        }
+    }
+}
+
+/// The coordinator's delegate: every answer comes from the view.
+@available(iOS 18.2, *)
+final class LeafWritingToolsDelegate: NSObject, UIWritingToolsCoordinator.Delegate {
+    typealias Coordinator = UIWritingToolsCoordinator
+
+    weak var view: LeafTextView?
+
+    init(view: LeafTextView) { self.view = view }
+
+    private func onView<T>(_ fallback: T, _ body: @MainActor (LeafTextView) -> T) -> T {
+        MainActor.assumeIsolated { view.map(body) ?? fallback }
+    }
+
+    func writingToolsCoordinator(_ writingToolsCoordinator: Coordinator, requestsContextsFor scope: Coordinator.ContextScope,
+                                 completion: @escaping @Sendable ([Coordinator.Context]) -> Void) {
+        completion(onView([]) { $0.writingToolsContexts(for: scope) })
+    }
+
+    func writingToolsCoordinator(_ writingToolsCoordinator: Coordinator, replace range: NSRange, in context: Coordinator.Context,
+                                 proposedText replacementText: NSAttributedString, reason: Coordinator.TextReplacementReason,
+                                 animationParameters: Coordinator.AnimationParameters?,
+                                 completion: @escaping @Sendable (NSAttributedString?) -> Void) {
+        completion(onView(nil) { $0.writingToolsReplace(range, in: context, with: replacementText) })
+    }
+
+    func writingToolsCoordinator(_ writingToolsCoordinator: Coordinator, select ranges: [NSValue], in context: Coordinator.Context,
+                                 completion: @escaping @Sendable () -> Void) {
+        onView(()) { $0.writingToolsSelect(ranges, in: context) }
+        completion()
+    }
+
+    func writingToolsCoordinator(_ writingToolsCoordinator: Coordinator, requestsBoundingBezierPathsFor range: NSRange,
+                                 in context: Coordinator.Context, completion: @escaping @Sendable ([UIBezierPath]) -> Void) {
+        completion(onView([]) { $0.writingToolsBoundingPaths(range, in: context) })
+    }
+
+    func writingToolsCoordinator(_ writingToolsCoordinator: Coordinator, requestsUnderlinePathsFor range: NSRange,
+                                 in context: Coordinator.Context, completion: @escaping @Sendable ([UIBezierPath]) -> Void) {
+        completion(onView([]) { $0.writingToolsUnderlinePaths(range, in: context) })
+    }
+
+    func writingToolsCoordinator(_ writingToolsCoordinator: Coordinator, prepareFor textAnimation: Coordinator.TextAnimation,
+                                 for range: NSRange, in context: Coordinator.Context,
+                                 completion: @escaping @Sendable () -> Void) {
+        onView(()) { $0.writingToolsPrepare(textAnimation, for: range, in: context) }
+        completion()
+    }
+
+    func writingToolsCoordinator(_ writingToolsCoordinator: Coordinator, requestsPreviewFor textAnimation: Coordinator.TextAnimation,
+                                 of range: NSRange, in context: Coordinator.Context,
+                                 completion: @escaping @Sendable (UITargetedPreview?) -> Void) {
+        completion(onView(nil) { $0.writingToolsPreview(of: range, in: context) })
+    }
+
+    func writingToolsCoordinator(_ writingToolsCoordinator: Coordinator, finish textAnimation: Coordinator.TextAnimation,
+                                 for range: NSRange, in context: Coordinator.Context,
+                                 completion: @escaping @Sendable () -> Void) {
+        onView(()) { $0.writingToolsFinish(textAnimation, for: range, in: context) }
+        completion()
+    }
+
+    func writingToolsCoordinator(_ writingToolsCoordinator: Coordinator, willChangeTo newState: Coordinator.State,
+                                 completion: @escaping @Sendable () -> Void) {
+        onView(()) { $0.writingToolsWillChange(to: newState) }
+        completion()
     }
 }
 #endif
