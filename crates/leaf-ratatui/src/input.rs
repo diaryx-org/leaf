@@ -137,6 +137,11 @@ pub fn handle_key(doc: &mut Doc, key: KeyEvent, _state: &mut EditorState) -> Out
         match key.code {
             KeyCode::Left => doc.move_word_left(shift),
             KeyCode::Right => doc.move_word_right(shift),
+            // ⌥↑/⌥↓ move the caret's *block* — a paragraph, a picture, a list
+            // item with its children — one place, beside the word motions that
+            // share the modifier. The caret rides the block.
+            KeyCode::Up => doc.move_block_up(),
+            KeyCode::Down => doc.move_block_down(),
             KeyCode::Backspace => doc.delete_word_back(),
             KeyCode::Delete => doc.delete_word_forward(),
             // Alt+Enter is the in-cell line break. The GUI's chord is Shift+Enter,
@@ -987,6 +992,31 @@ mod tests {
         let mut state = EditorState::new();
         handle_key(&mut d, alt('a'), &mut state);
         assert_eq!(d.source, "hi\n");
+    }
+
+    /// ⌥↓ carries the caret's block below the next one, and ⌥↑ brings it back.
+    #[test]
+    fn alt_up_and_down_move_the_block() {
+        let mut d = doc("a\n\nb\n\nc\n");
+        let mut state = EditorState::new();
+        d.caret = 0;
+        handle_key(
+            &mut d,
+            KeyEvent::new(KeyCode::Down, KeyModifiers::ALT),
+            &mut state,
+        );
+        assert_eq!(d.source, "b\n\na\n\nc\n");
+        assert_eq!(
+            &d.source[d.caret..],
+            "a\n\nc\n",
+            "the caret rides the block"
+        );
+        handle_key(
+            &mut d,
+            KeyEvent::new(KeyCode::Up, KeyModifiers::ALT),
+            &mut state,
+        );
+        assert_eq!(d.source, "a\n\nb\n\nc\n");
     }
 
     /// ⌥⇧C fences the block, beside the ⌥c that marks a span as code.

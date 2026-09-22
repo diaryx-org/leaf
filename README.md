@@ -234,6 +234,7 @@ shut — so this is a guarantee rather than a suppressed keyboard.
 | `⌥k` / `⌥l` | set the link destination / the code block's language |
 | `⌥e` / `⌥f` / `⌥r` | insert an image / a footnote / a horizontal rule |
 | `⌥a` / `⌥⇧r` | cycle the block's alignment (left, centre, right) / insert a page break |
+| `⌥↑` / `⌥↓` | move the block at the caret — a paragraph, a picture, a list item with its children — one place up / down |
 | `⌥g` | follow what the caret is on — a footnote to its note, a note back to its reference, a `#fragment` to the heading it names |
 | `⌥w` | switch between the source and wysiwyg views |
 | `⌥⇧w` / `⌥⇧f` | cycle the markup mode / flip line flow |

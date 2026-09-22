@@ -114,6 +114,11 @@ pub enum Command {
     /// and nothing visible is a row that reads as broken. A frontend that can
     /// draw all four offers all four.
     CycleAlign,
+    /// Move the block at the caret one place up or down — a paragraph, a
+    /// picture, a list item with its children — the caret riding it. The
+    /// keyboard half of drag-and-drop, which a terminal has no gesture for.
+    MoveBlockUp,
+    MoveBlockDown,
 
     // ── inline ──
     Inline(InlineKind),
@@ -206,6 +211,8 @@ impl Command {
             // alignments are different properties of different things, and a
             // palette lists them side by side.
             CycleAlign => "Cycle Text Alignment",
+            MoveBlockUp => "Move Block Up",
+            MoveBlockDown => "Move Block Down",
 
             Inline(InlineKind::Strong) => "Bold",
             Inline(InlineKind::Emph) => "Italic",
@@ -305,6 +312,8 @@ impl Command {
             TaskItem => "⌥t",
             TaskChecked => "⌥x",
             CycleAlign => "⌥a",
+            MoveBlockUp => "⌥↑",
+            MoveBlockDown => "⌥↓",
 
             Inline(InlineKind::Strong) => "⌥b",
             Inline(InlineKind::Emph) => "⌥i",
@@ -375,6 +384,7 @@ impl Command {
             CodeBlock => c.code_block,
             TaskItem | TaskChecked => c.task,
             CycleAlign => c.alignment,
+            MoveBlockUp | MoveBlockDown => c.move_block,
 
             Inline(InlineKind::Strong) => c.bold,
             Inline(InlineKind::Emph) => c.italic,
@@ -487,6 +497,8 @@ impl Command {
             TaskItem => doc.toggle_task_item(),
             TaskChecked => doc.toggle_task_checked(),
             CycleAlign => leaf_ratatui::cycle_alignment(doc),
+            MoveBlockUp => doc.move_block_up(),
+            MoveBlockDown => doc.move_block_down(),
 
             Inline(k) => doc.toggle(k),
             // The compound, not the bare gesture: over a selection this both
@@ -586,6 +598,8 @@ const BLOCK: &[Command] = &[
     Command::TaskItem,
     Command::TaskChecked,
     Command::CycleAlign,
+    Command::MoveBlockUp,
+    Command::MoveBlockDown,
 ];
 
 const INLINE: &[Command] = &[

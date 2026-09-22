@@ -975,6 +975,90 @@ await test("dropped files go to the host with the offset under the pointer", () 
   return ed;
 });
 
+// ── moving a block ────────────────────────────────────────────────────────
+
+function key(ed, init) {
+  return ed.contentEl.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
+}
+function pointer(ed, type, at, init = {}) {
+  return ed.contentEl.dispatchEvent(new PointerEvent(type, {
+    bubbles: true, cancelable: true, pointerId: 7, button: 0, buttons: 1, isPrimary: true, ...at, ...init,
+  }));
+}
+/** A point in the margin left of a row — where a block is picked up. */
+function marginOf(ed, el) {
+  const c = ed.contentEl.getBoundingClientRect();
+  const r = el.getBoundingClientRect();
+  return { clientX: c.left + 4, clientY: r.top + r.height / 2 };
+}
+/** A point on a row's upper edge, where a drop lands before its block. */
+function topOf(el) {
+  const r = el.getBoundingClientRect();
+  return { clientX: r.left + r.width / 2, clientY: r.top + 1 };
+}
+
+await test("⌥↓ and ⌥↑ move the caret's block, and the caret rides it", () => {
+  const ed = editor("alpha\n\nbeta\n\ngamma\n");
+  ed.render(ed.doc.set_selection_offsets(2, 2));
+  key(ed, { key: "ArrowDown", altKey: true });
+  eq(ed.source(), "beta\n\nalpha\n\ngamma\n", "⌥↓ did not move the block");
+  eq(ed.doc.caret_offset(), 8, "the caret did not ride the block");
+  key(ed, { key: "ArrowUp", altKey: true });
+  eq(ed.source(), "alpha\n\nbeta\n\ngamma\n", "⌥↑ did not bring it back");
+  return ed;
+});
+
+await test("a block picked up by its margin drops on the boundary under the pointer", () => {
+  const ed = editor("alpha\n\nbeta\n\ngamma\n");
+  const rowOf = (t) => ed.rowEls.find((r) => r.textContent === t);
+  const gamma = rowOf("gamma");
+  pointer(ed, "pointerdown", marginOf(ed, gamma));
+  assert(ed._blockDrag, "the press in the margin did not pick the block up");
+  eq(ed._blockDrag.from, 13, "the wrong block was picked up");
+  const beta = rowOf("beta");
+  pointer(ed, "pointermove", topOf(beta));
+  assert(ed.container.classList.contains("leaf-block-dragging"), "no drag in progress");
+  assert(gamma.classList.contains("leaf-drag-source"), "the carried block is not marked");
+  const line = ed.contentEl.querySelector(".leaf-drop-indicator");
+  assert(line, "no drop indicator drawn");
+  eq(ed._blockDrag.target, { offset: 7, row: 2 }, "the indicator is not on beta's boundary");
+  pointer(ed, "pointerup", topOf(beta));
+  eq(ed.source(), "alpha\n\ngamma\n\nbeta\n", "the drop did not move the block");
+  assert(!ed.contentEl.querySelector(".leaf-drop-indicator"), "the indicator outlived the drop");
+  assert(!ed.rowEls.some((r) => r.classList.contains("leaf-drag-source")), "a row stayed marked");
+  return ed;
+});
+
+await test("a press in the margin with no travel is a click on the row", () => {
+  const ed = editor("alpha\n\nbeta\n");
+  const beta = ed.rowEls.find((r) => r.textContent === "beta");
+  pointer(ed, "pointerdown", marginOf(ed, beta));
+  pointer(ed, "pointerup", marginOf(ed, beta));
+  eq(ed.source(), "alpha\n\nbeta\n", "a click edited the document");
+  eq(ed.doc.caret_offset(), 7, "the caret did not land on the row");
+  return ed;
+});
+
+await test("a picture is picked up by itself and dropped below everything", () => {
+  const ed = editor("![a leaf](leaf.png)\n\nalpha\n");
+  const img = ed.contentEl.querySelector("img.leaf-media");
+  assert(img, "no picture drawn");
+  const r = img.getBoundingClientRect();
+  // The press is on the picture itself, and bubbles to the surface.
+  img.dispatchEvent(new PointerEvent("pointerdown", {
+    bubbles: true, cancelable: true, pointerId: 7, button: 0, buttons: 1, isPrimary: true,
+    clientX: r.left + 2, clientY: r.top + 2,
+  }));
+  assert(ed._blockDrag, "the press on the picture did not pick it up");
+  const alpha = ed.rowEls.find((r) => r.textContent === "alpha");
+  const below = alpha.getBoundingClientRect().bottom + 40;
+  pointer(ed, "pointermove", { clientX: r.left + 2, clientY: below });
+  eq(ed._blockDrag.target, { offset: ed.source().length, row: ed.rowEls.length }, "not aimed at the end");
+  pointer(ed, "pointerup", { clientX: r.left + 2, clientY: below });
+  eq(ed.source(), "alpha\n\n![a leaf](leaf.png)\n", "the picture did not move to the end");
+  return ed;
+});
+
 // ── another document, same editor ─────────────────────────────────────────
 
 await test("load swaps the document and keeps the reader's preferences", () => {

@@ -585,6 +585,15 @@ public protocol LeafDocProtocol : AnyObject {
     func backspace()  -> DocView
     
     /**
+     * The source range of the block a drag starting at visual `(row, ch)`
+     * would pick up — the whole paragraph, picture, table or fence, or the
+     * whole list item with its children — for the outline drawn under the
+     * pointer. `None` on a blank line. Does not move the caret; map the pair
+     * through [`row_range_for`](Self::row_range_for) for the rows.
+     */
+    func blockRangeAt(row: UInt32, ch: UInt32)  -> LandingView?
+    
+    /**
      * Which of the formatting commands above this document's format can
      * actually spell — one flag per control, for building the toolbar.
      *
@@ -694,6 +703,14 @@ public protocol LeafDocProtocol : AnyObject {
      * The last caret stop in the document — `UITextInput.endOfDocument`.
      */
     func docEndOffset()  -> UInt32
+    
+    /**
+     * Where a block dragged over visual `row` would land: the boundary
+     * before the row's block when the row is in its upper half, after it
+     * otherwise, the document's end for a row below everything. `None` for
+     * a row with no block under it. See [`leaf_core::Doc::drop_target_at`].
+     */
+    func dropTargetAt(row: UInt32)  -> DropTargetView?
     
     /**
      * The face in force at the caret, or `nil` for the theme's body face.
@@ -904,6 +921,30 @@ public protocol LeafDocProtocol : AnyObject {
      * The current markup-exposure preference (see [`MarkupMode`]).
      */
     func markupMode()  -> MarkupMode
+    
+    /**
+     * Move the block at source offset `from` to the boundary `to` — the drop
+     * half of a drag, with `to` from [`drop_target_at`](Self::drop_target_at)
+     * and `from` any offset inside the block being carried. One undo step;
+     * the caret rides the block; a drop back onto the block's own boundary
+     * is a quiet no-op. See [`leaf_core::Doc::move_block`].
+     */
+    func moveBlock(from: UInt32, to: UInt32)  -> DocView
+    
+    /**
+     * Move the caret's block one place down — the mirror of
+     * [`move_block_up`](Self::move_block_up).
+     */
+    func moveBlockDown()  -> DocView
+    
+    /**
+     * Move the caret's block one place up — Alt+↑ and the Format menu's Move
+     * Block Up: above the block before it, and out of its container to just
+     * above it when it is the first block there. A list item goes with its
+     * children. The caret rides the block. Gate on
+     * [`Capabilities::move_block`]; see [`leaf_core::Doc::move_block_up`].
+     */
+    func moveBlockUp()  -> DocView
     
     func moveDocEnd(extend: Bool)  -> DocView
     
@@ -1557,6 +1598,22 @@ open func backspace() -> DocView {
 }
     
     /**
+     * The source range of the block a drag starting at visual `(row, ch)`
+     * would pick up — the whole paragraph, picture, table or fence, or the
+     * whole list item with its children — for the outline drawn under the
+     * pointer. `None` on a blank line. Does not move the caret; map the pair
+     * through [`row_range_for`](Self::row_range_for) for the rows.
+     */
+open func blockRangeAt(row: UInt32, ch: UInt32) -> LandingView? {
+    return try!  FfiConverterOptionTypeLandingView.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_block_range_at(self.uniffiClonePointer(),
+        FfiConverterUInt32.lower(row),
+        FfiConverterUInt32.lower(ch),$0
+    )
+})
+}
+    
+    /**
      * Which of the formatting commands above this document's format can
      * actually spell — one flag per control, for building the toolbar.
      *
@@ -1752,6 +1809,20 @@ open func distanceOffset(from: UInt32, to: UInt32) -> Int32 {
 open func docEndOffset() -> UInt32 {
     return try!  FfiConverterUInt32.lift(try! rustCall() {
     uniffi_leaf_ffi_fn_method_leafdoc_doc_end_offset(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+    /**
+     * Where a block dragged over visual `row` would land: the boundary
+     * before the row's block when the row is in its upper half, after it
+     * otherwise, the document's end for a row below everything. `None` for
+     * a row with no block under it. See [`leaf_core::Doc::drop_target_at`].
+     */
+open func dropTargetAt(row: UInt32) -> DropTargetView? {
+    return try!  FfiConverterOptionTypeDropTargetView.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_drop_target_at(self.uniffiClonePointer(),
+        FfiConverterUInt32.lower(row),$0
     )
 })
 }
@@ -2094,6 +2165,47 @@ open func markSaved() -> DocView {
 open func markupMode() -> MarkupMode {
     return try!  FfiConverterTypeMarkupMode.lift(try! rustCall() {
     uniffi_leaf_ffi_fn_method_leafdoc_markup_mode(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+    /**
+     * Move the block at source offset `from` to the boundary `to` — the drop
+     * half of a drag, with `to` from [`drop_target_at`](Self::drop_target_at)
+     * and `from` any offset inside the block being carried. One undo step;
+     * the caret rides the block; a drop back onto the block's own boundary
+     * is a quiet no-op. See [`leaf_core::Doc::move_block`].
+     */
+open func moveBlock(from: UInt32, to: UInt32) -> DocView {
+    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_move_block(self.uniffiClonePointer(),
+        FfiConverterUInt32.lower(from),
+        FfiConverterUInt32.lower(to),$0
+    )
+})
+}
+    
+    /**
+     * Move the caret's block one place down — the mirror of
+     * [`move_block_up`](Self::move_block_up).
+     */
+open func moveBlockDown() -> DocView {
+    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_move_block_down(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+    /**
+     * Move the caret's block one place up — Alt+↑ and the Format menu's Move
+     * Block Up: above the block before it, and out of its container to just
+     * above it when it is the first block there. A list item goes with its
+     * children. The caret rides the block. Gate on
+     * [`Capabilities::move_block`]; see [`leaf_core::Doc::move_block_up`].
+     */
+open func moveBlockUp() -> DocView {
+    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_move_block_up(self.uniffiClonePointer(),$0
     )
 })
 }
@@ -3330,6 +3442,12 @@ public struct Capabilities {
      * those spellings yet.
      */
     public var pageBreak: Bool
+    /**
+     * Moving a block — [`LeafDoc::move_block`] and the
+     * [`move_block_up`](LeafDoc::move_block_up)/`down` pair. Every format
+     * with blocks a caret can name; XML has none.
+     */
+    public var moveBlock: Bool
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -3402,7 +3520,12 @@ public struct Capabilities {
          * and no others, though twig spells the gesture in HTML and AsciiDoc too:
          * the flag describes what leaf can *show*, and the walker draws neither of
          * those spellings yet.
-         */pageBreak: Bool) {
+         */pageBreak: Bool, 
+        /**
+         * Moving a block — [`LeafDoc::move_block`] and the
+         * [`move_block_up`](LeafDoc::move_block_up)/`down` pair. Every format
+         * with blocks a caret can name; XML has none.
+         */moveBlock: Bool) {
         self.bold = bold
         self.italic = italic
         self.code = code
@@ -3431,6 +3554,7 @@ public struct Capabilities {
         self.fontFamily = fontFamily
         self.textColor = textColor
         self.pageBreak = pageBreak
+        self.moveBlock = moveBlock
     }
 }
 
@@ -3522,6 +3646,9 @@ extension Capabilities: Equatable, Hashable {
         if lhs.pageBreak != rhs.pageBreak {
             return false
         }
+        if lhs.moveBlock != rhs.moveBlock {
+            return false
+        }
         return true
     }
 
@@ -3554,6 +3681,7 @@ extension Capabilities: Equatable, Hashable {
         hasher.combine(fontFamily)
         hasher.combine(textColor)
         hasher.combine(pageBreak)
+        hasher.combine(moveBlock)
     }
 }
 
@@ -3592,7 +3720,8 @@ public struct FfiConverterTypeCapabilities: FfiConverterRustBuffer {
                 fontSize: FfiConverterBool.read(from: &buf), 
                 fontFamily: FfiConverterBool.read(from: &buf), 
                 textColor: FfiConverterBool.read(from: &buf), 
-                pageBreak: FfiConverterBool.read(from: &buf)
+                pageBreak: FfiConverterBool.read(from: &buf), 
+                moveBlock: FfiConverterBool.read(from: &buf)
         )
     }
 
@@ -3625,6 +3754,7 @@ public struct FfiConverterTypeCapabilities: FfiConverterRustBuffer {
         FfiConverterBool.write(value.fontFamily, into: &buf)
         FfiConverterBool.write(value.textColor, into: &buf)
         FfiConverterBool.write(value.pageBreak, into: &buf)
+        FfiConverterBool.write(value.moveBlock, into: &buf)
     }
 }
 
@@ -4451,6 +4581,79 @@ public func FfiConverterTypeDocView_lift(_ buf: RustBuffer) throws -> DocView {
 #endif
 public func FfiConverterTypeDocView_lower(_ value: DocView) -> RustBuffer {
     return FfiConverterTypeDocView.lower(value)
+}
+
+
+/**
+ * Where a dragged block would land — what [`LeafDoc::drop_target_at`]
+ * answers with, and the FFI mirror of [`leaf_core::DropTarget`]. A drop is
+ * aimed at a row and lands at a boundary, and a host needs both halves: the
+ * `offset` to hand [`LeafDoc::move_block`], and the `row` to draw the
+ * indicator above — `rows.len()` for a drop below everything.
+ */
+public struct DropTargetView {
+    public var offset: UInt32
+    public var row: UInt32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(offset: UInt32, row: UInt32) {
+        self.offset = offset
+        self.row = row
+    }
+}
+
+
+
+extension DropTargetView: Equatable, Hashable {
+    public static func ==(lhs: DropTargetView, rhs: DropTargetView) -> Bool {
+        if lhs.offset != rhs.offset {
+            return false
+        }
+        if lhs.row != rhs.row {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(offset)
+        hasher.combine(row)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeDropTargetView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DropTargetView {
+        return
+            try DropTargetView(
+                offset: FfiConverterUInt32.read(from: &buf), 
+                row: FfiConverterUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: DropTargetView, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.offset, into: &buf)
+        FfiConverterUInt32.write(value.row, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDropTargetView_lift(_ buf: RustBuffer) throws -> DropTargetView {
+    return try FfiConverterTypeDropTargetView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDropTargetView_lower(_ value: DropTargetView) -> RustBuffer {
+    return FfiConverterTypeDropTargetView.lower(value)
 }
 
 
@@ -8515,6 +8718,30 @@ fileprivate struct FfiConverterOptionTypeDocView: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeDropTargetView: FfiConverterRustBuffer {
+    typealias SwiftType = DropTargetView?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeDropTargetView.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeDropTargetView.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeFootnoteDefView: FfiConverterRustBuffer {
     typealias SwiftType = FootnoteDefView?
 
@@ -9234,6 +9461,9 @@ private var initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_backspace() != 9512) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_block_range_at() != 31197) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_capabilities() != 30762) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -9280,6 +9510,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_doc_end_offset() != 21296) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_drop_target_at() != 59322) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_font_family_at_caret() != 51206) {
@@ -9352,6 +9585,15 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_markup_mode() != 54804) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_move_block() != 40208) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_move_block_down() != 49498) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_move_block_up() != 50391) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_move_doc_end() != 9594) {

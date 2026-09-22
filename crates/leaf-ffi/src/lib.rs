@@ -282,6 +282,26 @@ impl From<leaf_core::Landing> for LandingView {
     }
 }
 
+/// Where a dragged block would land — what [`LeafDoc::drop_target_at`]
+/// answers with, and the FFI mirror of [`leaf_core::DropTarget`]. A drop is
+/// aimed at a row and lands at a boundary, and a host needs both halves: the
+/// `offset` to hand [`LeafDoc::move_block`], and the `row` to draw the
+/// indicator above — `rows.len()` for a drop below everything.
+#[derive(uniffi::Record)]
+pub struct DropTargetView {
+    pub offset: u32,
+    pub row: u32,
+}
+
+impl From<leaf_core::DropTarget> for DropTargetView {
+    fn from(t: leaf_core::DropTarget) -> Self {
+        DropTargetView {
+            offset: t.offset as u32,
+            row: t.row as u32,
+        }
+    }
+}
+
 /// A footnote reference and the note it names — what [`LeafDoc::footnote_at`]
 /// answers with. The FFI mirror of [`leaf_core::FootnoteRef`].
 ///
@@ -1364,6 +1384,10 @@ pub struct Capabilities {
     /// the flag describes what leaf can *show*, and the walker draws neither of
     /// those spellings yet.
     pub page_break: bool,
+    /// Moving a block — [`LeafDoc::move_block`] and the
+    /// [`move_block_up`](LeafDoc::move_block_up)/`down` pair. Every format
+    /// with blocks a caret can name; XML has none.
+    pub move_block: bool,
 }
 
 impl From<CoreCapabilities> for Capabilities {
@@ -1400,6 +1424,7 @@ impl From<CoreCapabilities> for Capabilities {
             font_family: c.font_family,
             text_color: c.text_color,
             page_break: c.page_break,
+            move_block: c.move_block,
         }
     }
 }
@@ -2201,6 +2226,62 @@ impl LeafDoc {
         };
         g.doc.append_media(kind, &destination, &alt);
         g.frame()
+    }
+
+    /// Move the caret's block one place up — Alt+↑ and the Format menu's Move
+    /// Block Up: above the block before it, and out of its container to just
+    /// above it when it is the first block there. A list item goes with its
+    /// children. The caret rides the block. Gate on
+    /// [`Capabilities::move_block`]; see [`leaf_core::Doc::move_block_up`].
+    pub fn move_block_up(&self) -> DocView {
+        let mut g = self.lock();
+        g.doc.move_block_up();
+        g.frame()
+    }
+
+    /// Move the caret's block one place down — the mirror of
+    /// [`move_block_up`](Self::move_block_up).
+    pub fn move_block_down(&self) -> DocView {
+        let mut g = self.lock();
+        g.doc.move_block_down();
+        g.frame()
+    }
+
+    /// Move the block at source offset `from` to the boundary `to` — the drop
+    /// half of a drag, with `to` from [`drop_target_at`](Self::drop_target_at)
+    /// and `from` any offset inside the block being carried. One undo step;
+    /// the caret rides the block; a drop back onto the block's own boundary
+    /// is a quiet no-op. See [`leaf_core::Doc::move_block`].
+    pub fn move_block(&self, from: u32, to: u32) -> DocView {
+        let mut g = self.lock();
+        g.doc.move_block(from as usize, to as usize);
+        g.frame()
+    }
+
+    /// The source range of the block a drag starting at visual `(row, ch)`
+    /// would pick up — the whole paragraph, picture, table or fence, or the
+    /// whole list item with its children — for the outline drawn under the
+    /// pointer. `None` on a blank line. Does not move the caret; map the pair
+    /// through [`row_range_for`](Self::row_range_for) for the rows.
+    pub fn block_range_at(&self, row: u32, ch: u32) -> Option<LandingView> {
+        let mut g = self.lock();
+        g.sync();
+        let col = utf16_to_col(&g.row_text(row as usize), ch as usize);
+        let off = g.offset_of_col(row as usize, col);
+        g.doc.block_range_at(off).map(|r| LandingView {
+            start: r.start as u32,
+            end: r.end as u32,
+        })
+    }
+
+    /// Where a block dragged over visual `row` would land: the boundary
+    /// before the row's block when the row is in its upper half, after it
+    /// otherwise, the document's end for a row below everything. `None` for
+    /// a row with no block under it. See [`leaf_core::Doc::drop_target_at`].
+    pub fn drop_target_at(&self, row: u32) -> Option<DropTargetView> {
+        let mut g = self.lock();
+        g.sync();
+        g.doc.drop_target_at(row as usize).map(DropTargetView::from)
     }
 
     /// Insert a thematic break (`---`) at the caret — the toolbar's Horizontal

@@ -862,6 +862,27 @@ export class LeafEditor {
     return this.doc.text_color_at_caret() ?? null;
   }
 
+  /** Move the caret's block one place up — ⌥↑. Above the block before it,
+   *  and out of its container to just above it when it is the first block
+   *  there; a list item goes with its children; the caret rides the block.
+   *  Gate on `capabilities().move_block`. */
+  moveBlockUp() { this._command((d) => d.move_block_up()); }
+  /** Move the caret's block one place down — ⌥↓, the mirror of `moveBlockUp`. */
+  moveBlockDown() { this._command((d) => d.move_block_down()); }
+  /** Move the block at source offset `from` to the boundary `to` — what a
+   *  block drag does on its drop, with `to` from `dropTargetAt`. One undo
+   *  step; the caret rides the block; a drop back onto the block's own
+   *  boundary is nothing at all. */
+  moveBlock(from, to) { this._command((d) => d.move_block(from, to)); }
+  /** Where a block dragged over rendered row `row` would land — `{offset,
+   *  row}`: the offset to hand `moveBlock`, and the row to draw an indicator
+   *  above (`rowEls.length` for a drop below everything). Null for a row
+   *  with no block under it. */
+  dropTargetAt(row) {
+    this._syncFromDom();
+    return this.doc.drop_target_at(row) ?? null;
+  }
+
   tableInsertRow(below = true) { this._command((d) => d.table_insert_row(below)); }
   tableDeleteRow() { this._command((d) => d.table_delete_row()); }
   tableInsertColumn(right = true) { this._command((d) => d.table_insert_column(right)); }
@@ -2212,6 +2233,18 @@ export class LeafEditor {
     });
     on(ce, "drop", (e) => this._onDrop(e));
 
+    // A block drag: a picture, or any block by its left margin, picked up as
+    // a unit and dropped between two others. A separate gesture from the
+    // selection drag above, on pointer events rather than the browser's drag
+    // session — see `_blockDragStart`.
+    on(ce, "pointerdown", (e) => this._blockDragStart(e));
+    on(ce, "pointermove", (e) => this._blockDragMove(e));
+    on(ce, "pointerup", (e) => this._blockDragEnd(e, true));
+    on(ce, "pointercancel", (e) => this._blockDragEnd(e, false));
+    on(ce, "keydown", (e) => {
+      if (e.key === "Escape" && this._blockDrag) this._blockDragEnd(e, false);
+    });
+
     // Reflow on viewport change.
     if (typeof ResizeObserver !== "undefined") {
       this._resizeObs = new ResizeObserver(() => this._scheduleRefit());
@@ -2219,6 +2252,130 @@ export class LeafEditor {
     } else {
       on(window, "resize", () => this._scheduleRefit());
     }
+  }
+
+  // ── block drag ────────────────────────────────────────────────────────────
+  //
+  // A drag that starts on a block image, or in the margin to the left of any
+  // row, picks the whole block up — the paragraph, the picture, the table, the
+  // list item with its children — and a drop lands it between two blocks, on
+  // the boundary core names for the row under the pointer. A drag that starts
+  // inside text is the browser's, and grows a selection as it always has.
+  //
+  // Pointer events rather than a drag session: the browser starts no drag
+  // from unselected text, so the margin gesture has to be built by hand, and
+  // building the picture's the same way keeps one gesture rather than two. A
+  // press with no travel is a click — the caret goes to the row, as the
+  // browser would have put it had the press not been taken.
+
+  /** The row element under `clientY`, and its index, or null between rows. */
+  _rowAtY(clientY) {
+    for (let i = 0; i < this.rowEls.length; i++) {
+      const el = this.rowEls[i];
+      if (!el || !el.isConnected) continue;
+      const r = el.getBoundingClientRect();
+      if (r.height > 0 && clientY >= r.top && clientY < r.bottom) return { el, row: i };
+    }
+    return null;
+  }
+
+  /** Whether `clientX` is in the surface's left padding — the margin a block
+   *  is picked up by. */
+  _inMargin(clientX) {
+    const r = this.contentEl.getBoundingClientRect();
+    const pad = parseFloat(getComputedStyle(this.contentEl).paddingLeft) || 0;
+    return clientX >= r.left && clientX < r.left + pad;
+  }
+
+  _blockDragStart(e) {
+    if (e.button !== 0 || e.shiftKey || e.altKey || primaryModifier(e)) return;
+    if (this.viewName() === "source" || this.doc.read_only()) return;
+    if (!this.doc.capabilities().move_block) return;
+    const picture = e.target.closest?.("img.leaf-media");
+    const margin = !picture && this._inMargin(e.clientX);
+    if (!picture && !margin) return;
+    const hit = this._rowAtY(e.clientY);
+    if (!hit) return;
+    const range = this.doc.block_range_at(hit.row, 0);
+    if (!range) return;
+    // The press is ours from here: no caret placement, no native image drag,
+    // no selection growing under the pointer.
+    e.preventDefault();
+    this.focus();
+    const rows = this.doc.row_range_for(range.start, range.end);
+    this._blockDrag = {
+      pointerId: e.pointerId,
+      from: range.start,
+      rows,
+      row: hit.row,
+      x: e.clientX,
+      y: e.clientY,
+      moved: false,
+      target: null,
+    };
+    try { this.contentEl.setPointerCapture(e.pointerId); } catch { /* not a pointer the surface can hold */ }
+  }
+
+  _blockDragMove(e) {
+    const drag = this._blockDrag;
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    if (!drag.moved) {
+      if (Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < 4) return;
+      drag.moved = true;
+      for (let r = drag.rows.first; r <= drag.rows.last; r++) this.rowEls[r]?.classList.add("leaf-drag-source");
+      this.container.classList.add("leaf-block-dragging");
+    }
+    const hit = this._rowAtY(e.clientY);
+    const row = hit ? hit.row : this._isPastEnd(e.clientY) ? this.rowEls.length : null;
+    const target = row == null ? null : this.doc.drop_target_at(row) ?? null;
+    drag.target = target;
+    this._drawDropIndicator(target);
+  }
+
+  _blockDragEnd(e, drop) {
+    const drag = this._blockDrag;
+    if (!drag) return;
+    if (e.pointerId != null && e.pointerId !== drag.pointerId) return;
+    this._blockDrag = null;
+    try { this.contentEl.releasePointerCapture(drag.pointerId); } catch { /* already released */ }
+    for (let r = drag.rows.first; r <= drag.rows.last; r++) this.rowEls[r]?.classList.remove("leaf-drag-source");
+    this.container.classList.remove("leaf-block-dragging");
+    this._drawDropIndicator(null);
+    if (!drag.moved) {
+      // A press that went nowhere: a click, landing the caret on the row.
+      if (drop) this.render(this.doc.click_ch(drag.row, 0));
+      return;
+    }
+    if (drop && drag.target) this.render(this.doc.move_block(drag.from, drag.target.offset));
+  }
+
+  /** The line drawn above the row a drop would land before — under the last
+   *  row for a drop below everything — or nothing. */
+  _drawDropIndicator(target) {
+    let line = this._dropIndicator;
+    if (!target) {
+      line?.remove();
+      this._dropIndicator = null;
+      return;
+    }
+    if (!line) {
+      line = el("div", "leaf-drop-indicator");
+      this._dropIndicator = line;
+    }
+    const content = this.contentEl.getBoundingClientRect();
+    let y;
+    if (target.row < this.rowEls.length && this.rowEls[target.row]?.isConnected) {
+      y = this.rowEls[target.row].getBoundingClientRect().top;
+    } else {
+      let bottom = content.top;
+      for (const r of this.rowEls) {
+        const b = r?.isConnected ? r.getBoundingClientRect().bottom : 0;
+        if (b > bottom) bottom = b;
+      }
+      y = bottom;
+    }
+    line.style.top = `${y - content.top + this.contentEl.scrollTop}px`;
+    if (!line.isConnected) this.contentEl.appendChild(line);
   }
 
   /**
@@ -2488,6 +2645,18 @@ export class LeafEditor {
       e.preventDefault();
       this._syncFromDom();
       this.render(op());
+      return;
+    }
+
+    // ⌥↑ / ⌥↓ move the caret's *block* — a paragraph, a picture, a list item
+    // with its children — one place, the caret riding it: the keyboard half of
+    // the block drag below. Only in the rich view, where a block is a thing on
+    // screen; in the source view the keys keep the browser's meaning.
+    if (e.altKey && !e.shiftKey && !primaryModifier(e) && this.viewName() !== "source"
+        && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+      e.preventDefault();
+      this._syncFromDom();
+      this.render(e.key === "ArrowUp" ? d.move_block_up() : d.move_block_down());
       return;
     }
 
@@ -3304,6 +3473,17 @@ const EDITOR_CSS = `
    than something to fit a box. */
 audio.leaf-media { width: 100%; max-width: 420px; border-radius: 999px; }
 img.leaf-media, video.leaf-media { max-height: 60vh; }
+
+/* A block being dragged, and where it would land: the block's rows fade while
+   it is carried, and a line marks the boundary under the pointer. The margin a
+   block is picked up by is the surface's own left padding, so it needs no
+   element of its own — only a cursor that says it can be grabbed. */
+.leaf-block-dragging, .leaf-block-dragging * { cursor: grabbing !important; }
+.leaf-drag-source { opacity: 0.4; }
+.leaf-drop-indicator {
+  position: absolute; left: 20px; right: 20px; height: 2px; margin-top: -1px;
+  background: var(--leaf-caret); border-radius: 1px; pointer-events: none;
+}
 
 /* A display formula: its picture centred on the measure, at its own size. */
 .leaf-math-row { text-align: center; }

@@ -1,10 +1,23 @@
 ---
-status: open
+status: done
 created: 2026-09-21
 updated: 2026-09-21
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 # A block can be moved — by keyboard, and by dragging it — and an attachment is a block
+
+**Status.** Done, on twig-doc 3.9.0's offset-addressed `move_block`, which
+landed before leaf called `move_before`/`move_after` at all — so the
+cross-container cases are in from the start rather than deferred. What
+shipped differs from the shape below in two places: `drop_target_at` and
+`block_range_at` are `Doc`'s, not `VisualMap`'s, because a block is a fact
+about the tree and the map has no tree; and a block's boundaries are read
+per kind (a quote's first byte is inside it, a list's is before it), which is
+`Doc::before`/`after` and is what makes ⌥↑ over a quote step over it rather
+than into it. What twig's boundary reading still refuses — the last block of
+a quote dropped on the blank line right after it, a paragraph moved above a
+quote that opens the document — is filed with twig as
+`move-block-boundary-gaps`.
 
 **Where.** `crates/leaf-core/src/doc.rs` (the op), `wysiwyg.rs` (the drop
 target), then each frontend's gesture.

@@ -321,6 +321,22 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// came of it. The point is in layout space.
     private var dragCandidate: (point: CGPoint, event: NSEvent)?
 
+    /// A mouse-down on a picture, or in the margin left of a row, that has not
+    /// yet become a block drag — the block under it, by an offset inside it
+    /// and the rows it covers. Resolved the way `dragCandidate` is: a drag in
+    /// `mouseDragged`, a click on the row in `mouseUp`.
+    private var blockDragCandidate: (point: CGPoint, event: NSEvent, from: Int, rows: RowRange)?
+
+    /// The block being carried by a dragging session this view started, and
+    /// where it would land — `nil` between drags. The target is core's
+    /// answer for the row under the pointer, redrawn as the indicator.
+    private var blockDrag: (from: Int, rows: RowRange)?
+    private var dropTarget: DropTargetView? {
+        didSet {
+            if oldValue?.row != dropTarget?.row || oldValue?.offset != dropTarget?.offset { needsDisplay = true }
+        }
+    }
+
     /// Reconsider `src` — or every source, for nil — and redraw.
     /// See `LeafEditorModel.reloadMedia`.
     public func reloadMedia(_ src: String?) {
@@ -810,6 +826,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             ctx.setFillColor(theme.caretColor.cgColor)
             ctx.fill(rect)
         }
+        drawDropIndicator(in: ctx)
 
         drawHighlightMarkers()
     }
@@ -1321,6 +1338,19 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             onShowMedia(hit.src)
             return
         }
+        // A plain press on a picture, or in the margin left of a row, picks the
+        // row's *block* up — the paragraph, the picture, the table, the list
+        // item with its children — to be dropped between two others. Like the
+        // selection press below it is not yet a drag: the caret lands on the row
+        // in `mouseUp` if none comes of it. A press inside text stays a caret
+        // placement or a selection, and the pictures with a transport (video,
+        // audio) keep their click, since a press on those is a play.
+        if event.clickCount == 1, event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty,
+           docView.view != "source", !isReadOnly, doc.capabilities().moveBlock,
+           let candidate = blockDragCandidate(at: p) {
+            blockDragCandidate = (p, event, candidate.from, candidate.rows)
+            return
+        }
         // A plain click on a video or audio box starts it — the box's whole point
         // is the play badge drawn on it — and a click on an *empty* picture box
         // asks the host for it. The caret still moves there first, so a host that
@@ -1398,6 +1428,13 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     }
 
     public override func mouseUp(with event: NSEvent) {
+        if let candidate = blockDragCandidate {
+            // A press that went nowhere: a click, landing the caret on the row.
+            blockDragCandidate = nil
+            let (row, ch) = hitRowCh(candidate.point)
+            render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: false))
+            return
+        }
         guard let candidate = dragCandidate else { return super.mouseUp(with: event) }
         dragCandidate = nil
         if docView.view != "source", layoutEngine.isPastEnd(candidate.point) {
@@ -1760,6 +1797,12 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     public override func mouseDragged(with event: NSEvent) {
         let p = layoutPoint(convert(event.locationInWindow, from: nil))
+        if let candidate = blockDragCandidate {
+            guard hypot(p.x - candidate.point.x, p.y - candidate.point.y) > 3 else { return }
+            blockDragCandidate = nil
+            beginDraggingBlock(from: candidate.from, rows: candidate.rows, with: candidate.event)
+            return
+        }
         if let candidate = dragCandidate {
             // A few points of slop, so a press that wobbles is still a click.
             guard hypot(p.x - candidate.point.x, p.y - candidate.point.y) > 3 else { return }
@@ -1786,6 +1829,79 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         let dragging = NSDraggingItem(pasteboardWriter: item)
         dragging.setDraggingFrame(frame, contents: dragImage(of: frame))
         beginDraggingSession(with: [dragging], event: event, source: self)
+    }
+
+    // MARK: drag & drop (source) — a block, picked up
+
+    /// The block a press at `p` (layout space) would pick up, or nil when the
+    /// press is on text — an image box, or the margin to the left of a row's
+    /// column, the two places a press is not asking for a caret. The block is
+    /// core's: an offset inside it and the rows it covers.
+    private func blockDragCandidate(at p: CGPoint) -> (from: Int, rows: RowRange)? {
+        let onPicture = layoutEngine.mediaBox(at: p)?.kind == .image
+        let margin = layoutEngine.rows.contains { rl in
+            rl.lineBoxes.contains { $0.minY <= p.y && p.y < $0.maxY && p.x < $0.minX }
+        }
+        guard onPicture || margin else { return nil }
+        let (row, _) = layoutEngine.hit(p)
+        guard let range = doc.blockRangeAt(row: UInt32(row), ch: 0) else { return nil }
+        return (Int(range.start), doc.rowRangeFor(start: range.start, end: range.end))
+    }
+
+    /// Start carrying a block: its source on the pasteboard, so a drop
+    /// elsewhere gets the text, under an image of the block as drawn. Within
+    /// this view the drop is a `moveBlock`, not a paste — `performDragOperation`
+    /// tells the two apart by `blockDrag`.
+    private func beginDraggingBlock(from: Int, rows: RowRange, with event: NSEvent) {
+        let source = doc.source()
+        guard let range = doc.blockRangeAt(row: rows.first, ch: 0) else { return }
+        let bytes = Array(source.utf8)
+        let lo = min(Int(range.start), bytes.count), hi = min(Int(range.end), bytes.count)
+        let item = NSPasteboardItem()
+        item.setString(String(decoding: bytes[lo..<hi], as: UTF8.self), forType: .string)
+        let boxes = (Int(rows.first)...Int(rows.last)).compactMap { layoutEngine.rows.indices.contains($0) ? layoutEngine.rows[$0] : nil }
+            .flatMap(\.lineBoxes)
+        guard let first = boxes.first else { return }
+        let frame = viewRect(boxes.dropFirst().reduce(first) { $0.union($1) })
+        let dragging = NSDraggingItem(pasteboardWriter: item)
+        dragging.setDraggingFrame(frame, contents: dragImage(of: frame))
+        blockDrag = (from, rows)
+        beginDraggingSession(with: [dragging], event: event, source: self)
+    }
+
+    public func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+        blockDrag = nil
+        dropTarget = nil
+    }
+
+    /// The rendered row under `p` (layout space), `rows.count` for a point
+    /// under everything, or nil beside the rows — what a block drop is aimed at.
+    private func dropRow(at p: CGPoint) -> Int? {
+        for (i, rl) in layoutEngine.rows.enumerated() where rl.height > 0 {
+            if rl.lineBoxes.contains(where: { $0.minY <= p.y && p.y < $0.maxY }) { return i }
+        }
+        return layoutEngine.isPastEnd(p) ? layoutEngine.rows.count : nil
+    }
+
+    /// The line a block drop would land on: above the target row, or under
+    /// the last row for a drop below everything, across the text column.
+    private func drawDropIndicator(in ctx: CGContext) {
+        guard let target = dropTarget else { return }
+        let rows = layoutEngine.rows
+        let y: CGFloat
+        let column: (x: CGFloat, width: CGFloat)
+        if Int(target.row) < rows.count {
+            let rl = rows[Int(target.row)]
+            y = rl.lineBoxes.first?.minY ?? rl.top
+            column = (rl.originX, rl.columnWidth)
+        } else if let last = rows.last(where: { $0.height > 0 }) {
+            y = last.lineBoxes.last?.maxY ?? last.top + last.height
+            column = (last.originX, last.columnWidth)
+        } else {
+            return
+        }
+        ctx.setFillColor(theme.caretColor.cgColor)
+        ctx.fill(CGRect(x: column.x, y: y - 1, width: column.width, height: 2))
     }
 
     /// The selected text as it is drawn, for the drag to carry.
@@ -1824,7 +1940,9 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     public override func draggingExited(_ sender: NSDraggingInfo?) {
         // The selection the drag came from was left standing for the preview;
-        // let it stand. Nothing to undo here.
+        // let it stand. Nothing to undo here. A carried block's indicator
+        // goes, though: out of the view there is nowhere for it to land.
+        dropTarget = nil
     }
 
     /// What a drop of `sender` would do here: nothing on a reader, nothing for
@@ -1832,6 +1950,13 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// own selection (⌥ copies), a copy for everything else.
     private func dropOperation(for sender: NSDraggingInfo) -> NSDragOperation {
         guard !isReadOnly, hasUsableFlavor(sender.draggingPasteboard) else { return [] }
+        if blockDrag != nil, sender.draggingSource as AnyObject? === self {
+            // A carried block lands on a boundary, never at a point: the row
+            // under the pointer names it, and the indicator shows it.
+            let p = layoutPoint(convert(sender.draggingLocation, from: nil))
+            dropTarget = dropRow(at: p).flatMap { doc.dropTargetAt(row: UInt32($0)) }
+            return dropTarget == nil ? [] : .move
+        }
         if sender.draggingSource as AnyObject? === self {
             return sender.draggingSourceOperationMask.contains(.move) ? .move : .copy
         }
@@ -1855,6 +1980,14 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     public override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         let pb = sender.draggingPasteboard
+        if let drag = blockDrag, sender.draggingSource as AnyObject? === self {
+            let target = dropTarget
+            blockDrag = nil
+            dropTarget = nil
+            guard let target else { return false }
+            render(doc.moveBlock(from: UInt32(drag.from), to: target.offset))
+            return true
+        }
         let dropByte = dropOffset(sender)
         if sender.draggingSource as AnyObject? === self {
             return dropSelection(at: dropByte, move: sender.draggingSourceOperationMask.contains(.move), from: pb)
@@ -1945,6 +2078,17 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         let isReturn = event.keyCode == 36 || event.keyCode == 76 // Return, keypad Enter
         if markedByteRange == nil, isReturn, mods == .shift {
             doCommand(by: #selector(insertLineBreak(_:)))
+            return
+        }
+        // ⌥↑ / ⌥↓ move the caret's *block* — the keyboard half of the block
+        // drag — rather than the caret to the paragraph's edge, which is what
+        // AppKit's bindings make of them. In the rich view only, where a block
+        // is a thing on screen; the source view keeps the system's meaning.
+        // The Format menu carries the same pair and answers first where there
+        // is one; this is the binding for a host without it.
+        let isArrowUp = event.keyCode == 126, isArrowDown = event.keyCode == 125
+        if markedByteRange == nil, mods == .option, isArrowUp || isArrowDown, docView.view != "source" {
+            render(isArrowUp ? doc.moveBlockUp() : doc.moveBlockDown())
             return
         }
         if !(inputContext?.handleEvent(event) ?? false) { interpretKeyEvents([event]) }
