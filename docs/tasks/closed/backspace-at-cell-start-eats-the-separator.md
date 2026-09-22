@@ -1,11 +1,18 @@
 ---
 title: Backspace at the start of a table cell eats the column separator
-status: open
+status: done
 created: 2026-09-16
-updated: 2026-09-16
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+updated: 2026-09-22
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 # Backspace at the start of a table cell eats the column separator
+
+**Status.** Done, in `fix(core): a table cell's start is a wall to
+Backspace, and its end to Delete`. The meaning chosen is the wall: in the
+rich view Backspace at a cell's first stop — or anywhere in the padding
+before it — does nothing, and Delete at its last stop or in the padding
+after it is the mirror. An in-cell `<br>` at the edge is still taken whole.
+Source view keeps the literal byte delete, as it does for a list marker.
 
 **Where.** `crates/leaf-core`, `Doc::backspace`. Every frontend inherits it.
 
