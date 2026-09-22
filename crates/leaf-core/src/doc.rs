@@ -18789,9 +18789,6 @@ mod tests {
 
     #[test]
     fn a_dollar_typed_in_shortcuts_authors_math() {
-        // (In `None` the same keystrokes *also* mint a formula for now: twig's
-        // `insert_literal` does not yet escape `$` under the math extension —
-        // see `docs/tasks/a-typed-dollar-mints-math-in-the-hidden-mode.md`.)
         let mut d = doc_in(View::Wysiwyg, "math_dollar_sc", "\n");
         d.set_markup_mode(MarkupMode::Shortcuts);
         d.caret = 0;
@@ -18799,6 +18796,16 @@ mod tests {
         assert_eq!(d.source, "$x$\n");
         d.caret = 1;
         assert_eq!(d.breadcrumb(), "doc › para › inline_math");
+
+        // `None` keeps typed syntax literal, and under the math extension a
+        // `$` is syntax: twig escapes it, and the paragraph stays text.
+        let mut d = doc_in(View::Wysiwyg, "math_dollar_none", "\n");
+        assert_eq!(d.markup_mode(), MarkupMode::None);
+        d.caret = 0;
+        d.insert("$x$");
+        assert_eq!(d.source, "\\$x\\$\n");
+        d.caret = 2;
+        assert_eq!(d.breadcrumb(), "doc › para › str");
     }
 
     #[test]

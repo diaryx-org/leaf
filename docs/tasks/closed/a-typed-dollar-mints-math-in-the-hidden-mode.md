@@ -1,11 +1,16 @@
 ---
 title: A typed dollar mints math in the hidden mode
-status: open
+status: done
 created: 2026-09-19
-updated: 2026-09-19
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+updated: 2026-09-22
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 # A typed dollar mints math in the hidden mode
+
+**Status.** Done, on twig-doc 3.9.2 (twig `8721abc`), in the leaf commit
+`fix(core): a typed dollar stays literal in MarkupMode::None, on twig-doc
+3.9.2`. `a_dollar_typed_in_shortcuts_authors_math` has its `None` half back:
+the same keystrokes write `\$x\$` and the paragraph stays text.
 
 `MarkupMode::None` promises that typed syntax stays literal — twig escapes
 anything that would open markup, and formatting comes from commands. Since
