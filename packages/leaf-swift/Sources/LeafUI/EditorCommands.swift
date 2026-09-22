@@ -87,6 +87,28 @@ public struct LeafEditorCommands: Commands {
             }
             .disabled(editor == nil)
         }
+        #else
+        // The same Find items on an iPad, driving the system find panel
+        // (`UIFindInteraction`) where the Mac's drive its find bar. No Paste
+        // and Match Style or Spelling here: UIKit's own text system answers
+        // those, where it answers them at all.
+        CommandGroup(after: .pasteboard) {
+            Menu(loc("menu.find", "Find")) {
+                Button(loc("menu.findEllipsis", "Find…")) { editor?.find(.showFind) }
+                    .keyboardShortcut("f", modifiers: .command)
+                Button(loc("menu.findAndReplace", "Find and Replace…")) { editor?.find(.showReplace) }
+                    .keyboardShortcut("f", modifiers: [.command, .option])
+                    .disabled(editor?.isReadOnly == true)
+                Button(loc("menu.findNext", "Find Next")) { editor?.find(.next) }
+                    .keyboardShortcut("g", modifiers: .command)
+                Button(loc("menu.findPrevious", "Find Previous")) { editor?.find(.previous) }
+                    .keyboardShortcut("g", modifiers: [.command, .shift])
+                // ⌘E is leaf's Source View, on every frontend; this one goes by menu.
+                Button(loc("menu.useSelectionForFind", "Use Selection for Find")) { editor?.find(.useSelection) }
+                Button(loc("menu.hideFindBar", "Hide Find Bar")) { editor?.find(.hide) }
+            }
+            .disabled(editor == nil)
+        }
         #endif
         CommandGroup(after: .toolbar) {
             if let editor {

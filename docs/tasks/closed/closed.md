@@ -25,6 +25,7 @@ contents:
 - '[Page Break In Html And Asciidoc](/docs/tasks/closed/page-break-in-html-and-asciidoc.md)'
 - '[Pdf Reveals The Carets Line](/docs/tasks/closed/pdf-reveals-the-carets-line.md)'
 - '[Dynamic Type on paper should be a zoom, not a repagination](/docs/tasks/closed/ios-dynamic-type-on-paper.md)'
+- '[Find on iOS](/docs/tasks/closed/ios-find-interaction.md)'
 ---
 
 # Closed tasks
