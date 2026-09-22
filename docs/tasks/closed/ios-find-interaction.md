@@ -22,7 +22,7 @@ markup that closes around it (`matchBounds`), which fixed the Mac's find bar
 too: replacing a bold word there used to take its closing `**` with it.
 Replace All is one undo step per match, because core's history cannot group
 edits. That is deferred to
-[Replace All is one undo step](/docs/tasks/replace-all-is-one-undo-step.md).
+[Replace All is one undo step](/docs/tasks/closed/replace-all-is-one-undo-step.md).
 
 **Where.** `packages/leaf-swift`, `LeafTextView` (iOS).
 

@@ -26,6 +26,7 @@ contents:
 - '[Pdf Reveals The Carets Line](/docs/tasks/closed/pdf-reveals-the-carets-line.md)'
 - '[Dynamic Type on paper should be a zoom, not a repagination](/docs/tasks/closed/ios-dynamic-type-on-paper.md)'
 - '[Find on iOS](/docs/tasks/closed/ios-find-interaction.md)'
+- '[Replace All is one undo step](/docs/tasks/closed/replace-all-is-one-undo-step.md)'
 ---
 
 # Closed tasks

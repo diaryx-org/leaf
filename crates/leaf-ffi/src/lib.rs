@@ -3264,6 +3264,20 @@ impl LeafDoc {
         g.frame()
     }
 
+    /// Open an undo group: every edit until the matching
+    /// [`end_undo_group`](Self::end_undo_group) undoes and redoes as one step —
+    /// a Replace All, or a Writing Tools session. Groups nest; an undo or redo
+    /// closes any that is open. See `Doc::begin_undo_group`.
+    pub fn begin_undo_group(&self) {
+        self.lock().doc.begin_undo_group();
+    }
+
+    /// Close the group [`begin_undo_group`](Self::begin_undo_group) opened; a
+    /// no-op when none is open.
+    pub fn end_undo_group(&self) {
+        self.lock().doc.end_undo_group();
+    }
+
     /// Switch between the rendered WYSIWYG surface and the raw source.
     pub fn toggle_view(&self) -> DocView {
         let mut g = self.lock();

@@ -291,6 +291,11 @@ int8_t uniffi_leaf_ffi_fn_method_leafdoc_authorable(void*_Nonnull ptr, RustCallS
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_backspace(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_BEGIN_UNDO_GROUP
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_BEGIN_UNDO_GROUP
+void uniffi_leaf_ffi_fn_method_leafdoc_begin_undo_group(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_BLOCK_RANGE_AT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_BLOCK_RANGE_AT
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_block_range_at(void*_Nonnull ptr, uint32_t row, uint32_t ch, RustCallStatus *_Nonnull out_status
@@ -379,6 +384,11 @@ uint32_t uniffi_leaf_ffi_fn_method_leafdoc_doc_end_offset(void*_Nonnull ptr, Rus
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_DROP_TARGET_AT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_DROP_TARGET_AT
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_drop_target_at(void*_Nonnull ptr, uint32_t row, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_END_UNDO_GROUP
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_END_UNDO_GROUP
+void uniffi_leaf_ffi_fn_method_leafdoc_end_undo_group(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_FONT_FAMILY_AT_CARET
@@ -1262,6 +1272,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_backspace(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_BEGIN_UNDO_GROUP
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_BEGIN_UNDO_GROUP
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_begin_undo_group(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_BLOCK_RANGE_AT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_BLOCK_RANGE_AT
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_block_range_at(void
@@ -1367,6 +1383,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_doc_end_offset(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_DROP_TARGET_AT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_DROP_TARGET_AT
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_drop_target_at(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_END_UNDO_GROUP
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_END_UNDO_GROUP
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_end_undo_group(void
     
 );
 #endif

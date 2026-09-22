@@ -1,10 +1,23 @@
 ---
-status: open
+status: done
 created: 2026-09-22
 updated: 2026-09-22
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 # Replace All is one undo step
+
+**Status.** Done, in `feat: Replace All is one undo step, through an undo
+group on Doc`. No twig change was needed: `Doc::begin_undo_group` and
+`Doc::end_undo_group` fold each edit made between them into the group's
+first step as it lands, through twig's `coalesce_last_undo`, so a group
+holds one step on the history however many edits it makes and never meets
+twig's 200-step cap. Groups nest, an undo or redo closes an open one, and
+the `can_undo` mirror follows every fold
+(`can_undo_is_exact_across_the_gestures_that_coalesce` has the group
+gestures). leaf-ffi and the wasm binding expose the pair. The iOS
+`replaceAll` wraps its run in one group, and the Mac opens one at the
+finder's `shouldReplaceCharacters(inRanges:with:)` and closes it at
+`didReplaceCharacters()`. leaf-web has no Replace All to use it.
 
 **Where.** `crates/leaf-core` (`Doc`), `crates/leaf-ffi`, and both Swift
 `LeafTextView`s.

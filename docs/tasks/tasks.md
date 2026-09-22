@@ -6,7 +6,6 @@ updated: 2026-09-22
 contents:
 - '[Automatic correction and substitutions in the macOS view](macos-text-checking.md)'
 - '[Writing Tools in the Apple views](writing-tools.md)'
-- '[Replace All is one undo step](replace-all-is-one-undo-step.md)'
 - '[Right-to-left text](right-to-left-text.md)'
 - '[A host hook for directives in the web editor](web-directive-hook.md)'
 - '[The heading the caret is under is a question `Doc` cannot answer](heading-at-offset.md)'
