@@ -480,8 +480,12 @@ impl Command {
     pub fn run(self, doc: &mut Doc) -> Outcome {
         use Command::*;
         match self {
-            Undo => doc.undo(),
-            Redo => doc.redo(),
+            Undo => {
+                doc.undo();
+            }
+            Redo => {
+                doc.redo();
+            }
             Cut => return Outcome::Cut,
             Copy => return Outcome::Copy,
             Paste => return Outcome::Paste,

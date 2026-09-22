@@ -819,7 +819,9 @@ pub struct DocView {
     pub dirty: bool,
     /// Whether there is a step to undo, and one to redo — what a native Edit
     /// menu or an undo manager enables its items by. Both false on a read-only
-    /// document. See [`leaf_core::Doc::can_undo`] for the bound this is.
+    /// document. Exact, not a bound: `can_undo` is true precisely when
+    /// [`LeafDoc::undo`] would move the document, so a host composing several
+    /// histories into one can ask before it dispatches.
     pub can_undo: bool,
     pub can_redo: bool,
     /// `"wysiwyg"` or `"source"`, for a view-toggle affordance.

@@ -101,9 +101,15 @@ pub fn handle_key(doc: &mut Doc, key: KeyEvent, _state: &mut EditorState) -> Out
             KeyCode::Char('x') => return Outcome::Cut,
             KeyCode::Char('v') => return Outcome::Paste,
             // ^Z undo, ^⇧Z or ^Y redo.
-            KeyCode::Char('z') | KeyCode::Char('Z') if shift => doc.redo(),
-            KeyCode::Char('z') | KeyCode::Char('Z') => doc.undo(),
-            KeyCode::Char('y') | KeyCode::Char('Y') => doc.redo(),
+            KeyCode::Char('z') | KeyCode::Char('Z') if shift => {
+                doc.redo();
+            }
+            KeyCode::Char('z') | KeyCode::Char('Z') => {
+                doc.undo();
+            }
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                doc.redo();
+            }
             // Readline's kill-line pair: ^U back to the line start, ^K forward to
             // its end — the convention a terminal user already has under their
             // fingers.
