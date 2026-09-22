@@ -4,7 +4,6 @@ description: Deferred work on leaf, one file each — a commitment with a done s
 created: 2026-09-04
 updated: 2026-09-21
 contents:
-- '[A typed dollar mints math in the hidden mode](a-typed-dollar-mints-math-in-the-hidden-mode.md)'
 - '[Spelling and autocorrect in the macOS view](macos-text-checking.md)'
 - '[Writing Tools in the Apple views](writing-tools.md)'
 - '[Find on iOS](ios-find-interaction.md)'

@@ -39,7 +39,7 @@ to 5.81 MB, 0.52 MB of it KaTeX's fonts, the rest RaTeX's code — the
 
 One thing found rather than built: twig's `insert_literal` does not escape a
 `$` under the math extension, so typing `$x$` in `MarkupMode::None` mints a
-formula. Filed in twig, and as `docs/tasks/a-typed-dollar-mints-math-in-the-hidden-mode.md` here.
+formula. Filed in twig, and as `docs/tasks/closed/a-typed-dollar-mints-math-in-the-hidden-mode.md` here.
 
 ## The picture
 

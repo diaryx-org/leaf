@@ -127,12 +127,12 @@ pub(crate) fn parse_fragment(html: &str, format: Format) -> Option<String> {
 ///   - [`Fidelity::AttrsDropped`] means they are not written at all. Nothing
 ///     reaches the document; the user gets the prose without the decoration,
 ///     which for a paste is the goal rather than a loss. **Accept** — and note
-///     that most of what twig reports here is not a loss at all: its HTML
-///     parser keeps `href`, `src` and `alt` in the node's attribute bag
-///     *besides* modelling them as the link's destination and the image's, so
-///     `<a href="…">` and `<img src alt>` are reported `AttrsDropped` against
-///     Markdown even though the Markdown written for them is `[l](https://x.dev)`
-///     and `![p](u)`, destination and all. Declining on this code is what made
+///     that much of what twig reported here was not a loss at all: until
+///     3.9.2 its HTML parser kept `href`, `src` and `alt` in the node's
+///     attribute bag *besides* modelling them as the link's destination and
+///     the image's, so `<a href="…">` and `<img src alt>` were reported
+///     `AttrsDropped` against Markdown even though the Markdown written for
+///     them is `[l](https://x.dev)` and `![p](u)`, destination and all. Declining on this code is what made
 ///     every link and image on the clipboard unpasteable under 3.6.0.
 ///
 /// The catch-all declines: `Fidelity` is `#[non_exhaustive]`, and an axis twig
@@ -202,7 +202,7 @@ fn namespaced(name: &str) -> bool {
 /// rest of the pasteboard dialect is handled.
 ///
 /// A deny list and not an allow list, deliberately: an attribute that turns out
-/// to carry content and is not here — `start` on an `<ol>` — survives to twig,
+/// to carry content and is not here — `title` on a `<p>` — survives to twig,
 /// which reports it, and [`would_leak`] declines the paste. The failure mode is
 /// a fall back to the plain flavor. An allow list's would be silently losing it.
 fn presentational(name: &str) -> bool {
@@ -789,13 +789,14 @@ mod tests {
 
     #[test]
     fn an_attribute_markdown_cannot_spell_is_a_note_and_not_a_loss() {
-        // twig 3.6's second fidelity axis. Its HTML parser keeps `href`, `src`
-        // and `alt` in the node's attribute bag *as well as* modelling them as
-        // the link's destination and the image's, so converting to Markdown —
-        // which has no attribute syntax to write the bag with — reports the
-        // node as `AttrsDropped`. The Markdown it writes carries the
-        // destination all the same, which is what these assert: the warning is
-        // about the bag, and there is nothing missing from the paste.
+        // twig 3.6's second fidelity axis. Until 3.9.2 its HTML parser kept
+        // `href`, `src` and `alt` in the node's attribute bag *as well as*
+        // modelling them as the link's destination and the image's, so
+        // converting to Markdown — which has no attribute syntax to write the
+        // bag with — reported the node as `AttrsDropped`. The Markdown it
+        // writes carries the destination all the same, which is what these
+        // assert: the warning was about the bag, and there is nothing missing
+        // from the paste.
         assert_eq!(
             md(r#"<a href="https://x.dev" title="t">l</a>"#).as_deref(),
             Some("[l](https://x.dev)")
@@ -814,11 +815,19 @@ mod tests {
 
     #[test]
     fn an_attribute_markdown_spells_as_a_div_declines() {
-        // The other half of the axis, and the half that leaks. `start` is a
+        // The other half of the axis, and the half that leaks. `title` is a
         // content attribute, so the sanitizer leaves it; Markdown writes it as
-        // `<div start="3">` around the list, which is markup the user never
-        // copied. The plain flavor is the better paste.
-        assert_eq!(md(r#"<ol start="3"><li>a</li><li>b</li></ol>"#), None);
+        // `<div title="t">` around the paragraph, which is markup the user
+        // never copied. The plain flavor is the better paste.
+        assert_eq!(md(r#"<p title="t">a</p>"#), None);
+        // `start` was this test's example until twig 3.9.2, whose HTML parser
+        // stopped keeping it in the bag beside the list's own start number —
+        // so an `<ol start>` is now a faithful paste, numbered from where it
+        // was.
+        assert_eq!(
+            md(r#"<ol start="3"><li>a</li><li>b</li></ol>"#).as_deref(),
+            Some("3. a\n4. b")
+        );
     }
 
     #[test]

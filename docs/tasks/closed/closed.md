@@ -19,6 +19,7 @@ contents:
 - '[Clicks left of a table jump to its last cell](/docs/tasks/closed/table-left-margin-hit-testing.md)'
 - '[Table caret and selection drift after Unicode](/docs/tasks/closed/table-unicode-geometry.md)'
 - '[Wasm Frame Crosses Whole](/docs/tasks/closed/wasm-frame-crosses-whole.md)'
+- '[A typed dollar mints math in the hidden mode](/docs/tasks/closed/a-typed-dollar-mints-math-in-the-hidden-mode.md)'
 ---
 
 # Closed tasks
