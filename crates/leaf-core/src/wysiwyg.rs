@@ -3538,6 +3538,23 @@ impl Builder<'_> {
             {
                 self.block_directive(id, pf);
             }
+            // HTML and AsciiDoc spell `insert_directive`'s page break in ways
+            // of their own — `<page-break></page-break>`, an *element* with
+            // no form at all, and `<<<`, a directive with none — so neither
+            // meets the arm above. Both are named `page-break` and empty, and
+            // both draw the same placeholder, for the same reason djot's
+            // fence below does: a frontend that paginates on the mark must
+            // not be able to tell which format the file is in. Narrow to the
+            // one name: an arbitrary empty custom element is not a leaf
+            // directive.
+            "container"
+                if node.name.as_deref() == Some(crate::doc::PAGE_BREAK)
+                    && node.directive_form.is_none()
+                    && node.origin.is_some()
+                    && self.children(id).is_empty() =>
+            {
+                self.block_directive(id, pf);
+            }
             // djot has no *leaf* directive form. `insert_directive` spells the
             // same document as an empty `::: page-break` fence — a container
             // with nothing in it — and the name comes back as the fence's one
@@ -9855,14 +9872,20 @@ mod tests {
 
     /// A page break is the `::page-break` leaf directive, and djot spells the
     /// same document as an empty `::: page-break` fence whose name comes back
-    /// as a class. Both draw the placeholder row every leaf directive gets and
-    /// both carry the same [`DirectiveMark`], because a frontend that opens a
-    /// page at one must not be able to tell which format the file is in.
+    /// as a class, HTML as a `<page-break>` element and AsciiDoc as `<<<`. All
+    /// four draw the placeholder row every leaf directive gets and carry the
+    /// same [`DirectiveMark`], because a frontend that opens a page at one
+    /// must not be able to tell which format the file is in.
     #[test]
-    fn a_page_break_reads_the_same_in_markdown_and_in_djot() {
+    fn a_page_break_reads_the_same_in_every_format() {
         for (fmt, src) in [
             (Format::Markdown, "a\n\n::page-break\n\nb\n"),
             (Format::Djot, "a\n\n::: page-break\n:::\n\nb\n"),
+            (
+                Format::Html,
+                "<p>a</p>\n\n<page-break></page-break>\n\n<p>b</p>\n",
+            ),
+            (Format::Asciidoc, "a\n\n<<<\n\nb\n"),
         ] {
             let m = map_leaf(src, fmt);
             let marks: Vec<&DirectiveMark> = m

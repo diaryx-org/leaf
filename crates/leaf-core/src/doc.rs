@@ -924,11 +924,9 @@ pub struct Capabilities {
     pub text_color: bool,
     /// The page-break button — [`Doc::insert_page_break`], twig's
     /// `Gesture::InsertDirective`. Markdown under the `directives` extension
-    /// [`parse_extensions`] turns on (`::page-break`) and djot, which spells
-    /// it as an empty `::: page-break` fence.
-    ///
-    /// **Those two and no others**, though twig spells the gesture in HTML and
-    /// AsciiDoc as well — see [`Capabilities::of`].
+    /// [`parse_extensions`] turns on (`::page-break`), djot, which spells it
+    /// as an empty `::: page-break` fence, HTML (`<page-break></page-break>`)
+    /// and AsciiDoc (`<<<`) — each drawn as the same placeholder row.
     pub page_break: bool,
     /// Moving a block — [`Doc::move_block`] and the Alt+↑/↓ pair, twig's
     /// `Gesture::MoveBlock`. Every format with blocks a caret can name; XML
@@ -986,18 +984,10 @@ impl Capabilities {
             font_size: supports(Gesture::WrapRangeAttrs),
             font_family: supports(Gesture::WrapRangeAttrs),
             text_color: supports(Gesture::WrapRangeAttrs),
-            // Narrower than the gesture, on purpose. Twig spells
-            // `InsertDirective` in HTML and AsciiDoc too, and spells it
-            // *differently* there — `<page-break></page-break>` and `<<<` —
-            // and the walker reads only the two spellings above. An HTML page
-            // break draws as nothing at all (no row, no caret home) and an
-            // AsciiDoc one as an empty unlabelled row, so the button would
-            // write a break the author cannot see and cannot get back to.
-            // The proposal claims Markdown and djot, and this is that claim.
-            // Widening it is the walker's work, not this line's — see
-            // `docs/tasks/page-break-in-html-and-asciidoc.md`.
-            page_break: supports(Gesture::InsertDirective)
-                && matches!(format, Format::Markdown | Format::Djot),
+            // Every format twig spells the directive in: the walker draws
+            // HTML's `<page-break>` and AsciiDoc's `<<<` as the same
+            // placeholder Markdown's `::page-break` and djot's fence get.
+            page_break: supports(Gesture::InsertDirective),
             move_block: supports(Gesture::MoveBlock),
         }
     }
@@ -18073,6 +18063,27 @@ mod tests {
                 .map(|m| m.name.as_str()),
             Some(PAGE_BREAK)
         );
+
+        // HTML and AsciiDoc spell it their own way, and draw it the same.
+        for (fmt, src, spelled) in [
+            (Format::Html, "<p>hello</p>\n", "<page-break></page-break>"),
+            (Format::Asciidoc, "hello\n", "<<<"),
+        ] {
+            let mut d = fmt_doc(src, fmt);
+            d.caret = d.source.find("hello").unwrap() + 5;
+            d.insert_page_break();
+            assert!(d.source.contains(spelled), "{fmt:?}: {:?}", d.source);
+            d.view = View::Wysiwyg;
+            d.build_visual(80);
+            let marks = d
+                .vmap
+                .rows
+                .iter()
+                .filter_map(|r| r.leaf_directive.as_ref())
+                .map(|m| m.name.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(marks, [PAGE_BREAK], "{fmt:?}");
+        }
     }
 
     /// The vocabulary's capabilities, per format. The two block properties are
@@ -18112,21 +18123,14 @@ mod tests {
         for f in [Format::Markdown, Format::Djot, Format::Html] {
             assert!(Capabilities::of(f).move_block, "{f:?} moves blocks");
         }
-        assert!(Capabilities::of(Format::Markdown).page_break);
-        assert!(Capabilities::of(Format::Djot).page_break);
-
-        // And those two *only*, though twig spells the gesture in HTML and
-        // AsciiDoc as well: it spells it differently there —
-        // `<page-break></page-break>` and `<<<` — and the walker reads neither,
-        // so the button would write a break that draws as nothing at all in
-        // HTML and as an empty unlabelled row in AsciiDoc. The flag describes
-        // what leaf can show, not what twig can write. See
-        // `docs/tasks/page-break-in-html-and-asciidoc.md`.
-        let exts = parse_extensions();
-        assert!(Format::Html.supports_with(exts, Gesture::InsertDirective));
-        assert!(Format::Asciidoc.supports_with(exts, Gesture::InsertDirective));
-        assert!(!Capabilities::of(Format::Html).page_break);
-        assert!(!Capabilities::of(Format::Asciidoc).page_break);
+        for f in [
+            Format::Markdown,
+            Format::Djot,
+            Format::Html,
+            Format::Asciidoc,
+        ] {
+            assert!(Capabilities::of(f).page_break, "{f:?} breaks pages");
+        }
     }
 
     /// A format that cannot spell a property refuses in its own words and

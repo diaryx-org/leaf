@@ -657,10 +657,9 @@ pub struct CapabilitiesView {
     /// confused with `mark_color`: that is a highlight's background and rides the
     /// `mark` node, this is a run's foreground and rides an attributed span.
     text_color: bool,
-    /// The page-break button — `insert_page_break`. Markdown and djot and no
-    /// others, though twig spells the gesture in HTML and AsciiDoc too: the flag
-    /// describes what leaf can *show*, and the walker draws neither of those
-    /// spellings yet.
+    /// The page-break button — `insert_page_break`. Markdown, djot, HTML and
+    /// AsciiDoc, each spelling it its own way and each drawn as the same
+    /// placeholder row.
     page_break: bool,
     /// Moving a block — `moveBlock`, `moveBlockUp`, `moveBlockDown`, and a
     /// drag. Every format with blocks a caret can name; XML has none.

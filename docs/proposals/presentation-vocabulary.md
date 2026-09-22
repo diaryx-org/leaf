@@ -15,10 +15,11 @@ twig-doc 3.6.0 (`3b8b5aa`): core in `ecd3219`, with a review's four fixes in
 `1df3fee` and the caret kept on its text through a Markdown `<div>` wrap in
 `adcd0bc`; both bindings in `77a963f`; leaf-swift in `cf89f97` and `095bf88`;
 leaf-web in `57a15df` and `b2ed99a`; leaf-ratatui in `b72f67f`. Four things
-the text below did not foresee. `Capabilities::page_break` is true for
+the text below did not foresee. `Capabilities::page_break` was true for
 Markdown and djot only: twig spells the directive in HTML and AsciiDoc too,
-but the walker cannot yet read `<page-break>` or `<<<` back, and the
-[task](../tasks/page-break-in-html-and-asciidoc.md) says what would. A clear
+but the walker could not yet read `<page-break>` or `<<<` back — until the
+[task](/docs/tasks/closed/page-break-in-html-and-asciidoc.md) that says so was done
+on 2026-09-22, and the flag is now the gesture's alone. A clear
 that cannot reach its property — the caret's block is inside a `<div>` that
 sets it and is not its sole child — sets a status rather than silently doing
 nothing. The terminal draws text colour in its own inks rather than the
