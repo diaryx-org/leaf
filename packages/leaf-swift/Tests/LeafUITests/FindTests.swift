@@ -134,6 +134,33 @@ final class FindTests: XCTestCase {
         XCTAssertEqual(view.sourceText(), "# leaf\n\nA **brave** leaf.\n")
     }
 
+    func testTheFindersReplaceAllIsOneUndoStep() throws {
+        // What the finder does for Replace All: one bracket around a
+        // `replaceCharacters` per match, last to first.
+        let view = try laidOut("# leaf\n\nA **leaf**, a leaf.\n")
+        let text = view.string as NSString
+        var matches: [NSRange] = []
+        var from = 0
+        while case let r = text.range(of: "leaf", range: NSRange(location: from, length: text.length - from)),
+              r.location != NSNotFound {
+            matches.append(r)
+            from = NSMaxRange(r)
+        }
+        XCTAssertEqual(matches.count, 3)
+        XCTAssertTrue(view.shouldReplaceCharacters(inRanges: matches.map { NSValue(range: $0) },
+                                                   with: matches.map { _ in "tree" }))
+        for r in matches.reversed() { view.replaceCharacters(in: r, with: "tree") }
+        view.didReplaceCharacters()
+        XCTAssertEqual(view.sourceText(), "# tree\n\nA **tree**, a tree.\n")
+
+        view.command { $0.undo() }
+        XCTAssertEqual(view.sourceText(), "# leaf\n\nA **leaf**, a leaf.\n", "one undo puts every match back")
+        view.command { $0.redo() }
+        XCTAssertEqual(view.sourceText(), "# tree\n\nA **tree**, a tree.\n", "one redo replaces them all")
+        view.command { $0.undo() }
+        XCTAssertFalse(view.doc.view().canUndo, "and it was the only step")
+    }
+
     func testTheVisibleRangeCoversAShortDocument() throws {
         let view = try laidOut("# leaf\n\nA **bold** leaf.\n")
         let visible = view.visibleCharacterRanges.map(\.rangeValue)
@@ -237,6 +264,18 @@ final class FindTests: XCTestCase {
         let (doc, view) = try laidOut("# Leaf\n\nA **leaf**, a leaflet, a leaf.\n")
         view.replaceAll(queryString: "leaf", options: UITextSearchOptions(), withText: "tree")
         XCTAssertEqual(doc.source(), "# Leaf\n\nA **tree**, a treelet, a tree.\n", "case-sensitive, as the options say")
+    }
+
+    func testReplaceAllIsOneUndoStep() throws {
+        let (doc, view) = try laidOut("# leaf\n\nA **leaf**, a leaf.\n")
+        view.replaceAll(queryString: "leaf", options: UITextSearchOptions(), withText: "tree")
+        XCTAssertEqual(doc.source(), "# tree\n\nA **tree**, a tree.\n")
+        XCTAssertTrue(doc.view().canUndo)
+        view.command { $0.undo() }
+        XCTAssertEqual(doc.source(), "# leaf\n\nA **leaf**, a leaf.\n", "one undo puts every match back")
+        XCTAssertFalse(doc.view().canUndo, "it was the only step")
+        view.command { $0.redo() }
+        XCTAssertEqual(doc.source(), "# tree\n\nA **tree**, a tree.\n", "one redo replaces them all")
     }
 
     func testAReaderIsNotOfferedReplacement() throws {

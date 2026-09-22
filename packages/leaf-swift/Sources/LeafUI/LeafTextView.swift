@@ -249,6 +249,10 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// Quieting the caret and the beep a refused key makes is still to do.
     public var isReadOnly: Bool = false
 
+    /// Whether the find bar's replace bracket — `shouldReplaceCharacters` to
+    /// `didReplaceCharacters` — holds a core undo group open.
+    private var finderUndoGroupOpen = false
+
     /// Called with a highlight's `id` when a click lands on its margin marker
     /// — how a host's painted annotation opens. The marker, not the wash: the
     /// wash is ink a reader selects and copies through, the glyph in the
@@ -2635,8 +2639,17 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         }
     }
 
+    /// The finder brackets every replacement it makes — one, or a Replace All's
+    /// whole run of `replaceCharacters(in:with:)` — between this and
+    /// `didReplaceCharacters()`, so the bracket is a core undo group: ⌘Z after
+    /// a Replace All puts every match back at once.
     public func shouldReplaceCharacters(inRanges ranges: [NSValue], with strings: [String]) -> Bool {
-        !isReadOnly
+        guard !isReadOnly else { return false }
+        // A bracket the finder never closed is closed here, not nested into.
+        if finderUndoGroupOpen { doc.endUndoGroup() }
+        doc.beginUndoGroup()
+        finderUndoGroupOpen = true
+        return true
     }
 
     public func replaceCharacters(in range: NSRange, with string: String) {
@@ -2646,7 +2659,11 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         render(doc.replaceRange(from: UInt32(from), to: UInt32(to), text: string))
     }
 
-    public func didReplaceCharacters() {}
+    public func didReplaceCharacters() {
+        guard finderUndoGroupOpen else { return }
+        finderUndoGroupOpen = false
+        doc.endUndoGroup()
+    }
 
     /// The boxes a byte range occupies, in layout coordinates — see
     /// `EditorLayout.rangeRects(fromByte:toByte:in:)`, which the iOS find panel

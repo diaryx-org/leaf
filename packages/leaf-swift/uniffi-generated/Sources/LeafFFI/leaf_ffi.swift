@@ -585,6 +585,14 @@ public protocol LeafDocProtocol : AnyObject {
     func backspace()  -> DocView
     
     /**
+     * Open an undo group: every edit until the matching
+     * [`end_undo_group`](Self::end_undo_group) undoes and redoes as one step —
+     * a Replace All, or a Writing Tools session. Groups nest; an undo or redo
+     * closes any that is open. See `Doc::begin_undo_group`.
+     */
+    func beginUndoGroup() 
+    
+    /**
      * The source range of the block a drag starting at visual `(row, ch)`
      * would pick up — the whole paragraph, picture, table or fence, or the
      * whole list item with its children — for the outline drawn under the
@@ -711,6 +719,12 @@ public protocol LeafDocProtocol : AnyObject {
      * a row with no block under it. See [`leaf_core::Doc::drop_target_at`].
      */
     func dropTargetAt(row: UInt32)  -> DropTargetView?
+    
+    /**
+     * Close the group [`begin_undo_group`](Self::begin_undo_group) opened; a
+     * no-op when none is open.
+     */
+    func endUndoGroup() 
     
     /**
      * The face in force at the caret, or `nil` for the theme's body face.
@@ -1625,6 +1639,18 @@ open func backspace() -> DocView {
 }
     
     /**
+     * Open an undo group: every edit until the matching
+     * [`end_undo_group`](Self::end_undo_group) undoes and redoes as one step —
+     * a Replace All, or a Writing Tools session. Groups nest; an undo or redo
+     * closes any that is open. See `Doc::begin_undo_group`.
+     */
+open func beginUndoGroup() {try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_begin_undo_group(self.uniffiClonePointer(),$0
+    )
+}
+}
+    
+    /**
      * The source range of the block a drag starting at visual `(row, ch)`
      * would pick up — the whole paragraph, picture, table or fence, or the
      * whole list item with its children — for the outline drawn under the
@@ -1852,6 +1878,16 @@ open func dropTargetAt(row: UInt32) -> DropTargetView? {
         FfiConverterUInt32.lower(row),$0
     )
 })
+}
+    
+    /**
+     * Close the group [`begin_undo_group`](Self::begin_undo_group) opened; a
+     * no-op when none is open.
+     */
+open func endUndoGroup() {try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_end_undo_group(self.uniffiClonePointer(),$0
+    )
+}
 }
     
     /**
@@ -9669,6 +9705,9 @@ private var initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_backspace() != 9512) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_begin_undo_group() != 15508) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_block_range_at() != 31197) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -9721,6 +9760,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_drop_target_at() != 59322) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_end_undo_group() != 44716) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_font_family_at_caret() != 51206) {

@@ -2389,10 +2389,9 @@ extension LeafTextView: UITextSearching {
     }
 
     /// Every match, last to first, so each replacement leaves the offsets of the
-    /// ones still to go where the search found them.
-    ///
-    /// Each is its own undo step: core's history has no way to group edits a
-    /// host makes one after another, so ⌘Z puts the matches back one at a time.
+    /// ones still to go where the search found them — inside one core undo
+    /// group, so a single ⌘Z puts every match back and a single redo replaces
+    /// them all again.
     public func replaceAll(queryString: String, options: UITextSearchOptions, withText replacementText: String) {
         guard !isReadOnly else { return }
         let ranges = foundRanges(of: queryString, options: options)
@@ -2400,6 +2399,8 @@ extension LeafTextView: UITextSearching {
         replacingFoundText = true
         defer { replacingFoundText = false }
         notifyingDelegate {
+            doc.beginUndoGroup()
+            defer { doc.endUndoGroup() }
             for r in ranges.reversed() {
                 render(doc.replaceRange(from: UInt32(r.from.offset), to: UInt32(r.to.offset), text: replacementText))
             }

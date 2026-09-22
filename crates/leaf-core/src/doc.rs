@@ -387,6 +387,14 @@ pub struct FootnoteDef {
 /// [`Doc::can_undo`]'s count follows: past it twig drops the oldest step.
 const UNDO_CAP: usize = 200;
 
+/// An open [`Doc::begin_undo_group`]: how deeply it is nested, and whether an
+/// edit made inside it has put its one step on the history yet.
+#[derive(Clone, Copy, Debug)]
+struct UndoGroup {
+    depth: usize,
+    has_step: bool,
+}
+
 /// What [`Doc::set_unrevealed`] sets aside: the screen's map, what it was
 /// built from, and the caret state a paper build's clamp must not move.
 struct ScreenMap {
@@ -698,6 +706,9 @@ pub struct Doc {
     /// it ever drift anyway, the first undo twig refuses sets it to zero.
     undo_steps: usize,
     redo_steps: usize,
+    /// The undo group a host has open, if any — see
+    /// [`begin_undo_group`](Self::begin_undo_group). `None` outside one.
+    undo_group: Option<UndoGroup>,
     /// What `vmap` was built from, or `None` before the first build. The map is
     /// a pure function of `(revision, wrap, reveal line)`, so when those haven't
     /// moved, rebuilding it produces the identical map — see
@@ -1180,6 +1191,7 @@ impl Doc {
             revision: 0,
             undo_steps: 0,
             redo_steps: 0,
+            undo_group: None,
             // No map yet — the first `build_visual` always builds.
             vmap_key: None,
             screen: None,
@@ -7048,6 +7060,9 @@ impl Doc {
         if self.read_only {
             return false;
         }
+        // Stepping through the history ends a group: what comes after is not
+        // part of the step just taken back.
+        self.close_undo_group();
         let (undone, redoable) = (self.undo_steps, self.redo_steps);
         match self.editor.undo() {
             Ok(Some(change)) => {
@@ -7076,6 +7091,7 @@ impl Doc {
         if self.read_only {
             return false;
         }
+        self.close_undo_group();
         let (undone, redoable) = (self.undo_steps, self.redo_steps);
         match self.editor.redo() {
             Ok(Some(change)) => {
@@ -7101,9 +7117,81 @@ impl Doc {
     /// `coalesce_last_undo`, with the `undo_steps` mirror following
     /// it. twig merges only when there are two steps to merge. Call it after
     /// [`refresh`](Self::refresh) has counted the edit being folded.
+    ///
+    /// Inside an [undo group](Self::begin_undo_group) it does nothing: the
+    /// group's edits are already one step, which [`refresh`](Self::refresh)
+    /// folds as they come, so a fold here could only reach across the group's
+    /// start into the step before it.
     fn coalesce_last_undo(&mut self) {
+        if self.undo_group.is_some() {
+            return;
+        }
+        self.fold_last_undo();
+    }
+
+    /// twig's `coalesce_last_undo`, unconditionally, with the mirror following.
+    fn fold_last_undo(&mut self) {
         if self.editor.coalesce_last_undo().is_ok() && self.undo_steps >= 2 {
             self.undo_steps -= 1;
+        }
+    }
+
+    /// Open an undo group: every edit from here to the matching
+    /// [`end_undo_group`](Self::end_undo_group) is one step, which a single
+    /// [`undo`](Self::undo) takes back whole and a single [`redo`](Self::redo)
+    /// puts back — a Replace All over twelve matches, or a Writing Tools
+    /// session, rather than twelve presses of ⌘Z.
+    ///
+    /// Groups nest, and only the outermost end closes one. The step is folded
+    /// as each edit lands (twig's `coalesce_last_undo`, one edit at a time),
+    /// so a group of a thousand edits holds one step on the history and never
+    /// meets twig's cap. Nothing typed before the group folds into it, and
+    /// nothing typed after: it is a step of its own, even when it is a single
+    /// edit. A group no edit landed in leaves no step at all.
+    ///
+    /// An [`undo`](Self::undo) or [`redo`](Self::redo) closes any open group,
+    /// whatever its depth — the history has moved, and an edit made after it
+    /// is not part of the step it moved past. A later `end_undo_group` is
+    /// then a no-op.
+    pub fn begin_undo_group(&mut self) {
+        match &mut self.undo_group {
+            Some(g) => g.depth += 1,
+            None => {
+                self.undo_group = Some(UndoGroup {
+                    depth: 1,
+                    has_step: false,
+                });
+                // The first edit inside is not a continuation of the typing
+                // before it.
+                self.last_edit_kind = None;
+            }
+        }
+    }
+
+    /// Close the undo group [`begin_undo_group`](Self::begin_undo_group)
+    /// opened. A no-op when none is open.
+    pub fn end_undo_group(&mut self) {
+        let Some(g) = &mut self.undo_group else {
+            return;
+        };
+        if g.depth > 1 {
+            g.depth -= 1;
+        } else {
+            self.close_undo_group();
+        }
+    }
+
+    /// Whether an undo group is open.
+    pub fn in_undo_group(&self) -> bool {
+        self.undo_group.is_some()
+    }
+
+    /// Close any open group, however deeply nested.
+    fn close_undo_group(&mut self) {
+        if self.undo_group.take().is_some() {
+            // Typing after the group is not a continuation of the last edit
+            // in it.
+            self.last_edit_kind = None;
         }
     }
 
@@ -7324,9 +7412,13 @@ impl Doc {
             match new_editor(source.as_bytes(), self.format) {
                 Ok(editor) => {
                     self.editor = editor;
-                    // A fresh editor, and so a fresh history.
+                    // A fresh editor, and so a fresh history — with no
+                    // step in it for an open group to fold into.
                     self.undo_steps = 0;
                     self.redo_steps = 0;
+                    if let Some(g) = &mut self.undo_group {
+                        g.has_step = false;
+                    }
                     self.source = source.clone();
                     // Not going through `refresh`, so the revision has to move
                     // here or every frontend keeps painting the old file from
@@ -7364,6 +7456,15 @@ impl Doc {
         // `undo`/`redo` come through here too and correct this after.
         self.undo_steps = (self.undo_steps + 1).min(UNDO_CAP);
         self.redo_steps = 0;
+        // Inside a group, fold each step into the group's first as it lands.
+        // Not for `undo`/`redo`, which close the group before they get here.
+        if let Some(g) = &mut self.undo_group {
+            if g.has_step {
+                self.fold_last_undo();
+            } else {
+                g.has_step = true;
+            }
+        }
         self.clamp_caret();
     }
 
@@ -13646,6 +13747,96 @@ mod tests {
         assert_eq!(d.status.as_deref(), None, "the run was a single step");
     }
 
+    /// A Replace All the way a host does one: every match, last to first so
+    /// the offsets still to go stay put, each a selection replaced by an
+    /// insert, inside one undo group. `select_range` rather than the host's
+    /// snapping `place_caret`, which would snap against a map these tests do
+    /// not rebuild between edits.
+    fn replace_all_in(d: &mut Doc, needle: &str, with: &str) {
+        let hits: Vec<usize> = d.source.match_indices(needle).map(|(i, _)| i).collect();
+        d.begin_undo_group();
+        for at in hits.into_iter().rev() {
+            d.select_range(at, at + needle.len());
+            d.insert(with);
+        }
+        d.end_undo_group();
+    }
+
+    #[test]
+    fn a_replace_all_undoes_and_redoes_as_one_step() {
+        let mut d = wysiwyg_doc("group", "a cat, a **cat**, a cat\n");
+        d.caret = 0;
+        d.insert("x");
+        replace_all_in(&mut d, "cat", "dog");
+        assert_eq!(d.source, "xa dog, a **dog**, a dog\n");
+        assert!(d.undo(), "one undo");
+        assert_eq!(
+            d.source, "xa cat, a **cat**, a cat\n",
+            "puts back every match"
+        );
+        assert!(d.redo(), "one redo");
+        assert_eq!(
+            d.source, "xa dog, a **dog**, a dog\n",
+            "replaces them all again"
+        );
+        assert!(d.undo());
+        assert!(d.undo(), "the typing before is its own step");
+        assert_eq!(d.source, "a cat, a **cat**, a cat\n");
+        assert!(!d.can_undo());
+    }
+
+    #[test]
+    fn typing_after_a_group_is_a_step_of_its_own() {
+        // A one-character replacement is an insert like a keystroke, and a
+        // keystroke after it would coalesce with it outside a group.
+        let mut d = wysiwyg_doc("group", "a b a\n");
+        replace_all_in(&mut d, "a", "c");
+        d.caret = d.source.len() - 1;
+        d.insert("d");
+        assert_eq!(d.source, "c b cd\n");
+        assert!(d.undo());
+        assert_eq!(d.source, "c b c\n", "the typing alone");
+        assert!(d.undo());
+        assert_eq!(d.source, "a b a\n", "then the replacement, whole");
+    }
+
+    #[test]
+    fn a_group_of_more_edits_than_the_history_holds_is_still_one_step() {
+        // twig keeps 200 steps; a group folds as it goes, so it never holds
+        // more than one of them.
+        let src = format!("start\n{}\n", "x ".repeat(300));
+        let mut d = wysiwyg_doc("group", &src);
+        d.caret = 5;
+        d.insert("!");
+        replace_all_in(&mut d, "x", "yy");
+        assert_eq!(d.undo_steps, 2);
+        assert!(d.undo());
+        assert_eq!(d.source, src.replacen("start", "start!", 1));
+        assert!(d.undo());
+        assert_eq!(d.source, src);
+        assert!(!d.can_undo());
+    }
+
+    #[test]
+    fn an_undo_closes_an_open_group() {
+        let mut d = wysiwyg_doc("group", "one\n");
+        d.caret = 3;
+        d.begin_undo_group();
+        d.begin_undo_group();
+        d.insert("x");
+        assert!(d.in_undo_group());
+        assert!(d.undo());
+        assert!(
+            !d.in_undo_group(),
+            "the history moved, so the group is over"
+        );
+        d.end_undo_group();
+        d.end_undo_group();
+        assert_eq!(d.source, "one\n");
+        assert!(d.redo());
+        assert_eq!(d.source, "onex\n");
+    }
+
     #[test]
     fn can_undo_is_false_once_a_coalesced_run_is_undone() {
         // The task's repro: five characters typed are one twig step, and the
@@ -13743,6 +13934,46 @@ mod tests {
                 d.cell_tab(true);
                 d.insert("e");
                 d.cell_return();
+            }),
+            ("replace all", "cat cat cat\n", |d| {
+                d.caret = 0;
+                d.insert("a ");
+                replace_all_in(d, "cat", "dog");
+                d.insert("!");
+            }),
+            ("nested group", "one\n\ntwo\n", |d| {
+                d.begin_undo_group();
+                d.caret = 3;
+                d.insert("x");
+                d.begin_undo_group();
+                d.toggle_heading(1);
+                d.end_undo_group();
+                d.insert("y");
+                d.end_undo_group();
+                d.backspace();
+            }),
+            ("group around a list", "1. one\n2. two\n", |d| {
+                d.begin_undo_group();
+                d.caret = 6;
+                d.newline();
+                d.insert("x");
+                d.end_undo_group();
+            }),
+            ("empty group", "one\n", |d| {
+                d.caret = 3;
+                d.insert("x");
+                d.begin_undo_group();
+                d.end_undo_group();
+                d.insert("y");
+            }),
+            ("undo inside a group", "one\n", |d| {
+                d.caret = 3;
+                d.begin_undo_group();
+                d.insert("x");
+                d.undo();
+                d.insert("y");
+                d.insert("z");
+                d.end_undo_group();
             }),
         ];
         for (name, src, gesture) in cases {

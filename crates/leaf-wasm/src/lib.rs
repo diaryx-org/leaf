@@ -2278,6 +2278,18 @@ impl LeafDoc {
         self.frame()
     }
 
+    /// Open an undo group: every edit until the matching `end_undo_group`
+    /// undoes and redoes as one step — a Replace All, say. Groups nest; an
+    /// undo or redo closes any that is open.
+    pub fn begin_undo_group(&mut self) {
+        self.doc.begin_undo_group();
+    }
+
+    /// Close the group `begin_undo_group` opened; a no-op when none is open.
+    pub fn end_undo_group(&mut self) {
+        self.doc.end_undo_group();
+    }
+
     /// Switch between the rendered WYSIWYG surface and the raw source.
     pub fn toggle_view(&mut self) -> Result<DocView, JsValue> {
         self.doc.toggle_view();
