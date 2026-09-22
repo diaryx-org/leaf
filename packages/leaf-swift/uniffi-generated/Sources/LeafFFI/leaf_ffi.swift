@@ -762,6 +762,20 @@ public protocol LeafDocProtocol : AnyObject {
     func footnoteDefinitionAtCaret()  -> FootnoteDefView?
     
     /**
+     * The heading byte offset `off` is under — the nearest heading at or
+     * above it — or `None` above the first. What a host writing a link *to*
+     * a place names it by: the `#slug` comes from its `text`. See
+     * [`leaf_core::Doc::heading_at`].
+     */
+    func headingAt(off: UInt32)  -> HeadingView?
+    
+    /**
+     * The heading the caret is under — [`heading_at`](Self::heading_at) at
+     * the caret.
+     */
+    func headingAtCaret()  -> HeadingView?
+    
+    /**
      * One press of a colour swatch: colour the highlight at the caret, or —
      * over a selection that isn't highlighted yet — highlight it and colour it,
      * as **one** undo step.
@@ -1898,6 +1912,31 @@ open func footnoteAtCaret() -> FootnoteView? {
 open func footnoteDefinitionAtCaret() -> FootnoteDefView? {
     return try!  FfiConverterOptionTypeFootnoteDefView.lift(try! rustCall() {
     uniffi_leaf_ffi_fn_method_leafdoc_footnote_definition_at_caret(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+    /**
+     * The heading byte offset `off` is under — the nearest heading at or
+     * above it — or `None` above the first. What a host writing a link *to*
+     * a place names it by: the `#slug` comes from its `text`. See
+     * [`leaf_core::Doc::heading_at`].
+     */
+open func headingAt(off: UInt32) -> HeadingView? {
+    return try!  FfiConverterOptionTypeHeadingView.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_heading_at(self.uniffiClonePointer(),
+        FfiConverterUInt32.lower(off),$0
+    )
+})
+}
+    
+    /**
+     * The heading the caret is under — [`heading_at`](Self::heading_at) at
+     * the caret.
+     */
+open func headingAtCaret() -> HeadingView? {
+    return try!  FfiConverterOptionTypeHeadingView.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_heading_at_caret(self.uniffiClonePointer(),$0
     )
 })
 }
@@ -4871,6 +4910,118 @@ public func FfiConverterTypeFootnoteView_lift(_ buf: RustBuffer) throws -> Footn
 #endif
 public func FfiConverterTypeFootnoteView_lower(_ value: FootnoteView) -> RustBuffer {
     return FfiConverterTypeFootnoteView.lower(value)
+}
+
+
+/**
+ * The heading a place sits under — what [`LeafDoc::heading_at`] answers
+ * with, and the FFI mirror of [`leaf_core::Heading`].
+ */
+public struct HeadingView {
+    /**
+     * The heading's words with their markup stripped — what a `#slug` is made
+     * from.
+     */
+    public var text: String
+    /**
+     * 1 for `#`, 2 for `##`, and so on.
+     */
+    public var level: UInt32
+    /**
+     * The heading block's first byte.
+     */
+    public var start: UInt32
+    /**
+     * One past its last byte, marker and all — the heading, not its section.
+     */
+    public var end: UInt32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The heading's words with their markup stripped — what a `#slug` is made
+         * from.
+         */text: String, 
+        /**
+         * 1 for `#`, 2 for `##`, and so on.
+         */level: UInt32, 
+        /**
+         * The heading block's first byte.
+         */start: UInt32, 
+        /**
+         * One past its last byte, marker and all — the heading, not its section.
+         */end: UInt32) {
+        self.text = text
+        self.level = level
+        self.start = start
+        self.end = end
+    }
+}
+
+
+
+extension HeadingView: Equatable, Hashable {
+    public static func ==(lhs: HeadingView, rhs: HeadingView) -> Bool {
+        if lhs.text != rhs.text {
+            return false
+        }
+        if lhs.level != rhs.level {
+            return false
+        }
+        if lhs.start != rhs.start {
+            return false
+        }
+        if lhs.end != rhs.end {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(text)
+        hasher.combine(level)
+        hasher.combine(start)
+        hasher.combine(end)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeHeadingView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HeadingView {
+        return
+            try HeadingView(
+                text: FfiConverterString.read(from: &buf), 
+                level: FfiConverterUInt32.read(from: &buf), 
+                start: FfiConverterUInt32.read(from: &buf), 
+                end: FfiConverterUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: HeadingView, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.text, into: &buf)
+        FfiConverterUInt32.write(value.level, into: &buf)
+        FfiConverterUInt32.write(value.start, into: &buf)
+        FfiConverterUInt32.write(value.end, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHeadingView_lift(_ buf: RustBuffer) throws -> HeadingView {
+    return try FfiConverterTypeHeadingView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHeadingView_lower(_ value: HeadingView) -> RustBuffer {
+    return FfiConverterTypeHeadingView.lower(value)
 }
 
 
@@ -8790,6 +8941,30 @@ fileprivate struct FfiConverterOptionTypeFootnoteView: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeHeadingView: FfiConverterRustBuffer {
+    typealias SwiftType = HeadingView?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeHeadingView.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeHeadingView.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeLandingView: FfiConverterRustBuffer {
     typealias SwiftType = LandingView?
 
@@ -9528,6 +9703,12 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_footnote_definition_at_caret() != 43634) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_heading_at() != 31582) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_heading_at_caret() != 30476) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_highlight() != 22834) {

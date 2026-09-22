@@ -481,6 +481,30 @@ pub struct LandingView {
     end: usize,
 }
 
+/// The heading a place sits under — what [`LeafDoc::heading_at`] answers
+/// with, and the mirror of [`leaf_core::Heading`]. `text` is the heading's
+/// words with their markup stripped, what a `#slug` is made from; `start` and
+/// `end` are the heading block's own span.
+#[derive(Serialize, Tsify)]
+#[tsify(into_wasm_abi)]
+pub struct HeadingView {
+    text: String,
+    level: u32,
+    start: usize,
+    end: usize,
+}
+
+impl From<leaf_core::Heading> for HeadingView {
+    fn from(h: leaf_core::Heading) -> Self {
+        HeadingView {
+            text: h.text,
+            level: h.level,
+            start: h.span.start,
+            end: h.span.end,
+        }
+    }
+}
+
 /// Where a dragged block would land — what `dropTargetAt` answers with, the
 /// web peer of [`leaf_core::DropTarget`]. `offset` is `moveBlock`'s `to`;
 /// `row` is the rendered row to draw the indicator above — `rows.length`
@@ -2559,6 +2583,18 @@ impl LeafDoc {
         self.doc.image_destination_at_caret()
     }
 
+    /// The heading `off` is under — the nearest at or above it — or
+    /// `undefined` above the first. What a host writing a link *to* a place
+    /// names it by.
+    pub fn heading_at(&mut self, off: usize) -> Option<HeadingView> {
+        self.doc.heading_at(off).map(HeadingView::from)
+    }
+
+    /// The heading the caret is under, or `undefined`.
+    pub fn heading_at_caret(&mut self) -> Option<HeadingView> {
+        self.doc.heading_at_caret().map(HeadingView::from)
+    }
+
     /// Where a locator lands — the span of the block a fragment id names, for
     /// following an in-document link.
     pub fn locate(&mut self, id: &str) -> Option<LandingView> {
@@ -3615,6 +3651,15 @@ mod tests {
             assert!(n.text.is_none() && n.offset.is_none());
         }
         assert!(d.footnote_at(0).is_none(), "no reference at the line start");
+    }
+
+    #[test]
+    fn a_heading_answers_for_the_text_under_it() {
+        let mut d = handle("intro\n\n## The *Second* Part\n\nbody\n");
+        assert!(d.heading_at(0).is_none());
+        let h = d.heading_at(d.doc.source.find("body").unwrap()).unwrap();
+        assert_eq!((h.text.as_str(), h.level), ("The Second Part", 2));
+        assert_eq!(h.start, d.doc.source.find("##").unwrap());
     }
 
     #[test]
