@@ -3736,15 +3736,6 @@ impl Doc {
     /// The boundary one step above `block`: before its previous sibling, or
     /// — for the first block in a container — before the container itself.
     /// `None` for the document's first block.
-    ///
-    /// What "before" means is per kind, because twig reads a boundary as
-    /// inside the innermost container it touches: the first byte of a quote
-    /// is inside the quote, so the boundary above one is the line end before
-    /// it — a blank line, or the end of whatever it interrupted — and a quote
-    /// opening the document has nothing above it at all. A list is the one
-    /// container whose first byte is *before* it, since a list holds items and
-    /// nothing else. Lists and items behave as blocks here: before either is
-    /// its own first byte.
     fn boundary_above(&self, nodes: &[FlatNode], block: &FlatNode) -> Option<usize> {
         let parent = block.parent.and_then(|p| nodes.get(p.0 as usize))?;
         let previous = nodes
@@ -3809,28 +3800,18 @@ impl Doc {
         }
     }
 
-    /// The boundary before `node`, read the way twig reads it — see
-    /// [`boundary_above`](Self::boundary_above).
+    /// The boundary before `node`: its first byte. twig reads a container's
+    /// opening as before it — a quote's marker, a fence's first byte — so the
+    /// span's start is the boundary at the parent's level for every kind.
     fn before(&self, node: &FlatNode) -> Option<usize> {
-        let prefixed = is_block_container(&node.kind)
-            && !matches!(
-                node.kind,
-                Kind::ListItem
-                    | Kind::TaskListItem
-                    | Kind::BulletList
-                    | Kind::OrderedList
-                    | Kind::TaskList
-            );
-        if !prefixed {
-            return Some(node.span.start);
-        }
-        node.span.start.checked_sub(1)
+        Some(node.span.start)
     }
 
     /// The boundary after `node`: its own end, which for a container proper
-    /// (a quote, a list, a fenced or tagged container) is still inside it, so
-    /// there the boundary is the next line's start — a blank line, the next
-    /// block, or the document's end.
+    /// (a quote, a list, a fenced or tagged container) is the end of its last
+    /// line — after its last block, still inside it, where a block arriving
+    /// from outside joins it. Past the container is the next line's start: a
+    /// blank line, the next block, or the document's end.
     fn after(&self, node: &FlatNode) -> usize {
         let container = is_block_container(&node.kind)
             && !matches!(node.kind, Kind::ListItem | Kind::TaskListItem);
@@ -10514,22 +10495,23 @@ mod tests {
         d.move_block_down();
         assert_eq!(d.status, None);
         assert_eq!(d.source, "x\n\n> a\n>\n> b\n\ny\n");
-        // Above a quote that opens the document there is no boundary twig can
-        // name — its first byte is inside it — so that one step is refused.
+        // Above a quote that opens the document is offset 0 — before the
+        // quote, not inside it.
         let mut d = doc_with("mv_over_top", "> a\n\ny\n");
         d.caret = 5;
         d.move_block_up();
-        assert_eq!(d.source, "> a\n\ny\n");
-        assert_eq!(d.status.as_deref(), Some("move block: nothing above"));
+        assert_eq!(d.source, "y\n\n> a\n");
+        assert_eq!(d.caret, 0);
     }
 
     #[test]
-    fn move_block_up_from_the_first_block_of_a_quote_that_opens_the_document_is_refused() {
+    fn move_block_up_from_the_first_block_of_a_quote_that_opens_the_document_leaves_it() {
         let mut d = doc_with("mv_top_quote", "> a\n>\n> b\n");
         d.caret = 2;
         d.move_block_up();
-        assert_eq!(d.source, "> a\n>\n> b\n");
-        assert_eq!(d.status.as_deref(), Some("move block: nothing above"));
+        assert_eq!(d.source, "a\n\n> b\n");
+        assert_eq!(d.caret, 0);
+        assert_eq!(d.status, None);
     }
 
     #[test]
