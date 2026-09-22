@@ -2560,9 +2560,9 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         get { [NSValue(range: firstSelectedRange)] }
         set {
             guard let range = newValue.first?.rangeValue else { return }
-            let (from, to) = byteBounds(range)
+            let (from, to) = doc.matchBounds(range)
             // The exact bytes, snapping neither end: a match inside `**word**`
-            // is the word, not one stop short of it.
+            // is the word, not one stop short of it, nor its closing `**`.
             render(doc.selectRange(start: UInt32(from), end: UInt32(to)))
         }
     }
@@ -2640,24 +2640,19 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     }
 
     public func replaceCharacters(in range: NSRange, with string: String) {
-        let (from, to) = byteBounds(range)
+        // The match's own bytes — see `matchBounds` — so replacing a word at
+        // the end of a bold span leaves the span's closing delimiter.
+        let (from, to) = doc.matchBounds(range)
         render(doc.replaceRange(from: UInt32(from), to: UInt32(to), text: string))
     }
 
     public func didReplaceCharacters() {}
 
-    /// The boxes a byte range occupies, in layout coordinates — the layout's
-    /// `rangeRects` over core's positions for the two ends, plus any table
-    /// cells the range crosses.
+    /// The boxes a byte range occupies, in layout coordinates — see
+    /// `EditorLayout.rangeRects(fromByte:toByte:in:)`, which the iOS find panel
+    /// draws its matches from too.
     private func rangeRects(fromByte from: Int, toByte to: Int) -> [CGRect] {
-        guard to > from else {
-            let p = doc.posForOffset(off: UInt32(from))
-            return layoutEngine.rect(row: Int(p.row), ch: Int(p.ch)).map { [$0] } ?? []
-        }
-        let s = doc.posForOffset(off: UInt32(from)), e = doc.posForOffset(off: UInt32(to))
-        let lines = layoutEngine.rangeRects(from: (Int(s.row), Int(s.ch)), to: (Int(e.row), Int(e.ch))).map(\.rect)
-        let cells = layoutEngine.tableSelectionRects(from: from, to: to).map(\.rect)
-        return lines + cells
+        layoutEngine.rangeRects(fromByte: from, toByte: to, in: doc)
     }
 
     // MARK: accessibility — expose the document as a native text area
@@ -2849,22 +2844,19 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     private var selHighByte: Int { max(anchorByte, caretByte) }
     private var hasSelection: Bool { docView.hasSelection }
 
+    // The crossing itself is `LeafDoc`'s (TextSearch.swift), shared with the
+    // iOS view's find panel; these name it the way this file reads it.
+
     /// The document's whole plain text — the string the system's UTF-16 ranges index.
-    private func fullText() -> String { doc.textInRange(from: 0, to: doc.docEndOffset()) }
+    private func fullText() -> String { doc.visibleText() }
 
     /// A source byte range as the system's UTF-16 `NSRange` into `fullText()`.
     private func utf16Range(fromByte: Int, toByte: Int) -> NSRange {
-        let lo = Int(doc.utf16IndexForOffset(off: UInt32(max(0, fromByte))))
-        let hi = Int(doc.utf16IndexForOffset(off: UInt32(max(fromByte, toByte))))
-        return NSRange(location: lo, length: hi - lo)
+        doc.utf16Range(fromByte: fromByte, toByte: toByte)
     }
 
     /// The system's UTF-16 `NSRange` as source byte bounds, both ends caret stops.
-    private func byteBounds(_ range: NSRange) -> (from: Int, to: Int) {
-        let from = Int(doc.offsetForUtf16Index(index: UInt32(max(0, range.location))))
-        let to = Int(doc.offsetForUtf16Index(index: UInt32(max(0, range.location + range.length))))
-        return (from, max(from, to))
-    }
+    private func byteBounds(_ range: NSRange) -> (from: Int, to: Int) { doc.byteBounds(range) }
 
     // MARK: NSSpellChecker
 

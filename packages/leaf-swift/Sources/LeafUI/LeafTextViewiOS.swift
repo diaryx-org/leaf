@@ -766,6 +766,25 @@ public final class LeafTextView: UIView, UITextInput {
     /// the menu the long press already raises rather than in a second one.
     private lazy var editMenu = UIEditMenuInteraction(delegate: self)
 
+    /// The system find panel — ⌘F on an iPad keyboard, Edit ▸ Find, the Find
+    /// rotor — over this view as its `UITextSearching` client (see "Find"
+    /// below). The panel is UIKit's; what it searches, and how a match is lit,
+    /// scrolled to and replaced, is this view's.
+    public private(set) lazy var findInteraction = UIFindInteraction(sessionDelegate: self)
+
+    /// The matches the find panel has asked to be lit, by source byte range,
+    /// with how: every match found, and the current one brighter.
+    private var foundDecorations: [FoundRange: UITextSearchFoundTextStyle] = [:]
+    /// A re-search is already queued for the text having changed under the
+    /// panel — see `invalidateFoundResultsAfterEdit`.
+    private var findInvalidationQueued = false
+    /// A replace the panel itself asked for is under way: it re-searches on
+    /// its own afterwards, and an invalidation on top of that leaves it with
+    /// no results.
+    private var replacingFoundText = false
+    /// The panel's last search, to run again when the text changes under it.
+    private var lastFindQuery: (query: String, options: UITextSearchOptions)?
+
     public init(doc: LeafDoc, theme: EditorTheme = .default) {
         self.doc = doc
         self.hostTheme = theme
@@ -798,6 +817,7 @@ public final class LeafTextView: UIView, UITextInput {
         pinch.delegate = self   // alongside the scroll view's pan: a pinch that drifts also scrolls
         addGestureRecognizer(pinch)
         addInteraction(editMenu)
+        addInteraction(findInteraction)
         // Seed with the initial caret so the first reflow opens at the top.
         lastCaretOffset = doc.caretOffset()
         applyDynamicType()   // scale type to the current trait environment
@@ -1307,7 +1327,10 @@ public final class LeafTextView: UIView, UITextInput {
         }
         onStateChange?(EditorState(view))
         if relaid { onLayoutChange?() }
-        if edited { onEdit?() }
+        if edited {
+            invalidateFoundResultsAfterEdit()
+            onEdit?()
+        }
     }
 
     /// Put the caret at `offset` and land the reader on it — how a host arrives
@@ -1418,6 +1441,7 @@ public final class LeafTextView: UIView, UITextInput {
         if !isPaper { PageChrome.draw(layoutEngine.pages, theme: renderTheme, clip: rect, in: ctx) }
         // Under every other mark: a light behind the words, not over them.
         if !isPaper { drawLandingFlash(in: ctx) }
+        if !isPaper { drawFoundText(in: ctx) }
         drawDirectiveBorders(in: ctx, dirtyRect: rect)
         // One pass for the quote bars (a run of quoted rows merges into a single
         // bar), before the rows, exactly as the AppKit surface orders it.
@@ -1725,6 +1749,10 @@ public final class LeafTextView: UIView, UITextInput {
             let pb = UIPasteboard.general
             return pb.hasStrings || (onPaste != nil && (pb.hasImages || pb.hasURLs))
         case #selector(selectAll(_:)):                return true
+        case #selector(find(_:)), #selector(findNext(_:)), #selector(findPrevious(_:)):
+            return true
+        case #selector(findAndReplace(_:)):           return !isReadOnly
+        case #selector(useSelectionForFind(_:)):      return docView.hasSelection
         default: return super.canPerformAction(action, withSender: sender)
         }
     }
@@ -1738,11 +1766,20 @@ public final class LeafTextView: UIView, UITextInput {
     ///
     /// Host verbs lead, inline, with the system's Copy/Look Up kept after
     /// them: a host adds to the reader's menu, it does not take the menu over.
+    /// Find Selection follows them, as it does in a `UITextView`: on a phone
+    /// with no keyboard it is the way into the find panel.
     public func editMenu(
         for textRange: UITextRange, suggestedActions: [UIMenuElement]
     ) -> UIMenu? {
-        guard let host = selectionMenuActions?(), !host.isEmpty else { return nil }
-        return UIMenu(children: [UIMenu(options: .displayInline, children: host)] + suggestedActions)
+        let host = selectionMenuActions?() ?? []
+        let findSelection = UIAction(title: loc("menu.findSelection", "Find Selection"),
+                                     image: UIImage(systemName: "text.magnifyingglass")) { [weak self] _ in
+            self?.useSelectionForFind(nil)
+            self?.performFind(.showFind)
+        }
+        let find = UIMenu(options: .displayInline, children: [findSelection])
+        guard !host.isEmpty else { return UIMenu(children: suggestedActions + [find]) }
+        return UIMenu(children: [UIMenu(options: .displayInline, children: host)] + suggestedActions + [find])
     }
 
     public override func copy(_ sender: Any?) {
@@ -2160,6 +2197,213 @@ extension LeafTextView: UIEditMenuInteractionDelegate {
         // `.displayInline` keeps them as a group in the same menu rather than
         // folding them behind a submenu title.
         return UIMenu(children: [UIMenu(options: .displayInline, children: actions)] + suggestedActions)
+    }
+}
+// MARK: - Find — the system find panel over the visible text
+
+/// A found range's identity, in source bytes: what a decoration is keyed by.
+private struct FoundRange: Hashable {
+    let from: Int
+    let to: Int
+    init(_ range: UITextRange) {
+        let r = range as? LeafTextRange
+        from = r?.from.offset ?? 0
+        to = r?.to.offset ?? 0
+    }
+}
+
+/// What a host's Find menu asks of the iOS view — the AppKit peer takes an
+/// `NSTextFinder.Action` for the same items.
+public enum LeafFindAction: Sendable {
+    /// Find… — the panel, with the search field.
+    case showFind
+    /// Find and Replace… — the panel with the replace field too.
+    case showReplace
+    /// Find Next and Find Previous: the next match after, or before, the
+    /// current one.
+    case next, previous
+    /// Use Selection for Find: the selected text becomes the search string.
+    case useSelection
+    /// Put the panel away.
+    case hide
+}
+
+extension LeafTextView: UIFindInteractionDelegate {
+    public func findInteraction(_ interaction: UIFindInteraction, sessionFor view: UIView) -> UIFindSession? {
+        UITextSearchingFindSession(searchableObject: self)
+    }
+
+    /// Carry out a Find menu item.
+    public func performFind(_ action: LeafFindAction) {
+        switch action {
+        case .showFind: findInteraction.presentFindNavigator(showingReplace: false)
+        case .showReplace: findInteraction.presentFindNavigator(showingReplace: !isReadOnly)
+        case .next: findInteraction.findNext()
+        case .previous: findInteraction.findPrevious()
+        case .useSelection: useSelectionForFind(nil)
+        case .hide: findInteraction.dismissFindNavigator()
+        }
+    }
+
+    // The responder chain's names for the same items — UIKit's own Edit ▸ Find
+    // menu, and a hardware keyboard's ⌘F where the host's menu has none.
+    public override func find(_ sender: Any?) { performFind(.showFind) }
+    public override func findAndReplace(_ sender: Any?) { performFind(.showReplace) }
+    public override func findNext(_ sender: Any?) { performFind(.next) }
+    public override func findPrevious(_ sender: Any?) { performFind(.previous) }
+    public override func useSelectionForFind(_ sender: Any?) {
+        let (lo, hi) = (min(Int(doc.anchorOffset()), Int(doc.caretOffset())),
+                        max(Int(doc.anchorOffset()), Int(doc.caretOffset())))
+        guard hi > lo else { return }
+        findInteraction.searchText = doc.textInRange(from: UInt32(lo), to: UInt32(hi))
+    }
+
+    /// The text changed under an open panel — typed, pasted, undone, a
+    /// toolbar command — so its matches may be stale: run its search again.
+    /// Not `invalidateFoundResults`, which empties the panel ("0") and leaves
+    /// it empty until the query is edited. Once per turn, however many frames
+    /// the change took, and after the change rather than inside it; and not
+    /// for a replace the panel asked for, which it follows up itself.
+    fileprivate func invalidateFoundResultsAfterEdit() {
+        guard !replacingFoundText, findInteraction.activeFindSession != nil, !findInvalidationQueued else { return }
+        findInvalidationQueued = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.findInvalidationQueued = false
+            guard let session = self.findInteraction.activeFindSession, let last = self.lastFindQuery else { return }
+            session.performSearch(query: last.query, options: last.options)
+        }
+    }
+
+    /// The lit matches, under the text: a wash on every match found, and a
+    /// stronger one on the current one — the two a `UITextView` draws.
+    fileprivate func drawFoundText(in ctx: CGContext) {
+        guard !foundDecorations.isEmpty else { return }
+        // The current match last, so a wash on a neighbour never covers it.
+        for (style, box) in foundTextRects.sorted(by: { $0.style.rawValue < $1.style.rawValue }) {
+            let color = style == .highlighted
+                ? UIColor.systemYellow.withAlphaComponent(0.85)
+                : UIColor.systemYellow.withAlphaComponent(0.3)
+            ctx.setFillColor(color.cgColor)
+            ctx.fill(box.insetBy(dx: -1, dy: 0))
+        }
+    }
+
+    /// The lit boxes of every decorated match, by style — what `draw` paints.
+    var foundTextRects: [(style: UITextSearchFoundTextStyle, rect: CGRect)] {
+        foundDecorations.flatMap { range, style in
+            layoutEngine.rangeRects(fromByte: range.from, toByte: range.to, in: doc)
+                .filter { $0.width > 0 }.map { (style, $0) }
+        }
+    }
+
+    /// A match as the panel's range: the source bytes the UTF-16 match covers
+    /// in the visible text.
+    private func foundRange(_ utf16: NSRange) -> LeafTextRange {
+        let (from, to) = doc.matchBounds(utf16)
+        return LeafTextRange(LeafTextPosition(from), LeafTextPosition(to))
+    }
+
+    /// Every match of `query` the panel's options allow, first to last.
+    func foundRanges(of query: String, options: UITextSearchOptions) -> [LeafTextRange] {
+        let word: TextSearch.WordMatch
+        switch options.wordMatchMethod {
+        case .startsWith: word = .startsWith
+        case .fullWord: word = .fullWord
+        default: word = .contains
+        }
+        return TextSearch.matches(of: query, in: doc.visibleText(),
+                                  options: options.stringCompareOptions, word: word)
+            .map(foundRange)
+    }
+}
+
+extension LeafTextView: UITextSearching {
+    /// One document: the view's own text.
+    public typealias DocumentIdentifier = AnyHashable?
+
+    public func compare(_ foundRange: UITextRange, toRange: UITextRange,
+                        document: DocumentIdentifier?) -> ComparisonResult {
+        let a = FoundRange(foundRange), b = FoundRange(toRange)
+        if a.from != b.from { return a.from < b.from ? .orderedAscending : .orderedDescending }
+        if a.to != b.to { return a.to < b.to ? .orderedAscending : .orderedDescending }
+        return .orderedSame
+    }
+
+    /// The search runs over what the reader sees — the words without their
+    /// markup in the rendered view, the source in the source view — which is
+    /// the text the system's UTF-16 ranges index everywhere else.
+    public func performTextSearch(queryString: String, options: UITextSearchOptions,
+                                  resultAggregator: UITextSearchAggregator<DocumentIdentifier>) {
+        lastFindQuery = (queryString, options)
+        for range in foundRanges(of: queryString, options: options) {
+            resultAggregator.foundRange(range, searchString: queryString, document: nil)
+        }
+        resultAggregator.finishedSearching()
+    }
+
+    public func decorate(foundTextRange: UITextRange, document: DocumentIdentifier?,
+                         usingStyle style: UITextSearchFoundTextStyle) {
+        let key = FoundRange(foundTextRange)
+        if style == .normal { foundDecorations[key] = nil } else { foundDecorations[key] = style }
+        setNeedsDisplay()
+    }
+
+    public func clearAllDecoratedFoundText() {
+        guard !foundDecorations.isEmpty else { return }
+        foundDecorations.removeAll()
+        setNeedsDisplay()
+    }
+
+    /// The current match is the selection, as the Mac's find bar leaves it: the
+    /// panel closes on the word it stopped at, selected.
+    public func willHighlight(foundTextRange: UITextRange, document: DocumentIdentifier?) {
+        let r = FoundRange(foundTextRange)
+        // The exact bytes, snapping neither end: a match inside `**word**` is
+        // the word, not one stop short of it.
+        command { $0.selectRange(start: UInt32(r.from), end: UInt32(r.to)) }
+    }
+
+    public func scrollRangeToVisible(_ range: UITextRange, inDocument: DocumentIdentifier?) {
+        let r = FoundRange(range)
+        let boxes = layoutEngine.rangeRects(fromByte: r.from, toByte: r.to, in: doc)
+        guard let first = boxes.first, let scroll = enclosingScrollView() else { return }
+        let union = boxes.dropFirst().reduce(first) { $0.union($1) }
+        // A line's worth of room either side, as the caret gets, so the match
+        // is not left flush against the panel or the top bar.
+        scroll.scrollRectToVisible(convert(union.insetBy(dx: 0, dy: -renderTheme.lineHeight), to: scroll),
+                                   animated: true)
+    }
+
+    public var supportsTextReplacement: Bool { !isReadOnly }
+
+    public func shouldReplace(foundTextRange: UITextRange, document: DocumentIdentifier?,
+                              withText: String) -> Bool { !isReadOnly }
+
+    public func replace(foundTextRange: UITextRange, document: DocumentIdentifier?,
+                        withText replacementText: String) {
+        let r = FoundRange(foundTextRange)
+        replacingFoundText = true
+        defer { replacingFoundText = false }
+        command { $0.replaceRange(from: UInt32(r.from), to: UInt32(r.to), text: replacementText) }
+    }
+
+    /// Every match, last to first, so each replacement leaves the offsets of the
+    /// ones still to go where the search found them.
+    ///
+    /// Each is its own undo step: core's history has no way to group edits a
+    /// host makes one after another, so ⌘Z puts the matches back one at a time.
+    public func replaceAll(queryString: String, options: UITextSearchOptions, withText replacementText: String) {
+        guard !isReadOnly else { return }
+        let ranges = foundRanges(of: queryString, options: options)
+        guard !ranges.isEmpty else { return }
+        replacingFoundText = true
+        defer { replacingFoundText = false }
+        notifyingDelegate {
+            for r in ranges.reversed() {
+                render(doc.replaceRange(from: UInt32(r.from.offset), to: UInt32(r.to.offset), text: replacementText))
+            }
+        }
     }
 }
 #endif

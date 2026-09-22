@@ -765,6 +765,11 @@ public final class LeafEditorModel: ObservableObject {
     }
 
     public func checkSpelling() { textView?.checkSpelling(nil) }
+    #elseif canImport(UIKit)
+    /// Drive the system find panel: show it, with or without its replace
+    /// field, find next/previous, use the selection, put it away. What Edit ▸
+    /// Find's items do on an iPad, for a menu built in SwiftUI.
+    public func find(_ action: LeafFindAction) { textView?.performFind(action) }
     #endif
     public func toggleView() { run { $0.toggleView() } }
 
