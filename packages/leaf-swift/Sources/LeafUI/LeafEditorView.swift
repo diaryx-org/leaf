@@ -650,6 +650,15 @@ public final class LeafEditorModel: ObservableObject {
     /// and no page, so the first sheet is never blank.
     public func insertPageBreak() { run { $0.insertPageBreak() } }
 
+    /// Move the caret's block one place up — ⌥↑ and the Format menu's Move
+    /// Block Up: above the block before it, and out of its container to just
+    /// above it when it is the first block there. A list item goes with its
+    /// children; the caret rides the block. Gate on `capabilities.moveBlock`.
+    /// See `leaf_core::Doc::move_block_up`.
+    public func moveBlockUp()      { run { $0.moveBlockUp() } }
+    /// The mirror of `moveBlockUp` — ⌥↓ and Move Block Down.
+    public func moveBlockDown()    { run { $0.moveBlockDown() } }
+
     public func setParagraph()     { run { $0.setParagraph() } }
     public func setHeading(_ level: UInt32) { run { $0.setHeading(level: level) } }
     public func toggleBlockquote() { run { $0.toggleBlockquote() } }

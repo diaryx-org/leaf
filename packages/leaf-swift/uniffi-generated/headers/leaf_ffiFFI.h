@@ -291,6 +291,11 @@ int8_t uniffi_leaf_ffi_fn_method_leafdoc_authorable(void*_Nonnull ptr, RustCallS
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_backspace(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_BLOCK_RANGE_AT
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_BLOCK_RANGE_AT
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_block_range_at(void*_Nonnull ptr, uint32_t row, uint32_t ch, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_CAPABILITIES
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_CAPABILITIES
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_capabilities(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
@@ -369,6 +374,11 @@ int32_t uniffi_leaf_ffi_fn_method_leafdoc_distance_offset(void*_Nonnull ptr, uin
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_DOC_END_OFFSET
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_DOC_END_OFFSET
 uint32_t uniffi_leaf_ffi_fn_method_leafdoc_doc_end_offset(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_DROP_TARGET_AT
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_DROP_TARGET_AT
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_drop_target_at(void*_Nonnull ptr, uint32_t row, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_FONT_FAMILY_AT_CARET
@@ -489,6 +499,21 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_mark_saved(void*_Nonnull ptr, RustC
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MARKUP_MODE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MARKUP_MODE
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_markup_mode(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MOVE_BLOCK
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MOVE_BLOCK
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_move_block(void*_Nonnull ptr, uint32_t from, uint32_t to, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MOVE_BLOCK_DOWN
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MOVE_BLOCK_DOWN
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_move_block_down(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MOVE_BLOCK_UP
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MOVE_BLOCK_UP
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_move_block_up(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MOVE_DOC_END
@@ -1222,6 +1247,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_backspace(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_BLOCK_RANGE_AT
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_BLOCK_RANGE_AT
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_block_range_at(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_CAPABILITIES
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_CAPABILITIES
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_capabilities(void
@@ -1315,6 +1346,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_distance_offset(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_DOC_END_OFFSET
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_DOC_END_OFFSET
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_doc_end_offset(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_DROP_TARGET_AT
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_DROP_TARGET_AT
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_drop_target_at(void
     
 );
 #endif
@@ -1459,6 +1496,24 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_mark_saved(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_MARKUP_MODE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_MARKUP_MODE
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_markup_mode(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_MOVE_BLOCK
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_MOVE_BLOCK
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_move_block(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_MOVE_BLOCK_DOWN
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_MOVE_BLOCK_DOWN
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_move_block_down(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_MOVE_BLOCK_UP
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_MOVE_BLOCK_UP
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_move_block_up(void
     
 );
 #endif

@@ -1610,10 +1610,18 @@ public final class LeafTextView: UIView, UITextInput {
                 // Shift+Return: plain Return arrives through `insertText("\n")`, but
                 // the shifted chord doesn't — capture it here for the in-cell line
                 // break (an ordinary newline off a table).
-                k("\r", .shift)]
+                k("\r", .shift),
+                // ⌥↑ / ⌥↓ move the caret's *block* — a paragraph, a picture, a
+                // list item with its children — one place, as the Mac's Format
+                // menu does. Unmodified arrows stay the text-input system's.
+                k(UIKeyCommand.inputUpArrow, .alternate),
+                k(UIKeyCommand.inputDownArrow, .alternate)]
     }
 
     @objc private func handleShortcut(_ cmd: UIKeyCommand) {
+        // The arrows are named, not typed, and their names are case-sensitive.
+        if cmd.input == UIKeyCommand.inputUpArrow { return command { $0.moveBlockUp() } }
+        if cmd.input == UIKeyCommand.inputDownArrow { return command { $0.moveBlockDown() } }
         switch (cmd.input?.lowercased(), cmd.modifierFlags.contains(.shift)) {
         case ("b", _): command { $0.toggleBold() }
         case ("i", _): command { $0.toggleItalic() }

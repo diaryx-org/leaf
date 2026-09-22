@@ -481,6 +481,26 @@ pub struct LandingView {
     end: usize,
 }
 
+/// Where a dragged block would land — what `dropTargetAt` answers with, the
+/// web peer of [`leaf_core::DropTarget`]. `offset` is `moveBlock`'s `to`;
+/// `row` is the rendered row to draw the indicator above — `rows.length`
+/// for a drop below everything.
+#[derive(Serialize, Tsify)]
+#[tsify(into_wasm_abi)]
+pub struct DropTargetView {
+    offset: usize,
+    row: usize,
+}
+
+impl From<leaf_core::DropTarget> for DropTargetView {
+    fn from(t: leaf_core::DropTarget) -> Self {
+        DropTargetView {
+            offset: t.offset,
+            row: t.row,
+        }
+    }
+}
+
 impl From<leaf_core::Landing> for LandingView {
     fn from(l: leaf_core::Landing) -> Self {
         LandingView {
@@ -618,6 +638,9 @@ pub struct CapabilitiesView {
     /// describes what leaf can *show*, and the walker draws neither of those
     /// spellings yet.
     page_break: bool,
+    /// Moving a block — `moveBlock`, `moveBlockUp`, `moveBlockDown`, and a
+    /// drag. Every format with blocks a caret can name; XML has none.
+    move_block: bool,
 }
 
 impl From<leaf_core::Capabilities> for CapabilitiesView {
@@ -651,6 +674,7 @@ impl From<leaf_core::Capabilities> for CapabilitiesView {
             font_family: c.font_family,
             text_color: c.text_color,
             page_break: c.page_break,
+            move_block: c.move_block,
         }
     }
 }
@@ -2539,6 +2563,52 @@ impl LeafDoc {
     /// following an in-document link.
     pub fn locate(&mut self, id: &str) -> Option<LandingView> {
         self.doc.locate(id).map(LandingView::from)
+    }
+
+    /// Move the caret's block one place up — Alt+↑: above the block before
+    /// it, and out of its container to just above it when it is the first
+    /// block there. A list item goes with its children; the caret rides the
+    /// block. Gate on `capabilities().move_block`.
+    pub fn move_block_up(&mut self) -> Result<DocView, JsValue> {
+        self.doc.move_block_up();
+        self.frame()
+    }
+
+    /// Move the caret's block one place down — the mirror of `move_block_up`.
+    pub fn move_block_down(&mut self) -> Result<DocView, JsValue> {
+        self.doc.move_block_down();
+        self.frame()
+    }
+
+    /// Move the block at source offset `from` to the boundary `to` — the drop
+    /// half of a drag, `to` from `drop_target_at` and `from` any offset in the
+    /// block carried. One undo step; the caret rides the block; a drop back
+    /// onto the block's own boundary is a quiet no-op.
+    pub fn move_block(&mut self, from: usize, to: usize) -> Result<DocView, JsValue> {
+        self.doc.move_block(from, to);
+        self.frame()
+    }
+
+    /// The source range of the block a drag starting at `(row, ch)` picks up
+    /// — the whole paragraph, picture, table or fence, or the whole list
+    /// item with its children — for the outline drawn under the pointer.
+    /// `undefined` on a blank line. The caret is untouched; map the pair
+    /// through `row_range_for` for its rows.
+    pub fn block_range_at(&mut self, row: usize, ch: usize) -> Option<LandingView> {
+        let off = self.offset_for_pos(row, ch);
+        self.doc.block_range_at(off).map(|r| LandingView {
+            start: r.start,
+            end: r.end,
+        })
+    }
+
+    /// Where a block dragged over rendered `row` would land: the boundary
+    /// before the row's block when the row is in its upper half, after it
+    /// otherwise, the document's end for a row below everything. `undefined`
+    /// for a row with no block under it.
+    pub fn drop_target_at(&mut self, row: usize) -> Option<DropTargetView> {
+        self.sync();
+        self.doc.drop_target_at(row).map(DropTargetView::from)
     }
 
     /// Write a footnote reference at the caret and the definition it needs.

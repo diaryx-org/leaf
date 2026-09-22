@@ -400,6 +400,22 @@ pub struct Landing {
     pub end: usize,
 }
 
+/// Where a dragged block would land — the answer to [`Doc::drop_target_at`].
+///
+/// A drop is aimed at a *row* (the one under the pointer) and lands at a
+/// *boundary* (between two blocks), and a frontend needs both halves: the
+/// offset to hand [`Doc::move_block`], and the row to draw the indicator
+/// above — which is not the row aimed at, since a drop on the lower half of a
+/// block lands below it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct DropTarget {
+    /// The boundary offset — `move_block`'s `to`.
+    pub offset: usize,
+    /// The rendered row the indicator is drawn above; `rows.len()` for a drop
+    /// below everything.
+    pub row: usize,
+}
+
 /// A selection cited out of the source: the text itself, up to a requested
 /// number of characters either side, and the byte range it came from. See
 /// [`Doc::selection_quote`].
@@ -893,6 +909,10 @@ pub struct Capabilities {
     /// **Those two and no others**, though twig spells the gesture in HTML and
     /// AsciiDoc as well — see [`Capabilities::of`].
     pub page_break: bool,
+    /// Moving a block — [`Doc::move_block`] and the Alt+↑/↓ pair, twig's
+    /// `Gesture::MoveBlock`. Every format with blocks a caret can name; XML
+    /// has none.
+    pub move_block: bool,
 }
 
 impl Capabilities {
@@ -957,6 +977,7 @@ impl Capabilities {
             // `docs/tasks/page-break-in-html-and-asciidoc.md`.
             page_break: supports(Gesture::InsertDirective)
                 && matches!(format, Format::Markdown | Format::Djot),
+            move_block: supports(Gesture::MoveBlock),
         }
     }
 }
@@ -3498,6 +3519,370 @@ impl Doc {
         self.rebuild_map();
         self.clamp_caret();
         self.record_caret();
+    }
+
+    // ── moving a block ─────────────────────────────────────────────────────────
+
+    /// The block a move picks up at `offset` — the same one
+    /// [`select_block_at`](Self::select_block_at) selects (the deepest node
+    /// that is neither inline nor a multi-block container), widened to the
+    /// list item when it is the item's first block, because that is what
+    /// twig's `move_block` moves: a bullet's text is the bullet, and dragging
+    /// it takes the item and everything under it. A block later in an item's
+    /// tail moves alone. `None` on a blank line, and past the source.
+    fn movable_block_at(&mut self, offset: usize) -> Option<FlatNode> {
+        let off = offset.min(self.source.len());
+        let chain = self.editor.ancestors_at(off).ok()?;
+        let block = chain
+            .iter()
+            .rev()
+            .find(|m| !wysiwyg::is_inline_kind(&m.kind) && !is_block_container(&m.kind))?;
+        let nodes = self.nodes();
+        let block = nodes.get(block.node_id as usize)?.clone();
+        let item = block
+            .parent
+            .and_then(|p| nodes.get(p.0 as usize))
+            .filter(|p| matches!(p.kind, Kind::ListItem | Kind::TaskListItem))
+            .filter(|p| p.first_child == Some(block.id));
+        Some(item.cloned().unwrap_or(block))
+    }
+
+    /// The source range of the block a move would pick up at `offset` — for
+    /// the outline of the block being carried, without moving the caret. The
+    /// range [`select_block_at`](Self::select_block_at) would select, except
+    /// that it is the whole item for a bullet's text, as
+    /// [`move_block`](Self::move_block) is.
+    pub fn block_range_at(&mut self, offset: usize) -> Option<Range<usize>> {
+        self.movable_block_at(offset).map(|b| b.span)
+    }
+
+    /// Move the block at `from` to the boundary `to` — twig's `move_block`,
+    /// with the undo plumbing every structural gesture has and the caret
+    /// riding the block to its new place. `from` is any offset inside the
+    /// block (the one [`block_range_at`](Self::block_range_at) finds); `to`
+    /// is a position *between* blocks — a block's first byte lands before it,
+    /// its last after it, a blank line is itself a boundary, and the source's
+    /// length is the document's end. The block takes the line prefixes of
+    /// the container the boundary is inside — a `> ` on the way into a quote,
+    /// none on the way out — and the blank lines a person would have typed
+    /// are written and removed; twig spells all of that.
+    ///
+    /// A move that would move nothing — `to` inside the block, or on the
+    /// boundary it already sits on — is a quiet no-op rather than an error,
+    /// since it is what a block dropped back where it was asks for. Any other
+    /// refusal reaches the status line: a `to` interior to a fence or a table,
+    /// or a format with no blocks a caret could name.
+    ///
+    /// In WYSIWYG the frontmatter is hidden, and a boundary above it is not
+    /// one a person can see: `to` is raised to the first rendered offset.
+    ///
+    /// `true` when the document changed. A move twig accepts that rewrites
+    /// nothing — a one-item list sent past a paragraph is still a one-item
+    /// list past that paragraph — is taken back rather than left as an undo
+    /// step with no difference in it, and is `false` too.
+    pub fn move_block(&mut self, from: usize, to: usize) -> bool {
+        if self.read_only || self.refuse_unsupported("move block", Gesture::MoveBlock) {
+            return false;
+        }
+        let len = self.source.len();
+        let from = from.min(len);
+        let to = to.clamp(self.caret_floor().min(len), len);
+        let Some(block) = self.movable_block_at(from) else {
+            self.status = Some("move block: no block here".into());
+            return false;
+        };
+        // Where the caret stands in the block, as (line within the block,
+        // bytes back from that line's end) — the shape that survives a
+        // prefix being added or stripped on the way through a container.
+        let caret = self.caret.clamp(block.span.start, block.span.end);
+        let block_line = self.source[block.span.start..caret].matches('\n').count();
+        let line_end = self.source[caret..block.span.end]
+            .find('\n')
+            .map_or(block.span.end, |i| caret + i);
+        let tail = line_end - caret;
+        let block_lines = self.source[block.span.start..block.span.end]
+            .matches('\n')
+            .count()
+            + 1;
+        let upward = to <= block.span.start;
+        self.record_caret();
+        match self.editor.move_block(from, to) {
+            Ok(_) if self.editor.source_str().ok().as_deref() == Some(self.source.as_str()) => {
+                let _ = self.editor.undo();
+                self.status = None;
+                false
+            }
+            Ok(change) => {
+                self.last_edit_kind = None; // structural edit is its own undo step
+                self.refresh();
+                let at = self.moved_block_caret(&change.new, upward, block_lines, block_line, tail);
+                self.caret = at;
+                self.anchor = None;
+                self.goal_col = None;
+                self.dirty = self.source != self.clean_source;
+                self.status = None;
+                self.rebuild_map();
+                self.clamp_caret();
+                self.record_caret();
+                true
+            }
+            // Nothing to move: the block dropped back onto its own boundary.
+            Err(twig::Error::InvalidArgument) => {
+                self.status = None;
+                false
+            }
+            Err(e) => {
+                self.status = Some(format!("move block: {e}"));
+                false
+            }
+        }
+    }
+
+    /// The caret's place in the rewritten region after a move: the moved
+    /// block's lines open the region when it went up (below the blank line it
+    /// was dropped on, when it was) and close it (above the separator twig
+    /// wrote after it) when it went down, and within them the
+    /// caret keeps its line and its distance from that line's end. Clamped
+    /// into the region rather than trusted, since a block can lose a line on
+    /// the way — a quote it was the only content of goes with it.
+    fn moved_block_caret(
+        &self,
+        new: &Range<usize>,
+        upward: bool,
+        block_lines: usize,
+        block_line: usize,
+        tail: usize,
+    ) -> usize {
+        let region = &self.source[new.start.min(self.source.len())..new.end.min(self.source.len())];
+        let mut lines: Vec<(usize, usize)> = Vec::new();
+        let mut start = 0;
+        loop {
+            match region[start..].find('\n') {
+                Some(i) => {
+                    lines.push((start, start + i));
+                    start += i + 1;
+                }
+                None => {
+                    lines.push((start, region.len()));
+                    break;
+                }
+            }
+        }
+        // A separator line is blank, or a quote's bare `>`; the region can
+        // open with one (the blank line the block was dropped on) or close
+        // with one (the one twig wrote after it).
+        let separator = |&(s, e): &(usize, usize)| {
+            region[s..e]
+                .trim()
+                .trim_start_matches('>')
+                .trim()
+                .is_empty()
+        };
+        let first = if upward {
+            lines.iter().position(|l| !separator(l)).unwrap_or(0)
+        } else {
+            let filled = lines
+                .iter()
+                .rposition(|l| !separator(l))
+                .map_or(0, |i| i + 1);
+            filled.saturating_sub(block_lines)
+        };
+        let (s, e) = lines[(first + block_line).min(lines.len() - 1)];
+        new.start + e.saturating_sub(tail).max(s)
+    }
+
+    /// Move the caret's block one place up — Alt+↑: above the block before it,
+    /// and out of its container, to just above it, when it is the first block
+    /// there. Nothing above the document's first block, and nothing to do for
+    /// a caret on a blank line; both say so in the status line.
+    pub fn move_block_up(&mut self) {
+        self.move_block_by(true);
+    }
+
+    /// Move the caret's block one place down — Alt+↓, the mirror of
+    /// [`move_block_up`](Self::move_block_up): below the block after it, and
+    /// out of its container when it is the last block there.
+    pub fn move_block_down(&mut self) {
+        self.move_block_by(false);
+    }
+
+    fn move_block_by(&mut self, up: bool) {
+        if self.read_only || self.refuse_unsupported("move block", Gesture::MoveBlock) {
+            return;
+        }
+        let Some(from) = self.block_offset_for_caret() else {
+            self.status = Some("move block: no block here".into());
+            return;
+        };
+        let Some(block) = self.movable_block_at(from) else {
+            self.status = Some("move block: no block here".into());
+            return;
+        };
+        let nodes = self.nodes();
+        let to = if up {
+            self.boundary_above(&nodes, &block)
+        } else {
+            self.boundary_below(&nodes, &block)
+        };
+        if to.is_none_or(|to| !self.move_block(from, to)) && self.status.is_none() {
+            self.status = Some(if up {
+                "move block: nothing above".into()
+            } else {
+                "move block: nothing below".into()
+            });
+        }
+    }
+
+    /// The boundary one step above `block`: before its previous sibling, or
+    /// — for the first block in a container — before the container itself.
+    /// `None` for the document's first block.
+    ///
+    /// What "before" means is per kind, because twig reads a boundary as
+    /// inside the innermost container it touches: the first byte of a quote
+    /// is inside the quote, so the boundary above one is the line end before
+    /// it — a blank line, or the end of whatever it interrupted — and a quote
+    /// opening the document has nothing above it at all. A list is the one
+    /// container whose first byte is *before* it, since a list holds items and
+    /// nothing else. Lists and items behave as blocks here: before either is
+    /// its own first byte.
+    fn boundary_above(&self, nodes: &[FlatNode], block: &FlatNode) -> Option<usize> {
+        let parent = block.parent.and_then(|p| nodes.get(p.0 as usize))?;
+        let previous = nodes
+            .iter()
+            .filter(|n| n.parent == Some(parent.id))
+            .take_while(|n| n.id != block.id)
+            .last();
+        match previous {
+            Some(p) => self.before(p),
+            None if parent.kind == Kind::Doc => None,
+            // An item leaving a nested list upward goes before the item
+            // holding that list, as an item of the outer one; the list's own
+            // first byte is inside the holding item's tail.
+            None if matches!(
+                parent.kind,
+                Kind::BulletList | Kind::OrderedList | Kind::TaskList
+            ) =>
+            {
+                match parent.parent.and_then(|p| nodes.get(p.0 as usize)) {
+                    Some(item) if matches!(item.kind, Kind::ListItem | Kind::TaskListItem) => {
+                        self.before(item)
+                    }
+                    _ => self.before(parent),
+                }
+            }
+            None => self.before(parent),
+        }
+    }
+
+    /// The boundary one step below `block`: after its next sibling, or — for
+    /// the last block in a container — just past the container, at its
+    /// parent's level ([`exit_below`](Self::exit_below)). `None` for the
+    /// document's last block.
+    fn boundary_below(&self, nodes: &[FlatNode], block: &FlatNode) -> Option<usize> {
+        let parent = block.parent.and_then(|p| nodes.get(p.0 as usize))?;
+        if let Some(n) = block.next_sibling.and_then(|n| nodes.get(n.0 as usize)) {
+            return Some(self.after(n));
+        }
+        match parent.kind {
+            Kind::Doc => None,
+            _ => self.exit_below(nodes, parent),
+        }
+    }
+
+    /// The boundary just past `container` at its parent's level: before its
+    /// next sibling, or past its parent when it is the last thing there —
+    /// the document's end at the top. Leaving a list item is the exception
+    /// that keeps a block in the list: the next item's tail, which is what
+    /// [`after`](Self::after) an item names.
+    fn exit_below(&self, nodes: &[FlatNode], container: &FlatNode) -> Option<usize> {
+        let item = matches!(container.kind, Kind::ListItem | Kind::TaskListItem);
+        match container.next_sibling.and_then(|n| nodes.get(n.0 as usize)) {
+            Some(n) if item => Some(self.after(n)),
+            Some(n) => self.before(n),
+            None => {
+                let parent = container.parent.and_then(|p| nodes.get(p.0 as usize))?;
+                match parent.kind {
+                    Kind::Doc => Some(self.source.len()),
+                    _ => self.exit_below(nodes, parent),
+                }
+            }
+        }
+    }
+
+    /// The boundary before `node`, read the way twig reads it — see
+    /// [`boundary_above`](Self::boundary_above).
+    fn before(&self, node: &FlatNode) -> Option<usize> {
+        let prefixed = is_block_container(&node.kind)
+            && !matches!(
+                node.kind,
+                Kind::ListItem
+                    | Kind::TaskListItem
+                    | Kind::BulletList
+                    | Kind::OrderedList
+                    | Kind::TaskList
+            );
+        if !prefixed {
+            return Some(node.span.start);
+        }
+        node.span.start.checked_sub(1)
+    }
+
+    /// The boundary after `node`: its own end, which for a container proper
+    /// (a quote, a list, a fenced or tagged container) is still inside it, so
+    /// there the boundary is the next line's start — a blank line, the next
+    /// block, or the document's end.
+    fn after(&self, node: &FlatNode) -> usize {
+        let container = is_block_container(&node.kind)
+            && !matches!(node.kind, Kind::ListItem | Kind::TaskListItem);
+        let end = node.span.end.min(self.source.len());
+        if container && self.source.as_bytes().get(end) == Some(&b'\n') {
+            end + 1
+        } else {
+            end
+        }
+    }
+
+    /// Where a block dragged over rendered row `row` would land — the
+    /// boundary before the row's block when the row is in its upper half, the
+    /// boundary after it otherwise, and the document's end for a row below
+    /// everything. `None` for a row that holds no block (a decoration row is
+    /// resolved to the block under it, so this is a table's bottom rule with
+    /// nothing after it, or a map with no rows). The frontend draws its
+    /// indicator above [`DropTarget::row`] and hands
+    /// [`DropTarget::offset`] to [`move_block`](Self::move_block).
+    ///
+    /// The block is the deepest one, not the widened item: a drop on a
+    /// bullet's text lands before or after that bullet, and its nested
+    /// children — rows of their own — answer for themselves.
+    pub fn drop_target_at(&mut self, row: usize) -> Option<DropTarget> {
+        let rows = self.vmap.rows.len();
+        if row >= rows {
+            return Some(DropTarget {
+                offset: self.source.len(),
+                row: rows,
+            });
+        }
+        // A gap or a rule is not a block; the block under it is the one meant.
+        let row = (row..rows).find(|&r| self.vmap.row_is_navigable(r))?;
+        let start = self.vmap.row_start(row)?;
+        let chain = self.editor.ancestors_at(start).ok()?;
+        let block = chain
+            .iter()
+            .rev()
+            .find(|m| !wysiwyg::is_inline_kind(&m.kind) && !is_block_container(&m.kind))?;
+        let span = block.span.clone();
+        let (first, last) = self.vmap.row_range_for(span.clone());
+        if row <= usize::midpoint(first, last) {
+            Some(DropTarget {
+                offset: span.start,
+                row: first,
+            })
+        } else {
+            Some(DropTarget {
+                offset: span.end.min(self.source.len()),
+                row: last + 1,
+            })
+        }
     }
 
     /// Backspace at a table's trailing stop: move onto the stop before it (the
@@ -9946,6 +10331,288 @@ mod tests {
         d.caret = 0;
         d.insert_image("logo.svg", "");
         assert_eq!(d.source, "![](logo.svg)\n");
+    }
+
+    // ── move_block ─────────────────────────────────────────────────────────────
+
+    /// A move, then its undo: one step takes the whole thing back.
+    fn moved(name: &str, body: &str, from: usize, to: usize) -> (String, Doc) {
+        let mut d = doc_with(name, body);
+        d.caret = from;
+        let steps = d.undo_steps;
+        d.move_block(from, to);
+        let after = d.source.clone();
+        assert_eq!(d.undo_steps, steps + 1, "one undo step");
+        assert!(d.dirty);
+        d.undo();
+        assert_eq!(d.source, body, "one undo restores the original");
+        (after, d)
+    }
+
+    #[test]
+    fn move_block_carries_a_paragraph_between_two_paragraphs_and_to_the_end() {
+        let body = "a\n\nb\n\nc\n";
+        assert_eq!(moved("mv_p1", body, 6, 3).0, "a\n\nc\n\nb\n");
+        assert_eq!(moved("mv_p2", body, 0, body.len()).0, "b\n\nc\n\na\n");
+        assert_eq!(moved("mv_p3", body, 3, 0).0, "b\n\na\n\nc\n");
+    }
+
+    #[test]
+    fn move_block_carries_an_image_block() {
+        let body = "a\n\n![p](x.png)\n\nc\n";
+        assert_eq!(moved("mv_img1", body, 4, 0).0, "![p](x.png)\n\na\n\nc\n");
+        assert_eq!(
+            moved("mv_img2", body, 4, body.len()).0,
+            "a\n\nc\n\n![p](x.png)\n"
+        );
+    }
+
+    #[test]
+    fn move_block_carries_a_table() {
+        let body = "a\n\n| h |\n|---|\n| c |\n\nc\n";
+        assert_eq!(
+            moved("mv_tbl1", body, 5, 0).0,
+            "| h |\n|---|\n| c |\n\na\n\nc\n"
+        );
+        assert_eq!(
+            moved("mv_tbl2", body, 5, body.len()).0,
+            "a\n\nc\n\n| h |\n|---|\n| c |\n"
+        );
+    }
+
+    #[test]
+    fn move_block_carries_a_code_block() {
+        let body = "a\n\n```rs\nx\n```\n\nc\n";
+        assert_eq!(moved("mv_code1", body, 8, 0).0, "```rs\nx\n```\n\na\n\nc\n");
+        assert_eq!(
+            moved("mv_code2", body, 8, body.len()).0,
+            "a\n\nc\n\n```rs\nx\n```\n"
+        );
+    }
+
+    #[test]
+    fn move_block_onto_its_own_boundary_is_a_quiet_no_op() {
+        let mut d = doc_with("mv_noop", "a\n\nb\n");
+        let steps = d.undo_steps;
+        d.move_block(0, 0);
+        d.move_block(0, 3);
+        assert_eq!(d.source, "a\n\nb\n");
+        assert_eq!(d.undo_steps, steps);
+        assert_eq!(d.status, None);
+        assert!(!d.dirty);
+    }
+
+    #[test]
+    fn move_block_into_a_fence_is_refused_with_a_status() {
+        let mut d = doc_with("mv_fence", "a\n\n```\nx\ny\n```\n");
+        d.move_block(0, 7);
+        assert_eq!(d.source, "a\n\n```\nx\ny\n```\n");
+        assert!(
+            d.status
+                .as_deref()
+                .is_some_and(|s| s.starts_with("move block"))
+        );
+    }
+
+    #[test]
+    fn move_block_rides_the_caret_with_the_block() {
+        // Down: "second" is line 0 of its block, caret 3 bytes from its end.
+        let mut d = doc_with("mv_caret1", "first\n\nsecond\n\nthird\n");
+        d.caret = 10; // "sec|ond"
+        d.move_block(10, d.source.len());
+        assert_eq!(d.source, "first\n\nthird\n\nsecond\n");
+        assert_eq!(&d.source[d.caret..], "ond\n");
+        // Up, across a wrapped paragraph's second line.
+        let mut d = doc_with("mv_caret2", "first\n\nsecond\nline two\n");
+        d.caret = 16; // "li|ne two"
+        d.move_block(16, 0);
+        assert_eq!(d.source, "second\nline two\n\nfirst\n");
+        assert_eq!(&d.source[d.caret..], "ne two\n\nfirst\n");
+        assert_eq!(d.selection(), None);
+    }
+
+    #[test]
+    fn move_block_keeps_the_caret_on_its_line_through_a_quotes_prefix() {
+        let mut d = doc_with("mv_quote_caret", "para\n\n> a\n");
+        d.caret = 2; // "pa|ra"
+        d.move_block(2, 9); // after a, inside the quote
+        assert_eq!(d.source, "> a\n>\n> para\n");
+        assert_eq!(&d.source[d.caret..], "ra\n");
+    }
+
+    #[test]
+    fn move_block_up_and_down_step_over_siblings() {
+        let mut d = doc_with("mv_updown", "a\n\nb\n\nc\n");
+        d.caret = 3;
+        d.move_block_down();
+        assert_eq!(d.source, "a\n\nc\n\nb\n");
+        assert_eq!(&d.source[d.caret..], "b\n");
+        d.move_block_down();
+        assert_eq!(d.source, "a\n\nc\n\nb\n", "nothing below the last block");
+        assert_eq!(d.status.as_deref(), Some("move block: nothing below"));
+        d.move_block_up();
+        d.move_block_up();
+        assert_eq!(d.source, "b\n\na\n\nc\n");
+        assert_eq!(&d.source[d.caret..], "b\n\na\n\nc\n");
+        d.move_block_up();
+        assert_eq!(d.status.as_deref(), Some("move block: nothing above"));
+    }
+
+    #[test]
+    fn move_block_up_and_down_reorder_list_items_with_their_children() {
+        let mut d = doc_with("mv_items", "- a\n  - x\n- b\n- c\n");
+        d.caret = 12; // in "b"
+        d.move_block_up();
+        assert_eq!(d.source, "- b\n- a\n  - x\n- c\n");
+        assert_eq!(&d.source[d.caret..], "b\n- a\n  - x\n- c\n");
+        d.caret = 6; // in "a"
+        d.move_block_down();
+        assert_eq!(d.source, "- b\n- c\n- a\n  - x\n");
+        assert_eq!(&d.source[d.caret..], "a\n  - x\n");
+        // A nested item leaves its list upward, as an item of the outer one.
+        d.caret = 16; // in "x"
+        d.move_block_up();
+        assert_eq!(d.source, "- b\n- c\n- x\n- a\n");
+    }
+
+    #[test]
+    fn move_block_on_a_lone_item_that_stays_a_bullet_is_no_step() {
+        let mut d = doc_with("mv_lone_item", "x\n\n- b\n\ny\n");
+        d.caret = 5;
+        let steps = d.undo_steps;
+        d.move_block_up();
+        assert_eq!(d.source, "x\n\n- b\n\ny\n");
+        assert_eq!(
+            d.undo_steps, steps,
+            "a move that rewrote nothing is no undo step"
+        );
+        assert_eq!(d.status.as_deref(), Some("move block: nothing above"));
+    }
+
+    #[test]
+    fn move_block_up_leaves_a_container_at_its_first_block_and_down_at_its_last() {
+        let mut d = doc_with("mv_leave", "x\n\n> a\n>\n> b\n\ny\n");
+        d.caret = 5; // "a"
+        d.move_block_up();
+        assert_eq!(d.source, "x\n\na\n\n> b\n\ny\n");
+        d.caret = 8; // "b"
+        d.move_block_down();
+        assert_eq!(d.source, "x\n\na\n\nb\n\ny\n");
+        // A tail block leaves its item into the next item's tail, then the list.
+        let mut d = doc_with("mv_tail", "- a\n\n  t\n- b\n");
+        d.caret = 7;
+        d.move_block_down();
+        assert_eq!(d.source, "- a\n- b\n\n  t\n");
+        d.move_block_down();
+        assert_eq!(d.source, "- a\n- b\n\nt\n");
+        // And a paragraph after a quote steps over the whole quote, not into it.
+        let mut d = doc_with("mv_over", "x\n\n> a\n>\n> b\n\ny\n");
+        d.caret = 14;
+        d.move_block_up();
+        assert_eq!(d.source, "x\n\ny\n\n> a\n>\n> b\n");
+        assert_eq!(d.caret, 3);
+        d.move_block_down();
+        assert_eq!(d.status, None);
+        assert_eq!(d.source, "x\n\n> a\n>\n> b\n\ny\n");
+        // Above a quote that opens the document there is no boundary twig can
+        // name — its first byte is inside it — so that one step is refused.
+        let mut d = doc_with("mv_over_top", "> a\n\ny\n");
+        d.caret = 5;
+        d.move_block_up();
+        assert_eq!(d.source, "> a\n\ny\n");
+        assert_eq!(d.status.as_deref(), Some("move block: nothing above"));
+    }
+
+    #[test]
+    fn move_block_up_from_the_first_block_of_a_quote_that_opens_the_document_is_refused() {
+        let mut d = doc_with("mv_top_quote", "> a\n>\n> b\n");
+        d.caret = 2;
+        d.move_block_up();
+        assert_eq!(d.source, "> a\n>\n> b\n");
+        assert_eq!(d.status.as_deref(), Some("move block: nothing above"));
+    }
+
+    #[test]
+    fn move_block_on_a_blank_line_or_read_only_does_nothing() {
+        let mut d = doc_with("mv_blank", "a\n\nb\n");
+        d.caret = 2;
+        d.move_block_down();
+        assert_eq!(d.source, "a\n\nb\n");
+        assert_eq!(d.status.as_deref(), Some("move block: no block here"));
+        d.read_only = true;
+        d.caret = 0;
+        d.move_block_down();
+        d.move_block(0, 5);
+        assert_eq!(d.source, "a\n\nb\n");
+    }
+
+    #[test]
+    fn move_block_never_lands_above_hidden_frontmatter() {
+        let mut d = wysiwyg_doc("mv_fm", "---\nt: x\n---\n\na\n\nb\n");
+        let b = d.source.find('b').unwrap();
+        d.move_block(b, 0);
+        assert_eq!(d.source, "---\nt: x\n---\n\nb\n\na\n");
+    }
+
+    #[test]
+    fn block_range_at_is_the_block_a_move_picks_up() {
+        let mut d = doc_with("mv_range", "a\n\n- b\n  - c\n\nd\n");
+        assert_eq!(d.block_range_at(0), Some(0..1));
+        assert_eq!(d.block_range_at(5), Some(3..12), "the item with its child");
+        assert_eq!(d.block_range_at(10), Some(7..12), "the nested item alone");
+        assert_eq!(d.block_range_at(2), None, "a blank line");
+    }
+
+    #[test]
+    fn drop_target_at_splits_a_block_at_its_middle_row_and_ends_below_everything() {
+        let long = "two ".repeat(40).trim_end().to_string(); // wraps to three rows at 80
+        let mut d = wysiwyg_doc("drop", &format!("one\n\n{long} four\n\nfive\n"));
+        let rows = d.vmap.rows.len();
+        assert_eq!(rows, 7, "one, gap, three wrapped rows, gap, five");
+        assert_eq!(d.drop_target_at(0), Some(DropTarget { offset: 0, row: 0 }));
+        let two = d.source.find("two").unwrap();
+        assert_eq!(
+            d.drop_target_at(1),
+            Some(DropTarget {
+                offset: two,
+                row: 2
+            }),
+            "the gap resolves to the block under it"
+        );
+        assert_eq!(
+            d.drop_target_at(2),
+            Some(DropTarget {
+                offset: two,
+                row: 2
+            })
+        );
+        assert_eq!(
+            d.drop_target_at(3),
+            Some(DropTarget {
+                offset: two,
+                row: 2
+            })
+        );
+        let four_end = d.source.find("four").unwrap() + 4;
+        assert_eq!(
+            d.drop_target_at(4),
+            Some(DropTarget {
+                offset: four_end,
+                row: 5
+            })
+        );
+        assert_eq!(
+            d.drop_target_at(rows + 3),
+            Some(DropTarget {
+                offset: d.source.len(),
+                row: rows
+            })
+        );
+        // And the offsets are ones move_block takes.
+        let five = d.source.find("five").unwrap();
+        let t = d.drop_target_at(2).unwrap();
+        d.move_block(five, t.offset);
+        assert_eq!(d.source, format!("one\n\nfive\n\n{long} four\n"));
     }
 
     #[test]
@@ -17081,9 +17748,13 @@ mod tests {
             "AsciiDoc has no inline spelling that keeps a data- key"
         );
 
-        // XML spells none of it, and neither page break.
+        // XML spells none of it, and neither page break — nor has it blocks a
+        // caret could name for a move.
         let xml = Capabilities::of(Format::Xml);
-        assert!(!xml.alignment && !xml.font_size && !xml.page_break);
+        assert!(!xml.alignment && !xml.font_size && !xml.page_break && !xml.move_block);
+        for f in [Format::Markdown, Format::Djot, Format::Html] {
+            assert!(Capabilities::of(f).move_block, "{f:?} moves blocks");
+        }
         assert!(Capabilities::of(Format::Markdown).page_break);
         assert!(Capabilities::of(Format::Djot).page_break);
 

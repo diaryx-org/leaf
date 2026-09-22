@@ -377,7 +377,8 @@ export class LeafEditor {
   // selection, or the block with no selection. `null` clears the key and
   // returns the property to the theme's own; a name outside the vocabulary
   // throws. Dim each control by its own `capabilities()` flag — `alignment`,
-  // `line_spacing`, `font_size`, `font_family`, `text_color`, `page_break`.
+  // `line_spacing`, `font_size`, `font_family`, `text_color`, `page_break`,
+  // `move_block`.
 
   /** Align the caret's block, or `null` for the theme's default (left). */
   setAlignment(align?: Align | null): void;
@@ -405,6 +406,23 @@ export class LeafEditor {
   fontFamilyAtCaret(): FontFace | null;
   /** The *text* colour at the caret, or null — not `EditorState.markColor`. */
   textColorAtCaret(): TextColor | null;
+
+  /** Move the caret's block one place up — ⌥↑: above the block before it,
+   *  and out of its container to just above it when it is the first block
+   *  there. A list item goes with its children; the caret rides the block.
+   *  Gate on `capabilities().move_block`. */
+  moveBlockUp(): void;
+  /** The mirror of `moveBlockUp` — ⌥↓. */
+  moveBlockDown(): void;
+  /** Move the block at source offset `from` to the boundary `to` — a block
+   *  drag's drop, `to` from `dropTargetAt`. One undo step; the caret rides
+   *  the block; a drop back onto the block's own boundary is nothing. */
+  moveBlock(from: number, to: number): void;
+  /** Where a block dragged over rendered row `row` would land: the offset to
+   *  hand `moveBlock`, and the row to draw an indicator above
+   *  (`rowEls.length` for a drop below everything). Null for a row with no
+   *  block under it. */
+  dropTargetAt(row: number): { offset: number; row: number } | null;
 
   tableInsertRow(below?: boolean): void;
   tableDeleteRow(): void;

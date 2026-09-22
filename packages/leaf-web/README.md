@@ -95,6 +95,14 @@ for a host that decides later.
   many points and not the heading's ramp scaled, and an exact colour is painted
   as written in both appearances: that is what exact means, and it is the
   portability the author traded away.
+- **Moving a block.** ⌥↑/⌥↓ (`moveBlockUp`/`moveBlockDown`) carry the caret's
+  block — a paragraph, a picture, a table, a list item with its children —
+  one place, the caret riding it; and a **block drag** picks one up by its
+  picture or by the margin to the left of any row, draws a line on the
+  boundary it would land on, and drops it there (`moveBlock`, with the target
+  from `dropTargetAt`). One undo step either way, and a block dropped into a
+  quote or out of a list arrives spelled for where it landed. A drag inside
+  text is still a selection. Dim on `capabilities().move_block`.
 - **Math.** A `$…$` formula is its picture in the line, stretched over the
   one-character atom core counts the row by, and a `$$` block a centred
   picture in a row of its own — a self-contained SVG from `leaf-math`, the

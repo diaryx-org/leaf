@@ -200,6 +200,18 @@ private struct FormatMenuItems: View {
         Button(loc("menu.outdent", "Outdent")) { editor.outdent() }
             .keyboardShortcut("[", modifiers: .command)
             .disabled(!editable)
+        // Moving a block, beside the indent pair that also restructures
+        // rather than restyles: the caret's paragraph, picture, table or
+        // list item (with its children) one place up or down, the keyboard
+        // half of the block drag. ⌥↑/⌥↓ are the keys every outliner gives
+        // this, and the text view binds the same pair for a host with no
+        // menu. Dimmed where the format has no blocks a caret could name.
+        Button(loc("menu.moveBlockUp", "Move Block Up")) { editor.moveBlockUp() }
+            .keyboardShortcut(.upArrow, modifiers: .option)
+            .disabled(!editable || !editor.capabilities.moveBlock)
+        Button(loc("menu.moveBlockDown", "Move Block Down")) { editor.moveBlockDown() }
+            .keyboardShortcut(.downArrow, modifiers: .option)
+            .disabled(!editable || !editor.capabilities.moveBlock)
         Divider()
         Button(loc("menu.footnote", "Insert Footnote")) { editor.insertFootnote() }
             .disabled(!editable)
@@ -298,6 +310,8 @@ private struct FormatMenuItems: View {
             Toggle(loc("menu.checked", "Checked"), isOn: .constant(false)).keyboardShortcut("u", modifiers: [.command, .shift])
             Button(loc("menu.indent", "Indent")) {}.keyboardShortcut("]", modifiers: .command)
             Button(loc("menu.outdent", "Outdent")) {}.keyboardShortcut("[", modifiers: .command)
+            Button(loc("menu.moveBlockUp", "Move Block Up")) {}.keyboardShortcut(.upArrow, modifiers: .option)
+            Button(loc("menu.moveBlockDown", "Move Block Down")) {}.keyboardShortcut(.downArrow, modifiers: .option)
             Divider()
             Button(loc("menu.footnote", "Insert Footnote")) {}
             Button(loc("menu.rule", "Insert Horizontal Rule")) {}
