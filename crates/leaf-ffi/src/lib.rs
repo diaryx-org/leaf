@@ -282,6 +282,32 @@ impl From<leaf_core::Landing> for LandingView {
     }
 }
 
+/// The heading a place sits under — what [`LeafDoc::heading_at`] answers
+/// with, and the FFI mirror of [`leaf_core::Heading`].
+#[derive(uniffi::Record)]
+pub struct HeadingView {
+    /// The heading's words with their markup stripped — what a `#slug` is made
+    /// from.
+    pub text: String,
+    /// 1 for `#`, 2 for `##`, and so on.
+    pub level: u32,
+    /// The heading block's first byte.
+    pub start: u32,
+    /// One past its last byte, marker and all — the heading, not its section.
+    pub end: u32,
+}
+
+impl From<leaf_core::Heading> for HeadingView {
+    fn from(h: leaf_core::Heading) -> Self {
+        HeadingView {
+            text: h.text,
+            level: h.level,
+            start: h.span.start as u32,
+            end: h.span.end as u32,
+        }
+    }
+}
+
 /// Where a dragged block would land — what [`LeafDoc::drop_target_at`]
 /// answers with, and the FFI mirror of [`leaf_core::DropTarget`]. A drop is
 /// aimed at a row and lands at a boundary, and a host needs both halves: the
@@ -3124,6 +3150,23 @@ impl LeafDoc {
         self.lock().doc.link_destination_at(off as usize)
     }
 
+    /// The heading byte offset `off` is under — the nearest heading at or
+    /// above it — or `None` above the first. What a host writing a link *to*
+    /// a place names it by: the `#slug` comes from its `text`. See
+    /// [`leaf_core::Doc::heading_at`].
+    pub fn heading_at(&self, off: u32) -> Option<HeadingView> {
+        self.lock()
+            .doc
+            .heading_at(off as usize)
+            .map(HeadingView::from)
+    }
+
+    /// The heading the caret is under — [`heading_at`](Self::heading_at) at
+    /// the caret.
+    pub fn heading_at_caret(&self) -> Option<HeadingView> {
+        self.lock().doc.heading_at_caret().map(HeadingView::from)
+    }
+
     /// Where the locator `id` lands in this document — the `#v2` half of a
     /// `chapter.dj#v2`, resolved to the block it names. `None` when nothing here
     /// answers to it, which is a host's cue to open the document at its top
@@ -3977,6 +4020,17 @@ mod tests {
 
     fn doc(src: &str) -> Arc<LeafDoc> {
         LeafDoc::new(src.to_string(), "markdown".to_string()).unwrap()
+    }
+
+    #[test]
+    fn heading_at_names_the_heading_above() {
+        let d = doc("intro\n\n## The *Second* Part\n\nbody\n");
+        assert!(d.heading_at(0).is_none());
+        let h = d.heading_at(29).expect("`body` is under the heading");
+        assert_eq!(
+            (h.text.as_str(), h.level, h.start),
+            ("The Second Part", 2, 7)
+        );
     }
 
     /// The source view's rows carry the markup's styling: a heading's `# ` is

@@ -400,6 +400,23 @@ pub struct Landing {
     pub end: usize,
 }
 
+/// The heading a place in the document sits under — the answer to
+/// [`Doc::heading_at`].
+///
+/// What a host writing a link *to* a position needs: the `#its-slug` half of a
+/// reference is made from `text`, and a peek at the target draws `span`.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Heading {
+    /// The heading's inline content with its markup stripped — `A *big* day`
+    /// is `A big day` — which is what a slug is made from.
+    pub text: String,
+    /// 1 for `#`, 2 for `##`, and so on.
+    pub level: u32,
+    /// The heading block's own source span, marker and all — the heading, not
+    /// the section it opens.
+    pub span: Range<usize>,
+}
+
 /// Where a dragged block would land — the answer to [`Doc::drop_target_at`].
 ///
 /// A drop is aimed at a *row* (the one under the pointer) and lands at a
@@ -6520,6 +6537,36 @@ impl Doc {
             .and_then(|n| n.destination.or(n.text))
     }
 
+    /// The heading the caret is under — the nearest heading at or above it,
+    /// whatever its level. See [`heading_at`](Self::heading_at).
+    pub fn heading_at_caret(&mut self) -> Option<Heading> {
+        self.heading_at(self.caret)
+    }
+
+    /// The heading `off` is under: the last heading that starts at or before
+    /// it, or the one `off` stands in. `None` above the first heading.
+    ///
+    /// The question between [`link_destination_at`](Self::link_destination_at)
+    /// ("which link is this") and [`locate`](Self::locate) ("where does this
+    /// fragment land"): a host writing a link *to* a place needs the heading
+    /// that place is under, to name it by `#slug`. Nearest, not enclosing —
+    /// a level-3 heading under a level-2 is the answer for the text below the
+    /// level-3, because it is the finer place to land.
+    pub fn heading_at(&mut self, off: usize) -> Option<Heading> {
+        let nodes = self.nodes();
+        let h = nodes
+            .iter()
+            .filter(|n| n.kind == Kind::Heading && n.span.start <= off)
+            .max_by_key(|n| n.span.start)?;
+        let mut text = String::new();
+        inline_text(&nodes, h.first_child, &mut text);
+        Some(Heading {
+            text: text.trim().to_string(),
+            level: h.level.unwrap_or(1),
+            span: h.span.clone(),
+        })
+    }
+
     /// Where the locator `id` lands in this document — the `#v2` half of a
     /// `chapter.dj#v2`, resolved to the block it names. `None` when nothing here
     /// answers to it.
@@ -8288,6 +8335,24 @@ fn slug(text: &str) -> String {
         }
     }
     out
+}
+
+/// The text of the inline run starting at `first` and its siblings, markup
+/// stripped: each leaf's payload in order, a line break as a space. `nodes` is
+/// the arena `Doc::nodes` returns, indexed by id.
+fn inline_text(nodes: &[FlatNode], first: Option<NodeId>, out: &mut String) {
+    let mut next = first;
+    while let Some(id) = next {
+        let Some(n) = nodes.get(id.0 as usize) else {
+            return;
+        };
+        match (&n.text, &n.kind) {
+            (Some(text), _) => out.push_str(text),
+            (None, Kind::SoftBreak | Kind::HardBreak) => out.push(' '),
+            (None, _) => inline_text(nodes, n.first_child, out),
+        }
+        next = n.next_sibling;
+    }
 }
 
 fn is_block_container(kind: &Kind) -> bool {
@@ -11699,6 +11764,28 @@ mod tests {
         );
         a.caret = 21;
         assert_eq!(a.link_destination_at_caret(), None);
+    }
+
+    #[test]
+    fn heading_at_caret_is_the_nearest_heading_above() {
+        let src = "intro\n\n# Title\n\n## The *Second* Part\n\nbody here\n";
+        let mut d = doc_with("heading_at", src);
+        // Under no heading at all.
+        d.caret = 2;
+        assert_eq!(d.heading_at_caret(), None);
+        // In a paragraph under a level-2 heading: that heading, its markup
+        // stripped for the slug, and its own span.
+        d.caret = src.find("body").unwrap() + 2;
+        let h = d.heading_at_caret().expect("under `## The Second Part`");
+        assert_eq!(h.text, "The Second Part");
+        assert_eq!(h.level, 2);
+        assert_eq!(&src[h.span.clone()].trim_end(), &"## The *Second* Part");
+        // Standing in a heading answers with that heading.
+        let h = d.heading_at(src.find("Title").unwrap()).unwrap();
+        assert_eq!((h.text.as_str(), h.level), ("Title", 1));
+        // And the text is what `locate` lands a slug of.
+        let landing = d.locate("the-second-part").unwrap();
+        assert_eq!(landing.start, d.heading_at_caret().unwrap().span.start);
     }
 
     #[test]
