@@ -37,6 +37,32 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.4.3 — 2026-09-21
+
+### Added
+
+- **leaf-editor** — the app icon is an Icon Composer source ([`18a889f`](https://github.com/diaryx-org/leaf/commit/18a889f8970c14676f2cf9b7c79ba8c8fc5c6c90))
+- **swift** — a footer under the last line, inside the scroll — the header's twin ([`6fb53e7`](https://github.com/diaryx-org/leaf/commit/6fb53e77d84db414c24e26de739279cb7b6db589))
+- **core** — append_media — media at the end of the document, as a block of its own ([`defef0d`](https://github.com/diaryx-org/leaf/commit/defef0d6fe5d188aa38ab04503abaad3108fbb09))
+- a block can be moved — ⌥↑/⌥↓ in every frontend, and by dragging it on macOS and the web ([`eae3f0c`](https://github.com/diaryx-org/leaf/commit/eae3f0c21d88e70f0866cf7b6eb4c6f5368674ca))
+
+### Fixed
+
+- **core** — a block above a quote that opens the document, and out of one, on twig-doc 3.9.1 ([`fb749e7`](https://github.com/diaryx-org/leaf/commit/fb749e7963ef970cb63fe00b8de0d811a9a28f3c))
+
+### Behavioural changes
+
+- ⌥↑/⌥↓ now move the caret's block in the rich view; on macOS they no longer move the caret to the paragraph's edge, and on the web they no longer reach the browser.
+
+- `Capabilities` gains a `move_block` field, so a caller destructuring it exhaustively stops compiling.
+
+- twig-doc is pinned at 3.9.0, up from 3.7.0.
+
+- `move_block_up` from the first block of a block quote that opens the document, or from the block right after one, now moves it (leaving or stepping over the quote) where it set the "nothing above" status.
+
+- twig-doc is pinned at 3.9.1, up from 3.9.0.
+
+
 ## v0.4.2 — 2026-09-21
 
 ### Added
