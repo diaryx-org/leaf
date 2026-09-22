@@ -5,7 +5,9 @@
 //  so what comes out is what the editor shows — minus everything that only
 //  exists on screen. No caret, no selection, no landing flash, no placeholder
 //  cue, no marker in the margin, and no picture of a sheet on a backdrop: the
-//  page is the sheet.
+//  page is the sheet. Nor the caret's line revealed, which is core's rather
+//  than the view's — the sheet lays out from `paperView()`, where the line the
+//  reader stands on is drawn like every other.
 //
 //  Done by a second view over the same document, paginated to the paper, so
 //  nothing on screen moves — the same shape File ▸ Print takes on the Mac, and
@@ -81,6 +83,7 @@ extension LeafTextView {
     static func paperSheet(of doc: LeafDoc, theme: EditorTheme, documentDirectory: URL?,
                            page: PageSetup) -> LeafTextView {
         let sheet = LeafTextView(doc: doc, theme: theme)
+        sheet.layOutAsPaper()
         sheet.appearance = NSAppearance(named: .aqua)
         sheet.frame = NSRect(origin: .zero, size: CGSize(width: page.size.width, height: 0))
         sheet.documentDirectory = documentDirectory

@@ -182,6 +182,27 @@ final class DocumentPDFTests: XCTestCase {
         XCTAssertGreaterThan(try ink(proseThenMath), try ink(prose) + 100,
                              "the integral and E = mc² are drawn in ink, not in paper")
     }
+
+    func testTheCaretsLineIsNotRevealedOnPaper() throws {
+        // The screen shows the line the caret stands on as source — here the
+        // formula's TeX, and under the full mode the `*`s too. Paper has no
+        // caret, so the page is the same wherever the caret was left, and the
+        // screen's frames go on revealing after it.
+        let source = "*Words* and $E = mc^2$.\n\nMore words.\n"
+        func ink(caret: UInt32) throws -> Int {
+            let doc = try LeafDoc(source: source, format: "markdown")
+            _ = doc.setInlinePictures(on: true)
+            _ = doc.setMarkupMode(mode: .full)
+            let screen = doc.setSelectionOffsets(anchor: caret, focus: caret)
+            let pdf = try document(LeafTextView.pdf(of: doc, theme: .default, documentDirectory: nil,
+                                                    page: .usLetter, title: nil))
+            XCTAssertEqual(doc.view().rows.count, screen.rows.count)
+            return try inkOn(try XCTUnwrap(pdf.page(at: 1)))
+        }
+        let away = try ink(caret: UInt32(source.utf8.count - 3))
+        XCTAssertGreaterThan(away, 0)
+        XCTAssertEqual(try ink(caret: 0), away, "the caret's line prints as every other line does")
+    }
 }
 #elseif canImport(UIKit)
 import UIKit
@@ -286,6 +307,22 @@ final class DocumentPDFTests: XCTestCase {
         }
         XCTAssertGreaterThan(try ink(proseThenMath), try ink(prose) + 100,
                              "the integral and E = mc² are drawn in ink, not in paper")
+    }
+
+    func testTheCaretsLineIsNotRevealedOnPaper() throws {
+        // The AppKit test's peer: the page is the same wherever the caret was.
+        let source = "*Words* and $E = mc^2$.\n\nMore words.\n"
+        func ink(caret: UInt32) throws -> Int {
+            let doc = try LeafDoc(source: source, format: "markdown")
+            _ = doc.setInlinePictures(on: true)
+            _ = doc.setMarkupMode(mode: .full)
+            _ = doc.setSelectionOffsets(anchor: caret, focus: caret)
+            let pdf = try document(LeafTextView(doc: doc, theme: .default).pdfData(page: .usLetter))
+            return try inkOn(try XCTUnwrap(pdf.page(at: 1)))
+        }
+        let away = try ink(caret: UInt32(source.utf8.count - 3))
+        XCTAssertGreaterThan(away, 0)
+        XCTAssertEqual(try ink(caret: 0), away, "the caret's line prints as every other line does")
     }
 }
 #endif

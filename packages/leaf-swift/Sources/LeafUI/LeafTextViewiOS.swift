@@ -390,7 +390,14 @@ public final class LeafTextView: UIView, UITextInput {
     /// placeholder cue, no marker in the margin, and no picture of a sheet on a
     /// backdrop: the sheet is the paper. UIKit has no `currentContextDrawingToScreen`
     /// for `draw` to ask, so the sheet is told.
-    var isPaper = false
+    ///
+    /// And no line revealed: the frame core hands the screen shows the caret's
+    /// line as source — a formula as its TeX, and under the full markup mode
+    /// its delimiters — which paper, having no caret, lays out from
+    /// `paperView()` instead.
+    var isPaper = false {
+        didSet { if isPaper, !oldValue { render(doc.paperView(), reflow: true) } }
+    }
 
     private var docView: DocView
     private var layoutEngine: EditorLayout

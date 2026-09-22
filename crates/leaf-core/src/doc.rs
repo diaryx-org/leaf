@@ -387,6 +387,16 @@ pub struct FootnoteDef {
 /// [`Doc::can_undo`]'s count follows: past it twig drops the oldest step.
 const UNDO_CAP: usize = 200;
 
+/// What [`Doc::set_unrevealed`] sets aside: the screen's map, what it was
+/// built from, and the caret state a paper build's clamp must not move.
+struct ScreenMap {
+    vmap: VisualMap,
+    key: Option<(u64, Option<usize>, Option<Reveal>)>,
+    caret: usize,
+    anchor: Option<usize>,
+    goal_col: Option<usize>,
+}
+
 /// Where a locator lands — the answer to [`Doc::locate`].
 ///
 /// A locator (the `v2` of a `chapter.dj#v2`) names a *place* rather than a
@@ -697,6 +707,10 @@ pub struct Doc {
     /// every mode but [`MarkupMode::Full`] — so outside that mode the key is
     /// text and width alone, and a caret motion still rebuilds nothing.
     vmap_key: Option<(u64, Option<usize>, Option<Reveal>)>,
+    /// The screen's map, set aside while [`Doc::set_unrevealed`] lays the
+    /// document out as paper, and put back when it stops — `Some` exactly
+    /// while the map in `vmap` is the page's.
+    screen: Option<Box<ScreenMap>>,
     /// Which `Doc` this is, distinct from every other one built in this
     /// process. Folded into [`VisualKey`] so that a map stashed by a frontend
     /// can never be mistaken for another document's — see
@@ -1168,6 +1182,7 @@ impl Doc {
             redo_steps: 0,
             // No map yet — the first `build_visual` always builds.
             vmap_key: None,
+            screen: None,
             identity: NEXT_IDENTITY.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             block_cache: wysiwyg::BlockCache::default(),
             surface: wysiwyg::Surface::default(),
@@ -1245,7 +1260,8 @@ impl Doc {
     /// Only in [`View::Wysiwyg`]: source view already shows every byte, so
     /// there is nothing there to reveal.
     pub(crate) fn reveal_line(&self) -> Option<Reveal> {
-        if self.view != View::Wysiwyg {
+        // A page has no caret, so no line of it is the caret's.
+        if self.view != View::Wysiwyg || self.screen.is_some() {
             return None;
         }
         let line = source_line_range(&self.source, self.caret);
@@ -1310,6 +1326,53 @@ impl Doc {
     /// than a fixed character column.
     pub fn build_visual_unwrapped(&mut self) {
         self.build_map(None);
+    }
+
+    /// Lay the document out as paper shows it, with no line revealed — or,
+    /// with `false`, go back to the screen's map.
+    ///
+    /// The reveal is core's, folded into the rows before a frontend sees them:
+    /// under [`MarkupMode::Full`] the caret's line shows its delimiters, and in
+    /// every mode a formula on it is its TeX rather than its picture. A page
+    /// has no caret, so a PDF or a printout laid out from the screen's map
+    /// printed the one line the reader happened to be standing on as source.
+    /// While this is on, [`build_visual`](Self::build_visual) and its twin
+    /// build as though nothing were revealed.
+    ///
+    /// Kept apart from the screen's build rather than replacing it: turning
+    /// this on sets the screen's map aside — and the caret, which a build
+    /// clamps against the map it builds — and turning it off puts both back
+    /// as they were, so the screen's next build costs nothing it would not
+    /// have cost anyway. Meant to bracket one read of the map, on and then
+    /// off; an edit in between is not the paper's to make.
+    pub fn set_unrevealed(&mut self, on: bool) {
+        match (on, self.screen.take()) {
+            (true, None) => {
+                self.screen = Some(Box::new(ScreenMap {
+                    vmap: std::mem::take(&mut self.vmap),
+                    key: self.vmap_key.take(),
+                    caret: self.caret,
+                    anchor: self.anchor,
+                    goal_col: self.goal_col,
+                }));
+            }
+            (false, Some(screen)) => {
+                let ScreenMap {
+                    vmap,
+                    key,
+                    caret,
+                    anchor,
+                    goal_col,
+                } = *screen;
+                self.vmap = vmap;
+                self.vmap_key = key;
+                self.caret = caret;
+                self.anchor = anchor;
+                self.goal_col = goal_col;
+            }
+            // Already in the state asked for.
+            (_, screen) => self.screen = screen,
+        }
     }
 
     /// Build the source view's syntax map ([`Doc::smap`]) — the styling for
@@ -19069,6 +19132,41 @@ mod tests {
         d.set_markup_mode(MarkupMode::Full);
         caret_at(&mut d, "here");
         assert!(drawn_rows(&d).iter().any(|r| r == "*one* $x+y$ here"));
+    }
+
+    #[test]
+    fn an_unrevealed_map_shows_the_carets_line_as_a_page_does() {
+        let mut d = doc_in(
+            View::Wysiwyg,
+            "math_unrevealed",
+            "*one* $x+y$ here\n\ntwo there\n",
+        );
+        d.set_inline_pictures(true);
+        d.set_markup_mode(MarkupMode::Full);
+        caret_at(&mut d, "here");
+        assert!(drawn_rows(&d).iter().any(|r| r == "*one* $x+y$ here"));
+        let (screen, caret) = (d.visual_key(), d.caret);
+
+        // On paper: the delimiters hidden and the formula a picture, though
+        // the caret has not moved off the line.
+        d.set_unrevealed(true);
+        d.build_visual(80);
+        assert!(
+            drawn_rows(&d).iter().any(|r| r == "one ∑ here"),
+            "{:?}",
+            drawn_rows(&d)
+        );
+        assert_eq!(d.vmap.math.len(), 1);
+        assert_eq!(d.caret, caret);
+
+        // Off again: the screen's map is back as it was, and the next build
+        // reuses it rather than building it over.
+        d.set_unrevealed(false);
+        assert_eq!(d.visual_key(), screen);
+        d.build_visual(80);
+        assert_eq!(d.visual_key(), screen);
+        assert!(drawn_rows(&d).iter().any(|r| r == "*one* $x+y$ here"));
+        assert_eq!(d.caret, caret);
     }
 
     #[test]

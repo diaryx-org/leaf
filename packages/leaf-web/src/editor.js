@@ -2245,6 +2245,16 @@ export class LeafEditor {
       if (e.key === "Escape" && this._blockDrag) this._blockDragEnd(e, false);
     });
 
+    // Printed, the page has no caret, so no line of it is revealed: the
+    // caret's line would otherwise print as source — a formula as its TeX,
+    // and under "full" its delimiters. Draw the page's frame for the print
+    // and the screen's again after; `view()` is whole, and restarts the chain
+    // of changes the paper frame stepped out of.
+    if (typeof window !== "undefined") {
+      on(window, "beforeprint", () => this.render(this.doc.paper_view()));
+      on(window, "afterprint", () => this.render(this.doc.view()));
+    }
+
     // Reflow on viewport change.
     if (typeof ResizeObserver !== "undefined") {
       this._resizeObs = new ResizeObserver(() => this._scheduleRefit());

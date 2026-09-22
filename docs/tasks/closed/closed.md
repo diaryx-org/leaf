@@ -23,6 +23,7 @@ contents:
 - '[Backspace at the start of a table cell eats the column separator](/docs/tasks/closed/backspace-at-cell-start-eats-the-separator.md)'
 - '[Fence Inside A Container Has No Language](/docs/tasks/closed/fence-inside-a-container-has-no-language.md)'
 - '[Page Break In Html And Asciidoc](/docs/tasks/closed/page-break-in-html-and-asciidoc.md)'
+- '[Pdf Reveals The Carets Line](/docs/tasks/closed/pdf-reveals-the-carets-line.md)'
 ---
 
 # Closed tasks

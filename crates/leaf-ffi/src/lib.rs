@@ -2108,6 +2108,26 @@ impl LeafDoc {
         self.lock().view()
     }
 
+    /// A whole frame of the document as a page shows it: no line revealed,
+    /// where [`view`](Self::view) reveals the caret's — its delimiters under
+    /// `MarkupMode::Full`, and in every mode a formula on it as its TeX. What
+    /// the sheet a PDF or a printout is laid out from asks for in place of
+    /// `view`, since paper has no caret. See [`leaf_core::Doc::set_unrevealed`].
+    ///
+    /// Kept apart from the screen: the screen's map is set aside and put back,
+    /// and neither the frame count nor the rows kept for the next change move,
+    /// so the frame after this one is still a change from the screen's last.
+    pub fn paper_view(&self) -> DocView {
+        let mut g = self.lock();
+        // Bring the screen's map up to date first, so an edit it has not yet
+        // been built for is spent on it rather than on the paper's build.
+        g.sync();
+        g.doc.set_unrevealed(true);
+        let v = g.whole();
+        g.doc.set_unrevealed(false);
+        v
+    }
+
     /// Whether the frame every method answers with is the change since the
     /// frame before rather than the whole document — see [`DocView`] for the
     /// shape, and for what a frontend does with one. Off by default, so a
@@ -5584,6 +5604,29 @@ mod tests {
                 .iter()
                 .any(|r| r.role == "delimiter" && r.text == "$")
         );
+    }
+
+    #[test]
+    fn a_paper_view_reveals_nothing_and_leaves_the_screens_frames_alone() {
+        let d = doc("say $x+y$ here\n\nnext\n");
+        d.set_inline_pictures(true);
+        d.set_incremental_frames(true);
+        let screen = d.set_selection_offsets(0, 0);
+        assert!(
+            screen.math.is_empty(),
+            "the screen reveals the caret's line"
+        );
+
+        let paper = d.paper_view();
+        assert_eq!(paper.math.len(), 1, "the page shows the picture");
+        assert!(paper.rows[0].runs.iter().any(|r| r.role == "math"));
+        assert_eq!(d.caret_offset(), 0, "and the caret is where it was");
+
+        // The screen's chain is unbroken: the next frame is a change from the
+        // screen's last, and still reveals.
+        let next = d.set_selection_offsets(1, 1);
+        assert_eq!(next.basis, screen.frame);
+        assert!(next.math.is_empty());
     }
 
     #[test]

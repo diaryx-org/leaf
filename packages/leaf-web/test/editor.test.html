@@ -1559,6 +1559,21 @@ await test("a formula on the caret's line is its TeX, and folds back when the ca
   return ed;
 });
 
+await test("printed, the caret's line is not revealed, and the screen's is again after", async () => {
+  await LeafEditor.loadMath();
+  const ed = editor("say $x+y$ here\n\nnext\n");
+  eq(ed.rowEls[0].textContent, "say $x+y$ here");
+  window.dispatchEvent(new Event("beforeprint"));
+  eq(ed.rowEls[0].textContent, "say ∑ here");
+  assert(ed.rowEls[0].querySelector(".leaf-r-math"), "the page drew no formula");
+  window.dispatchEvent(new Event("afterprint"));
+  eq(ed.rowEls[0].textContent, "say $x+y$ here");
+  // And the screen's frames go on from there.
+  ed.render(ed.doc.move_doc_end(false));
+  eq(ed.rowEls[0].textContent, "say ∑ here");
+  return ed;
+});
+
 await test("a caret move onto a formula's line repaints, through the real selection", async () => {
   await LeafEditor.loadMath();
   const ed = editor("say $x+y$ here\n\nnext\n");
