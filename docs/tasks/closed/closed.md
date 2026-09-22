@@ -21,6 +21,7 @@ contents:
 - '[Wasm Frame Crosses Whole](/docs/tasks/closed/wasm-frame-crosses-whole.md)'
 - '[A typed dollar mints math in the hidden mode](/docs/tasks/closed/a-typed-dollar-mints-math-in-the-hidden-mode.md)'
 - '[Backspace at the start of a table cell eats the column separator](/docs/tasks/closed/backspace-at-cell-start-eats-the-separator.md)'
+- '[Fence Inside A Container Has No Language](/docs/tasks/closed/fence-inside-a-container-has-no-language.md)'
 ---
 
 # Closed tasks

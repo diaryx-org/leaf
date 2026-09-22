@@ -566,11 +566,6 @@ mod tests {
     /// indented two spaces has two stripped from every body line, and the
     /// highlighting has to land past them. The indent carries no token, the
     /// `let` after it is a keyword.
-    ///
-    /// (A fence inside a quote or a list item strips its container's prefix the
-    /// same way, but has no language in either view yet — `code_language` reads
-    /// the fence at the block's start and finds the `> ` — so it is not the
-    /// case tested here.)
     #[cfg(feature = "syntax")]
     #[test]
     fn an_indented_fence_is_highlighted_past_its_indent() {
@@ -585,6 +580,23 @@ mod tests {
             None,
             "the indent carries none"
         );
+    }
+
+    /// A fence inside a quote or a list item strips its container's prefix
+    /// the same way, and the language is read past the marker.
+    #[cfg(feature = "syntax")]
+    #[test]
+    fn a_fence_in_a_container_is_highlighted() {
+        use crate::style::Token;
+        for src in [
+            "> ```rust\n> let x = 1;\n> ```\n",
+            "- ```rust\n  let x = 1;\n  ```\n",
+        ] {
+            let m = md(src);
+            let at = src.find("let").unwrap();
+            assert_eq!(m.style_at(at).role, Role::Code, "{src:?}");
+            assert_eq!(m.style_at(at).token, Some(Token::Keyword), "{src:?}");
+        }
     }
 
     /// A fence in no known language, or with no language at all, is plain code

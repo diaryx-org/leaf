@@ -15,7 +15,6 @@ contents:
 - '[Dynamic Type on paper should be a zoom, not a repagination](ios-dynamic-type-on-paper.md)'
 - '[The Mac app runs unsandboxed and unsigned](sandboxed-mac-app.md)'
 - '[A PDF shows the caret''s line revealed](pdf-reveals-the-carets-line.md)'
-- '[A fence inside a quote or list has no language](fence-inside-a-container-has-no-language.md)'
 - '[Closed tasks](/docs/tasks/closed/closed.md)'
 part_of: '[leaf](/README.md)'
 ---
