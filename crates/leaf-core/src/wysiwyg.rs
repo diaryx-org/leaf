@@ -1480,25 +1480,125 @@ fn math_spans(rows: &[VRow]) -> Vec<MathInfo> {
 /// opens with no fence to carry one. The range is empty for a fence written
 /// bare (`` ``` `` alone), which is exactly where a language would be inserted.
 ///
+/// A block inside a quote or a list item starts at its line's start, with the
+/// container's marker in front of the fence — `> ```rust`, `- ```rust` — so
+/// the marker is skipped first, and the fence's three-space indent allowance
+/// is measured from where the container's content begins: past the marker on
+/// the fence's own line, or, on a continuation line, from the content column
+/// of the list item above. That is what keeps an *indented* code block inside
+/// a list item answering `None`.
+///
 /// Shared by the WYSIWYG builder (to label the box) and [`crate::Doc`] (to edit
 /// the label through a prompt), so the two agree on where the language lives.
 pub fn code_info_span(source: &str, block_start: usize) -> Option<Range<usize>> {
     let rest = source.get(block_start..)?;
     let line_len = rest.find('\n').unwrap_or(rest.len());
     let line = &rest[..line_len];
+    let (depth, quoted) = strip_quote_markers(line);
+    let mut content = quoted;
+    let mut listed = false;
+    while let Some(n) = list_marker_len(&line[content..], 3) {
+        content += n;
+        listed = true;
+    }
+    let lead = leading_spaces(&line[content..]);
+    // No marker of its own: a continuation line, whose leading spaces include
+    // the enclosing item's indent. Only when the block owns its line — a span
+    // that starts mid-line has had its container prefix measured off already.
+    let at_line_start = block_start == 0 || source.as_bytes()[block_start - 1] == b'\n';
+    let base = if listed || !at_line_start {
+        0
+    } else {
+        item_content_column(&source[..block_start], depth, lead)
+    };
     // A fence may be indented up to three spaces; past that it opens with a run
     // of the same fence character.
-    let indent = line.len() - line.trim_start().len();
-    if indent > 3 {
+    if lead - base > 3 {
         return None;
     }
-    let fence = line[indent..].chars().next()?;
+    let at = content + lead;
+    let fence = line[at..].chars().next()?;
     if fence != '`' && fence != '~' {
         return None; // an indented block, not a fenced one
     }
-    let fence_len = line[indent..].chars().take_while(|&c| c == fence).count();
-    let info_start = block_start + indent + fence_len;
+    let fence_len = line[at..].chars().take_while(|&c| c == fence).count();
+    let info_start = block_start + at + fence_len;
     Some(info_start..block_start + line_len)
+}
+
+/// The spaces a line opens with.
+fn leading_spaces(s: &str) -> usize {
+    s.bytes().take_while(|&b| b == b' ').count()
+}
+
+/// A line's block-quote markers — each `>` behind up to three spaces, with the
+/// one space after it — as the quote depth and the byte offset past them.
+fn strip_quote_markers(line: &str) -> (usize, usize) {
+    let b = line.as_bytes();
+    let (mut depth, mut i) = (0, 0);
+    loop {
+        let j = i + leading_spaces(&line[i..]);
+        if j - i > 3 || b.get(j) != Some(&b'>') {
+            return (depth, i);
+        }
+        depth += 1;
+        i = j + 1 + usize::from(b.get(j + 1) == Some(&b' '));
+    }
+}
+
+/// The length of a list marker opening `s` — its indent (at most `max_lead`
+/// spaces), a bullet or an ordinal, and the one space the item's content
+/// starts after — or `None` when `s` opens with none.
+fn list_marker_len(s: &str, max_lead: usize) -> Option<usize> {
+    let b = s.as_bytes();
+    let lead = leading_spaces(s);
+    if lead > max_lead {
+        return None;
+    }
+    let mark = match b.get(lead)? {
+        b'-' | b'*' | b'+' => 1,
+        c if c.is_ascii_digit() => {
+            let digits = b[lead..].iter().take_while(|c| c.is_ascii_digit()).count();
+            if digits > 9 || !matches!(b.get(lead + digits), Some(b'.' | b')')) {
+                return None;
+            }
+            digits + 1
+        }
+        _ => return None,
+    };
+    match b.get(lead + mark) {
+        Some(b' ') => Some(lead + mark + 1),
+        None => Some(lead + mark),
+        _ => None,
+    }
+}
+
+/// The content column of the list item a continuation line indented `lead`
+/// spaces (past `depth` quote markers) sits in: the nearest item above whose
+/// content starts at or before `lead`. `0` when a line at the margin, or a
+/// change of quote depth, says there is no such item.
+fn item_content_column(before: &str, depth: usize, lead: usize) -> usize {
+    for line in before.strip_suffix('\n').unwrap_or(before).rsplit('\n') {
+        let (d, q) = strip_quote_markers(line);
+        let s = &line[q..];
+        if s.trim().is_empty() {
+            continue;
+        }
+        if d != depth {
+            return 0;
+        }
+        let mut col = 0;
+        while let Some(n) = list_marker_len(&s[col..], usize::MAX) {
+            col += n;
+        }
+        if col > 0 && col <= lead {
+            return col;
+        }
+        if col == 0 && leading_spaces(s) == 0 {
+            return 0;
+        }
+    }
+    0
 }
 
 /// A fenced code block's language for display: its info string, trimmed, or
@@ -8165,6 +8265,63 @@ mod tests {
         );
         assert_eq!(map("```\nplain\n```\n").code_blocks[0].lang, None);
         assert_eq!(map("    indented\n").code_blocks[0].lang, None);
+    }
+
+    fn lang_of(src: &str) -> Option<String> {
+        map(src).code_blocks[0].lang.clone()
+    }
+
+    #[test]
+    fn a_fence_in_a_quote_has_its_language() {
+        // The block's span starts at the line, `> ` and all; the fence is past
+        // the quote marker, and so is its info string.
+        let src = "> ```rust\n> let x = 1;\n> ```\n";
+        assert_eq!(lang_of(src).as_deref(), Some("rust"));
+        let info = code_info_span(src, 0).unwrap();
+        assert_eq!(&src[info], "rust", "the info string's exact bytes");
+        assert_eq!(
+            lang_of("> > ~~~ py\n> > x\n> > ~~~\n").as_deref(),
+            Some("py")
+        );
+    }
+
+    #[test]
+    fn a_fence_in_a_list_item_has_its_language() {
+        // On the item's own line, past its marker…
+        assert_eq!(
+            lang_of("- ```rust\n  let x = 1;\n  ```\n").as_deref(),
+            Some("rust")
+        );
+        assert_eq!(
+            lang_of("10. ```rust\n    let x = 1;\n    ```\n").as_deref(),
+            Some("rust")
+        );
+        // …and on a line of its own inside the item, where the indent is the
+        // item's content column and not the fence's.
+        assert_eq!(
+            lang_of("10. a\n\n    ```rust\n    let x = 1;\n    ```\n").as_deref(),
+            Some("rust")
+        );
+        assert_eq!(
+            lang_of("- a\n  - b\n\n    ```rust\n    x\n    ```\n").as_deref(),
+            Some("rust")
+        );
+        // In a list in a quote.
+        assert_eq!(
+            lang_of("> - a\n>\n>   ```rust\n>   x\n>   ```\n").as_deref(),
+            Some("rust")
+        );
+    }
+
+    #[test]
+    fn an_indented_block_in_a_list_item_still_has_no_language() {
+        // Four spaces past the item's content column is an indented code
+        // block, whatever its text looks like — the allowance is measured from
+        // the item, not dropped.
+        let src = "- a\n\n      ```rust\n";
+        assert_eq!(map(src).code_blocks.len(), 1);
+        assert_eq!(lang_of(src), None);
+        assert_eq!(lang_of("- a\n\n      indented\n"), None);
     }
 
     /// The token every glyph spelling `ch` carries, in row order — how a test

@@ -1,10 +1,18 @@
 ---
-status: open
+status: done
 created: 2026-09-21
-updated: 2026-09-21
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+updated: 2026-09-22
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 # A fence inside a quote or list has no language
+
+**Status.** Done, in `fix(core): a fence inside a quote or list item has
+its language`. `code_info_span` skips the line's quote and list markers
+before looking for the fence, and measures the three-space allowance from
+the container's content column — past the marker on the fence's own line,
+or from the list item above on a continuation line — so an indented block
+in a list item still answers `None`. Tests per container in `wysiwyg.rs`,
+the source view's tokens in `source.rs`, and the edit in `doc.rs`.
 
 **Where.** `crates/leaf-core`, `wysiwyg::code_info_span` and the
 `code_language` over it; read by both `wysiwyg` (the block's label and its

@@ -11651,6 +11651,21 @@ mod tests {
     }
 
     #[test]
+    fn code_language_reads_and_edits_through_a_quoted_fence() {
+        let mut d = doc_with("code_lang_quote", "> ```rust\n> let x = 1;\n> ```\n");
+        d.caret = d.source.find("let").unwrap();
+        assert_eq!(d.code_language_at_caret().as_deref(), Some("rust"));
+        assert!(d.caret_in_fenced_code());
+        d.set_code_language("python");
+        assert!(
+            d.source.starts_with("> ```python\n"),
+            "source: {:?}",
+            d.source
+        );
+        assert_eq!(d.code_language_at_caret().as_deref(), Some("python"));
+    }
+
+    #[test]
     fn a_language_the_fence_cannot_carry_is_refused_not_written() {
         // Markdown's info string ends at whitespace, so `two words` would write
         // a fence that reads back with a different language than the one asked
