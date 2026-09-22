@@ -24,6 +24,7 @@ contents:
 - '[Fence Inside A Container Has No Language](/docs/tasks/closed/fence-inside-a-container-has-no-language.md)'
 - '[Page Break In Html And Asciidoc](/docs/tasks/closed/page-break-in-html-and-asciidoc.md)'
 - '[Pdf Reveals The Carets Line](/docs/tasks/closed/pdf-reveals-the-carets-line.md)'
+- '[Dynamic Type on paper should be a zoom, not a repagination](/docs/tasks/closed/ios-dynamic-type-on-paper.md)'
 ---
 
 # Closed tasks

@@ -145,25 +145,57 @@ final class LeafTokenizer: UITextInputStringTokenizer {
 public final class LeafTextView: UIView, UITextInput {
     let doc: LeafDoc
     /// The host-set theme (base sizes). Internal layout uses `renderTheme`, which
-    /// scales this to the user's Dynamic Type content size.
+    /// in the continuous flow scales this to the user's Dynamic Type content size,
+    /// and on paper is this unchanged — see `typeZoom`.
     public var theme: EditorTheme {
         get { hostTheme }
         set { hostTheme = newValue; applyDynamicType() }
     }
     private var hostTheme: EditorTheme
-    private var renderTheme: EditorTheme
+    private(set) var renderTheme: EditorTheme
 
-    /// Scale `hostTheme`'s type to the current Dynamic Type content size and relayout
-    /// if the geometry changed. The `metricsDiffer` guard keeps a re-applied theme (or
-    /// an unchanged content size) from relayouting — the loop-breaking invariant.
+    /// The part of the reader's Dynamic Type factor the zoom carries: all of it
+    /// on paper, none of it in the continuous flow, where `renderTheme` carries
+    /// it instead.
+    ///
+    /// Bigger type in the flow is bigger type: the column reflows. On a sheet it
+    /// would be a different document — other line breaks, another page count,
+    /// and not the one `pdfData(page:)` prints, which is at the theme's stated
+    /// size. So on paper the sheet keeps the host's type and the setting reaches
+    /// it the way it reaches a PDF in Preview, by making the sheet larger on
+    /// screen: every zoom resolves to its usual scale times this. See `zoom`.
+    private(set) var typeZoom: CGFloat = 1
+
+    /// The Dynamic Type factor for the current content size, `1` at the default.
+    private var dynamicTypeFactor: CGFloat {
+        UIFontMetrics.default.scaledValue(for: 100, compatibleWith: traitCollection) / 100
+    }
+
+    /// Give the Dynamic Type factor to whichever of the theme and the zoom
+    /// carries it here — the theme in the flow, the zoom on paper — and nothing
+    /// else: the caller relayouts or re-resolves as the change needs.
+    private func distributeDynamicType() {
+        let factor = dynamicTypeFactor
+        let onPaper = pageSetup != nil
+        renderTheme = onPaper ? hostTheme : hostTheme.scaled(by: factor)
+        // A PDF's sheet is never on a screen, so has no text size to show.
+        typeZoom = onPaper && !isPaper ? factor : 1
+    }
+
+    /// Apply the current Dynamic Type content size (or a new host theme): in the
+    /// flow, scale the type and relayout if the geometry changed; on paper,
+    /// leave the type and re-resolve the zoom, which is a redraw and not a
+    /// relayout. The `metricsDiffer` guard keeps a re-applied theme (or an
+    /// unchanged content size) from relayouting — the loop-breaking invariant.
     ///
     /// Which lengths the factor reaches is `EditorTheme.scaled(by:)`'s answer, not
     /// this method's: the same question comes up wherever a theme is resized, and
     /// only the theme knows which of its numbers are typography.
     private func applyDynamicType() {
         let old = renderTheme
-        let factor = UIFontMetrics.default.scaledValue(for: 100, compatibleWith: traitCollection) / 100
-        renderTheme = hostTheme.scaled(by: factor)
+        let oldTypeZoom = typeZoom
+        distributeDynamicType()
+        if typeZoom != oldTypeZoom { reresolveZoom() }
         guard renderTheme.metricsDiffer(from: old) else { setNeedsDisplay(); return }
         shapeCache.removeAll(keepingCapacity: true)
         relayoutForWidth(force: true)
@@ -206,10 +238,13 @@ public final class LeafTextView: UIView, UITextInput {
             // The column width changed, and the shape cache is only valid at the
             // width it was built for.
             shapeCache.removeAll(keepingCapacity: true)
+            // Onto paper the Dynamic Type factor moves from the type into the
+            // zoom, and off it back again — see `typeZoom`.
+            distributeDynamicType()
             // A fit is a rule about the sheet, and the sheet just changed (or
             // went away, which makes a fit the identity). Resolve it over the
             // new one before the layout that will draw it.
-            let scale = zoomMode.resolve(in: viewportSize, page: pageSetup)
+            let scale = resolvedScale(zoomMode)
             let rescaled = scale != zoomScale
             if rescaled { applyZoomScale(scale, anchor: nil, sharpen: true, settle: false) }
             relayoutForWidth(force: true)
@@ -223,6 +258,17 @@ public final class LeafTextView: UIView, UITextInput {
     /// How large the document is on screen — see `Zoom`, and the AppKit peer's
     /// `zoom`, which this is the same value as. `zoomScale` is what it currently
     /// resolves to.
+    ///
+    /// On paper, every zoom is multiplied by the reader's Dynamic Type factor
+    /// (`typeZoom`): `.fitWidth` at an accessibility size is the fit times that
+    /// size's factor, a pinch moves on from there, and `zoomScale` is the
+    /// product — what a "125%" label should say on that phone. The product is
+    /// held to `Zoom.range` like any zoom and has no cap of its own: a fit-width
+    /// sheet at the largest sizes is scrolled sideways, as a Larger Text reader's
+    /// PDF is in Preview. A `.scale` here is the zoom *before* the factor, so
+    /// the same scale follows the reader's text size, and one the view reports
+    /// back (after a pinch, or a clamp) is `zoomScale` divided by it. In the
+    /// continuous flow the factor is in the type instead, and a zoom is as asked.
     ///
     /// Applied as the view's own `transform`, not as a scale inside `draw` as
     /// the AppKit peer does it: UIKit converts touches, the system's selection
@@ -257,10 +303,11 @@ public final class LeafTextView: UIView, UITextInput {
     /// coordinates) at the same place on screen — the point under a pinch, or,
     /// for `nil`, the centre of what is visible.
     public func setZoom(_ zoom: Zoom, anchor: CGPoint? = nil) {
-        let scale = zoom.resolve(in: viewportSize, page: pageSetup)
+        let scale = resolvedScale(zoom)
         // A scale past the range is held at its edge as a mode too, so what is
-        // reported back is the scale the view is at, not the one it was asked.
-        let zoom = zoom.isFit ? zoom : .scale(scale)
+        // reported back is the scale the view is at, not the one it was asked
+        // — before the Dynamic Type factor, which a `.scale` does not include.
+        let zoom = zoom.isFit ? zoom : .scale(scale / typeZoom)
         let changed = zoom != zoomMode || scale != zoomScale
         zoomMode = zoom
         if scale != zoomScale { applyZoomScale(scale, anchor: anchor, sharpen: true, settle: true) }
@@ -275,7 +322,24 @@ public final class LeafTextView: UIView, UITextInput {
     /// of what is visible stays put.
     func refitZoom() {
         guard zoomMode.isFit else { return }
-        let scale = zoomMode.resolve(in: viewportSize, page: pageSetup)
+        let scale = resolvedScale(zoomMode)
+        guard scale != zoomScale else { return }
+        let anchor = enclosingScrollView().map { convert($0.bounds.origin, from: $0) }
+        applyZoomScale(scale, anchor: anchor, sharpen: true, settle: false)
+        onZoomChange?(zoomMode, zoomScale)
+    }
+
+    /// What `zoom` comes to on this viewport, over this page, at the reader's
+    /// text size.
+    private func resolvedScale(_ zoom: Zoom) -> CGFloat {
+        zoom.resolve(in: viewportSize, page: pageSetup, factor: typeZoom)
+    }
+
+    /// Re-resolve the zoom after the factor it is multiplied by changed — the
+    /// reader's text size, on paper. The top-left of what is visible stays put,
+    /// as it does under a re-fit.
+    private func reresolveZoom() {
+        let scale = resolvedScale(zoomMode)
         guard scale != zoomScale else { return }
         let anchor = enclosingScrollView().map { convert($0.bounds.origin, from: $0) }
         applyZoomScale(scale, anchor: anchor, sharpen: true, settle: false)
@@ -374,7 +438,7 @@ public final class LeafTextView: UIView, UITextInput {
             let anchor = gesture.location(in: self)
             let scale = Zoom.clamp(pinchStart * gesture.scale)
             guard scale != zoomScale else { return }
-            zoomMode = .scale(scale)
+            zoomMode = .scale(scale / typeZoom)
             applyZoomScale(scale, anchor: anchor, sharpen: false, settle: true)
             onZoomChange?(zoomMode, zoomScale)
         case .ended, .cancelled, .failed:
@@ -400,7 +464,7 @@ public final class LeafTextView: UIView, UITextInput {
     }
 
     private var docView: DocView
-    private var layoutEngine: EditorLayout
+    private(set) var layoutEngine: EditorLayout
     /// Every sheet's frame in layout coordinates, top to bottom — what a PDF
     /// takes one page from each of. Empty in the continuous flow.
     var pages: [CGRect] { layoutEngine.pages }

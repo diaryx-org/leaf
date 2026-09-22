@@ -1,10 +1,25 @@
 ---
-status: open
+status: done
 created: 2026-09-19
-updated: 2026-09-19
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+updated: 2026-09-22
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 # Dynamic Type on paper should be a zoom, not a repagination
+
+**Status.** Done, in `fix(swift): on paper, iOS Dynamic Type zooms the
+sheet instead of repaginating`. On paper `renderTheme` is the host's theme
+and the factor is `typeZoom`, a multiplier on whatever `zoom` resolves to
+(`Zoom.resolve(in:page:factor:)`): `.fitWidth` at AX3 is the fit times AX3's
+factor, a `.scale` is the zoom before the factor so a pinch and View ▸ Zoom
+move on from the product, and `zoomScale` reports it. A text-size change
+re-resolves the zoom on paper and relayouts only in the flow; setting or
+clearing `pageSetup` moves the factor between the type and the zoom. The
+cap: none of its own — the product is held to `Zoom.range` like any zoom,
+so a fit-width sheet at the largest sizes scrolls sideways, as it does in
+Preview. The PDF sheet takes no factor at all. `ZoomTests` pins the pages
+and line breaks at the default and an accessibility size, the zoom as the
+fit times the factor, the flow still scaling its type, and the move on and
+off paper.
 
 **Where.** `packages/leaf-swift`, `LeafTextView` (iOS) — `applyDynamicType`
 and `renderTheme`; `LeafEditorModel.zoom`.

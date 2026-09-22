@@ -21,6 +21,15 @@ final class ZoomTests: XCTestCase {
         XCTAssertEqual(Zoom.scale(0.01).resolve(in: CGSize(width: 800, height: 600), page: nil), 0.25)
     }
 
+    func testAFactorMultipliesTheZoomAndTheProductIsClampedOnce() {
+        let viewport = CGSize(width: 402, height: 700)
+        XCTAssertEqual(Zoom.fitWidth.resolve(in: viewport, page: letter, factor: 2), 2 * 402 / letter.stackWidth, accuracy: 1e-9)
+        XCTAssertEqual(Zoom.scale(1.5).resolve(in: viewport, page: letter, factor: 2), 3)
+        XCTAssertEqual(Zoom.scale(3).resolve(in: viewport, page: letter, factor: 2), 4, "the product is held to the range")
+        XCTAssertEqual(Zoom.scale(0.2).resolve(in: viewport, page: letter, factor: 2.5), 0.5, accuracy: 1e-9,
+                       "and a scale below the floor is not raised before it is multiplied")
+    }
+
     func testFitWidthSetsTheStackToTheViewportsWidth() {
         let scale = Zoom.fitWidth.resolve(in: CGSize(width: 990, height: 600), page: letter)
         XCTAssertEqual(scale, 990 / letter.stackWidth, accuracy: 1e-9)
@@ -369,6 +378,117 @@ extension ZoomTests {
         let after = view.convert(p, to: scroll.superview!)
         XCTAssertEqual(after.x, onScreen.x, accuracy: 1)
         XCTAssertEqual(after.y, onScreen.y, accuracy: 1)
+    }
+
+    // ── Dynamic Type ─────────────────────────────────────────────────────────
+    // On paper the reader's text size is a zoom, not a repagination; in the
+    // flow it is bigger type, as it always was.
+
+    private static let large = UIContentSizeCategory.accessibilityExtraExtraExtraLarge
+
+    /// The factor a content size scales body type by, `1` at the default.
+    private func factor(_ size: UIContentSizeCategory) -> CGFloat {
+        UIFontMetrics.default.scaledValue(for: 100, compatibleWith: UITraitCollection(preferredContentSizeCategory: size)) / 100
+    }
+
+    /// Put the view at a content size, as Settings ▸ Display & Brightness ▸
+    /// Text Size does, and let the trait change reach it.
+    private func setTextSize(_ size: UIContentSizeCategory, on view: LeafTextView, in scroll: UIScrollView) throws {
+        guard #available(iOS 17, *) else { throw XCTSkip("trait overrides are iOS 17") }
+        view.traitOverrides.preferredContentSizeCategory = size
+        view.updateTraitsIfNeeded()
+        scroll.layoutIfNeeded()
+        XCTAssertEqual(view.traitCollection.preferredContentSizeCategory, size)
+    }
+
+    /// Where every visual line starts and how high it sits: a layout's line
+    /// breaks, and so its pagination.
+    private func lineBreaks(_ view: LeafTextView) -> [[CGFloat]] {
+        view.layoutEngine.rows.map { row in [row.top] + row.shaped.wrapped.map { CGFloat($0.start) } }
+    }
+
+    private var long: String {
+        (1...60).map { "Paragraph \($0), long enough to wrap onto a second line at the sheet's measure, and then some." }
+            .joined(separator: "\n\n") + "\n"
+    }
+
+    func testOnPaperALargerTextSizeKeepsThePagesAndTheLineBreaks() throws {
+        let (scroll, _, view) = try host(long, page: letter)
+        view.zoom = .fitWidth
+        scroll.layoutIfNeeded()
+        let pages = view.pages
+        let breaks = lineBreaks(view)
+        XCTAssertGreaterThan(pages.count, 2)
+
+        try setTextSize(Self.large, on: view, in: scroll)
+        XCTAssertEqual(view.pages, pages, "the same sheets")
+        XCTAssertEqual(lineBreaks(view), breaks, "broken at the same places")
+        XCTAssertEqual(view.renderTheme.fontSize, EditorTheme.default.fontSize, "the sheet's type is the document's")
+
+        // And the PDF breaks the lines the screen does.
+        let pdf = try XCTUnwrap(CGPDFDocument(CGDataProvider(data: view.pdfData(page: letter) as CFData)!))
+        XCTAssertEqual(pdf.numberOfPages, pages.count)
+    }
+
+    func testOnPaperTheZoomIsTheFitTimesTheTextSize() throws {
+        let (scroll, zoomed, view) = try host(long, page: letter)
+        view.zoom = .fitWidth
+        scroll.layoutIfNeeded()
+        let fit = 402 / letter.stackWidth
+        XCTAssertEqual(view.zoomScale, fit, accuracy: 1e-6)
+
+        try setTextSize(Self.large, on: view, in: scroll)
+        let f = factor(Self.large)
+        XCTAssertGreaterThan(f, 1.5)
+        XCTAssertEqual(view.zoom, .fitWidth, "still a fit")
+        XCTAssertEqual(view.zoomScale, fit * f, accuracy: 1e-6, "the fit times the factor")
+        XCTAssertEqual(view.transform.a, fit * f, accuracy: 1e-6)
+        XCTAssertEqual(zoomed.bounds.width, letter.stackWidth * fit * f, accuracy: 0.5, "a sheet wider than the screen")
+
+        // A scale is multiplied as a fit is, and reported back before the factor.
+        view.zoom = .actualSize
+        XCTAssertEqual(view.zoomScale, f, accuracy: 1e-6)
+        view.zoom = .scale(9)
+        XCTAssertEqual(view.zoomScale, Zoom.range.upperBound, "the product is held to the range, and no lower")
+        XCTAssertEqual(view.zoom, .scale(Zoom.range.upperBound / f))
+
+        // Back to the default size, back to the plain fit.
+        view.zoom = .fitWidth
+        try setTextSize(.large, on: view, in: scroll)
+        XCTAssertEqual(view.zoomScale, fit, accuracy: 1e-6)
+    }
+
+    func testTheContinuousFlowStillScalesTheType() throws {
+        let (scroll, _, view) = try host(long, page: nil)
+        view.zoom = .fitWidth
+        scroll.layoutIfNeeded()
+        let rows = view.layoutEngine.rows.last?.top ?? 0
+
+        try setTextSize(Self.large, on: view, in: scroll)
+        let f = factor(Self.large)
+        XCTAssertEqual(view.renderTheme.fontSize, EditorTheme.default.fontSize * f, accuracy: 0.01, "bigger type")
+        XCTAssertEqual(view.zoomScale, 1, "and no zoom")
+        XCTAssertGreaterThan(view.layoutEngine.rows.last?.top ?? 0, rows * 1.5, "so the column reflows longer")
+    }
+
+    func testMovingOnAndOffPaperMovesTheFactorBetweenTheTypeAndTheZoom() throws {
+        let (scroll, _, view) = try host(long, page: nil)
+        view.zoom = .fitWidth
+        scroll.layoutIfNeeded()
+        try setTextSize(Self.large, on: view, in: scroll)
+        let f = factor(Self.large)
+        XCTAssertEqual(view.renderTheme.fontSize, EditorTheme.default.fontSize * f, accuracy: 0.01)
+        XCTAssertEqual(view.zoomScale, 1)
+
+        view.pageSetup = letter
+        scroll.layoutIfNeeded()
+        XCTAssertEqual(view.renderTheme.fontSize, EditorTheme.default.fontSize, "onto paper: the type is the host's")
+        XCTAssertEqual(view.zoomScale, 402 / letter.stackWidth * f, accuracy: 1e-6, "and the zoom carries the size")
+
+        view.pageSetup = nil
+        scroll.layoutIfNeeded()
+        XCTAssertEqual(view.renderTheme.fontSize, EditorTheme.default.fontSize * f, accuracy: 0.01, "off it: back in the type")
+        XCTAssertEqual(view.zoomScale, 1, "and out of the zoom")
     }
 }
 #endif

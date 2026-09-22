@@ -786,9 +786,21 @@ public final class LeafEditorModel: ObservableObject {
     @Published public private(set) var zoomScale: CGFloat = 1
 
     /// To the next stop up `Zoom.stops` from wherever the view is — View ▸ Zoom In.
-    public func zoomIn() { zoom = .scale(Zoom.stepUp(from: zoomScale)) }
+    public func zoomIn() { zoom = .scale(Zoom.stepUp(from: zoomScale) / zoomFactor) }
     /// To the next stop down — View ▸ Zoom Out.
-    public func zoomOut() { zoom = .scale(Zoom.stepDown(from: zoomScale)) }
+    public func zoomOut() { zoom = .scale(Zoom.stepDown(from: zoomScale) / zoomFactor) }
+
+    /// What the view multiplies a `.scale` by: on iOS, on paper, the reader's
+    /// Dynamic Type factor (the UIKit `LeafTextView.zoom` says why); `1`
+    /// everywhere else. A step walks the ladder of scales the reader sees,
+    /// `zoomScale`, so the stop is handed to the view divided by it.
+    private var zoomFactor: CGFloat {
+        #if canImport(AppKit) && !targetEnvironment(macCatalyst)
+        return 1
+        #else
+        return textView?.typeZoom ?? 1
+        #endif
+    }
     /// One layout point per screen point — View ▸ Actual Size.
     public func actualSize() { zoom = .actualSize }
 
