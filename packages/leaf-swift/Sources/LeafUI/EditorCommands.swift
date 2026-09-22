@@ -31,6 +31,19 @@ extension FocusedValues {
     }
 }
 
+/// The automatic substitutions the macOS editor can make as prose is typed,
+/// each a per-view toggle in the Edit menu — see `LeafEditorModel.toggleSubstitution`.
+public enum LeafSubstitution: Sendable, CaseIterable {
+    /// Edit ▸ Spelling and Grammar ▸ Correct Spelling Automatically.
+    case spellingCorrection
+    /// Edit ▸ Substitutions ▸ Text Replacement.
+    case textReplacement
+    /// Edit ▸ Substitutions ▸ Smart Quotes.
+    case smartQuotes
+    /// Edit ▸ Substitutions ▸ Smart Dashes.
+    case smartDashes
+}
+
 /// Format and View menu items for the focused `LeafEditor`. Add to a scene with
 /// `.commands { LeafEditorCommands() }`.
 ///
@@ -79,11 +92,11 @@ public struct LeafEditorCommands: Commands {
                 Button(loc("menu.checkDocumentNow", "Check Document Now")) {
                     editor?.checkSpelling()
                 }
-                Toggle(
-                    loc("menu.checkSpellingWhileTyping", "Check Spelling While Typing"),
-                    isOn: Binding(
-                        get: { editor?.isContinuousSpellCheckingEnabled ?? true },
-                        set: { _ in editor?.toggleContinuousSpellChecking() }))
+                if let editor { SpellingToggles(editor: editor) }
+            }
+            .disabled(editor == nil)
+            Menu(loc("menu.substitutions", "Substitutions")) {
+                if let editor { SubstitutionToggles(editor: editor) }
             }
             .disabled(editor == nil)
         }
@@ -122,6 +135,53 @@ public struct LeafEditorCommands: Commands {
 
 /// The Format menu's items, observing the editor so the checkmarks and the
 /// enabled state follow the caret.
+#if os(macOS)
+/// Edit ▸ Spelling and Grammar's toggles. A view observing the editor, as
+/// `FormatMenuItems` is, so each checkmark follows the editor and each item
+/// is disabled in the source view as it happens — read straight off the
+/// focused value, the menu kept whatever it showed when it was first built.
+private struct SpellingToggles: View {
+    @ObservedObject var editor: LeafEditorModel
+
+    var body: some View {
+        Toggle(loc("menu.checkSpellingWhileTyping", "Check Spelling While Typing"),
+               isOn: Binding(get: { editor.isContinuousSpellCheckingEnabled },
+                             set: { _ in editor.toggleContinuousSpellChecking() }))
+        SubstitutionToggle(editor: editor, substitution: .spellingCorrection,
+                           title: loc("menu.correctSpellingAutomatically", "Correct Spelling Automatically"))
+    }
+}
+
+/// Edit ▸ Substitutions.
+private struct SubstitutionToggles: View {
+    @ObservedObject var editor: LeafEditorModel
+
+    var body: some View {
+        SubstitutionToggle(editor: editor, substitution: .smartQuotes,
+                           title: loc("menu.smartQuotes", "Smart Quotes"))
+        SubstitutionToggle(editor: editor, substitution: .smartDashes,
+                           title: loc("menu.smartDashes", "Smart Dashes"))
+        SubstitutionToggle(editor: editor, substitution: .textReplacement,
+                           title: loc("menu.textReplacement", "Text Replacement"))
+    }
+}
+
+/// One per-view substitution toggle: checked as the view has it, and disabled
+/// where nothing is substituted — the source view, where a straight quote or
+/// a `--` is markup, and a reader.
+private struct SubstitutionToggle: View {
+    @ObservedObject var editor: LeafEditorModel
+    let substitution: LeafSubstitution
+    let title: String
+
+    var body: some View {
+        Toggle(title, isOn: Binding(get: { editor.isSubstitutionEnabled(substitution) },
+                                    set: { _ in editor.toggleSubstitution(substitution) }))
+            .disabled(editor.isSource || editor.isReadOnly)
+    }
+}
+#endif
+
 private struct FormatMenuItems: View {
     @ObservedObject var editor: LeafEditorModel
 

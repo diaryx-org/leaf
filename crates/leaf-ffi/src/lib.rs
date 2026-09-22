@@ -3571,6 +3571,17 @@ impl LeafDoc {
         g.frame()
     }
 
+    /// Replace the source range `[from, to)` with `text` behind the caret — an
+    /// automatic substitution as the user types (a correction, a text
+    /// replacement, a smart quote or dash). The caret and selection stay where
+    /// they were, and the substitution is an undo step of its own. See
+    /// `Doc::substitute`.
+    pub fn substitute(&self, from: u32, to: u32, text: String) -> DocView {
+        let mut g = self.lock();
+        g.doc.substitute(from as usize, to as usize, &text);
+        g.frame()
+    }
+
     /// Replace the source range `[from, to]` with `text` — `replace(_:withText:)`.
     pub fn replace_range(&self, from: u32, to: u32, text: String) -> DocView {
         let mut g = self.lock();

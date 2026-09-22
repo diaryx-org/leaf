@@ -765,6 +765,36 @@ public final class LeafEditorModel: ObservableObject {
     }
 
     public func checkSpelling() { textView?.checkSpelling(nil) }
+
+    /// Whether the macOS editor makes `substitution` as prose is typed — the
+    /// per-view toggles under Edit ▸ Substitutions and Correct Spelling
+    /// Automatically, seeded from the user's system settings.
+    public func isSubstitutionEnabled(_ substitution: LeafSubstitution) -> Bool {
+        guard let textView else {
+            switch substitution {
+            case .spellingCorrection: return NSSpellChecker.isAutomaticSpellingCorrectionEnabled
+            case .textReplacement: return NSSpellChecker.isAutomaticTextReplacementEnabled
+            case .smartQuotes: return NSSpellChecker.isAutomaticQuoteSubstitutionEnabled
+            case .smartDashes: return NSSpellChecker.isAutomaticDashSubstitutionEnabled
+            }
+        }
+        switch substitution {
+        case .spellingCorrection: return textView.isAutomaticSpellingCorrectionEnabled
+        case .textReplacement: return textView.isAutomaticTextReplacementEnabled
+        case .smartQuotes: return textView.isAutomaticQuoteSubstitutionEnabled
+        case .smartDashes: return textView.isAutomaticDashSubstitutionEnabled
+        }
+    }
+
+    public func toggleSubstitution(_ substitution: LeafSubstitution) {
+        switch substitution {
+        case .spellingCorrection: textView?.toggleAutomaticSpellingCorrection(nil)
+        case .textReplacement: textView?.toggleAutomaticTextReplacement(nil)
+        case .smartQuotes: textView?.toggleAutomaticQuoteSubstitution(nil)
+        case .smartDashes: textView?.toggleAutomaticDashSubstitution(nil)
+        }
+        objectWillChange.send()
+    }
     #elseif canImport(UIKit)
     /// Drive the system find panel: show it, with or without its replace
     /// field, find next/previous, use the selection, put it away. What Edit ▸

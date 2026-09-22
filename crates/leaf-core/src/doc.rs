@@ -1890,6 +1890,89 @@ impl Doc {
         self.splice(start, end, text, EditKind::Other);
     }
 
+    /// Replace `[start, end)` with `text` in place, behind the caret — an
+    /// automatic substitution a host makes as the user types: a misspelling
+    /// corrected, a text replacement expanded, a straight quote curled, a `--`
+    /// made a dash. Whether it did: `false` for a read-only document, a range
+    /// that is not one, or an edit twig refused.
+    ///
+    /// Unlike [`edit`](Self::edit), the caret and the selection stay where they
+    /// were, moved along by the edit — a word corrected behind the caret does
+    /// not pull the caret back to it — and so does a sticky mark armed at the
+    /// caret. It is an undo step of its own, folded into neither the typing
+    /// before it nor the typing after, so one undo puts back exactly what was
+    /// typed, with the caret where it stood. The bytes are replaced exactly,
+    /// snapping neither end, so a word at the edge of `**bold**` keeps its
+    /// delimiters. `text` is written the way typing writes it: literally, with
+    /// anything that would open markup escaped, where typing is literal
+    /// ([`MarkupMode::None`] in the rendered view).
+    pub fn substitute(&mut self, start: usize, end: usize, text: &str) -> bool {
+        if self.read_only
+            || start > end
+            || end > self.source.len()
+            || !self.source.is_char_boundary(start)
+            || !self.source.is_char_boundary(end)
+        {
+            return false;
+        }
+        let before = self.source.len();
+        let (caret, anchor) = (self.caret, self.anchor);
+        let (pending_marks, pending_at) = (self.pending_marks, self.pending_at);
+        self.last_edit_kind = None;
+        let literal = !self.markup_mode.authors()
+            && self.view == View::Wysiwyg
+            && !text.is_empty()
+            && self.supports(Gesture::InsertLiteral);
+        let landed = if literal {
+            if start != end && !self.splice_exact(start, end, "", EditKind::Other) {
+                false
+            } else if self.insert_literal_at(start, text, EditKind::Other, start != end) {
+                true
+            } else {
+                // The deletion landed and the text did not: take the deletion
+                // back rather than leave half a substitution.
+                if start != end {
+                    self.undo();
+                }
+                false
+            }
+        } else {
+            self.splice_exact(start, end, text, EditKind::Other)
+        };
+        if !landed {
+            self.caret = caret;
+            self.anchor = anchor;
+            return false;
+        }
+        let delta = self.source.len() as isize - before as isize;
+        let new_end = (end as isize + delta).max(start as isize) as usize;
+        // A place after the range moves with it, one inside it goes to the end
+        // of what replaced it, and one before it stays.
+        fn shift(p: usize, start: usize, end: usize, new_end: usize, delta: isize) -> usize {
+            if p >= end {
+                (p as isize + delta).max(0) as usize
+            } else if p > start {
+                new_end
+            } else {
+                p
+            }
+        }
+        self.caret = shift(caret, start, end, new_end, delta);
+        self.anchor = anchor
+            .map(|a| shift(a, start, end, new_end, delta))
+            .filter(|&a| a != self.caret);
+        if pending_at == Some(caret) {
+            self.pending_marks = pending_marks;
+            self.pending_at = Some(self.caret);
+        }
+        self.goal_col = None;
+        self.last_edit_kind = None;
+        self.clamp_caret();
+        // The caret the step leaves, so a redo puts it back here too.
+        self.record_caret();
+        true
+    }
+
     /// Insert typed `text` at the caret, replacing the selection if there is one.
     /// A single typed character coalesces with the run of typing before it; a
     /// newline or a multi-character insert is its own undo step.
@@ -13838,6 +13921,69 @@ mod tests {
     }
 
     #[test]
+    fn a_substitution_behind_the_caret_leaves_the_caret_and_is_its_own_step() {
+        let mut d = wysiwyg_doc("substitute", "\n");
+        d.caret = 0;
+        for c in ["I", " ", "s", "a", "w", " ", "t", "e", "h", " "] {
+            d.insert(c);
+        }
+        assert_eq!(d.source, "I saw teh \n");
+        let at = d.source.find("teh").unwrap();
+        assert!(d.substitute(at, at + 3, "the"));
+        assert_eq!(d.source, "I saw the \n");
+        assert_eq!(d.caret, 10, "still after the space");
+        assert!(d.selection().is_none());
+        d.insert("c");
+        assert_eq!(d.source, "I saw the c\n");
+        assert!(d.undo(), "the typing after it is a step of its own");
+        assert_eq!(d.source, "I saw the \n");
+        assert!(d.undo(), "the correction is one step");
+        assert_eq!(d.source, "I saw teh \n", "what was typed");
+        assert_eq!(d.caret, 10, "with the caret where it stood");
+        assert!(d.redo());
+        assert_eq!(d.source, "I saw the \n");
+        assert!(d.undo());
+        assert!(d.undo(), "and the typing before it is its own");
+        assert_eq!(d.source, "\n");
+        assert!(!d.can_undo());
+    }
+
+    #[test]
+    fn a_substitution_keeps_the_markup_it_stands_beside() {
+        // A quote typed just past a bold run: only its own byte changes.
+        let mut d = wysiwyg_doc("substitute", "A **bold** word\n");
+        let at = d.source.find(" word").unwrap();
+        d.caret = at;
+        d.insert("\"");
+        assert_eq!(d.source, "A **bold**\" word\n");
+        assert!(d.substitute(at, at + 1, "\u{201d}"));
+        assert_eq!(d.source, "A **bold**\u{201d} word\n");
+        assert_eq!(d.caret, at + "\u{201d}".len());
+        assert!(
+            d.marks_at(d.source.find("bold").unwrap())
+                .iter()
+                .any(|(k, _)| *k == InlineKind::Strong)
+        );
+        // A range that is not one is refused, and changes nothing.
+        let src = d.source.clone();
+        assert!(!d.substitute(3, 2, "x"));
+        assert!(!d.substitute(0, src.len() + 1, "x"));
+        assert!(!d.substitute(d.source.find('\u{201d}').unwrap() + 1, d.source.len(), "x"));
+        assert_eq!(d.source, src);
+    }
+
+    #[test]
+    fn a_substitution_is_written_the_way_typing_writes() {
+        // Where typing is literal, so is a replacement's text.
+        let mut d = wysiwyg_doc("substitute", "say hi\n");
+        d.set_markup_mode(MarkupMode::None);
+        assert!(d.substitute(4, 6, "*hi*"));
+        assert_eq!(d.source, "say \\*hi\\*\n");
+        assert!(d.undo());
+        assert_eq!(d.source, "say hi\n", "one step, escapes and all");
+    }
+
+    #[test]
     fn can_undo_is_false_once_a_coalesced_run_is_undone() {
         // The task's repro: five characters typed are one twig step, and the
         // counter used to say five.
@@ -13958,6 +14104,15 @@ mod tests {
                 d.newline();
                 d.insert("x");
                 d.end_undo_group();
+            }),
+            ("substitution", "\n", |d| {
+                d.caret = 0;
+                d.insert("t");
+                d.insert("e");
+                d.insert("h");
+                d.insert(" ");
+                d.substitute(0, 3, "the");
+                d.insert("c");
             }),
             ("empty group", "one\n", |d| {
                 d.caret = 3;
