@@ -15,7 +15,7 @@ resvg-swift`. The renderer is its own repository,
 display list crate held to resvg's own test suite (1,697 cases, 1,676
 byte-identical), a UniFFI binding, and a `CGContext` replayer — because nothing
 in it is leaf's. leaf's part was the task
-[SVG through resvg-swift](../tasks/svg-through-resvg-swift.md).
+[SVG through resvg-swift](/docs/tasks/closed/svg-through-resvg-swift.md).
 
 ## The picture
 

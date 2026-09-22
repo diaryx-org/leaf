@@ -3,7 +3,7 @@ title: The macOS formatting bar pages by group instead of scrolling
 status: done
 created: 2026-09-18
 updated: 2026-09-18
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 # The macOS formatting bar pages by group instead of scrolling
 

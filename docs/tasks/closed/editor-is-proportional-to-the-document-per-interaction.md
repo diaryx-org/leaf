@@ -2,7 +2,7 @@
 status: done
 created: 2026-09-20
 updated: 2026-09-20
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 # The Apple editor does work proportional to the document on every interaction
 
@@ -68,7 +68,7 @@ bench`, which this task added.
    cause, but the same rule applies: a caret move changed no count.
 
 The wasm binding has the boundary-crossing half of this written up already
-in [The frame crosses the wasm boundary whole on every keystroke](wasm-frame-crosses-whole.md);
+in [The frame crosses the wasm boundary whole on every keystroke](/docs/tasks/closed/wasm-frame-crosses-whole.md);
 what is here is the Apple renderer's half and the core lookups both share.
 
 **How.**

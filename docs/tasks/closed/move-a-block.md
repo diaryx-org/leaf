@@ -2,7 +2,7 @@
 status: done
 created: 2026-09-21
 updated: 2026-09-21
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 # A block can be moved — by keyboard, and by dragging it — and an attachment is a block
 
@@ -36,7 +36,7 @@ derived from `nodes()` (`parent`, `next_sibling`) at the moment of the move,
 never held across a reparse. Their stated limit — *bytes, not structure*:
 a `> ` prefix does not travel, a list item's continuation indent is not
 added — is twig's
-[move-block-as-an-offset-addressed-gesture](https://github.com/diaryx-org/twig/blob/main/docs/tasks/move-block-as-an-offset-addressed-gesture.md),
+[move-block-as-an-offset-addressed-gesture](https://github.com/diaryx-org/twig/blob/main/docs/tasks/closed/move-block-as-an-offset-addressed-gesture.md),
 and until it lands a move whose source and destination are in different
 containers is refused here with a status line, not attempted.
 
