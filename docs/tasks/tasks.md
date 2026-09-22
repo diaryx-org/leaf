@@ -11,7 +11,6 @@ contents:
 - '[A host hook for directives in the web editor](web-directive-hook.md)'
 - '[The heading the caret is under is a question `Doc` cannot answer](heading-at-offset.md)'
 - '[`can_undo` counts edits, and twig counts steps](can-undo-counts-edits-not-steps.md)'
-- '[Dynamic Type on paper should be a zoom, not a repagination](ios-dynamic-type-on-paper.md)'
 - '[The Mac app runs unsandboxed and unsigned](sandboxed-mac-app.md)'
 - '[Closed tasks](/docs/tasks/closed/closed.md)'
 part_of: '[leaf](/README.md)'

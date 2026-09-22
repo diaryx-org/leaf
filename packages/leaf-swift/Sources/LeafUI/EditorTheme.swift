@@ -354,8 +354,9 @@ public struct EditorTheme {
     }
 
     /// This theme with its *typographic* lengths multiplied by `factor` — how a
-    /// Dynamic Type content size is applied on iOS (see
-    /// `LeafTextView.applyDynamicType`), and a plain multiplier anywhere else.
+    /// Dynamic Type content size is applied on iOS in the continuous flow (see
+    /// `LeafTextView.applyDynamicType`; on paper it is a zoom instead), and a
+    /// plain multiplier anywhere else.
     ///
     /// What scales is what belongs to the type: the body size, its line box, and
     /// the quote gutter — which is spelled in points but *means* "the indent one

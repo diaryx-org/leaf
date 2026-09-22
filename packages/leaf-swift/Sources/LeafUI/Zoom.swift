@@ -47,17 +47,31 @@ public enum Zoom: Equatable, Sendable {
     /// The scale this zoom is in a viewport `viewport` wide and tall, over
     /// `page` — or over the continuous flow, when `page` is nil, where the fits
     /// are the identity.
-    func resolve(in viewport: CGSize, page: PageSetup?) -> CGFloat {
+    ///
+    /// `factor` multiplies whatever the zoom comes to before the result is
+    /// held to `range`: it is how the iOS view carries a Dynamic Type content
+    /// size on paper, where the sheet's type is the document's and the reader's
+    /// text size is a question of how large the sheet is on screen (see the
+    /// UIKit `LeafTextView.zoom`). The product is clamped once, so a fit at a
+    /// large text size stops at the top of the range like any other zoom, and
+    /// a scale is not held to the range before it is multiplied: at three times
+    /// the default text size, a sheet pinched to 50% on screen is kept as a
+    /// scale of 1/6, below the range's floor, and is 50% again once multiplied.
+    func resolve(in viewport: CGSize, page: PageSetup?, factor: CGFloat = 1) -> CGFloat {
+        Self.clamp(unclamped(in: viewport, page: page) * factor)
+    }
+
+    private func unclamped(in viewport: CGSize, page: PageSetup?) -> CGFloat {
         switch self {
         case .scale(let s):
-            return Self.clamp(s)
+            return s
         case .fitWidth:
             guard let page, viewport.width > 0, page.stackWidth > 0 else { return 1 }
-            return Self.clamp(viewport.width / page.stackWidth)
+            return viewport.width / page.stackWidth
         case .fitPage:
             guard let page, viewport.width > 0, viewport.height > 0, page.stackWidth > 0 else { return 1 }
             let stackHeight = page.size.height + page.backdrop * 2
-            return Self.clamp(min(viewport.width / page.stackWidth, viewport.height / stackHeight))
+            return min(viewport.width / page.stackWidth, viewport.height / stackHeight)
         }
     }
 
