@@ -383,6 +383,10 @@ pub struct FootnoteDef {
     pub offset: Option<usize>,
 }
 
+/// twig's cap on retained undo steps (`MAX_UNDO` in its splicer), which
+/// [`Doc::can_undo`]'s count follows: past it twig drops the oldest step.
+const UNDO_CAP: usize = 200;
+
 /// Where a locator lands — the answer to [`Doc::locate`].
 ///
 /// A locator (the `v2` of a `chapter.dj#v2`) names a *place* rather than a
@@ -673,15 +677,15 @@ pub struct Doc {
     revision: u64,
     /// How many history steps stand behind the caret, and how many ahead of
     /// it — the answer to a native Edit menu's "may Undo be enabled?", which
-    /// twig's history does not ask itself. Counted at [`refresh`](Self::refresh),
-    /// the funnel every edit comes through, and moved back and forth by
-    /// [`undo`](Self::undo)/[`redo`](Self::redo). An upper bound rather than
-    /// an exact depth: a coalesced run of typing is one of twig's steps but
-    /// several of these, and twig's own cap on history is not mirrored here.
-    /// Neither error can make `can_undo` false while a step remains, which is
-    /// the only property a menu needs; the one place the bound can be wrong the
-    /// other way — the cap has retired every step — is reconciled the moment
-    /// twig reports nothing to undo.
+    /// twig's history does not answer itself. A mirror of twig's two stacks,
+    /// kept exact by following every move twig makes to them: a step onto the
+    /// undo stack at [`refresh`](Self::refresh), the funnel every edit comes
+    /// through, capped where twig caps it ([`UNDO_CAP`]); one fewer at each
+    /// [`coalesce_last_undo`](Self::coalesce_last_undo), under twig's own
+    /// two-step rule; and moved back and forth by [`undo`](Self::undo) and
+    /// [`redo`](Self::redo). A counter that only ever went up — which this was
+    /// — answered `true` after a coalesced run had been undone whole. Should
+    /// it ever drift anyway, the first undo twig refuses sets it to zero.
     undo_steps: usize,
     redo_steps: usize,
     /// What `vmap` was built from, or `None` before the first build. The map is
@@ -4379,11 +4383,12 @@ impl Doc {
         self.record_caret();
         match self.editor.edit_range(start, end, text) {
             Ok(change) => {
-                if coalesce {
-                    let _ = self.editor.coalesce_last_undo();
-                }
                 self.last_edit_kind = Some(kind);
+                // Counted first, so the fold has the step it folds.
                 self.refresh();
+                if coalesce {
+                    self.coalesce_last_undo();
+                }
                 self.caret = change.new.end;
                 self.anchor = None;
                 self.goal_col = None;
@@ -4538,7 +4543,7 @@ impl Doc {
         if !self.splice_exact(fix.start, fix.end, &fix.text, EditKind::Other) {
             return;
         }
-        let _ = self.editor.coalesce_last_undo();
+        self.coalesce_last_undo();
         // The keystroke owns the undo step, so the run of typing it belongs to
         // keeps coalescing over the repair rather than breaking in two here.
         self.last_edit_kind = resumed;
@@ -4597,11 +4602,12 @@ impl Doc {
         self.record_caret();
         match self.editor.insert_literal(at, text) {
             Ok(change) => {
-                if coalesce {
-                    let _ = self.editor.coalesce_last_undo();
-                }
                 self.last_edit_kind = Some(kind);
+                // Counted first, so the fold has the step it folds.
                 self.refresh();
+                if coalesce {
+                    self.coalesce_last_undo();
+                }
                 self.caret = change.new.end;
                 self.anchor = None;
                 self.goal_col = None;
@@ -4646,7 +4652,7 @@ impl Doc {
         }
         self.refresh();
         if self.source != before {
-            let _ = self.editor.coalesce_last_undo();
+            self.coalesce_last_undo();
             self.dirty = self.source != self.clean_source;
             self.clamp_caret();
             self.record_caret();
@@ -4713,7 +4719,7 @@ impl Doc {
         if self.splice(dash, dash + 1, "*", EditKind::Other) {
             // Same width, so the caret keeps its column; fold into the edit that
             // triggered this so Tab stays one undo step.
-            let _ = self.editor.coalesce_last_undo();
+            self.coalesce_last_undo();
             self.caret = caret.min(self.source.len());
             self.clamp_caret();
             self.record_caret();
@@ -4969,7 +4975,7 @@ impl Doc {
         // fresh highlight is a no-op by design, and coalescing there would eat
         // the *previous* edit into the toggle instead.
         if self.revision != before {
-            let _ = self.editor.coalesce_last_undo();
+            self.coalesce_last_undo();
         }
     }
 
@@ -6982,10 +6988,12 @@ impl Doc {
     // in lockstep and silently drift out of it.
 
     /// Undo the last edit step (⌘Z / ^Z), putting the caret and selection back
-    /// where they were when that step began.
-    pub fn undo(&mut self) {
+    /// where they were when that step began. Whether it did: `false` when
+    /// there was nothing to undo, the document is read-only, or twig refused —
+    /// the answer a host composing several histories into one walks on by.
+    pub fn undo(&mut self) -> bool {
         if self.read_only {
-            return;
+            return false;
         }
         let (undone, redoable) = (self.undo_steps, self.redo_steps);
         match self.editor.undo() {
@@ -6994,34 +7002,55 @@ impl Doc {
                 // `refresh` counted the restore as an edit; it was a step back.
                 self.undo_steps = undone.saturating_sub(1);
                 self.redo_steps = redoable + 1;
+                true
             }
             Ok(None) => {
                 self.undo_steps = 0;
                 self.status = Some("nothing to undo".into());
+                false
             }
-            Err(e) => self.status = Some(format!("undo: {e}")),
+            Err(e) => {
+                self.status = Some(format!("undo: {e}"));
+                false
+            }
         }
     }
 
     /// Redo the last undone edit step (⇧⌘Z / ^Y), putting the caret and
-    /// selection back where that step originally left them.
-    pub fn redo(&mut self) {
+    /// selection back where that step originally left them. Whether it did,
+    /// as [`undo`](Self::undo) reports.
+    pub fn redo(&mut self) -> bool {
         if self.read_only {
-            return;
+            return false;
         }
         let (undone, redoable) = (self.undo_steps, self.redo_steps);
         match self.editor.redo() {
             Ok(Some(change)) => {
                 self.after_history(change);
                 // `refresh` counted the restore as an edit; it was a step forward.
-                self.undo_steps = undone + 1;
+                self.undo_steps = (undone + 1).min(UNDO_CAP);
                 self.redo_steps = redoable.saturating_sub(1);
+                true
             }
             Ok(None) => {
                 self.redo_steps = 0;
                 self.status = Some("nothing to redo".into());
+                false
             }
-            Err(e) => self.status = Some(format!("redo: {e}")),
+            Err(e) => {
+                self.status = Some(format!("redo: {e}"));
+                false
+            }
+        }
+    }
+
+    /// Fold the edit just made into the undo step before it — twig's
+    /// `coalesce_last_undo`, with the `undo_steps` mirror following
+    /// it. twig merges only when there are two steps to merge. Call it after
+    /// [`refresh`](Self::refresh) has counted the edit being folded.
+    fn coalesce_last_undo(&mut self) {
+        if self.editor.coalesce_last_undo().is_ok() && self.undo_steps >= 2 {
+            self.undo_steps -= 1;
         }
     }
 
@@ -7242,6 +7271,9 @@ impl Doc {
             match new_editor(source.as_bytes(), self.format) {
                 Ok(editor) => {
                     self.editor = editor;
+                    // A fresh editor, and so a fresh history.
+                    self.undo_steps = 0;
+                    self.redo_steps = 0;
                     self.source = source.clone();
                     // Not going through `refresh`, so the revision has to move
                     // here or every frontend keeps painting the old file from
@@ -7277,14 +7309,13 @@ impl Doc {
         self.revision += 1;
         // An edit is a step onto the history and the end of anything undone;
         // `undo`/`redo` come through here too and correct this after.
-        self.undo_steps += 1;
+        self.undo_steps = (self.undo_steps + 1).min(UNDO_CAP);
         self.redo_steps = 0;
         self.clamp_caret();
     }
 
     /// Whether [`undo`](Self::undo) has a step to take back — for a native
-    /// Edit menu to enable its item by. See the note on `undo_steps` for what
-    /// "has" means here.
+    /// Edit menu to enable its item by, and exactly when `undo` would move.
     pub fn can_undo(&self) -> bool {
         !self.read_only && self.undo_steps > 0
     }
@@ -13560,6 +13591,128 @@ mod tests {
         d.undo(); // the whole composition, not its last keystroke
         assert_eq!(d.source, "\n");
         assert_eq!(d.status.as_deref(), None, "the run was a single step");
+    }
+
+    #[test]
+    fn can_undo_is_false_once_a_coalesced_run_is_undone() {
+        // The task's repro: five characters typed are one twig step, and the
+        // counter used to say five.
+        let mut d = wysiwyg_doc("undo_truth", "\n");
+        d.caret = 0;
+        for c in ["h", "e", "l", "l", "o"] {
+            d.insert(c);
+        }
+        assert!(d.can_undo());
+        assert!(d.undo(), "the run undoes");
+        assert_eq!(d.source, "\n");
+        assert!(!d.can_undo(), "and nothing is left behind it");
+        let rev = d.revision();
+        assert!(!d.undo(), "an undo that does not move says so");
+        assert_eq!(d.revision(), rev);
+        assert!(d.can_redo());
+        assert!(d.redo());
+        assert_eq!(d.source, "hello\n");
+        assert!(!d.can_redo());
+        assert!(!d.redo());
+    }
+
+    #[test]
+    fn can_undo_is_exact_across_the_gestures_that_coalesce() {
+        // Each gesture below folds, or may fold, one twig step into another.
+        // After it, the mirror must name exactly the number of undos twig
+        // takes — and the same number of redos back.
+        type Gesture = fn(&mut Doc);
+        let cases: &[(&str, &str, Gesture)] = &[
+            ("typing", "\n", |d| {
+                d.caret = 0;
+                d.insert("ab");
+                d.insert("c");
+                d.move_left(false);
+                d.insert("x");
+            }),
+            ("backspaces", "abcdef\n", |d| {
+                d.caret = 6;
+                d.backspace();
+                d.backspace();
+                d.insert("z");
+                d.backspace();
+            }),
+            ("ordered list item", "1. one\n2. two\n", |d| {
+                d.caret = 6;
+                d.newline();
+                d.insert("x");
+            }),
+            ("list indent", "- one\n- two\n", |d| {
+                d.caret = d.source.find("two").unwrap();
+                d.indent();
+                d.outdent();
+            }),
+            ("bold then type", "one two\n", |d| {
+                d.select_range(0, 3);
+                d.toggle(InlineKind::Strong);
+                d.caret = d.source.len() - 1;
+                d.insert("!");
+            }),
+            ("highlight", "one two\n", |d| {
+                d.select_range(0, 3);
+                d.highlight(None);
+                d.highlight(Some(MarkColor::Green));
+            }),
+            ("heading and quote", "one\n", |d| {
+                d.caret = 1;
+                d.toggle_heading(2);
+                d.toggle_blockquote();
+            }),
+            ("footnote", "one\n", |d| {
+                d.caret = 3;
+                d.insert_footnote();
+                d.insert("note");
+            }),
+            ("blocks", "one\n\ntwo\n\nthree\n", |d| {
+                d.caret = 1;
+                d.move_block_down();
+                d.toggle_list(true);
+                d.set_alignment(Some(Align::Center));
+                d.insert_page_break();
+                d.insert_table(2, 2);
+            }),
+            ("paste and compose", "\n", |d| {
+                d.caret = 0;
+                d.paste("one two");
+                d.delete_word_back();
+                d.edit_composing(d.caret, d.caret, "か");
+                d.edit_composing(d.caret - 3, d.caret, "蚊");
+                d.end_composition();
+                d.insert("z");
+            }),
+            ("table", "| a | b |\n| - | - |\n| c | d |\n", |d| {
+                d.place_caret(d.source.find("d |").unwrap(), false);
+                d.cell_tab(true);
+                d.insert("e");
+                d.cell_return();
+            }),
+        ];
+        for (name, src, gesture) in cases {
+            let mut d = wysiwyg_doc("undo_exact", src);
+            gesture(&mut d);
+            let (steps, after) = (d.undo_steps, d.source.clone());
+            let mut undone = 0;
+            while d.can_undo() {
+                assert!(d.undo(), "{name}: can_undo said yes, undo moved nothing");
+                undone += 1;
+            }
+            assert!(!d.undo(), "{name}: can_undo said no, undo moved");
+            assert_eq!(undone, steps, "{name}");
+            assert_eq!(d.source, *src, "{name}: back to the start");
+            let mut redone = 0;
+            while d.can_redo() {
+                assert!(d.redo(), "{name}: can_redo said yes, redo moved nothing");
+                redone += 1;
+            }
+            assert!(!d.redo(), "{name}: can_redo said no, redo moved");
+            assert_eq!(redone, steps, "{name}");
+            assert_eq!(d.source, after, "{name}: forward to the end");
+        }
     }
 
     #[test]

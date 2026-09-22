@@ -860,7 +860,8 @@ pub struct DocView {
     /// affordance.
     dirty: bool,
     /// Whether there is a step to undo, and one to redo — what a toolbar's
-    /// history buttons enable by. Both false on a read-only document.
+    /// history buttons enable by. Both false on a read-only document. Exact:
+    /// `can_undo` is true precisely when `undo()` would move the document.
     can_undo: bool,
     can_redo: bool,
     /// `"wysiwyg"` or `"source"`, for a view-toggle affordance.
