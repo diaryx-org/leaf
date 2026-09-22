@@ -1344,6 +1344,25 @@ impl LeafDoc {
         Ok(v)
     }
 
+    /// A whole frame of the document as a page shows it: no line revealed,
+    /// where [`view`](Self::view) reveals the caret's — its delimiters under
+    /// the `"full"` markup mode, and in every mode a formula on it as its TeX.
+    /// What a print path renders from, since paper has no caret. See
+    /// [`leaf_core::Doc::set_unrevealed`].
+    ///
+    /// Kept apart from the screen: the screen's map is set aside and put back,
+    /// and neither the frame count nor the rows kept for the next change move,
+    /// so the frame after this one is still a change from the screen's last.
+    pub fn paper_view(&mut self) -> Result<DocView, JsValue> {
+        // Bring the screen's map up to date first, so an edit it has not yet
+        // been built for is spent on it rather than on the paper's build.
+        self.sync();
+        self.doc.set_unrevealed(true);
+        let v = self.whole();
+        self.doc.set_unrevealed(false);
+        Ok(v)
+    }
+
     /// Whether the frame every method answers with is the change since the
     /// frame before rather than the whole document — see [`DocView`] for the
     /// shape, and for what a renderer does with one. Off by default, so a

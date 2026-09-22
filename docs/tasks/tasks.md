@@ -13,7 +13,6 @@ contents:
 - '[`can_undo` counts edits, and twig counts steps](can-undo-counts-edits-not-steps.md)'
 - '[Dynamic Type on paper should be a zoom, not a repagination](ios-dynamic-type-on-paper.md)'
 - '[The Mac app runs unsandboxed and unsigned](sandboxed-mac-app.md)'
-- '[A PDF shows the caret''s line revealed](pdf-reveals-the-carets-line.md)'
 - '[Closed tasks](/docs/tasks/closed/closed.md)'
 part_of: '[leaf](/README.md)'
 ---

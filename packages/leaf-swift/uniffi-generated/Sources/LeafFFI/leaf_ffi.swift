@@ -1004,6 +1004,19 @@ public protocol LeafDocProtocol : AnyObject {
      */
     func outdent()  -> DocView
     
+    /**
+     * A whole frame of the document as a page shows it: no line revealed,
+     * where [`view`](Self::view) reveals the caret's — its delimiters under
+     * `MarkupMode::Full`, and in every mode a formula on it as its TeX. What
+     * the sheet a PDF or a printout is laid out from asks for in place of
+     * `view`, since paper has no caret. See [`leaf_core::Doc::set_unrevealed`].
+     *
+     * Kept apart from the screen: the screen's map is set aside and put back,
+     * and neither the frame count nor the rows kept for the next change move,
+     * so the frame after this one is still a change from the screen's last.
+     */
+    func paperView()  -> DocView
+    
     func paste(text: String)  -> DocView
     
     /**
@@ -2372,6 +2385,24 @@ open func offsetForUtf16Index(index: UInt32) -> UInt32 {
 open func outdent() -> DocView {
     return try!  FfiConverterTypeDocView.lift(try! rustCall() {
     uniffi_leaf_ffi_fn_method_leafdoc_outdent(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+    /**
+     * A whole frame of the document as a page shows it: no line revealed,
+     * where [`view`](Self::view) reveals the caret's — its delimiters under
+     * `MarkupMode::Full`, and in every mode a formula on it as its TeX. What
+     * the sheet a PDF or a printout is laid out from asks for in place of
+     * `view`, since paper has no caret. See [`leaf_core::Doc::set_unrevealed`].
+     *
+     * Kept apart from the screen: the screen's map is set aside and put back,
+     * and neither the frame count nor the rows kept for the next change move,
+     * so the frame after this one is still a change from the screen's last.
+     */
+open func paperView() -> DocView {
+    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
+    uniffi_leaf_ffi_fn_method_leafdoc_paper_view(self.uniffiClonePointer(),$0
     )
 })
 }
@@ -9819,6 +9850,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_outdent() != 21680) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_paper_view() != 8845) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_paste() != 18516) {

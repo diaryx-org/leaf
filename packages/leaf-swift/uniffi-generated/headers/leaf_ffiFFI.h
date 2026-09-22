@@ -596,6 +596,11 @@ uint32_t uniffi_leaf_ffi_fn_method_leafdoc_offset_for_utf16_index(void*_Nonnull 
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_outdent(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_PAPER_VIEW
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_PAPER_VIEW
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_paper_view(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_PASTE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_PASTE
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_paste(void*_Nonnull ptr, RustBuffer text, RustCallStatus *_Nonnull out_status
@@ -1620,6 +1625,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_offset_for_utf16_index(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_OUTDENT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_OUTDENT
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_outdent(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_PAPER_VIEW
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_PAPER_VIEW
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_paper_view(void
     
 );
 #endif

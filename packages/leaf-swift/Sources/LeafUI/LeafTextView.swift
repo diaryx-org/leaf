@@ -601,6 +601,15 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     // MARK: applying a frame
 
+    /// Lay this view out from the document as a page shows it — no line
+    /// revealed — rather than as the screen does, where the caret's line is
+    /// source: a formula as its TeX, and under the full markup mode its
+    /// delimiters. What the paper sheet a PDF or a printout is drawn from
+    /// calls once, having no caret of its own. See `LeafDoc.paperView()`.
+    func layOutAsPaper() {
+        render(doc.paperView(), reflow: true)
+    }
+
     /// Install `frame` and lay it out. The frame is the change since the
     /// frame before — the rows that differ and where they go, which is what
     /// core answers every gesture with — or the whole document, and either
