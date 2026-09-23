@@ -2795,6 +2795,28 @@ fn definitions(editor: &mut Editor) -> Vec<QueryMatch> {
     doc.definitions().unwrap_or_default()
 }
 
+/// The line of a thematic break whose span ends at `span_end`, as the two
+/// offsets the rest of the crate means by it: where the rule's text ends, and
+/// the caret's home after the rule — past the newline that ends its line, the
+/// start of the line under it (or the text's end, with no newline to pass).
+///
+/// Read off the span less the newline djot's span takes in, since Markdown's
+/// stops before it. Measured from djot's span end, the home after a rule landed
+/// past the blank line under it, on the next block's first character.
+pub(crate) fn rule_line(source: &str, span_end: usize) -> (usize, usize) {
+    let span_end = span_end.min(source.len());
+    let text_end = source[..span_end]
+        .strip_suffix('\n')
+        .map_or(span_end, |s| s.strip_suffix('\r').unwrap_or(s).len());
+    let rest = &source[text_end..];
+    let newline = if rest.starts_with("\r\n") {
+        2
+    } else {
+        usize::from(rest.starts_with('\n'))
+    };
+    (text_end, text_end + newline)
+}
+
 /// The label of the footnote definition starting at `start` — the `1` in
 /// `[^1]: …`. twig gives the `footnote` node no label of its own (no `text`, no
 /// `name`), and the bytes that spell it belong to no child node either — the
@@ -3785,18 +3807,20 @@ impl Builder<'_> {
                     });
                 }
                 // The dashes share one caret home in front of the atomic block,
-                // while the row's end is the second home just past its source.
-                // Without that trailing stop a final rule made the document end
-                // unreachable: Right could not cross it and a click in the
-                // empty space below it snapped back before the rule.
-                let after_line = node.span.end
-                    + self.source[node.span.end..]
-                        .strip_prefix("\r\n")
-                        .map_or_else(
-                            || usize::from(self.source[node.span.end..].starts_with('\n')),
-                            |_| 2,
-                        );
+                // while the row's end is the second home, past the newline that
+                // ends the rule's line. Without that trailing stop a final rule
+                // made the document end unreachable: Right could not cross it
+                // and a click in the empty space below it snapped back before
+                // the rule.
+                let (text_end, after_line) = rule_line(self.source, node.span.end);
                 self.push_row_at(glyphs, after_line);
+                // The walk stands at the rule itself, though, as it stands at
+                // the end of any other block's last line: the lines under a
+                // rule are counted from the newline that ends it. Counted from
+                // the home past that newline, every gap under a rule came up a
+                // line short, and the empty paragraph Enter opens beneath one
+                // drew as nothing at all.
+                self.last_off = text_end;
             }
             // A block-level image node with no wrapping paragraph — a promoted
             // top-level HTML `<img>` lands as a direct `doc` child like this
@@ -5099,6 +5123,17 @@ impl Builder<'_> {
         });
     }
 
+    /// Where the last row's line ends — what the lines under it are counted
+    /// from: the row's own end, or the walk's where that stands short of it.
+    /// Only a thematic break's does, whose row ends at the caret's home past
+    /// the newline under the rule while the walk stands at the rule itself
+    /// (see its arm). Every other block leaves the walk at its last row's end
+    /// or past it — past a closing fence, say, which the counts below reach
+    /// by other means.
+    fn last_line_end(&self) -> Option<usize> {
+        self.rows.last().map(|r| r.end_src.min(self.last_off))
+    }
+
     /// The quote's own trailing marker lines: the `>` / `> ` lines that lie past
     /// its last child but inside its span, one gutter row each.
     ///
@@ -5124,7 +5159,7 @@ impl Builder<'_> {
     /// where this never looks).
     fn emit_quote_trailing_lines(&mut self, pc: &[Glyph], end: usize) {
         let end = end.min(self.source.len());
-        let mut at = self.rows.last().map_or(0, |r| r.end_src);
+        let mut at = self.last_line_end().unwrap_or(0);
         // Walk line by line from the last child's end to the quote's, taking each
         // line's *end* as the row's offset — the caret home at the end of a line
         // is where one on an empty quoted line belongs, and it keeps every row's
@@ -5215,9 +5250,8 @@ impl Builder<'_> {
         // was the same shape.) Trailing whitespace is not content, so a line
         // of spaces still counts as the blank line it looks like.
         let last_end = self
-            .rows
-            .last()
-            .map_or(hidden_end, |r| r.end_src)
+            .last_line_end()
+            .unwrap_or(hidden_end)
             .max(self.stepped_over)
             .max(self.source.trim_end().len());
         if last_end >= self.source.len() {
@@ -6617,6 +6651,10 @@ mod tests {
             // paragraph, and closing the file under a comment — the README
             // shape.
             "see [a] and [b]\n\n[a]: /a\n\nmid\n[b]: /b \"bee\"\n\nend [c]\n\n<!-- links -->\n[c]: /c\n",
+            // A rule's row ends past the newline under it while the walk
+            // stands at the rule, and the rule's block is never cached for
+            // it: an empty line under one mid-document and closing it.
+            "para\n\n---\n\n\n\nbetween rules\n\n---\n\n",
         ];
         for wrap in [None, Some(80usize), Some(20)] {
             for src in docs {
@@ -9319,6 +9357,75 @@ mod tests {
             "a row under the underline: {:?}",
             m.rows.len()
         );
+    }
+
+    /// Each row as whether it is drawn-only and where it ends — the shape of
+    /// the blank lines around a block, which is what its text can't show.
+    fn row_shape(m: &VisualMap) -> Vec<(bool, usize)> {
+        m.rows.iter().map(|r| (r.decoration, r.end_src)).collect()
+    }
+
+    #[test]
+    fn the_lines_under_a_rule_are_counted_from_the_rule() {
+        // A rule's row ends at the caret's home past the newline under it, and
+        // the counts of the blank lines below used to start from there too, so
+        // every gap under a rule came up a line short: the empty paragraph
+        // Enter opens beneath a rule drew as two gaps and no line, and the
+        // caret put on it was drawn on the next block. They count from the
+        // rule itself, as under any other block's last line.
+        let src = "a\n\n---\n\n\n\nb\n";
+        let m = map(src);
+        assert_eq!(
+            row_shape(&m),
+            [
+                (false, 1),
+                (true, 2),
+                (false, 7), // the rule, its home past the newline under it
+                (true, 7),
+                (false, 8), // the empty paragraph
+                (true, 9),
+                (false, 11),
+            ]
+        );
+        assert_eq!(m.pos_of_offset(8), (4, 0), "the caret on the empty line");
+        // The one blank line under a rule is still the one gap, not two.
+        assert_eq!(
+            row_shape(&map("a\n\n---\n\nb\n")),
+            [(false, 1), (true, 2), (false, 7), (true, 7), (false, 9)]
+        );
+
+        // Closing the document, the line under the gap is somewhere to type.
+        let m = map("a\n\n---\n\n");
+        assert_eq!(
+            row_shape(&m),
+            [(false, 1), (true, 2), (false, 7), (true, 7), (false, 8)]
+        );
+        assert_eq!(m.pos_of_offset(8), (4, 0));
+        // And a lone newline after the rule is only the rule's own.
+        assert_eq!(
+            row_shape(&map("a\n\n---\n")),
+            [(false, 1), (true, 2), (false, 7)]
+        );
+
+        // A quote's own trailing lines under a rule: each a row, the first too.
+        let m = map("> ---\n>\n> ");
+        assert_eq!(row_shape(&m), [(false, 6), (false, 7), (false, 10)]);
+    }
+
+    #[test]
+    fn the_home_past_a_djot_rule_is_the_line_under_it() {
+        // djot's span takes in the newline that ends the rule, and the home
+        // past the rule was measured from that end — one newline further on,
+        // across the blank line, to the next block's first character. A caret
+        // left after the rule was drawn on that block.
+        let m = map_djot("a\n\n* * *\n\nb\n");
+        assert_eq!(
+            row_shape(&m),
+            [(false, 1), (true, 2), (false, 9), (true, 9), (false, 11)]
+        );
+        assert_eq!(m.pos_of_offset(9).0, 2, "beside the rule, not on `b`");
+        let m = map_djot("a\n\n* * *\n\n\n\nb\n");
+        assert_eq!(m.pos_of_offset(10), (4, 0), "the caret on the empty line");
     }
 
     // ── hidden blocks ────────────────────────────────────────────────────────
