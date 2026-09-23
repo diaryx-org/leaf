@@ -44,12 +44,38 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            #if os(macOS)
             toolbar
             Divider()
             LeafEditor(model: model, theme: theme, page: page)
                 .background(page == nil ? editorBackground : Color.clear)
-            #if os(macOS)
             if page != nil { zoomBar }
+            #else
+            // Above the keyboard, where the package's row is meant to hang:
+            // its `Aa` swaps the keyboard for the formatting panel and the row
+            // stays above whichever is up. The demo's display chrome goes in
+            // the navigation bar instead, where it can be reached without a
+            // keyboard up — and the row keeps to the nine it was sized for.
+            LeafEditor(model: model, theme: theme, page: page) {
+                LeafFormattingToolbar(editor: model)
+            }
+            .background(page == nil ? editorBackground : Color.clear)
+            .toolbar {
+                ToolbarItemGroup(placement: .primaryAction) {
+                    Button { model.toggleView() } label: {
+                        Image(systemName: model.isSource ? "doc.richtext" : "chevron.left.slash.chevron.right")
+                    }
+                    .accessibilityLabel("view")
+                    Menu {
+                        Menu("Line Flow") { flowRows }
+                        Menu("Appearance") { appearanceRows }
+                        Menu("Page") { pageRows }
+                    } label: {
+                        Image(systemName: page == nil ? "doc.plaintext" : "doc.on.doc")
+                    }
+                    .accessibilityLabel("display")
+                }
+            }
             #endif
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)
@@ -146,10 +172,10 @@ struct ContentView: View {
         DisplayChoice.theme(columnWidth: columnWidth, textSize: textSize, page: page)
     }
 
-    /// The package's own bar — scrolling on iOS, paged by group on macOS —
-    /// with the demo's display chrome as a group of host tools at its end:
-    /// the source toggle, the flow and appearance menus, and the page menu
-    /// where there is a paginated view to choose.
+    /// The package's own bar on macOS — six category menus — with the demo's
+    /// display chrome as a group of host tools at its end: the source toggle,
+    /// the flow and appearance menus, and the page menu. On iOS the same
+    /// chrome is in the navigation bar (see `body`).
     private var toolbar: some View {
         LeafFormattingToolbar(editor: model, tools: hostTools)
     }
