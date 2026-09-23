@@ -209,7 +209,8 @@ private struct FormatMenuItems: View {
     var body: some View {
         mark("bold", loc("menu.bold", "Bold"), "b", .command) { editor.toggleBold() }
         mark("italic", loc("menu.italic", "Italic"), "i", .command) { editor.toggleItalic() }
-        mark("underline", loc("menu.underline", "Underline"), "u", .command) { editor.toggleUnderline() }
+        mark("underline", loc("menu.underline", "Underline"), "u", .command,
+             enabled: editor.capabilities.underline) { editor.toggleUnderline() }
         mark("strike", loc("menu.strikethrough", "Strikethrough"), nil, []) { editor.toggleStrike() }
         mark("code", loc("menu.code", "Code"), "c", [.command, .shift]) { editor.toggleCode() }
         mark("mark", loc("menu.highlight", "Highlight"), "m", [.command, .shift]) { editor.toggleMark() }
@@ -335,9 +336,9 @@ private struct FormatMenuItems: View {
     /// An inline mark: ticked while active at the caret.
     @ViewBuilder
     private func mark(_ id: String, _ title: String, _ key: Character?, _ modifiers: EventModifiers,
-                      _ toggle: @escaping () -> Void) -> some View {
+                      enabled: Bool = true, _ toggle: @escaping () -> Void) -> some View {
         let item = Toggle(title, isOn: Binding(get: { editor.isActive(id) }, set: { _ in toggle() }))
-            .disabled(!editable)
+            .disabled(!editable || !enabled)
         if let key {
             item.keyboardShortcut(KeyEquivalent(key), modifiers: modifiers)
         } else {

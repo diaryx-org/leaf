@@ -331,7 +331,10 @@ public struct LeafFormattingToolbar: View {
         HStack(spacing: metrics.spacing) {
             tool("bold", "Bold", active: editor.isActive("bold")) { editor.toggleBold() }
             tool("italic", "Italic", active: editor.isActive("italic")) { editor.toggleItalic() }
-            tool("underline", "Underline", active: editor.isActive("underline")) { editor.toggleUnderline() }
+            // Dark in Markdown, which has no underline to write — djot's
+            // `{+text+}` has no Markdown spelling, even under leaf's extensions.
+            tool("underline", "Underline", active: editor.isActive("underline"),
+                 enabled: editor.capabilities.underline) { editor.toggleUnderline() }
             tool("strikethrough", "Strikethrough", active: editor.isActive("strike")) { editor.toggleStrike() }
             tool("chevron.left.forwardslash.chevron.right", "Code", active: editor.isActive("code")) { editor.toggleCode() }
             highlightTool
