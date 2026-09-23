@@ -238,7 +238,13 @@ public final class LeafEditorModel: ObservableObject {
         // the flag already up raises the panel, where one that became first
         // responder first would raise the keyboard and then swap it out.
         textView.showsFormattingPanel = shown
-        if shown, !textView.isFirstResponder { _ = textView.becomeFirstResponder() }
+        // Focus refused — a host's responder that won't give it up, a window
+        // not yet key — leaves nothing for the panel to stand under. Take
+        // the flag back down, so `Aa` isn't lit over nothing and the next
+        // tap into the text brings the keyboard.
+        if shown, !textView.isFirstResponder, !textView.becomeFirstResponder() {
+            textView.showsFormattingPanel = false
+        }
     }
 
     /// Fit the panel to the window again after a rotation or a resize, and
@@ -252,10 +258,20 @@ public final class LeafEditorModel: ObservableObject {
     }
 
     /// The Link fallback's destination, seed and all, while the field is up;
-    /// nil otherwise. The panel's Link sets it when no host has claimed the
-    /// question, and `LeafEditor` raises the field as a sheet — see the
-    /// panel's `beginLink` for why not a popover on the key.
+    /// nil otherwise. Set by `beginLinkInSheet`, and `LeafEditor` raises the
+    /// field as a sheet while it is.
     @Published var pendingLinkDestination: String?
+
+    /// Link, from the iOS row or the panel: the host's `onEditLink` first
+    /// (`beginLink(fallback:)`), and otherwise leaf's own field, raised by
+    /// `LeafEditor` as a sheet. Not a popover on the key that asked: the
+    /// field takes focus and the text view resigns, which takes the panel
+    /// away with it, and a popover on the keyboard accessory goes the same
+    /// way — the accessory leaves with the keyboard. A sheet hangs off the
+    /// editor, which stays.
+    func beginLinkInSheet() {
+        beginLink { [weak self] seed in self?.pendingLinkDestination = seed }
+    }
 
     /// `setFormattingPanelShown(!isFormattingPanelShown)`.
     public func toggleFormattingPanel() {
@@ -1684,6 +1700,10 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
     }
 
     public func updateUIViewController(_ controller: LeafEditorController, context: Context) {
+        // Rewired on every update, not only in `makeUIViewController`: SwiftUI
+        // keeps this controller across a model swap, and a turn caught by the
+        // closure `make` built would refit the panel of the model that left.
+        controller.onTransition = { [weak model] in model?.refitFormattingPanel() }
         guard let hosted = controller.textView else { return }
         // A freshly-swapped model has never been through `makeUIViewController`, so its
         // `textView` is still nil — that mismatch (rather than comparing docs

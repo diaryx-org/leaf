@@ -182,12 +182,15 @@ public struct LeafFormattingToolbar: View {
     /// can be handed to `frame(width:height:)`.
     @ScaledMetric(relativeTo: .body) private var typeScale: CGFloat = 1
 
-    /// The fallback destination field: shown only when no host has claimed the
-    /// question (see `askForDestination`), seeded with the caret link's current
-    /// destination so the button re-points a link as readily as it makes one.
+    #if !canImport(UIKit)
+    /// The fallback destination field on the Mac: shown only when no host has
+    /// claimed the question (see `beginLink`), seeded with the caret link's
+    /// current destination so the button re-points a link as readily as it
+    /// makes one. iOS asks through a sheet instead (`beginLinkInSheet`).
     @State private var askingForDestination = false
     @State private var typedDestination = ""
     @FocusState private var destinationFocused: Bool
+    #endif
 
     /// The `.bar` style's paging: which page of groups is up, and the width
     /// of the container the row has to fit. `page` is what was last turned
@@ -261,10 +264,12 @@ public struct LeafFormattingToolbar: View {
                 target(tools.list, width: metrics.buttonWidth, indicator: .corner)
                 target(tools.insert, width: metrics.buttonWidth, indicator: .corner)
                 target(tools.link, width: metrics.buttonWidth)
+                    #if !canImport(UIKit)
                     .popover(isPresented: $askingForDestination) {
                         LinkDestinationField(text: $typedDestination, commit: commitLink)
                             .focused($destinationFocused)
                     }
+                    #endif
             }
             if !hostTools.isEmpty {
                 separator
@@ -277,8 +282,7 @@ public struct LeafFormattingToolbar: View {
     /// The row's Style key: as wide as the widest short name ("Body", "Code"),
     /// so it holds still as the caret moves.
     private var rowStyleWidth: CGFloat {
-        let widest = ToolCatalogue.styleNames(short: true).map { glyphWidth(.text($0)) }.max() ?? 0
-        return max(metrics.buttonWidth, widest + 2 * metrics.textInset)
+        max(metrics.buttonWidth, widestStyleName(short: true) + 2 * metrics.textInset)
     }
 
     /// The bar: a row of category menus, and chevrons to the rest when the
@@ -301,10 +305,12 @@ public struct LeafFormattingToolbar: View {
             .overlay(alignment: .leading) { pagedContent }
             .background(.bar)
             .clipped()
+            #if !canImport(UIKit)
             .popover(isPresented: $askingForDestination) {
                 LinkDestinationField(text: $typedDestination, commit: commitLink)
                     .focused($destinationFocused)
             }
+            #endif
     }
 
     private var pagedContent: some View {
@@ -379,26 +385,21 @@ public struct LeafFormattingToolbar: View {
     /// width as the caret walks from a heading into body text — and so the
     /// paging, which has to know the width before the button is drawn, can.
     private var styleWidth: CGFloat {
-        let widest = ToolCatalogue.styleNames(short: false).map { glyphWidth(.text($0)) }.max() ?? 0
-        return max(metrics.buttonWidth, widest + 2 * metrics.textInset) + metrics.indicatorWidth
+        max(metrics.buttonWidth, widestStyleName(short: false) + 2 * metrics.textInset)
+            + metrics.indicatorWidth
+    }
+
+    /// The widest name Style can show, at this bar's label size.
+    private func widestStyleName(short: Bool) -> CGFloat {
+        GlyphWidths.widestStyleName(short: short, size: metrics.labelSize)
     }
 
     /// How wide a glyph draws at the bar's sizes: a label at `labelSize`, a
     /// symbol at `glyphSize`.
     private func glyphWidth(_ glyph: ToolGlyph) -> CGFloat {
         switch glyph {
-        case .text(let text):
-            let font = LeafFont.systemFont(ofSize: metrics.labelSize, weight: .medium)
-            return ceil((text as NSString).size(withAttributes: [.font: font]).width)
-        case .symbol(let name):
-            #if canImport(UIKit)
-            let image = UIImage(systemName: name,
-                                withConfiguration: UIImage.SymbolConfiguration(pointSize: metrics.glyphSize))
-            #else
-            let image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
-                .withSymbolConfiguration(.init(pointSize: metrics.glyphSize, weight: .regular))
-            #endif
-            return ceil(image?.size.width ?? metrics.glyphSize)
+        case .text: return GlyphWidths.width(of: glyph, size: metrics.labelSize)
+        case .symbol: return GlyphWidths.width(of: glyph, size: metrics.glyphSize)
         }
     }
 
@@ -605,37 +606,32 @@ public struct LeafFormattingToolbar: View {
 
     // MARK: the link destination
 
-    /// Ask for a destination and link with it. The host's `onEditLink` gets first
-    /// refusal — it is already the answer to this question everywhere else in the
-    /// package, and only a host can offer a picker for the destinations that
-    /// aren't URLs — and the bar's own field stands in when there is no host
-    /// listening.
-    ///
-    /// Seeded from the caret's link either way, so pressing this inside one
-    /// re-points it rather than nesting a second link in its text; empty
-    /// elsewhere, which is `insertLink`'s "make one" case.
+    /// Ask for a destination and link with it, through `LeafEditorModel.beginLink`:
+    /// the host's `onEditLink` first, and leaf's own field when no host is
+    /// listening. On iOS that field is a sheet over the editor, the one the
+    /// panel's Link raises — a popover on the row would hang off the
+    /// keyboard's accessory, and go away with it the moment its own field
+    /// took focus. On the Mac it is a popover on the button, which stays.
     private func beginLink() {
-        let current = editor.state.link ?? ""
-        if let ask = editor.onEditLink {
-            ask(current)
-            return
+        #if canImport(UIKit)
+        editor.beginLinkInSheet()
+        #else
+        editor.beginLink { seed in
+            typedDestination = seed
+            askingForDestination = true
+            // Raised on the next runloop: the field doesn't exist to focus
+            // until the popover has been presented.
+            DispatchQueue.main.async { destinationFocused = true }
         }
-        typedDestination = current
-        askingForDestination = true
-        // Raised on the next runloop: the field doesn't exist to focus until the
-        // popover has been presented.
-        DispatchQueue.main.async { destinationFocused = true }
+        #endif
     }
 
-    /// Commit what was typed. An empty destination cancels rather than writing
-    /// `[text]()` — core would take it, and a link that points nowhere is never
-    /// what the empty field meant.
+    #if !canImport(UIKit)
     private func commitLink() {
         askingForDestination = false
-        let destination = typedDestination.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !destination.isEmpty else { return }
-        editor.insertLink(destination)
+        editor.commitLinkDestination(typedDestination)
     }
+    #endif
 
     // MARK: metrics
 
@@ -754,9 +750,39 @@ public struct LeafFormattingToolbar: View {
     }
 }
 
+extension LeafEditorModel {
+    /// The Link question, asked once for every surface that offers Link —
+    /// the Mac's bar, the iOS row, the panel. The host's `onEditLink` gets
+    /// first refusal: it is already the answer to this question everywhere
+    /// else in the package, and only a host can offer a picker for the
+    /// destinations that aren't URLs. With no host listening, `fallback`
+    /// raises leaf's own field, seeded with what it is given.
+    ///
+    /// Seeded from the caret's link either way, so Link pressed inside one
+    /// re-points it rather than nesting a second link in its text; empty
+    /// elsewhere, which is `insertLink`'s "make one" case.
+    func beginLink(fallback: (String) -> Void) {
+        let current = state.link ?? ""
+        if let ask = onEditLink {
+            ask(current)
+            return
+        }
+        fallback(current)
+    }
+
+    /// Link with what was typed into leaf's own field. An empty destination
+    /// cancels rather than writing `[text]()` — core would take it, and a
+    /// link that points nowhere is never what the empty field meant.
+    func commitLinkDestination(_ typed: String) {
+        let destination = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !destination.isEmpty else { return }
+        insertLink(destination)
+    }
+}
+
 /// The fallback destination field: a URL field and a Link button, for a host
-/// that has not claimed the question with `onEditLink`. Shared by the row's
-/// Link and the panel's, so the two ask the same way.
+/// that has not claimed the question with `onEditLink`. Shared by every
+/// surface's Link, so they all ask the same way.
 struct LinkDestinationField: View {
     @Binding var text: String
     let commit: () -> Void
@@ -778,6 +804,67 @@ struct LinkDestinationField: View {
                 .keyboardShortcut(.defaultAction)
         }
         .padding(12)
+    }
+}
+
+/// Glyph widths, measured once per glyph and size and kept. The bar's body
+/// runs on every change to the published state — every keystroke, every
+/// caret move — and each run needs the width of every category's glyph and
+/// of every name Style can show, which is a string measured or an SF Symbol
+/// loaded apiece. None of them changes with the text; they change with the
+/// size they are drawn at, which is the style's metrics under the reader's
+/// Dynamic Type, so that size is the key. A handful of sizes in a session, a
+/// few dozen glyphs at each.
+enum GlyphWidths {
+    private struct Key: Hashable {
+        let glyph: ToolGlyph
+        let size: CGFloat
+    }
+
+    private struct StyleKey: Hashable {
+        let short: Bool
+        let size: CGFloat
+    }
+
+    private static var widths: [Key: CGFloat] = [:]
+    private static var styleNames: [StyleKey: CGFloat] = [:]
+
+    /// How wide `glyph` draws at `size`: a label in the bar's medium weight,
+    /// a symbol at that point size.
+    static func width(of glyph: ToolGlyph, size: CGFloat) -> CGFloat {
+        let key = Key(glyph: glyph, size: size)
+        if let known = widths[key] { return known }
+        let width = measure(glyph, size: size)
+        widths[key] = width
+        return width
+    }
+
+    /// The widest of the names Style can show at `size` — the width the
+    /// Style button holds, so it does not change as the caret moves.
+    static func widestStyleName(short: Bool, size: CGFloat) -> CGFloat {
+        let key = StyleKey(short: short, size: size)
+        if let known = styleNames[key] { return known }
+        let widest = ToolCatalogue.styleNames(short: short)
+            .map { width(of: .text($0), size: size) }.max() ?? 0
+        styleNames[key] = widest
+        return widest
+    }
+
+    private static func measure(_ glyph: ToolGlyph, size: CGFloat) -> CGFloat {
+        switch glyph {
+        case .text(let text):
+            let font = LeafFont.systemFont(ofSize: size, weight: .medium)
+            return ceil((text as NSString).size(withAttributes: [.font: font]).width)
+        case .symbol(let name):
+            #if canImport(UIKit)
+            let image = UIImage(systemName: name,
+                                withConfiguration: UIImage.SymbolConfiguration(pointSize: size))
+            #else
+            let image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+                .withSymbolConfiguration(.init(pointSize: size, weight: .regular))
+            #endif
+            return ceil(image?.size.width ?? size)
+        }
     }
 }
 
