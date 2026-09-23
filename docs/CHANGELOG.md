@@ -37,6 +37,86 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.4.4 — 2026-09-22
+
+### Breaking
+
+- **core** — can_undo answers exactly, and undo and redo say whether they moved ([`df37bd0`](https://github.com/diaryx-org/leaf/commit/df37bd07fa5a03cd6c36397a22bc9a802ff3c3d8))
+
+### Added
+
+- **core** — heading_at — the heading a place in the document is under ([`d15bbb7`](https://github.com/diaryx-org/leaf/commit/d15bbb76d18af5116398379b70a69916db231d34))
+- **core** — a page break in HTML and AsciiDoc draws the placeholder row, and the button is offered there ([`b35c1d5`](https://github.com/diaryx-org/leaf/commit/b35c1d5d4f25863aacc640d785f7de7332f330c9))
+- **swift** — find and replace on iOS through the system find panel ([`40f3db7`](https://github.com/diaryx-org/leaf/commit/40f3db7fc16b5279a2a19353ecb0f77e9056242c))
+- Replace All is one undo step, through an undo group on Doc ([`d7de1f4`](https://github.com/diaryx-org/leaf/commit/d7de1f4e2f86c130874d82fd0bf153f108433c8b))
+- **swift** — the macOS view corrects spelling, expands text replacements, and curls quotes and dashes as prose is typed ([`19caf69`](https://github.com/diaryx-org/leaf/commit/19caf6949b6d62a6584d9c341aa9206c57867b0d))
+- **swift** — inline Writing Tools in both views through the system's coordinator ([`f37d9d4`](https://github.com/diaryx-org/leaf/commit/f37d9d4131e90db9402e1566d6cacdf8362b620a))
+
+### Fixed
+
+- **core** — a typed dollar stays literal in MarkupMode::None, on twig-doc 3.9.2 ([`fb393f0`](https://github.com/diaryx-org/leaf/commit/fb393f0b6a478e53fb0b35b567aefbd41cf329d7))
+- **core** — a table cell's start is a wall to Backspace, and its end to Delete ([`6894c78`](https://github.com/diaryx-org/leaf/commit/6894c78fd3d91a62eb75ecf52118dac85c09eb09))
+- **core** — a fence inside a quote or list item has its language ([`539b1ba`](https://github.com/diaryx-org/leaf/commit/539b1baaeb7cf7bfa1c1a626123f59a51540263a))
+- a PDF and a printout show the caret's line as every other ([`b1a2e25`](https://github.com/diaryx-org/leaf/commit/b1a2e253d6398b03a2b3eca194af129db6e1f2c4))
+- **swift** — on paper, iOS Dynamic Type zooms the sheet instead of repaginating ([`e039373`](https://github.com/diaryx-org/leaf/commit/e039373f3a24d6926d80c34c33341f795beeb7a2))
+- **swift** — the macOS view checks a keystroke's substitutions in the caret's block alone ([`5ddfc45`](https://github.com/diaryx-org/leaf/commit/5ddfc4519b3be219aca235ff2118a72b0570706b))
+- **swift** — an edit made during a Writing Tools session is an undo step of its own ([`57ce7c1`](https://github.com/diaryx-org/leaf/commit/57ce7c135288109d181c0f454d151a12365da2a0))
+- **swift** — a Writing Tools rewrite keeps the markup of the blocks it spans ([`5d7ce62`](https://github.com/diaryx-org/leaf/commit/5d7ce62579e5b1c1238779512aa7105ea712b7f7))
+- **core** — a substitution that half lands takes back its own deletion and nothing else ([`f6c9f0f`](https://github.com/diaryx-org/leaf/commit/f6c9f0f4a1451a2b4f2896e4268995b40d806503))
+
+### Behavioural changes
+
+- in `MarkupMode::None` on a Markdown document, a typed `$` is written as `\$` and no longer makes a formula.
+
+- HTML pasted as `<ol start="3">…</ol>` now converts to a Markdown list numbered from 3 instead of falling back to the plain-text flavor.
+
+- twig-doc is pinned at 3.9.2, up from 3.9.1.
+
+- in the rich view, Backspace at the start of a table cell and Delete at the end of one no longer delete the padding or the `|`; the source is left unchanged.
+
+- a fenced code block inside a block quote or list item now reports its language — the rendered view labels and highlights it, source view highlights it, and `code_language_at_caret` returns it.
+
+- `can_undo`/`can_redo` (and the frames' `can_undo`/`can_redo`) turn false as soon as twig's history is exhausted, instead of staying true through one extra press per coalesced keystroke.
+
+- `Doc::undo` and `Doc::redo` return `bool`, so a caller using either as a `()`-typed expression (a match arm beside unit arms) stops compiling.
+
+- `Capabilities::page_break` (and the bindings' `page_break`) is now true for HTML and AsciiDoc documents, so hosts offer the page-break button there.
+
+- an HTML `<page-break></page-break>` or an AsciiDoc `<<<` in a document now draws as a `⧉ page-break` placeholder row carrying a `page-break` `DirectiveMark`, where it drew nothing.
+
+- a PDF from `pdfData` and a macOS printout draw the caret's line like every other line — formulas as pictures, delimiters hidden — where they drew it revealed.
+
+- leaf-web's editor re-renders on `beforeprint` and `afterprint`, so a browser printout of the editor shows no line revealed.
+
+- on iOS, a paginated document keeps its type size, line breaks and page count when the reader's Dynamic Type size changes; the sheet is shown larger instead, and `zoomScale` includes the text-size factor.
+
+- on iOS, on paper, a `.scale` zoom is multiplied by the Dynamic Type factor, and the `.scale` the view reports after a pinch or a clamp is the on-screen scale divided by it.
+
+- the macOS find bar's Replace, and its selection of a match, end the match before markup that closes around it, so replacing a word at the end of a bold span keeps the span's closing delimiter instead of deleting it.
+
+- the iOS LeafTextView's selection edit menu always offers Find Selection, and returns a menu even when the host supplies no selection actions.
+
+- Replace All in the iOS find panel and in the macOS find bar undoes and redoes as one step, instead of one step per match.
+
+- typing straight after a single Replace from the macOS find bar is an undo step of its own, instead of folding into the replacement when the replacement was an insert like a keystroke.
+
+- in the macOS LeafTextView's rendered view, typed prose is now changed as it is typed according to the user's system settings (Text Replacement is on by default on macOS; Correct Spelling Automatically, Smart Quotes and Smart Dashes when the user has them on), each change being its own undo step.
+
+- LeafEditorCommands' Edit menu gains Spelling and Grammar ▸ Correct Spelling Automatically and a Substitutions menu, and Check Spelling While Typing's checkmark now follows the editor instead of staying as it was first drawn.
+
+- on macOS 15.2+ and iOS 18.2+ Writing Tools works inline in LeafTextView instead of in its panel, and a whole session undoes as one step.
+
+- LeafEditorCommands' Edit menu gains a Writing Tools submenu on macOS 15.2+, and the macOS LeafTextView's context menu gains the system's Writing Tools items.
+
+- the macOS view's automatic spelling correction reads only the caret's block before the caret as context, not the paragraphs above it.
+
+- typing, deleting, pasting or dropping while Writing Tools is still at work closes the session's undo group, so the edit and the rewrite are separate undo steps.
+
+- a Writing Tools rewrite replaces only the text that changed in each block, and a rewrite that would merge or split blocks carrying markup is refused (the coordinator is answered nil) rather than flattened.
+
+- a substitute call that fails after its deletion no longer closes an open undo group, undoes earlier edits in it, or leaves a redo step.
+
+
 ## v0.4.3 — 2026-09-21
 
 ### Added

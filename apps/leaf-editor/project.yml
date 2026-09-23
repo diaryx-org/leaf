@@ -82,7 +82,7 @@ targets:
         # The workspace version, written here by `cargo xtask sync-versions`
         # as part of a release bump; the build number is a timestamp so a
         # rebuild of the same version still reads as a newer bundle.
-        MARKETING_VERSION: "0.4.3"
+        MARKETING_VERSION: "0.4.4"
         CURRENT_PROJECT_VERSION: "1"
         # App icon, from the Icon Composer source at App/leaf.icon (picked up
         # automatically — it's a normal member of the App/ sources path above).
