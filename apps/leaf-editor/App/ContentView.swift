@@ -62,18 +62,7 @@ struct ContentView: View {
             .background(page == nil ? editorBackground : Color.clear)
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
-                    Button { model.toggleView() } label: {
-                        Image(systemName: model.isSource ? "doc.richtext" : "chevron.left.slash.chevron.right")
-                    }
-                    .accessibilityLabel("view")
-                    Menu {
-                        Menu("Line Flow") { flowRows }
-                        Menu("Appearance") { appearanceRows }
-                        Menu("Page") { pageRows }
-                    } label: {
-                        Image(systemName: page == nil ? "doc.plaintext" : "doc.on.doc")
-                    }
-                    .accessibilityLabel("display")
+                    ForEach(displayTools) { $0.navigationItem }
                 }
             }
             #endif
@@ -172,25 +161,31 @@ struct ContentView: View {
         DisplayChoice.theme(columnWidth: columnWidth, textSize: textSize, page: page)
     }
 
+    #if os(macOS)
     /// The package's own bar on macOS — six category menus — with the demo's
-    /// display chrome as a group of host tools at its end: the source toggle,
-    /// the flow and appearance menus, and the page menu. On iOS the same
+    /// display chrome as a group of host tools at its end. On iOS the same
     /// chrome is in the navigation bar (see `body`).
     private var toolbar: some View {
-        LeafFormattingToolbar(editor: model, tools: hostTools)
+        LeafFormattingToolbar(editor: model, tools: displayTools.map(\.barTool))
     }
+    #endif
 
-    private var hostTools: [LeafFormattingToolbar.Tool] {
-        var tools: [LeafFormattingToolbar.Tool] = [
-            .button("view", systemImage: model.isSource ? "doc.richtext" : "chevron.left.slash.chevron.right",
-                    label: "view", active: model.isSource) { model.toggleView() },
-            .menu("flow", systemImage: "arrow.turn.down.left", label: "line flow",
-                  active: flowPreserved) { flowRows },
-            .menu("appearance", systemImage: "textformat.size", label: "appearance") { appearanceRows },
+    /// The demo's display chrome, defined once for both places it is drawn —
+    /// host tools at the end of the Mac's bar, items in the navigation bar on
+    /// iOS: the source toggle, the flow and appearance menus, and the page
+    /// menu. Each lights while its choice is off the default, on both.
+    private var displayTools: [DisplayTool] {
+        [
+            DisplayTool(id: "view",
+                        systemImage: model.isSource ? "doc.richtext" : "chevron.left.slash.chevron.right",
+                        label: "view", active: model.isSource, kind: .button { model.toggleView() }),
+            DisplayTool(id: "flow", systemImage: "arrow.turn.down.left", label: "line flow",
+                        active: flowPreserved, kind: .menu(AnyView(flowRows))),
+            DisplayTool(id: "appearance", systemImage: "textformat.size", label: "appearance",
+                        kind: .menu(AnyView(appearanceRows))),
+            DisplayTool(id: "page", systemImage: page == nil ? "doc.plaintext" : "doc.on.doc",
+                        label: "page", active: page != nil, kind: .menu(AnyView(pageRows))),
         ]
-        tools.append(.menu("page", systemImage: page == nil ? "doc.plaintext" : "doc.on.doc",
-                           label: "page", active: page != nil) { pageRows })
-        return tools
     }
 
     /// The soft-break flow rows (a "View"-style menu): Fold reflows soft breaks
@@ -286,6 +281,56 @@ struct ContentView: View {
         flowPreserved = preserve
         model.setLineFlow(preserve ? .preserve : .fold)
     }
+}
+
+/// One piece of the demo's display chrome: what it is, what it does, and
+/// whether it is lit. The Mac draws it as one of `LeafFormattingToolbar`'s
+/// host tools (`barTool`), iOS as a navigation-bar item (`navigationItem`),
+/// and neither can lose a state the other shows.
+private struct DisplayTool: Identifiable {
+    enum Kind {
+        case button(() -> Void)
+        case menu(AnyView)
+    }
+
+    let id: String
+    let systemImage: String
+    let label: String
+    var active = false
+    let kind: Kind
+
+    /// As a tool on the package's bar, in the bar's own chrome.
+    var barTool: LeafFormattingToolbar.Tool {
+        switch kind {
+        case .button(let action):
+            return .button(id, systemImage: systemImage, label: label, active: active, action: action)
+        case .menu(let rows):
+            return .menu(id, systemImage: systemImage, label: label, active: active) { rows }
+        }
+    }
+
+    #if os(iOS)
+    /// As a navigation-bar item: the glyph, with the bar's accent pill
+    /// behind it while it is lit.
+    @ViewBuilder
+    var navigationItem: some View {
+        Group {
+            switch kind {
+            case .button(let action): Button(action: action) { glyph }
+            case .menu(let rows): Menu { rows } label: { glyph }
+            }
+        }
+        .accessibilityLabel(label)
+        .accessibilityAddTraits(active ? .isSelected : [])
+    }
+
+    private var glyph: some View {
+        Image(systemName: systemImage)
+            .padding(4)
+            .background(RoundedRectangle(cornerRadius: 6)
+                .fill(active ? Color.accentColor.opacity(0.15) : Color.clear))
+    }
+    #endif
 }
 
 /// The window/content background, resolved to each toolkit's dynamic system
