@@ -2078,6 +2078,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     }
 
     public override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        closeWritingToolsGroupForUserEdit()
         let pb = sender.draggingPasteboard
         if let drag = blockDrag, sender.draggingSource as AnyObject? === self {
             let target = dropTarget
@@ -2195,6 +2196,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     }
 
     public func insertText(_ string: Any, replacementRange: NSRange) {
+        closeWritingToolsGroupForUserEdit()
         let text = (string as? String) ?? (string as? NSAttributedString)?.string ?? ""
         // Committing an IME composition: replace the marked bytes with the final text.
         if let m = markedByteRange {
@@ -2216,6 +2218,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     }
 
     public override func doCommand(by selector: Selector) {
+        if Self.editingCommands.contains(selector) { closeWritingToolsGroupForUserEdit() }
         switch selector {
         case #selector(moveLeft(_:)):                       render(doc.moveLeft(extend: false))
         case #selector(moveRight(_:)):                      render(doc.moveRight(extend: false))
@@ -2263,6 +2266,13 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         default: super.doCommand(by: selector)
         }
     }
+
+    /// The key bindings `doCommand(by:)` answers with an edit, not a motion.
+    private static let editingCommands: Set<Selector> = [
+        #selector(insertNewline(_:)), #selector(insertLineBreak(_:)), #selector(insertTab(_:)),
+        #selector(insertBacktab(_:)), #selector(deleteBackward(_:)), #selector(deleteForward(_:)),
+        #selector(deleteWordBackward(_:)), #selector(deleteWordForward(_:)),
+    ]
 
     // MARK: visual-line motion (the wrap is ours, so core can't do these)
 
@@ -2425,6 +2435,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     }
 
     @objc public func cut(_ sender: Any?) {
+        closeWritingToolsGroupForUserEdit()
         copy(sender)
         if doc.selectedText() != nil { render(doc.backspace()) }
     }
@@ -2435,6 +2446,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // decided there was nothing to paste, the host would never hear about the
         // one thing that was there. See `LeafEditorModel.onPaste`.
         if onPaste?() == true { return }
+        closeWritingToolsGroupForUserEdit()
         let pb = NSPasteboard.general
         let html = pb.string(forType: .html)
         let text = pb.string(forType: .string) ?? ""
@@ -2447,6 +2459,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// leaf-tui's ⌥V). The Edit menu's "Paste and Match Style" routes here too.
     @objc public func pasteAsPlainText(_ sender: Any?) {
         guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else { return }
+        closeWritingToolsGroupForUserEdit()
         render(doc.paste(text: text))
     }
 
@@ -3572,6 +3585,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     // composed and drawn with a composing underline; `insertText` commits it.
 
     public func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        closeWritingToolsGroupForUserEdit()
         let text = (string as? String) ?? (string as? NSAttributedString)?.string ?? ""
         // Bytes to replace: the existing composition, else the proposed replacement,
         // else the current selection.
@@ -3658,14 +3672,24 @@ extension LeafTextView {
     func openWritingToolsGroup() { writingTools.openGroup(doc) }
     func closeWritingToolsGroup() { writingTools.closeGroup(doc) }
 
-    /// Close a session's group that its end never closed, before the user's
-    /// next edit can fold into it. Nothing while Writing Tools is still at work.
+    /// Close a session's group that its end never closed, at the user's next
+    /// key or click. Nothing while Writing Tools is still at work: a key may be
+    /// an arrow, which leaves the session be.
     func closeIdleWritingToolsGroup() {
         guard writingTools.groupOpen else { return }
         if #available(macOS 15.2, *), let coordinator = writingToolsCoordinator,
            coordinator.state != .inactive {
             return
         }
+        closeWritingToolsGroup()
+    }
+
+    /// Close the session's group before an edit the user makes — typing, a
+    /// deletion, a paste, a drop, an IME step — whether or not Writing Tools
+    /// is still at work. The edit is the user's own undo step, never folded
+    /// into the rewrite's, so ⌘Z takes it back alone; and it ends the session
+    /// as it lands (`writingToolsTextMoved`), whose ranges it has moved.
+    func closeWritingToolsGroupForUserEdit() {
         closeWritingToolsGroup()
     }
 }

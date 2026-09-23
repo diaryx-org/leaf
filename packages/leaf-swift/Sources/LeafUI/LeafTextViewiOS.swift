@@ -1694,7 +1694,7 @@ public final class LeafTextView: UIView, UITextInput {
     public var hasText: Bool { true }
 
     public func insertText(_ text: String) {
-        closeIdleWritingToolsGroup()
+        closeWritingToolsGroupForUserEdit()
         if let m = marked {
             marked = nil
             render(doc.replaceRange(from: UInt32(m.from.offset), to: UInt32(m.to.offset), text: text))
@@ -1711,7 +1711,7 @@ public final class LeafTextView: UIView, UITextInput {
     }
 
     public func deleteBackward() {
-        closeIdleWritingToolsGroup()
+        closeWritingToolsGroupForUserEdit()
         if let m = marked {
             marked = nil
             render(doc.replaceRange(from: UInt32(m.from.offset), to: UInt32(m.to.offset), text: ""))
@@ -1826,6 +1826,7 @@ public final class LeafTextView: UIView, UITextInput {
     }
 
     public override func cut(_ sender: Any?) {
+        closeWritingToolsGroupForUserEdit()
         copy(sender)
         if doc.selectedText() != nil { render(doc.backspace()) }
     }
@@ -1843,6 +1844,7 @@ public final class LeafTextView: UIView, UITextInput {
             ?? (pb.value(forPasteboardType: "public.html") as? String)
         let text = pb.string ?? ""
         guard html != nil || !text.isEmpty else { return }
+        closeWritingToolsGroupForUserEdit()
         command { $0.pasteRich(html: html, text: text) }
     }
 
@@ -1879,6 +1881,7 @@ public final class LeafTextView: UIView, UITextInput {
 
     public func replace(_ range: UITextRange, withText text: String) {
         guard let r = range as? LeafTextRange else { return }
+        closeWritingToolsGroupForUserEdit()
         render(doc.replaceRange(from: UInt32(r.from.offset), to: UInt32(r.to.offset), text: text))
     }
 
@@ -1896,6 +1899,7 @@ public final class LeafTextView: UIView, UITextInput {
     public var markedTextRange: UITextRange? { marked }
 
     public func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
+        closeWritingToolsGroupForUserEdit()
         let text = markedText ?? ""
         let start: Int
         let end: Int
@@ -2456,14 +2460,12 @@ extension LeafTextView {
         writingTools.effectRects(doc: doc, layout: layoutEngine)
     }
 
-    /// Close a session's group that its end never closed, before the user's
-    /// next edit can fold into it. Nothing while Writing Tools is still at work.
-    func closeIdleWritingToolsGroup() {
-        guard writingTools.groupOpen else { return }
-        if #available(iOS 18.2, *), let coordinator = writingToolsCoordinatorObject as? UIWritingToolsCoordinator,
-           coordinator.state != .inactive {
-            return
-        }
+    /// Close the session's group before an edit the user makes — typing, a
+    /// deletion, a paste, an autocorrection, an IME step — whether or not
+    /// Writing Tools is still at work, so the edit is an undo step of its own
+    /// and never folded into the rewrite's. It ends the session as it lands
+    /// (`writingToolsTextMoved`). See the AppKit peer.
+    func closeWritingToolsGroupForUserEdit() {
         writingTools.closeGroup(doc)
     }
 
