@@ -487,6 +487,9 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// from it — for every app on the Mac, not this document alone. Off only
     /// in tests, which must not teach the user's checker anything.
     var recordsCorrectionResponses = true
+    /// The stretch of `fullText()` the checker was last asked to look at for a
+    /// keystroke's substitutions — what a test pins the scope by.
+    private(set) var lastSubstitutionCheck: NSRange?
 
     // MARK: Writing Tools state — see the Writing Tools extension below
 
@@ -3149,8 +3152,11 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     /// What the system would substitute now that `typed` has been typed at
     /// the caret, over `text` as `spellCheckingText()` masks it (so nothing in
-    /// code is touched). Only the substitutions the keystroke itself
-    /// completes, the way `NSTextView` makes them:
+    /// code is touched) — the whole of `fullText()`, or, with `origin`, the
+    /// stretch of it that starts there, which is what typing hands it: the
+    /// caret's block up to the caret, `substitutionContext()`. `caret` and
+    /// the ranges found are `fullText()`'s either way. Only the substitutions
+    /// the keystroke itself completes, the way `NSTextView` makes them:
     ///
     /// - a straight quote is curled as it is typed, by what stands before it;
     /// - a `--` becomes a dash once the character after it is typed, and that
@@ -3161,7 +3167,17 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     ///
     /// Anything the checker reports elsewhere in the paragraph is left alone: a
     /// quote someone straightened again, or a misspelling they walked past.
-    func substitutions(afterTyping typed: String, in text: String, caret: Int) -> [Substitution] {
+    func substitutions(afterTyping typed: String, in text: String, origin: Int = 0, caret: Int) -> [Substitution] {
+        let found = substitutions(afterTyping: typed, inStretch: text, caret: caret - origin)
+        guard origin != 0 else { return found }
+        lastSubstitutionCheck?.location += origin
+        return found.map {
+            Substitution(range: NSRange(location: $0.range.location + origin, length: $0.range.length),
+                         replacement: $0.replacement, isCorrection: $0.isCorrection)
+        }
+    }
+
+    private func substitutions(afterTyping typed: String, inStretch text: String, caret: Int) -> [Substitution] {
         let ns = text as NSString
         let typedLength = (typed as NSString).length
         guard typedLength > 0, caret >= typedLength, caret <= ns.length else { return [] }
@@ -3181,6 +3197,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
         let paragraph = ns.paragraphRange(for: NSRange(location: typedStart, length: 0))
         let checked = NSRange(location: paragraph.location, length: caret - paragraph.location)
+        lastSubstitutionCheck = checked
         let results = checker.check(text, range: checked, types: types.rawValue, options: nil,
                                     inSpellDocumentWithTag: spellDocumentTag,
                                     orthography: nil, wordCount: nil)
@@ -3261,10 +3278,13 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             return doc.textInRange(from: from, to: UInt32(caretByte)).contains("--")
         }()
         guard mayQuote || mayWord || mayDash else { return }
-        let visible = fullText() as NSString
         let caret = utf16Range(fromByte: caretByte, toByte: caretByte).location
-        let found = substitutions(afterTyping: typed, in: spellCheckingText(), caret: caret)
+        // The caret's block, up to the caret, and not the document: a keystroke
+        // completes nothing outside it.
+        let context = substitutionContext()
+        let found = substitutions(afterTyping: typed, in: context.text, origin: context.origin, caret: caret)
         guard !found.isEmpty else { return }
+        let checked = context.text as NSString
         doc.beginUndoGroup()
         defer { doc.endUndoGroup() }
         for sub in found {
@@ -3273,8 +3293,10 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             // hidden markup, or text core spelled with an escape, is not one
             // this can replace without breaking what it stands in.
             let (from, to) = doc.matchBounds(sub.range)
-            let original = visible.substring(with: sub.range)
-            guard from < to, sourceBytes(from, to) == original else { continue }
+            let original = checked.substring(with: NSRange(location: sub.range.location - context.origin,
+                                                           length: sub.range.length))
+            guard from < to, sourceBytes(from, to) == original,
+                  doc.textInRange(from: UInt32(from), to: UInt32(to)) == original else { continue }
             render(doc.substitute(from: UInt32(from), to: UInt32(to), text: sub.replacement))
             if sub.isCorrection {
                 let now = utf16Range(fromByte: from, toByte: from + sub.replacement.utf8.count)
@@ -3405,9 +3427,40 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// what an edit cost once the typing settled.
     internal func spellCheckingText() -> String {
         let visible = fullText() as NSString
-        let masked = NSMutableString(
-            string: String(repeating: " ", count: visible.length))
+        return masked(proseRuns(in: 0..<docView.rows.count), origin: 0, length: visible.length)
+    }
 
+    /// `spellCheckingText()` for the caret's block alone, up to the caret —
+    /// the stretch a keystroke's substitutions are looked for in: `origin` is
+    /// where it starts in `fullText()`, and `text` is it masked as
+    /// `spellCheckingText()` masks it. The block is the caret's row, or the
+    /// whole table the caret is in; nothing of the rest of the document is read.
+    internal func substitutionContext() -> (origin: Int, text: String) {
+        let caret = caretByte
+        var rows = Int(docView.caretRow)..<Int(docView.caretRow) + 1
+        if let table = docView.tables.first(where: { Int($0.startRow)..<Int($0.endRow) ~= rows.lowerBound }) {
+            rows = Int(table.startRow)..<Int(table.endRow)
+        }
+        guard rows.lowerBound >= 0, rows.upperBound <= docView.rows.count else { return (0, "") }
+        // Where the block's text starts: its first run that is text, and not a
+        // bullet or a quote bar, which stand on markup the text does not show.
+        let chrome: Set<String> = ["list", "quote", "rule"]
+        let runs = rows.flatMap { docView.rows[$0].runs }
+            + docView.tables.filter { Int($0.startRow) == rows.lowerBound }
+                .flatMap { $0.grid.flatMap { $0.cells.flatMap { $0.lines.flatMap(\.runs) } } }
+        let start = min(runs.filter { !chrome.contains($0.role) }.map { Int($0.src) }.min() ?? caret, caret)
+        let origin = utf16Range(fromByte: start, toByte: start).location
+        let length = utf16Range(fromByte: caret, toByte: caret).location - origin
+        guard length > 0 else { return (origin, "") }
+        let text = masked(proseRuns(in: rows).filter { Int($0.src) < caret }, origin: origin, length: length,
+                          cut: true)
+        return (origin, text)
+    }
+
+    /// The runs of `rows` the checker reads: prose, and not code, list or
+    /// quote chrome, or a rule — with a table's cells in place of its picture
+    /// rows, and nothing of a directive's or a picture's.
+    private func proseRuns(in rows: Range<Int>) -> [Run] {
         var prose: [Run] = []
         func collect(_ run: Run) {
             guard run.role != "code",
@@ -3421,7 +3474,9 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
         var replacedRows = IndexSet()
         for table in docView.tables {
-            replacedRows.insert(integersIn: Int(table.startRow)..<Int(table.endRow))
+            let span = Int(table.startRow)..<Int(table.endRow)
+            replacedRows.insert(integersIn: span)
+            guard span.overlaps(rows) else { continue }
             for row in table.grid {
                 for cell in row.cells {
                     for line in cell.lines {
@@ -3436,19 +3491,32 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         for media in docView.media {
             replacedRows.insert(integersIn: Int(media.startRow)..<Int(media.endRow))
         }
-        for (index, row) in docView.rows.enumerated()
-            where !replacedRows.contains(index) && !row.code && !row.decoration {
+        for index in rows where !replacedRows.contains(index) {
+            let row = docView.rows[index]
+            guard !row.code, !row.decoration else { continue }
             for run in row.runs { collect(run) }
         }
+        return prose
+    }
 
+    /// `length` spaces standing for the stretch of `fullText()` from `origin`,
+    /// with each of `prose` written over its place in it — every prose run's
+    /// place asked of core in one crossing (`utf16IndicesForOffsets`), not one
+    /// per run: a long document has thousands of runs, and a call across the
+    /// binding for each was most of what an edit cost once the typing
+    /// settled. A run that reaches past the stretch is dropped, or with `cut`
+    /// written up to its end — the caret, where a run the caret stands in
+    /// goes on after it.
+    private func masked(_ prose: [Run], origin: Int, length: Int, cut: Bool = false) -> String {
+        let masked = NSMutableString(string: String(repeating: " ", count: length))
         let locations = doc.utf16IndicesForOffsets(offs: prose.map(\.src))
         for (run, location) in zip(prose, locations) {
-            let location = Int(location)
-            let length = (run.text as NSString).length
-            guard location + length <= masked.length else { continue }
-            masked.replaceCharacters(
-                in: NSRange(location: location, length: length),
-                with: run.text)
+            let location = Int(location) - origin
+            let text = run.text as NSString
+            let fits = min(text.length, length - location)
+            guard location >= 0, fits > 0, cut || fits == text.length else { continue }
+            masked.replaceCharacters(in: NSRange(location: location, length: fits),
+                                     with: text.substring(to: fits))
         }
         return masked as String
     }
