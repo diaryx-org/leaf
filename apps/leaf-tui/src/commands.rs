@@ -16,9 +16,8 @@
 //!
 //! # Why capability gating lives here
 //!
-//! The formats are ragged (see [`leaf_core::Capabilities`]): `+underline+` is
-//! djot-only, HTML spells no heading marker and no task box, and only Markdown
-//! and djot spell a footnote. Core already *refuses* a gesture its format can't
+//! The formats are ragged (see [`leaf_core::Capabilities`]): HTML spells no
+//! task box, and only Markdown and djot spell a footnote. Core already *refuses* a gesture its format can't
 //! spell and says so in the status line, so the keyboard is safe without any
 //! help from here. What the keyboard can't do is tell you in advance — and a
 //! menu can, which is why [`Command::enabled`] exists and why the menu, palette,
@@ -704,34 +703,37 @@ mod tests {
         }
     }
 
-    /// The djot-only mark, in the format that spells it and the one that doesn't
-    /// — the gating this module exists for, checked against a real document
-    /// rather than against a hand-written `Capabilities`.
+    /// A command in the format that spells it and one that doesn't — the gating
+    /// this module exists for, checked against a real document rather than
+    /// against a hand-written `Capabilities`.
     ///
-    /// It is the underline that carries this now. The highlight used to, and
-    /// stopped when twig 3.3.1 made `==x==` authorable for an editor holding the
-    /// `highlight` extension — which every leaf document does, so the row below
-    /// asserts the opposite of what it once did.
+    /// It is the footnote in HTML that carries this now. The highlight did until
+    /// twig 3.3.1 made `==x==` authorable in Markdown, and the underline until
+    /// twig 3.10 gave Markdown `<u>x</u>`; since then every inline row is lit in
+    /// both lightweight formats, and HTML, which has no footnote to write, is
+    /// where a row goes dark.
     #[test]
-    fn underline_is_offered_in_djot_and_dimmed_in_markdown() {
-        let underline = Command::Inline(InlineKind::Insert);
-
-        let mut dj = Doc::from_source("hello\n".into(), leaf_core::Format::Djot).unwrap();
-        assert!(underline.enabled(&Ctx::read(&mut dj)));
+    fn a_footnote_is_offered_in_markdown_and_dimmed_in_html() {
+        let footnote = Command::Footnote;
 
         let mut md = Doc::from_source("hello\n".into(), leaf_core::Format::Markdown).unwrap();
-        assert!(!underline.enabled(&Ctx::read(&mut md)));
+        assert!(footnote.enabled(&Ctx::read(&mut md)));
+
+        let mut html = Doc::from_source("<p>hello</p>\n".into(), leaf_core::Format::Html).unwrap();
+        assert!(!footnote.enabled(&Ctx::read(&mut html)));
     }
 
-    /// The pair twig 3.3.1 added, offered in both lightweight formats — the
-    /// menu row and the palette row for a gesture core will now carry out.
+    /// The pair twig 3.3.1 added and the underline 3.10 did, offered in both
+    /// lightweight formats — the menu row and the palette row for a gesture core
+    /// will now carry out.
     #[test]
-    fn highlight_and_strikethrough_are_offered_in_both_markdown_and_djot() {
+    fn highlight_strikethrough_and_underline_are_offered_in_both_markdown_and_djot() {
         for fmt in [leaf_core::Format::Markdown, leaf_core::Format::Djot] {
             let mut doc = Doc::from_source("hello\n".into(), fmt).unwrap();
             let ctx = Ctx::read(&mut doc);
             assert!(Command::Inline(InlineKind::Mark).enabled(&ctx), "{fmt:?}");
             assert!(Command::Inline(InlineKind::Delete).enabled(&ctx), "{fmt:?}");
+            assert!(Command::Inline(InlineKind::Insert).enabled(&ctx), "{fmt:?}");
         }
     }
 

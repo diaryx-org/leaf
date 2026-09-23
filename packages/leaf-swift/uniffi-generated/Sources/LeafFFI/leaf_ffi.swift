@@ -613,7 +613,7 @@ public protocol LeafDocProtocol : AnyObject {
      *
      * Don't collapse it to one flag. An HTML document takes ⌘B, ⌘I and inline
      * code (its marks are a tag pair) while refusing every heading, list, quote
-     * and link, and Markdown refuses the underline djot spells — so a toolbar
+     * and link, and Markdown refuses the superscript djot spells — so a toolbar
      * driven by [`Self::authorable`] alone would be wrong in both directions.
      */
     func capabilities()  -> Capabilities
@@ -1687,7 +1687,7 @@ open func blockRangeAt(row: UInt32, ch: UInt32) -> LandingView? {
      *
      * Don't collapse it to one flag. An HTML document takes ⌘B, ⌘I and inline
      * code (its marks are a tag pair) while refusing every heading, list, quote
-     * and link, and Markdown refuses the underline djot spells — so a toolbar
+     * and link, and Markdown refuses the superscript djot spells — so a toolbar
      * driven by [`Self::authorable`] alone would be wrong in both directions.
      */
 open func capabilities() -> Capabilities {
@@ -9737,7 +9737,7 @@ private var initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_block_range_at() != 31197) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_capabilities() != 30762) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_capabilities() != 2269) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_caret_in_mark() != 17292) {

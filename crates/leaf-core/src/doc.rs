@@ -15467,9 +15467,12 @@ mod tests {
         // turns `highlight` on — twig will only mint bytes this editor's reparse
         // reads back — and `~~x~~` because GFM strikethrough is parsed by
         // default, so the refusal there was never right for any leaf document.
+        // twig 3.10 adds the underline, spelled `<u>x</u>` and paired back into
+        // an `insert` under the `html_elements` leaf parses with.
         for (kind, marked) in [
             (InlineKind::Mark, "a ==word== b\n"),
             (InlineKind::Delete, "a ~~word~~ b\n"),
+            (InlineKind::Insert, "a <u>word</u> b\n"),
         ] {
             let mut d = doc_with("author_mark", "a word b\n");
             d.anchor = Some(2);
@@ -15507,6 +15510,28 @@ mod tests {
             .find(|g| g.ch == 'w')
             .expect("the highlighted word");
         assert_eq!(w.style.role, crate::Role::Mark(None));
+    }
+
+    #[test]
+    fn an_authored_underline_reads_back_as_an_insert() {
+        // The same round trip for `<u>…</u>`: under `html_elements` the tag pair
+        // is one `insert`, so the word is underlined and the tags are markup the
+        // caret-off line hides — not two `raw_inline` runs drawn as literal
+        // HTML around plain text.
+        let mut d = doc_with("underline_roundtrip", "a word b\nnext\n");
+        d.view = View::Wysiwyg;
+        d.build_visual(80);
+        d.anchor = Some(2);
+        d.caret = 6;
+        d.toggle(InlineKind::Insert);
+        assert_eq!(d.source, "a <u>word</u> b\nnext\n");
+        d.anchor = None;
+        d.caret = d.source.find("next").unwrap();
+        d.build_visual(80);
+        let glyphs: Vec<_> = d.vmap.rows.iter().flat_map(|r| r.glyphs.iter()).collect();
+        let w = glyphs.iter().find(|g| g.ch == 'w').expect("the underlined word");
+        assert!(w.style.underline);
+        assert!(!glyphs.iter().any(|g| g.ch == '<'), "the tags are hidden");
     }
 
     #[test]
@@ -15829,13 +15854,15 @@ mod tests {
                 "{fmt:?}"
             );
         }
-        // Both spell the highlight and the strikethrough: djot natively, and
-        // Markdown because `Capabilities` asks with `parse_extensions` rather
-        // than with twig's defaults — `==x==` is text under those, and a mark
-        // under the `highlight` leaf always parses with.
+        // Both spell the highlight, the strikethrough and the underline: djot
+        // natively, and Markdown because `Capabilities` asks with
+        // `parse_extensions` rather than with twig's defaults — `==x==` is text
+        // under those, and a mark under the `highlight` leaf always parses
+        // with; `<u>x</u>` likewise pairs into an `insert` only under
+        // `html_elements`.
         for fmt in [Format::Markdown, Format::Djot] {
             let caps = Capabilities::of(fmt);
-            assert!(caps.mark && caps.strike, "{fmt:?}");
+            assert!(caps.mark && caps.strike && caps.underline, "{fmt:?}");
         }
         // What still separates them, now that the highlight doesn't: djot has
         // no in-cell break, and Markdown spells neither of the scripts.

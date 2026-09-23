@@ -1735,7 +1735,7 @@ impl LeafDoc {
     ///
     /// Don't collapse it to one flag. An HTML document takes ⌘B, ⌘I and inline
     /// code — its marks are a tag pair — while refusing every heading, list,
-    /// quote and link, and Markdown refuses the underline djot spells.
+    /// quote and link, and Markdown refuses the superscript djot spells.
     pub fn capabilities(&self) -> CapabilitiesView {
         self.doc.capabilities().into()
     }
