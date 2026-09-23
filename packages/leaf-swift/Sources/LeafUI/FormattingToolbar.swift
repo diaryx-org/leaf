@@ -14,26 +14,33 @@
 //  two files that would drift. What differs is the metrics, which tools are on
 //  the row, and how the row copes with a width it does not fit in:
 //
-//  **The accessory scrolls.** A finger flicks a row, and a scroll row shows the
-//  first group in full, hints at the next, and can't clip. (It was once a paged
-//  TabView — three pages, swipe or tap a dot — and read badly at accessory
-//  height: `.page` reserves a strip of its own frame for the dot indicator, so
-//  inside a 44pt bar the dots and the 34pt buttons fought over the same points
-//  and both got clipped, and the paging hid two thirds of the tools behind a
-//  gesture with no affordance once the dots were gone.)
+//  **The accessory is short.** Nine targets — `Aa`, Style, Bold, Italic,
+//  Underline, Checklist, List, Insert, Link — then the host's tools. Nine fit
+//  an iPhone 15 to 17 at accessory size, so the row a writer sees is the whole
+//  row, not the first third of one that runs on past the screen's edge; the
+//  row of every tool it replaced was about 1300 points wide. `Aa` swaps the
+//  keyboard for a panel of every other tool (`FormattingPanel.swift`) and back,
+//  and lights while the panel is up. Where the host's tools, or a large
+//  Dynamic Type size, still make the row too wide, it scrolls: a finger
+//  flicks a row, and a scroll can't clip. (It was once a paged TabView —
+//  three pages, swipe or tap a dot — and read badly at accessory height:
+//  `.page` reserves a strip of its own frame for the dot indicator, so inside
+//  a 44pt bar the dots and the 34pt buttons fought over the same points and
+//  both got clipped.)
 //
 //  **The bar is categories.** On the Mac the strip is six menus — Style,
 //  Format, Align, Lists, Text, Insert — each drawn from `ToolCatalogue`, with a
 //  ▾ beside its glyph. Style spells the caret's style out ("Heading 1") and
 //  Align wears the alignment in force, so the two things a reader glances at
-//  are readable without opening anything; the rows tick what is in force and
-//  carry the Format menu's shortcuts, which is how a reader learns them. The
-//  row of every tool it replaced ran to two or three pages at a usual window
-//  width. Undo and Redo are not here: the Edit menu has them, with ⌘Z.
+//  are readable without opening anything, and the rows tick what is in force.
+//  The row of every tool it replaced ran to two or three pages at a usual
+//  window width. Undo and Redo are not here: the Edit menu has them, with ⌘Z.
 //
-//  Showing the shortcuts registers them a second time, beside the menu bar's.
-//  Both call the same command on the same editor and the first to see the
-//  chord takes it, so ⌘B still bolds once — checked in the running app.
+//  The rows carry no shortcuts. SwiftUI shows a key equivalent beside a menu
+//  row only by registering it, and a chord registered by a view in the window
+//  fires wherever the window's focus is — ⌘B typed into a host's sidebar
+//  field would bold the document. The menu bar's Format menu has the chords,
+//  enabled only for the focused editor.
 //
 //  A pointer has no sideways scroll, so where even six categories don't fit
 //  the bar pages: as many whole groups as fit, and a pair of chevrons at its
@@ -52,13 +59,12 @@
 //  accent-tinted pill behind the glyph, which a bordered button's tint could
 //  barely express.
 //
-//  Table is the other tool with a menu behind it, and unlike Highlight it has
-//  no primary action: a press opens the rows. Inserting a table is one thing
-//  the button does and editing the one the caret is in is the other, and a
-//  tap that inserted a table while the caret stood in a table would be a
-//  gesture nobody asked for. The rows are `TableRows`, shared with the Format
-//  menu the way `HighlightColourRows` is, so the two surfaces cannot disagree
-//  about what a table can do or when.
+//  Table sits under Insert, and neither has a primary action: a press opens
+//  the rows. Inserting a table is one thing the submenu does and editing the
+//  one the caret is in is the other, and a tap that inserted a table while the
+//  caret stood in a table would be a gesture nobody asked for. The rows are
+//  `TableRows`, shared with the Format menu the way `HighlightColourRows` is,
+//  so the two surfaces cannot disagree about what a table can do or when.
 //
 //  Link is the one tool that can't be a bare command: every other button here
 //  knows everything it needs from the selection, and a link needs a destination
@@ -70,11 +76,11 @@
 //  isn't ready-made.
 //
 //  A host's own tools — a paperclip, a source toggle — go on the row as a
-//  `Tool` each, drawn with the bar's own chrome, as one more group after
-//  history: paged with the rest on the desktop, scrolled with the rest on the
-//  accessory. Values rather than a `@ViewBuilder` because the paging has to
-//  know how wide the group is before it lays it out, and a view has no width
-//  until it is drawn.
+//  `Tool` each, drawn with the bar's own chrome, as one more group at the end:
+//  after the categories on the desktop, after Link on the accessory. They are
+//  not on the panel, which is leaf's own keyboard. Values rather than a
+//  `@ViewBuilder` because the paging has to know how wide the group is before
+//  it lays it out, and a view has no width until it is drawn.
 
 import LeafFFI
 import SwiftUI
@@ -88,7 +94,8 @@ import SwiftUI
 ///         LeafEditor(model: editor)
 ///     }
 ///
-///     // iOS: the same tools, above the keyboard.
+///     // iOS: a short row above the keyboard, whose `Aa` swaps the
+///     // keyboard for a panel of the rest.
 ///     LeafEditor(model: editor) { LeafFormattingToolbar(editor: editor) }
 ///
 ///     // With a tool of the host's own at the row's end.
@@ -100,11 +107,14 @@ public struct LeafFormattingToolbar: View {
     /// and `.bar` on macOS, which is what a host wants unless it's deliberately
     /// putting the iOS-sized bar somewhere other than above the keyboard.
     public enum Style {
-        /// Keyboard-accessory metrics: 44pt tall, finger-sized targets, and a
-        /// row that scrolls when it does not fit.
+        /// Keyboard-accessory metrics: 44pt tall, finger-sized targets, the
+        /// nine most-used tools and an `Aa` for the panel of the rest, and a
+        /// row that scrolls when it does not fit. On macOS there is no panel
+        /// and no `Aa`.
         case accessory
-        /// Static-strip metrics: 32pt tall, pointer-sized targets, and a row
-        /// that pages by group when it does not fit.
+        /// Static-strip metrics: 32pt tall, pointer-sized targets, six
+        /// category menus, and a row that pages by category when it does not
+        /// fit.
         case bar
         /// The platform's usual choice.
         case automatic
@@ -114,7 +124,7 @@ public struct LeafFormattingToolbar: View {
     /// same target, the same bare glyph, the same accent pill when `active`.
     ///
     /// Two kinds, because the bar's own tools come in two: a button that acts,
-    /// and a menu whose rows are the whole tool (the way Table is). A menu's
+    /// and a menu whose rows are the whole tool (the way Insert is). A menu's
     /// rows are a view of the host's, and the glyph is the bar's, so a host's
     /// Format-style dropdown stands beside the built-in tools looking like one.
     public struct Tool: Identifiable {
@@ -197,24 +207,78 @@ public struct LeafFormattingToolbar: View {
 
     public var body: some View {
         switch resolvedStyle {
-        case .accessory, .automatic: scrollingRow
+        case .accessory, .automatic: accessoryRow
         case .bar: pagedRow
         }
     }
 
-    /// The accessory: one horizontal scroll, every group in a row.
-    private var scrollingRow: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 0) {
-                ForEach(Array(groups.enumerated()), id: \.element.id) { offset, group in
-                    if offset > 0 { separator }
-                    group.content
+    /// The accessory: `Aa`, Style, Bold, Italic, Underline, Checklist, List,
+    /// Insert and Link, then the host's tools after a hairline.
+    ///
+    /// Nine targets because nine fit an iPhone 15 to 17 (393–402 points) at
+    /// accessory size, so the row never has to scroll and nothing on it is
+    /// ever half off the edge. They are the tools a writer reaches for in the
+    /// middle of a sentence; the rest are one press of `Aa` away, on a panel
+    /// in the keyboard's place (`FormattingPanel.swift`). Where the host's
+    /// tools, or a large Dynamic Type size, make the row wider than the
+    /// screen, it scrolls as the whole row used to: a finger can flick it,
+    /// and it can't clip.
+    ///
+    /// `ViewThatFits` is macOS 13, and this style can be asked for on the
+    /// Mac too, so macOS 12 takes the scroll unconditionally.
+    @ViewBuilder
+    private var accessoryRow: some View {
+        let tools = ToolCatalogue(editor: editor, beginLink: beginLink)
+        Group {
+            if #available(macOS 13, iOS 16, *) {
+                ViewThatFits(in: .horizontal) {
+                    accessoryTools(tools)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    ScrollView(.horizontal, showsIndicators: false) { accessoryTools(tools) }
                 }
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) { accessoryTools(tools) }
             }
-            .padding(.horizontal, metrics.edgePadding)
         }
         .frame(height: metrics.barHeight)
         .background(.bar)
+    }
+
+    private func accessoryTools(_ tools: ToolCatalogue) -> some View {
+        HStack(spacing: 0) {
+            HStack(spacing: metrics.spacing) {
+                #if canImport(UIKit)
+                if FormattingPanelHost.isAvailable {
+                    target(tools.panel, width: metrics.buttonWidth)
+                }
+                #endif
+                target(tools.style, width: rowStyleWidth, indicator: .corner)
+                    .modifier(StyleValue(name: tools.styleName(short: false)))
+                target(tools.bold, width: metrics.buttonWidth)
+                target(tools.italic, width: metrics.buttonWidth)
+                target(tools.underline, width: metrics.buttonWidth)
+                target(tools.checklist, width: metrics.buttonWidth)
+                target(tools.list, width: metrics.buttonWidth, indicator: .corner)
+                target(tools.insert, width: metrics.buttonWidth, indicator: .corner)
+                target(tools.link, width: metrics.buttonWidth)
+                    .popover(isPresented: $askingForDestination) {
+                        LinkDestinationField(text: $typedDestination, commit: commitLink)
+                            .focused($destinationFocused)
+                    }
+            }
+            if !hostTools.isEmpty {
+                separator
+                hostGroup
+            }
+        }
+        .padding(.horizontal, metrics.edgePadding)
+    }
+
+    /// The row's Style key: as wide as the widest short name ("Body", "Code"),
+    /// so it holds still as the caret moves.
+    private var rowStyleWidth: CGFloat {
+        let widest = ToolCatalogue.styleNames(short: true).map { glyphWidth(.text($0)) }.max() ?? 0
+        return max(metrics.buttonWidth, widest + 2 * metrics.textInset)
     }
 
     /// The bar: a row of category menus, and chevrons to the rest when the
@@ -237,7 +301,10 @@ public struct LeafFormattingToolbar: View {
             .overlay(alignment: .leading) { pagedContent }
             .background(.bar)
             .clipped()
-            .popover(isPresented: $askingForDestination) { destinationField }
+            .popover(isPresented: $askingForDestination) {
+                LinkDestinationField(text: $typedDestination, commit: commitLink)
+                    .focused($destinationFocused)
+            }
     }
 
     private var pagedContent: some View {
@@ -272,15 +339,17 @@ public struct LeafFormattingToolbar: View {
     /// No Undo or Redo: the Edit menu has them, with ⌘Z and ⇧⌘Z, and a Mac
     /// reader does not look for them on a formatting strip.
     private var barGroups: [BarGroup] {
-        let tools = ToolCatalogue(editor: editor, beginLink: beginLink, shortcuts: true)
+        let tools = ToolCatalogue(editor: editor, beginLink: beginLink)
         let style = tools.style
+        let name = tools.styleName(short: false)
         var groups = [BarGroup(id: "style", gap: .space, widths: [styleWidth],
-                               content: AnyView(target(labelled(style, tools.styleName(short: false)),
-                                                       width: styleWidth, indicator: true)))]
+                               content: AnyView(target(labelled(style, name), width: styleWidth,
+                                                       indicator: .chevron)
+                                                    .modifier(StyleValue(name: name))))]
         for item in [tools.format, tools.align, tools.lists, tools.text, tools.insert] {
             let width = categoryWidth(item)
             groups.append(BarGroup(id: item.id, gap: .space, widths: [width],
-                                   content: AnyView(target(item, width: width, indicator: true))))
+                                   content: AnyView(target(item, width: width, indicator: .chevron))))
         }
         if !hostTools.isEmpty {
             groups.append(BarGroup(id: "host", gap: .separator,
@@ -357,6 +426,12 @@ public struct LeafFormattingToolbar: View {
 
     // MARK: a catalogue tool as a target
 
+    /// How a target says it has a menu behind it. A chevron beside the glyph
+    /// on the Mac, where the categories are menus and a reader should see so
+    /// before clicking; a small ▾ in the corner on the iOS row, which has no
+    /// width to spare beside its glyphs — the mark the panel's keys wear too.
+    private enum Indicator { case none, chevron, corner }
+
     /// A tool drawn in the bar's chrome, whatever its shape: a button for a
     /// tool with an action and nothing else, a menu with `primaryAction` for
     /// one with both (tap to act, press-and-hold or right-click for the
@@ -366,12 +441,15 @@ public struct LeafFormattingToolbar: View {
     /// macOS 13, this package is macOS 12, and a plain button style reaches a
     /// menu's own label the same way — a bare glyph on the bar's material.
     @ViewBuilder
-    private func target(_ item: ToolItem, width: CGFloat, indicator: Bool = false) -> some View {
+    private func target(_ item: ToolItem, width: CGFloat, indicator: Indicator = .none) -> some View {
         let face = targetFace(item, width: width, indicator: indicator)
         Group {
             if let variants = item.variants {
                 if let action = item.action {
                     Menu { variants } label: { face } primaryAction: { action() }
+                        #if canImport(UIKit)
+                        .accessibilityHint(loc("panel.holdForMore", "Touch and hold for more options."))
+                        #endif
                 } else {
                     Menu { variants } label: { face }
                 }
@@ -384,22 +462,18 @@ public struct LeafFormattingToolbar: View {
         .frame(width: width, height: metrics.buttonHeight)
         .disabled(!item.enabled)
         .accessibilityLabel(item.label)
-        .modifier(StyleValue(item: item))
+        .accessibilityAddTraits(item.active ? .isSelected : [])
         #if !canImport(UIKit)
         .help(item.label)
         #endif
     }
 
-    /// A Style target reads its name as the value, so VoiceOver says "Style,
-    /// Heading 1" rather than "H1".
+    /// The Style target reads the style's full name as its value, so
+    /// VoiceOver says "Style, Heading 1" where the row's key says "H1".
     private struct StyleValue: ViewModifier {
-        let item: ToolItem
+        let name: String
         func body(content: Content) -> some View {
-            if item.id == "style", case .text(let name) = item.glyph {
-                content.accessibilityValue(name)
-            } else {
-                content
-            }
+            content.accessibilityValue(name)
         }
     }
 
@@ -410,28 +484,37 @@ public struct LeafFormattingToolbar: View {
     /// the ▾ straight after it: the Style button is as wide as its widest
     /// name, and centring "Body" in room for "Code Block" left the ▾
     /// stranded at the far end.
-    private func targetFace(_ item: ToolItem, width: CGFloat, indicator: Bool) -> some View {
-        Group {
+    private func targetFace(_ item: ToolItem, width: CGFloat, indicator: Indicator) -> some View {
+        let chevron = indicator == .chevron
+        return Group {
             switch item.glyph {
             case .symbol(let name):
                 HStack(spacing: 0) {
                     Image(systemName: name)
                         .font(.system(size: metrics.glyphSize))
-                        .frame(width: indicator ? width - metrics.indicatorWidth : width)
-                    if indicator { chevron }
+                        .frame(width: chevron ? width - metrics.indicatorWidth : width)
+                    if chevron { self.chevron }
                 }
             case .text(let text):
                 HStack(spacing: 0) {
                     Text(text)
                         .font(.system(size: metrics.labelSize, weight: .medium))
                         .lineLimit(1)
-                    if indicator { chevron }
+                    if chevron { self.chevron }
                 }
                 .padding(.horizontal, metrics.textInset)
-                .frame(width: width, alignment: indicator ? .leading : .center)
+                .frame(width: width, alignment: chevron ? .leading : .center)
             }
         }
         .frame(width: width, height: metrics.buttonHeight)
+        .overlay(alignment: .bottomTrailing) {
+            if indicator == .corner {
+                Image(systemName: "arrowtriangle.down.fill")
+                    .font(.system(size: metrics.glyphSize * 0.3))
+                    .foregroundStyle(.secondary)
+                    .padding(metrics.cornerRadius * 0.5)
+            }
+        }
         // `.plain` leaves a disabled button looking pressed-and-ignored; the
         // tertiary label is what the system's own bars dim to.
         .foregroundStyle(!item.enabled ? Color(Palette.tertiary)
@@ -497,279 +580,27 @@ public struct LeafFormattingToolbar: View {
         #endif
     }
 
-    // MARK: tool groups
+    // MARK: the host's tools
 
-    /// One group on the row: its tools as a view, and how many there are, which
-    /// is what the paging measures. The count sits beside the builder it counts
-    /// so the two are edited together.
-    private struct ToolGroup {
-        let id: String
-        let count: Int
-        let content: AnyView
-    }
-
-    /// The groups in order — the bar's five, then the host's, if it gave any.
-    private var groups: [ToolGroup] {
-        var groups = [
-            ToolGroup(id: "inline", count: 7, content: AnyView(inlineMarks)),
-            ToolGroup(id: "block", count: 11, content: AnyView(blockStyles)),
-            ToolGroup(id: "presentation", count: 9, content: AnyView(presentationTools)),
-            ToolGroup(id: "indent", count: 2, content: AnyView(indentTools)),
-            ToolGroup(id: "history", count: 2, content: AnyView(historyTools)),
-        ]
-        if !hostTools.isEmpty {
-            groups.append(ToolGroup(id: "host", count: hostTools.count, content: AnyView(hostGroup)))
-        }
-        return groups
-    }
-
-    /// Seven tools: the five marks, Highlight, Link.
-    private var inlineMarks: some View {
-        HStack(spacing: metrics.spacing) {
-            tool("bold", "Bold", active: editor.isActive("bold")) { editor.toggleBold() }
-            tool("italic", "Italic", active: editor.isActive("italic")) { editor.toggleItalic() }
-            // Dark in Markdown, which has no underline to write — djot's
-            // `{+text+}` has no Markdown spelling, even under leaf's extensions.
-            tool("underline", "Underline", active: editor.isActive("underline"),
-                 enabled: editor.capabilities.underline) { editor.toggleUnderline() }
-            tool("strikethrough", "Strikethrough", active: editor.isActive("strike")) { editor.toggleStrike() }
-            tool("chevron.left.forwardslash.chevron.right", "Code", active: editor.isActive("code")) { editor.toggleCode() }
-            highlightTool
-            linkTool
-        }
-    }
-
-    /// Highlight, and the seven colours a highlight can be — the one tool here
-    /// with a menu behind it.
-    ///
-    /// A press marks (or unmarks) the selection, exactly like the buttons beside
-    /// it; the colour lives in the menu, because a colour is a property of a
-    /// highlight rather than a mark of its own, and seven more buttons in a row
-    /// this size would be a palette pretending to be formatting. `primaryAction`
-    /// is what keeps both on one target: tap to highlight, press-and-hold — or
-    /// right-click, on the desktop — for the colours.
-    private var highlightTool: some View {
-        Menu {
-            HighlightColourRows(editor: editor)
-        } label: {
-            Image(systemName: "highlighter")
-                .font(.system(size: metrics.glyphSize))
-        } primaryAction: {
-            editor.toggleMark()
-        }
-        // `.buttonStyle(.plain)` rather than `.menuStyle(.button)`: the latter is
-        // macOS 13, this package is macOS 12, and a plain button style reaches
-        // the menu's own label the same way — a bare glyph on the bar's
-        // material, like every tool beside it.
-        .buttonStyle(.plain)
-        .menuIndicator(.hidden)
-        .frame(width: metrics.buttonWidth, height: metrics.buttonHeight)
-        .foregroundStyle(editor.isActive("mark") ? Color.accentColor : Color.primary)
-        .background(
-            RoundedRectangle(cornerRadius: metrics.cornerRadius)
-                .fill(editor.isActive("mark") ? Color.accentColor.opacity(0.15) : Color.clear)
-        )
-        .contentShape(Rectangle())
-        .accessibilityLabel(loc("menu.highlight", "Highlight"))
-        #if !canImport(UIKit)
-        .help(loc("menu.highlight", "Highlight"))
-        #endif
-    }
-
-    /// Link, among the inline marks rather than beside the rule and the footnote:
-    /// it is applied *over the selection* the way bold is, and it is the only
-    /// other tool here with something to light up — the caret standing in a link.
-    ///
-    /// The pill reads `state.link`, which rides the frame precisely so this can:
-    /// walking the caret out of a link changes no mark and no heading, so a
-    /// button that asked core directly would keep a stale light (see
-    /// `EditorState.link`).
-    private var linkTool: some View {
-        tool("link", "Link", active: editor.state.link != nil) { beginLink() }
-            .popover(isPresented: $askingForDestination) { destinationField }
-    }
-
-    /// Eleven tools: H1, H2, body, quote, code block, the two lists, Checklist,
-    /// the rule, Footnote, Table.
-    private var blockStyles: some View {
-        HStack(spacing: metrics.spacing) {
-            textTool("H1", "Heading 1", active: editor.state.heading == 1) { editor.setHeading(1) }
-            textTool("H2", "Heading 2", active: editor.state.heading == 2) { editor.setHeading(2) }
-            tool("paragraphsign", "Body text", active: editor.state.heading == nil) { editor.setParagraph() }
-            tool("quote.opening", "Quote") { editor.toggleBlockquote() }
-            // Beside Quote because it is the same kind of thing — a block the
-            // caret's paragraph becomes — and lit while the caret stands in one
-            // for the same reason Bold is lit inside bold text. The braces
-            // rather than the angle-bracket glyph inline Code wears, so the two
-            // read as different tools and not as one button drawn twice.
-            tool("curlybraces", "Code Block", active: editor.state.codeBlock,
-                 enabled: editor.capabilities.codeBlock) { editor.toggleCodeBlock() }
-            tool("list.bullet", "Bulleted list") { editor.toggleList(ordered: false) }
-            tool("list.number", "Numbered list") { editor.toggleList(ordered: true) }
-            // The third list, lit while the caret's item has a box for the
-            // reason Code Block is lit inside a fence. Ticking the box is not a
-            // tool here: a click or a tap on the box itself does that, and the
-            // Format menu's Checked item is the keyboard's way.
-            tool("checklist", "Checklist", active: editor.state.task != nil,
-                 enabled: editor.capabilities.task) { editor.toggleTaskItem() }
-            tool("rectangle.compress.vertical", "Horizontal Rule") { editor.insertThematicBreak() }
-            // Beside the rule rather than among the inline marks: a footnote is
-            // not a mark over the selection, it's a thing written into the
-            // document — and like the rule it acts once rather than toggling, so
-            // it has no active state to show. The glyph is the raised character
-            // because that is what the gesture puts on screen; if the eight
-            // inline marks ever grow a Superscript button of their own, that one
-            // takes this symbol and this takes `asterisk`.
-            tool("textformat.superscript", "Footnote") { editor.insertFootnote() }
-            tableTool
-        }
-    }
-
-    /// Table: a fresh one at the caret, and the grid ops over the one the
-    /// caret is in, as one menu (see the file's note on why it has no primary
-    /// action). Lit while the caret stands in a table, the way Link is lit
-    /// inside a link; dark where the format spells no table at all
-    /// (`Capabilities.table`), which is the whole gate for inserting one — the
-    /// grid rows gate themselves on the caret.
-    private var tableTool: some View {
-        Menu {
-            TableRows(editor: editor)
-        } label: {
-            Image(systemName: "tablecells")
-                .font(.system(size: metrics.glyphSize))
-        }
-        .buttonStyle(.plain)
-        .menuIndicator(.hidden)
-        .frame(width: metrics.buttonWidth, height: metrics.buttonHeight)
-        .foregroundStyle(!editor.capabilities.table ? Color(Palette.tertiary)
-                         : editor.caretInTable ? Color.accentColor : Color.primary)
-        .background(
-            RoundedRectangle(cornerRadius: metrics.cornerRadius)
-                .fill(editor.caretInTable ? Color.accentColor.opacity(0.15) : Color.clear)
-        )
-        .contentShape(Rectangle())
-        .disabled(!editor.capabilities.table)
-        .accessibilityLabel(loc("menu.table", "Table"))
-        #if !canImport(UIKit)
-        .help(loc("menu.table", "Table"))
-        #endif
-    }
-
-    /// The presentation vocabulary: how the block is laid (alignment, spacing),
-    /// how the letters are set (size, face, colour), and where the paper ends.
-    ///
-    /// Its own group rather than four more tools in the block group, and in this
-    /// order: the two that describe a *line* first, the three that describe the
-    /// *letters* after, and the page break last because it is the only one that
-    /// writes something into the document rather than restyling what is there.
-    /// A group is the unit the `.bar` style pages by, so nine tools arriving as
-    /// one group is nine tools that turn onto a page together instead of nine
-    /// more the trailing edge cuts in half.
-    ///
-    /// Alignment is four buttons and not a menu: it is the one property here a
-    /// reader glances at to see how the block they are in is set, and a segment
-    /// shows that where a menu would have to be opened to find out. The other
-    /// four are menus, which is also what lets them ask the document for the
-    /// caret's value only when they open (see `LeafEditorModel`'s queries).
-    private var presentationTools: some View {
-        HStack(spacing: metrics.spacing) {
-            alignmentSegment
-            menuTool("arrow.up.and.down.text.horizontal", loc("menu.lineSpacing", "Line Spacing"),
-                     enabled: editor.capabilities.lineSpacing) {
-                LineSpacingRows(editor: editor)
-            }
-            menuTool("textformat.size", loc("menu.textSize", "Text Size"),
-                     enabled: editor.capabilities.fontSize) {
-                TextSizeRows(editor: editor)
-            }
-            menuTool("textformat", loc("menu.font", "Font"),
-                     enabled: editor.capabilities.fontFamily) {
-                FontFamilyRows(editor: editor)
-            }
-            menuTool("paintpalette", loc("menu.textColour", "Text Colour"),
-                     enabled: editor.capabilities.textColor) {
-                TextColourRows(editor: editor)
-            }
-            tool("arrow.down.to.line", loc("menu.pageBreak", "Page Break"),
-                 enabled: editor.capabilities.pageBreak) { editor.insertPageBreak() }
-        }
-    }
-
-    /// Left · Centre · Right · Justify, lit by the block the caret is in. Left is
-    /// *clearing* the key — the vocabulary has no `left` token, because absence
-    /// is left — so the button that looks like the default is the one that
-    /// restores it.
-    ///
-    /// The light reads `editor.alignment`, which rides the published frame for
-    /// the reason the Link button's does: walking the caret out of a centred
-    /// paragraph changes no mark and no heading, so a segment asking core for
-    /// itself would never be told (see `EditorState.align`).
-    private var alignmentSegment: some View {
-        Group {
-            tool("text.alignleft", loc("menu.align.left", "Left"),
-                 active: editor.alignment == nil,
-                 enabled: editor.capabilities.alignment) { editor.setAlignment(nil) }
-            ForEach(Align.all, id: \.self) { align in
-                tool(align.symbol, align.title,
-                     active: editor.alignment == align,
-                     enabled: editor.capabilities.alignment) { editor.setAlignment(align) }
-            }
-        }
-    }
-
-    /// Two tools: Indent, Outdent.
-    private var indentTools: some View {
-        HStack(spacing: metrics.spacing) {
-            tool("increase.indent", "Indent") { editor.indent() }
-            tool("decrease.indent", "Outdent") { editor.outdent() }
-        }
-    }
-
-    /// Enabled by the history's depth, the way the Edit menu's items are: a
-    /// button that does nothing when pressed says the document is broken, where
-    /// a dimmed one says there is nothing to take back.
-    private var historyTools: some View {
-        HStack(spacing: metrics.spacing) {
-            tool("arrow.uturn.backward", "Undo", enabled: editor.state.canUndo) { editor.undo() }
-            tool("arrow.uturn.forward", "Redo", enabled: editor.state.canRedo) { editor.redo() }
-        }
-    }
-
-    /// The host's tools, each in the bar's own chrome. A menu tool is the
-    /// Table tool's shape — a plain `Menu` behind a bare glyph, the pill
-    /// outside it — and a button tool is every other tool's.
+    /// The host's tools, each in the bar's own chrome: a button tool as a
+    /// catalogue button, a menu tool as a catalogue tool that is only its
+    /// variants — the shape Insert is.
     private var hostGroup: some View {
         HStack(spacing: metrics.spacing) {
             ForEach(hostTools) { tool in
-                switch tool.kind {
-                case .button(let action):
-                    self.tool(tool.systemImage, tool.label, active: tool.active,
-                              enabled: tool.enabled, action: action)
-                case .menu(let rows):
-                    Menu {
-                        rows
-                    } label: {
-                        Image(systemName: tool.systemImage)
-                            .font(.system(size: metrics.glyphSize))
-                    }
-                    .buttonStyle(.plain)
-                    .menuIndicator(.hidden)
-                    .frame(width: metrics.buttonWidth, height: metrics.buttonHeight)
-                    .foregroundStyle(!tool.enabled ? Color(Palette.tertiary)
-                                     : tool.active ? Color.accentColor : Color.primary)
-                    .background(
-                        RoundedRectangle(cornerRadius: metrics.cornerRadius)
-                            .fill(tool.active ? Color.accentColor.opacity(0.15) : Color.clear)
-                    )
-                    .contentShape(Rectangle())
-                    .disabled(!tool.enabled)
-                    .accessibilityLabel(tool.label)
-                    #if !canImport(UIKit)
-                    .help(tool.label)
-                    #endif
-                }
+                target(item(for: tool), width: metrics.buttonWidth)
             }
         }
+    }
+
+    private func item(for tool: Tool) -> ToolItem {
+        var item = ToolItem(id: tool.id, glyph: .symbol(tool.systemImage), label: tool.label,
+                            active: tool.active, enabled: tool.enabled)
+        switch tool.kind {
+        case .button(let action): item.action = action
+        case .menu(let rows): item.variants = rows
+        }
+        return item
     }
 
     // MARK: the link destination
@@ -806,26 +637,6 @@ public struct LeafFormattingToolbar: View {
         editor.insertLink(destination)
     }
 
-    private var destinationField: some View {
-        HStack(spacing: 8) {
-            TextField("https://\u{2026}", text: $typedDestination)
-                .textFieldStyle(.roundedBorder)
-                .focused($destinationFocused)
-                .frame(width: 260)
-                .onSubmit(commitLink)
-                .autocorrectionDisabled()
-                #if canImport(UIKit)
-                // A destination is not prose: iOS capitalizing the first letter
-                // of a URL is a wrong answer every time.
-                .textInputAutocapitalization(.never)
-                .keyboardType(.URL)
-                #endif
-            Button("Link", action: commitLink)
-                .keyboardShortcut(.defaultAction)
-        }
-        .padding(12)
-    }
-
     // MARK: metrics
 
     /// The per-style sizes. Everything that differs between the keyboard
@@ -855,10 +666,14 @@ public struct LeafFormattingToolbar: View {
 
         /// 44 is the tap-target floor, and the row spends all of it — there's no
         /// indicator strip to leave room for any more.
+        ///
+        /// The row's nine tools are 40 wide with a point between them, and the
+        /// Style key as wide as "Body" (50): 390 points with the edges,
+        /// measured in the simulator, which fits an iPhone 15's 393.
         static let accessory = Metrics(
             barHeight: 44, buttonWidth: 40, buttonHeight: 36,
             glyphSize: 17, labelSize: 15, cornerRadius: 8,
-            spacing: 2, edgePadding: 8, separatorHeight: 22, separatorPadding: 6,
+            spacing: 1, edgePadding: 6, separatorHeight: 22, separatorPadding: 6,
             indicatorWidth: 10, textInset: 6, categoryGap: 4
         )
 
@@ -937,95 +752,32 @@ public struct LeafFormattingToolbar: View {
             .frame(height: metrics.separatorHeight)
             .padding(.horizontal, metrics.separatorPadding)
     }
+}
 
-    private func tool(
-        _ systemImage: String,
-        _ label: String,
-        active: Bool = false,
-        enabled: Bool = true,
-        action: @escaping () -> Void
-    ) -> some View {
-        button(active: active, enabled: enabled, label: label, action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: metrics.glyphSize))
-        }
-    }
+/// The fallback destination field: a URL field and a Link button, for a host
+/// that has not claimed the question with `onEditLink`. Shared by the row's
+/// Link and the panel's, so the two ask the same way.
+struct LinkDestinationField: View {
+    @Binding var text: String
+    let commit: () -> Void
 
-    /// A tool whose whole job is its menu — no primary action, the way Table has
-    /// none: there is no "apply the last size" gesture, only a choice. Dimmed by
-    /// its capability, so a format that cannot spell the property offers no rows
-    /// to open.
-    ///
-    /// Written once here because the vocabulary added four of them at a stroke
-    /// and they differ only in glyph, label, and which rows they drop.
-    private func menuTool<Rows: View>(
-        _ systemImage: String,
-        _ label: String,
-        enabled: Bool,
-        @ViewBuilder rows: () -> Rows
-    ) -> some View {
-        Menu {
-            rows()
-        } label: {
-            Image(systemName: systemImage)
-                .font(.system(size: metrics.glyphSize))
+    var body: some View {
+        HStack(spacing: 8) {
+            TextField("https://\u{2026}", text: $text)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 260)
+                .onSubmit(commit)
+                .autocorrectionDisabled()
+                #if canImport(UIKit)
+                // A destination is not prose: iOS capitalizing the first letter
+                // of a URL is a wrong answer every time.
+                .textInputAutocapitalization(.never)
+                .keyboardType(.URL)
+                #endif
+            Button(loc("toolbar.link", "Link"), action: commit)
+                .keyboardShortcut(.defaultAction)
         }
-        // `.plain` for the reason the Highlight menu takes it: `.menuStyle(.button)`
-        // is macOS 13 and this package is macOS 12.
-        .buttonStyle(.plain)
-        .menuIndicator(.hidden)
-        .frame(width: metrics.buttonWidth, height: metrics.buttonHeight)
-        .foregroundStyle(enabled ? Color.primary : Color(Palette.tertiary))
-        .contentShape(Rectangle())
-        .disabled(!enabled)
-        .accessibilityLabel(label)
-        #if !canImport(UIKit)
-        .help(label)
-        #endif
-    }
-
-    private func textTool(
-        _ text: String,
-        _ label: String,
-        active: Bool = false,
-        action: @escaping () -> Void
-    ) -> some View {
-        button(active: active, label: label, action: action) {
-            Text(text)
-                .font(.system(size: metrics.labelSize, weight: .semibold))
-        }
-    }
-
-    /// The shared button body: a style-sized tap target, accent glyph plus a
-    /// tinted pill when the mark is active under the caret.
-    private func button<Glyph: View>(
-        active: Bool,
-        enabled: Bool = true,
-        label: String,
-        action: @escaping () -> Void,
-        @ViewBuilder glyph: () -> Glyph
-    ) -> some View {
-        Button(action: action) {
-            glyph()
-                .frame(width: metrics.buttonWidth, height: metrics.buttonHeight)
-                // `.plain` leaves a disabled button looking pressed-and-ignored;
-                // the tertiary label is what the system's own bars dim to.
-                .foregroundStyle(!enabled ? Color(Palette.tertiary) : active ? Color.accentColor : Color.primary)
-                .background(
-                    RoundedRectangle(cornerRadius: metrics.cornerRadius)
-                        .fill(active ? Color.accentColor.opacity(0.15) : Color.clear)
-                )
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(!enabled)
-        .accessibilityLabel(label)
-        // A pointer can hover; a fingertip can't. On iOS `.help` lands as an
-        // accessibility hint, which duplicates the label above — so the tooltip
-        // is desktop-only rather than unconditional.
-        #if !canImport(UIKit)
-        .help(label)
-        #endif
+        .padding(12)
     }
 }
 

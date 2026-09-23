@@ -56,18 +56,8 @@ struct ToolItem: Identifiable {
     var action: (() -> Void)?
     /// The rows behind the ▾. Nil for a plain button.
     var variants: AnyView?
-    /// The Format menu's key equivalent for this tool, shown beside its menu
-    /// row where the rendering asks for shortcuts (the macOS bar).
-    var shortcut: ToolShortcut?
 
     var title: String { menuTitle ?? label }
-}
-
-/// A key equivalent, held as a value so a catalogue built on either platform
-/// can name one; only a menu row on the Mac applies it.
-struct ToolShortcut {
-    var key: KeyEquivalent
-    var modifiers: EventModifiers
 }
 
 /// The catalogue, over one editor. Built in a view's `body`, with whatever
@@ -78,35 +68,28 @@ struct ToolCatalogue {
     /// own field. The rendering owns the field because a popover has to hang
     /// on a view it draws.
     let beginLink: () -> Void
-    /// Whether menu rows carry the Format menu's key equivalents. True on the
-    /// macOS bar, where the reader has a keyboard and a hint beside a row is
-    /// how they learn it. False on iOS, whose menus are for touch.
-    var shortcuts = false
 
     // MARK: inline marks
 
     var bold: ToolItem {
-        mark("bold", .symbol("bold"), loc("menu.bold", "Bold"), "bold",
-             shortcut: ToolShortcut(key: "b", modifiers: .command)) { editor.toggleBold() }
+        mark("bold", .symbol("bold"), loc("menu.bold", "Bold"), "bold") { editor.toggleBold() }
     }
 
     var italic: ToolItem {
-        mark("italic", .symbol("italic"), loc("menu.italic", "Italic"), "italic",
-             shortcut: ToolShortcut(key: "i", modifiers: .command)) { editor.toggleItalic() }
+        mark("italic", .symbol("italic"), loc("menu.italic", "Italic"), "italic") { editor.toggleItalic() }
     }
 
     /// Dark in Markdown, which has no underline to write. djot's `{+text+}`
     /// has no Markdown spelling, even under leaf's extensions.
     var underline: ToolItem {
-        var item = mark("underline", .symbol("underline"), loc("menu.underline", "Underline"), "underline",
-                        shortcut: ToolShortcut(key: "u", modifiers: .command)) { editor.toggleUnderline() }
+        var item = mark("underline", .symbol("underline"), loc("menu.underline", "Underline"), "underline") { editor.toggleUnderline() }
         item.enabled = editor.capabilities.underline
         return item
     }
 
     var strikethrough: ToolItem {
         mark("strikethrough", .symbol("strikethrough"), loc("menu.strikethrough", "Strikethrough"),
-             "strike", shortcut: nil) { editor.toggleStrike() }
+             "strike") { editor.toggleStrike() }
     }
 
     /// Inline code, with Code Block as its variant. The two are one key on
@@ -115,9 +98,8 @@ struct ToolCatalogue {
     /// Style.
     var code: ToolItem {
         var item = mark("code", .symbol("chevron.left.forwardslash.chevron.right"),
-                        loc("menu.code", "Code"), "code",
-                        shortcut: ToolShortcut(key: "c", modifiers: [.command, .shift])) { editor.toggleCode() }
-        item.variants = AnyView(ToolMenuRow(item: codeBlock, shortcuts: shortcuts))
+                        loc("menu.code", "Code"), "code") { editor.toggleCode() }
+        item.variants = AnyView(ToolMenuRow(item: codeBlock))
         return item
     }
 
@@ -127,8 +109,7 @@ struct ToolCatalogue {
     /// a mark of its own, and seven more buttons would be a palette pretending
     /// to be formatting.
     var highlight: ToolItem {
-        var item = mark("highlight", .symbol("highlighter"), loc("menu.highlight", "Highlight"), "mark",
-                        shortcut: ToolShortcut(key: "m", modifiers: [.command, .shift])) { editor.toggleMark() }
+        var item = mark("highlight", .symbol("highlighter"), loc("menu.highlight", "Highlight"), "mark") { editor.toggleMark() }
         item.variants = AnyView(HighlightColourRows(editor: editor))
         return item
     }
@@ -156,12 +137,12 @@ struct ToolCatalogue {
     var style: ToolItem {
         let rows = Group {
             ForEach(1...3, id: \.self) { level in
-                ToolMenuRow(item: heading(level), shortcuts: shortcuts)
+                ToolMenuRow(item: heading(level))
             }
-            ToolMenuRow(item: paragraph, shortcuts: shortcuts)
+            ToolMenuRow(item: paragraph)
             Divider()
-            ToolMenuRow(item: quote, shortcuts: shortcuts)
-            ToolMenuRow(item: codeBlock, shortcuts: shortcuts)
+            ToolMenuRow(item: quote)
+            ToolMenuRow(item: codeBlock)
         }
         return ToolItem(id: "style", glyph: .text(styleName(short: true)),
                         label: loc("toolbar.style", "Style"), variants: AnyView(rows))
@@ -196,23 +177,20 @@ struct ToolCatalogue {
         ToolItem(id: "heading-\(level)", glyph: .text("H\(level)"),
                  label: String(format: loc("menu.headingN", "Heading %d"), level),
                  active: editor.state.heading == UInt32(level), toggles: true,
-                 action: { editor.setHeading(UInt32(level)) },
-                 shortcut: ToolShortcut(key: KeyEquivalent(Character(String(level))), modifiers: .control))
+                 action: { editor.setHeading(UInt32(level)) })
     }
 
     var paragraph: ToolItem {
         ToolItem(id: "body", glyph: .symbol("paragraphsign"), label: loc("toolbar.style.body", "Body"),
                  active: editor.state.heading == nil && !editor.state.codeBlock, toggles: true,
-                 action: { editor.setParagraph() },
-                 shortcut: ToolShortcut(key: "0", modifiers: .control))
+                 action: { editor.setParagraph() })
     }
 
     /// Not a toggle row: nothing in the published state says the caret is in
     /// a quote, so there is nothing to tick.
     var quote: ToolItem {
         ToolItem(id: "quote", glyph: .symbol("quote.opening"), label: loc("menu.blockQuote", "Block Quote"),
-                 action: { editor.toggleBlockquote() },
-                 shortcut: ToolShortcut(key: "9", modifiers: [.command, .shift]))
+                 action: { editor.toggleBlockquote() })
     }
 
     /// Lit while the caret stands in one, for the reason Bold is lit inside
@@ -221,8 +199,7 @@ struct ToolCatalogue {
     var codeBlock: ToolItem {
         ToolItem(id: "code-block", glyph: .symbol("curlybraces"), label: loc("menu.codeBlock", "Code Block"),
                  active: editor.state.codeBlock, enabled: editor.capabilities.codeBlock, toggles: true,
-                 action: { editor.toggleCodeBlock() },
-                 shortcut: ToolShortcut(key: "c", modifiers: [.command, .option]))
+                 action: { editor.toggleCodeBlock() })
     }
 
     // MARK: lists and structure
@@ -232,9 +209,9 @@ struct ToolCatalogue {
     /// Checklist's light) but not whether it is in a list at all.
     var list: ToolItem {
         let rows = Group {
-            ToolMenuRow(item: bulletList, shortcuts: shortcuts)
-            ToolMenuRow(item: numberedList, shortcuts: shortcuts)
-            ToolMenuRow(item: checklist, shortcuts: shortcuts)
+            ToolMenuRow(item: bulletList)
+            ToolMenuRow(item: numberedList)
+            ToolMenuRow(item: checklist)
         }
         return ToolItem(id: "list", glyph: .symbol("list.bullet"), label: loc("toolbar.list", "List"),
                         action: { editor.toggleList(ordered: false) }, variants: AnyView(rows))
@@ -242,15 +219,13 @@ struct ToolCatalogue {
 
     var bulletList: ToolItem {
         ToolItem(id: "bullet-list", glyph: .symbol("list.bullet"), label: loc("menu.bulletList", "Bullet List"),
-                 action: { editor.toggleList(ordered: false) },
-                 shortcut: ToolShortcut(key: "8", modifiers: [.command, .shift]))
+                 action: { editor.toggleList(ordered: false) })
     }
 
     var numberedList: ToolItem {
         ToolItem(id: "numbered-list", glyph: .symbol("list.number"),
                  label: loc("menu.numberedList", "Numbered List"),
-                 action: { editor.toggleList(ordered: true) },
-                 shortcut: ToolShortcut(key: "7", modifiers: [.command, .shift]))
+                 action: { editor.toggleList(ordered: true) })
     }
 
     /// Lit while the caret's item has a box, whichever way it faces. Ticking
@@ -259,18 +234,17 @@ struct ToolCatalogue {
     var checklist: ToolItem {
         ToolItem(id: "checklist", glyph: .symbol("checklist"), label: loc("menu.checklist", "Checklist"),
                  active: editor.state.task != nil, enabled: editor.capabilities.task, toggles: true,
-                 action: { editor.toggleTaskItem() },
-                 shortcut: ToolShortcut(key: "l", modifiers: [.command, .shift]))
+                 action: { editor.toggleTaskItem() })
     }
 
     var indent: ToolItem {
         ToolItem(id: "indent", glyph: .symbol("increase.indent"), label: loc("menu.indent", "Indent"),
-                 action: { editor.indent() }, shortcut: ToolShortcut(key: "]", modifiers: .command))
+                 action: { editor.indent() })
     }
 
     var outdent: ToolItem {
         ToolItem(id: "outdent", glyph: .symbol("decrease.indent"), label: loc("menu.outdent", "Outdent"),
-                 action: { editor.outdent() }, shortcut: ToolShortcut(key: "[", modifiers: .command))
+                 action: { editor.outdent() })
     }
 
     /// The caret's block one place up, with its children if it is a list
@@ -278,15 +252,13 @@ struct ToolCatalogue {
     /// blocks a caret could name.
     var moveUp: ToolItem {
         ToolItem(id: "move-up", glyph: .symbol("arrow.up.to.line"), label: loc("menu.moveBlockUp", "Move Block Up"),
-                 enabled: editor.capabilities.moveBlock, action: { editor.moveBlockUp() },
-                 shortcut: ToolShortcut(key: .upArrow, modifiers: .option))
+                 enabled: editor.capabilities.moveBlock, action: { editor.moveBlockUp() })
     }
 
     var moveDown: ToolItem {
         ToolItem(id: "move-down", glyph: .symbol("arrow.down.to.line"),
                  label: loc("menu.moveBlockDown", "Move Block Down"),
-                 enabled: editor.capabilities.moveBlock, action: { editor.moveBlockDown() },
-                 shortcut: ToolShortcut(key: .downArrow, modifiers: .option))
+                 enabled: editor.capabilities.moveBlock, action: { editor.moveBlockDown() })
     }
 
     // MARK: presentation
@@ -302,7 +274,7 @@ struct ToolCatalogue {
     var align: ToolItem {
         ToolItem(id: "align", glyph: .symbol(editor.alignment?.symbol ?? "text.alignleft"),
                  label: loc("menu.alignment", "Alignment"), enabled: editor.capabilities.alignment,
-                 variants: AnyView(AlignmentRows(editor: editor, shortcuts: shortcuts)))
+                 variants: AnyView(AlignmentRows(editor: editor)))
     }
 
     /// How the letters are set: size, face, colour, and the line spacing
@@ -312,9 +284,8 @@ struct ToolCatalogue {
     var text: ToolItem {
         let caps = editor.capabilities
         let editor = self.editor
-        let shortcuts = self.shortcuts
         let rows = Group {
-            Menu(loc("menu.textSize", "Text Size")) { TextSizeRows(editor: editor, shortcuts: shortcuts) }
+            Menu(loc("menu.textSize", "Text Size")) { TextSizeRows(editor: editor) }
                 .disabled(!caps.fontSize)
             Menu(loc("menu.font", "Font")) { FontFamilyRows(editor: editor) }
                 .disabled(!caps.fontFamily)
@@ -337,9 +308,9 @@ struct ToolCatalogue {
         let rows = Group {
             Menu(loc("menu.table", "Table")) { TableRows(editor: editor) }
                 .disabled(!editor.capabilities.table)
-            ToolMenuRow(item: rule, shortcuts: shortcuts)
-            ToolMenuRow(item: footnote, shortcuts: shortcuts)
-            ToolMenuRow(item: pageBreak, shortcuts: shortcuts)
+            ToolMenuRow(item: rule)
+            ToolMenuRow(item: footnote)
+            ToolMenuRow(item: pageBreak)
         }
         return ToolItem(id: "insert", glyph: .symbol("plus"), label: loc("toolbar.insert", "Insert"),
                         variants: AnyView(rows))
@@ -378,6 +349,18 @@ struct ToolCatalogue {
                  enabled: editor.state.canRedo, action: { editor.redo() })
     }
 
+    // MARK: the iOS panel
+
+    #if canImport(UIKit)
+    /// `Aa`: the formatting panel in the keyboard's place, or the keyboard
+    /// back. Lit while the panel is up, so the key that brought it is the key
+    /// that puts it away.
+    var panel: ToolItem {
+        ToolItem(id: "panel", glyph: .symbol("textformat"), label: loc("toolbar.panel", "Formatting Panel"),
+                 active: editor.isFormattingPanelShown, action: { editor.toggleFormattingPanel() })
+    }
+    #endif
+
     // MARK: the Mac's categories
 
     /// The inline marks and Link, as one menu. Highlight's colours are a
@@ -385,15 +368,15 @@ struct ToolCatalogue {
     var format: ToolItem {
         let editor = self.editor
         let rows = Group {
-            ToolMenuRow(item: bold, shortcuts: shortcuts)
-            ToolMenuRow(item: italic, shortcuts: shortcuts)
-            ToolMenuRow(item: underline, shortcuts: shortcuts)
-            ToolMenuRow(item: strikethrough, shortcuts: shortcuts)
-            ToolMenuRow(item: code, shortcuts: shortcuts)
-            ToolMenuRow(item: highlight, shortcuts: shortcuts)
+            ToolMenuRow(item: bold)
+            ToolMenuRow(item: italic)
+            ToolMenuRow(item: underline)
+            ToolMenuRow(item: strikethrough)
+            ToolMenuRow(item: code)
+            ToolMenuRow(item: highlight)
             Menu(loc("menu.highlightColour", "Highlight Colour")) { HighlightColourRows(editor: editor) }
             Divider()
-            ToolMenuRow(item: link, shortcuts: shortcuts)
+            ToolMenuRow(item: link)
         }
         return ToolItem(id: "format", glyph: .symbol("bold.italic.underline"),
                         label: loc("toolbar.format", "Format"), variants: AnyView(rows))
@@ -403,15 +386,15 @@ struct ToolCatalogue {
     /// indent, outdent, and moving the block.
     var lists: ToolItem {
         let rows = Group {
-            ToolMenuRow(item: bulletList, shortcuts: shortcuts)
-            ToolMenuRow(item: numberedList, shortcuts: shortcuts)
-            ToolMenuRow(item: checklist, shortcuts: shortcuts)
+            ToolMenuRow(item: bulletList)
+            ToolMenuRow(item: numberedList)
+            ToolMenuRow(item: checklist)
             Divider()
-            ToolMenuRow(item: indent, shortcuts: shortcuts)
-            ToolMenuRow(item: outdent, shortcuts: shortcuts)
+            ToolMenuRow(item: indent)
+            ToolMenuRow(item: outdent)
             Divider()
-            ToolMenuRow(item: moveUp, shortcuts: shortcuts)
-            ToolMenuRow(item: moveDown, shortcuts: shortcuts)
+            ToolMenuRow(item: moveUp)
+            ToolMenuRow(item: moveDown)
         }
         return ToolItem(id: "lists", glyph: .symbol("list.bullet"), label: loc("toolbar.lists", "Lists"),
                         variants: AnyView(rows))
@@ -420,18 +403,23 @@ struct ToolCatalogue {
     // MARK: shared construction
 
     private func mark(_ id: String, _ glyph: ToolGlyph, _ label: String, _ mark: String,
-                      shortcut: ToolShortcut?, _ action: @escaping () -> Void) -> ToolItem {
+                      _ action: @escaping () -> Void) -> ToolItem {
         ToolItem(id: id, glyph: glyph, label: label, active: editor.isActive(mark), toggles: true,
-                 action: action, shortcut: shortcut)
+                 action: action)
     }
 }
 
 /// A tool as a menu row: a submenu for a tool that is only its variants, a
 /// toggle ticked while `active` for a tool that has a state, and a plain
 /// command otherwise.
+///
+/// No key equivalents. A chord on a row of a menu that lives in a view is
+/// registered by that view, and fires wherever the window's focus is: ⌘B in a
+/// sidebar's search field would bold the document instead. The menu bar's
+/// Format menu has the chords, gated on the focused editor, and is where a
+/// reader looks them up.
 struct ToolMenuRow: View {
     let item: ToolItem
-    var shortcuts = false
 
     var body: some View {
         if let variants = item.variants, item.action == nil {
@@ -439,24 +427,10 @@ struct ToolMenuRow: View {
                 .disabled(!item.enabled)
         } else if item.toggles {
             Toggle(item.title, isOn: Binding(get: { item.active }, set: { _ in item.action?() }))
-                .toolShortcut(shortcuts ? item.shortcut : nil)
                 .disabled(!item.enabled)
         } else {
             Button(item.title) { item.action?() }
-                .toolShortcut(shortcuts ? item.shortcut : nil)
                 .disabled(!item.enabled)
-        }
-    }
-}
-
-extension View {
-    /// The shortcut, when there is one.
-    @ViewBuilder
-    func toolShortcut(_ shortcut: ToolShortcut?) -> some View {
-        if let shortcut {
-            keyboardShortcut(shortcut.key, modifiers: shortcut.modifiers)
-        } else {
-            self
         }
     }
 }
