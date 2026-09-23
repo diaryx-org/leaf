@@ -2951,7 +2951,7 @@ impl Doc {
     ///   - heading              → a new *paragraph*, not another heading
     ///   - code block           → a literal newline (stay in the block)
     ///   - thematic break       → the line under the rule, opened if it has
-    ///                            none ([`stand_under_rule`](Self::stand_under_rule))
+    ///                            none ([`stand_under_block`](Self::stand_under_block))
     ///   - blank line           → a literal newline (one Backspace undoes it)
     ///   - [`LineFlow::Preserve`] → a single soft break, which renders as a
     ///                            visible line
@@ -3017,7 +3017,7 @@ impl Doc {
         // empty paragraph. Mid-document its lone newline left the caret on the
         // next block's first line, and what was typed there joined that block.
         if let Some(end) = self.rule_above_caret() {
-            self.stand_under_rule(end);
+            self.stand_under_block(end);
             return;
         }
         // On an *empty* paragraph line, a lone Enter should add a single blank line,
@@ -3061,7 +3061,84 @@ impl Doc {
             self.splice(self.caret, end, "\n\n", EditKind::Other);
             return;
         }
+        // At the start of a paragraph with a block above it, twig's split
+        // writes a lone newline ahead of the paragraph, which Fold draws as one
+        // more gap: the first Enter showed nothing. A paragraph break opens the
+        // empty paragraph above it instead, the caret staying with the text.
+        if let Some(at) = self.paragraph_opening_at_caret() {
+            let caret = self.caret;
+            if self.splice(at, at, "\n\n", EditKind::Other) {
+                self.caret = caret + 2;
+                self.record_caret();
+            }
+            return;
+        }
         self.split_block_here();
+    }
+
+    /// Where Enter writes a paragraph break to open an empty paragraph above
+    /// the one the caret starts — `None` when the caret does not start one.
+    ///
+    /// The caret starts a paragraph that is in no list item, quote, fence or
+    /// table when no text of the paragraph stands before it: at its first
+    /// byte, or past only the opening delimiters of marks that begin with it
+    /// (`**`, a colour's `<span …>`), which is where a tap before the first
+    /// letter lands. Parted there, twig's split cut the mark in two. The break
+    /// goes in front of those delimiters, and in front of any `<div>` or
+    /// fenced div the paragraph opens — the view draws no row for a blank line
+    /// above a container's first block, so a centred paragraph's empty line
+    /// has to open outside its div.
+    ///
+    /// Inside a list or a quote twig's split already writes a marked line,
+    /// which draws. The document's first block is left to the split too: the
+    /// view draws no row above it, whichever is written.
+    fn paragraph_opening_at_caret(&mut self) -> Option<usize> {
+        let caret = self.caret.min(self.source.len());
+        let chain = self.editor.ancestors_at(caret).ok()?;
+        if chain.iter().any(|m| {
+            matches!(
+                m.kind,
+                Kind::ListItem
+                    | Kind::TaskListItem
+                    | Kind::BlockQuote
+                    | Kind::CodeBlock
+                    | Kind::Table
+            )
+        }) {
+            return None;
+        }
+        let para = chain.iter().find(|m| m.kind == Kind::Para)?;
+        let mut at = para.span.start;
+        if at != caret {
+            let text_before = self
+                .editor
+                .subtree(twig::NodeId(para.node_id))
+                .ok()?
+                .iter()
+                .any(|n| {
+                    n.span.start < caret
+                        && (n.kind == Kind::Image
+                            || n.text.as_deref().is_some_and(|t| !t.trim().is_empty()))
+                });
+            if text_before {
+                return None;
+            }
+        }
+        // Out past each container this paragraph opens, innermost first: one
+        // whose source before it is its opening line and blank lines.
+        let mut outer: Vec<_> = chain
+            .iter()
+            .filter(|m| m.kind == Kind::Container && m.span.start < at)
+            .collect();
+        outer.sort_by_key(|m| std::cmp::Reverse(m.span.start));
+        for c in outer {
+            let before = &self.source[c.span.start..at];
+            if !before.lines().skip(1).all(|l| l.trim().is_empty()) {
+                break;
+            }
+            at = c.span.start;
+        }
+        (!self.source[..at].trim().is_empty()).then_some(at)
     }
 
     /// Part the block at the caret with twig's [`Editor::split_block`], leaving
@@ -5333,21 +5410,23 @@ impl Doc {
         self.anchor = None;
         self.record_caret();
         let at = self.caret;
-        if self.caret_parts_bare_paragraph() {
-            // A failure here is not fatal: the break still lands after the
-            // block, which is what this call was trying to improve on.
-            let _ = self.editor.split_block(at);
-        }
+        // A failure here is not fatal: the break still lands after the
+        // block, which is what this call was trying to improve on.
+        let parted = self.part_for_block(at);
         match self.editor.insert_directive(at, PAGE_BREAK, None, &[]) {
             Ok(change) => {
                 self.last_edit_kind = None;
                 self.refresh();
+                if parted {
+                    self.coalesce_last_undo();
+                }
                 self.anchor = None;
                 self.caret = change.new.end;
                 self.dirty = self.source != self.clean_source;
                 self.status = None;
                 self.clamp_caret();
                 self.record_caret();
+                self.caret_under_written_block(change.new, parted);
             }
             Err(e) => self.status = Some(format!("page break: {e}")),
         }
@@ -6623,7 +6702,7 @@ impl Doc {
     /// The caret ends on the line under the rule, which is where the writer
     /// goes on: at the start of the paragraph's second half when the rule
     /// parted one, and otherwise on an empty line opened under the rule — see
-    /// [`stand_under_rule`](Self::stand_under_rule). It used to be left at
+    /// [`stand_under_block`](Self::stand_under_block). It used to be left at
     /// the end of what twig wrote, which is the rule's own row: the caret was
     /// drawn beside the rule, and mid-document the next keystroke joined the
     /// block below.
@@ -6643,67 +6722,101 @@ impl Doc {
         let at = self.caret;
         // A failure here is not fatal: the rule still lands after the block,
         // which is exactly what this call was trying to improve on.
-        let parted = self.caret_parts_bare_paragraph() && self.editor.split_block(at).is_ok();
+        let parted = self.part_for_block(at);
         match self.editor.insert_thematic_break(at) {
             Ok(change) => {
                 self.last_edit_kind = None;
                 self.refresh();
+                if parted {
+                    self.coalesce_last_undo();
+                }
                 self.anchor = None;
                 self.caret = change.new.end;
                 self.dirty = self.source != self.clean_source;
                 self.status = None;
                 self.clamp_caret();
                 self.record_caret();
-                let rule = self
-                    .nodes()
-                    .into_iter()
-                    .find(|n| n.kind == Kind::ThematicBreak && change.new.contains(&n.span.start));
-                if let Some(rule) = rule {
-                    let (end, _) = wysiwyg::rule_line(&self.source, rule.span.end);
-                    if parted {
-                        // The second half starts at the first text under the
-                        // rule; the split left it no leading whitespace.
-                        let rest = &self.source[end..];
-                        self.caret = end + (rest.len() - rest.trim_start().len());
-                        self.record_caret();
-                    } else if self.stand_under_rule(end) {
-                        // The line it wrote is the rule's, one step with it.
-                        self.coalesce_last_undo();
-                    }
-                }
+                self.caret_under_written_block(change.new, parted);
             }
             Err(e) => self.status = Some(format!("thematic break: {e}")),
         }
     }
 
-    /// Stand the caret on the line under the thematic break whose text ends at
-    /// `end`, first writing that line if the rule has none — where the rule
-    /// button leaves the caret, and where Enter on a rule takes it. Whether
-    /// anything was written, so a caller can fold it into its own step.
+    /// Part the bare paragraph at `at` for a block gesture, where
+    /// [`caret_parts_bare_paragraph`](Self::caret_parts_bare_paragraph) says
+    /// to, and say whether it was parted.
     ///
-    /// The caret's line is the first under the rule that the view gives a
+    /// The split is counted as a step of its own, so the gesture can fold the
+    /// block it writes next into it. It used to go to twig uncounted: twig
+    /// kept it as a step and leaf's count did not, so one Undo took back the
+    /// block and left the paragraph parted, with Undo then reporting nothing
+    /// left to undo.
+    fn part_for_block(&mut self, at: usize) -> bool {
+        if !self.caret_parts_bare_paragraph() || self.editor.split_block(at).is_err() {
+            return false;
+        }
+        self.refresh();
+        true
+    }
+
+    /// Where a block gesture leaves the caret once twig has written the block
+    /// `new` spans — a rule, a page break: on the line under it. That is the
+    /// start of the paragraph's second half when the gesture `parted` one,
+    /// and otherwise the line [`stand_under_block`](Self::stand_under_block)
+    /// finds or writes, folded into the gesture's step.
+    ///
+    /// The block is the outermost node twig's change opens, whatever its
+    /// kind, since the kind a leaf directive comes back as is the format's.
+    fn caret_under_written_block(&mut self, new: Range<usize>, parted: bool) {
+        let block = self
+            .nodes()
+            .into_iter()
+            .filter(|n| n.kind != Kind::Doc && new.contains(&n.span.start))
+            .min_by_key(|n| (n.span.start, std::cmp::Reverse(n.span.end)));
+        let Some(block) = block else {
+            return;
+        };
+        let (end, _) = wysiwyg::block_line(&self.source, block.span.end);
+        if parted {
+            // The second half starts at the first text under the block; the
+            // split left it no leading whitespace.
+            let rest = &self.source[end..];
+            self.caret = end + (rest.len() - rest.trim_start().len());
+            self.record_caret();
+        } else if self.stand_under_block(end) {
+            self.coalesce_last_undo();
+        }
+    }
+
+    /// Stand the caret on the line under the block whose last line's text ends
+    /// at `end` — a thematic break, a page break — first writing that line if
+    /// the block has none: where the rule and page-break buttons leave the
+    /// caret, and where Enter on a rule takes it. Whether anything was
+    /// written, so a caller can fold it into its own step.
+    ///
+    /// The caret's line is the first under the block that the view gives a
     /// home: the second blank line in [`LineFlow::Fold`], which draws the
-    /// first as the gap closing the rule, and the first in
+    /// first as the gap closing the block, and the first in
     /// [`LineFlow::Preserve`], where every blank line is somewhere to type.
     /// When anything follows, one more blank line has to stand between the
     /// caret's line and it, or what is typed there runs on into the next
-    /// block. Only what that shape is missing is written. A rule twig wrote on
+    /// block. Only what that shape is missing is written. A block twig wrote on
     /// a blank line still has the blank lines that were under the caret and
     /// needs one line more, or none, where a rule written under a paragraph
     /// needs two.
     ///
-    /// Blank means blank inside the rule's container: a quote's blank lines
+    /// Blank means blank inside the block's container: a quote's blank lines
     /// keep their `>`, and the caret's line wears the quote's whole prefix, as
     /// the line Enter opens in a quote does. The document's last line, when no
     /// newline ends it, counts only once a blank line stands above it, since
     /// only then does the view draw it as a row. Fold always writes the gap
-    /// above it if it isn't there, so there a rule ending the document takes
+    /// above it if it isn't there, so there a block ending the document takes
     /// one newline more and the caret its end.
-    fn stand_under_rule(&mut self, end: usize) -> bool {
+    fn stand_under_block(&mut self, end: usize) -> bool {
         let prefix = self.continuation_prefix_at(end);
         let blank = prefix.trim_end();
         let gap = usize::from(self.line_flow == LineFlow::Fold);
-        // The blank lines directly under the rule's own, by where each starts,
+        // The blank lines directly under the block's own, by where each starts,
         // and whether the line that ends the run has anything on it.
         let mut blanks = Vec::new();
         let mut follows = false;
@@ -6780,7 +6893,7 @@ impl Doc {
             .ok()?
             .into_iter()
             .find(|m| m.kind == Kind::ThematicBreak)?;
-        let (end, home) = wysiwyg::rule_line(&self.source, rule.span.end);
+        let (end, home) = wysiwyg::block_line(&self.source, rule.span.end);
         if home != caret {
             return None;
         }
@@ -6810,9 +6923,17 @@ impl Doc {
     ///
     /// The shape is the caller's: a menu offers a few, a dialog asks. Zero
     /// rows or columns is twig's refusal (a header with nothing under it is
-    /// what its row delete refuses to leave), reported through `status`.
+    /// what its row delete refuses to leave), reported through `status` —
+    /// and refused here before the paragraph is parted, which would otherwise
+    /// be left parted around a table never written.
     pub fn insert_table(&mut self, rows: usize, cols: usize) {
         if self.read_only || self.refuse_unsupported("table", Gesture::InsertTable) {
+            return;
+        }
+        // twig's one refusal of a shape, asked before the paragraph is parted
+        // for a table that would never be written into it.
+        if rows == 0 || cols == 0 {
+            self.status = Some("table: needs at least one row and one column".into());
             return;
         }
         self.caret = self.skip_trailing_close_delims(self.caret);
@@ -6822,13 +6943,14 @@ impl Doc {
         self.anchor = None;
         self.record_caret();
         let at = self.caret;
-        if self.caret_parts_bare_paragraph() {
-            let _ = self.editor.split_block(at);
-        }
+        let parted = self.part_for_block(at);
         match self.editor.insert_table(at, rows, cols) {
             Ok(change) => {
                 self.last_edit_kind = None;
                 self.refresh();
+                if parted {
+                    self.coalesce_last_undo();
+                }
                 self.anchor = None;
                 self.caret = change.new.end;
                 self.dirty = self.source != self.clean_source;
@@ -11585,6 +11707,145 @@ mod tests {
         d.insert_thematic_break();
         assert_eq!(d.source, "a\n\n---\n\n\nb\n");
         assert_eq!(d.caret, "a\n\n---\n".len());
+    }
+
+    #[test]
+    fn insert_page_break_leaves_the_caret_on_a_line_under_it() {
+        // The rule button's placement, for the other block the toolbar writes:
+        // the caret was left at the end of twig's splice, beside the break at
+        // the end of the document and on the next block's first letter before
+        // one. djot spells the break as a fence of two lines; the line under
+        // it is under the closing `:::`.
+        for (fmt, body, want, typed) in [
+            (
+                Format::Markdown,
+                "a\n\nb\n",
+                "a\n\n::page-break\n\n\n\nb\n",
+                "a\n\n::page-break\n\nX\n\nb\n",
+            ),
+            (
+                Format::Markdown,
+                "a\n",
+                "a\n\n::page-break\n\n",
+                "a\n\n::page-break\n\nX",
+            ),
+            (
+                Format::Djot,
+                "a\n\nb\n",
+                "a\n\n::: page-break\n:::\n\n\n\nb\n",
+                "a\n\n::: page-break\n:::\n\nX\n\nb\n",
+            ),
+        ] {
+            let mut d = Doc::from_source(body.into(), fmt).unwrap();
+            d.view = View::Wysiwyg;
+            d.caret = 1;
+            d.insert_page_break();
+            assert_eq!(d.source, want, "{fmt:?}");
+            d.build_visual(80);
+            let (row, col) = d.vmap.pos_of_offset(d.caret);
+            assert_eq!(col, 0);
+            assert!(d.vmap.rows[row].glyphs.is_empty(), "{fmt:?}: an empty line");
+            assert!(
+                d.vmap.rows[row - 2].leaf_directive.is_some(),
+                "{fmt:?}: under the break"
+            );
+            d.insert("X");
+            assert_eq!(d.source, typed, "{fmt:?}");
+            d.undo();
+            d.undo();
+            assert_eq!(
+                d.source, body,
+                "{fmt:?}: the break and its line are one step"
+            );
+        }
+    }
+
+    #[test]
+    fn a_block_parting_a_paragraph_is_one_undo_step() {
+        // The split went to twig without leaf counting it, so the first Undo
+        // took back the block, left the paragraph parted, and reported nothing
+        // more to undo.
+        let mut rule = wysiwyg_doc("part_undo_rule", "before after\n");
+        rule.caret = 7;
+        rule.insert_thematic_break();
+        let mut table = wysiwyg_doc("part_undo_table", "before after\n");
+        table.caret = 7;
+        table.insert_table(1, 1);
+        let mut page = wysiwyg_doc("part_undo_page", "before after\n");
+        page.caret = 7;
+        page.insert_page_break();
+        for (name, d) in [
+            ("rule", &mut rule),
+            ("table", &mut table),
+            ("page break", &mut page),
+        ] {
+            assert_ne!(d.source, "before after\n", "{name}");
+            d.undo();
+            assert_eq!(d.source, "before after\n", "{name}: one Undo");
+            assert_eq!(d.caret, 7, "{name}: the caret back where it was");
+            assert!(!d.can_undo(), "{name}");
+            assert!(d.can_redo(), "{name}");
+            d.redo();
+            assert!(!d.source.starts_with("before after"), "{name}: one Redo");
+            assert!(!d.can_redo(), "{name}");
+        }
+        // A table twig would refuse parts nothing: the refusal comes first.
+        let mut d = wysiwyg_doc("part_undo_zero", "before after\n");
+        d.caret = 7;
+        d.insert_table(0, 1);
+        assert_eq!(d.source, "before after\n");
+        assert!(!d.can_undo());
+    }
+
+    #[test]
+    fn enter_at_a_paragraph_s_start_opens_an_empty_paragraph_above_it() {
+        // twig's split at a paragraph's start writes one newline ahead of it,
+        // which Fold draws as one more gap, so the first Enter showed nothing.
+        // A paragraph break opens a line above, the caret staying before the
+        // text. Past a mark's opening delimiters — where a tap before the
+        // first letter lands — the split used to cut the mark in two
+        // (`**\n\nb**`); the break goes in front of them. A paragraph that
+        // opens a div gets its line outside the div, where it draws.
+        for (body, caret, want, want_caret) in [
+            ("a\n\nb\n", 3, "a\n\n\n\nb\n", 5),
+            ("# H\n\nb\n", 5, "# H\n\n\n\nb\n", 7),
+            ("a\n\n**b** c\n", 3, "a\n\n\n\n**b** c\n", 5),
+            ("a\n\n**b** c\n", 5, "a\n\n\n\n**b** c\n", 7),
+            (
+                "a\n\n<span data-color=\"orange\">b</span>\n",
+                29,
+                "a\n\n\n\n<span data-color=\"orange\">b</span>\n",
+                31,
+            ),
+            (
+                "a\n\n<div class=\"center\">\n\nb\n\n</div>\n",
+                25,
+                "a\n\n\n\n<div class=\"center\">\n\nb\n\n</div>\n",
+                27,
+            ),
+        ] {
+            let mut d = wysiwyg_doc("enter_para_start", body);
+            d.build_visual(80);
+            d.caret = caret;
+            d.newline();
+            assert_eq!(d.source, want, "{body:?}");
+            assert_eq!(d.caret, want_caret, "{body:?}");
+            d.build_visual(80);
+            let (row, _) = d.vmap.pos_of_offset(d.caret);
+            assert!(
+                d.vmap.rows[row - 2].glyphs.is_empty(),
+                "{body:?}: an empty line above"
+            );
+            assert!(
+                !d.vmap.rows[row - 2].decoration,
+                "{body:?}: one the caret can stand on"
+            );
+        }
+        // Past the first letter it is an ordinary split.
+        let mut d = wysiwyg_doc("enter_para_mid", "a\n\n**b** c\n");
+        d.caret = 8;
+        d.newline();
+        assert_eq!(d.source, "a\n\n**b**\n\nc\n");
     }
 
     #[test]
@@ -18987,7 +19248,8 @@ mod tests {
         let mut end = doc_with("page_break_end", "hello\n");
         end.caret = 5;
         end.insert_page_break();
-        assert_eq!(end.source, "hello\n\n::page-break\n");
+        assert_eq!(end.source, "hello\n\n::page-break\n\n");
+        assert_eq!(end.caret, end.source.len(), "on the line under the break");
 
         // And it reaches the map as the placeholder row a frontend paginates on.
         end.view = View::Wysiwyg;

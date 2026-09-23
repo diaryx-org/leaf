@@ -2795,15 +2795,16 @@ fn definitions(editor: &mut Editor) -> Vec<QueryMatch> {
     doc.definitions().unwrap_or_default()
 }
 
-/// The line of a thematic break whose span ends at `span_end`, as the two
-/// offsets the rest of the crate means by it: where the rule's text ends, and
-/// the caret's home after the rule — past the newline that ends its line, the
-/// start of the line under it (or the text's end, with no newline to pass).
+/// The last line of a block whose span ends at `span_end` — a thematic break,
+/// a page break — as the two offsets the rest of the crate means by it: where
+/// the line's text ends, and the home past it — past the newline that ends the
+/// line, the start of the line under it (or the text's end, with no newline to
+/// pass). A rule's row ends at that home.
 ///
 /// Read off the span less the newline djot's span takes in, since Markdown's
 /// stops before it. Measured from djot's span end, the home after a rule landed
 /// past the blank line under it, on the next block's first character.
-pub(crate) fn rule_line(source: &str, span_end: usize) -> (usize, usize) {
+pub(crate) fn block_line(source: &str, span_end: usize) -> (usize, usize) {
     let span_end = span_end.min(source.len());
     let text_end = source[..span_end]
         .strip_suffix('\n')
@@ -3812,7 +3813,7 @@ impl Builder<'_> {
                 // made the document end unreachable: Right could not cross it
                 // and a click in the empty space below it snapped back before
                 // the rule.
-                let (text_end, after_line) = rule_line(self.source, node.span.end);
+                let (text_end, after_line) = block_line(self.source, node.span.end);
                 self.push_row_at(glyphs, after_line);
                 // The walk stands at the rule itself, though, as it stands at
                 // the end of any other block's last line: the lines under a
