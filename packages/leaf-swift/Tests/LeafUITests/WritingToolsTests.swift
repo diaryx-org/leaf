@@ -53,6 +53,23 @@ final class WritingToolsTextTests: XCTestCase {
         _ = doc.applyWritingTools(range, origin: origin, text: "brave")
         XCTAssertEqual(doc.source(), "# Title\n\nA **brave** word.\n", "the markup around it stays")
     }
+
+    func testARewriteReplacesOnlyWhatChangedBlockByBlock() throws {
+        let doc = try LeafDoc(source: "# Title\n\nA **bold** word.\n\n- one\n- two\n", format: "markdown")
+        let visible = doc.visibleText() as NSString
+        let all = NSRange(location: 0, length: NSMaxRange(visible.range(of: "two")))
+        let rewrite = try XCTUnwrap(doc.writingToolsEdits(all, origin: 0, text: "Title\nA bold claim.\none\n2"))
+        XCTAssertEqual(rewrite.edits.count, 2, "the blocks the rewrite left alone are not touched")
+        _ = doc.applyWritingTools(all, origin: 0, text: "Title\nA bold claim.\none\n2")
+        XCTAssertEqual(doc.source(), "# Title\n\nA **bold** claim.\n\n- one\n- 2\n")
+        let now = NSRange(location: 0, length: NSMaxRange((doc.visibleText() as NSString).range(of: "2")))
+        XCTAssertNil(doc.writingToolsEdits(now, origin: 0, text: "Title and the rest."),
+                     "four blocks with markup do not become one")
+        XCTAssertNil(doc.applyWritingTools(now, origin: 0, text: "Title\nOne paragraph.\nAnd more."))
+        XCTAssertEqual(doc.source(), "# Title\n\nA **bold** claim.\n\n- one\n- 2\n")
+        XCTAssertNotNil(doc.writingToolsEdits(now, origin: 0, text: "Title\nA bold claim.\none\n2\n"),
+                        "a trailing break is not a block of its own")
+    }
 }
 
 #if canImport(AppKit) && !targetEnvironment(macCatalyst)
@@ -135,6 +152,38 @@ final class WritingToolsTests: XCTestCase {
         let ctx = try context(view, .fullDocument)
         _ = view.writingToolsReplace(ctx.range, in: ctx, with: NSAttributedString(string: "First.\nSecond."))
         XCTAssertEqual(view.sourceText(), "First.\n\nSecond.\n")
+    }
+
+    func testARewriteOfAHeadingAndAListKeepsTheirMarkup() throws {
+        guard #available(macOS 15.2, *) else { throw XCTSkip("macOS 15.2") }
+        let view = try editor("## Plan\n\n- one\n- **two** items\n\nAfter.\n")
+        view.command { $0.selectRange(start: 3, end: UInt32(("## Plan\n\n- one\n- **two** items" as NSString).length)) }
+        let ctx = try context(view, .userSelection)
+        let rewrite = "Outline\nfirst\ntwo things"
+        let applied = view.writingToolsReplace(ctx.range, in: ctx, with: NSAttributedString(string: rewrite))
+        XCTAssertEqual(view.sourceText(), "## Outline\n\n- first\n- **two** things\n\nAfter.\n",
+                       "each block's markup stays, and the bold the rewrite did not touch")
+        XCTAssertEqual(applied?.string, rewrite)
+        view.command { $0.undo() }
+        XCTAssertEqual(view.sourceText(), "## Plan\n\n- one\n- **two** items\n\nAfter.\n", "one step")
+    }
+
+    func testARewriteThatMergesBlocksWithMarkupIsRefused() throws {
+        guard #available(macOS 15.2, *) else { throw XCTSkip("macOS 15.2") }
+        let source = "## Plan\n\n- one\n- two\n"
+        let view = try editor(source)
+        let ctx = try context(view, .fullDocument)
+        let whole = NSRange(location: 0, length: (ctx.attributedString.string as NSString).length)
+        XCTAssertNil(view.writingToolsReplace(whole, in: ctx, with: NSAttributedString(string: "A plan of two items.")))
+        XCTAssertEqual(view.sourceText(), source, "the heading and the list are not flattened into a paragraph")
+    }
+
+    func testARewriteOfPlainParagraphsMayChangeHowManyThereAre() throws {
+        guard #available(macOS 15.2, *) else { throw XCTSkip("macOS 15.2") }
+        let view = try editor("One.\n\nTwo.\n")
+        let ctx = try context(view, .fullDocument)
+        _ = view.writingToolsReplace(ctx.range, in: ctx, with: NSAttributedString(string: "Both."))
+        XCTAssertEqual(view.sourceText(), "Both.\n")
     }
 
     func testASessionIsOneUndoStep() throws {
@@ -390,6 +439,19 @@ final class WritingToolsTests: XCTestCase {
         XCTAssertFalse(doc.view().canUndo)
         view.command { $0.redo() }
         XCTAssertEqual(doc.source(), "There is a mistake, and there too.\n")
+    }
+
+    func testARewriteOfAHeadingAndAListKeepsTheirMarkup() throws {
+        guard #available(iOS 18.2, *) else { throw XCTSkip("iOS 18.2") }
+        let (doc, view) = try editor("## Plan\n\n- one\n- two\n")
+        let ctx = try context(view, .fullDocument)
+        let text = ctx.attributedString.string as NSString
+        let blocks = NSRange(location: 0, length: NSMaxRange(text.range(of: "two")))
+        _ = view.writingToolsReplace(blocks, in: ctx, with: NSAttributedString(string: "Outline\nfirst\nsecond"))
+        XCTAssertEqual(doc.source(), "## Outline\n\n- first\n- second\n")
+        XCTAssertNil(view.writingToolsReplace(blocks, in: try context(view, .fullDocument),
+                                              with: NSAttributedString(string: "Flat.")))
+        XCTAssertEqual(doc.source(), "## Outline\n\n- first\n- second\n", "refused, not flattened")
     }
 
     func testTypingDuringASessionIsAStepOfItsOwn() throws {

@@ -11,7 +11,8 @@
 //  origin makes it a range of the visible text, and core's `matchBounds` takes
 //  it to the exact source bytes, as find does. A rewrite goes back through
 //  `replaceRange`, so it is an edit like any other, inside the undo group the
-//  session holds open.
+//  session holds open — only where it changed the words, and block by block,
+//  so the markup Writing Tools never saw stays (`writingToolsEdits`).
 
 import Foundation
 import CoreGraphics
@@ -81,11 +82,89 @@ extension LeafDoc {
     }
 
     /// Replace `range` of the context at `origin` with `text`, through
-    /// `replaceRange`.
-    func applyWritingTools(_ range: NSRange, origin: Int, text: String) -> DocView {
-        let (from, to) = writingToolsBytes(range, origin: origin)
-        return replaceRange(from: UInt32(from), to: UInt32(max(from, to)),
-                            text: WritingToolsText.sourceText(text))
+    /// `replaceRange` — see `writingToolsEdits` for how, and when not. The
+    /// view after the last edit, and the visible text that went in; nil when
+    /// the rewrite was refused and nothing changed.
+    func applyWritingTools(_ range: NSRange, origin: Int, text: String) -> (view: DocView, applied: String)? {
+        guard let rewrite = writingToolsEdits(range, origin: origin, text: text) else { return nil }
+        var view: DocView?
+        // Last to first, so each edit leaves the bytes of the ones still to
+        // go where they were measured.
+        for edit in rewrite.edits.sorted(by: { $0.from > $1.from }) {
+            view = replaceRange(from: UInt32(edit.from), to: UInt32(edit.to), text: edit.text)
+        }
+        return (view ?? self.view(), rewrite.applied)
+    }
+
+    /// The source edits that put `text` in place of `range` of the context at
+    /// `origin`, and the visible text they leave there — or nil, to refuse a
+    /// rewrite that would take structure with it.
+    ///
+    /// A rewrite is plain text, and the source has markup Writing Tools never
+    /// saw: a heading's `##`, a list item's `- `, the `**` around a word. So
+    /// it goes in as narrowly as it can:
+    ///
+    /// - each paragraph of it replaces only what changed in its own paragraph
+    ///   — the text the old and the new share at either end stays, with any
+    ///   markup inside it;
+    /// - over several blocks, paragraph by paragraph, when the rewrite has as
+    ///   many as the range: a line break of the visible text is a block
+    ///   boundary, and a block's markup lies between two of them, where no
+    ///   edit reaches;
+    /// - when it has more or fewer, only where the blocks are plain
+    ///   paragraphs — the source nothing but the text and the blank lines
+    ///   between — since there is no telling which block's markup a paragraph
+    ///   of the rewrite would take. Anything else is refused whole.
+    ///
+    /// The break at the end of the range's last block is the boundary with
+    /// the block after it, and a rewrite over several blocks neither removes
+    /// it nor adds one.
+    func writingToolsEdits(_ range: NSRange, origin: Int, text: String)
+        -> (edits: [(from: Int, to: Int, text: String)], applied: String)? {
+        let whole = WritingToolsText.visibleRange(range, origin: origin)
+        let visible = visibleText() as NSString
+        guard whole.location >= 0, NSMaxRange(whole) <= visible.length else { return nil }
+        let original = visible.substring(with: whole)
+        let rewrite = text.replacingOccurrences(of: "\r\n", with: "\n")
+        let trailing = original.hasSuffix("\n")
+        let old = (trailing ? String(original.dropLast()) : original).components(separatedBy: "\n")
+        guard old.count > 1 else {
+            return ([writingToolsEdit(whole.location, original, rewrite)].compactMap { $0 }, rewrite)
+        }
+        let body = rewrite.hasSuffix("\n") ? String(rewrite.dropLast()) : rewrite
+        let new = body.components(separatedBy: "\n")
+        if new.count == old.count {
+            var edits: [(from: Int, to: Int, text: String)] = []
+            var at = whole.location
+            for (was, now) in zip(old, new) {
+                if let edit = writingToolsEdit(at, was, now) { edits.append(edit) }
+                at += (was as NSString).length + 1
+            }
+            return (edits, body + (trailing ? "\n" : ""))
+        }
+        let (from, to) = matchBounds(whole)
+        let source = Array(self.source().utf8)
+        guard from <= to, to <= source.count,
+              String(decoding: source[from..<to], as: UTF8.self) == WritingToolsText.sourceText(original)
+        else { return nil }
+        return ([writingToolsEdit(whole.location, original, rewrite)].compactMap { $0 }, rewrite)
+    }
+
+    /// The edit that makes `old`, which starts at `location` in the visible
+    /// text, read `new`: the source of what differs between them — what they
+    /// share at either end left as it is, markup and all — or nil when they
+    /// are the same.
+    private func writingToolsEdit(_ location: Int, _ old: String, _ new: String) -> (from: Int, to: Int, text: String)? {
+        let a = Array(old), b = Array(new)
+        var head = 0
+        while head < a.count, head < b.count, a[head] == b[head] { head += 1 }
+        var tail = 0
+        while tail < a.count - head, tail < b.count - head, a[a.count - 1 - tail] == b[b.count - 1 - tail] { tail += 1 }
+        guard head + tail < a.count || head + tail < b.count else { return nil }
+        let start = location + String(a[..<head]).utf16.count
+        let length = String(a[head..<(a.count - tail)]).utf16.count
+        let (from, to) = matchBounds(NSRange(location: start, length: length))
+        return (from, max(from, to), WritingToolsText.sourceText(String(b[head..<(b.count - tail)])))
     }
 }
 

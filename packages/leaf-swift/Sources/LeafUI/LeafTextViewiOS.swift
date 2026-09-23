@@ -2572,8 +2572,16 @@ extension LeafTextView {
         writingTools.openGroup(doc)
         writingTools.applying = true
         defer { writingTools.applying = false }
-        command { $0.applyWritingTools(range, origin: origin, text: text.string) }
-        return text
+        // Refused when it would take the markup of the blocks it spans with
+        // it — see `writingToolsEdits`.
+        var applied: String?
+        command { doc in
+            guard let result = doc.applyWritingTools(range, origin: origin, text: text.string) else { return doc.view() }
+            applied = result.applied
+            return result.view
+        }
+        guard let applied else { return nil }
+        return applied == text.string ? text : NSAttributedString(string: applied)
     }
 
     func writingToolsSelect(_ ranges: [NSValue], in context: WTCoordinator.Context) {
