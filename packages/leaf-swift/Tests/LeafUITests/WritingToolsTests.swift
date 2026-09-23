@@ -187,6 +187,31 @@ final class WritingToolsTests: XCTestCase {
         XCTAssertEqual(view.sourceText(), "the cat\n")
     }
 
+    func testTypingDuringASessionIsAStepOfItsOwn() throws {
+        guard #available(macOS 15.2, *) else { throw XCTSkip("macOS 15.2") }
+        let view = try editor("teh cat\n")
+        let ctx = try context(view, .fullDocument)
+        view.writingToolsWillChange(to: .interactiveResting)
+        _ = view.writingToolsReplace(range(of: "teh", in: ctx), in: ctx, with: NSAttributedString(string: "the"))
+        view.command { $0.selectRange(start: 7, end: 7) }
+        // Typed while Writing Tools is still at work — `keyDown` leaves a
+        // working session's group alone, and the input system then inserts.
+        view.insertText("s", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertFalse(view.writingToolsGroupOpen, "the user's edit is not the session's")
+        view.doCommand(by: #selector(NSResponder.deleteBackward(_:)))
+        view.insertText("!", replacementRange: NSRange(location: NSNotFound, length: 0))
+        view.writingToolsWillChange(to: .inactive)
+        XCTAssertEqual(view.sourceText(), "the cat!\n")
+        view.command { $0.undo() }
+        XCTAssertEqual(view.sourceText(), "the cat\n", "the typing goes first, alone")
+        view.command { $0.undo() }
+        XCTAssertEqual(view.sourceText(), "the cats\n", "the deletion")
+        view.command { $0.undo() }
+        XCTAssertEqual(view.sourceText(), "the cat\n", "the first keystroke")
+        view.command { $0.undo() }
+        XCTAssertEqual(view.sourceText(), "teh cat\n", "and then the rewrite, alone")
+    }
+
     func testAReaderTakesNoReplacement() throws {
         guard #available(macOS 15.2, *) else { throw XCTSkip("macOS 15.2") }
         let view = try editor("teh cat\n")
@@ -365,6 +390,28 @@ final class WritingToolsTests: XCTestCase {
         XCTAssertFalse(doc.view().canUndo)
         view.command { $0.redo() }
         XCTAssertEqual(doc.source(), "There is a mistake, and there too.\n")
+    }
+
+    func testTypingDuringASessionIsAStepOfItsOwn() throws {
+        guard #available(iOS 18.2, *) else { throw XCTSkip("iOS 18.2") }
+        let (doc, view) = try editor("teh cat\n")
+        let ctx = try context(view, .fullDocument)
+        view.writingToolsWillChange(to: .interactiveResting)
+        _ = view.writingToolsReplace(range(of: "teh", in: ctx), in: ctx, with: NSAttributedString(string: "the"))
+        view.command { $0.selectRange(start: 7, end: 7) }
+        view.insertText("s")
+        XCTAssertFalse(view.writingToolsGroupOpen, "the user's edit is not the session's")
+        view.writingToolsWillChange(to: .interactiveResting)
+        view.deleteBackward()
+        XCTAssertFalse(view.writingToolsGroupOpen)
+        view.writingToolsWillChange(to: .inactive)
+        XCTAssertEqual(doc.source(), "the cat\n")
+        view.command { $0.undo() }
+        XCTAssertEqual(doc.source(), "the cats\n", "the deletion alone")
+        view.command { $0.undo() }
+        XCTAssertEqual(doc.source(), "the cat\n", "the typing alone")
+        view.command { $0.undo() }
+        XCTAssertEqual(doc.source(), "teh cat\n", "and then the rewrite")
     }
 
     func testTheGeometryIsTheLayoutsRangeRects() throws {
