@@ -6113,7 +6113,10 @@ impl Doc {
         if self.refuse_unsupported("task", Gesture::ToggleTaskItem) {
             return;
         }
-        if self.innermost_list_item(self.caret.min(self.source.len())).is_none() {
+        if self
+            .innermost_list_item(self.caret.min(self.source.len()))
+            .is_none()
+        {
             if self.refuse_unsupported(
                 "task",
                 Gesture::ToggleBlockContainer(BlockContainerKind::BulletList),
@@ -6122,7 +6125,10 @@ impl Doc {
             }
             self.begin_undo_group();
             self.toggle_list(false);
-            if self.innermost_list_item(self.caret.min(self.source.len())).is_some() {
+            if self
+                .innermost_list_item(self.caret.min(self.source.len()))
+                .is_some()
+            {
                 self.box_item_at_caret();
             }
             self.end_undo_group();
@@ -11196,7 +11202,10 @@ mod tests {
         assert_eq!(d.task_checked_at_caret(), Some(false));
         assert_eq!(d.status, None);
         d.undo();
-        assert_eq!(d.source, "first\n\nplain para\n", "one step takes both back");
+        assert_eq!(
+            d.source, "first\n\nplain para\n",
+            "one step takes both back"
+        );
     }
 
     #[test]
