@@ -3748,15 +3748,18 @@ extension LeafTextView {
         return [context]
     }
 
-    /// Apply a replacement through core, and answer with what went in.
+    /// Apply a replacement through core, and answer with what went in — or
+    /// nil, for a rewrite refused because it would take the markup of the
+    /// blocks it spans with it (see `writingToolsEdits`).
     func writingToolsReplace(_ range: NSRange, in context: NSWritingToolsCoordinator.Context,
                              with text: NSAttributedString) -> NSAttributedString? {
         guard !isReadOnly, let origin = writingTools.origins[context.identifier] else { return nil }
         openWritingToolsGroup()
         writingTools.applying = true
         defer { writingTools.applying = false }
-        render(doc.applyWritingTools(range, origin: origin, text: text.string))
-        return text
+        guard let result = doc.applyWritingTools(range, origin: origin, text: text.string) else { return nil }
+        render(result.view)
+        return result.applied == text.string ? text : NSAttributedString(string: result.applied)
     }
 
     func writingToolsSelect(_ ranges: [NSValue], in context: NSWritingToolsCoordinator.Context) {
