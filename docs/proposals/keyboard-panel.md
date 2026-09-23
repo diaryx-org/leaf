@@ -1,6 +1,6 @@
 ---
 title: "Proposal: a short row, a keyboard panel, and categories on the Mac"
-status: accepted
+status: implemented
 created: 2026-09-23
 updated: 2026-09-23
 part_of: '[Proposals](/docs/proposals/proposals.md)'
@@ -9,6 +9,36 @@ part_of: '[Proposals](/docs/proposals/proposals.md)'
 # A short row, a keyboard panel, and categories on the Mac
 
 ## Status
+
+`implemented` on 2026-09-23, unreleased: the catalogue and the Mac's
+categories in `8221499`, the iOS row and panel in `90f9129`, the demo app in
+`cd69781`. Where the build
+differs from the text below:
+
+- **The panel's presentation key is Text▾** (the large-and-small A), not a
+  second `Aa▾`. The reason is under point 3.
+- **List▾ does not light, and Style never reads "Quote".** The published
+  `EditorState` says whether the caret's item has a box (Checklist lights by
+  it) and whether it is in a code block, but not whether it is in a list or a
+  quote. Lighting either would mean asking core for one more fact on every
+  frame.
+- **Style offers H1 to H3.** `setHeading` takes 1 to 6 and the Format menu
+  offers all six. The key still names H4 to H6 when the caret is in one.
+- **No Math in Insert.** The model has no insert-math command yet.
+- **The Mac's menus show no shortcuts.** SwiftUI draws a key equivalent
+  beside a menu row only by registering it, and a chord registered by a view
+  fires wherever the window's focus is: ⌘B in a host's sidebar field would
+  bold the document. The menu bar's Format menu keeps the chords, gated on
+  the focused editor.
+- **The panel's Link asks through a sheet** when no host has claimed
+  `onEditLink`. A popover on the key would go away with the panel, because
+  the field takes focus and the text view resigns.
+- **No panel on a Mac.** `Aa` is left off where an iPad or iPhone app runs
+  on macOS, because there is no soft keyboard there to stand in for.
+- **The demo app hangs the row over the keyboard on iOS** (`LeafEditor(model:
+  accessory:)`), where it used to stack the bar over the editor as on the
+  Mac, and its display chrome moves to the navigation bar. The row there is
+  the nine tools and doesn't scroll.
 
 `accepted` on 2026-09-23. Adam's decision, after studying Pages, Apple
 Notes, Bear and Obsidian: leaf-swift's `LeafFormattingToolbar` stops being

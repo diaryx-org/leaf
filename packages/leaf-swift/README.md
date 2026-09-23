@@ -100,19 +100,45 @@ struct ContentView: View {
 ```
 
 A hand-rolled bar like the one above is the fully-customizable path; if you just
-want the usual tools, `LeafFormattingToolbar(editor: editor)` is a ready-made row
-of them (inline marks · block structure · indent · history) built on those same
-public commands. It sizes itself per platform — a 32pt strip you stack over the
-editor on macOS, a 44pt keyboard accessory on iOS:
+want the usual tools, `LeafFormattingToolbar(editor: editor)` is a ready-made bar
+built on those same public commands. Every tool it offers is defined once and
+drawn in two shapes, one per platform:
 
 ```swift
 LeafEditor(model: editor) { LeafFormattingToolbar(editor: editor) }
 ```
 
-**Colouring a highlight.** Highlight is the one tool with a menu behind it: a
-press marks the selection, and a press-and-hold (right-click on the desktop)
-drops down the seven colours a highlight can be — `==🔴 text==`, the spelling
-core reads and writes. The rows tick from `state.markColor`, so walking the caret
+- **On iOS**, a 44pt keyboard accessory with the nine tools a writer reaches for
+  mid-sentence: `Aa`, Style, Bold, Italic, Underline, Checklist, List, Insert
+  and Link. Nine fit an iPhone 15 to 17 without scrolling. `Aa` swaps the
+  keyboard for a panel of every tool, laid out as a six-by-four grid of keys
+  (Bear's layout), and lights while the panel is up. Press it again to get the
+  keyboard back. The editor stays first responder through the swap, so the
+  caret and the selection stay put. The panel keeps Delete, Space and Return,
+  sent through the text view's own `insertText` and `deleteBackward`, so they
+  behave exactly as the keyboard's do: Return continues a list, one undo takes
+  back what was typed. A key marked ▾ has variants: a tap runs its primary
+  action (List makes a bulleted list, Code inline code) and a press-and-hold
+  opens the rest. Style, Align, Text and Insert have no primary action, and
+  open on a tap. A host with an accessory of its own can raise the same
+  panel with `editor.setFormattingPanelShown(true)` or
+  `toggleFormattingPanel()`, and light its own `Aa` by
+  `editor.isFormattingPanelShown`.
+- **On macOS**, a 32pt strip you stack over the editor, holding six category
+  menus: Style (which shows the caret's style by name), Format, Align (which
+  wears the alignment in force), Lists, Text and Insert. Each row is ticked
+  while it is in force. The shortcuts stay in the menu bar's Format menu: a
+  chord registered by a view fires wherever the focus is. Undo and Redo are
+  the Edit menu's and are not on the strip. In a window too narrow for the
+  whole strip, a pair of chevrons pages between categories.
+
+A host's own tools go at the end of either one, as `LeafFormattingToolbar.Tool`
+values: `.button(…)` or `.menu(…)`, drawn in the bar's own chrome.
+
+**Colouring a highlight.** Highlight has a menu behind it. On the iOS panel a
+press marks the selection and a press-and-hold drops down the seven colours a
+highlight can be; on the Mac, Format ▸ Highlight Colour lists them. The spelling
+is `==🔴 text==`, which core reads and writes. The rows tick from `state.markColor`, so walking the caret
 from a red highlight into a blue one moves the tick, and they dim through
 `canColourHighlight`: a colour needs a format that spells one (Markdown does;
 Djot writes the highlight and no colour on it) *and* a highlight to belong to —
@@ -126,8 +152,8 @@ leaving an uncoloured highlight on the way back. `setMarkColor(_:)` is the exact
 one-splice gesture if you want it unwrapped. Format ▸ Highlight Colour carries
 the same rows in the menu bar.
 
-**Authoring a link.** Link is among the inline marks, and it's the one tool that
-has to ask a question: the selection says what to link, never where to. It reads
+**Authoring a link.** Link is on the iOS row and panel and in the Mac's Format
+menu, and it's the one tool that has to ask a question: the selection says what to link, never where to. It reads
 `state.link` — the destination of the link the caret stands in — so the button
 lights inside a link and pressing it there *re-points* that link instead of
 nesting a second one in its text. The destination itself comes from
