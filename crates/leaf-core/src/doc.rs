@@ -15529,7 +15529,10 @@ mod tests {
         d.caret = d.source.find("next").unwrap();
         d.build_visual(80);
         let glyphs: Vec<_> = d.vmap.rows.iter().flat_map(|r| r.glyphs.iter()).collect();
-        let w = glyphs.iter().find(|g| g.ch == 'w').expect("the underlined word");
+        let w = glyphs
+            .iter()
+            .find(|g| g.ch == 'w')
+            .expect("the underlined word");
         assert!(w.style.underline);
         assert!(!glyphs.iter().any(|g| g.ch == '<'), "the tags are hidden");
     }
