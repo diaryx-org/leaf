@@ -139,6 +139,49 @@ final class SubstitutionTests: XCTestCase {
         XCTAssertEqual(view.sourceText(), "x \(short) \n")
     }
 
+    func testAKeystrokeIsCheckedInTheCaretsBlockAlone() throws {
+        // Every block but the caret's is left out of what the checker reads —
+        // the words behind the caret in its own paragraph are context enough,
+        // and a long document is not read again at every space.
+        let source = "# A heading\n\nFirst paragraph here.\n\n- a list item\n\nLast one\n"
+        let end = (source as NSString).range(of: "Last one").location + 8
+        let view = try editor(source, caret: end)
+        type(" \"", into: view)
+        let text = view.string as NSString
+        let last = text.range(of: "Last one")
+        let checked = try XCTUnwrap(view.lastSubstitutionCheck)
+        XCTAssertEqual(checked.location, last.location, "from the start of the caret's paragraph")
+        XCTAssertEqual(NSMaxRange(checked), NSMaxRange(last) + 2, "to the caret")
+        XCTAssertTrue(view.sourceText().hasSuffix("Last one \u{201C}\n"), view.sourceText())
+
+        // In a list item: from the item's text, not the paragraph before it.
+        let item = (view.sourceText() as NSString).range(of: "a list item")
+        view.command { $0.selectRange(start: UInt32(NSMaxRange(item)), end: UInt32(NSMaxRange(item))) }
+        type("\"", into: view)
+        let inItem = try XCTUnwrap(view.lastSubstitutionCheck)
+        let itemText = (view.string as NSString).range(of: "a list item")
+        XCTAssertGreaterThan(inItem.location, NSMaxRange(text.range(of: "First paragraph here.")))
+        XCTAssertLessThanOrEqual(inItem.location, itemText.location)
+        XCTAssertEqual(NSMaxRange(inItem), NSMaxRange(itemText) + 1)
+    }
+
+    func testAWordIsCorrectedInALaterBlockAndInATableCell() throws {
+        try XCTSkipUnless(correctsTeh, "this Mac's checker does not correct teh")
+        let source = "# Title\n\nA **bold** start.\n\n- item\n"
+        let view = try editor(source, caret: source.utf8.count - 1)
+        type(" saw teh ", into: view)
+        XCTAssertEqual(view.sourceText(), "# Title\n\nA **bold** start.\n\n- item saw the \n")
+        let correction = try XCTUnwrap(view.autocorrections.first)
+        XCTAssertEqual(correction.original, "teh")
+        XCTAssertEqual((view.string as NSString).substring(with: correction.range), "the",
+                       "the range is the document's, not the block's")
+
+        let table = "Before.\n\n| Name | Note |\n|---|---|\n| cat | I saw |\n"
+        let cell = try editor(table, caret: (table as NSString).range(of: "saw |").location + 3)
+        type(" teh ", into: cell)
+        XCTAssertTrue(cell.sourceText().contains("| cat | I saw the  |"), cell.sourceText())
+    }
+
     func testNothingIsSubstitutedInTheSourceView() throws {
         let view = try editor("\n", caret: 0)
         view.command { $0.toggleView() }
