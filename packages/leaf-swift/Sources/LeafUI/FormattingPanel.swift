@@ -87,8 +87,24 @@ final class FormattingPanelHost: UIInputView, UIInputViewAudioFeedback {
 
     enum Orientation { case portrait, landscape }
 
-    static func orientation(of bounds: CGRect) -> Orientation {
-        bounds.width > bounds.height ? .landscape : .portrait
+    /// The orientation a keyboard in `window` is laid out for: the scene's
+    /// interface orientation, which is the one the keyboard follows. Not the
+    /// window's shape — on an iPad in Split View or Stage Manager a window
+    /// can be tall and narrow on a landscape screen, and its keyboard is the
+    /// landscape one.
+    static func orientation(of window: UIWindow) -> Orientation {
+        orientation(interface: window.windowScene?.interfaceOrientation, bounds: window.bounds)
+    }
+
+    /// `interface` when it says, and the shape of `bounds` when it doesn't —
+    /// a window not yet in a scene, or a scene whose orientation is
+    /// `.unknown` — which is the best a window with no scene has to go on.
+    static func orientation(interface: UIInterfaceOrientation?, bounds: CGRect) -> Orientation {
+        switch interface {
+        case .landscapeLeft?, .landscapeRight?: return .landscape
+        case .portrait?, .portraitUpsideDown?: return .portrait
+        default: return bounds.width > bounds.height ? .landscape : .portrait
+        }
     }
 
     /// Remember the keyboard's height from a frame-change notification's end
@@ -103,7 +119,7 @@ final class FormattingPanelHost: UIInputView, UIInputViewAudioFeedback {
         guard frame.minY < screen.maxY - 1 else { return }
         let height = frame.height - (accessory?.bounds.height ?? 0)
         guard height > 120 else { return }
-        keyboardHeights[orientation(of: window.bounds)] = height
+        keyboardHeights[orientation(of: window)] = height
     }
 
     /// Size the panel for the window `textView` is in: the window's width,
@@ -113,10 +129,12 @@ final class FormattingPanelHost: UIInputView, UIInputViewAudioFeedback {
     @discardableResult
     func fit(to textView: UIView) -> Bool {
         let bounds = textView.window?.bounds ?? textView.bounds
-        let fallback = Self.orientation(of: bounds) == .landscape
+        let orientation = textView.window.map(Self.orientation(of:))
+            ?? Self.orientation(interface: nil, bounds: bounds)
+        let fallback = orientation == .landscape
             ? min(max(bounds.height * 0.5, 160), 220)
             : min(max(bounds.height * 0.38, 216), 336)
-        let height = Self.keyboardHeights[Self.orientation(of: bounds)] ?? fallback
+        let height = Self.keyboardHeights[orientation] ?? fallback
         let moved = abs(frame.height - height) > 0.5
         frame.size = CGSize(width: bounds.width, height: height)
         return moved
@@ -226,19 +244,10 @@ struct FormattingPanelView: View {
         .accessibilityAddTraits(item.active ? .isSelected : [])
     }
 
-    /// Link from the panel. The host's `onEditLink` first, as everywhere;
-    /// with no host listening, the fallback field is raised by `LeafEditor`
-    /// as a sheet (`pendingLinkDestination`), not as a popover on this key.
-    /// The field takes focus, the text view resigns, the panel goes away with
-    /// it — and a popover anchored on one of the panel's keys would go too.
-    private func beginLink() {
-        let current = editor.state.link ?? ""
-        if let ask = editor.onEditLink {
-            ask(current)
-            return
-        }
-        editor.pendingLinkDestination = current
-    }
+    /// Link from the panel: the host's `onEditLink` first, and leaf's own
+    /// field as a sheet otherwise — see `LeafEditorModel.beginLinkInSheet`
+    /// for why not a popover on this key.
+    private func beginLink() { editor.beginLinkInSheet() }
 }
 
 /// The grid's arithmetic: six keys across and four down, filling the panel,
@@ -364,10 +373,20 @@ private struct PanelKeyStyle: ButtonStyle {
 /// Delete that waited for the finger to lift would feel broken to anyone
 /// used to the keyboard.
 ///
+/// The first press fires from the gesture's own `updating` callback, the
+/// first time it sees the touch — not from `onChange(of: held)`. A tap quick
+/// enough for SwiftUI to fold the touch's start and end into one update
+/// never changes `held` as far as `onChange` can see, and a key that fired
+/// only from there would drop it. `held` is what guards the callback, so it
+/// fires once per touch.
+///
 /// "Held" is `@GestureState`, which SwiftUI resets when the touch ends *and*
 /// when it is cancelled — a system gesture taking the touch, the panel going
 /// away under the finger — where a flag set in `onChanged` and cleared in
-/// `onEnded` stays set on a cancel, and a repeating Delete with it.
+/// `onEnded` stays set on a cancel, and a repeating Delete with it. The
+/// repeat starts and stops on its changes, stops when the key leaves the
+/// screen (the panel put away, the text view resigning), and checks it again
+/// on every tick, so no path leaves a Delete repeating with no finger down.
 private struct TypingKey: View {
     let symbol: String
     let label: String
@@ -383,12 +402,17 @@ private struct TypingKey: View {
         PanelKeyFace(item: ToolItem(id: symbol, glyph: .symbol(symbol), label: label),
                      kind: .typing, pressed: held, glyphSize: glyphSize)
             .frame(width: size.width, height: size.height)
-            .gesture(DragGesture(minimumDistance: 0).updating($held) { _, held, _ in held = true })
+            .gesture(DragGesture(minimumDistance: 0).updating($held) { _, held, _ in
+                guard !held else { return }
+                held = true
+                // A turn later: this runs inside the gesture's update, and the
+                // keystroke publishes the editor's state.
+                DispatchQueue.main.async { press() }
+            })
             .onChange(of: held) { down in
-                if down {
-                    press()
-                    if repeats { startRepeating() }
-                } else {
+                if down, repeats {
+                    startRepeating()
+                } else if !down {
                     stopRepeating()
                 }
             }
@@ -409,6 +433,7 @@ private struct TypingKey: View {
     private func startRepeating() {
         stopRepeating()
         let timer = Timer(fire: Date().addingTimeInterval(0.45), interval: 0.09, repeats: true) { _ in
+            guard held else { return stopRepeating() }
             press()
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -421,8 +446,9 @@ private struct TypingKey: View {
     }
 }
 
-/// The panel's Link field, raised by `LeafEditor` as a sheet over the editor
-/// while `pendingLinkDestination` is set. Seeded with the caret link's
+/// Leaf's own Link field on iOS, raised by `LeafEditor` as a sheet over the
+/// editor while `pendingLinkDestination` is set — from the row's Link and
+/// the panel's alike. Seeded with the caret link's
 /// destination, so it re-points a link as readily as it makes one.
 struct LinkPromptHost: View {
     @ObservedObject var editor: LeafEditorModel
@@ -449,12 +475,9 @@ private struct LinkPromptSheet: View {
             .presentationDetents([.height(120)])
     }
 
-    /// An empty destination cancels, as the row's field does.
     private func commit() {
-        let destination = typed.trimmingCharacters(in: .whitespacesAndNewlines)
         editor.pendingLinkDestination = nil
-        guard !destination.isEmpty else { return }
-        editor.insertLink(destination)
+        editor.commitLinkDestination(typed)
     }
 }
 
@@ -465,6 +488,7 @@ extension LeafTextView {
     /// machinery would otherwise be left holding a stale selection when the
     /// keyboard comes back.
     func typeFromPanel(_ text: String) {
+        commitMarkedText()
         inputDelegate?.selectionWillChange(self)
         inputDelegate?.textWillChange(self)
         insertText(text)
@@ -474,9 +498,28 @@ extension LeafTextView {
 
     /// Delete backwards as the keyboard would, from the panel.
     func deleteFromPanel() {
+        commitMarkedText()
         inputDelegate?.selectionWillChange(self)
         inputDelegate?.textWillChange(self)
         deleteBackward()
+        inputDelegate?.textDidChange(self)
+        inputDelegate?.selectionDidChange(self)
+    }
+
+    /// Keep an input method's composition as the text it is, and stop
+    /// composing. `insertText` and `deleteBackward` both *replace* a marked
+    /// range, which is right from the keyboard that owns the composition —
+    /// it is committing or cancelling it — and wrong from the panel: a
+    /// Japanese or Chinese phrase half-composed when `Aa` swapped the
+    /// keyboard out would be replaced by a space, or erased whole by one
+    /// Delete. Called as the panel goes up, and again before each of its
+    /// keystrokes in case a composition began in between. The input delegate
+    /// is told, so the keyboard drops its own idea of the composition too.
+    func commitMarkedText() {
+        guard markedTextRange != nil else { return }
+        inputDelegate?.selectionWillChange(self)
+        inputDelegate?.textWillChange(self)
+        unmarkText()
         inputDelegate?.textDidChange(self)
         inputDelegate?.selectionDidChange(self)
     }

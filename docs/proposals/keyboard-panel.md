@@ -30,9 +30,10 @@ differs from the text below:
   fires wherever the window's focus is: ⌘B in a host's sidebar field would
   bold the document. The menu bar's Format menu keeps the chords, gated on
   the focused editor.
-- **The panel's Link asks through a sheet** when no host has claimed
-  `onEditLink`. A popover on the key would go away with the panel, because
-  the field takes focus and the text view resigns.
+- **Link on iOS asks through a sheet**, the row's and the panel's alike,
+  when no host has claimed `onEditLink`. A popover on the key would go away
+  with the panel or the keyboard's accessory, because the field takes focus
+  and the text view resigns. The Mac's bar keeps its popover.
 - **No panel on a Mac.** `Aa` is left off where an iPad or iPhone app runs
   on macOS, because there is no soft keyboard there to stand in for.
 - **The demo app hangs the row over the keyboard on iOS** (`LeafEditor(model:

@@ -26,7 +26,7 @@ import SwiftUI
 
 /// What a tool shows on its target: an SF Symbol, or a short label (Style's
 /// "H1", "Body").
-enum ToolGlyph: Equatable {
+enum ToolGlyph: Hashable {
     case symbol(String)
     case text(String)
 }

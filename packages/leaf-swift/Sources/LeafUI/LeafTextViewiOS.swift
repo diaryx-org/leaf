@@ -1249,6 +1249,9 @@ public final class LeafTextView: UIView, UITextInput {
     var showsFormattingPanel = false {
         didSet {
             guard showsFormattingPanel != oldValue else { return }
+            // The keyboard going away takes its composition with it; keep
+            // what was composed as text (see `commitMarkedText`).
+            if showsFormattingPanel { commitMarkedText() }
             if isFirstResponder { reloadInputViews() }
             onFormattingPanelChange?(showsFormattingPanel)
         }

@@ -74,7 +74,8 @@ final class ToolCatalogueTests: XCTestCase {
 
     #if canImport(UIKit)
     /// The panel takes the keyboard's height for the orientation the window is
-    /// in, and a guess near a phone keyboard's before one has been measured —
+    /// in (by shape here, because a test's windows have no scene — see the
+    /// test after this for the scene's orientation), and a guess near a phone keyboard's before one has been measured —
     /// so a turn to landscape with the panel up doesn't leave a portrait-height
     /// panel over half the screen.
     func testThePanelTakesThisOrientationsKeyboardHeight() throws {
@@ -109,6 +110,48 @@ final class ToolCatalogueTests: XCTestCase {
         XCTAssertTrue(panel.fit(to: view))
         XCTAssertEqual(panel.frame.height, 209)
         XCTAssertEqual(panel.frame.width, 874)
+    }
+
+    /// The keyboard's orientation is the scene's, not the window's shape: an
+    /// iPad window in Split View or Stage Manager can be tall and narrow on a
+    /// landscape screen, and the keyboard under it is the landscape one. The
+    /// shape stands in only where the scene has no orientation to give.
+    func testTheOrientationIsTheScenesNotTheWindowsShape() {
+        let tall = CGRect(x: 0, y: 0, width: 507, height: 1024)
+        let wide = CGRect(x: 0, y: 0, width: 1366, height: 1024)
+        typealias Host = FormattingPanelHost
+        XCTAssertEqual(Host.orientation(interface: .landscapeLeft, bounds: tall), .landscape)
+        XCTAssertEqual(Host.orientation(interface: .landscapeRight, bounds: tall), .landscape)
+        XCTAssertEqual(Host.orientation(interface: .portrait, bounds: wide), .portrait)
+        XCTAssertEqual(Host.orientation(interface: .portraitUpsideDown, bounds: wide), .portrait)
+        XCTAssertEqual(Host.orientation(interface: .unknown, bounds: wide), .landscape)
+        XCTAssertEqual(Host.orientation(interface: nil, bounds: tall), .portrait)
+    }
+
+    /// An input method's composition survives the panel: what was composed
+    /// stays as text, and the panel's Space and Delete act after it rather
+    /// than replacing it — a space for a whole phrase, or the phrase erased
+    /// by one Delete.
+    func testThePanelKeepsAComposition() throws {
+        let view = LeafTextView(doc: try LeafDoc(source: "a\n", format: "markdown"))
+        view.frame = CGRect(x: 0, y: 0, width: 400, height: 300)
+        view.layoutIfNeeded()
+        view.command { $0.selectRange(start: 1, end: 1) }
+        view.setMarkedText("にほん", selectedRange: NSRange(location: 3, length: 0))
+        XCTAssertNotNil(view.markedTextRange)
+
+        view.typeFromPanel(" ")
+        XCTAssertNil(view.markedTextRange)
+        XCTAssertEqual(view.sourceText(), "aにほん \n")
+
+        view.setMarkedText("ごはん", selectedRange: NSRange(location: 3, length: 0))
+        view.deleteFromPanel()
+        XCTAssertEqual(view.sourceText(), "aにほん ごは\n", "Delete takes a character, not the composition")
+
+        view.setMarkedText("で", selectedRange: NSRange(location: 1, length: 0))
+        view.showsFormattingPanel = true
+        XCTAssertNil(view.markedTextRange, "raising the panel commits the composition")
+        XCTAssertEqual(view.sourceText(), "aにほん ごはで\n")
     }
 
     /// A keyboard going away, and a hardware keyboard's accessory-only sliver,
