@@ -6100,6 +6100,11 @@ impl Doc {
     /// Give the list item at the caret a checkbox, or take its checkbox away —
     /// the gesture that converts between a plain bullet and a task. A new box
     /// arrives unticked.
+    ///
+    /// Outside a list the caret's block becomes a bullet first, and the box
+    /// goes on the new item — one undo step. twig's gesture only converts an
+    /// item that is already there, and a Checklist button that did nothing on
+    /// a paragraph read as broken.
     pub fn toggle_task_item(&mut self) {
         // The read-only gate — this door reaches twig without the splice.
         if self.read_only {
@@ -6108,6 +6113,27 @@ impl Doc {
         if self.refuse_unsupported("task", Gesture::ToggleTaskItem) {
             return;
         }
+        if self.innermost_list_item(self.caret.min(self.source.len())).is_none() {
+            if self.refuse_unsupported(
+                "task",
+                Gesture::ToggleBlockContainer(BlockContainerKind::BulletList),
+            ) {
+                return;
+            }
+            self.begin_undo_group();
+            self.toggle_list(false);
+            if self.innermost_list_item(self.caret.min(self.source.len())).is_some() {
+                self.box_item_at_caret();
+            }
+            self.end_undo_group();
+            return;
+        }
+        self.box_item_at_caret();
+    }
+
+    /// twig's half of [`toggle_task_item`](Self::toggle_task_item): the box on
+    /// the item the caret is already in.
+    fn box_item_at_caret(&mut self) {
         let caret = self.caret.min(self.source.len());
         self.record_caret();
         match self.editor.toggle_task_item(caret) {
@@ -11159,6 +11185,27 @@ mod tests {
         d.toggle_task_at(second);
         assert_eq!(d.source, "- [ ] first\n- [x] second\n");
         assert_eq!(d.caret, 8, "the caret stayed in the first item");
+    }
+
+    #[test]
+    fn a_paragraph_becomes_a_task_item_in_one_undo_step() {
+        let mut d = doc_with("task_para", "first\n\nplain para\n");
+        d.caret = d.source.find("para").unwrap();
+        d.toggle_task_item();
+        assert_eq!(d.source, "first\n\n- [ ] plain para\n");
+        assert_eq!(d.task_checked_at_caret(), Some(false));
+        assert_eq!(d.status, None);
+        d.undo();
+        assert_eq!(d.source, "first\n\nplain para\n", "one step takes both back");
+    }
+
+    #[test]
+    fn a_blank_line_becomes_an_empty_task_item() {
+        let mut d = doc_with("task_blank", "first\n\n");
+        d.caret = d.source.len();
+        d.toggle_task_item();
+        assert_eq!(d.task_checked_at_caret(), Some(false), "{:?}", d.source);
+        assert_eq!(d.status, None);
     }
 
     #[test]
