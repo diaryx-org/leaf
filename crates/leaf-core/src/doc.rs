@@ -2950,6 +2950,8 @@ impl Doc {
     ///   - block quote          → likewise: a new paragraph inside the quote
     ///   - heading              → a new *paragraph*, not another heading
     ///   - code block           → a literal newline (stay in the block)
+    ///   - thematic break       → the line under the rule, opened if it has
+    ///                            none ([`stand_under_rule`](Self::stand_under_rule))
     ///   - blank line           → a literal newline (one Backspace undoes it)
     ///   - [`LineFlow::Preserve`] → a single soft break, which renders as a
     ///                            visible line
@@ -3008,6 +3010,14 @@ impl Doc {
             && self.item_is_empty(&marker)
         {
             self.exit_list(&marker);
+            return;
+        }
+        // Beside a rule, at the home past it, the caret's source line is the
+        // blank one under the rule, which the branch below would take for an
+        // empty paragraph. Mid-document its lone newline left the caret on the
+        // next block's first line, and what was typed there joined that block.
+        if let Some(end) = self.rule_above_caret() {
+            self.stand_under_rule(end);
             return;
         }
         // On an *empty* paragraph line, a lone Enter should add a single blank line,
@@ -6609,6 +6619,14 @@ impl Doc {
     /// item nobody asked for on the way to a rule that lands after the list
     /// regardless. A table and a setext heading refuse the split outright, so
     /// they take the same path by themselves.
+    ///
+    /// The caret ends on the line under the rule, which is where the writer
+    /// goes on: at the start of the paragraph's second half when the rule
+    /// parted one, and otherwise on an empty line opened under the rule — see
+    /// [`stand_under_rule`](Self::stand_under_rule). It used to be left at
+    /// the end of what twig wrote, which is the rule's own row: the caret was
+    /// drawn beside the rule, and mid-document the next keystroke joined the
+    /// block below.
     pub fn insert_thematic_break(&mut self) {
         if self.read_only || self.refuse_unsupported("thematic break", Gesture::InsertThematicBreak)
         {
@@ -6623,11 +6641,9 @@ impl Doc {
         self.anchor = None;
         self.record_caret();
         let at = self.caret;
-        if self.caret_parts_bare_paragraph() {
-            // A failure here is not fatal: the rule still lands after the block,
-            // which is exactly what this call was trying to improve on.
-            let _ = self.editor.split_block(at);
-        }
+        // A failure here is not fatal: the rule still lands after the block,
+        // which is exactly what this call was trying to improve on.
+        let parted = self.caret_parts_bare_paragraph() && self.editor.split_block(at).is_ok();
         match self.editor.insert_thematic_break(at) {
             Ok(change) => {
                 self.last_edit_kind = None;
@@ -6638,9 +6654,143 @@ impl Doc {
                 self.status = None;
                 self.clamp_caret();
                 self.record_caret();
+                let rule = self
+                    .nodes()
+                    .into_iter()
+                    .find(|n| n.kind == Kind::ThematicBreak && change.new.contains(&n.span.start));
+                if let Some(rule) = rule {
+                    let (end, _) = wysiwyg::rule_line(&self.source, rule.span.end);
+                    if parted {
+                        // The second half starts at the first text under the
+                        // rule; the split left it no leading whitespace.
+                        let rest = &self.source[end..];
+                        self.caret = end + (rest.len() - rest.trim_start().len());
+                        self.record_caret();
+                    } else if self.stand_under_rule(end) {
+                        // The line it wrote is the rule's, one step with it.
+                        self.coalesce_last_undo();
+                    }
+                }
             }
             Err(e) => self.status = Some(format!("thematic break: {e}")),
         }
+    }
+
+    /// Stand the caret on the line under the thematic break whose text ends at
+    /// `end`, first writing that line if the rule has none — where the rule
+    /// button leaves the caret, and where Enter on a rule takes it. Whether
+    /// anything was written, so a caller can fold it into its own step.
+    ///
+    /// The caret's line is the first under the rule that the view gives a
+    /// home: the second blank line in [`LineFlow::Fold`], which draws the
+    /// first as the gap closing the rule, and the first in
+    /// [`LineFlow::Preserve`], where every blank line is somewhere to type.
+    /// When anything follows, one more blank line has to stand between the
+    /// caret's line and it, or what is typed there runs on into the next
+    /// block. Only what that shape is missing is written. A rule twig wrote on
+    /// a blank line still has the blank lines that were under the caret and
+    /// needs one line more, or none, where a rule written under a paragraph
+    /// needs two.
+    ///
+    /// Blank means blank inside the rule's container: a quote's blank lines
+    /// keep their `>`, and the caret's line wears the quote's whole prefix, as
+    /// the line Enter opens in a quote does. The document's last line, when no
+    /// newline ends it, counts only once a blank line stands above it, since
+    /// only then does the view draw it as a row. Fold always writes the gap
+    /// above it if it isn't there, so there a rule ending the document takes
+    /// one newline more and the caret its end.
+    fn stand_under_rule(&mut self, end: usize) -> bool {
+        let prefix = self.continuation_prefix_at(end);
+        let blank = prefix.trim_end();
+        let gap = usize::from(self.line_flow == LineFlow::Fold);
+        // The blank lines directly under the rule's own, by where each starts,
+        // and whether the line that ends the run has anything on it.
+        let mut blanks = Vec::new();
+        let mut follows = false;
+        let mut at = end;
+        while let Some(nl) = self.source[at..].find('\n') {
+            let start = at + nl + 1;
+            let len = self.source[start..].find('\n');
+            let line = &self.source[start..len.map_or(self.source.len(), |len| start + len)];
+            let line = line.trim_end();
+            if line != blank {
+                follows = !line.trim().is_empty();
+                break;
+            }
+            let Some(len) = len else {
+                if gap > 0 || !blanks.is_empty() {
+                    blanks.push(start);
+                }
+                break;
+            };
+            blanks.push(start);
+            at = start + len;
+        }
+        let missing = (gap + 1 + usize::from(follows)).saturating_sub(blanks.len());
+        // What is missing goes in at the rule's end, above the blank lines
+        // already there, so the caret's line is the same one counted from
+        // the rule either way: written here, or one of those, moved down.
+        let mut text = String::new();
+        let mut caret = None;
+        for line in 1..=missing {
+            text.push('\n');
+            if line == gap + 1 {
+                text.push_str(&prefix);
+                caret = Some(end + text.len());
+            } else {
+                text.push_str(blank);
+            }
+        }
+        let caret = caret.unwrap_or_else(|| {
+            let start = blanks[gap - missing];
+            let line = self.source[start..].split('\n').next().unwrap_or("");
+            start + text.len() + line.trim_end_matches('\r').len().min(prefix.len())
+        });
+        if !text.is_empty() && !self.splice(end, end, &text, EditKind::Other) {
+            return false;
+        }
+        self.caret = caret.min(self.source.len());
+        self.anchor = None;
+        self.goal_col = None;
+        self.record_caret();
+        !text.is_empty()
+    }
+
+    /// The thematic break the caret stands under, as its text's end, when
+    /// Enter there belongs to the rule: the caret at the rule's home past it
+    /// (the start of the line under it), that line blank, and the caret drawn
+    /// on the rule's own row.
+    ///
+    /// Drawn on the rule's row, because the home past a rule is also the start
+    /// of the line under it, and which of the two the view draws it on is the
+    /// flow's. [`LineFlow::Fold`] draws that line as the gap under the rule,
+    /// no caret's home, so the caret is beside the rule. [`LineFlow::Preserve`]
+    /// makes every blank line a home, so it draws the caret there and Enter is
+    /// an ordinary blank line's — unless it is the document's unterminated
+    /// last line, which is no row in either flow.
+    fn rule_above_caret(&mut self) -> Option<usize> {
+        let caret = self.caret.min(self.source.len());
+        let above = self.source[..caret].strip_suffix('\n')?;
+        let above_start = above.rfind('\n').map_or(0, |i| i + 1);
+        let text = above[above_start..].trim_end();
+        let (last, _) = text.char_indices().next_back()?;
+        let rule = self
+            .editor
+            .ancestors_at(above_start + last)
+            .ok()?
+            .into_iter()
+            .find(|m| m.kind == Kind::ThematicBreak)?;
+        let (end, home) = wysiwyg::rule_line(&self.source, rule.span.end);
+        if home != caret {
+            return None;
+        }
+        let blank = self.continuation_prefix_at(end);
+        let line_end = self.source[caret..].find('\n').map(|i| caret + i);
+        let line = &self.source[caret..line_end.unwrap_or(self.source.len())];
+        if line.trim_end() != blank.trim_end() && !line.trim().is_empty() {
+            return None;
+        }
+        (self.line_flow == LineFlow::Fold || line_end.is_none()).then_some(end)
     }
 
     /// Insert a fresh table at the caret — the toolbar's Table button. One
@@ -11285,24 +11435,29 @@ mod tests {
         // because the two reach the split through different doors: Markdown's
         // paragraph span stops before its newline, so `para\n` at 4 never split
         // there, but `para` at 4 did.
+        //
+        // What stands under the rule is the line the caret goes on to, not a
+        // slot: nothing above the rule but the one blank line, and the caret on
+        // the line beneath it.
         for (fmt, rule) in [(Format::Markdown, "---"), (Format::Djot, "* * *")] {
             for src in ["para\n", "para"] {
                 let mut d = Doc::from_source(src.into(), fmt).unwrap();
                 d.caret = 4;
                 d.insert_thematic_break();
-                assert_eq!(d.source, format!("para\n\n{rule}\n"), "{fmt:?} {src:?}");
+                assert_eq!(d.source, format!("para\n\n{rule}\n\n"), "{fmt:?} {src:?}");
                 assert_eq!(d.caret, d.source.len());
             }
-            // Mid-document the slot sat between the rule and the next block.
+            // Mid-document the slot sat between the rule and the next block;
+            // the caret's line does now, a blank line either side of it.
             let mut d = Doc::from_source("para\n\nnext\n".into(), fmt).unwrap();
             d.caret = 4;
             d.insert_thematic_break();
-            assert_eq!(d.source, format!("para\n\n{rule}\n\nnext\n"), "{fmt:?}");
+            assert_eq!(d.source, format!("para\n\n{rule}\n\n\n\nnext\n"), "{fmt:?}");
             // Trailing whitespace is nothing to part either.
             let mut d = Doc::from_source("para  \n".into(), fmt).unwrap();
             d.caret = 4;
             d.insert_thematic_break();
-            assert_eq!(d.source, format!("para  \n\n{rule}\n"), "{fmt:?}");
+            assert_eq!(d.source, format!("para  \n\n{rule}\n\n"), "{fmt:?}");
         }
     }
 
@@ -11328,11 +11483,149 @@ mod tests {
     #[test]
     fn insert_thematic_break_on_a_blank_line_takes_that_line() {
         // The gap between two blocks is where a click lands the caret; the
-        // rule goes on the blank, one blank each side.
+        // rule goes on the blank, one blank each side, and the caret on the
+        // line opened under it.
         let mut d = doc_with("hr_gap", "a\n\nb\n");
         d.caret = 2;
         d.insert_thematic_break();
-        assert_eq!(d.source, "a\n\n---\n\nb\n");
+        assert_eq!(d.source, "a\n\n---\n\n\n\nb\n");
+        assert_eq!(d.caret, "a\n\n---\n\n".len());
+    }
+
+    #[test]
+    fn insert_thematic_break_leaves_the_caret_on_a_line_under_the_rule() {
+        // The caret used to be left where twig's splice ended, the home past
+        // the rule, which is drawn on the rule's own row: the writer saw the
+        // caret beside the rule, and mid-document what they typed next ran
+        // into the block below. Now it goes on to an empty row under the
+        // rule's gap from every place a rule is asked for — the end of a
+        // paragraph, the empty paragraph Enter opened, a list and the line
+        // Enter leaves a list for, closing the document and before another
+        // block — and what is typed there is a paragraph of its own.
+        for (body, caret, typed) in [
+            ("para\n", 4, "para\n\n---\n\nX"),
+            ("para\n\n\n", 6, "para\n\n---\n\nX"),
+            ("- one\n- two\n", 11, "- one\n- two\n\n---\n\nX"),
+            ("- one\n- two\n\n\n", 13, "- one\n- two\n\n---\n\nX"),
+            ("a\n\nb\n", 1, "a\n\n---\n\nX\n\nb\n"),
+            ("a\n\n\n\nb\n", 3, "a\n\n---\n\nX\n\nb\n"),
+        ] {
+            let mut d = wysiwyg_doc("hr_caret", body);
+            d.build_visual(80);
+            d.caret = caret;
+            d.insert_thematic_break();
+            d.build_visual(80);
+            let rule = d.vmap.pos_of_offset(d.source.find("---").unwrap()).0;
+            let (row, col) = d.vmap.pos_of_offset(d.caret);
+            assert_eq!((row, col), (rule + 2, 0), "{body:?} → {:?}", d.source);
+            assert!(d.vmap.rows[rule + 1].decoration, "the gap under the rule");
+            assert!(d.vmap.rows[row].glyphs.is_empty(), "an empty line");
+            d.insert("X");
+            assert_eq!(d.source, typed, "{body:?}");
+            let rule_at = d.source.find("---").unwrap();
+            assert_eq!(kind_at(&mut d, rule_at), Some(Kind::ThematicBreak));
+        }
+        // djot's rule takes in its newline; the line under it is the same.
+        let mut d = Doc::from_source("a\n\nb\n".into(), Format::Djot).unwrap();
+        d.view = View::Wysiwyg;
+        d.caret = 1;
+        d.insert_thematic_break();
+        d.build_visual(80);
+        assert_eq!(d.source, "a\n\n* * *\n\n\n\nb\n");
+        assert_eq!(d.vmap.pos_of_offset(d.caret), (4, 0));
+    }
+
+    #[test]
+    fn a_rule_parting_a_paragraph_leaves_the_caret_before_its_second_half() {
+        // The line under the rule is the paragraph's second half, so that is
+        // where the caret goes: the text it was standing in front of is still
+        // in front of it.
+        let mut d = wysiwyg_doc("hr_parted", "before after\n");
+        d.caret = 7;
+        d.insert_thematic_break();
+        assert_eq!(d.source, "before \n\n---\n\nafter\n");
+        assert_eq!(d.caret, d.source.find("after").unwrap());
+        // At the start of a paragraph too, the rule landing above it.
+        let mut d = wysiwyg_doc("hr_parted_start", "prev\n\npara\n");
+        d.caret = 6;
+        d.insert_thematic_break();
+        assert_eq!(d.caret, d.source.find("para").unwrap());
+    }
+
+    #[test]
+    fn the_line_under_a_new_rule_is_one_undo_step_with_it() {
+        let mut d = wysiwyg_doc("hr_undo", "a\n\nb\n");
+        d.caret = 1;
+        d.insert_thematic_break();
+        assert_eq!(d.source, "a\n\n---\n\n\n\nb\n");
+        d.undo();
+        assert_eq!(d.source, "a\n\nb\n");
+        assert!(!d.can_undo());
+        d.redo();
+        assert_eq!(d.source, "a\n\n---\n\n\n\nb\n");
+    }
+
+    #[test]
+    fn a_rule_in_preserve_flow_leaves_the_caret_on_the_first_line_under_it() {
+        // Preserve draws every blank line as somewhere to type, the first under
+        // the rule included, so that is the caret's line and the one written.
+        let mut d = wysiwyg_doc("hr_preserve", "para\n");
+        d.set_line_flow(LineFlow::Preserve);
+        d.caret = 4;
+        d.insert_thematic_break();
+        assert_eq!(d.source, "para\n\n---\n\n");
+        assert_eq!(d.caret, "para\n\n---\n".len());
+        d.build_visual(80);
+        let rule = d.vmap.pos_of_offset(d.source.find("---").unwrap()).0;
+        assert_eq!(d.vmap.pos_of_offset(d.caret), (rule + 1, 0));
+        // Before another block, one blank line more keeps it off that block.
+        let mut d = wysiwyg_doc("hr_preserve_mid", "a\n\nb\n");
+        d.set_line_flow(LineFlow::Preserve);
+        d.caret = 1;
+        d.insert_thematic_break();
+        assert_eq!(d.source, "a\n\n---\n\n\nb\n");
+        assert_eq!(d.caret, "a\n\n---\n".len());
+    }
+
+    #[test]
+    fn enter_beside_a_rule_opens_a_line_under_it() {
+        // Beside a rule the caret stands at the home past it, which in source is
+        // the start of the blank line under the rule, and Enter took it for an
+        // empty paragraph: a lone newline, drawn as one more gap, and the caret
+        // put on the next block's first line — where typing joined that block.
+        // It goes on under the rule instead, as the rule button leaves it.
+        let mut d = wysiwyg_doc("enter_rule", "a\n\n---\n\nb\n");
+        d.build_visual(80);
+        d.caret = "a\n\n---\n".len();
+        d.newline();
+        assert_eq!(d.source, "a\n\n---\n\n\n\nb\n");
+        assert_eq!(d.caret, "a\n\n---\n\n".len());
+        d.insert("X");
+        assert_eq!(d.source, "a\n\n---\n\nX\n\nb\n");
+
+        // Closing the document.
+        let mut d = wysiwyg_doc("enter_rule_end", "a\n\n---\n");
+        d.caret = d.source.len();
+        d.newline();
+        assert_eq!(d.source, "a\n\n---\n\n");
+        assert_eq!(d.caret, d.source.len());
+
+        // In a quote, where the lines it writes keep the quote's prefix.
+        let mut d = wysiwyg_doc("enter_rule_quote", "> a\n>\n> ---\n>\n> b\n");
+        d.caret = "> a\n>\n> ---\n".len();
+        d.newline();
+        assert_eq!(d.source, "> a\n>\n> ---\n>\n> \n>\n> b\n");
+        d.insert("X");
+        assert_eq!(d.source, "> a\n>\n> ---\n>\n> X\n>\n> b\n");
+
+        // Preserve draws the blank line under a rule as a line, and the caret
+        // on it: Enter there is a blank line's, one line down.
+        let mut d = wysiwyg_doc("enter_rule_preserve", "a\n\n---\n\nb\n");
+        d.set_line_flow(LineFlow::Preserve);
+        d.caret = "a\n\n---\n".len();
+        d.newline();
+        assert_eq!(d.source, "a\n\n---\n\n\nb\n");
+        assert_eq!(d.caret, "a\n\n---\n\n".len());
     }
 
     #[test]
@@ -11670,10 +11963,10 @@ mod tests {
                 "code",
                 "```\nfn x() {}\n```\n",
                 8,
-                "```\nfn x() {}\n```\n\n---\n",
+                "```\nfn x() {}\n```\n\n---\n\n",
             ),
-            ("list", "- one two\n", 6, "- one two\n\n---\n"),
-            ("quote", "> one two\n", 6, "> one two\n>\n> ---\n"),
+            ("list", "- one two\n", 6, "- one two\n\n---\n\n"),
+            ("quote", "> one two\n", 6, "> one two\n>\n> ---\n>\n> \n"),
         ] {
             let mut d = doc_with(&format!("hr_narrow_{name}"), body);
             d.caret = caret;
@@ -11704,13 +11997,13 @@ mod tests {
         let mut code = doc_with("hr_code", "```\nfn x() {}\n```\n");
         code.caret = 5; // inside the fenced code
         code.insert_thematic_break();
-        assert_eq!(code.source, "```\nfn x() {}\n```\n\n---\n");
+        assert_eq!(code.source, "```\nfn x() {}\n```\n\n---\n\n");
         assert_eq!(code.status, None, "no refusal to report any more");
 
         let mut table = doc_with("hr_table", "| a | b |\n|---|---|\n| 1 | 2 |\n");
         table.caret = 3; // in the header row
         table.insert_thematic_break();
-        assert_eq!(table.source, "| a | b |\n|---|---|\n| 1 | 2 |\n\n---\n");
+        assert_eq!(table.source, "| a | b |\n|---|---|\n| 1 | 2 |\n\n---\n\n");
     }
 
     #[test]
@@ -11734,11 +12027,14 @@ mod tests {
     #[test]
     fn insert_thematic_break_in_a_blockquote_stays_in_the_quote() {
         // Leaf used to end the quote. twig gives the rule the quote's own prefix,
-        // which is the document the gesture was actually asked for.
+        // which is the document the gesture was actually asked for — and the
+        // line the caret goes on to under it wears the prefix too, as the line
+        // Enter opens in a quote does.
         let mut d = doc_with("hr_quote", "> hello\n");
         d.caret = 4; // inside the quoted text
         d.insert_thematic_break();
-        assert_eq!(d.source, "> hello\n>\n> ---\n");
+        assert_eq!(d.source, "> hello\n>\n> ---\n>\n> \n");
+        assert_eq!(d.caret, "> hello\n>\n> ---\n>\n> ".len());
         d.build_visual(80);
         let rule_at = d.source.find("---").unwrap();
         assert_eq!(kind_at(&mut d, rule_at), Some(Kind::ThematicBreak));
