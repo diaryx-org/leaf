@@ -39,8 +39,9 @@ import SwiftUI
 /// the vocabulary has no `left` token and absence is the theme's default.
 ///
 /// `shortcuts` adds ⌘{ ⌘| ⌘}, the Mac's own alignment chords: true in the menu
-/// bar, which is where a shortcut belongs, and false in the bar's own menu, so
-/// the same chord isn't registered twice by two views of one list.
+/// bar and in the macOS formatting bar's Align menu, where the hint beside a row
+/// is how a reader learns the chord (both registrations call the same command,
+/// so a chord still acts once), and false on iOS, whose menus are for touch.
 struct AlignmentRows: View {
     @ObservedObject var editor: LeafEditorModel
     var shortcuts = false
