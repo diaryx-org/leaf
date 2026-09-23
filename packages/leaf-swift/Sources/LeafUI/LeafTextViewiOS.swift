@@ -572,6 +572,10 @@ public final class LeafTextView: UIView, UITextInput {
     public var isReadOnly: Bool = false {
         didSet {
             guard isReadOnly != oldValue else { return }
+            // A reader has no keyboard, and so nothing for the panel to
+            // stand in for; left up, it would come back the moment the
+            // document was made editable again, unasked.
+            if isReadOnly { showsFormattingPanel = false }
             removeInteraction(textInteraction)
             let interaction = UITextInteraction(for: isReadOnly ? .nonEditable : .editable)
             interaction.textInput = self
@@ -1225,7 +1229,43 @@ public final class LeafTextView: UIView, UITextInput {
     /// suppressing it takes an explicit empty view — becoming first responder
     /// (which copy and the edit menu still need) must not raise a keyboard the
     /// document would refuse every key of.
-    public override var inputView: UIView? { isReadOnly ? UIView() : nil }
+    ///
+    /// Otherwise the formatting panel while it is up (see
+    /// `FormattingPanel.swift`), and the system keyboard the rest of the time.
+    public override var inputView: UIView? {
+        if isReadOnly { return UIView() }
+        return showsFormattingPanel ? formattingPanel : nil
+    }
+
+    /// The key grid that can stand in for the keyboard, made the first time it
+    /// is asked for (`LeafEditorModel.setFormattingPanelShown`) and kept, so a
+    /// second press of `Aa` shows the same panel rather than building another.
+    var formattingPanel: UIView?
+
+    /// Whether the panel is the input view. Setting it re-reads the input
+    /// views — the one call that swaps what stands under the accessory without
+    /// the view resigning, so the caret, the selection and the accessory all
+    /// stay where they are.
+    var showsFormattingPanel = false {
+        didSet {
+            guard showsFormattingPanel != oldValue else { return }
+            if isFirstResponder { reloadInputViews() }
+            onFormattingPanelChange?(showsFormattingPanel)
+        }
+    }
+
+    /// Told when `showsFormattingPanel` changes, including when the view
+    /// resigns with the panel up — the model's published flag follows it.
+    var onFormattingPanelChange: ((Bool) -> Void)?
+
+    /// Put the panel away with the keyboard. A view that becomes first
+    /// responder again gets the keyboard, which is what a reader tapping back
+    /// into the text expects; the panel is one press of `Aa` away.
+    public override func resignFirstResponder() -> Bool {
+        let resigned = super.resignFirstResponder()
+        if resigned { showsFormattingPanel = false }
+        return resigned
+    }
 
     private func off(_ p: UITextPosition) -> Int { (p as? LeafTextPosition)?.offset ?? 0 }
 

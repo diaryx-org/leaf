@@ -245,8 +245,9 @@ private struct FormatMenuItems: View {
         // The presentation vocabulary, under the block kinds it decorates and
         // above the list structure: how the block is laid, and how its letters
         // are set. The rows are the ones the formatting bar's own menus drop —
-        // one definition, as with the highlight colours above — with the
-        // Mac's own shortcuts, which the macOS bar's copies show too.
+        // one definition, as with the highlight colours above — and the
+        // shortcuts are the Mac's own, which is why the bar's copies don't
+        // carry them.
         Menu(loc("menu.alignment", "Alignment")) {
             AlignmentRows(editor: editor, shortcuts: true)
         }

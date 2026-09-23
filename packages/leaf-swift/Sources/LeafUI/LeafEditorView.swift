@@ -205,6 +205,82 @@ public final class LeafEditorModel: ObservableObject {
     }
     #endif
 
+    #if canImport(UIKit)
+    /// Whether leaf's formatting panel stands where the keyboard would — the
+    /// key grid `LeafFormattingToolbar`'s `Aa` raises. Published, so a host's
+    /// own `Aa` can light by it as the toolbar's does.
+    ///
+    /// False again whenever the editor stops being first responder: the next
+    /// tap into the text brings the keyboard, not the panel.
+    @Published public private(set) var isFormattingPanelShown = false
+
+    /// Show the formatting panel in the keyboard's place, or put the keyboard
+    /// back. The editor stays first responder throughout, so the caret, the
+    /// selection and whatever accessory the host hung above the keyboard all
+    /// survive the swap. Does nothing on a reader, or before the editor is on
+    /// screen.
+    ///
+    /// For a host that draws its own accessory and wants leaf's panel under
+    /// it; `LeafFormattingToolbar` calls this from its `Aa`.
+    ///
+    /// Does nothing on a Mac either (an iPad app under Catalyst, an iPhone app
+    /// on Apple silicon), where there is no soft keyboard to stand in for.
+    public func setFormattingPanelShown(_ shown: Bool) {
+        guard let textView, !isReadOnly else { return }
+        guard !shown || FormattingPanelHost.isAvailable else { return }
+        if shown {
+            let panel = textView.formattingPanel as? FormattingPanelHost
+                ?? FormattingPanelHost(editor: self)
+            panel.fit(to: textView)
+            textView.formattingPanel = panel
+        }
+        // The flag before the focus: a view that becomes first responder with
+        // the flag already up raises the panel, where one that became first
+        // responder first would raise the keyboard and then swap it out.
+        textView.showsFormattingPanel = shown
+        if shown, !textView.isFirstResponder { _ = textView.becomeFirstResponder() }
+    }
+
+    /// Fit the panel to the window again after a rotation or a resize, and
+    /// re-read the input views if its height moved: the keyboard it stands
+    /// in for is a different height in landscape.
+    func refitFormattingPanel() {
+        guard let textView, textView.showsFormattingPanel,
+              let panel = textView.formattingPanel as? FormattingPanelHost,
+              panel.fit(to: textView), textView.isFirstResponder else { return }
+        textView.reloadInputViews()
+    }
+
+    /// The Link fallback's destination, seed and all, while the field is up;
+    /// nil otherwise. The panel's Link sets it when no host has claimed the
+    /// question, and `LeafEditor` raises the field as a sheet — see the
+    /// panel's `beginLink` for why not a popover on the key.
+    @Published var pendingLinkDestination: String?
+
+    /// `setFormattingPanelShown(!isFormattingPanelShown)`.
+    public func toggleFormattingPanel() {
+        setFormattingPanelShown(!(textView?.showsFormattingPanel ?? false))
+    }
+
+    /// The panel's Space and Return: through the text view's own
+    /// `insertText`, so they are the keystrokes the keyboard sends — the same
+    /// undo steps, the same list continuation on Return, the same cell step in
+    /// a table.
+    func typeFromPanel(_ text: String) { textView?.typeFromPanel(text) }
+    /// The panel's Delete, through `deleteBackward` for the same reason.
+    func deleteFromPanel() { textView?.deleteFromPanel() }
+
+    /// The text view says the panel went up or down. Published a turn later:
+    /// a resign can arrive inside a SwiftUI update, where publishing is what
+    /// the view system forbids.
+    fileprivate func formattingPanelChanged(_ shown: Bool) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.isFormattingPanelShown != shown else { return }
+            self.isFormattingPanelShown = shown
+        }
+    }
+    #endif
+
     /// Paint host ranges over the source — annotation footprints, search
     /// hits. The whole set each time (see `leaf_core::Doc::set_highlights`);
     /// safe to call before the view exists, since the doc holds them and the
@@ -1388,6 +1464,9 @@ public struct LeafEditor: View {
             // The one place an *Other…* field is raised, from either surface
             // that offers the row — see `PresentationOther.swift`.
             .presentingOtherValues(model)
+            // And the formatting panel's Link field, for the same reason: the
+            // key that asked is gone by the time the field is up.
+            .background(LinkPromptHost(editor: model))
     }
 }
 
@@ -1442,6 +1521,17 @@ final class LeafEditorController: UIViewController {
         updateFill()
     }
 
+    /// Told when the window turns or resizes: a formatting panel that is up
+    /// takes the height of this orientation's keyboard, once the turn has
+    /// landed and the window has its new size.
+    var onTransition: (() -> Void)?
+
+    override func viewWillTransition(to size: CGSize,
+                                     with coordinator: UIViewControllerTransitionCoordinator) {
+        super.viewWillTransition(to: size, with: coordinator)
+        coordinator.animate(alongsideTransition: nil) { [weak self] _ in self?.onTransition?() }
+    }
+
     private func keyboardWillChangeFrame(_ note: Notification) {
         guard let info = note.userInfo, let window = view.window,
               let end = (info[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue
@@ -1452,6 +1542,11 @@ final class LeafEditorController: UIViewController {
         // keyboard's frame sits below the screen, so its overlap is nothing.
         let inView = view.convert(window.convert(end, from: nil), from: window)
         let overlap = max(0, view.bounds.maxY - inView.minY)
+        // The system keyboard's own height, for the formatting panel to take
+        // its place at — measured only while it *is* the system keyboard.
+        if let textView, textView.isFirstResponder, !textView.showsFormattingPanel, !textView.isReadOnly {
+            FormattingPanelHost.noteKeyboard(frame: end, accessory: textView.inputAccessoryView, in: window)
+        }
         // The safe area under the frame is already an inset (`adjustedContentInset`
         // adds it); the keyboard covers that band too, so count it once.
         let inset = max(0, overlap - view.safeAreaInsets.bottom)
@@ -1568,6 +1663,7 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
         attachAccessory(to: textView, context: context)
 
         let controller = LeafEditorController()
+        controller.onTransition = { [weak model] in model?.refitFormattingPanel() }
         let scroll = controller.scroll
         scroll.alwaysBounceVertical = true
         scroll.keyboardDismissMode = .interactive
@@ -1758,7 +1854,10 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
         textView.isReadOnly = model.isReadOnly
         textView.selectionMenuActions = model.selectionMenuBridge
         textView.onTapHighlight = model.tapHighlightBridge
+        textView.onFormattingPanelChange = { [weak model] shown in model?.formattingPanelChanged(shown) }
         model.textView = textView
+        // A new view starts on the keyboard, whatever the one it replaces had.
+        model.formattingPanelChanged(false)
         // A locator the host followed before there was anything to scroll — see
         // the AppKit peer for why this waits a turn.
         if let landing = model.takePendingLanding() {
