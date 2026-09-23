@@ -1,7 +1,8 @@
 //  ToolbarPagingTests.swift
 //
-//  The `.bar` style's paging arithmetic — which groups fit a width, and where a
-//  remembered page lands when the count changes. Driven with round numbers
+//  The `.bar` style's paging arithmetic — which groups fit a width, how wide a
+//  group of unequal targets is, and where a remembered page lands when the
+//  count changes. Driven with round numbers
 //  rather than the bar's own metrics, so a failure reads as arithmetic rather
 //  than as a point size.
 
@@ -60,6 +61,41 @@ final class ToolbarPagingTests: XCTestCase {
         let two: [CGFloat] = [100, 100]
         XCTAssertEqual(paging.pages(of: two, in: 230), [[0, 1]])
         XCTAssertEqual(paging.pages(of: two, in: 229), [[0], [1]])
+    }
+
+    func testGapsNeedNotBeSeparators() {
+        // The Mac's categories: a wide Style button, then two glyph
+        // categories, with 4 of space between each rather than a hairline.
+        // 80 + 4 + 35 + 4 + 35 = 158 across, 178 with the padding.
+        let widths: [CGFloat] = [80, 35, 35]
+        let gaps: [CGFloat] = [4, 4]
+        XCTAssertEqual(paging.pages(of: widths, gaps: gaps, in: 178), [[0, 1, 2]])
+        // A point short, it pages: 177 - 20 - 10 - 50 = 97 per page. Style
+        // alone is 80, and a category beside it (80 + 4 + 35 = 119) is not;
+        // the two categories together (35 + 4 + 35 = 74) are.
+        XCTAssertEqual(paging.pages(of: widths, gaps: gaps, in: 177), [[0], [1, 2]])
+    }
+
+    func testAGapAtAPageBreakIsNotCounted() {
+        // A 40-wide gap would push the second group off a page it fits on
+        // alone; at the break it is not drawn, so it is not counted.
+        // 240 - 20 - 10 - 50 = 160 per page: 100, then 150 on a page of its own.
+        XCTAssertEqual(paging.pages(of: [100, 150], gaps: [40], in: 240), [[0], [1]])
+    }
+
+    func testTheSeparatorFormIsEveryGapASeparator() {
+        let gaps = Array(repeating: CGFloat(10), count: widths.count - 1)
+        for available: CGFloat in [100, 240, 329, 330, 1000] {
+            XCTAssertEqual(paging.pages(of: widths, in: available),
+                           paging.pages(of: widths, gaps: gaps, in: available))
+        }
+    }
+
+    func testAGroupOfUnequalTargetsIsSummed() {
+        // A Style button that spells its name, beside a glyph and its ▾.
+        XCTAssertEqual(ToolbarPaging.span(of: [83, 35], spacing: 1), 119)
+        XCTAssertEqual(ToolbarPaging.span(of: [26], spacing: 1), 26)
+        XCTAssertEqual(ToolbarPaging.span(of: [], spacing: 1), 0)
     }
 
     func testClampKeepsAPageThatStillExists() {
