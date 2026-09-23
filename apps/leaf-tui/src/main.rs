@@ -2323,6 +2323,17 @@ mod tests {
     /// (`Delete`) and underline (`Insert`) marks aren't representable in
     /// Markdown (`toggle` reports "unsupported format" there), so the tests
     /// that exercise ⌥d/⌥u need a format that actually has syntax for them.
+    fn doc_with_html(name: &str, body: &str) -> Doc {
+        let mut p = std::env::temp_dir();
+        p.push(format!("leaf_tui_test_{name}.html"));
+        std::fs::write(&p, body).unwrap();
+        let mut doc = Doc::open(p).unwrap();
+        doc.build_visual(80);
+        doc.body_origin = (0, 1);
+        doc.body_height = 10;
+        doc
+    }
+
     fn doc_with_dj(name: &str, body: &str) -> Doc {
         let mut p = std::env::temp_dir();
         p.push(format!("leaf_tui_test_{name}.dj"));
@@ -4394,13 +4405,11 @@ mod tests {
             lvl.items[lvl.selected].label()
         };
         // Up from Paragraph wraps to the last row this *Markdown* document can
-        // actually run — Strikethrough, since underline is the one inline row
-        // below it and `+underline+` is djot's alone — never landing on the
-        // "Inline" header on the way. Highlight and strikethrough both moved
-        // onto the near side of that line with twig 3.3.1; before it, the wrap
-        // landed on Code.
+        // actually run — Underline, since twig 3.10 spells it `<u>x</u>` —
+        // never landing on the "Block" header on the way. Before 3.3.1 the wrap
+        // landed on Code, and before 3.10 on Strikethrough.
         handle_key(&mut doc, keyp(KeyCode::Up), &mut app);
-        assert_eq!(row(&app), "Strikethrough");
+        assert_eq!(row(&app), "Underline");
         // Down from there wraps past the "Block" header back to Paragraph.
         handle_key(&mut doc, keyp(KeyCode::Down), &mut app);
         assert_eq!(row(&app), "Paragraph");
@@ -4806,11 +4815,11 @@ mod tests {
     /// surprising.
     #[test]
     fn the_palette_will_not_run_a_command_this_format_cannot_spell() {
-        let mut doc = doc_with("palette_gated", "hello\n"); // Markdown
+        let mut doc = doc_with_html("palette_gated", "<p>hello</p>\n");
         let mut app = App::default();
         let before = doc.source.clone();
         handle_key(&mut doc, alt('p'), &mut app);
-        for c in "underline".chars() {
+        for c in "footnote".chars() {
             handle_key(&mut doc, plain(c), &mut app);
         }
         let palette = app.palette.as_ref().unwrap();
@@ -4818,8 +4827,8 @@ mod tests {
             palette
                 .rows
                 .iter()
-                .any(|r| r.command == Command::Inline(InlineKind::Insert) && !r.enabled),
-            "the djot-only underline should be listed and dimmed in Markdown"
+                .any(|r| r.command == Command::Footnote && !r.enabled),
+            "the footnote HTML cannot write should be listed and dimmed"
         );
         handle_key(&mut doc, keyp(KeyCode::Enter), &mut app);
         assert_eq!(doc.source, before);
@@ -4919,13 +4928,13 @@ mod tests {
 
     #[test]
     fn a_dimmed_row_is_drawn_but_not_run_by_a_click() {
-        // Markdown spells no underline, so the Format flyout's Underline row is
+        // HTML has no task box, so the Format flyout's Checklist Item row is
         // dimmed — and clicking it must leave both the menu and the document as
-        // they were. (The Highlight row stood here until twig 3.3.1 made it
-        // authorable in Markdown.)
-        let mut doc = doc_with("menu_dimmed_click", "hello\n");
-        doc.anchor = Some(0);
-        doc.caret = 5;
+        // they were. (Markdown's Highlight row stood here until twig 3.3.1 made
+        // it authorable, and its Underline row until 3.10 did the same.)
+        let mut doc = doc_with_html("menu_dimmed_click", "<p>hello</p>\n");
+        doc.anchor = Some(3);
+        doc.caret = 8;
         let mut app = App::default();
         let before = doc.source.clone();
         open_format(&mut doc, &mut app);
@@ -4934,7 +4943,7 @@ mod tests {
         let rect = app.context_menu.as_ref().unwrap().levels[1].rect.unwrap();
         let row = FORMAT_MENU
             .iter()
-            .position(|e| e.label() == "Underline")
+            .position(|e| e.label() == "Checklist Item")
             .unwrap() as u16;
         handle_mouse(&mut doc, left_down(rect.y + row, rect.x + 1), &mut app);
         assert!(

@@ -225,7 +225,7 @@ shut — so this is a guarantee rather than a suppressed keyboard.
 | `Shift`+move | extend the selection |
 | click / drag | place / drag the caret — a click under the last block lands on a blank line beneath it, opening one if need be |
 | `⌥b` / `⌥i` / `⌥c` | toggle **bold** / *italic* / `code` on the selection |
-| `⌥m` / `⌥d` / `⌥u` | toggle highlight / strikethrough / underline (underline is Djot's alone) |
+| `⌥m` / `⌥d` / `⌥u` | toggle highlight / strikethrough / underline |
 | `⌥1`…`⌥6` | make the block at the caret a heading of that level |
 | `⌥0` | make it a paragraph |
 | `⌥7` / `⌥8` / `⌥9` | numbered list / bulleted list / quote |
@@ -297,12 +297,12 @@ yet, one press does both: the highlight and its colour, as a single undo step.
 The palette, the context menu, and the key reference are all generated from one
 command table (`apps/leaf-tui/src/commands.rs`), so a command cannot gain a key
 without gaining a menu row and a line in the help. Every one of those surfaces
-also **dims what the document's format cannot spell** — a footnote in an HTML
-file, `+underline+` in a Markdown one — rather than hiding it, so what a format
-can't do stays legible instead of merely absent. What that line no longer
-separates is the highlight: leaf both renders *and* writes `==text==` in
-Markdown as of twig 3.3.1, and `~~struck~~` with it. The gate is real and worth
-stating, because it is what makes the button honest — twig will only author
+also **dims what the document's format cannot spell** — a footnote or a task
+box in an HTML file — rather than hiding it, so what a format can't do stays
+legible instead of merely absent. What that line no longer separates is the
+highlight: leaf both renders *and* writes `==text==` in Markdown as of twig
+3.3.1, and `~~struck~~` with it, and as of twig 3.10 `<u>underline</u>` too.
+The gate is real and worth stating, because it is what makes the button honest — twig will only author
 bytes the document's own reparse reads back, and leaf parses every document with
 the `highlight` extension (`==🔴 text==`, colour and all), so `⌥m` writes a
 highlight that is still a highlight when the file is opened again.

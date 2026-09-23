@@ -79,8 +79,8 @@ struct ToolCatalogue {
         mark("italic", .symbol("italic"), loc("menu.italic", "Italic"), "italic") { editor.toggleItalic() }
     }
 
-    /// Dark in Markdown, which has no underline to write. djot's `{+text+}`
-    /// has no Markdown spelling, even under leaf's extensions.
+    /// Lit wherever the format spells one: djot's `{+text+}`, Markdown's
+    /// `<u>text</u>` (under leaf's `html_elements`), HTML's `<ins>`.
     var underline: ToolItem {
         var item = mark("underline", .symbol("underline"), loc("menu.underline", "Underline"), "underline") { editor.toggleUnderline() }
         item.enabled = editor.capabilities.underline
