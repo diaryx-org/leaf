@@ -2,13 +2,14 @@
 title: Proposals
 description: Arguments for a change to leaf, one file each — a case that may lose
 created: 2026-09-07
-updated: 2026-09-19
+updated: 2026-09-23
 contents:
 - '[HTML containers leaf does not author fold to atoms](html-containers-fold-to-atoms.md)'
 - '[Math in leaf](math-rendering.md)'
 - '[SVG as vectors in leaf-swift, through usvg](svg-as-vectors-on-apple.md)'
 - '[A presentation vocabulary](presentation-vocabulary.md)'
 - '[Exact values beside the presentation names](exact-presentation-values.md)'
+- '[A short row, a keyboard panel, and categories on the Mac](keyboard-panel.md)'
 part_of: '[leaf](/README.md)'
 ---
 # Proposals
