@@ -709,6 +709,10 @@ pub struct Doc {
     /// The undo group a host has open, if any — see
     /// [`begin_undo_group`](Self::begin_undo_group). `None` outside one.
     undo_group: Option<UndoGroup>,
+    /// Make the next literal insert fail as twig would refuse one — a test's
+    /// way to reach the rollback no document provokes.
+    #[cfg(test)]
+    refuse_next_literal: bool,
     /// What `vmap` was built from, or `None` before the first build. The map is
     /// a pure function of `(revision, wrap, reveal line)`, so when those haven't
     /// moved, rebuilding it produces the identical map — see
@@ -1192,6 +1196,8 @@ impl Doc {
             undo_steps: 0,
             redo_steps: 0,
             undo_group: None,
+            #[cfg(test)]
+            refuse_next_literal: false,
             // No map yet — the first `build_visual` always builds.
             vmap_key: None,
             screen: None,
@@ -1918,12 +1924,14 @@ impl Doc {
         let before = self.source.len();
         let (caret, anchor) = (self.caret, self.anchor);
         let (pending_marks, pending_at) = (self.pending_marks, self.pending_at);
+        let group_had_step = self.undo_group.map(|g| g.has_step);
         self.last_edit_kind = None;
         let literal = !self.markup_mode.authors()
             && self.view == View::Wysiwyg
             && !text.is_empty()
             && self.supports(Gesture::InsertLiteral);
         let landed = if literal {
+            let deleted = self.source[start..end].to_owned();
             if start != end && !self.splice_exact(start, end, "", EditKind::Other) {
                 false
             } else if self.insert_literal_at(start, text, EditKind::Other, start != end) {
@@ -1932,7 +1940,7 @@ impl Doc {
                 // The deletion landed and the text did not: take the deletion
                 // back rather than leave half a substitution.
                 if start != end {
-                    self.undo();
+                    self.restore_deleted(start, &deleted, group_had_step);
                 }
                 false
             }
@@ -1942,6 +1950,7 @@ impl Doc {
         if !landed {
             self.caret = caret;
             self.anchor = anchor;
+            self.record_caret();
             return false;
         }
         let delta = self.source.len() as isize - before as isize;
@@ -1971,6 +1980,45 @@ impl Doc {
         // The caret the step leaves, so a redo puts it back here too.
         self.record_caret();
         true
+    }
+
+    /// Put back `deleted`, the bytes a half-made [`substitute`](Self::substitute)
+    /// took out at `at`, and leave nothing of the pair on the history.
+    ///
+    /// Not [`undo`](Self::undo): that closes an open group and takes the whole
+    /// of it back — every substitution of the keystroke made before this one
+    /// — and leaves a redo step that would delete the bytes again. Instead the
+    /// bytes go back as an edit of their own, and the two edits, which change
+    /// nothing together, are folded away: inside a group that already had a
+    /// step they fold into it as they land; as a group's first step, or
+    /// outside a group, into the step before. With no step before it there is
+    /// nothing to fold into, and one step that changes nothing is left.
+    /// `group_had_step` is what the group said before the deletion — `None`
+    /// outside one.
+    fn restore_deleted(&mut self, at: usize, deleted: &str, group_had_step: Option<bool>) {
+        if !self.splice_exact(at, at, deleted, EditKind::Other) {
+            // twig will not take its own bytes back: the history's way, which
+            // at least leaves the document as it was.
+            self.undo();
+            return;
+        }
+        match group_had_step {
+            Some(true) => {}
+            Some(false) => {
+                let steps = self.undo_steps;
+                self.fold_last_undo();
+                if self.undo_steps < steps
+                    && let Some(g) = &mut self.undo_group
+                {
+                    g.has_step = false;
+                }
+            }
+            None => {
+                self.fold_last_undo();
+                self.fold_last_undo();
+            }
+        }
+        self.last_edit_kind = None;
     }
 
     /// Insert typed `text` at the caret, replacing the selection if there is one.
@@ -4747,6 +4795,11 @@ impl Doc {
         // since a fix is measured in the bytes that actually land, and an escape
         // adds bytes this couldn't have counted.
         let fix = self.mark_edge_fix(at, at, text);
+        #[cfg(test)]
+        if std::mem::take(&mut self.refuse_next_literal) {
+            self.status = Some("edit: refused".into());
+            return false;
+        }
         self.record_caret();
         match self.editor.insert_literal(at, text) {
             Ok(change) => {
@@ -13970,6 +14023,59 @@ mod tests {
         assert!(!d.substitute(0, src.len() + 1, "x"));
         assert!(!d.substitute(d.source.find('\u{201d}').unwrap() + 1, d.source.len(), "x"));
         assert_eq!(d.source, src);
+    }
+
+    #[test]
+    fn a_substitution_that_half_lands_takes_back_only_its_own_deletion() {
+        // The deletion lands and twig refuses the literal text: the deleted
+        // bytes go back, and nothing else moves — not an earlier substitution
+        // of the same keystroke, not the group it is in, and no redo is left
+        // to delete them again.
+        let mut d = wysiwyg_doc("substitute", "\n");
+        d.set_markup_mode(MarkupMode::None);
+        d.caret = 0;
+        for c in ["a", "\"", "b", " ", "\""] {
+            d.insert(c);
+        }
+        assert_eq!(d.source, "a\"b \"\n");
+
+        d.refuse_next_literal = true;
+        assert!(!d.substitute(1, 2, "\u{201c}"));
+        assert_eq!(d.source, "a\"b \"\n");
+        assert_eq!(d.caret, 5, "the caret where it stood");
+        assert!(!d.can_redo(), "no redo step left behind");
+
+        d.begin_undo_group();
+        assert!(d.substitute(4, 5, "\u{201d}"));
+        d.refuse_next_literal = true;
+        assert!(!d.substitute(1, 2, "\u{201c}"));
+        assert!(d.in_undo_group(), "the group is still open");
+        assert_eq!(d.source, "a\"b \u{201d}\n", "the first substitution stands");
+        d.end_undo_group();
+        assert!(!d.can_redo());
+        assert!(d.undo());
+        assert_eq!(d.source, "a\"b \"\n", "one step takes the group back");
+        assert!(d.undo());
+        assert_eq!(d.source, "\n", "and the typing is still one step");
+        assert!(!d.can_undo());
+
+        // A group whose first edit is the one that half lands has no step.
+        let mut d = wysiwyg_doc("substitute", "\n");
+        d.set_markup_mode(MarkupMode::None);
+        d.caret = 0;
+        d.insert("\"");
+        d.begin_undo_group();
+        d.refuse_next_literal = true;
+        assert!(!d.substitute(0, 1, "\u{201c}"));
+        assert!(d.substitute(0, 1, "\u{201c}"));
+        d.end_undo_group();
+        assert!(d.undo());
+        assert_eq!(
+            d.source, "\"\n",
+            "the substitution that landed is the group's step"
+        );
+        assert!(d.undo());
+        assert_eq!(d.source, "\n");
     }
 
     #[test]
