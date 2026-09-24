@@ -271,9 +271,13 @@ private struct FormatMenuItems: View {
         Button(loc("menu.numberedList", "Numbered List")) { editor.toggleList(ordered: true) }
             .keyboardShortcut("7", modifiers: [.command, .shift])
             .disabled(!editable)
-        Button(loc("menu.blockQuote", "Block Quote")) { editor.toggleBlockquote() }
+        // Ticked while the caret stands in a quote, for Code Block's reason
+        // below: it layers over the block's style, so nothing else in the menu
+        // says the caret is in one.
+        Toggle(loc("menu.blockQuote", "Block Quote"),
+               isOn: block(editor.state.blockquote) { editor.toggleBlockquote() })
             .keyboardShortcut("9", modifiers: [.command, .shift])
-            .disabled(!editable)
+            .disabled(!editable || !editor.capabilities.blockquote)
         // Ticked while the caret stands in one, the way the marks above are:
         // this is the rich view's one door into a code block (a typed backtick
         // is escaped there), and a menu item that only ever said "make one"
@@ -406,7 +410,7 @@ private struct FormatMenuItems: View {
             Divider()
             Button(loc("menu.bulletList", "Bullet List")) {}.keyboardShortcut("8", modifiers: [.command, .shift])
             Button(loc("menu.numberedList", "Numbered List")) {}.keyboardShortcut("7", modifiers: [.command, .shift])
-            Button(loc("menu.blockQuote", "Block Quote")) {}.keyboardShortcut("9", modifiers: [.command, .shift])
+            Toggle(loc("menu.blockQuote", "Block Quote"), isOn: .constant(false)).keyboardShortcut("9", modifiers: [.command, .shift])
             Toggle(loc("menu.codeBlock", "Code Block"), isOn: .constant(false)).keyboardShortcut("c", modifiers: [.command, .option])
             Toggle(loc("menu.checklist", "Checklist"), isOn: .constant(false)).keyboardShortcut("l", modifiers: [.command, .shift])
             Toggle(loc("menu.checked", "Checked"), isOn: .constant(false)).keyboardShortcut("u", modifiers: [.command, .shift])

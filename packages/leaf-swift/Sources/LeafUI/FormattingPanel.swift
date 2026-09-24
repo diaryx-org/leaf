@@ -158,7 +158,7 @@ struct FormattingPanelView: View {
             VStack(spacing: grid.rowGap) {
                 HStack(spacing: grid.columnGap) {
                     key(tools.style, grid)
-                        .accessibilityValue(tools.styleName(short: false))
+                        .accessibilityValue(tools.styleValue)
                     key(tools.bold, grid)
                     key(tools.italic, grid)
                     key(tools.underline, grid)

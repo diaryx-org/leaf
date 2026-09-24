@@ -131,9 +131,11 @@ struct ToolCatalogue {
     /// primary action: none of the six is the obvious one.
     ///
     /// The label names what is in force: a heading's level, a code block, or
-    /// Body. A quote is not among them, because nothing in the published
-    /// state says the caret stands in one; a paragraph inside a quote reads
-    /// Body, which it also is.
+    /// Body. The rows above the divider exclude one another; Block Quote,
+    /// below it, is a layer over whichever of them is in force — a heading can
+    /// be quoted, and stays a heading — so it ticks on its own, and the label
+    /// wears an opening quote mark in front of the name (`“H1`) rather than
+    /// being replaced by it.
     var style: ToolItem {
         let rows = Group {
             ForEach(1...3, id: \.self) { level in
@@ -150,16 +152,32 @@ struct ToolCatalogue {
 
     /// The name `style` shows. Short on a key (`H1`, `Body`), long on the
     /// Mac's button (`Heading 1`, `Body`), where there is room to say it.
+    /// Inside a quote, either wears `quoteMark` in front.
     func styleName(short: Bool) -> String {
+        let name: String
         if let level = editor.state.heading {
-            return short ? "H\(level)"
+            name = short ? "H\(level)"
                 : String(format: loc("menu.headingN", "Heading %d"), Int(level))
+        } else if editor.state.codeBlock {
+            name = short ? loc("toolbar.style.code", "Code") : loc("menu.codeBlock", "Code Block")
+        } else {
+            name = loc("toolbar.style.body", "Body")
         }
-        if editor.state.codeBlock {
-            return short ? loc("toolbar.style.code", "Code") : loc("menu.codeBlock", "Code Block")
-        }
-        return loc("toolbar.style.body", "Body")
+        return editor.state.blockquote ? Self.quoteMark + name : name
     }
+
+    /// What the Style key says to VoiceOver: the name spelled out, and the
+    /// quote named rather than left to a punctuation mark read aloud.
+    var styleValue: String {
+        let name = styleName(short: false)
+        guard editor.state.blockquote else { return name }
+        return String(format: loc("toolbar.style.quoted", "%@, Block Quote"),
+                      String(name.dropFirst(Self.quoteMark.count)))
+    }
+
+    /// The mark `styleName` puts in front of a quoted block's name: the
+    /// opening quote the Block Quote row's glyph draws.
+    static let quoteMark = "\u{201C}"
 
     /// Every name `styleName` can return, for a rendering that sizes the
     /// button to the widest so it doesn't jump as the caret moves.
@@ -167,10 +185,11 @@ struct ToolCatalogue {
         let headings = (1...6).map {
             short ? "H\($0)" : String(format: loc("menu.headingN", "Heading %d"), $0)
         }
-        return headings + [
+        let names = headings + [
             short ? loc("toolbar.style.code", "Code") : loc("menu.codeBlock", "Code Block"),
             loc("toolbar.style.body", "Body"),
         ]
+        return names + names.map { quoteMark + $0 }
     }
 
     func heading(_ level: Int) -> ToolItem {
@@ -186,10 +205,12 @@ struct ToolCatalogue {
                  action: { editor.setParagraph() })
     }
 
-    /// Not a toggle row: nothing in the published state says the caret is in
-    /// a quote, so there is nothing to tick.
+    /// Lit and ticked while the caret stands in a quote, at any depth. A
+    /// toggle beside the style rather than one of them: the press wraps the
+    /// block, or unwraps it, and leaves it the heading or paragraph it was.
     var quote: ToolItem {
         ToolItem(id: "quote", glyph: .symbol("quote.opening"), label: loc("menu.blockQuote", "Block Quote"),
+                 active: editor.state.blockquote, enabled: editor.capabilities.blockquote, toggles: true,
                  action: { editor.toggleBlockquote() })
     }
 

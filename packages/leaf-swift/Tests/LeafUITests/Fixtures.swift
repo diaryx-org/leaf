@@ -156,6 +156,8 @@ func docView(
     markColor: MarkColor? = nil,
     // Whether the caret stands in a code block — what lights the Code Block button.
     codeBlock: Bool = false,
+    // Whether the caret stands in a quote — what ticks Block Quote.
+    blockquote: Bool = false,
     // Whether the caret's item has a box, and which way it faces — what lights
     // the Checklist button.
     task: Bool? = nil
@@ -186,6 +188,7 @@ func docView(
         view: view,
         heading: heading,
         codeBlock: codeBlock,
+        blockquote: blockquote,
         task: task,
         active: active,
         link: link,

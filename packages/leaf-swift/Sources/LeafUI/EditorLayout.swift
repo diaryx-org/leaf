@@ -65,6 +65,11 @@ public struct EditorState: Equatable {
     /// a fence moves no mark and no heading, so a button asking core for itself
     /// would never be republished.
     public var codeBlock: Bool
+    /// Whether the caret stands inside a block quote, at any depth — what
+    /// ticks Style's Block Quote row and marks the Style key. A quote wraps
+    /// blocks rather than being one, so this is true alongside `heading` or
+    /// `codeBlock`. Here for `codeBlock`'s reason.
+    public var blockquote: Bool
     /// Whether the list item at the caret carries a checkbox, and which way it
     /// faces — `true` ticked, `false` empty, nil for a plain item or no item at
     /// all. What lights the toolbar's Checklist button and ticks the Format
@@ -72,18 +77,20 @@ public struct EditorState: Equatable {
     /// from a bullet into a task item moves no mark and no heading.
     public var task: Bool?
 
-    /// `link`, `markColor`, `hasSelection`, `align`, `codeBlock` and `task`
-    /// default so a host that built a state by hand before any of them existed
+    /// `link`, `markColor`, `hasSelection`, `align`, `codeBlock`, `blockquote`
+    /// and `task` default so a host that built a state by hand before any of them existed
     /// still compiles; the frame-projecting initializer below is the real path.
     public init(view: String, dirty: Bool, heading: UInt32?, active: [String], link: String? = nil,
                 canUndo: Bool = false, canRedo: Bool = false,
                 markColor: MarkColor? = nil, hasSelection: Bool = false,
-                align: Align? = nil, codeBlock: Bool = false, task: Bool? = nil) {
+                align: Align? = nil, codeBlock: Bool = false, blockquote: Bool = false,
+                task: Bool? = nil) {
         self.view = view; self.dirty = dirty; self.heading = heading
         self.active = active; self.link = link
         self.canUndo = canUndo; self.canRedo = canRedo
         self.markColor = markColor; self.hasSelection = hasSelection
-        self.align = align; self.codeBlock = codeBlock; self.task = task
+        self.align = align; self.codeBlock = codeBlock; self.blockquote = blockquote
+        self.task = task
     }
 
     /// Project a full `DocView` down to the chrome-facing state.
@@ -95,7 +102,7 @@ public struct EditorState: Equatable {
                   canUndo: v.canUndo, canRedo: v.canRedo,
                   markColor: v.markColor, hasSelection: v.hasSelection,
                   align: v.rows.indices.contains(caretRow) ? Align(name: v.rows[caretRow].align) : nil,
-                  codeBlock: v.codeBlock, task: v.task)
+                  codeBlock: v.codeBlock, blockquote: v.blockquote, task: v.task)
     }
 }
 
