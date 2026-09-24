@@ -4266,6 +4266,14 @@ public struct DocView {
      */
     public var codeBlock: Bool
     /**
+     * Whether the caret stands inside a block quote, at any depth — the
+     * toolbar lights and ticks its Block Quote control from it. A quote wraps
+     * blocks rather than being one, so this is true alongside `heading` or
+     * `code_block`, not instead of them. Rides the frame for `heading`'s
+     * reason.
+     */
+    public var blockquote: Bool
+    /**
      * Whether the list item at the caret carries a checkbox, and which way it
      * faces — `Some(true)` ticked, `Some(false)` empty, `None` for a plain
      * item or no item at all. A toolbar lights its Checklist button from the
@@ -4434,6 +4442,13 @@ public struct DocView {
          * would never be told.
          */codeBlock: Bool, 
         /**
+         * Whether the caret stands inside a block quote, at any depth — the
+         * toolbar lights and ticks its Block Quote control from it. A quote wraps
+         * blocks rather than being one, so this is true alongside `heading` or
+         * `code_block`, not instead of them. Rides the frame for `heading`'s
+         * reason.
+         */blockquote: Bool, 
+        /**
          * Whether the list item at the caret carries a checkbox, and which way it
          * faces — `Some(true)` ticked, `Some(false)` empty, `None` for a plain
          * item or no item at all. A toolbar lights its Checklist button from the
@@ -4501,6 +4516,7 @@ public struct DocView {
         self.view = view
         self.heading = heading
         self.codeBlock = codeBlock
+        self.blockquote = blockquote
         self.task = task
         self.active = active
         self.link = link
@@ -4584,6 +4600,9 @@ extension DocView: Equatable, Hashable {
         if lhs.codeBlock != rhs.codeBlock {
             return false
         }
+        if lhs.blockquote != rhs.blockquote {
+            return false
+        }
         if lhs.task != rhs.task {
             return false
         }
@@ -4624,6 +4643,7 @@ extension DocView: Equatable, Hashable {
         hasher.combine(view)
         hasher.combine(heading)
         hasher.combine(codeBlock)
+        hasher.combine(blockquote)
         hasher.combine(task)
         hasher.combine(active)
         hasher.combine(link)
@@ -4663,6 +4683,7 @@ public struct FfiConverterTypeDocView: FfiConverterRustBuffer {
                 view: FfiConverterString.read(from: &buf), 
                 heading: FfiConverterOptionUInt32.read(from: &buf), 
                 codeBlock: FfiConverterBool.read(from: &buf), 
+                blockquote: FfiConverterBool.read(from: &buf), 
                 task: FfiConverterOptionBool.read(from: &buf), 
                 active: FfiConverterSequenceString.read(from: &buf), 
                 link: FfiConverterOptionString.read(from: &buf), 
@@ -4695,6 +4716,7 @@ public struct FfiConverterTypeDocView: FfiConverterRustBuffer {
         FfiConverterString.write(value.view, into: &buf)
         FfiConverterOptionUInt32.write(value.heading, into: &buf)
         FfiConverterBool.write(value.codeBlock, into: &buf)
+        FfiConverterBool.write(value.blockquote, into: &buf)
         FfiConverterOptionBool.write(value.task, into: &buf)
         FfiConverterSequenceString.write(value.active, into: &buf)
         FfiConverterOptionString.write(value.link, into: &buf)
