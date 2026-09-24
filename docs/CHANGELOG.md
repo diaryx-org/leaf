@@ -37,6 +37,75 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.4.5 — 2026-09-24
+
+### Added
+
+- **swift** — the macOS formatting bar is six category menus over one tool catalogue ([`8221499`](https://github.com/diaryx-org/leaf/commit/8221499279adef1bd9a7afaee1f0567fca706800))
+- **swift** — a nine-tool iOS row, and a keyboard panel behind its Aa ([`90f9129`](https://github.com/diaryx-org/leaf/commit/90f91292240a15c9953932b81ada48fa6233be8f))
+- **leaf-editor** — the formatting row hangs over the iOS keyboard, display chrome in the navigation bar ([`cd69781`](https://github.com/diaryx-org/leaf/commit/cd697814a7de80a2afe954d97de0fae5e63ac222))
+- underline in Markdown, on twig-doc 3.10.0 ([`f447edf`](https://github.com/diaryx-org/leaf/commit/f447edfe4992789096fbeb0f12550f750cb96ed7))
+
+### Fixed
+
+- **core** — the checklist gesture outside a list makes the block a task item ([`2b34169`](https://github.com/diaryx-org/leaf/commit/2b341696abd3cea15b90946e750176778d5a9596))
+- **swift** — the underline button and menu item dim where the format has no underline ([`72b33c5`](https://github.com/diaryx-org/leaf/commit/72b33c5868f941d9a0ea93598ffd1a24ec5e3231))
+- **swift** — the keyboard panel and iOS row after review ([`506701b`](https://github.com/diaryx-org/leaf/commit/506701bf3d13a69d98479870002a5813a922e944))
+- **leaf-editor** — one definition of the display chrome, lit on iOS too ([`1027d55`](https://github.com/diaryx-org/leaf/commit/1027d558e176d7652f3cdd298cc2f8cebcb909cb))
+- **leaf-core** — the caret goes on under a new horizontal rule ([`292a095`](https://github.com/diaryx-org/leaf/commit/292a09568e910982c4d3c4721a86bfaf48ba8fda))
+- **leaf-core** — page-break caret, one-step block undo, Enter at a paragraph's start ([`45aaaa4`](https://github.com/diaryx-org/leaf/commit/45aaaa4fc2087707045b0a5fad15c5f672d9c8b7))
+- **leaf-core** — Enter pushes the first block down, and does nothing on a blank page ([`f89d2e8`](https://github.com/diaryx-org/leaf/commit/f89d2e89622da29a4c20f4ae8245e6092dfe861a))
+- **leaf-core** — Enter never writes a line the view does not draw ([`c2744da`](https://github.com/diaryx-org/leaf/commit/c2744da1984d58b541ba6fc5e75cb1ddecb06962))
+
+### Behavioural changes
+
+- Doc::toggle_task_item on a paragraph or blank line now writes `- [ ] ` (one undo step) instead of leaving the source alone and setting a "task:" status.
+
+- in a Markdown document the toolbar's Underline button and the Format menu's Underline item are disabled.
+
+- on macOS, LeafFormattingToolbar's .bar style shows six category menus (Style, Format, Align, Lists, Text, Insert) and then the host's tools, in place of one row of 31 tools; Undo and Redo are no longer on it.
+
+- on iOS, LeafFormattingToolbar's .accessory style shows nine tools (Aa, Style, B, I, U, Checklist, List, Insert, Link) then the host's, in place of one scrolling row of 31; Aa replaces the keyboard with a panel of the rest.
+
+- on iOS, LeafFormattingToolbar's Link with no onEditLink asks in a sheet over the editor instead of a popover on the button.
+
+- in a Markdown document the underline control is enabled and writes `<u>text</u>`, where it was dimmed and the gesture refused.
+
+- Markdown `<u>text</u>` renders as underlined text with hidden tags, where it rendered as literal raw HTML around plain text.
+
+- Doc::insert_thematic_break leaves the caret on the line under the rule and may write that line: `para\n` becomes `para\n\n---\n\n` with the caret at the end, and `a\n\nb\n` with the caret after `a` becomes `a\n\n---\n\n\n\nb\n` with the caret on the empty line, where both left the caret on the rule's row.
+
+- Enter with the caret beside a thematic break (at the home past it) opens a line under the rule and puts the caret on it, where it inserted a lone newline that, mid-document, put the caret on the next block.
+
+- the visual map draws the blank lines under a thematic break counted from the rule itself, so `---\n\n\n\nb` draws an empty row between two gaps (it drew two gaps), `---\n\n` at the end of a document draws an empty row, and a djot rule's row ends at the line under it rather than at the next block's start.
+
+- Doc::insert_page_break leaves the caret on the line under the break and may write that line: `a\n` becomes `a\n\n::page-break\n\n` with the caret at the end, where the caret was left on the break's row (or, mid-document, on the next block's first character).
+
+- a thematic break, table or page break that parts a paragraph is one undo step with the split, where Undo took back the block alone and left the paragraph parted; Doc::insert_table with zero rows or columns now parts nothing before refusing.
+
+- Enter at the start of a paragraph that has a block above it (outside lists and quotes) writes `\n\n` before the paragraph, ahead of any opening mark delimiters and any div the paragraph opens, where it wrote twig's single newline (drawn as nothing) or, past a mark's opening delimiters, split the mark.
+
+- the visual map draws blank lines above the first drawn block as rows: in Fold flow two or more lines draw as empty rows over one gap row (`\n\nb` draws an empty row, a gap, then `b`), in Preserve flow every line but the one under frontmatter draws, and VisualMap::content_start is the first such row's offset where there are any.
+
+- Doc::newline at the start of the document's first paragraph or heading opens an empty line above it with the caret staying with the text: `b\n` with the caret at 0 becomes `\n\nb\n` with the caret at 2, where it split the block and drew no change.
+
+- Doc::newline at the start of a heading writes the break before its `#` marker (`a\n\n# H\n` becomes `a\n\n\n\n# H\n`), where it left `# ` as an empty heading over `H` as a paragraph.
+
+- Doc::newline at a paragraph's start writes a single newline when an empty line is already drawn above it, where it wrote a paragraph break that drew two more.
+
+- Doc::newline in Fold flow on a document that is blank past its hidden frontmatter writes nothing and records no undo step, where it inserted a newline.
+
+- the visual map draws blank lines between a `<div>`'s last block and its `</div>` as rows inside the div once there are more than the one Markdown needs and the gap (three in Fold flow, two in Preserve), with the div's line height and alignment, where it drew none.
+
+- navigable empty rows between blocks inside a `<div>` carry the div's line_height and align, where they carried none.
+
+- in Preserve flow the visual map draws no row for the blank line directly under a `</div>`, where it drew a navigable empty row.
+
+- Doc::newline at the start of a quote's first paragraph writes the break above the quote (`a\n\n> q\n` becomes `a\n\n\n\n> q\n`), where twig's split wrote `> \n>\n> q` inside it.
+
+- Doc::newline in Preserve flow at a paragraph's or heading's start opens a line above it, outside any div it opens and before any mark delimiters, where it wrote a newline at the caret; inside a heading it parts the heading as Fold flow does, where it wrote a newline.
+
+
 ## v0.4.4 — 2026-09-22
 
 ### Breaking
