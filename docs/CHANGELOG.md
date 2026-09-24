@@ -37,6 +37,42 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.4.6 — 2026-09-24
+
+### Added
+
+- **leaf-ffi** — DocView says whether the caret stands in a block quote ([`6a8ad8c`](https://github.com/diaryx-org/leaf/commit/6a8ad8c37e04c68b71a7c76a2958234197685d0e))
+- **leaf-swift** — a shorter iOS row, and Block Quote as a toggle over the style ([`4e71ebe`](https://github.com/diaryx-org/leaf/commit/4e71ebecb57738585bda0254a9294dbe17c1cbea))
+
+### Fixed
+
+- **leaf-core** — a code block in a list item wears one marker, and a quoted fence draws no row ([`7994de9`](https://github.com/diaryx-org/leaf/commit/7994de937e1ba8a9c459312a0a6fbf0b551d9057))
+- a list item's later rows line up under its first, and a code block's tint starts past the bullet ([`df42144`](https://github.com/diaryx-org/leaf/commit/df42144fe6014832571f18c013ec3b830a5d8822))
+- **leaf-core** — Code Block toggles inside a list item, on twig 3.11.0 ([`d8943aa`](https://github.com/diaryx-org/leaf/commit/d8943aa75c64fde0df265fa55b2ab1fba3f6bb69))
+
+### Behavioural changes
+
+- the Swift DocView memberwise initializer takes a new `blockquote:` argument between `codeBlock:` and `task:`, so a host building a DocView by hand must pass it.
+
+- LeafFormattingToolbar's iOS accessory row no longer shows Underline or Checklist.
+
+- the Style key reads “H1 / “Body / “Code (an opening quote mark in front) with the caret inside a block quote, where it read the bare name.
+
+- Block Quote in the Style menu and the Format menu is a toggle, ticked inside a quote, and disabled where the format has no block quote, where it was an always-enabled plain command.
+
+- the visual map draws a fenced code block inside a list item with the item's marker on its first row only and the item's indent on the rest, where every row carried the marker.
+
+- the visual map draws no row for the closing fence of a code block inside a block quote, where it drew an empty gutter row; `>` lines the writer added under the fence still draw.
+
+- the visual map's glyphs for a list item's or footnote definition's later-row indent are the marker's characters (`•`, `1.`, `☐`, `[1]`) with Role::ListIndent, where they were spaces with Role::Body; a frontend drawing Glyph::ch must draw Glyph::drawn instead or show the marker on every row.
+
+- leaf-ffi and leaf-wasm runs carry the role string "list-indent" for that indent, where they carried the body role.
+
+- LeafUI draws a code block's background from the end of the row's prefix (past a list marker or quote gutter), where it filled from the margin, and a code row's list marker is 4pt wider.
+
+- Doc::toggle_code_block inside a Markdown or Djot list item fences the item's block at its content column (`- item` becomes "- ```\n  item\n  ```\n") and unfences it back, where it left the source unchanged and set a "code block:" status.
+
+
 ## v0.4.5 — 2026-09-24
 
 ### Added
