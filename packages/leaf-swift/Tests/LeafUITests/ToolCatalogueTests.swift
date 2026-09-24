@@ -51,11 +51,29 @@ final class ToolCatalogueTests: XCTestCase {
     /// Every name Style can show is among the ones the bar sizes its button
     /// to, or the button would clip a name it had not measured.
     func testEveryStyleNameIsMeasured() throws {
-        for source in ["# One\n", "###### Six\n", "Body.\n", "```\ncode\n```\n"] {
+        for source in ["# One\n", "###### Six\n", "Body.\n", "```\ncode\n```\n", "> # One\n", "> Body.\n"] {
             let (_, tools) = try catalogue(source)
             XCTAssertTrue(ToolCatalogue.styleNames(short: true).contains(tools.styleName(short: true)), source)
             XCTAssertTrue(ToolCatalogue.styleNames(short: false).contains(tools.styleName(short: false)), source)
         }
+    }
+
+    /// Block Quote ticks while the caret is in a quote, and the style it
+    /// layers over is still named: a quoted heading is Heading 1, marked.
+    /// Two documents rather than one caret moved, because a model with no
+    /// view on screen publishes its state when it opens and not on a select.
+    func testQuoteLightsAndStacksOnTheStyle() throws {
+        let (_, inside) = try catalogue("> # Title\n\nPlain.\n")
+        XCTAssertTrue(inside.quote.active)
+        XCTAssertTrue(inside.quote.toggles, "a row that ticks")
+        XCTAssertTrue(inside.heading(1).active, "the heading is still in force")
+        XCTAssertEqual(inside.styleName(short: true), ToolCatalogue.quoteMark + "H1")
+        XCTAssertEqual(inside.styleValue, "Heading 1, Block Quote")
+
+        let (_, outside) = try catalogue("Plain.\n\n> # Title\n")
+        XCTAssertFalse(outside.quote.active)
+        XCTAssertEqual(outside.styleName(short: true), "Body")
+        XCTAssertEqual(outside.styleValue, "Body")
     }
 
     /// A light follows the published state: Bold lights inside bold text.

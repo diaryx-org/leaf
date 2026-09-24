@@ -67,6 +67,16 @@ final class EditorStateTests: XCTestCase {
         XCTAssertNotEqual(inside, outside)
     }
 
+    /// Stepping into a quote, likewise — and it stacks: a heading in a quote
+    /// is both, where a heading in a code block could not be.
+    func testSteppingIntoAQuoteIsAChangedState() {
+        let inside = EditorState(docView([row([mkRun("x")])], heading: 2, blockquote: true))
+        let outside = EditorState(docView([row([mkRun("x")])], heading: 2, blockquote: false))
+        XCTAssertTrue(inside.blockquote)
+        XCTAssertEqual(inside.heading, 2)
+        XCTAssertNotEqual(inside, outside)
+    }
+
     /// Stepping from a bullet into a task item — and ticking the box the caret
     /// stands in — are changes the toolbar has to be told about, for the same
     /// reason: nothing else on the state moves.

@@ -14,11 +14,13 @@
 //  two files that would drift. What differs is the metrics, which tools are on
 //  the row, and how the row copes with a width it does not fit in:
 //
-//  **The accessory is short.** Nine targets — `Aa`, Style, Bold, Italic,
-//  Underline, Checklist, List, Insert, Link — then the host's tools. Nine fit
-//  an iPhone 15 to 17 at accessory size, so the row a writer sees is the whole
-//  row, not the first third of one that runs on past the screen's edge; the
-//  row of every tool it replaced was about 1300 points wide. `Aa` swaps the
+//  **The accessory is short.** Seven targets — `Aa`, Style, Bold, Italic,
+//  List, Insert, Link — then the host's tools. Seven fit an iPhone 15 to 17
+//  at accessory size with room for a host's tool or two, so the row a writer
+//  sees is the whole row, not the first third of one that runs on past the
+//  screen's edge; the row of every tool it replaced was about 1300 points
+//  wide. Underline and Checklist were on it once, and are on the panel, and
+//  Checklist under List's ▾ too. `Aa` swaps the
 //  keyboard for a panel of every other tool (`FormattingPanel.swift`) and back,
 //  and lights while the panel is up. Where the host's tools, or a large
 //  Dynamic Type size, still make the row too wide, it scrolls: a finger
@@ -108,7 +110,7 @@ public struct LeafFormattingToolbar: View {
     /// putting the iOS-sized bar somewhere other than above the keyboard.
     public enum Style {
         /// Keyboard-accessory metrics: 44pt tall, finger-sized targets, the
-        /// nine most-used tools and an `Aa` for the panel of the rest, and a
+        /// most-used tools and an `Aa` for the panel of the rest, and a
         /// row that scrolls when it does not fit. On macOS there is no panel
         /// and no `Aa`.
         case accessory
@@ -215,12 +217,12 @@ public struct LeafFormattingToolbar: View {
         }
     }
 
-    /// The accessory: `Aa`, Style, Bold, Italic, Underline, Checklist, List,
-    /// Insert and Link, then the host's tools after a hairline.
+    /// The accessory: `Aa`, Style, Bold, Italic, List, Insert and Link, then
+    /// the host's tools after a hairline.
     ///
-    /// Nine targets because nine fit an iPhone 15 to 17 (393–402 points) at
-    /// accessory size, so the row never has to scroll and nothing on it is
-    /// ever half off the edge. They are the tools a writer reaches for in the
+    /// Seven targets because seven fit an iPhone 15 to 17 (393–402 points) at
+    /// accessory size with room to spare, so the row never has to scroll and
+    /// nothing on it is ever half off the edge. They are the tools a writer reaches for in the
     /// middle of a sentence; the rest are one press of `Aa` away, on a panel
     /// in the keyboard's place (`FormattingPanel.swift`). Where the host's
     /// tools, or a large Dynamic Type size, make the row wider than the
@@ -256,11 +258,9 @@ public struct LeafFormattingToolbar: View {
                 }
                 #endif
                 target(tools.style, width: rowStyleWidth, indicator: .corner)
-                    .modifier(StyleValue(name: tools.styleName(short: false)))
+                    .modifier(StyleValue(name: tools.styleValue))
                 target(tools.bold, width: metrics.buttonWidth)
                 target(tools.italic, width: metrics.buttonWidth)
-                target(tools.underline, width: metrics.buttonWidth)
-                target(tools.checklist, width: metrics.buttonWidth)
                 target(tools.list, width: metrics.buttonWidth, indicator: .corner)
                 target(tools.insert, width: metrics.buttonWidth, indicator: .corner)
                 target(tools.link, width: metrics.buttonWidth)
@@ -351,7 +351,7 @@ public struct LeafFormattingToolbar: View {
         var groups = [BarGroup(id: "style", gap: .space, widths: [styleWidth],
                                content: AnyView(target(labelled(style, name), width: styleWidth,
                                                        indicator: .chevron)
-                                                    .modifier(StyleValue(name: name))))]
+                                                    .modifier(StyleValue(name: tools.styleValue))))]
         for item in [tools.format, tools.align, tools.lists, tools.text, tools.insert] {
             let width = categoryWidth(item)
             groups.append(BarGroup(id: item.id, gap: .space, widths: [width],
@@ -663,9 +663,10 @@ public struct LeafFormattingToolbar: View {
         /// 44 is the tap-target floor, and the row spends all of it — there's no
         /// indicator strip to leave room for any more.
         ///
-        /// The row's nine tools are 40 wide with a point between them, and the
-        /// Style key as wide as "Body" (50): 390 points with the edges,
-        /// measured in the simulator, which fits an iPhone 15's 393.
+        /// The row's seven tools are 40 wide with a point between them, and
+        /// the Style key as wide as a quoted "“Body" (56): 314 points with the
+        /// edges, measured in the simulator, which leaves an iPhone 15's 393
+        /// room for two of a host's tools before the row has to scroll.
         static let accessory = Metrics(
             barHeight: 44, buttonWidth: 40, buttonHeight: 36,
             glyphSize: 17, labelSize: 15, cornerRadius: 8,
