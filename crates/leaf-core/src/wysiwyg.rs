@@ -1731,13 +1731,17 @@ pub fn build(
         presentation: Presentation::default(),
         faces: RefCell::new(FaceTable::default()),
     };
-    let last_drawn = b.top_blocks(&top);
-    // The hidden frontmatter's end is the baseline for both the trailing blank
-    // rows and the caret floor — see [`hidden_prefix_end`]. `top_level` has
-    // already dropped every `metadata` child, so read it off the arena.
+    // The hidden frontmatter's end is the baseline for the leading and trailing
+    // blank rows and for the caret floor — see [`hidden_prefix_end`].
+    // `top_level` has already dropped every `metadata` child, so read it off
+    // the arena.
     let hidden_end = hidden_prefix_end(source, metadata_end_of(nodes, doc));
+    let last_drawn = b.top_blocks(&top, hidden_end);
     b.emit_trailing_blank_lines(last_drawn.unwrap_or(BlockClass::Paragraph), hidden_end);
-    let content_start = top.first().map_or(hidden_end, |&i| nodes[i].span.start);
+    let content_start = floor_of(
+        &b.rows,
+        top.first().map_or(hidden_end, |&i| nodes[i].span.start),
+    );
     let stops = collect_stops(&b.rows);
     let mark_ends = collect_mark_ends(&b.rows);
     label_media_boundaries(&mut b.rows);
@@ -1836,23 +1840,26 @@ pub fn build_cached(
     // (a comment) never becomes it — see [`Builder::block_or_hidden`], whose
     // step-over this loop repeats for the incremental walk.
     let mut above: Option<BlockClass> = None;
+    let hidden_end = hidden_prefix_end(
+        source,
+        top.iter()
+            .filter(|m| m.kind == Kind::Metadata)
+            .map(|m| m.span.end)
+            .next_back(),
+    );
     for block in &blocks {
         let start = block.span.start;
         let before_sep = b.rows.len();
+        // This walker has no node arena at all (see the `nodes: &[]` above),
+        // but a top-level query match carries its kind — the same string
+        // `BlockClass::from_node_kind` classifies for the whole-arena walk, so
+        // the incremental and full builds label a boundary identically.
+        let below = BlockClass::from_node_kind(&block.kind);
         if let Some(above) = above {
-            // This walker has no node arena at all (see the `nodes: &[]` above),
-            // but a top-level query match carries its kind — the same string
-            // `BlockClass::from_node_kind` classifies for the whole-arena walk, so
-            // the incremental and full builds label a boundary identically.
-            b.emit_separators_before(
-                start,
-                &[],
-                true,
-                Boundary {
-                    above,
-                    below: BlockClass::from_node_kind(&block.kind),
-                },
-            );
+            b.emit_separators_before(start, &[], true, Boundary { above, below });
+        } else {
+            let from = b.leading_from(hidden_end);
+            b.emit_leading_blank_lines(from, start, below);
         }
         let after_sep = b.rows.len();
         let bytes = block_bytes(source, &block.span);
@@ -1981,13 +1988,6 @@ pub fn build_cached(
     }
 
     let before_trailing = b.rows.len();
-    let hidden_end = hidden_prefix_end(
-        source,
-        top.iter()
-            .filter(|m| m.kind == Kind::Metadata)
-            .map(|m| m.span.end)
-            .next_back(),
-    );
     b.emit_trailing_blank_lines(above.unwrap_or(BlockClass::Paragraph), hidden_end);
     let trailing_rows = b.rows.len() - before_trailing;
 
@@ -2012,7 +2012,7 @@ pub fn build_cached(
     // analogue of [`first_content_offset`] for the top-level list. With nothing
     // but frontmatter it's the end of that frontmatter, and 0 for an empty
     // document ([`hidden_prefix_end`]).
-    let content_start = blocks.first().map_or(hidden_end, |m| m.span.start);
+    let content_start = floor_of(&b.rows, blocks.first().map_or(hidden_end, |m| m.span.start));
     let stops = collect_stops(&b.rows);
     let mark_ends = collect_mark_ends(&b.rows);
     label_media_boundaries(&mut b.rows);
@@ -2274,7 +2274,9 @@ pub fn build_spliced(
     let math = math_spans(&rows);
     Some(VisualMap {
         rows,
-        content_start: blocks[0].span.start,
+        // The edit was inside one block, so no block moved its start and the
+        // lines above the first are the ones the floor was taken from.
+        content_start: prev.content_start,
         stops,
         mark_ends,
         tables: Vec::new(),
@@ -2654,6 +2656,13 @@ fn hidden_prefix_end(source: &str, meta_end: Option<usize>) -> usize {
     } else {
         end
     }
+}
+
+/// The caret floor: the first block's start, or the first blank line above it
+/// when those lines draw rows ([`Builder::emit_leading_blank_lines`]).
+fn floor_of(rows: &[VRow], first_start: usize) -> usize {
+    rows.first()
+        .map_or(first_start, |r| r.end_src.min(first_start))
 }
 
 /// The end of the document's hidden frontmatter: the last `metadata` child of
@@ -3307,7 +3316,7 @@ impl Builder<'_> {
     ///
     /// Returns the class of the last block that drew anything — what the
     /// trailing blank lines close — or `None` when nothing did.
-    fn top_blocks(&mut self, ids: &[usize]) -> Option<BlockClass> {
+    fn top_blocks(&mut self, ids: &[usize], hidden_end: usize) -> Option<BlockClass> {
         let mut above: Option<BlockClass> = None;
         for &child in ids {
             let below = BlockClass::from_node_kind(&self.nodes[child].kind);
@@ -3319,6 +3328,9 @@ impl Builder<'_> {
                     true,
                     Boundary { above, below },
                 );
+            } else {
+                let from = self.leading_from(hidden_end);
+                self.emit_leading_blank_lines(from, self.nodes[child].span.start, below);
             }
             if self.block_or_hidden(child, before_sep, &[], &[]) {
                 above = Some(below);
@@ -3411,6 +3423,73 @@ impl Builder<'_> {
                 math: Vec::new(),
             });
         }
+    }
+
+    /// The blank lines above the first block that draws anything, from `from`
+    /// — the first line past any hidden frontmatter or comment — to the line
+    /// holding `next_start`. [`Builder::emit_trailing_blank_lines`] turned
+    /// upside down: nothing above needs a gap, so every line is an empty
+    /// paragraph but the last, which is the gap that opens the block below.
+    ///
+    /// One blank line is only that gap, and draws nothing, which keeps the
+    /// usual line under frontmatter out of sight. Two are the empty paragraph
+    /// Enter opens at the first block's start (`\n\nHello`), which drew
+    /// nothing either: the caret stayed with the text and the text stayed put.
+    /// Preserve flow draws every line, as it does between blocks, but the one
+    /// under frontmatter, which is the frontmatter's and not the author's.
+    fn emit_leading_blank_lines(&mut self, from: usize, next_start: usize, below: BlockClass) {
+        let next_line_start = self.source[..next_start].rfind('\n').map_or(0, |p| p + 1);
+        let mut offs = Vec::new();
+        let mut start = from;
+        while start < next_line_start {
+            offs.push(start);
+            match self.source[start..next_line_start].find('\n') {
+                Some(k) => start += k + 1,
+                None => break,
+            }
+        }
+        if self.preserve_soft {
+            if from > 0 && !offs.is_empty() {
+                offs.remove(0);
+            }
+        } else if offs.len() < 2 {
+            return;
+        }
+        let last = offs.len().saturating_sub(1);
+        for (k, end_src) in offs.into_iter().enumerate() {
+            let drawn = !self.preserve_soft && k == last;
+            self.rows.push(VRow {
+                glyphs: Vec::new(),
+                end_src,
+                decoration: drawn,
+                code: false,
+                code_lang: None,
+                directive: false,
+                directive_label: None,
+                media: None,
+                task: None,
+                leaf_directive: None,
+                heading: None,
+                align: None,
+                line_height: None,
+                boundary: drawn.then_some(Boundary {
+                    above: BlockClass::Paragraph,
+                    below,
+                }),
+                mark_ends: Vec::new(),
+                math: Vec::new(),
+            });
+        }
+    }
+
+    /// Where the lines above the first drawn block begin: past the hidden
+    /// frontmatter, or past the line of the last hidden block the walk
+    /// stepped over, whichever is later.
+    fn leading_from(&self, hidden_end: usize) -> usize {
+        if self.last_off == 0 {
+            return hidden_end;
+        }
+        block_line(self.source, self.last_off).1.max(hidden_end)
     }
 
     /// One block, drawn under whatever presentation the containers around it
@@ -6656,6 +6735,11 @@ mod tests {
             // stands at the rule, and the rule's block is never cached for
             // it: an empty line under one mid-document and closing it.
             "para\n\n---\n\n\n\nbetween rules\n\n---\n\n",
+            // Blank lines above the first block draw rows: bare, past
+            // frontmatter, and past a comment that draws nothing.
+            "\n\n\nfirst\n\nsecond\n",
+            "---\ntitle: x\n---\n\n\nafter frontmatter\n",
+            "<!-- lead -->\n\n\n\nafter a comment\n",
         ];
         for wrap in [None, Some(80usize), Some(20)] {
             for src in docs {
@@ -9364,6 +9448,58 @@ mod tests {
     /// the blank lines around a block, which is what its text can't show.
     fn row_shape(m: &VisualMap) -> Vec<(bool, usize)> {
         m.rows.iter().map(|r| (r.decoration, r.end_src)).collect()
+    }
+
+    #[test]
+    fn the_lines_above_the_first_block_draw_as_the_lines_under_the_last_do() {
+        // No row was drawn above the first block, so an empty paragraph opened
+        // there drew nothing. As at the document's end, one blank line is only
+        // the gap, and every line above that gap is somewhere to type.
+        assert_eq!(row_shape(&map("\nb\n")), [(false, 2)]);
+        let m = map("\n\nb\n");
+        assert_eq!(row_shape(&m), [(false, 0), (true, 1), (false, 3)]);
+        assert_eq!(m.content_start, 0, "the caret can reach the empty line");
+        assert_eq!(m.pos_of_offset(0), (0, 0));
+        assert_eq!(map("b\n").content_start, 0);
+        assert_eq!(
+            row_shape(&map("\n\n\n# H\n")),
+            [(false, 0), (false, 1), (true, 2), (false, 6)]
+        );
+
+        // Past frontmatter, the line under it is the frontmatter's.
+        let fm = "---\nt: x\n---\n";
+        let m = map(&format!("{fm}\nb\n"));
+        assert_eq!(row_shape(&m), [(false, 15)]);
+        assert_eq!(m.content_start, 14);
+        let m = map(&format!("{fm}\n\nb\n"));
+        assert_eq!(row_shape(&m), [(false, 13), (true, 14), (false, 16)]);
+        assert_eq!(m.content_start, 13);
+
+        // Preserve flow draws every line, but the frontmatter's.
+        let preserve = |src: &str| {
+            let mut ed = Editor::new_str(src, Format::Markdown).unwrap();
+            build(
+                &ed.nodes().unwrap(),
+                src,
+                Some(80),
+                true,
+                &Surface::default(),
+                None,
+            )
+        };
+        assert_eq!(row_shape(&preserve("\nb\n")), [(false, 0), (false, 2)]);
+        assert_eq!(row_shape(&preserve(&format!("{fm}\nb\n"))), [(false, 15)]);
+        assert_eq!(
+            row_shape(&preserve(&format!("{fm}\n\nb\n"))),
+            [(false, 14), (false, 16)]
+        );
+
+        // Past a comment, counted from the line after it.
+        assert_eq!(row_shape(&map("<!-- c -->\n\nb\n")), [(false, 13)]);
+        assert_eq!(
+            row_shape(&map("<!-- c -->\n\n\nb\n")),
+            [(false, 11), (true, 12), (false, 14)]
+        );
     }
 
     #[test]
