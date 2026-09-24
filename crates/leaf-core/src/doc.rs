@@ -6055,9 +6055,11 @@ impl Doc {
     /// and a blank line either side, which is what typing into a new block and
     /// then Backspacing out of it would have left.
     ///
-    /// Inside a list item twig refuses in both directions (a fence at column
-    /// zero would swallow the item's marker), and the refusal is reported rather
-    /// than worked around.
+    /// Inside a list item twig fences at the item's content column and keeps
+    /// the marker (a task item's box too) on the opening fence's line, so the
+    /// block stays the item's; unfencing puts the marker back on the text.
+    /// What twig still refuses — an AsciiDoc item's own first line — is
+    /// reported rather than worked around.
     pub fn toggle_code_block(&mut self) {
         // The read-only gate — this door reaches twig without the splice.
         if self.read_only {
@@ -17720,16 +17722,41 @@ mod tests {
     }
 
     #[test]
-    fn toggle_code_block_inside_a_list_item_is_refused_and_reported() {
-        let mut d = wysiwyg_doc("cb_list", "- it|em\n".replace('|', "").as_str());
-        d.caret = 3;
+    fn toggle_code_block_inside_a_list_item_fences_and_unfences_in_place() {
+        for (name, before, fenced) in [
+            ("cb_list", "- it|em\n", "- ```\n  it|em\n  ```\n"),
+            ("cb_olist", "1. it|em\n", "1. ```\n   it|em\n   ```\n"),
+            ("cb_task", "- [ ] it|em\n", "- [ ] ```\n  it|em\n  ```\n"),
+            (
+                "cb_nested",
+                "- a\n  - it|em\n",
+                "- a\n  - ```\n    it|em\n    ```\n",
+            ),
+        ] {
+            let mut d = wysiwyg_doc(name, &before.replace('|', ""));
+            d.caret = before.find('|').unwrap();
+            d.toggle_code_block();
+            assert_eq!(render_caret(&d), fenced, "{name}: fencing");
+            assert!(
+                d.caret_in_code_block(),
+                "{name}: the caret is in the new block"
+            );
+            d.toggle_code_block();
+            assert_eq!(
+                render_caret(&d),
+                before,
+                "{name}: a second press reverses the first"
+            );
+        }
+    }
+
+    #[test]
+    fn toggle_code_block_in_a_list_item_is_one_undo_step() {
+        let mut d = wysiwyg_doc("cb_list_undo", "- item\n");
+        d.caret = 4;
         d.toggle_code_block();
-        assert_eq!(d.source, "- item\n");
-        assert!(
-            d.status
-                .as_deref()
-                .is_some_and(|s| s.starts_with("code block:"))
-        );
+        d.undo();
+        assert_eq!(render_caret(&d), "- it|em\n");
     }
 
     #[test]
