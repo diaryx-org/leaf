@@ -2,7 +2,7 @@
 title: Tasks
 description: Deferred work on leaf, one file each — a commitment with a done state
 created: 2026-09-04
-updated: 2026-09-22
+updated: 2026-09-23
 contents:
 - '[Writing Tools in the Apple views](writing-tools.md)'
 - '[Right-to-left text](right-to-left-text.md)'
@@ -10,6 +10,8 @@ contents:
 - '[The heading the caret is under is a question `Doc` cannot answer](heading-at-offset.md)'
 - '[`can_undo` counts edits, and twig counts steps](can-undo-counts-edits-not-steps.md)'
 - '[The Mac app runs unsandboxed and unsigned](sandboxed-mac-app.md)'
+- '[Enter in an HTML document writes whitespace](enter-in-html-writes-whitespace.md)'
+- '[Text glued under a closing `</div>` draws until the next full rebuild](text-glued-under-a-closing-div.md)'
 - '[Closed tasks](/docs/tasks/closed/closed.md)'
 part_of: '[leaf](/README.md)'
 ---
