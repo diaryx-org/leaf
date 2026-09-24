@@ -3364,6 +3364,16 @@ impl Builder<'_> {
         boundary: Boundary,
     ) {
         let mut offs = self.blank_rows_between(self.last_off, next_start);
+        // Under a `</div>` the first blank line is the one Markdown needs to
+        // end the div, not a line the author opened. Preserve flow drew it as
+        // one, and Backspace there took it and glued the block below onto the
+        // closing tag, as raw HTML.
+        if self.preserve_soft && offs.first().is_some_and(|&o| self.closes_div_above(o)) {
+            offs.remove(0);
+            if offs.is_empty() {
+                return;
+            }
+        }
         if offs.is_empty() {
             if !synthetic {
                 // A tight list item's own text sits directly above the sub-list
@@ -3416,8 +3426,10 @@ impl Builder<'_> {
                 task: None,
                 leaf_directive: None,
                 heading: None,
-                align: None,
-                line_height: None,
+                // A line the author can type on is a line of the block
+                // around it, and keeps its spacing and alignment.
+                align: (!drawn).then_some(self.presentation.align).flatten(),
+                line_height: (!drawn).then_some(self.presentation.line_height).flatten(),
                 boundary: drawn.then_some(boundary),
                 mark_ends: Vec::new(),
                 math: Vec::new(),
@@ -3482,6 +3494,91 @@ impl Builder<'_> {
         }
     }
 
+    /// Whether the line above the one starting at `line` is a `</div>`.
+    fn closes_div_above(&self, line: usize) -> bool {
+        let Some(above) = self.source[..line].strip_suffix('\n') else {
+            return false;
+        };
+        let above = above.strip_suffix('\r').unwrap_or(above);
+        let start = above.rfind('\n').map_or(0, |p| p + 1);
+        above[start..].trim() == "</div>"
+    }
+
+    /// The blank lines between a `<div>`'s last block and its closing tag,
+    /// drawn inside the div, as the lines between two of its blocks are.
+    ///
+    /// One blank line is the one Markdown needs before `</div>`, and two are
+    /// that and the gap, so neither draws (in Preserve flow, which has no
+    /// gap, the second does). A third is the empty paragraph
+    /// Enter opens at the end of the div's last block — the end of a line
+    /// with a line height or an alignment on it — which drew nothing: the
+    /// key looked dead, and each press left another line nobody could see.
+    fn emit_div_trailing_lines(&mut self, id: usize, pc: &[Glyph]) {
+        let Some(&last) = self.children(id).last() else {
+            return;
+        };
+        if self.rows.is_empty() {
+            return;
+        }
+        let end = self.nodes[id].span.end.min(self.source.len());
+        let from = block_line(self.source, self.last_off).1;
+        if from >= end {
+            return;
+        }
+        let Some(close) = self.source[from..end].rfind("</div>") else {
+            return;
+        };
+        let close_line = self.source[..from + close].rfind('\n').map_or(0, |p| p + 1);
+        let mut offs = Vec::new();
+        let mut start = from;
+        while start < close_line {
+            if !self.source[start..close_line]
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .is_empty()
+            {
+                return;
+            }
+            offs.push(start);
+            match self.source[start..close_line].find('\n') {
+                Some(k) => start += k + 1,
+                None => break,
+            }
+        }
+        // Preserve flow draws every blank line but the one `</div>` needs.
+        if offs.len() < if self.preserve_soft { 2 } else { 3 } {
+            return;
+        }
+        offs.pop();
+        let above = BlockClass::from_node_kind(&self.nodes[last].kind);
+        for (k, end_src) in offs.into_iter().enumerate() {
+            let drawn = !self.preserve_soft && k == 0;
+            self.rows.push(VRow {
+                glyphs: pc.to_vec(),
+                end_src,
+                decoration: drawn,
+                code: false,
+                code_lang: None,
+                directive: false,
+                directive_label: None,
+                media: None,
+                task: None,
+                leaf_directive: None,
+                heading: None,
+                align: (!drawn).then_some(self.presentation.align).flatten(),
+                line_height: (!drawn).then_some(self.presentation.line_height).flatten(),
+                boundary: drawn.then_some(Boundary {
+                    above,
+                    below: BlockClass::Paragraph,
+                }),
+                mark_ends: Vec::new(),
+                math: Vec::new(),
+            });
+        }
+    }
+
     /// Where the lines above the first drawn block begin: past the hidden
     /// frontmatter, or past the line of the last hidden block the walk
     /// stepped over, whichever is later.
@@ -3513,6 +3610,7 @@ impl Builder<'_> {
             let saved = self.presentation;
             self.presentation = saved.under(&self.nodes[id].attrs, &self.faces);
             self.block_kind(id, pf, pc);
+            self.emit_div_trailing_lines(id, pc);
             self.presentation = saved;
             // Step the walk past the closing `</div>`, as the fenced-div arm
             // below anchors past its `:::`. The tag sits on a line of its own
@@ -6740,6 +6838,8 @@ mod tests {
             "\n\n\nfirst\n\nsecond\n",
             "---\ntitle: x\n---\n\n\nafter frontmatter\n",
             "<!-- lead -->\n\n\n\nafter a comment\n",
+            // An empty paragraph at the end of a div draws inside it.
+            "<div data-line-height=\"1.5\">\n\nI cry\n\nknees\n\n\n\n</div>\n\nafter\n",
         ];
         for wrap in [None, Some(80usize), Some(20)] {
             for src in docs {

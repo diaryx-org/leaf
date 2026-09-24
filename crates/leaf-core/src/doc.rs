@@ -3037,6 +3037,22 @@ impl Doc {
             self.insert_raw("\n");
             return;
         }
+        // At the start of a paragraph with a block above it, twig's split
+        // writes a lone newline ahead of the paragraph, which Fold draws as one
+        // more gap: the first Enter showed nothing. A heading's branch below
+        // parted it after its `#`, leaving an empty heading over a paragraph
+        // that had been the heading's text. Both open an empty paragraph above
+        // instead, the caret staying with the text. In Preserve flow too: its
+        // lone newline went inside a div, where nothing drew it, and between
+        // a mark's delimiters, where it cut the mark.
+        if let Some((at, text)) = self.paragraph_opening_at_caret() {
+            let caret = self.caret;
+            if self.splice(at, at, text, EditKind::Other) {
+                self.caret = caret + text.len();
+                self.record_caret();
+            }
+            return;
+        }
         // In `Preserve` flow a soft break is a *visible* line the author means to
         // make, so Enter writes a single `\n` and typing continues the same
         // paragraph on the next line — the behaviour of an ordinary text editor.
@@ -3049,23 +3065,11 @@ impl Doc {
         //
         // Only in running prose. A list or a quote has a continuation of its own
         // to write, and a `\n` there is not a soft line but a lost container.
+        // Nor in a heading, which a newline ends in Markdown and runs on
+        // unseen in djot: it takes the heading's own branch below.
         let in_container = has(Kind::ListItem) || has(Kind::TaskListItem) || has(Kind::BlockQuote);
-        if self.line_flow == LineFlow::Preserve && !in_container {
+        if self.line_flow == LineFlow::Preserve && !in_container && !has(Kind::Heading) {
             self.insert_raw("\n");
-            return;
-        }
-        // At the start of a paragraph with a block above it, twig's split
-        // writes a lone newline ahead of the paragraph, which Fold draws as one
-        // more gap: the first Enter showed nothing. A heading's branch below
-        // parted it after its `#`, leaving an empty heading over a paragraph
-        // that had been the heading's text. Both open an empty paragraph above
-        // instead, the caret staying with the text.
-        if let Some((at, text)) = self.paragraph_opening_at_caret() {
-            let caret = self.caret;
-            if self.splice(at, at, text, EditKind::Other) {
-                self.caret = caret + text.len();
-                self.record_caret();
-            }
             return;
         }
         // A heading gets a *paragraph*, never a second heading: Enter at the end
@@ -3098,25 +3102,23 @@ impl Doc {
     /// above a container's first block, so a centred paragraph's empty line
     /// has to open outside its div.
     ///
-    /// Inside a list or a quote twig's split already writes a marked line,
-    /// which draws.
+    /// Inside a list twig's split already writes a marked line, which draws,
+    /// and so it does in a quote, except above the quote's first line.
     ///
     /// What is written is what it takes to draw one more empty row. Between
     /// two blocks the first and last blank lines are the gap, so a paragraph
     /// break goes where there are fewer than two and a newline where the gap
     /// is already there. Above the first block only the last blank line is
-    /// the gap, so a newline goes where there is one already.
+    /// the gap, so a newline goes where there is one already. Preserve flow
+    /// draws every blank line, so a newline is always enough there, but under
+    /// frontmatter, whose own blank line draws nothing.
     fn paragraph_opening_at_caret(&mut self) -> Option<(usize, &'static str)> {
         let caret = self.caret.min(self.source.len());
         let chain = self.editor.ancestors_at(caret).ok()?;
         if chain.iter().any(|m| {
             matches!(
                 m.kind,
-                Kind::ListItem
-                    | Kind::TaskListItem
-                    | Kind::BlockQuote
-                    | Kind::CodeBlock
-                    | Kind::Table
+                Kind::ListItem | Kind::TaskListItem | Kind::CodeBlock | Kind::Table
             )
         }) {
             return None;
@@ -3147,18 +3149,31 @@ impl Doc {
             }
         }
         // Out past each container this paragraph opens, innermost first: one
-        // whose source before it is its opening line and blank lines.
+        // whose source before it is its opening line and blank lines. A quote
+        // opens on its first paragraph's own line, and draws no line above
+        // that paragraph: the break goes above the quote. Further down a
+        // quote twig's split writes a quoted line, which draws.
         let mut outer: Vec<_> = chain
             .iter()
-            .filter(|m| m.kind == Kind::Container && m.span.start < at)
+            .filter(|m| matches!(m.kind, Kind::Container | Kind::BlockQuote) && m.span.start < at)
             .collect();
         outer.sort_by_key(|m| std::cmp::Reverse(m.span.start));
         for c in outer {
             let before = &self.source[c.span.start..at];
-            if !before.lines().skip(1).all(|l| l.trim().is_empty()) {
+            let opens = match c.kind {
+                Kind::BlockQuote => !before.contains('\n'),
+                _ => before.lines().skip(1).all(|l| l.trim().is_empty()),
+            };
+            if !opens {
                 break;
             }
             at = c.span.start;
+        }
+        if chain
+            .iter()
+            .any(|m| m.kind == Kind::BlockQuote && m.span.start < at)
+        {
+            return None;
         }
         let content = self.source[..at].trim_end().len();
         let newlines = self.source[content..at].matches('\n').count();
@@ -3173,7 +3188,13 @@ impl Doc {
             .top_blocks()
             .iter()
             .all(|m| m.kind == Kind::Metadata || m.span.start >= at);
-        let gap = if first { 1 } else { 2 };
+        // Preserve flow draws every blank line, but the one under frontmatter.
+        let gap = match (self.line_flow, first) {
+            (LineFlow::Preserve, true) => usize::from(content > 0),
+            (LineFlow::Preserve, false) => 0,
+            (LineFlow::Fold, true) => 1,
+            (LineFlow::Fold, false) => 2,
+        };
         Some((at, if blank >= gap { "\n" } else { "\n\n" }))
     }
 
@@ -11952,6 +11973,245 @@ mod tests {
         }
     }
 
+    /// What a reader sees of a map: each row's text, whether it is a gap,
+    /// and the presentation it is drawn with. Offsets are left out, since an
+    /// edit shifts them without anything on screen changing.
+    fn drawn(d: &Doc) -> Vec<String> {
+        d.vmap
+            .rows
+            .iter()
+            .map(|r| {
+                let text: String = r.glyphs.iter().map(|g| g.ch).collect();
+                format!(
+                    "{}{text:?} h={:?} lh={:?} a={:?}",
+                    if r.decoration { "~" } else { "" },
+                    r.heading,
+                    r.line_height,
+                    r.align
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn enter_and_backspace_anywhere_show_what_they_write_and_undo_in_one_step() {
+        // Enter that writes what the view does not draw looks like a key that
+        // did nothing, so it gets pressed again, and the lines pile up unseen
+        // until something redraws them all at once. The rule, the page break,
+        // a paragraph's start, the first block's start and the blank page
+        // were each that bug once. So: at every place the caret can stand, in
+        // both flows, Enter either changes what is drawn or writes nothing,
+        // and one Undo takes back whatever it wrote. Enter and Backspace both
+        // leave the view a fresh open of the text would draw, so nothing
+        // moves when the view is next rebuilt from scratch.
+        let cases: &[(Format, &str)] = &[
+            (
+                Format::Markdown,
+                "I talk to myself\n\nI laugh\n\nI cry\n\nknees to nose\n\nlet me go\n",
+            ),
+            (Format::Markdown, "I talk to myself\nI laugh\nI cry\n"),
+            (
+                Format::Markdown,
+                "<div data-line-height=\"1.5\">\n\nI laugh\n\nI cry\n\nknees to nose\n\n</div>\n",
+            ),
+            (
+                Format::Markdown,
+                "<div data-line-height=\"1.15\">\n\nI cry\n\n</div>\n\n<div data-line-height=\"1.15\">\n\nknees\n\n</div>\n",
+            ),
+            (
+                Format::Markdown,
+                "<div class=\"center\">\n\nmiddle\n\n</div>\n\nafter\n",
+            ),
+            (
+                Format::Markdown,
+                "---\ntitle: x\n---\n\n# Title\n\nbody **bold** and <span data-color=\"red\">red</span>\n",
+            ),
+            (Format::Markdown, "\n\n\nafter blank lines\n\n\n\nmid\n\n\n"),
+            (
+                Format::Markdown,
+                "- one\n- two\n\n1. a\n2. b\n\n- [ ] task\n",
+            ),
+            (Format::Markdown, "> quoted\n> more\n\n> - in a quote\n"),
+            (Format::Markdown, "a\n\n---\n\nb\n\n::page-break\n\nc\n"),
+            (Format::Markdown, "Title\n=====\n\nSub\n---\n\ntext\n"),
+            (
+                Format::Markdown,
+                "```\ncode\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |\n",
+            ),
+            (Format::Djot, "I laugh\n\nI cry\n\nknees to nose\n"),
+            (
+                Format::Djot,
+                "{data-line-height=\"2\"}\nI cry\n\n{data-line-height=\"2\"}\nknees to nose\n",
+            ),
+            (Format::Djot, "# Title\n\na\n\n* * *\n\nb\n"),
+            // HTML is not here: Enter writes blank lines there, which the
+            // view draws and HTML does not keep. See
+            // docs/tasks/enter-in-html-writes-whitespace.md.
+        ];
+        let mut failures = Vec::new();
+        for &(format, body) in cases {
+            for flow in [LineFlow::Fold, LineFlow::Preserve] {
+                let open = || {
+                    let mut d = Doc::from_source(body.into(), format).unwrap();
+                    d.view = View::Wysiwyg;
+                    d.set_line_flow(flow);
+                    d.build_visual_unwrapped();
+                    d
+                };
+                // The map a fresh open of the same text would draw. The
+                // edited map differing from it is a view that changes on the
+                // next full rebuild, seconds after the key, with no key.
+                let fresh = |source: &str| {
+                    let mut ed =
+                        twig::Editor::new_ext(source.as_bytes(), format, parse_extensions())
+                            .unwrap();
+                    let nodes = ed.nodes().unwrap();
+                    crate::wysiwyg::build(
+                        &nodes,
+                        source,
+                        None,
+                        flow == LineFlow::Preserve,
+                        &wysiwyg::Surface::default(),
+                        None,
+                    )
+                };
+                let probe = open();
+                let stops: Vec<usize> = (0..=body.len())
+                    .filter(|&o| probe.vmap.is_stop(o))
+                    .collect();
+                for at in stops {
+                    for enter in [true, false] {
+                        let mut d = open();
+                        d.caret = at;
+                        d.anchor = None;
+                        let before = drawn(&d);
+                        if enter {
+                            d.newline();
+                        } else {
+                            d.backspace();
+                        }
+                        d.build_visual_unwrapped();
+                        let key = if enter { "enter" } else { "backspace" };
+                        let what = format!(
+                            "{key} {format:?} {flow:?} caret {at} in {body:?} -> {:?}",
+                            d.source
+                        );
+                        if maps_differ(&d.vmap, &fresh(&d.source)) {
+                            failures.push(format!("redraws differently: {what}"));
+                        }
+                        if d.source == body {
+                            continue;
+                        }
+                        if enter && drawn(&d) == before {
+                            failures.push(format!("drew nothing: {what}"));
+                        }
+                        d.undo();
+                        if d.source != body {
+                            failures.push(format!("undo left {:?}: {what}", d.source));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} failures:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    #[test]
+    fn enter_opens_a_line_that_draws_inside_a_div_a_quote_and_preserve_flow() {
+        // Each of these wrote a line the view did not draw, so Enter looked
+        // dead and every press left one more.
+        let enter = |format, flow, body: &str, at: usize| {
+            let mut d = Doc::from_source(body.into(), format).unwrap();
+            d.view = View::Wysiwyg;
+            d.set_line_flow(flow);
+            d.build_visual(80);
+            d.caret = at;
+            d.newline();
+            d.build_visual(80);
+            d
+        };
+        let div = "<div data-line-height=\"1.5\">\n\nI cry\n\nknees\n\n</div>\n";
+        let end = div.find("knees").unwrap() + "knees".len();
+
+        // At the end of a div's last paragraph, the empty paragraph opens
+        // inside the div, drawn with its line height, and what is typed
+        // there stays in it.
+        let mut d = enter(Format::Markdown, LineFlow::Fold, div, end);
+        let (row, _) = d.vmap.pos_of_offset(d.caret);
+        let r = &d.vmap.rows[row];
+        assert!(r.glyphs.is_empty() && !r.decoration, "{:?}", drawn(&d));
+        assert!(
+            r.line_height.is_some(),
+            "the new line keeps the div's spacing"
+        );
+        d.insert("x");
+        assert_eq!(
+            d.source,
+            "<div data-line-height=\"1.5\">\n\nI cry\n\nknees\n\nx\n\n</div>\n"
+        );
+        // Preserve flow's soft line there draws too.
+        let d = enter(Format::Markdown, LineFlow::Preserve, div, end);
+        assert_eq!(
+            d.source,
+            "<div data-line-height=\"1.5\">\n\nI cry\n\nknees\n\n\n</div>\n"
+        );
+        assert_eq!(d.vmap.rows.len(), 4, "{:?}", drawn(&d));
+        // Between two of the div's paragraphs, the empty line takes its
+        // spacing as well.
+        let d = enter(
+            Format::Markdown,
+            LineFlow::Fold,
+            div,
+            div.find("knees").unwrap(),
+        );
+        let (row, _) = d.vmap.pos_of_offset(d.caret);
+        assert!(
+            d.vmap.rows[row - 2].line_height.is_some(),
+            "{:?}",
+            drawn(&d)
+        );
+
+        // Under `</div>` the blank line is the one Markdown needs to end the
+        // div. Preserve flow drew it as a line to type on, and Backspace
+        // there glued the next paragraph to the tag (`</div>after`).
+        let below = "<div class=\"center\">\n\nmiddle\n\n</div>\n\nafter\n";
+        let mut d = Doc::from_source(below.into(), Format::Markdown).unwrap();
+        d.view = View::Wysiwyg;
+        d.set_line_flow(LineFlow::Preserve);
+        d.build_visual(80);
+        assert_eq!(d.vmap.rows.len(), 2, "{:?}", drawn(&d));
+        d.caret = below.find("after").unwrap();
+        d.backspace();
+        assert!(!d.source.contains("</div>after"), "{:?}", d.source);
+
+        // At a quote's first line, the line opens above the quote; twig's
+        // split wrote a quoted blank line above the text, which drew nothing.
+        let d = enter(
+            Format::Markdown,
+            LineFlow::Fold,
+            "a\n\n> quoted\n> more\n",
+            5,
+        );
+        assert_eq!(d.source, "a\n\n\n\n> quoted\n> more\n");
+        assert_eq!(&d.source[d.caret..], "quoted\n> more\n");
+
+        // Preserve flow at a paragraph's start: past a mark's delimiters its
+        // newline cut the mark (`**\nb**`), and in djot a heading ran on
+        // over it unseen.
+        let d = enter(Format::Markdown, LineFlow::Preserve, "a\n\n**b** c\n", 5);
+        assert_eq!(d.source, "a\n\n\n**b** c\n");
+        let d = enter(Format::Djot, LineFlow::Preserve, "a\n\n# Title\n", 5);
+        assert_eq!(d.source, "a\n\n\n# Title\n");
+        // Inside a heading it parts the heading, as in Fold flow.
+        let d = enter(Format::Djot, LineFlow::Preserve, "a\n\n# Title\n", 7);
+        assert_eq!(d.source, "a\n\n# Ti\n\ntle\n");
+    }
+
     #[test]
     fn enter_on_a_blank_page_writes_nothing() {
         // With no block to push down, Fold flow draws no line for Enter to
@@ -13573,6 +13833,9 @@ mod tests {
             "\n\nfirst pushed down\n\nsecond\n",
             "---\ntitle: x\n---\n\n\nafter frontmatter\n\nmore\n",
             "<!-- lead -->\n\n\nafter a comment\n\nmore\n",
+            // No `<div>` here yet: an edit that takes the blank line under
+            // `</div>` leaves a map no fresh build draws. See
+            // docs/tasks/text-glued-under-a-closing-div.md.
         ];
         // A deterministic mix: mostly single characters (which stay inside one
         // block → splice), plus edits that reshape structure (a paragraph break,
