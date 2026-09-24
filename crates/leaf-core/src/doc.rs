@@ -2977,6 +2977,12 @@ impl Doc {
             self.splice(s, e, "\n\n", EditKind::Other);
             return;
         }
+        // On a blank page there is no block to push down, and a blank line
+        // with nothing under it is not something Fold flow draws. Enter wrote
+        // one anyway: an edit, and an undo step, that showed nothing.
+        if self.line_flow == LineFlow::Fold && self.source[self.caret_floor()..].trim().is_empty() {
+            return;
+        }
         // A caret resting exactly between an inline mark's content and its own
         // closing delimiter (`**bold**` with nothing after it on the line —
         // the WYSIWYG caret's natural end-of-line position) must not splice a
@@ -3048,6 +3054,20 @@ impl Doc {
             self.insert_raw("\n");
             return;
         }
+        // At the start of a paragraph with a block above it, twig's split
+        // writes a lone newline ahead of the paragraph, which Fold draws as one
+        // more gap: the first Enter showed nothing. A heading's branch below
+        // parted it after its `#`, leaving an empty heading over a paragraph
+        // that had been the heading's text. Both open an empty paragraph above
+        // instead, the caret staying with the text.
+        if let Some((at, text)) = self.paragraph_opening_at_caret() {
+            let caret = self.caret;
+            if self.splice(at, at, text, EditKind::Other) {
+                self.caret = caret + text.len();
+                self.record_caret();
+            }
+            return;
+        }
         // A heading gets a *paragraph*, never a second heading: Enter at the end
         // of a title is how every editor is asked for the body under it, and
         // `split_block` would repeat the `#` instead. Whitespace at the split
@@ -3061,38 +3081,32 @@ impl Doc {
             self.splice(self.caret, end, "\n\n", EditKind::Other);
             return;
         }
-        // At the start of a paragraph with a block above it, twig's split
-        // writes a lone newline ahead of the paragraph, which Fold draws as one
-        // more gap: the first Enter showed nothing. A paragraph break opens the
-        // empty paragraph above it instead, the caret staying with the text.
-        if let Some(at) = self.paragraph_opening_at_caret() {
-            let caret = self.caret;
-            if self.splice(at, at, "\n\n", EditKind::Other) {
-                self.caret = caret + 2;
-                self.record_caret();
-            }
-            return;
-        }
         self.split_block_here();
     }
 
-    /// Where Enter writes a paragraph break to open an empty paragraph above
-    /// the one the caret starts — `None` when the caret does not start one.
+    /// Where Enter writes to open an empty paragraph above the paragraph or
+    /// heading the caret starts, and what — `None` when the caret does not
+    /// start one.
     ///
     /// The caret starts a paragraph that is in no list item, quote, fence or
     /// table when no text of the paragraph stands before it: at its first
     /// byte, or past only the opening delimiters of marks that begin with it
     /// (`**`, a colour's `<span …>`), which is where a tap before the first
-    /// letter lands. Parted there, twig's split cut the mark in two. The break
+    /// letter lands. A heading's `#` marker is such a delimiter. Parted there, twig's split cut the mark in two. The break
     /// goes in front of those delimiters, and in front of any `<div>` or
     /// fenced div the paragraph opens — the view draws no row for a blank line
     /// above a container's first block, so a centred paragraph's empty line
     /// has to open outside its div.
     ///
     /// Inside a list or a quote twig's split already writes a marked line,
-    /// which draws. The document's first block is left to the split too: the
-    /// view draws no row above it, whichever is written.
-    fn paragraph_opening_at_caret(&mut self) -> Option<usize> {
+    /// which draws.
+    ///
+    /// What is written is what it takes to draw one more empty row. Between
+    /// two blocks the first and last blank lines are the gap, so a paragraph
+    /// break goes where there are fewer than two and a newline where the gap
+    /// is already there. Above the first block only the last blank line is
+    /// the gap, so a newline goes where there is one already.
+    fn paragraph_opening_at_caret(&mut self) -> Option<(usize, &'static str)> {
         let caret = self.caret.min(self.source.len());
         let chain = self.editor.ancestors_at(caret).ok()?;
         if chain.iter().any(|m| {
@@ -3107,7 +3121,15 @@ impl Doc {
         }) {
             return None;
         }
-        let para = chain.iter().find(|m| m.kind == Kind::Para)?;
+        let para = chain
+            .iter()
+            .find(|m| matches!(m.kind, Kind::Para | Kind::Heading))?;
+        // An empty heading has nothing to push down: Enter there is still
+        // the body under it.
+        let end = para.span.end.min(self.source.len());
+        if self.source[caret.min(end)..end].trim().is_empty() {
+            return None;
+        }
         let mut at = para.span.start;
         if at != caret {
             let text_before = self
@@ -3138,7 +3160,21 @@ impl Doc {
             }
             at = c.span.start;
         }
-        (!self.source[..at].trim().is_empty()).then_some(at)
+        let content = self.source[..at].trim_end().len();
+        let newlines = self.source[content..at].matches('\n').count();
+        // Every newline starts a blank line but one that ends the line of
+        // what stands above, a block or hidden frontmatter.
+        let blank = if content == 0 {
+            newlines
+        } else {
+            newlines.saturating_sub(1)
+        };
+        let first = self
+            .top_blocks()
+            .iter()
+            .all(|m| m.kind == Kind::Metadata || m.span.start >= at);
+        let gap = if first { 1 } else { 2 };
+        Some((at, if blank >= gap { "\n" } else { "\n\n" }))
     }
 
     /// Part the block at the caret with twig's [`Editor::split_block`], leaving
@@ -11804,11 +11840,14 @@ mod tests {
         // A paragraph break opens a line above, the caret staying before the
         // text. Past a mark's opening delimiters — where a tap before the
         // first letter lands — the split used to cut the mark in two
-        // (`**\n\nb**`); the break goes in front of them. A paragraph that
+        // (`**\n\nb**`); the break goes in front of them, as it goes in
+        // front of a heading's `#`, where the heading's own Enter left an
+        // empty heading over its text as a paragraph. A paragraph that
         // opens a div gets its line outside the div, where it draws.
         for (body, caret, want, want_caret) in [
             ("a\n\nb\n", 3, "a\n\n\n\nb\n", 5),
             ("# H\n\nb\n", 5, "# H\n\n\n\nb\n", 7),
+            ("a\n\n# H\n", 5, "a\n\n\n\n# H\n", 7),
             ("a\n\n**b** c\n", 3, "a\n\n\n\n**b** c\n", 5),
             ("a\n\n**b** c\n", 5, "a\n\n\n\n**b** c\n", 7),
             (
@@ -11846,6 +11885,92 @@ mod tests {
         d.caret = 8;
         d.newline();
         assert_eq!(d.source, "a\n\n**b**\n\nc\n");
+    }
+
+    #[test]
+    fn enter_again_at_a_paragraph_s_start_opens_one_more_line() {
+        // The first Enter's paragraph break leaves a gap either side of the
+        // empty line. A second break drew two lines more; a newline draws one.
+        let mut d = wysiwyg_doc("enter_para_again", "a\n\nb\n");
+        d.build_visual(80);
+        d.caret = 3;
+        for (want, lines) in [("a\n\n\n\nb\n", 1), ("a\n\n\n\n\nb\n", 2)] {
+            d.newline();
+            assert_eq!(d.source, want);
+            assert_eq!(&d.source[d.caret..], "b\n");
+            d.build_visual(80);
+            let empty = d
+                .vmap
+                .rows
+                .iter()
+                .filter(|r| r.glyphs.is_empty() && !r.decoration)
+                .count();
+            assert_eq!(empty, lines, "{want:?}");
+        }
+    }
+
+    #[test]
+    fn enter_at_the_first_block_s_start_pushes_it_down() {
+        // No row was drawn for a blank line above the first block, so Enter
+        // there wrote a line and the text stayed where it was. Each Enter now
+        // draws one empty line above it, the caret staying with the text;
+        // past frontmatter, the line conventionally under it still draws
+        // nothing until Enter adds to it.
+        for (body, caret, wants) in [
+            ("b\n", 0, ["\n\nb\n", "\n\n\nb\n"]),
+            ("**b** c\n", 2, ["\n\n**b** c\n", "\n\n\n**b** c\n"]),
+            ("# H\n", 2, ["\n\n# H\n", "\n\n\n# H\n"]),
+            (
+                "---\nt: x\n---\n\nb\n",
+                14,
+                ["---\nt: x\n---\n\n\nb\n", "---\nt: x\n---\n\n\n\nb\n"],
+            ),
+        ] {
+            let mut d = wysiwyg_doc("enter_first_block", body);
+            d.build_visual(80);
+            let empty = |d: &Doc| {
+                d.vmap
+                    .rows
+                    .iter()
+                    .filter(|r| r.glyphs.is_empty() && !r.decoration)
+                    .count()
+            };
+            assert_eq!(empty(&d), 0, "{body:?}: nothing above the text yet");
+            d.caret = caret;
+            for (lines, want) in wants.into_iter().enumerate() {
+                d.newline();
+                assert_eq!(d.source, want, "{body:?}");
+                assert!(d.source[d.caret..].starts_with(&body[caret..]), "{body:?}");
+                d.build_visual(80);
+                assert_eq!(empty(&d), lines + 1, "{want:?}");
+            }
+            // The caret can go up onto the lines it opened.
+            d.move_up(false);
+            let (row, _) = d.vmap.pos_of_offset(d.caret);
+            assert!(d.vmap.rows[row].glyphs.is_empty(), "{body:?}");
+            assert!(!d.vmap.rows[row].decoration, "{body:?}");
+        }
+    }
+
+    #[test]
+    fn enter_on_a_blank_page_writes_nothing() {
+        // With no block to push down, Fold flow draws no line for Enter to
+        // open, and the newline it wrote was an edit and an undo step that
+        // showed nothing. Preserve flow draws every line, so there it writes.
+        for body in ["", "\n", "\n\n  \n", "---\nt: x\n---\n"] {
+            let mut d = wysiwyg_doc("enter_blank_page", body);
+            d.build_visual(80);
+            d.caret = d.source.len();
+            d.newline();
+            assert_eq!(d.source, body);
+            assert!(!d.can_undo(), "{body:?}");
+            assert!(!d.dirty, "{body:?}");
+        }
+        let mut d = wysiwyg_doc("enter_blank_page_preserve", "");
+        d.set_line_flow(LineFlow::Preserve);
+        d.build_visual(80);
+        d.newline();
+        assert_eq!(d.source, "\n");
     }
 
     #[test]
@@ -13443,6 +13568,11 @@ mod tests {
             // into a paragraph (a deleted `:`) and back, and whose own bytes an
             // edit can land in.
             "see [a] and [b]\n\n[a]: /a\n\nmid text\n\n[b]: /b\n",
+            // Blank lines above the first block draw as rows, counted as its
+            // separator; above it past frontmatter and past a comment too.
+            "\n\nfirst pushed down\n\nsecond\n",
+            "---\ntitle: x\n---\n\n\nafter frontmatter\n\nmore\n",
+            "<!-- lead -->\n\n\nafter a comment\n\nmore\n",
         ];
         // A deterministic mix: mostly single characters (which stay inside one
         // block → splice), plus edits that reshape structure (a paragraph break,
