@@ -833,6 +833,12 @@ pub struct DocView {
     /// the caret into a fence changes no mark, and a button asking for itself
     /// would never be told.
     pub code_block: bool,
+    /// Whether the caret stands inside a block quote, at any depth — the
+    /// toolbar lights and ticks its Block Quote control from it. A quote wraps
+    /// blocks rather than being one, so this is true alongside `heading` or
+    /// `code_block`, not instead of them. Rides the frame for `heading`'s
+    /// reason.
+    pub blockquote: bool,
     /// Whether the list item at the caret carries a checkbox, and which way it
     /// faces — `Some(true)` ticked, `Some(false)` empty, `None` for a plain
     /// item or no item at all. A toolbar lights its Checklist button from the
@@ -1868,6 +1874,7 @@ impl Inner {
         };
         let heading = self.doc.current_heading_level();
         let code_block = self.doc.caret_in_code_block();
+        let blockquote = self.doc.caret_in_blockquote();
         let task = self.doc.task_checked_at_caret();
         let active = self
             .doc
@@ -1904,6 +1911,7 @@ impl Inner {
             view: self.doc.view_name().to_string(),
             heading,
             code_block,
+            blockquote,
             task,
             active,
             link,

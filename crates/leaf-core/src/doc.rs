@@ -6195,6 +6195,19 @@ impl Doc {
         self.code_block_start_at_caret().is_some()
     }
 
+    /// Whether the caret stands anywhere inside a block quote, however deep —
+    /// what lights the Block Quote button. A quote is a container rather than
+    /// a block kind, so this is true alongside a heading or a code block, not
+    /// instead of one.
+    pub fn caret_in_blockquote(&mut self) -> bool {
+        let off = self.caret.min(self.source.len());
+        // A quote's span stops short of its closing newline, so the end of its
+        // last line is `span.end` itself, and has to count.
+        self.nodes()
+            .into_iter()
+            .any(|n| n.kind == Kind::BlockQuote && n.span.start <= off && off <= n.span.end)
+    }
+
     // ── Task list items ──────────────────────────────────────────────────────
     // The checkbox in `- [x] done`. twig owns all three gestures: the box is
     // inline content of the item's first paragraph rather than part of its
@@ -17728,6 +17741,40 @@ mod tests {
         assert!(d.caret_in_code_block());
         d.caret = 25;
         assert!(d.caret_in_code_block(), "an indented block is a code block");
+    }
+
+    #[test]
+    fn caret_in_blockquote_reads_every_line_of_a_quote_and_nothing_after() {
+        let src = "para\n\n> # Head\n> body|\n\nafter\n";
+        let mut d = wysiwyg_doc("bq_in", &src.replace('|', ""));
+        let quote_start = src.find('>').unwrap();
+        let body_end = src.find('|').unwrap();
+        let after = src.find("after").unwrap() - 1;
+        for (at, inside) in [
+            (2, false),
+            (quote_start + 4, true),
+            (body_end - 2, true),
+            (body_end, true),
+            (after, false),
+            (after + 2, false),
+        ] {
+            d.caret = at;
+            assert_eq!(d.caret_in_blockquote(), inside, "caret at {at}");
+        }
+        // A heading in a quote is both: the quote is a layer over the style.
+        d.caret = quote_start + 4;
+        assert_eq!(d.current_heading_level(), Some(1));
+    }
+
+    #[test]
+    fn caret_in_blockquote_follows_the_toggle() {
+        let mut d = wysiwyg_doc("bq_toggle", "hello\n");
+        d.caret = 2;
+        assert!(!d.caret_in_blockquote());
+        d.toggle_blockquote();
+        assert!(d.caret_in_blockquote());
+        d.toggle_blockquote();
+        assert!(!d.caret_in_blockquote());
     }
 
     #[test]
