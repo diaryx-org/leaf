@@ -45,8 +45,9 @@ enum AttributedRow {
         let result = NSMutableAttributedString()
         let size = row.heading.map { theme.headingSize(Int($0)) } ?? theme.fontSize
         let isHeadingRow = row.heading != nil
+        let widened = codeListMarker(row)
 
-        for run in runs {
+        for (index, run) in runs.enumerated() {
             let attrs = attributes(
                 run: run,
                 size: size,
@@ -62,9 +63,35 @@ enum AttributedRow {
             }
             let piece = NSMutableAttributedString(string: run.text, attributes: attrs)
             if run.role == "quote" { kernGutter(piece, theme: theme) }
+            if index == widened { widenMarker(piece) }
             result.append(piece)
         }
         return result
+    }
+
+    /// How far a code block's tint reaches past its text on either side.
+    static let codeFillOutset: CGFloat = 4
+
+    /// The index of the run whose marker a code row widens: its last prefix
+    /// run, when that is a list item's marker or indent. The tint starts at
+    /// the end of the prefix less `codeFillOutset`, which would bring it up
+    /// against the bullet; the marker's gap grows by as much instead, the same
+    /// on the item's first row and its later ones, so they still line up.
+    /// Nil on any other row — a quote's gutter is wide enough already.
+    private static func codeListMarker(_ row: Row) -> Int? {
+        guard row.code, let last = row.prefixRuns.last,
+              last.role == "list" || last.role == "list-indent" else { return nil }
+        return row.prefixRuns.count - 1
+    }
+
+    /// Kern the marker's last glyph before its space by `codeFillOutset`. On
+    /// the glyph and not the space, for the reason `kernGutter` gives: kern on
+    /// the trailing space would stand a caret at the line's start short of the
+    /// first letter.
+    private static func widenMarker(_ piece: NSMutableAttributedString) {
+        let text = piece.string as NSString
+        guard text.length >= 2 else { return }
+        piece.addAttribute(.kern, value: codeFillOutset, range: NSRange(location: text.length - 2, length: 1))
     }
 
     /// An inline formula's run as its picture: the one character core drew
@@ -186,6 +213,10 @@ enum AttributedRow {
         // plain one — inline code, a block no grammar covers — in `codeColor`.
         case "code": attrs[.foregroundColor] = theme.syntaxColor(run.token)
         case "list": attrs[.foregroundColor] = theme.secondaryColor
+        // A list item's marker again, on the item's later rows: spelled with
+        // the marker's characters so it takes exactly the marker's width, and
+        // drawn clear, so the rows below the bullet line up under its text.
+        case "list-indent": attrs[.foregroundColor] = LeafColor.clear
         // A quote's `│ ` gutter is *not* drawn as text: the view paints a real bar
         // down the block's left edge instead. The glyphs stay in the string (they
         // hold the row's UTF-16 offsets in step with core's `caret_ch`) but draw

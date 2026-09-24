@@ -166,6 +166,46 @@ final class BlockChromeTests: XCTestCase {
         XCTAssertTrue(BlockChrome.quoteBarRuns(layout.rows, theme: theme).isEmpty)
     }
 
+    // MARK: list items
+
+    /// An item's later rows wear its marker as a clear indent, so they take
+    /// the marker's width exactly and their text starts under the first row's.
+    func testAnItemsLaterRowsLineUpUnderItsFirst() {
+        for marker in ["• ", "1. ", "☐ "] {
+            let dv = docView([
+                row([mkRun(marker, role: "list"), mkRun("first")]),
+                row([mkRun(marker, role: "list-indent"), mkRun("second")]),
+            ])
+            let layout = EditorLayout(dv, theme: theme, wrapWidth: 400)
+            let first = layout.rows[0].shaped.prefixWidth, later = layout.rows[1].shaped.prefixWidth
+            XCTAssertGreaterThan(first, 0, marker)
+            XCTAssertEqual(later, first, accuracy: 0.01, marker)
+        }
+    }
+
+    /// A code block in a list item is tinted from the end of the item's
+    /// prefix on every row, so the bullet stands beside the block rather than
+    /// inside it; a code block with no prefix fills from the margin.
+    func testACodeFillStartsPastTheRowsPrefix() throws {
+        let dv = docView([
+            row([mkRun("• ", role: "list"), mkRun("one", role: "code")], code: true),
+            row([mkRun("• ", role: "list-indent"), mkRun("two", role: "code")], code: true),
+            row([mkRun("bare", role: "code")], code: true),
+        ])
+        let layout = EditorLayout(dv, theme: theme, wrapWidth: 400)
+        let edges = try layout.rows.map { try XCTUnwrap($0.codeFills.first).minX }
+        let prefix = layout.rows[0].shaped.prefixWidth
+        XCTAssertEqual(edges[0], theme.padding.left + prefix - 4, accuracy: 0.5)
+        XCTAssertEqual(edges[1], edges[0], accuracy: 0.01, "one straight edge down the block")
+        XCTAssertEqual(edges[2], theme.padding.left - 4, accuracy: 0.5)
+
+        // The bullet keeps its gap from the tint: its marker is widened by the
+        // tint's reach, so it stands as far from the fill as from prose.
+        let prose = EditorLayout(docView([row([mkRun("• ", role: "list"), mkRun("text")])]),
+                                 theme: theme, wrapWidth: 400)
+        XCTAssertEqual(prefix, prose.rows[0].shaped.prefixWidth + AttributedRow.codeFillOutset, accuracy: 0.01)
+    }
+
     // MARK: hanging indent
 
     func testWrappedQuoteHangsUnderItsOwnText() throws {

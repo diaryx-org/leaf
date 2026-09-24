@@ -611,7 +611,7 @@ fn expand_headings(
             for g in &row.glyphs {
                 srcs.push(g.src);
                 byte_starts.push(text.len());
-                text.push(g.ch);
+                text.push(g.drawn());
             }
         }
         let target: usize = if level == 1 { 3 } else { 2 };
