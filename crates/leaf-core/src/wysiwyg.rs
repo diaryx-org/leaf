@@ -3945,9 +3945,11 @@ impl Builder<'_> {
                     let at = offs.as_ref().map_or(node.span.start, |o| o[i]);
                     // No gutter glyph: the block is set apart by the border and
                     // tint a frontend draws around the whole run of `code` rows,
-                    // not by a per-line mark. Just the block prefix (a list
-                    // indent, a quote gutter) and the code text.
-                    let mut glyphs: Vec<Glyph> = pf.to_vec();
+                    // not by a per-line mark. Just the block prefix and the
+                    // code text: the first-row prefix on the first line (a list
+                    // item's marker) and the continuation on the rest (its
+                    // indent), as a wrapped paragraph takes them.
+                    let mut glyphs: Vec<Glyph> = if i == 0 { pf } else { pc }.to_vec();
                     match tokens.as_ref().and_then(|t| t.get(i)) {
                         Some(spans) => push_code_text(&mut glyphs, raw, at, style, spans),
                         None => push_text(&mut glyphs, raw, at, style),
@@ -5337,7 +5339,11 @@ impl Builder<'_> {
     /// where this never looks).
     fn emit_quote_trailing_lines(&mut self, pc: &[Glyph], end: usize) {
         let end = end.min(self.source.len());
-        let mut at = self.last_line_end().unwrap_or(0);
+        // From where the walk stands, not where the last row ends: a fenced
+        // code block's last row is its last line of code, and its closing
+        // fence (`> ```) is markup the block already stepped `last_off` past.
+        // Counted from the row, the fence's line drew as an empty quoted line.
+        let mut at = self.last_line_end().unwrap_or(0).max(self.last_off);
         // Walk line by line from the last child's end to the quote's, taking each
         // line's *end* as the row's offset — the caret home at the end of a line
         // is where one on an empty quoted line belongs, and it keeps every row's
@@ -7350,6 +7356,42 @@ mod tests {
         // real one the author typed. The gap row wears the item's continuation
         // prefix (the two-space indent), so it renders as "  ", not empty.
         assert_eq!(rendered(&map("- a\n\n  - b\n")), "• a\n  \n  • b");
+    }
+
+    #[test]
+    fn a_code_block_in_a_list_item_wears_one_marker() {
+        // The item's marker goes on the block's first line and its indent on
+        // the rest, as a wrapped paragraph's rows do. Every line wore the
+        // marker once, so a two-line block in an item read as two items.
+        assert_eq!(
+            rendered(&map("- ```\n  one\n  two\n  ```\n")),
+            "• one\n  two"
+        );
+        assert_eq!(
+            rendered(&map("1. ```\n   one\n   two\n   ```\n")),
+            "1. one\n   two"
+        );
+        assert_eq!(
+            rendered(&map("- [ ] ```\n  one\n  two\n  ```\n")),
+            "☐ one\n  two"
+        );
+    }
+
+    #[test]
+    fn a_code_block_in_a_quote_draws_no_row_for_its_closing_fence() {
+        // The gutter is the same on every row. The closing fence is markup,
+        // and drew an empty quoted line under the code as if the writer had
+        // typed one, at the end of the document or before more.
+        assert_eq!(
+            rendered(&map("> ```\n> one\n> two\n> ```\n")),
+            "│ one\n│ two"
+        );
+        assert_eq!(
+            rendered(&map("> ```\n> one\n> ```\n\nafter\n")),
+            "│ one\n\nafter"
+        );
+        // A quoted line the writer added under the fence is still one.
+        assert_eq!(rendered(&map("> ```\n> one\n> ```\n>\n")), "│ one\n│ ");
     }
 
     #[test]
