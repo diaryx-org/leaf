@@ -149,7 +149,7 @@ fn is_text(role: Role) -> bool {
         Role::Body | Role::Heading(_) | Role::Code | Role::Link | Role::Mark(_) => true,
         // A bullet, a quote's `│`, a thematic break's dashes and a table's
         // borders: drawn by the renderer, not written by the author.
-        Role::ListMarker | Role::QuoteGutter | Role::Rule => false,
+        Role::ListMarker | Role::ListIndent | Role::QuoteGutter | Role::Rule => false,
         // Raw markup a revealed line is showing — the source, not the text.
         // `Doc::counts` builds its map with no revealed line, so this arm is
         // the statement of intent rather than a live case.

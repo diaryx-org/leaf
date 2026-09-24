@@ -56,6 +56,19 @@ pub struct Glyph {
     pub stop: bool,
 }
 
+impl Glyph {
+    /// The character to draw: [`ch`](Self::ch), except a list item's indent
+    /// on its later rows ([`Role::ListIndent`]), which is spelled with the
+    /// marker's characters for its width and drawn blank.
+    pub fn drawn(&self) -> char {
+        if self.style.role == Role::ListIndent {
+            ' '
+        } else {
+            self.ch
+        }
+    }
+}
+
 /// One visual line. `end_src` is the source offset a caret sits at when placed
 /// at the line's end (past its last glyph) — the anchor for end-of-line and
 /// click-past-content.
@@ -3819,7 +3832,10 @@ impl Builder<'_> {
                             (None, false) => "• ".to_string(),
                         };
                         let bullet = synth(&marker, Role::ListMarker, start);
-                        let indent = synth(&" ".repeat(text_width(&marker)), Role::Body, start);
+                        // The item's later rows wear the marker's own
+                        // characters, drawn blank: the width a proportional
+                        // face gives the marker, whatever the marker is.
+                        let indent = synth(&marker, Role::ListIndent, start);
                         let first_row = self.rows.len();
                         self.block(child, &concat(pc, &bullet), &concat(pc, &indent));
                         // On the item's first row, the way `code_lang` rides the
@@ -3884,9 +3900,8 @@ impl Builder<'_> {
                 let (start, end) = (node.span.start, node.span.end);
                 let source = self.source;
                 let marker = format!("[{}] ", footnote_label(source, start).unwrap_or(""));
-                let indent = " ".repeat(text_width(&marker));
                 let f = concat(pf, &synth(&marker, Role::ListMarker, start));
-                let c = concat(pc, &synth(&indent, Role::Body, start));
+                let c = concat(pc, &synth(&marker, Role::ListIndent, start));
                 if self.children(id).is_empty() {
                     // A definition with no body yet — the instant `[^1]: ` has
                     // been typed and nothing after it. `blocks` would emit
@@ -6717,7 +6732,7 @@ mod tests {
     fn rendered(m: &VisualMap) -> String {
         m.rows
             .iter()
-            .map(|r| r.glyphs.iter().map(|g| g.ch).collect::<String>())
+            .map(|r| r.glyphs.iter().map(Glyph::drawn).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -7375,6 +7390,28 @@ mod tests {
             rendered(&map("- [ ] ```\n  one\n  two\n  ```\n")),
             "☐ one\n  two"
         );
+    }
+
+    #[test]
+    fn an_items_later_rows_wear_its_marker_as_a_blank_indent() {
+        // Spelled with the marker's characters so a proportional face gives
+        // the indent exactly the marker's width; drawn blank everywhere.
+        for (src, marker) in [
+            ("- a\n\n  b\n", "• "),
+            ("1. a\n\n   b\n", "1. "),
+            ("- [ ] a\n\n  b\n", "☐ "),
+        ] {
+            let m = map(src);
+            let last = m.rows.last().unwrap();
+            let indent: String = last
+                .glyphs
+                .iter()
+                .take_while(|g| g.style.role == Role::ListIndent)
+                .map(|g| g.ch)
+                .collect();
+            assert_eq!(indent, marker, "{src:?}");
+            assert!(rendered(&m).ends_with(&format!("{}b", " ".repeat(marker.chars().count()))));
+        }
     }
 
     #[test]

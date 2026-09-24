@@ -64,6 +64,13 @@ pub enum Role {
     Mark(Option<MarkColor>),
     /// A list item's bullet or number — synthetic decoration, not authored text.
     ListMarker,
+    /// The room a list item's marker takes on the item's later rows — a
+    /// second paragraph, a code block's second line. Spelled with the
+    /// marker's own characters, so a frontend setting a proportional face
+    /// measures it at exactly the marker's width and the rows line up; drawn
+    /// as blank space, never as the marker. [`Glyph::drawn`] is the character
+    /// to put on screen.
+    ListIndent,
     /// A block quote's gutter (`│`), drawn down its left edge.
     QuoteGutter,
     /// A drawn rule: a thematic break (`───`) or a table's borders. A GUI that

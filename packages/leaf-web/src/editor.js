@@ -3372,6 +3372,7 @@ const EDITOR_CSS = `
 .leaf-r-mark.leaf-mk-purple { background: var(--leaf-mk-purple); }
 .leaf-r-mark.leaf-mk-brown { background: var(--leaf-mk-brown); }
 .leaf-r-list { color: var(--leaf-muted); }
+.leaf-r-list-indent { color: transparent; }
 .leaf-r-quote { color: var(--leaf-muted); }
 .leaf-r-rule { color: var(--leaf-muted); }
 /* Raw markup revealed on the caret's line under the "full" markdown mode: the

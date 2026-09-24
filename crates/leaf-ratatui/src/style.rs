@@ -445,6 +445,8 @@ impl Theme {
                 None => self.mark_bg,
             }),
             Role::ListMarker => s.fg(self.list_marker),
+            // Drawn as blanks (`Glyph::drawn`), so only a background would show.
+            Role::ListIndent => s,
             Role::QuoteGutter => s.fg(self.quote_gutter),
             // Thematic breaks and table rules are quiet grey.
             Role::Rule => s.fg(self.rule),
@@ -687,13 +689,13 @@ pub fn wysiwyg_lines(
                 }
                 let style = composed(theme.to_ratatui(g.style), g.src, sel, &mut covering, theme);
                 if cur == Some(style) {
-                    buf.push(g.ch);
+                    buf.push(g.drawn());
                 } else {
                     if let Some(s) = cur.take() {
                         spans.push(Span::styled(std::mem::take(&mut buf), s));
                     }
                     cur = Some(style);
-                    buf.push(g.ch);
+                    buf.push(g.drawn());
                 }
             }
             if let Some(s) = cur {

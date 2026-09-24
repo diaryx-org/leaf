@@ -119,12 +119,19 @@ extension Row {
     /// says it once, for every frontend.
     var isBlockGap: Bool { boundary != nil }
 
+    /// Whether a run of `role` is block decoration a row can open with: a
+    /// quote's gutter, a list item's marker, or the blank indent its marker
+    /// becomes on the item's later rows.
+    static func isPrefixRole(_ role: String) -> Bool {
+        role == "quote" || role == "list" || role == "list-indent"
+    }
+
     /// The row's leading block decoration — a blockquote's `│ ` gutters and a
     /// list's indent/bullet. Core emits these as synthetic glyphs in front of the
     /// row's real content, one gutter per nesting level, so the prefix is exactly
     /// the run of leading `quote`/`list` runs.
     var prefixRuns: [Run] {
-        Array(runs.prefix { $0.role == "quote" || $0.role == "list" })
+        Array(runs.prefix { Self.isPrefixRole($0.role) })
     }
 
     /// The task checkbox this row draws, as core's `☐ `/`☑ ` list marker and
@@ -152,7 +159,7 @@ extension Row {
     /// separators with real cell text.
     var isThematicBreak: Bool {
         guard !decoration, !code else { return false }
-        let body = runs.drop { $0.role == "quote" || $0.role == "list" }
+        let body = runs.drop { Self.isPrefixRole($0.role) }
         guard !body.isEmpty else { return false }
         return body.allSatisfy { run in
             run.role == "rule" && !run.text.isEmpty && run.text.allSatisfy { $0 == "─" }
@@ -551,6 +558,20 @@ struct RowLayout {
             out[0].size.height += labelInset
         }
         return out
+    }
+
+    /// Where a code row's fill goes: each band, from the end of the row's
+    /// prefix, reaching `codeFillOutset` past the text on either side. The
+    /// prefix — a list item's bullet, a quote's gutter — stands beside the
+    /// block the way it stands beside a paragraph, rather than inside its
+    /// tint; a row with no prefix fills from just before the margin, as it
+    /// always has.
+    var codeFills: [CGRect] {
+        let prefix = shaped.prefixWidth, outset = AttributedRow.codeFillOutset
+        return bands.map { b in
+            CGRect(x: b.minX + prefix - outset, y: b.minY,
+                   width: b.width - prefix + 2 * outset, height: b.height)
+        }
     }
 
     /// The blockquote gutter bars this row carries, in view coordinates — one

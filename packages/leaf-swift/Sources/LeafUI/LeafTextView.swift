@@ -880,7 +880,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             }
             if rl.row.code {
                 ctx.setFillColor(theme.codeBackground.cgColor)
-                for b in bands { ctx.fill(b.insetBy(dx: -4, dy: 0)) }
+                for fill in rl.codeFills { ctx.fill(fill) }
                 if let lang = rl.row.codeLang, !lang.isEmpty { drawCodeLang(lang, in: rowRect) }
             }
             BlockChrome.drawRule(rl, theme: theme, selColor: selColor, in: ctx)
@@ -3457,7 +3457,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         guard rows.lowerBound >= 0, rows.upperBound <= docView.rows.count else { return (0, "") }
         // Where the block's text starts: its first run that is text, and not a
         // bullet or a quote bar, which stand on markup the text does not show.
-        let chrome: Set<String> = ["list", "quote", "rule"]
+        let chrome: Set<String> = ["list", "list-indent", "quote", "rule"]
         let runs = rows.flatMap { docView.rows[$0].runs }
             + docView.tables.filter { Int($0.startRow) == rows.lowerBound }
                 .flatMap { $0.grid.flatMap { $0.cells.flatMap { $0.lines.flatMap(\.runs) } } }
@@ -3478,6 +3478,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         func collect(_ run: Run) {
             guard run.role != "code",
                   run.role != "list",
+                  run.role != "list-indent",
                   run.role != "quote",
                   run.role != "rule",
                   !run.text.isEmpty

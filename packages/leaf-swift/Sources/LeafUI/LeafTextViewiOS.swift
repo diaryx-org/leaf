@@ -1557,7 +1557,7 @@ public final class LeafTextView: UIView, UITextInput {
             }
             if rl.row.code {
                 ctx.setFillColor(renderTheme.codeBackground.cgColor)
-                for b in bands { ctx.fill(b.insetBy(dx: -4, dy: 0)) }
+                for fill in rl.codeFills { ctx.fill(fill) }
                 if let lang = rl.row.codeLang, !lang.isEmpty { drawCodeLang(lang, in: rowRect) }
             }
             // The system paints selection on iOS, so no selection fill here.

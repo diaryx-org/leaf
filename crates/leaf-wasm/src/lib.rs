@@ -1058,6 +1058,7 @@ fn role_name(r: Role) -> String {
         // styles `mark` and nothing else still draws a coloured highlight.
         Role::Mark(_) => "mark".into(),
         Role::ListMarker => "list".into(),
+        Role::ListIndent => "list-indent".into(),
         Role::QuoteGutter => "quote".into(),
         Role::Rule => "rule".into(),
         Role::Image => "image".into(),
