@@ -31,7 +31,7 @@ clipboard, and file I/O.
 | [`leaf-raster`](crates/leaf-raster)   | the **shared CPU rasterization layer**: image decode (SVG included), path resolution and aspect-fit policy, and oversized-heading rasters with the caret and selection painted into the pixels — how a terminal heading stays editable when cells can't draw over a graphics-protocol image.                    |
 | [`leaf-ratatui`](crates/leaf-ratatui) | the **embeddable terminal widget** (ratatui + crossterm): renders the editing surface into a `Rect` and turns key/mouse events into `Doc` edits, returning an `Outcome` for what the host owns (quit, save, clipboard, dialogs). The terminal peer of `leaf-gpui`. |
 | [`leaf-gpui`](crates/leaf-gpui)       | the **embeddable GUI widget** on [gpui](https://github.com/zed-industries/zed): the `Editor` view plus its input, pixel-wrapping renderer, and `register_keybindings`. Renders only the editing surface and leaves window chrome, file I/O, and quit to the host.  |
-| [`leaf-ffi`](crates/leaf-ffi)         | the **UniFFI Rust binding** — wraps the filesystem-free `Doc` behind a C ABI so a native Apple app can drive it. Paired with the `leaf-swift` package.                                                                                                             |
+| [`leaf-ffi`](crates/leaf-ffi)         | the **UniFFI Rust binding** — wraps the filesystem-free `Doc` behind a C ABI so a native app can drive it: as Swift for the `leaf-swift` package, and as Kotlin for `leaf-android`.                                                                                  |
 | [`leaf-math`](crates/leaf-math)       | TeX to a **self-contained SVG picture** with baseline metrics, through RaTeX with KaTeX's outlines embedded — the one door every frontend draws a formula through, so the picture is byte-identical everywhere.                                                    |
 | [`leaf-wasm`](crates/leaf-wasm)       | the **wasm-bindgen Rust binding** — wraps the `Doc` for the browser (`LeafDoc` + a typed `DocView`). Paired with the `leaf-web` package.                                                                                                                           |
 | [`leaf-math-wasm`](crates/leaf-math-wasm) | the **typesetter's own wasm module** — `leaf-math` behind one `typeset_math`, built apart from `leaf-wasm` because it is two megabytes most documents never need; `leaf-web` fetches it on the first formula.                                                   |
@@ -41,6 +41,7 @@ clipboard, and file I/O.
 | package | what it is |
 |---------|------------|
 | [`leaf-swift`](packages/leaf-swift) | the Swift Package (manifest at the repo root, so SwiftPM can resolve it by version) — `LeafUI`, the AppKit/UIKit editor view, over the committed UniFFI `leaf-ffi` binding. The Apple peer of `leaf-ratatui`/`leaf-gpui`. |
+| [`leaf-android`](packages/leaf-android) | the Android library — `LeafEditor`, a Jetpack Compose editor, over the UniFFI binding generated as Kotlin: rows wrapped and hit-tested by Compose's own text layout, and the soft keyboard through an `InputConnection` that composes into the document through core. A Gradle build of its own (`org.diaryx.leaf:leaf-compose`), not yet published. |
 | [`leaf-web`](packages/leaf-web) | the npm package (not yet published; private until there is a consumer) — `LeafEditor`, a framework-agnostic web editor, over the `leaf-wasm` binding. Tables draw as a real grid from core's structural `TableView`, not as the box-glyph picture; links, footnotes, task boxes and host highlights are clickable; text and files drop onto it; a frame repaints only the rows it changed; a highlight takes one of seven colours; the toolbar dims what the format cannot spell. |
 
 ### `apps/` — runnable frontends
@@ -51,6 +52,7 @@ clipboard, and file I/O.
 | [`leaf`](apps/leaf) | the standalone gpui **application** (binary `leaf-gui`) — a thin host around `leaf-gpui`. A standalone workspace, like `leaf-ios`. |
 | [`leaf-ios`](apps/leaf-ios) | the gpui iOS host (a standalone workspace on the gpui-mobile platform). |
 | [`leaf-editor`](apps/leaf-editor) | **Leaf**, the macOS + iOS document app (`Leaf.app`, `org.diaryx.leaf`), consuming `packages/leaf-swift`. Opens, edits and saves `.md`, `.dj` and `.html` through the document system — Finder's Open With, autosave, Versions, the Files app — with an icon, a Settings window, and Export as PDF. |
+| [`leaf-android`](apps/leaf-android) | **Leaf** for Android (`org.diaryx.leaf`), consuming `packages/leaf-android`. Opens, edits and autosaves `.md`, `.dj` and `.html` through the Storage Access Framework and Open With, with the rendered/source toggle and a formatting bar over the keyboard. |
 | [`leaf-web-demo`](apps/leaf-web-demo) | the web demo page, consuming `packages/leaf-web`. Published from each release tag at **<https://diaryx-org.github.io/leaf/>** by [`pages.yml`](.github/workflows/pages.yml). |
 
 ```sh
@@ -62,15 +64,17 @@ cargo run -- --width 100 path/to/document.md # centered 100-column document
 cargo run --manifest-path apps/leaf/Cargo.toml -- path/to/document.md
 ```
 
-The other two frontends aren't a `cargo run` away — the Apple app is a Rust
-staticlib behind a UniFFI binding behind an Xcode project, and the web demo is a
-wasm build behind a static server. Both are one word through the task runner in
+The other frontends aren't a `cargo run` away — the Apple app is a Rust
+staticlib behind a UniFFI binding behind an Xcode project, the Android app a
+shared library behind the same binding behind Gradle, and the web demo a wasm
+build behind a static server. Each is one word through the task runner in
 [`xtask/`](xtask):
 
 ```sh
 cargo xtask swift            # build + launch Leaf on macOS, with a copy of the sample open
 cargo xtask swift notes.md   # …with a document of your own
 cargo xtask swift --ios      # …on its own `iPhone 17 (leaf)` simulator (--device for another)
+cargo xtask android        # build + install Leaf on the attached Android device or emulator
 cargo xtask web            # build the wasm, serve apps/leaf-web-demo, open it
 cargo xtask web --test     # …serve the leaf-web editor tests instead
 cargo xtask web --headless # …run those tests in Chrome and exit with the outcome

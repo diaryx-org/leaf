@@ -3,7 +3,9 @@
 The C-ABI / UniFFI **Rust binding** for leaf: it wraps the filesystem-free
 `leaf-core` `Doc` behind UniFFI so a native Apple app can drive the byte-offset
 caret model and render the `VisualMap` as style runs. The native-Apple peer of
-`leaf-wasm`.
+`leaf-wasm` — and, generated as Kotlin, the Android one's too: see
+[`packages/leaf-android`](../../packages/leaf-android), whose binding
+`cargo xtask android` generates at build time rather than committing.
 
 This crate is only the Rust binding (`src/lib.rs` + the `uniffi-bindgen` bin).
 The Swift side built on top of it lives elsewhere:

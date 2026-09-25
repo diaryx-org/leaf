@@ -4,7 +4,7 @@
 //!
 //! What earns a task here is work that leaves Rust, or work that must be done
 //! the same way every time. `cargo run` already opens the TUI and `cargo run -p
-//! leaf` the GUI; the Apple app and the web demo each need three or four tools
+//! leaf` the GUI; the Apple app, the Android app and the web demo each need three or four tools
 //! driven in the right order.
 //!
 //! Releasing is not here. It is `release <command>`, from diaryx-org/devtools,
@@ -14,6 +14,7 @@
 //!
 //! [cargo-xtask]: https://github.com/matklad/cargo-xtask
 
+mod android;
 mod ci;
 mod swift;
 mod util;
@@ -40,6 +41,8 @@ enum Task {
     Swift(swift::Args),
     /// Build the wasm binding and serve the web demo (apps/leaf-web-demo).
     Web(web::Args),
+    /// Build and launch the Android app (apps/leaf-android) over packages/leaf-android.
+    Android(android::Args),
 
     /// Run the checks a release has to pass — all of them, or one by id.
     Ci(ci::Args),
@@ -53,6 +56,7 @@ fn main() -> Result<()> {
     match Cli::parse().task {
         Task::Swift(args) => swift::run_task(args),
         Task::Web(args) => web::run_task(args),
+        Task::Android(args) => android::run_task(args),
         Task::Ci(args) => ci::run_task(args),
         Task::SyncVersions => versions::run_task(),
     }
