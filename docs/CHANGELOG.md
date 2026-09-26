@@ -37,6 +37,27 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.4.7 — 2026-09-26
+
+### Breaking
+
+- **deps** — uniffi 0.32, and the Kotlin binding as UniFFI writes it ([`18128dc`](https://github.com/diaryx-org/leaf/commit/18128dce8b7d854ab68b94463fc1839591e68717))
+
+### Added
+
+- **leaf-android** — a Jetpack Compose editor and app over the UniFFI binding ([`11f7e09`](https://github.com/diaryx-org/leaf/commit/11f7e093305e09673c65b1209c36237021997957))
+
+### Behavioural changes
+
+- in Kotlin, `LeafException.Parse` and `LeafException.Math`
+carry their text as `reason`, and their `message` is UniFFI's
+`reason=…` summary rather than the bare text. Swift keeps `message`.
+
+- the generated Swift objects are handle-based —
+`init(unsafeFromHandle:)`, `NoHandle`, `uniffiCloneHandle()` replace the
+raw-pointer spellings — and protocols and records conform to `Sendable`.
+
+
 ## v0.4.6 — 2026-09-24
 
 ### Added
