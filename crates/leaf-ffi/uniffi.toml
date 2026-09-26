@@ -7,3 +7,10 @@
 ffi_module_name = "leaf_ffiFFI"
 # The dylib/staticlib symbol prefix — must match the crate's lib name.
 cdylib_name = "leaf_ffi"
+
+# Kotlin's generated exception classes already have a `message` (Throwable's),
+# so a variant field of that name is declared twice and the binding does not
+# compile. Kotlin alone calls it `reason`; Swift keeps `message`.
+[bindings.kotlin.rename]
+"LeafError.Parse.message" = "reason"
+"LeafError.Math.message" = "reason"

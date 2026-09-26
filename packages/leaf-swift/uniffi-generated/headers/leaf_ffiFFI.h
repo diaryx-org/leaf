@@ -50,9 +50,9 @@ typedef void (*UniffiRustFutureContinuationCallback)(uint64_t, int8_t
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_FREE
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_FREE
-typedef void (*UniffiForeignFutureFree)(uint64_t
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_DROPPED_CALLBACK
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_DROPPED_CALLBACK
+typedef void (*UniffiForeignFutureDroppedCallback)(uint64_t
     );
 
 #endif
@@ -62,898 +62,890 @@ typedef void (*UniffiCallbackInterfaceFree)(uint64_t
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE
-typedef struct UniffiForeignFuture {
-    uint64_t handle;
-    UniffiForeignFutureFree _Nonnull free;
-} UniffiForeignFuture;
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CLONE
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CLONE
+typedef uint64_t (*UniffiCallbackInterfaceClone)(uint64_t
+    );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_U8
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_U8
-typedef struct UniffiForeignFutureStructU8 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_DROPPED_CALLBACK_STRUCT
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_DROPPED_CALLBACK_STRUCT
+typedef struct UniffiForeignFutureDroppedCallbackStruct {
+    uint64_t handle;
+    UniffiForeignFutureDroppedCallback _Nonnull free;
+} UniffiForeignFutureDroppedCallbackStruct;
+
+#endif
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_U8
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_U8
+typedef struct UniffiForeignFutureResultU8 {
     uint8_t returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructU8;
+} UniffiForeignFutureResultU8;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_U8
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_U8
-typedef void (*UniffiForeignFutureCompleteU8)(uint64_t, UniffiForeignFutureStructU8
+typedef void (*UniffiForeignFutureCompleteU8)(uint64_t, UniffiForeignFutureResultU8
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_I8
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_I8
-typedef struct UniffiForeignFutureStructI8 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_I8
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_I8
+typedef struct UniffiForeignFutureResultI8 {
     int8_t returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructI8;
+} UniffiForeignFutureResultI8;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_I8
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_I8
-typedef void (*UniffiForeignFutureCompleteI8)(uint64_t, UniffiForeignFutureStructI8
+typedef void (*UniffiForeignFutureCompleteI8)(uint64_t, UniffiForeignFutureResultI8
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_U16
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_U16
-typedef struct UniffiForeignFutureStructU16 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_U16
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_U16
+typedef struct UniffiForeignFutureResultU16 {
     uint16_t returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructU16;
+} UniffiForeignFutureResultU16;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_U16
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_U16
-typedef void (*UniffiForeignFutureCompleteU16)(uint64_t, UniffiForeignFutureStructU16
+typedef void (*UniffiForeignFutureCompleteU16)(uint64_t, UniffiForeignFutureResultU16
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_I16
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_I16
-typedef struct UniffiForeignFutureStructI16 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_I16
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_I16
+typedef struct UniffiForeignFutureResultI16 {
     int16_t returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructI16;
+} UniffiForeignFutureResultI16;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_I16
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_I16
-typedef void (*UniffiForeignFutureCompleteI16)(uint64_t, UniffiForeignFutureStructI16
+typedef void (*UniffiForeignFutureCompleteI16)(uint64_t, UniffiForeignFutureResultI16
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_U32
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_U32
-typedef struct UniffiForeignFutureStructU32 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_U32
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_U32
+typedef struct UniffiForeignFutureResultU32 {
     uint32_t returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructU32;
+} UniffiForeignFutureResultU32;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_U32
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_U32
-typedef void (*UniffiForeignFutureCompleteU32)(uint64_t, UniffiForeignFutureStructU32
+typedef void (*UniffiForeignFutureCompleteU32)(uint64_t, UniffiForeignFutureResultU32
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_I32
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_I32
-typedef struct UniffiForeignFutureStructI32 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_I32
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_I32
+typedef struct UniffiForeignFutureResultI32 {
     int32_t returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructI32;
+} UniffiForeignFutureResultI32;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_I32
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_I32
-typedef void (*UniffiForeignFutureCompleteI32)(uint64_t, UniffiForeignFutureStructI32
+typedef void (*UniffiForeignFutureCompleteI32)(uint64_t, UniffiForeignFutureResultI32
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_U64
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_U64
-typedef struct UniffiForeignFutureStructU64 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_U64
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_U64
+typedef struct UniffiForeignFutureResultU64 {
     uint64_t returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructU64;
+} UniffiForeignFutureResultU64;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_U64
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_U64
-typedef void (*UniffiForeignFutureCompleteU64)(uint64_t, UniffiForeignFutureStructU64
+typedef void (*UniffiForeignFutureCompleteU64)(uint64_t, UniffiForeignFutureResultU64
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_I64
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_I64
-typedef struct UniffiForeignFutureStructI64 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_I64
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_I64
+typedef struct UniffiForeignFutureResultI64 {
     int64_t returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructI64;
+} UniffiForeignFutureResultI64;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_I64
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_I64
-typedef void (*UniffiForeignFutureCompleteI64)(uint64_t, UniffiForeignFutureStructI64
+typedef void (*UniffiForeignFutureCompleteI64)(uint64_t, UniffiForeignFutureResultI64
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_F32
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_F32
-typedef struct UniffiForeignFutureStructF32 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_F32
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_F32
+typedef struct UniffiForeignFutureResultF32 {
     float returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructF32;
+} UniffiForeignFutureResultF32;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_F32
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_F32
-typedef void (*UniffiForeignFutureCompleteF32)(uint64_t, UniffiForeignFutureStructF32
+typedef void (*UniffiForeignFutureCompleteF32)(uint64_t, UniffiForeignFutureResultF32
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_F64
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_F64
-typedef struct UniffiForeignFutureStructF64 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_F64
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_F64
+typedef struct UniffiForeignFutureResultF64 {
     double returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructF64;
+} UniffiForeignFutureResultF64;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_F64
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_F64
-typedef void (*UniffiForeignFutureCompleteF64)(uint64_t, UniffiForeignFutureStructF64
+typedef void (*UniffiForeignFutureCompleteF64)(uint64_t, UniffiForeignFutureResultF64
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_POINTER
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_POINTER
-typedef struct UniffiForeignFutureStructPointer {
-    void*_Nonnull returnValue;
-    RustCallStatus callStatus;
-} UniffiForeignFutureStructPointer;
-
-#endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_POINTER
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_POINTER
-typedef void (*UniffiForeignFutureCompletePointer)(uint64_t, UniffiForeignFutureStructPointer
-    );
-
-#endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_RUST_BUFFER
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_RUST_BUFFER
-typedef struct UniffiForeignFutureStructRustBuffer {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_RUST_BUFFER
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_RUST_BUFFER
+typedef struct UniffiForeignFutureResultRustBuffer {
     RustBuffer returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructRustBuffer;
+} UniffiForeignFutureResultRustBuffer;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_RUST_BUFFER
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_RUST_BUFFER
-typedef void (*UniffiForeignFutureCompleteRustBuffer)(uint64_t, UniffiForeignFutureStructRustBuffer
+typedef void (*UniffiForeignFutureCompleteRustBuffer)(uint64_t, UniffiForeignFutureResultRustBuffer
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_VOID
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_VOID
-typedef struct UniffiForeignFutureStructVoid {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_VOID
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_VOID
+typedef struct UniffiForeignFutureResultVoid {
     RustCallStatus callStatus;
-} UniffiForeignFutureStructVoid;
+} UniffiForeignFutureResultVoid;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_VOID
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_VOID
-typedef void (*UniffiForeignFutureCompleteVoid)(uint64_t, UniffiForeignFutureStructVoid
+typedef void (*UniffiForeignFutureCompleteVoid)(uint64_t, UniffiForeignFutureResultVoid
     );
 
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_CLONE_LEAFDOC
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_CLONE_LEAFDOC
-void*_Nonnull uniffi_leaf_ffi_fn_clone_leafdoc(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+uint64_t uniffi_leaf_ffi_fn_clone_leafdoc(uint64_t handle, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_FREE_LEAFDOC
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_FREE_LEAFDOC
-void uniffi_leaf_ffi_fn_free_leafdoc(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+void uniffi_leaf_ffi_fn_free_leafdoc(uint64_t handle, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_CONSTRUCTOR_LEAFDOC_NEW
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_CONSTRUCTOR_LEAFDOC_NEW
-void*_Nonnull uniffi_leaf_ffi_fn_constructor_leafdoc_new(RustBuffer source, RustBuffer format, RustCallStatus *_Nonnull out_status
+uint64_t uniffi_leaf_ffi_fn_constructor_leafdoc_new(RustBuffer source, RustBuffer format, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_ALIGNMENT_AT_CARET
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_ALIGNMENT_AT_CARET
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_alignment_at_caret(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_alignment_at_caret(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_ANCHOR_OFFSET
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_ANCHOR_OFFSET
-uint32_t uniffi_leaf_ffi_fn_method_leafdoc_anchor_offset(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+uint32_t uniffi_leaf_ffi_fn_method_leafdoc_anchor_offset(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_APPEND_MEDIA
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_APPEND_MEDIA
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_append_media(void*_Nonnull ptr, RustBuffer kind, RustBuffer destination, RustBuffer alt, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_append_media(uint64_t ptr, RustBuffer kind, RustBuffer destination, RustBuffer alt, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_AUTHORABLE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_AUTHORABLE
-int8_t uniffi_leaf_ffi_fn_method_leafdoc_authorable(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+int8_t uniffi_leaf_ffi_fn_method_leafdoc_authorable(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_BACKSPACE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_BACKSPACE
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_backspace(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_backspace(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_BEGIN_UNDO_GROUP
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_BEGIN_UNDO_GROUP
-void uniffi_leaf_ffi_fn_method_leafdoc_begin_undo_group(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+void uniffi_leaf_ffi_fn_method_leafdoc_begin_undo_group(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_BLOCK_RANGE_AT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_BLOCK_RANGE_AT
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_block_range_at(void*_Nonnull ptr, uint32_t row, uint32_t ch, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_block_range_at(uint64_t ptr, uint32_t row, uint32_t ch, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_CAPABILITIES
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_CAPABILITIES
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_capabilities(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_capabilities(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_CARET_IN_MARK
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_CARET_IN_MARK
-int8_t uniffi_leaf_ffi_fn_method_leafdoc_caret_in_mark(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+int8_t uniffi_leaf_ffi_fn_method_leafdoc_caret_in_mark(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_CARET_IN_TABLE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_CARET_IN_TABLE
-int8_t uniffi_leaf_ffi_fn_method_leafdoc_caret_in_table(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+int8_t uniffi_leaf_ffi_fn_method_leafdoc_caret_in_table(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_CARET_OFFSET
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_CARET_OFFSET
-uint32_t uniffi_leaf_ffi_fn_method_leafdoc_caret_offset(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+uint32_t uniffi_leaf_ffi_fn_method_leafdoc_caret_offset(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_CELL_LINE_BREAK
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_CELL_LINE_BREAK
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_cell_line_break(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_cell_line_break(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_CELL_RETURN
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_CELL_RETURN
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_cell_return(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_cell_return(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_CELL_TAB
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_CELL_TAB
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_cell_tab(void*_Nonnull ptr, int8_t forward, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_cell_tab(uint64_t ptr, int8_t forward, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_CLICK
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_CLICK
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_click(void*_Nonnull ptr, uint32_t row, uint32_t col, int8_t extend, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_click(uint64_t ptr, uint32_t row, uint32_t col, int8_t extend, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_CLICK_CH
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_CLICK_CH
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_click_ch(void*_Nonnull ptr, uint32_t row, uint32_t ch, int8_t extend, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_click_ch(uint64_t ptr, uint32_t row, uint32_t ch, int8_t extend, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_CLICK_PAST_END
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_CLICK_PAST_END
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_click_past_end(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_click_past_end(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_COUNTS
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_COUNTS
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_counts(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_counts(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_DELETE_FORWARD
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_DELETE_FORWARD
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_delete_forward(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_delete_forward(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_DELETE_WORD_BACK
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_DELETE_WORD_BACK
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_delete_word_back(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_delete_word_back(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_DELETE_WORD_FORWARD
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_DELETE_WORD_FORWARD
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_delete_word_forward(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_delete_word_forward(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_DISTANCE_OFFSET
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_DISTANCE_OFFSET
-int32_t uniffi_leaf_ffi_fn_method_leafdoc_distance_offset(void*_Nonnull ptr, uint32_t from, uint32_t to, RustCallStatus *_Nonnull out_status
+int32_t uniffi_leaf_ffi_fn_method_leafdoc_distance_offset(uint64_t ptr, uint32_t from, uint32_t to, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_DOC_END_OFFSET
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_DOC_END_OFFSET
-uint32_t uniffi_leaf_ffi_fn_method_leafdoc_doc_end_offset(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+uint32_t uniffi_leaf_ffi_fn_method_leafdoc_doc_end_offset(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_DROP_TARGET_AT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_DROP_TARGET_AT
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_drop_target_at(void*_Nonnull ptr, uint32_t row, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_drop_target_at(uint64_t ptr, uint32_t row, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_END_UNDO_GROUP
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_END_UNDO_GROUP
-void uniffi_leaf_ffi_fn_method_leafdoc_end_undo_group(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+void uniffi_leaf_ffi_fn_method_leafdoc_end_undo_group(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_FONT_FAMILY_AT_CARET
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_FONT_FAMILY_AT_CARET
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_font_family_at_caret(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_font_family_at_caret(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_FONT_SIZE_AT_CARET
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_FONT_SIZE_AT_CARET
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_font_size_at_caret(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_font_size_at_caret(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_FOOTNOTE_AT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_FOOTNOTE_AT
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_footnote_at(void*_Nonnull ptr, uint32_t off, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_footnote_at(uint64_t ptr, uint32_t off, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_FOOTNOTE_AT_CARET
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_FOOTNOTE_AT_CARET
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_footnote_at_caret(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_footnote_at_caret(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_FOOTNOTE_DEFINITION_AT_CARET
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_FOOTNOTE_DEFINITION_AT_CARET
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_footnote_definition_at_caret(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_footnote_definition_at_caret(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_HEADING_AT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_HEADING_AT
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_heading_at(void*_Nonnull ptr, uint32_t off, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_heading_at(uint64_t ptr, uint32_t off, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_HEADING_AT_CARET
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_HEADING_AT_CARET
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_heading_at_caret(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_heading_at_caret(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_HIGHLIGHT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_HIGHLIGHT
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_highlight(void*_Nonnull ptr, RustBuffer color, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_highlight(uint64_t ptr, RustBuffer color, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_HIGHLIGHT_AT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_HIGHLIGHT_AT
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_highlight_at(void*_Nonnull ptr, uint32_t offset, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_highlight_at(uint64_t ptr, uint32_t offset, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_HIGHLIGHTS
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_HIGHLIGHTS
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_highlights(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_highlights(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_IMAGE_DESTINATION_AT_CARET
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_IMAGE_DESTINATION_AT_CARET
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_image_destination_at_caret(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_image_destination_at_caret(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INDENT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INDENT
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_indent(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_indent(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INSERT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INSERT
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_insert(void*_Nonnull ptr, RustBuffer text, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_insert(uint64_t ptr, RustBuffer text, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INSERT_FOOTNOTE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INSERT_FOOTNOTE
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_insert_footnote(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_insert_footnote(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INSERT_LINK
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INSERT_LINK
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_insert_link(void*_Nonnull ptr, RustBuffer destination, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_insert_link(uint64_t ptr, RustBuffer destination, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INSERT_MEDIA
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INSERT_MEDIA
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_insert_media(void*_Nonnull ptr, RustBuffer kind, RustBuffer destination, RustBuffer alt, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_insert_media(uint64_t ptr, RustBuffer kind, RustBuffer destination, RustBuffer alt, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INSERT_PAGE_BREAK
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INSERT_PAGE_BREAK
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_insert_page_break(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_insert_page_break(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INSERT_TABLE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INSERT_TABLE
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_insert_table(void*_Nonnull ptr, uint32_t rows, uint32_t cols, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_insert_table(uint64_t ptr, uint32_t rows, uint32_t cols, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INSERT_THEMATIC_BREAK
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INSERT_THEMATIC_BREAK
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_insert_thematic_break(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_insert_thematic_break(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_LINE_FLOW
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_LINE_FLOW
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_line_flow(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_line_flow(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_LINE_SPACING_AT_CARET
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_LINE_SPACING_AT_CARET
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_line_spacing_at_caret(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_line_spacing_at_caret(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_LINK_DESTINATION_AT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_LINK_DESTINATION_AT
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_link_destination_at(void*_Nonnull ptr, uint32_t off, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_link_destination_at(uint64_t ptr, uint32_t off, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_LINK_DESTINATION_AT_CARET
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_LINK_DESTINATION_AT_CARET
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_link_destination_at_caret(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_link_destination_at_caret(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_LOCATE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_LOCATE
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_locate(void*_Nonnull ptr, RustBuffer id, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_locate(uint64_t ptr, RustBuffer id, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MARK_SAVED
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MARK_SAVED
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_mark_saved(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_mark_saved(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MARKUP_MODE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MARKUP_MODE
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_markup_mode(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_markup_mode(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MOVE_BLOCK
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MOVE_BLOCK
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_move_block(void*_Nonnull ptr, uint32_t from, uint32_t to, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_move_block(uint64_t ptr, uint32_t from, uint32_t to, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MOVE_BLOCK_DOWN
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MOVE_BLOCK_DOWN
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_move_block_down(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_move_block_down(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MOVE_BLOCK_UP
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MOVE_BLOCK_UP
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_move_block_up(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_move_block_up(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MOVE_DOC_END
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MOVE_DOC_END
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_move_doc_end(void*_Nonnull ptr, int8_t extend, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_move_doc_end(uint64_t ptr, int8_t extend, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MOVE_DOC_START
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MOVE_DOC_START
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_move_doc_start(void*_Nonnull ptr, int8_t extend, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_move_doc_start(uint64_t ptr, int8_t extend, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MOVE_DOWN
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MOVE_DOWN
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_move_down(void*_Nonnull ptr, int8_t extend, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_move_down(uint64_t ptr, int8_t extend, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MOVE_END
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MOVE_END
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_move_end(void*_Nonnull ptr, int8_t extend, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_move_end(uint64_t ptr, int8_t extend, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MOVE_HOME
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MOVE_HOME
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_move_home(void*_Nonnull ptr, int8_t extend, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_move_home(uint64_t ptr, int8_t extend, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MOVE_LEFT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MOVE_LEFT
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_move_left(void*_Nonnull ptr, int8_t extend, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_move_left(uint64_t ptr, int8_t extend, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MOVE_RIGHT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MOVE_RIGHT
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_move_right(void*_Nonnull ptr, int8_t extend, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_move_right(uint64_t ptr, int8_t extend, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MOVE_UP
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MOVE_UP
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_move_up(void*_Nonnull ptr, int8_t extend, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_move_up(uint64_t ptr, int8_t extend, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MOVE_WORD_LEFT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MOVE_WORD_LEFT
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_move_word_left(void*_Nonnull ptr, int8_t extend, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_move_word_left(uint64_t ptr, int8_t extend, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MOVE_WORD_RIGHT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MOVE_WORD_RIGHT
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_move_word_right(void*_Nonnull ptr, int8_t extend, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_move_word_right(uint64_t ptr, int8_t extend, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_NEWLINE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_NEWLINE
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_newline(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_newline(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_OFFSET_FOR_POS
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_OFFSET_FOR_POS
-uint32_t uniffi_leaf_ffi_fn_method_leafdoc_offset_for_pos(void*_Nonnull ptr, uint32_t row, uint32_t ch, RustCallStatus *_Nonnull out_status
+uint32_t uniffi_leaf_ffi_fn_method_leafdoc_offset_for_pos(uint64_t ptr, uint32_t row, uint32_t ch, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_OFFSET_FOR_UTF16_INDEX
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_OFFSET_FOR_UTF16_INDEX
-uint32_t uniffi_leaf_ffi_fn_method_leafdoc_offset_for_utf16_index(void*_Nonnull ptr, uint32_t index, RustCallStatus *_Nonnull out_status
+uint32_t uniffi_leaf_ffi_fn_method_leafdoc_offset_for_utf16_index(uint64_t ptr, uint32_t index, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_OUTDENT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_OUTDENT
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_outdent(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_outdent(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_PAPER_VIEW
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_PAPER_VIEW
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_paper_view(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_paper_view(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_PASTE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_PASTE
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_paste(void*_Nonnull ptr, RustBuffer text, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_paste(uint64_t ptr, RustBuffer text, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_PASTE_RICH
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_PASTE_RICH
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_paste_rich(void*_Nonnull ptr, RustBuffer html, RustBuffer text, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_paste_rich(uint64_t ptr, RustBuffer html, RustBuffer text, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_POS_FOR_OFFSET
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_POS_FOR_OFFSET
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_pos_for_offset(void*_Nonnull ptr, uint32_t off, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_pos_for_offset(uint64_t ptr, uint32_t off, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_READ_ONLY
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_READ_ONLY
-int8_t uniffi_leaf_ffi_fn_method_leafdoc_read_only(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+int8_t uniffi_leaf_ffi_fn_method_leafdoc_read_only(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_REDO
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_REDO
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_redo(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_redo(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_REPLACE_RANGE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_REPLACE_RANGE
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_replace_range(void*_Nonnull ptr, uint32_t from, uint32_t to, RustBuffer text, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_replace_range(uint64_t ptr, uint32_t from, uint32_t to, RustBuffer text, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_ROW_RANGE_FOR
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_ROW_RANGE_FOR
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_row_range_for(void*_Nonnull ptr, uint32_t start, uint32_t end, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_row_range_for(uint64_t ptr, uint32_t start, uint32_t end, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_ROWS
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_ROWS
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_rows(void*_Nonnull ptr, uint32_t from, uint32_t to, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_rows(uint64_t ptr, uint32_t from, uint32_t to, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SELECT_ALL
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SELECT_ALL
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_select_all(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_select_all(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SELECT_BLOCK_CH
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SELECT_BLOCK_CH
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_select_block_ch(void*_Nonnull ptr, uint32_t row, uint32_t ch, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_select_block_ch(uint64_t ptr, uint32_t row, uint32_t ch, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SELECT_RANGE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SELECT_RANGE
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_select_range(void*_Nonnull ptr, uint32_t start, uint32_t end, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_select_range(uint64_t ptr, uint32_t start, uint32_t end, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SELECT_WORD_CH
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SELECT_WORD_CH
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_select_word_ch(void*_Nonnull ptr, uint32_t row, uint32_t ch, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_select_word_ch(uint64_t ptr, uint32_t row, uint32_t ch, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SELECTED_TEXT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SELECTED_TEXT
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_selected_text(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_selected_text(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SELECTION_COUNTS
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SELECTION_COUNTS
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_selection_counts(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_selection_counts(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SELECTION_HTML
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SELECTION_HTML
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_selection_html(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_selection_html(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SELECTION_QUOTE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SELECTION_QUOTE
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_selection_quote(void*_Nonnull ptr, uint32_t context, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_selection_quote(uint64_t ptr, uint32_t context, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_ALIGNMENT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_ALIGNMENT
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_alignment(void*_Nonnull ptr, RustBuffer align, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_alignment(uint64_t ptr, RustBuffer align, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_DARK_APPEARANCE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_DARK_APPEARANCE
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_dark_appearance(void*_Nonnull ptr, int8_t dark, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_dark_appearance(uint64_t ptr, int8_t dark, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_FONT_FAMILY
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_FONT_FAMILY
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_font_family(void*_Nonnull ptr, RustBuffer font, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_font_family(uint64_t ptr, RustBuffer font, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_FONT_SIZE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_FONT_SIZE
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_font_size(void*_Nonnull ptr, RustBuffer size, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_font_size(uint64_t ptr, RustBuffer size, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_HEADING
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_HEADING
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_heading(void*_Nonnull ptr, uint32_t level, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_heading(uint64_t ptr, uint32_t level, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_HIGHLIGHTS
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_HIGHLIGHTS
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_highlights(void*_Nonnull ptr, RustBuffer highlights, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_highlights(uint64_t ptr, RustBuffer highlights, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_INCREMENTAL_FRAMES
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_INCREMENTAL_FRAMES
-void uniffi_leaf_ffi_fn_method_leafdoc_set_incremental_frames(void*_Nonnull ptr, int8_t on, RustCallStatus *_Nonnull out_status
+void uniffi_leaf_ffi_fn_method_leafdoc_set_incremental_frames(uint64_t ptr, int8_t on, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_INLINE_PICTURES
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_INLINE_PICTURES
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_inline_pictures(void*_Nonnull ptr, int8_t on, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_inline_pictures(uint64_t ptr, int8_t on, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_LINE_FLOW
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_LINE_FLOW
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_line_flow(void*_Nonnull ptr, RustBuffer mode, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_line_flow(uint64_t ptr, RustBuffer mode, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_LINE_SPACING
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_LINE_SPACING
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_line_spacing(void*_Nonnull ptr, RustBuffer spacing, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_line_spacing(uint64_t ptr, RustBuffer spacing, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_MARK_COLOR
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_MARK_COLOR
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_mark_color(void*_Nonnull ptr, RustBuffer color, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_mark_color(uint64_t ptr, RustBuffer color, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_MARKUP_MODE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_MARKUP_MODE
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_markup_mode(void*_Nonnull ptr, RustBuffer mode, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_markup_mode(uint64_t ptr, RustBuffer mode, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_MATH_ROWS
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_MATH_ROWS
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_math_rows(void*_Nonnull ptr, RustBuffer heights, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_math_rows(uint64_t ptr, RustBuffer heights, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_MEDIA_ROWS
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_MEDIA_ROWS
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_media_rows(void*_Nonnull ptr, RustBuffer heights, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_media_rows(uint64_t ptr, RustBuffer heights, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_PARAGRAPH
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_PARAGRAPH
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_paragraph(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_paragraph(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_READ_ONLY
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_READ_ONLY
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_read_only(void*_Nonnull ptr, int8_t on, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_read_only(uint64_t ptr, int8_t on, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_SELECTION
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_SELECTION
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_selection(void*_Nonnull ptr, uint32_t anchor_row, uint32_t anchor_ch, uint32_t focus_row, uint32_t focus_ch, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_selection(uint64_t ptr, uint32_t anchor_row, uint32_t anchor_ch, uint32_t focus_row, uint32_t focus_ch, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_SELECTION_OFFSETS
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_SELECTION_OFFSETS
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_selection_offsets(void*_Nonnull ptr, uint32_t anchor, uint32_t focus, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_selection_offsets(uint64_t ptr, uint32_t anchor, uint32_t focus, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_TEXT_COLOR
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_TEXT_COLOR
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_text_color(void*_Nonnull ptr, RustBuffer color, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_text_color(uint64_t ptr, RustBuffer color, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_UNWRAPPED
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_UNWRAPPED
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_unwrapped(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_unwrapped(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_WIDTH
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_WIDTH
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_width(void*_Nonnull ptr, uint32_t cols, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_width(uint64_t ptr, uint32_t cols, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SNAP_OFFSET
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SNAP_OFFSET
-uint32_t uniffi_leaf_ffi_fn_method_leafdoc_snap_offset(void*_Nonnull ptr, uint32_t off, RustCallStatus *_Nonnull out_status
+uint32_t uniffi_leaf_ffi_fn_method_leafdoc_snap_offset(uint64_t ptr, uint32_t off, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SOURCE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SOURCE
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_source(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_source(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_STEP_OFFSET
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_STEP_OFFSET
-uint32_t uniffi_leaf_ffi_fn_method_leafdoc_step_offset(void*_Nonnull ptr, uint32_t off, int32_t delta, RustCallStatus *_Nonnull out_status
+uint32_t uniffi_leaf_ffi_fn_method_leafdoc_step_offset(uint64_t ptr, uint32_t off, int32_t delta, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SUBSTITUTE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SUBSTITUTE
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_substitute(void*_Nonnull ptr, uint32_t from, uint32_t to, RustBuffer text, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_substitute(uint64_t ptr, uint32_t from, uint32_t to, RustBuffer text, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TABLE_DELETE_COLUMN
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TABLE_DELETE_COLUMN
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_table_delete_column(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_table_delete_column(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TABLE_DELETE_ROW
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TABLE_DELETE_ROW
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_table_delete_row(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_table_delete_row(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TABLE_INSERT_COLUMN
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TABLE_INSERT_COLUMN
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_table_insert_column(void*_Nonnull ptr, int8_t right, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_table_insert_column(uint64_t ptr, int8_t right, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TABLE_INSERT_ROW
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TABLE_INSERT_ROW
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_table_insert_row(void*_Nonnull ptr, int8_t below, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_table_insert_row(uint64_t ptr, int8_t below, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TABLE_MOVE_COLUMN
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TABLE_MOVE_COLUMN
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_table_move_column(void*_Nonnull ptr, int8_t right, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_table_move_column(uint64_t ptr, int8_t right, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TABLE_MOVE_ROW
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TABLE_MOVE_ROW
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_table_move_row(void*_Nonnull ptr, int8_t down, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_table_move_row(uint64_t ptr, int8_t down, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TABLE_SET_ALIGNMENT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TABLE_SET_ALIGNMENT
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_table_set_alignment(void*_Nonnull ptr, RustBuffer alignment, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_table_set_alignment(uint64_t ptr, RustBuffer alignment, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TASK_CHECKED_AT_CARET
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TASK_CHECKED_AT_CARET
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_task_checked_at_caret(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_task_checked_at_caret(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TEXT_COLOR_AT_CARET
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TEXT_COLOR_AT_CARET
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_text_color_at_caret(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_text_color_at_caret(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TEXT_IN_RANGE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TEXT_IN_RANGE
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_text_in_range(void*_Nonnull ptr, uint32_t from, uint32_t to, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_text_in_range(uint64_t ptr, uint32_t from, uint32_t to, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TOGGLE_BLOCKQUOTE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TOGGLE_BLOCKQUOTE
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_blockquote(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_blockquote(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TOGGLE_BOLD
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TOGGLE_BOLD
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_bold(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_bold(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TOGGLE_CODE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TOGGLE_CODE
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_code(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_code(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TOGGLE_CODE_BLOCK
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TOGGLE_CODE_BLOCK
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_code_block(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_code_block(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TOGGLE_ITALIC
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TOGGLE_ITALIC
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_italic(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_italic(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TOGGLE_LIST
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TOGGLE_LIST
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_list(void*_Nonnull ptr, int8_t ordered, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_list(uint64_t ptr, int8_t ordered, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TOGGLE_MARK
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TOGGLE_MARK
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_mark(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_mark(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TOGGLE_STRIKE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TOGGLE_STRIKE
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_strike(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_strike(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TOGGLE_TASK_AT
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TOGGLE_TASK_AT
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_task_at(void*_Nonnull ptr, uint64_t offset, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_task_at(uint64_t ptr, uint64_t offset, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TOGGLE_TASK_CHECKED
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TOGGLE_TASK_CHECKED
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_task_checked(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_task_checked(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TOGGLE_TASK_ITEM
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TOGGLE_TASK_ITEM
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_task_item(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_task_item(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TOGGLE_UNDERLINE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TOGGLE_UNDERLINE
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_underline(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_underline(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TOGGLE_VIEW
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TOGGLE_VIEW
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_view(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_view(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_UNDO
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_UNDO
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_undo(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_undo(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_UTF16_INDEX_FOR_OFFSET
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_UTF16_INDEX_FOR_OFFSET
-uint32_t uniffi_leaf_ffi_fn_method_leafdoc_utf16_index_for_offset(void*_Nonnull ptr, uint32_t off, RustCallStatus *_Nonnull out_status
+uint32_t uniffi_leaf_ffi_fn_method_leafdoc_utf16_index_for_offset(uint64_t ptr, uint32_t off, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_UTF16_INDICES_FOR_OFFSETS
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_UTF16_INDICES_FOR_OFFSETS
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_utf16_indices_for_offsets(void*_Nonnull ptr, RustBuffer offs, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_utf16_indices_for_offsets(uint64_t ptr, RustBuffer offs, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_VERTICAL_OFFSET
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_VERTICAL_OFFSET
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_vertical_offset(void*_Nonnull ptr, uint32_t off, int8_t down, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_vertical_offset(uint64_t ptr, uint32_t off, int8_t down, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_VIEW
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_VIEW
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_view(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_view(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_FUNC_TYPESET_MATH
@@ -1179,26 +1171,6 @@ void ffi_leaf_ffi_rust_future_free_f64(uint64_t handle
 #ifndef UNIFFI_FFIDEF_FFI_LEAF_FFI_RUST_FUTURE_COMPLETE_F64
 #define UNIFFI_FFIDEF_FFI_LEAF_FFI_RUST_FUTURE_COMPLETE_F64
 double ffi_leaf_ffi_rust_future_complete_f64(uint64_t handle, RustCallStatus *_Nonnull out_status
-);
-#endif
-#ifndef UNIFFI_FFIDEF_FFI_LEAF_FFI_RUST_FUTURE_POLL_POINTER
-#define UNIFFI_FFIDEF_FFI_LEAF_FFI_RUST_FUTURE_POLL_POINTER
-void ffi_leaf_ffi_rust_future_poll_pointer(uint64_t handle, UniffiRustFutureContinuationCallback _Nonnull callback, uint64_t callback_data
-);
-#endif
-#ifndef UNIFFI_FFIDEF_FFI_LEAF_FFI_RUST_FUTURE_CANCEL_POINTER
-#define UNIFFI_FFIDEF_FFI_LEAF_FFI_RUST_FUTURE_CANCEL_POINTER
-void ffi_leaf_ffi_rust_future_cancel_pointer(uint64_t handle
-);
-#endif
-#ifndef UNIFFI_FFIDEF_FFI_LEAF_FFI_RUST_FUTURE_FREE_POINTER
-#define UNIFFI_FFIDEF_FFI_LEAF_FFI_RUST_FUTURE_FREE_POINTER
-void ffi_leaf_ffi_rust_future_free_pointer(uint64_t handle
-);
-#endif
-#ifndef UNIFFI_FFIDEF_FFI_LEAF_FFI_RUST_FUTURE_COMPLETE_POINTER
-#define UNIFFI_FFIDEF_FFI_LEAF_FFI_RUST_FUTURE_COMPLETE_POINTER
-void*_Nonnull ffi_leaf_ffi_rust_future_complete_pointer(uint64_t handle, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_FFI_LEAF_FFI_RUST_FUTURE_POLL_RUST_BUFFER

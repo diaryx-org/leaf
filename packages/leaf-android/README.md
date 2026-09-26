@@ -82,10 +82,10 @@ needs an Android SDK with an NDK (found through `ANDROID_HOME`, or Homebrew's
 `android-commandlinetools`), `cargo-ndk`, and the `aarch64-linux-android`
 target (`x86_64-linux-android` too for `--all-abis`).
 
-The generated Kotlin is post-processed in one place: UniFFI 0.28 declares an
-error variant's `message` field twice, which Kotlin refuses, and xtask makes the
-field the `Throwable.message` override instead (`fix_message_fields` in
-`xtask/src/android.rs`).
+The generated Kotlin is used as UniFFI writes it. An error variant's `message`
+field would clash with `Throwable.message`, so in Kotlin alone it is called
+`reason` (`[bindings.kotlin.rename]` in `crates/leaf-ffi/uniffi.toml`):
+`LeafException.Parse.reason` is what Swift calls `LeafError.Parse(message:)`.
 
 twig-sys builds for Android from its Zig source (bionic's thread-locals need
 API 29, which is `minSdk`); the release of twig that knows the two Android
