@@ -15,7 +15,6 @@ contents:
 - '[Android block views](android-block-views.md)'
 - '[Android needs a twig release](android-twig-release.md)'
 - '[An IME composition undoes a keystroke at a time](ime-composition-undo.md)'
-- '[UniFFI 0.32 needs a resvg-swift release](uniffi-032-needs-a-resvg-release.md)'
 - '[Closed tasks](/docs/tasks/closed/closed.md)'
 part_of: '[leaf](/README.md)'
 ---
