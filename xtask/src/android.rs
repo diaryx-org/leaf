@@ -161,80 +161,17 @@ fn generate_binding(out: &Path, extra: &[String]) -> Result<()> {
     run(cargo()
         .args(["run", "-q", "-p", "leaf-ffi"])
         .args(extra)
-        .args(["--bin", "uniffi-bindgen", "--", "generate", "--library"])
+        .args(["--bin", "uniffi-bindgen", "--", "generate"])
         .arg(out.join("jniLibs/arm64-v8a/libleaf_ffi.so"))
         .args(["--language", "kotlin", "--no-format", "--out-dir"])
         .arg(&kotlin))?;
-    // One file per component in the library: leaf's own, and resvg's, which
-    // rides in the same .so (see leaf-ffi's Cargo.toml) and has the same clash.
-    let packages = kotlin.join("uniffi");
-    if !packages.join("leaf_ffi/leaf_ffi.kt").is_file() {
+    if !kotlin.join("uniffi/leaf_ffi/leaf_ffi.kt").is_file() {
         bail!(
             "uniffi-bindgen wrote no uniffi/leaf_ffi/leaf_ffi.kt under {}",
             kotlin.display()
         );
     }
-    for package in std::fs::read_dir(&packages)? {
-        for file in std::fs::read_dir(package?.path())? {
-            let file = file?.path();
-            if file.extension().is_some_and(|e| e == "kt") {
-                let text = std::fs::read_to_string(&file)?;
-                std::fs::write(&file, fix_message_fields(&text))?;
-            }
-        }
-    }
     Ok(())
-}
-
-/// Make an error variant's own `message` field the `Throwable.message` it
-/// collides with.
-///
-/// UniFFI 0.28 gives each field of an error variant to its Kotlin class as a
-/// `val`, then overrides `message` with a `name=value` summary of them all — so
-/// a variant with a field called `message` (`LeafError::Parse`,
-/// `LeafError::Math`) declares it twice, and Kotlin refuses the file. Where that
-/// happens the field *is* the message: this marks the field `override` and
-/// drops the summary getter. Every other variant is left as generated.
-fn fix_message_fields(kotlin: &str) -> String {
-    let lines: Vec<&str> = kotlin.lines().collect();
-    let mut out = Vec::with_capacity(lines.len());
-    let mut in_ctor_with_message = false;
-    let mut i = 0;
-    while i < lines.len() {
-        let line = lines[i];
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("val `message`: kotlin.String") {
-            in_ctor_with_message = true;
-            out.push(line.replacen("val `message`", "override val `message`", 1));
-            i += 1;
-            continue;
-        }
-        if in_ctor_with_message && trimmed.starts_with(") : ") {
-            in_ctor_with_message = false;
-            out.push(line.to_string());
-            // The summary override is the next two lines: `override val
-            // message` and its `get() = "…"`.
-            if lines
-                .get(i + 1)
-                .is_some_and(|l| l.trim() == "override val message")
-                && lines
-                    .get(i + 2)
-                    .is_some_and(|l| l.trim_start().starts_with("get() = "))
-            {
-                i += 3;
-            } else {
-                i += 1;
-            }
-            continue;
-        }
-        out.push(line.to_string());
-        i += 1;
-    }
-    let mut joined = out.join("\n");
-    if kotlin.ends_with('\n') {
-        joined.push('\n');
-    }
-    joined
 }
 
 /// The Android SDK: `ANDROID_HOME`, then the older `ANDROID_SDK_ROOT`, then the
@@ -359,30 +296,5 @@ mod tests {
             ["--config", r#"patch.crates-io.twig-sys.path="../twig/x""#]
         );
         assert!(split_args("   ").is_empty());
-    }
-
-    #[test]
-    fn a_message_field_becomes_the_override() {
-        let generated = "\
-    class Parse(
-
-        val `message`: kotlin.String
-        ) : LeafException() {
-        override val message
-            get() = \"message=${ `message` }\"
-    }
-    class UnknownFormat(
-
-        val `name`: kotlin.String
-        ) : LeafException() {
-        override val message
-            get() = \"name=${ `name` }\"
-    }
-";
-        let fixed = fix_message_fields(generated);
-        assert!(fixed.contains("override val `message`: kotlin.String"));
-        assert_eq!(fixed.matches("override val message\n").count(), 1);
-        assert!(fixed.contains("get() = \"name=${ `name` }\""));
-        assert!(!fixed.contains("get() = \"message="));
     }
 }

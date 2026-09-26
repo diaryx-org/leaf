@@ -11,14 +11,14 @@ readme = "README.md"
 description = "C-ABI / Swift frontend binding for leaf: wraps the filesystem-free leaf-core Doc behind UniFFI so an AppKit/SwiftUI app can drive the byte-offset caret model and render the VisualMap as style runs — the native-Apple peer of leaf-wasm."
 
 # staticlib -> the .a linked into the xcframework for device/simulator.
-# cdylib    -> a .dylib for a host-side macOS build and for `uniffi-bindgen
-#              --library` to introspect.
+# cdylib    -> a .dylib for a host-side macOS build and for `uniffi-bindgen`
+#              to introspect.
 # lib       -> lets `cargo test` and the in-tree bindgen bin see the crate.
 [lib]
 crate-type = ["staticlib", "cdylib", "lib"]
 
 # The bindings generator. Run as `cargo run -p leaf-ffi --bin uniffi-bindgen --
-# generate --library <path-to-dylib> --language swift --out-dir <dir>`; the build
+# generate <path-to-dylib> --language swift --out-dir <dir>`; the build
 # script below wraps that. Kept in-tree (rather than the standalone
 # `uniffi-bindgen` crate) so the generator version can never drift from the
 # `uniffi` runtime this crate links.
@@ -44,7 +44,7 @@ leaf-core = { path = "../leaf-core", version = "0.4.6", default-features = false
 # The FFI machinery: `proc-macro` mode (no .udl file) — the view structs derive
 # `Record`, the handle derives `Object`, and `setup_scaffolding!()` emits the C
 # ABI. `cli` pulls in `uniffi_bindgen_main` for the bin target above.
-uniffi = { version = "0.28", features = ["cli"] }
+uniffi = { version = "0.32", features = ["cli"] }
 thiserror = "1"
 
 # A visual column is a display cell; a native text run (NSAttributedString /

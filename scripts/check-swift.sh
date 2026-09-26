@@ -24,7 +24,7 @@ DYLIB="$ROOT/target/debug/libleaf_ffi.dylib"
 
 rm -rf "$WORK" && mkdir -p "$WORK/headers" "$WORK/gen"
 cargo run -q -p leaf-ffi --manifest-path "$ROOT/Cargo.toml" --bin uniffi-bindgen -- \
-  generate --library "$DYLIB" --language swift --out-dir "$WORK/gen" 2>&1 \
+  generate "$DYLIB" --language swift --out-dir "$WORK/gen" 2>&1 \
   | grep -vi swiftformat || true
 
 cp "$WORK/gen/leaf_ffiFFI.h" "$WORK/headers/"

@@ -4,7 +4,7 @@
 //!
 //! ```sh
 //! cargo run -p leaf-ffi --bin uniffi-bindgen -- \
-//!   generate --library <libleaf_ffi.dylib> --language swift --out-dir <dir>
+//!   generate <libleaf_ffi.dylib> --language swift --out-dir <dir>
 //! ```
 fn main() {
     uniffi::uniffi_bindgen_main()

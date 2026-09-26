@@ -33,7 +33,7 @@ mkdir -p "$STAGE/out/Sources/LeafFFI" "$STAGE/out/headers"
 # --no-format: the committed output must not depend on whether this machine
 # happens to have swiftformat on PATH — CI's runner never does.
 cargo run -q --manifest-path "$ROOT/Cargo.toml" -p leaf-ffi --bin uniffi-bindgen -- \
-  generate --library "$LIB" --language swift --no-format --out-dir "$STAGE/gen"
+  generate "$LIB" --language swift --no-format --out-dir "$STAGE/gen"
 mv "$STAGE/gen/leaf_ffi.swift" "$STAGE/out/Sources/LeafFFI/leaf_ffi.swift"
 cp "$STAGE/gen/leaf_ffiFFI.h" "$STAGE/out/headers/"
 cp "$STAGE/gen/leaf_ffiFFI.modulemap" "$STAGE/out/headers/module.modulemap"

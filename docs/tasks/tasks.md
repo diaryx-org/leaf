@@ -2,7 +2,7 @@
 title: Tasks
 description: Deferred work on leaf, one file each — a commitment with a done state
 created: 2026-09-04
-updated: 2026-09-25
+updated: 2026-09-26
 contents:
 - '[Writing Tools in the Apple views](writing-tools.md)'
 - '[Right-to-left text](right-to-left-text.md)'
@@ -15,6 +15,7 @@ contents:
 - '[Android block views](android-block-views.md)'
 - '[Android needs a twig release](android-twig-release.md)'
 - '[An IME composition undoes a keystroke at a time](ime-composition-undo.md)'
+- '[UniFFI 0.32 needs a resvg-swift release](uniffi-032-needs-a-resvg-release.md)'
 - '[Closed tasks](/docs/tasks/closed/closed.md)'
 part_of: '[leaf](/README.md)'
 ---

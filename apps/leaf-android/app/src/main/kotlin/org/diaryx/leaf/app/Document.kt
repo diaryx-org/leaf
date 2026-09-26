@@ -36,7 +36,8 @@ class Document(val uri: Uri, val name: String, val editor: LeafEditorState) {
             val doc = try {
                 LeafDoc(text, format(name))
             } catch (e: LeafException) {
-                throw IllegalArgumentException("$name could not be read: ${e.message}", e)
+                val why = (e as? LeafException.Parse)?.reason ?: e.message
+                throw IllegalArgumentException("$name could not be read: $why", e)
             }
             return Document(uri, name, LeafEditorState(doc))
         }

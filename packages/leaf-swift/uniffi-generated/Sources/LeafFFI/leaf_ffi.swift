@@ -39,6 +39,52 @@ fileprivate extension ForeignBytes {
     init(bufferPointer: UnsafeBufferPointer<UInt8>) {
         self.init(len: Int32(bufferPointer.count), data: bufferPointer.baseAddress)
     }
+
+    init(rawBufferPointer: UnsafeRawBufferPointer) {
+        self.init(
+            len: Int32(rawBufferPointer.count),
+            data: rawBufferPointer.baseAddress?.assumingMemoryBound(to: UInt8.self)
+        )
+    }
+}
+
+// Converter for `&[u8]` / `[ByRef] bytes` arguments.
+//
+// Conforms to `FfiConverter` so the compiler enforces the full converter
+// method set. Only the scope-bound `lower(_:_body:)` overload is sound —
+// zero-copy byte buffers only flow foreign -> Rust, and only in argument
+// position. The four protocol-witness methods (`lift`, `lower`, `read`,
+// `write`) `fatalError` at runtime if anyone reaches them.
+//
+// The scope-bound `lower` takes a closure because the `ForeignBytes`
+// pointer is only guaranteed valid for the duration of
+// `Data.withUnsafeBytes`. Callers must run the full FFI call inside
+// the closure body.
+fileprivate enum FfiConverterByRefBytes: FfiConverter {
+    typealias SwiftType = Data
+    typealias FfiType = ForeignBytes
+
+    static func lower<R>(_ value: Data, _ body: (ForeignBytes) throws -> R) rethrows -> R {
+        return try value.withUnsafeBytes { rawBuf in
+            try body(ForeignBytes(rawBufferPointer: rawBuf))
+        }
+    }
+
+    static func lower(_ value: Data) -> ForeignBytes {
+        fatalError("ByRef bytes cannot use the plain lower: returning ForeignBytes escapes the Data.withUnsafeBytes scope. Use the scope-bound lower(_:_body:) overload instead.")
+    }
+
+    static func lift(_ value: ForeignBytes) throws -> Data {
+        fatalError("ByRef bytes cannot be lifted: zero-copy &[u8] only flows foreign->Rust")
+    }
+
+    static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Data {
+        fatalError("ByRef bytes cannot be read from a buffer: zero-copy &[u8] is only supported in argument position, not nested in records/options/etc.")
+    }
+
+    static func write(_ value: Data, into buf: inout [UInt8]) {
+        fatalError("ByRef bytes cannot be written to a buffer: zero-copy &[u8] is only supported in argument position, not nested in records/options/etc.")
+    }
 }
 
 // For every type used in the interface, we provide helper methods for conveniently
@@ -281,7 +327,7 @@ private func makeRustCall<T, E: Swift.Error>(
     _ callback: (UnsafeMutablePointer<RustCallStatus>) -> T,
     errorHandler: ((RustBuffer) throws -> E)?
 ) throws -> T {
-    uniffiEnsureInitialized()
+    uniffiEnsureLeafFfiInitialized()
     var callStatus = RustCallStatus.init()
     let returnedVal = callback(&callStatus)
     try uniffiCheckCallStatus(callStatus: callStatus, errorHandler: errorHandler)
@@ -352,18 +398,29 @@ private func uniffiTraitInterfaceCallWithError<T, E>(
         callStatus.pointee.errorBuf = FfiConverterString.lower(String(describing: error))
     }
 }
-fileprivate class UniffiHandleMap<T> {
-    private var map: [UInt64: T] = [:]
+// Initial value and increment amount for handles. 
+// These ensure that SWIFT handles always have the lowest bit set
+fileprivate let UNIFFI_HANDLEMAP_INITIAL: UInt64 = 1
+fileprivate let UNIFFI_HANDLEMAP_DELTA: UInt64 = 2
+
+fileprivate final class UniffiHandleMap<T>: @unchecked Sendable {
+    // All mutation happens with this lock held, which is why we implement @unchecked Sendable.
     private let lock = NSLock()
-    private var currentHandle: UInt64 = 1
+    private var map: [UInt64: T] = [:]
+    private var currentHandle: UInt64 = UNIFFI_HANDLEMAP_INITIAL
 
     func insert(obj: T) -> UInt64 {
         lock.withLock {
-            let handle = currentHandle
-            currentHandle += 1
-            map[handle] = obj
-            return handle
+            return doInsert(obj)
         }
+    }
+
+    // Low-level insert function, this assumes `lock` is held.
+    private func doInsert(_ obj: T) -> UInt64 {
+        let handle = currentHandle
+        currentHandle += UNIFFI_HANDLEMAP_DELTA
+        map[handle] = obj
+        return handle
     }
 
      func get(handle: UInt64) throws -> T {
@@ -372,6 +429,15 @@ fileprivate class UniffiHandleMap<T> {
                 throw UniffiInternalError.unexpectedStaleHandle
             }
             return obj
+        }
+    }
+
+     func clone(handle: UInt64) throws -> UInt64 {
+        try lock.withLock {
+            guard let obj = map[handle] else {
+                throw UniffiInternalError.unexpectedStaleHandle
+            }
+            return doInsert(obj)
         }
     }
 
@@ -515,7 +581,11 @@ fileprivate struct FfiConverterString: FfiConverter {
             return String()
         }
         let bytes = UnsafeBufferPointer<UInt8>(start: value.data!, count: Int(value.len))
-        return String(bytes: bytes, encoding: String.Encoding.utf8)!
+        // Use Swift's native UTF-8 decoder; `String(bytes:encoding:.utf8)` goes
+        // through Foundation's NSString and silently strips a leading U+FEFF BOM.
+        // Invalid UTF-8 substitutes U+FFFD instead of trapping (unreachable
+        // given Rust's `String` invariant).
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     public static func lower(_ value: String) -> RustBuffer {
@@ -531,7 +601,8 @@ fileprivate struct FfiConverterString: FfiConverter {
 
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> String {
         let len: Int32 = try readInt(&buf)
-        return String(bytes: try readBytes(&buf, count: Int(len)), encoding: String.Encoding.utf8)!
+        // See `lift` above for why we avoid Foundation's NSString-backed decoder here.
+        return String(decoding: try readBytes(&buf, count: Int(len)), as: UTF8.self)
     }
 
     public static func write(_ value: String, into buf: inout [UInt8]) {
@@ -550,7 +621,7 @@ fileprivate struct FfiConverterString: FfiConverter {
  * an in-memory string and driven entirely through method calls — there is no
  * filesystem behind it.
  */
-public protocol LeafDocProtocol : AnyObject {
+public protocol LeafDocProtocol: AnyObject, Sendable {
     
     /**
      * The alignment in force at the caret, or `nil` for the theme's default —
@@ -1517,71 +1588,74 @@ public protocol LeafDocProtocol : AnyObject {
     func view()  -> DocView
     
 }
-
 /**
  * A live leaf document bound for a native Apple frontend: `leaf_core::Doc` plus
  * the wrap width the current viewport implies, behind a mutex. Constructed from
  * an in-memory string and driven entirely through method calls — there is no
  * filesystem behind it.
  */
-open class LeafDoc:
-    LeafDocProtocol {
-    fileprivate let pointer: UnsafeMutableRawPointer!
+open class LeafDoc: LeafDocProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
 
-    /// Used to instantiate a [FFIObject] without an actual pointer, for fakes in tests, mostly.
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
 #if swift(>=5.8)
     @_documentation(visibility: private)
 #endif
-    public struct NoPointer {
+    public struct NoHandle {
         public init() {}
     }
 
     // TODO: We'd like this to be `private` but for Swifty reasons,
     // we can't implement `FfiConverter` without making this `required` and we can't
     // make it `required` without making it `public`.
-    required public init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer) {
-        self.pointer = pointer
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
     }
 
     // This constructor can be used to instantiate a fake object.
-    // - Parameter noPointer: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
     //
     // - Warning:
-    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing [Pointer] the FFI lower functions will crash.
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
 #if swift(>=5.8)
     @_documentation(visibility: private)
 #endif
-    public init(noPointer: NoPointer) {
-        self.pointer = nil
+    public init(noHandle: NoHandle) {
+        self.handle = 0
     }
 
 #if swift(>=5.8)
     @_documentation(visibility: private)
 #endif
-    public func uniffiClonePointer() -> UnsafeMutableRawPointer {
-        return try! rustCall { uniffi_leaf_ffi_fn_clone_leafdoc(self.pointer, $0) }
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_leaf_ffi_fn_clone_leafdoc(self.handle, $0) }
     }
     /**
      * Parse `source` as `format` (`"markdown"`/`"md"`, `"djot"`/`"dj"`,
      * `"html"`, `"xml"`) into a live, untitled document.
      */
 public convenience init(source: String, format: String)throws  {
-    let pointer =
-        try rustCallWithError(FfiConverterTypeLeafError.lift) {
+    let handle =
+        try rustCallWithError(FfiConverterTypeLeafError_lift) {
+        uniffiCallStatus in
     uniffi_leaf_ffi_fn_constructor_leafdoc_new(
         FfiConverterString.lower(source),
-        FfiConverterString.lower(format),$0
+        FfiConverterString.lower(format),uniffiCallStatus
     )
 }
-    self.init(unsafeFromRawPointer: pointer)
+    self.init(unsafeFromHandle: handle)
 }
 
     deinit {
-        guard let pointer = pointer else {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
             return
         }
 
-        try! rustCall { uniffi_leaf_ffi_fn_free_leafdoc(pointer, $0) }
+        try! rustCall { uniffi_leaf_ffi_fn_free_leafdoc(handle, $0) }
     }
 
     
@@ -1595,9 +1669,11 @@ public convenience init(source: String, format: String)throws  {
      * `div`s around it after that, so the control follows the caret into a
      * centred `<div>`.
      */
-open func alignmentAtCaret() -> Align? {
+open func alignmentAtCaret() -> Align?  {
     return try!  FfiConverterOptionTypeAlign.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_alignment_at_caret(self.uniffiClonePointer(),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_alignment_at_caret(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -1605,9 +1681,11 @@ open func alignmentAtCaret() -> Align? {
     /**
      * The selection's fixed end (equals the caret when there's no selection).
      */
-open func anchorOffset() -> UInt32 {
+open func anchorOffset() -> UInt32  {
     return try!  FfiConverterUInt32.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_anchor_offset(self.uniffiClonePointer(),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_anchor_offset(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -1617,12 +1695,14 @@ open func anchorOffset() -> UInt32 {
      * block of its own — for media that *arrives* rather than media the
      * writer places at the caret. See [`leaf_core::Doc::append_media`].
      */
-open func appendMedia(kind: MediaKind, destination: String, alt: String) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_append_media(self.uniffiClonePointer(),
-        FfiConverterTypeMediaKind.lower(kind),
+open func appendMedia(kind: MediaKind, destination: String, alt: String) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_append_media(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeMediaKind_lower(kind),
         FfiConverterString.lower(destination),
-        FfiConverterString.lower(alt),$0
+        FfiConverterString.lower(alt),uniffiCallStatus
     )
 })
 }
@@ -1633,16 +1713,20 @@ open func appendMedia(kind: MediaKind, destination: String, alt: String) -> DocV
      * read-only and hide the formatting section outright. For anything finer,
      * including whether to dim an individual button, use [`Self::capabilities`].
      */
-open func authorable() -> Bool {
+open func authorable() -> Bool  {
     return try!  FfiConverterBool.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_authorable(self.uniffiClonePointer(),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_authorable(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
     
-open func backspace() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_backspace(self.uniffiClonePointer(),$0
+open func backspace() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_backspace(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -1653,8 +1737,10 @@ open func backspace() -> DocView {
      * a Replace All, or a Writing Tools session. Groups nest; an undo or redo
      * closes any that is open. See `Doc::begin_undo_group`.
      */
-open func beginUndoGroup() {try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_begin_undo_group(self.uniffiClonePointer(),$0
+open func beginUndoGroup()  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_begin_undo_group(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 }
 }
@@ -1666,11 +1752,13 @@ open func beginUndoGroup() {try! rustCall() {
      * pointer. `None` on a blank line. Does not move the caret; map the pair
      * through [`row_range_for`](Self::row_range_for) for the rows.
      */
-open func blockRangeAt(row: UInt32, ch: UInt32) -> LandingView? {
+open func blockRangeAt(row: UInt32, ch: UInt32) -> LandingView?  {
     return try!  FfiConverterOptionTypeLandingView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_block_range_at(self.uniffiClonePointer(),
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_block_range_at(
+            self.uniffiCloneHandle(),
         FfiConverterUInt32.lower(row),
-        FfiConverterUInt32.lower(ch),$0
+        FfiConverterUInt32.lower(ch),uniffiCallStatus
     )
 })
 }
@@ -1690,9 +1778,11 @@ open func blockRangeAt(row: UInt32, ch: UInt32) -> LandingView? {
      * and link, and Markdown refuses the superscript djot spells — so a toolbar
      * driven by [`Self::authorable`] alone would be wrong in both directions.
      */
-open func capabilities() -> Capabilities {
-    return try!  FfiConverterTypeCapabilities.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_capabilities(self.uniffiClonePointer(),$0
+open func capabilities() -> Capabilities  {
+    return try!  FfiConverterTypeCapabilities_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_capabilities(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -1702,9 +1792,11 @@ open func capabilities() -> Capabilities {
      * itself by, since a colour is a property of a highlight that already
      * exists. The caret-side half of [`Capabilities::mark_color`].
      */
-open func caretInMark() -> Bool {
+open func caretInMark() -> Bool  {
     return try!  FfiConverterBool.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_caret_in_mark(self.uniffiClonePointer(),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_caret_in_mark(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -1714,9 +1806,11 @@ open func caretInMark() -> Bool {
      * Pair it with [`Capabilities::table`]: the caret is genuinely inside an
      * HTML `<table>`, and the grid controls still cannot edit one.
      */
-open func caretInTable() -> Bool {
+open func caretInTable() -> Bool  {
     return try!  FfiConverterBool.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_caret_in_table(self.uniffiClonePointer(),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_caret_in_table(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -1724,9 +1818,11 @@ open func caretInTable() -> Bool {
     /**
      * The caret's source offset (the selection's moving end).
      */
-open func caretOffset() -> UInt32 {
+open func caretOffset() -> UInt32  {
     return try!  FfiConverterUInt32.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_caret_offset(self.uniffiClonePointer(),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_caret_offset(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -1734,9 +1830,11 @@ open func caretOffset() -> UInt32 {
     /**
      * Shift+Return inserts a hard line break *within* the current cell.
      */
-open func cellLineBreak() -> DocView? {
+open func cellLineBreak() -> DocView?  {
     return try!  FfiConverterOptionTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_cell_line_break(self.uniffiClonePointer(),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_cell_line_break(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -1745,9 +1843,11 @@ open func cellLineBreak() -> DocView? {
      * Return drops to the cell below in the same column, appending a row at the
      * table's bottom.
      */
-open func cellReturn() -> DocView? {
+open func cellReturn() -> DocView?  {
     return try!  FfiConverterOptionTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_cell_return(self.uniffiClonePointer(),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_cell_return(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -1756,10 +1856,12 @@ open func cellReturn() -> DocView? {
      * Tab (`forward`) / Shift+Tab hops to the next/previous cell; Tab past the
      * last cell appends a fresh row and enters it.
      */
-open func cellTab(forward: Bool) -> DocView? {
+open func cellTab(forward: Bool) -> DocView?  {
     return try!  FfiConverterOptionTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_cell_tab(self.uniffiClonePointer(),
-        FfiConverterBool.lower(forward),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_cell_tab(
+            self.uniffiCloneHandle(),
+        FfiConverterBool.lower(forward),uniffiCallStatus
     )
 })
 }
@@ -1770,12 +1872,14 @@ open func cellTab(forward: Bool) -> DocView? {
      * to real caret stops. Prefer [`LeafDoc::click_ch`] from a proportional
      * renderer.
      */
-open func click(row: UInt32, col: UInt32, extend: Bool) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_click(self.uniffiClonePointer(),
+open func click(row: UInt32, col: UInt32, extend: Bool) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_click(
+            self.uniffiCloneHandle(),
         FfiConverterUInt32.lower(row),
         FfiConverterUInt32.lower(col),
-        FfiConverterBool.lower(extend),$0
+        FfiConverterBool.lower(extend),uniffiCallStatus
     )
 })
 }
@@ -1786,12 +1890,14 @@ open func click(row: UInt32, col: UInt32, extend: Bool) -> DocView {
      * back. Converted to core's display column before clicking, so a proportional
      * renderer never reasons about column widths itself.
      */
-open func clickCh(row: UInt32, ch: UInt32, extend: Bool) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_click_ch(self.uniffiClonePointer(),
+open func clickCh(row: UInt32, ch: UInt32, extend: Bool) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_click_ch(
+            self.uniffiCloneHandle(),
         FfiConverterUInt32.lower(row),
         FfiConverterUInt32.lower(ch),
-        FfiConverterBool.lower(extend),$0
+        FfiConverterBool.lower(extend),uniffiCallStatus
     )
 })
 }
@@ -1803,9 +1909,11 @@ open func clickCh(row: UInt32, ch: UInt32, extend: Bool) -> DocView {
      * [`leaf_core::Doc::click_past_end`]. The frontend decides "under": the
      * point is below every line box it laid out.
      */
-open func clickPastEnd() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_click_past_end(self.uniffiClonePointer(),$0
+open func clickPastEnd() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_click_past_end(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -1825,30 +1933,38 @@ open func clickPastEnd() -> DocView {
      * `DocView` in it, because nothing about the document changes by being
      * counted.
      */
-open func counts() -> TextCounts {
-    return try!  FfiConverterTypeTextCounts.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_counts(self.uniffiClonePointer(),$0
+open func counts() -> TextCounts  {
+    return try!  FfiConverterTypeTextCounts_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_counts(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
     
-open func deleteForward() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_delete_forward(self.uniffiClonePointer(),$0
+open func deleteForward() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_delete_forward(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
     
-open func deleteWordBack() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_delete_word_back(self.uniffiClonePointer(),$0
+open func deleteWordBack() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_delete_word_back(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
     
-open func deleteWordForward() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_delete_word_forward(self.uniffiClonePointer(),$0
+open func deleteWordForward() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_delete_word_forward(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -1856,11 +1972,13 @@ open func deleteWordForward() -> DocView {
     /**
      * The count of caret stops between two offsets (signed) — `offset(from:to:)`.
      */
-open func distanceOffset(from: UInt32, to: UInt32) -> Int32 {
+open func distanceOffset(from: UInt32, to: UInt32) -> Int32  {
     return try!  FfiConverterInt32.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_distance_offset(self.uniffiClonePointer(),
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_distance_offset(
+            self.uniffiCloneHandle(),
         FfiConverterUInt32.lower(from),
-        FfiConverterUInt32.lower(to),$0
+        FfiConverterUInt32.lower(to),uniffiCallStatus
     )
 })
 }
@@ -1868,9 +1986,11 @@ open func distanceOffset(from: UInt32, to: UInt32) -> Int32 {
     /**
      * The last caret stop in the document — `UITextInput.endOfDocument`.
      */
-open func docEndOffset() -> UInt32 {
+open func docEndOffset() -> UInt32  {
     return try!  FfiConverterUInt32.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_doc_end_offset(self.uniffiClonePointer(),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_doc_end_offset(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -1881,10 +2001,12 @@ open func docEndOffset() -> UInt32 {
      * otherwise, the document's end for a row below everything. `None` for
      * a row with no block under it. See [`leaf_core::Doc::drop_target_at`].
      */
-open func dropTargetAt(row: UInt32) -> DropTargetView? {
+open func dropTargetAt(row: UInt32) -> DropTargetView?  {
     return try!  FfiConverterOptionTypeDropTargetView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_drop_target_at(self.uniffiClonePointer(),
-        FfiConverterUInt32.lower(row),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_drop_target_at(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(row),uniffiCallStatus
     )
 })
 }
@@ -1893,8 +2015,10 @@ open func dropTargetAt(row: UInt32) -> DropTargetView? {
      * Close the group [`begin_undo_group`](Self::begin_undo_group) opened; a
      * no-op when none is open.
      */
-open func endUndoGroup() {try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_end_undo_group(self.uniffiClonePointer(),$0
+open func endUndoGroup()  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_end_undo_group(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 }
 }
@@ -1904,9 +2028,11 @@ open func endUndoGroup() {try! rustCall() {
      * [`font_size_at_caret`](Self::font_size_at_caret)'s peer, and a `.named`
      * is the family the author picked, shown as its own ticked row.
      */
-open func fontFamilyAtCaret() -> FontFace? {
+open func fontFamilyAtCaret() -> FontFace?  {
     return try!  FfiConverterOptionTypeFontFace.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_font_family_at_caret(self.uniffiClonePointer(),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_font_family_at_caret(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -1920,9 +2046,11 @@ open func fontFamilyAtCaret() -> FontFace? {
      * A `.points` is a size no row of the menu's seven can tick, and the menu
      * shows it as a row of its own — "14 pt" — above *Other…*.
      */
-open func fontSizeAtCaret() -> FontSize? {
+open func fontSizeAtCaret() -> FontSize?  {
     return try!  FfiConverterOptionTypeFontSize.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_font_size_at_caret(self.uniffiClonePointer(),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_font_size_at_caret(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -1936,10 +2064,12 @@ open func fontSizeAtCaret() -> FontSize? {
      * text in a popover, and moving the caret to find out would yank the reader
      * out of wherever they were typing.
      */
-open func footnoteAt(off: UInt32) -> FootnoteView? {
+open func footnoteAt(off: UInt32) -> FootnoteView?  {
     return try!  FfiConverterOptionTypeFootnoteView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_footnote_at(self.uniffiClonePointer(),
-        FfiConverterUInt32.lower(off),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_footnote_at(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(off),uniffiCallStatus
     )
 })
 }
@@ -1951,9 +2081,11 @@ open func footnoteAt(off: UInt32) -> FootnoteView? {
      * on a reference; see [`FootnoteView`] for the reference that resolved to
      * no definition.
      */
-open func footnoteAtCaret() -> FootnoteView? {
+open func footnoteAtCaret() -> FootnoteView?  {
     return try!  FfiConverterOptionTypeFootnoteView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_footnote_at_caret(self.uniffiClonePointer(),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_footnote_at_caret(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -1967,9 +2099,11 @@ open func footnoteAtCaret() -> FootnoteView? {
      * tells the two directions apart: the reference query answers up top, this
      * one answers down in the notes, and never both at once.
      */
-open func footnoteDefinitionAtCaret() -> FootnoteDefView? {
+open func footnoteDefinitionAtCaret() -> FootnoteDefView?  {
     return try!  FfiConverterOptionTypeFootnoteDefView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_footnote_definition_at_caret(self.uniffiClonePointer(),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_footnote_definition_at_caret(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -1980,10 +2114,12 @@ open func footnoteDefinitionAtCaret() -> FootnoteDefView? {
      * a place names it by: the `#slug` comes from its `text`. See
      * [`leaf_core::Doc::heading_at`].
      */
-open func headingAt(off: UInt32) -> HeadingView? {
+open func headingAt(off: UInt32) -> HeadingView?  {
     return try!  FfiConverterOptionTypeHeadingView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_heading_at(self.uniffiClonePointer(),
-        FfiConverterUInt32.lower(off),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_heading_at(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(off),uniffiCallStatus
     )
 })
 }
@@ -1992,9 +2128,11 @@ open func headingAt(off: UInt32) -> HeadingView? {
      * The heading the caret is under — [`heading_at`](Self::heading_at) at
      * the caret.
      */
-open func headingAtCaret() -> HeadingView? {
+open func headingAtCaret() -> HeadingView?  {
     return try!  FfiConverterOptionTypeHeadingView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_heading_at_caret(self.uniffiClonePointer(),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_heading_at_caret(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -2010,10 +2148,12 @@ open func headingAtCaret() -> HeadingView? {
      * colour, and over an unhighlighted selection means simply "highlight
      * this". A bare caret in no highlight is left alone.
      */
-open func highlight(color: MarkColor?) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_highlight(self.uniffiClonePointer(),
-        FfiConverterOptionTypeMarkColor.lower(color),$0
+open func highlight(color: MarkColor?) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_highlight(
+            self.uniffiCloneHandle(),
+        FfiConverterOptionTypeMarkColor.lower(color),uniffiCallStatus
     )
 })
 }
@@ -2022,10 +2162,12 @@ open func highlight(color: MarkColor?) -> DocView {
      * The id of the highlight covering source `offset`, if one does — what a
      * frontend asks when the reader activates a spot on the page.
      */
-open func highlightAt(offset: UInt32) -> String? {
+open func highlightAt(offset: UInt32) -> String?  {
     return try!  FfiConverterOptionString.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_highlight_at(self.uniffiClonePointer(),
-        FfiConverterUInt32.lower(offset),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_highlight_at(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(offset),uniffiCallStatus
     )
 })
 }
@@ -2034,9 +2176,11 @@ open func highlightAt(offset: UInt32) -> String? {
      * The host-painted ranges as last set, sorted by start — what a frontend
      * walks to lay out margin markers.
      */
-open func highlights() -> [Highlight] {
+open func highlights() -> [Highlight]  {
     return try!  FfiConverterSequenceTypeHighlight.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_highlights(self.uniffiClonePointer(),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_highlights(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -2056,9 +2200,11 @@ open func highlights() -> [Highlight] {
      * past it and gets `None`, which is the same half-open rule
      * [`link_destination_at_caret`](Self::link_destination_at_caret) follows.
      */
-open func imageDestinationAtCaret() -> String? {
+open func imageDestinationAtCaret() -> String?  {
     return try!  FfiConverterOptionString.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_image_destination_at_caret(self.uniffiClonePointer(),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_image_destination_at_caret(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -2068,17 +2214,21 @@ open func imageDestinationAtCaret() -> String? {
      * level, nesting a list item under its sibling. The frontend calls this when
      * [`LeafDoc::cell_tab`] declined because the caret isn't in a table.
      */
-open func indent() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_indent(self.uniffiClonePointer(),$0
+open func indent() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_indent(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
     
-open func insert(text: String) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_insert(self.uniffiClonePointer(),
-        FfiConverterString.lower(text),$0
+open func insert(text: String) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_insert(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(text),uniffiCallStatus
     )
 })
 }
@@ -2090,17 +2240,21 @@ open func insert(text: String) -> DocView {
      * is left **in the empty note** ready to type it. Gate the button on
      * [`Capabilities::footnote`]; see [`leaf_core::Doc::insert_footnote`].
      */
-open func insertFootnote() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_insert_footnote(self.uniffiClonePointer(),$0
+open func insertFootnote() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_insert_footnote(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
     
-open func insertLink(destination: String) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_insert_link(self.uniffiClonePointer(),
-        FfiConverterString.lower(destination),$0
+open func insertLink(destination: String) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_insert_link(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(destination),uniffiCallStatus
     )
 })
 }
@@ -2110,12 +2264,14 @@ open func insertLink(destination: String) -> DocView {
      * becomes the alt / fallback text. See [`leaf_core::Doc::insert_media`] for
      * the markup each kind spells.
      */
-open func insertMedia(kind: MediaKind, destination: String, alt: String) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_insert_media(self.uniffiClonePointer(),
-        FfiConverterTypeMediaKind.lower(kind),
+open func insertMedia(kind: MediaKind, destination: String, alt: String) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_insert_media(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeMediaKind_lower(kind),
         FfiConverterString.lower(destination),
-        FfiConverterString.lower(alt),$0
+        FfiConverterString.lower(alt),uniffiCallStatus
     )
 })
 }
@@ -2131,9 +2287,11 @@ open func insertMedia(kind: MediaKind, destination: String, alt: String) -> DocV
      * placeholder every leaf directive gets. Gate on
      * [`Capabilities::page_break`].
      */
-open func insertPageBreak() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_insert_page_break(self.uniffiClonePointer(),$0
+open func insertPageBreak() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_insert_page_break(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -2146,11 +2304,13 @@ open func insertPageBreak() -> DocView {
      * the placement (a paragraph is parted around the caret, as for the rule)
      * and for what a zero shape does.
      */
-open func insertTable(rows: UInt32, cols: UInt32) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_insert_table(self.uniffiClonePointer(),
+open func insertTable(rows: UInt32, cols: UInt32) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_insert_table(
+            self.uniffiCloneHandle(),
         FfiConverterUInt32.lower(rows),
-        FfiConverterUInt32.lower(cols),$0
+        FfiConverterUInt32.lower(cols),uniffiCallStatus
     )
 })
 }
@@ -2161,9 +2321,11 @@ open func insertTable(rows: UInt32, cols: UInt32) -> DocView {
      * handles a selection, a blank line, and the caret sitting mid-paragraph,
      * mid-list, or inside a quote.
      */
-open func insertThematicBreak() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_insert_thematic_break(self.uniffiClonePointer(),$0
+open func insertThematicBreak() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_insert_thematic_break(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -2171,9 +2333,11 @@ open func insertThematicBreak() -> DocView {
     /**
      * The current soft-break flow preference (see [`LineFlow`]).
      */
-open func lineFlow() -> LineFlow {
-    return try!  FfiConverterTypeLineFlow.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_line_flow(self.uniffiClonePointer(),$0
+open func lineFlow() -> LineFlow  {
+    return try!  FfiConverterTypeLineFlow_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_line_flow(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -2186,9 +2350,11 @@ open func lineFlow() -> LineFlow {
      * A `.ratio` is a spacing no row of the menu's three can tick, and is the
      * author's own: the menu shows it as a row of its own above *Other…*.
      */
-open func lineSpacingAtCaret() -> LineHeight? {
+open func lineSpacingAtCaret() -> LineHeight?  {
     return try!  FfiConverterOptionTypeLineHeight.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_line_spacing_at_caret(self.uniffiClonePointer(),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_line_spacing_at_caret(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -2203,10 +2369,12 @@ open func lineSpacingAtCaret() -> LineHeight? {
      * runs learn where they point, since a `Run` carries how a span looks and
      * not what it means.
      */
-open func linkDestinationAt(off: UInt32) -> String? {
+open func linkDestinationAt(off: UInt32) -> String?  {
     return try!  FfiConverterOptionString.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_link_destination_at(self.uniffiClonePointer(),
-        FfiConverterUInt32.lower(off),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_link_destination_at(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(off),uniffiCallStatus
     )
 })
 }
@@ -2216,9 +2384,11 @@ open func linkDestinationAt(off: UInt32) -> String? {
      * so a frontend can open it (⌘-click / "Open Link") or show it. `None` when the
      * caret isn't on a link.
      */
-open func linkDestinationAtCaret() -> String? {
+open func linkDestinationAtCaret() -> String?  {
     return try!  FfiConverterOptionString.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_link_destination_at_caret(self.uniffiClonePointer(),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_link_destination_at_caret(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -2237,10 +2407,12 @@ open func linkDestinationAtCaret() -> String? {
      * citation builds a [`LeafDoc`] over the other file's bytes and asks this,
      * which is what lets a hover show the verse instead of the filename.
      */
-open func locate(id: String) -> LandingView? {
+open func locate(id: String) -> LandingView?  {
     return try!  FfiConverterOptionTypeLandingView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_locate(self.uniffiClonePointer(),
-        FfiConverterString.lower(id),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_locate(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(id),uniffiCallStatus
     )
 })
 }
@@ -2249,9 +2421,11 @@ open func locate(id: String) -> LandingView? {
      * Mark the buffer saved after the host persisted [`LeafDoc::source`] its own
      * way — clears the dirty flag without touching a filesystem.
      */
-open func markSaved() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_mark_saved(self.uniffiClonePointer(),$0
+open func markSaved() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_mark_saved(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -2259,9 +2433,11 @@ open func markSaved() -> DocView {
     /**
      * The current markup-exposure preference (see [`MarkupMode`]).
      */
-open func markupMode() -> MarkupMode {
-    return try!  FfiConverterTypeMarkupMode.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_markup_mode(self.uniffiClonePointer(),$0
+open func markupMode() -> MarkupMode  {
+    return try!  FfiConverterTypeMarkupMode_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_markup_mode(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -2273,11 +2449,13 @@ open func markupMode() -> MarkupMode {
      * the caret rides the block; a drop back onto the block's own boundary
      * is a quiet no-op. See [`leaf_core::Doc::move_block`].
      */
-open func moveBlock(from: UInt32, to: UInt32) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_move_block(self.uniffiClonePointer(),
+open func moveBlock(from: UInt32, to: UInt32) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_move_block(
+            self.uniffiCloneHandle(),
         FfiConverterUInt32.lower(from),
-        FfiConverterUInt32.lower(to),$0
+        FfiConverterUInt32.lower(to),uniffiCallStatus
     )
 })
 }
@@ -2286,9 +2464,11 @@ open func moveBlock(from: UInt32, to: UInt32) -> DocView {
      * Move the caret's block one place down — the mirror of
      * [`move_block_up`](Self::move_block_up).
      */
-open func moveBlockDown() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_move_block_down(self.uniffiClonePointer(),$0
+open func moveBlockDown() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_move_block_down(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -2300,96 +2480,120 @@ open func moveBlockDown() -> DocView {
      * children. The caret rides the block. Gate on
      * [`Capabilities::move_block`]; see [`leaf_core::Doc::move_block_up`].
      */
-open func moveBlockUp() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_move_block_up(self.uniffiClonePointer(),$0
+open func moveBlockUp() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_move_block_up(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
     
-open func moveDocEnd(extend: Bool) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_move_doc_end(self.uniffiClonePointer(),
-        FfiConverterBool.lower(extend),$0
+open func moveDocEnd(extend: Bool) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_move_doc_end(
+            self.uniffiCloneHandle(),
+        FfiConverterBool.lower(extend),uniffiCallStatus
     )
 })
 }
     
-open func moveDocStart(extend: Bool) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_move_doc_start(self.uniffiClonePointer(),
-        FfiConverterBool.lower(extend),$0
+open func moveDocStart(extend: Bool) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_move_doc_start(
+            self.uniffiCloneHandle(),
+        FfiConverterBool.lower(extend),uniffiCallStatus
     )
 })
 }
     
-open func moveDown(extend: Bool) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_move_down(self.uniffiClonePointer(),
-        FfiConverterBool.lower(extend),$0
+open func moveDown(extend: Bool) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_move_down(
+            self.uniffiCloneHandle(),
+        FfiConverterBool.lower(extend),uniffiCallStatus
     )
 })
 }
     
-open func moveEnd(extend: Bool) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_move_end(self.uniffiClonePointer(),
-        FfiConverterBool.lower(extend),$0
+open func moveEnd(extend: Bool) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_move_end(
+            self.uniffiCloneHandle(),
+        FfiConverterBool.lower(extend),uniffiCallStatus
     )
 })
 }
     
-open func moveHome(extend: Bool) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_move_home(self.uniffiClonePointer(),
-        FfiConverterBool.lower(extend),$0
+open func moveHome(extend: Bool) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_move_home(
+            self.uniffiCloneHandle(),
+        FfiConverterBool.lower(extend),uniffiCallStatus
     )
 })
 }
     
-open func moveLeft(extend: Bool) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_move_left(self.uniffiClonePointer(),
-        FfiConverterBool.lower(extend),$0
+open func moveLeft(extend: Bool) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_move_left(
+            self.uniffiCloneHandle(),
+        FfiConverterBool.lower(extend),uniffiCallStatus
     )
 })
 }
     
-open func moveRight(extend: Bool) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_move_right(self.uniffiClonePointer(),
-        FfiConverterBool.lower(extend),$0
+open func moveRight(extend: Bool) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_move_right(
+            self.uniffiCloneHandle(),
+        FfiConverterBool.lower(extend),uniffiCallStatus
     )
 })
 }
     
-open func moveUp(extend: Bool) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_move_up(self.uniffiClonePointer(),
-        FfiConverterBool.lower(extend),$0
+open func moveUp(extend: Bool) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_move_up(
+            self.uniffiCloneHandle(),
+        FfiConverterBool.lower(extend),uniffiCallStatus
     )
 })
 }
     
-open func moveWordLeft(extend: Bool) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_move_word_left(self.uniffiClonePointer(),
-        FfiConverterBool.lower(extend),$0
+open func moveWordLeft(extend: Bool) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_move_word_left(
+            self.uniffiCloneHandle(),
+        FfiConverterBool.lower(extend),uniffiCallStatus
     )
 })
 }
     
-open func moveWordRight(extend: Bool) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_move_word_right(self.uniffiClonePointer(),
-        FfiConverterBool.lower(extend),$0
+open func moveWordRight(extend: Bool) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_move_word_right(
+            self.uniffiCloneHandle(),
+        FfiConverterBool.lower(extend),uniffiCallStatus
     )
 })
 }
     
-open func newline() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_newline(self.uniffiClonePointer(),$0
+open func newline() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_newline(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -2398,11 +2602,13 @@ open func newline() -> DocView {
      * The source offset at visual `(row, ch)` — the inverse of
      * [`Self::pos_for_offset`], for hit-testing a point to a position.
      */
-open func offsetForPos(row: UInt32, ch: UInt32) -> UInt32 {
+open func offsetForPos(row: UInt32, ch: UInt32) -> UInt32  {
     return try!  FfiConverterUInt32.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_offset_for_pos(self.uniffiClonePointer(),
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_offset_for_pos(
+            self.uniffiCloneHandle(),
         FfiConverterUInt32.lower(row),
-        FfiConverterUInt32.lower(ch),$0
+        FfiConverterUInt32.lower(ch),uniffiCallStatus
     )
 })
 }
@@ -2414,10 +2620,12 @@ open func offsetForPos(row: UInt32, ch: UInt32) -> UInt32 {
      * the character that owns it, and one on the `\n` a block gap is spelled
      * with to the stop at the end of the block before it. Always a caret stop.
      */
-open func offsetForUtf16Index(index: UInt32) -> UInt32 {
+open func offsetForUtf16Index(index: UInt32) -> UInt32  {
     return try!  FfiConverterUInt32.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_offset_for_utf16_index(self.uniffiClonePointer(),
-        FfiConverterUInt32.lower(index),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_offset_for_utf16_index(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(index),uniffiCallStatus
     )
 })
 }
@@ -2427,9 +2635,11 @@ open func offsetForUtf16Index(index: UInt32) -> UInt32 {
      * line (or the selected lines), unnesting a list item. The mirror of
      * [`LeafDoc::indent`].
      */
-open func outdent() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_outdent(self.uniffiClonePointer(),$0
+open func outdent() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_outdent(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -2445,17 +2655,21 @@ open func outdent() -> DocView {
      * and neither the frame count nor the rows kept for the next change move,
      * so the frame after this one is still a change from the screen's last.
      */
-open func paperView() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_paper_view(self.uniffiClonePointer(),$0
+open func paperView() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_paper_view(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
     
-open func paste(text: String) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_paste(self.uniffiClonePointer(),
-        FfiConverterString.lower(text),$0
+open func paste(text: String) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_paste(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(text),uniffiCallStatus
     )
 })
 }
@@ -2465,11 +2679,13 @@ open func paste(text: String) -> DocView {
      * `html` into the document's own markup and inserts it. Falls back to the
      * plain `text` when there's no HTML or it doesn't parse.
      */
-open func pasteRich(html: String?, text: String) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_paste_rich(self.uniffiClonePointer(),
+open func pasteRich(html: String?, text: String) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_paste_rich(
+            self.uniffiCloneHandle(),
         FfiConverterOptionString.lower(html),
-        FfiConverterString.lower(text),$0
+        FfiConverterString.lower(text),uniffiCallStatus
     )
 })
 }
@@ -2477,10 +2693,12 @@ open func pasteRich(html: String?, text: String) -> DocView {
     /**
      * Where a source offset sits on screen: its visual `(row, ch)`.
      */
-open func posForOffset(off: UInt32) -> RowCol {
-    return try!  FfiConverterTypeRowCol.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_pos_for_offset(self.uniffiClonePointer(),
-        FfiConverterUInt32.lower(off),$0
+open func posForOffset(off: UInt32) -> RowCol  {
+    return try!  FfiConverterTypeRowCol_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_pos_for_offset(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(off),uniffiCallStatus
     )
 })
 }
@@ -2488,16 +2706,20 @@ open func posForOffset(off: UInt32) -> RowCol {
     /**
      * Whether the document refuses to change — see `set_read_only`.
      */
-open func readOnly() -> Bool {
+open func readOnly() -> Bool  {
     return try!  FfiConverterBool.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_read_only(self.uniffiClonePointer(),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_read_only(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
     
-open func redo() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_redo(self.uniffiClonePointer(),$0
+open func redo() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_redo(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -2505,12 +2727,14 @@ open func redo() -> DocView {
     /**
      * Replace the source range `[from, to]` with `text` — `replace(_:withText:)`.
      */
-open func replaceRange(from: UInt32, to: UInt32, text: String) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_replace_range(self.uniffiClonePointer(),
+open func replaceRange(from: UInt32, to: UInt32, text: String) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_replace_range(
+            self.uniffiCloneHandle(),
         FfiConverterUInt32.lower(from),
         FfiConverterUInt32.lower(to),
-        FfiConverterString.lower(text),$0
+        FfiConverterString.lower(text),uniffiCallStatus
     )
 })
 }
@@ -2528,11 +2752,13 @@ open func replaceRange(from: UInt32, to: UInt32, text: String) -> DocView {
      * after it too. `pos_for_offset`'s snap is right for a caret and wrong for
      * a span; this is the question spans should be asking.
      */
-open func rowRangeFor(start: UInt32, end: UInt32) -> RowRange {
-    return try!  FfiConverterTypeRowRange.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_row_range_for(self.uniffiClonePointer(),
+open func rowRangeFor(start: UInt32, end: UInt32) -> RowRange  {
+    return try!  FfiConverterTypeRowRange_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_row_range_for(
+            self.uniffiCloneHandle(),
         FfiConverterUInt32.lower(start),
-        FfiConverterUInt32.lower(end),$0
+        FfiConverterUInt32.lower(end),uniffiCallStatus
     )
 })
 }
@@ -2545,18 +2771,22 @@ open func rowRangeFor(start: UInt32, end: UInt32) -> RowRange {
      * the window to lift, so it is the occasional resynchronisation, not the
      * per-gesture path.
      */
-open func rows(from: UInt32, to: UInt32) -> [Row] {
+open func rows(from: UInt32, to: UInt32) -> [Row]  {
     return try!  FfiConverterSequenceTypeRow.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_rows(self.uniffiClonePointer(),
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_rows(
+            self.uniffiCloneHandle(),
         FfiConverterUInt32.lower(from),
-        FfiConverterUInt32.lower(to),$0
+        FfiConverterUInt32.lower(to),uniffiCallStatus
     )
 })
 }
     
-open func selectAll() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_select_all(self.uniffiClonePointer(),$0
+open func selectAll() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_select_all(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -2565,11 +2795,13 @@ open func selectAll() -> DocView {
      * Select the whole logical text block under a click (row, `ch`) — the
      * triple-click gesture. Grabs the entire block even where it soft-wraps.
      */
-open func selectBlockCh(row: UInt32, ch: UInt32) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_select_block_ch(self.uniffiClonePointer(),
+open func selectBlockCh(row: UInt32, ch: UInt32) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_select_block_ch(
+            self.uniffiCloneHandle(),
         FfiConverterUInt32.lower(row),
-        FfiConverterUInt32.lower(ch),$0
+        FfiConverterUInt32.lower(ch),uniffiCallStatus
     )
 })
 }
@@ -2584,11 +2816,13 @@ open func selectBlockCh(row: UInt32, ch: UInt32) -> DocView {
      * takes the range as given, so a selection over `**needle**`'s inner word
      * is the word and not one byte short of it.
      */
-open func selectRange(start: UInt32, end: UInt32) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_select_range(self.uniffiClonePointer(),
+open func selectRange(start: UInt32, end: UInt32) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_select_range(
+            self.uniffiCloneHandle(),
         FfiConverterUInt32.lower(start),
-        FfiConverterUInt32.lower(end),$0
+        FfiConverterUInt32.lower(end),uniffiCallStatus
     )
 })
 }
@@ -2596,11 +2830,13 @@ open func selectRange(start: UInt32, end: UInt32) -> DocView {
     /**
      * Select the word under a click (row, `ch`) — the double-click gesture.
      */
-open func selectWordCh(row: UInt32, ch: UInt32) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_select_word_ch(self.uniffiClonePointer(),
+open func selectWordCh(row: UInt32, ch: UInt32) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_select_word_ch(
+            self.uniffiCloneHandle(),
         FfiConverterUInt32.lower(row),
-        FfiConverterUInt32.lower(ch),$0
+        FfiConverterUInt32.lower(ch),uniffiCallStatus
     )
 })
 }
@@ -2608,9 +2844,11 @@ open func selectWordCh(row: UInt32, ch: UInt32) -> DocView {
     /**
      * The selected text, if any — for a clipboard copy/cut.
      */
-open func selectedText() -> String? {
+open func selectedText() -> String?  {
     return try!  FfiConverterOptionString.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_selected_text(self.uniffiClonePointer(),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_selected_text(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -2619,9 +2857,11 @@ open func selectedText() -> String? {
      * The same statistics over the selection alone — `None` when nothing is
      * selected. See `leaf_core::Doc::selection_counts`.
      */
-open func selectionCounts() -> TextCounts? {
+open func selectionCounts() -> TextCounts?  {
     return try!  FfiConverterOptionTypeTextCounts.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_selection_counts(self.uniffiClonePointer(),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_selection_counts(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -2631,9 +2871,11 @@ open func selectionCounts() -> TextCounts? {
      * writes alongside the plain [`LeafDoc::selected_text`]. `None` when nothing
      * is selected.
      */
-open func selectionHtml() -> String? {
+open func selectionHtml() -> String?  {
     return try!  FfiConverterOptionString.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_selection_html(self.uniffiClonePointer(),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_selection_html(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -2645,10 +2887,12 @@ open func selectionHtml() -> String? {
      * string search. `None` when nothing is selected. See
      * `leaf_core::Doc::selection_quote`.
      */
-open func selectionQuote(context: UInt32) -> SelectionQuote? {
+open func selectionQuote(context: UInt32) -> SelectionQuote?  {
     return try!  FfiConverterOptionTypeSelectionQuote.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_selection_quote(self.uniffiClonePointer(),
-        FfiConverterUInt32.lower(context),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_selection_quote(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(context),uniffiCallStatus
     )
 })
 }
@@ -2661,10 +2905,12 @@ open func selectionQuote(context: UInt32) -> SelectionQuote? {
      * means the paragraph, not the words. Other `class` tokens on the block are
      * kept. Gate on [`Capabilities::alignment`].
      */
-open func setAlignment(align: Align?) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_set_alignment(self.uniffiClonePointer(),
-        FfiConverterOptionTypeAlign.lower(align),$0
+open func setAlignment(align: Align?) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_set_alignment(
+            self.uniffiCloneHandle(),
+        FfiConverterOptionTypeAlign.lower(align),uniffiCallStatus
     )
 })
 }
@@ -2678,10 +2924,12 @@ open func setAlignment(align: Align?) -> DocView {
      * Cheap to call repeatedly: resolving at the same appearance yields the same
      * URLs, and a renderer keying its views by `src` tears nothing down.
      */
-open func setDarkAppearance(dark: Bool) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_set_dark_appearance(self.uniffiClonePointer(),
-        FfiConverterBool.lower(dark),$0
+open func setDarkAppearance(dark: Bool) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_set_dark_appearance(
+            self.uniffiCloneHandle(),
+        FfiConverterBool.lower(dark),uniffiCallStatus
     )
 })
 }
@@ -2696,10 +2944,12 @@ open func setDarkAppearance(dark: Bool) -> DocView {
      * installed and in the theme's body face where it is not. A name that
      * names nothing (`"   "`) writes nothing, and the run's own face stands.
      */
-open func setFontFamily(font: FontFace?) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_set_font_family(self.uniffiClonePointer(),
-        FfiConverterOptionTypeFontFace.lower(font),$0
+open func setFontFamily(font: FontFace?) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_set_font_family(
+            self.uniffiCloneHandle(),
+        FfiConverterOptionTypeFontFace.lower(font),uniffiCallStatus
     )
 })
 }
@@ -2720,10 +2970,12 @@ open func setFontFamily(font: FontFace?) -> DocView {
      * range) writes nothing at all, and the run's own size stands: validate
      * the field before calling, because from here the refusal is silent.
      */
-open func setFontSize(size: FontSize?) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_set_font_size(self.uniffiClonePointer(),
-        FfiConverterOptionTypeFontSize.lower(size),$0
+open func setFontSize(size: FontSize?) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_set_font_size(
+            self.uniffiCloneHandle(),
+        FfiConverterOptionTypeFontSize.lower(size),uniffiCallStatus
     )
 })
 }
@@ -2732,10 +2984,12 @@ open func setFontSize(size: FontSize?) -> DocView {
      * Toggle the current block to a heading of `level` (1–6); toggling the
      * active level off returns it to a paragraph, per core.
      */
-open func setHeading(level: UInt32) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_set_heading(self.uniffiClonePointer(),
-        FfiConverterUInt32.lower(level),$0
+open func setHeading(level: UInt32) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_set_heading(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(level),uniffiCallStatus
     )
 })
 }
@@ -2745,10 +2999,12 @@ open func setHeading(level: UInt32) -> DocView {
      * `leaf_core::Doc::set_highlights` for why it is a replace, and
      * [`Highlight`] for what one is.
      */
-open func setHighlights(highlights: [Highlight]) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_set_highlights(self.uniffiClonePointer(),
-        FfiConverterSequenceTypeHighlight.lower(highlights),$0
+open func setHighlights(highlights: [Highlight]) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_set_highlights(
+            self.uniffiCloneHandle(),
+        FfiConverterSequenceTypeHighlight.lower(highlights),uniffiCallStatus
     )
 })
 }
@@ -2765,9 +3021,11 @@ open func setHighlights(highlights: [Highlight]) -> DocView {
      * The first frame after turning it on is whole (there is no frame before
      * to be a change from), and [`view`](Self::view) is whole at any time.
      */
-open func setIncrementalFrames(on: Bool) {try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_set_incremental_frames(self.uniffiClonePointer(),
-        FfiConverterBool.lower(on),$0
+open func setIncrementalFrames(on: Bool)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_set_incremental_frames(
+            self.uniffiCloneHandle(),
+        FfiConverterBool.lower(on),uniffiCallStatus
     )
 }
 }
@@ -2779,10 +3037,12 @@ open func setIncrementalFrames(on: Bool) {try! rustCall() {
      * picture over; when it cannot, as the code-styled TeX it always was.
      * Off until called, so a host that has not caught up sees what it saw.
      */
-open func setInlinePictures(on: Bool) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_set_inline_pictures(self.uniffiClonePointer(),
-        FfiConverterBool.lower(on),$0
+open func setInlinePictures(on: Bool) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_set_inline_pictures(
+            self.uniffiCloneHandle(),
+        FfiConverterBool.lower(on),uniffiCallStatus
     )
 })
 }
@@ -2792,10 +3052,12 @@ open func setInlinePictures(on: Bool) -> DocView {
      * can repaint: like the markup-exposure preference this one changes rendering
      * immediately, laying preserved soft breaks out as their own rows.
      */
-open func setLineFlow(mode: LineFlow) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_set_line_flow(self.uniffiClonePointer(),
-        FfiConverterTypeLineFlow.lower(mode),$0
+open func setLineFlow(mode: LineFlow) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_set_line_flow(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeLineFlow_lower(mode),uniffiCallStatus
     )
 })
 }
@@ -2811,10 +3073,12 @@ open func setLineFlow(mode: LineFlow) -> DocView {
      * ratio the vocabulary cannot carry at all — `0`, `700`, a NaN — writes
      * nothing, and the block's own spacing stands.
      */
-open func setLineSpacing(spacing: LineHeight?) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_set_line_spacing(self.uniffiClonePointer(),
-        FfiConverterOptionTypeLineHeight.lower(spacing),$0
+open func setLineSpacing(spacing: LineHeight?) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_set_line_spacing(
+            self.uniffiCloneHandle(),
+        FfiConverterOptionTypeLineHeight.lower(spacing),uniffiCallStatus
     )
 })
 }
@@ -2828,10 +3092,12 @@ open func setLineSpacing(spacing: LineHeight?) -> DocView {
      * this, which is the order the button and its palette already sit in. Both
      * refusals leave the document alone and say so in the status line.
      */
-open func setMarkColor(color: MarkColor?) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_set_mark_color(self.uniffiClonePointer(),
-        FfiConverterOptionTypeMarkColor.lower(color),$0
+open func setMarkColor(color: MarkColor?) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_set_mark_color(
+            self.uniffiCloneHandle(),
+        FfiConverterOptionTypeMarkColor.lower(color),uniffiCallStatus
     )
 })
 }
@@ -2842,10 +3108,12 @@ open func setMarkColor(color: MarkColor?) -> DocView {
      * first one showing the caret's line raw. Diaryx leaves it at the `None`
      * default.
      */
-open func setMarkupMode(mode: MarkupMode) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_set_markup_mode(self.uniffiClonePointer(),
-        FfiConverterTypeMarkupMode.lower(mode),$0
+open func setMarkupMode(mode: MarkupMode) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_set_markup_mode(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeMarkupMode_lower(mode),uniffiCallStatus
     )
 })
 }
@@ -2858,10 +3126,12 @@ open func setMarkupMode(mode: MarkupMode) -> DocView {
      *
      * [`set_media_rows`]: Self::set_media_rows
      */
-open func setMathRows(heights: [MathHeight]) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_set_math_rows(self.uniffiClonePointer(),
-        FfiConverterSequenceTypeMathHeight.lower(heights),$0
+open func setMathRows(heights: [MathHeight]) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_set_math_rows(
+            self.uniffiCloneHandle(),
+        FfiConverterSequenceTypeMathHeight.lower(heights),uniffiCallStatus
     )
 })
 }
@@ -2880,17 +3150,21 @@ open func setMathRows(heights: [MathHeight]) -> DocView {
      * vertical space itself (the way the gpui GUI does with images) never needs
      * to call this at all.
      */
-open func setMediaRows(heights: [MediaHeight]) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_set_media_rows(self.uniffiClonePointer(),
-        FfiConverterSequenceTypeMediaHeight.lower(heights),$0
+open func setMediaRows(heights: [MediaHeight]) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_set_media_rows(
+            self.uniffiCloneHandle(),
+        FfiConverterSequenceTypeMediaHeight.lower(heights),uniffiCallStatus
     )
 })
 }
     
-open func setParagraph() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_set_paragraph(self.uniffiClonePointer(),$0
+open func setParagraph() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_set_paragraph(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -2901,10 +3175,12 @@ open func setParagraph() -> DocView {
      * the three doors every mutation goes through, so a host that also quiets
      * its input chrome is polishing, not protecting.
      */
-open func setReadOnly(on: Bool) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_set_read_only(self.uniffiClonePointer(),
-        FfiConverterBool.lower(on),$0
+open func setReadOnly(on: Bool) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_set_read_only(
+            self.uniffiCloneHandle(),
+        FfiConverterBool.lower(on),uniffiCallStatus
     )
 })
 }
@@ -2915,13 +3191,15 @@ open func setReadOnly(on: Bool) -> DocView {
      * click is, then set as the selection's fixed and moving ends. A collapsed
      * range (`anchor == focus`) just places the caret.
      */
-open func setSelection(anchorRow: UInt32, anchorCh: UInt32, focusRow: UInt32, focusCh: UInt32) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_set_selection(self.uniffiClonePointer(),
+open func setSelection(anchorRow: UInt32, anchorCh: UInt32, focusRow: UInt32, focusCh: UInt32) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_set_selection(
+            self.uniffiCloneHandle(),
         FfiConverterUInt32.lower(anchorRow),
         FfiConverterUInt32.lower(anchorCh),
         FfiConverterUInt32.lower(focusRow),
-        FfiConverterUInt32.lower(focusCh),$0
+        FfiConverterUInt32.lower(focusCh),uniffiCallStatus
     )
 })
 }
@@ -2930,11 +3208,13 @@ open func setSelection(anchorRow: UInt32, anchorCh: UInt32, focusRow: UInt32, fo
      * Set the selection to `[anchor, focus]` by source offsets — the setter behind
      * `UITextInput.selectedTextRange` and handle dragging.
      */
-open func setSelectionOffsets(anchor: UInt32, focus: UInt32) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_set_selection_offsets(self.uniffiClonePointer(),
+open func setSelectionOffsets(anchor: UInt32, focus: UInt32) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_set_selection_offsets(
+            self.uniffiCloneHandle(),
         FfiConverterUInt32.lower(anchor),
-        FfiConverterUInt32.lower(focus),$0
+        FfiConverterUInt32.lower(focus),uniffiCallStatus
     )
 })
 }
@@ -2951,10 +3231,12 @@ open func setSelectionOffsets(anchor: UInt32, focus: UInt32) -> DocView {
      * system colour picker — painted as written in both appearances, which is
      * what "exact" costs.
      */
-open func setTextColor(color: TextColor?) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_set_text_color(self.uniffiClonePointer(),
-        FfiConverterOptionTypeTextColor.lower(color),$0
+open func setTextColor(color: TextColor?) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_set_text_color(
+            self.uniffiCloneHandle(),
+        FfiConverterOptionTypeTextColor.lower(color),uniffiCallStatus
     )
 })
 }
@@ -2966,9 +3248,11 @@ open func setTextColor(color: TextColor?) -> DocView {
      * the pixel wrap; core still owns the caret model, in byte offsets). Idempotent
      * and cheap to leave in place across edits.
      */
-open func setUnwrapped() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_set_unwrapped(self.uniffiClonePointer(),$0
+open func setUnwrapped() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_set_unwrapped(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -2977,10 +3261,12 @@ open func setUnwrapped() -> DocView {
      * Set the wrap width (in columns) the viewport implies and repaint. For a
      * fixed-cell frontend (a terminal); a proportional GUI uses [`set_unwrapped`].
      */
-open func setWidth(cols: UInt32) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_set_width(self.uniffiClonePointer(),
-        FfiConverterUInt32.lower(cols),$0
+open func setWidth(cols: UInt32) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_set_width(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(cols),uniffiCallStatus
     )
 })
 }
@@ -2988,10 +3274,12 @@ open func setWidth(cols: UInt32) -> DocView {
     /**
      * Snap an arbitrary offset to the nearest valid caret stop.
      */
-open func snapOffset(off: UInt32) -> UInt32 {
+open func snapOffset(off: UInt32) -> UInt32  {
     return try!  FfiConverterUInt32.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_snap_offset(self.uniffiClonePointer(),
-        FfiConverterUInt32.lower(off),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_snap_offset(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(off),uniffiCallStatus
     )
 })
 }
@@ -3000,9 +3288,11 @@ open func snapOffset(off: UInt32) -> UInt32 {
      * The current source text — for a save (write to disk / iCloud / a document
      * wrapper) or a source-view display.
      */
-open func source() -> String {
+open func source() -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_source(self.uniffiClonePointer(),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_source(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -3010,11 +3300,13 @@ open func source() -> String {
     /**
      * Move `off` by `delta` caret stops (negative = left) — `position(from:offset:)`.
      */
-open func stepOffset(off: UInt32, delta: Int32) -> UInt32 {
+open func stepOffset(off: UInt32, delta: Int32) -> UInt32  {
     return try!  FfiConverterUInt32.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_step_offset(self.uniffiClonePointer(),
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_step_offset(
+            self.uniffiCloneHandle(),
         FfiConverterUInt32.lower(off),
-        FfiConverterInt32.lower(delta),$0
+        FfiConverterInt32.lower(delta),uniffiCallStatus
     )
 })
 }
@@ -3026,12 +3318,14 @@ open func stepOffset(off: UInt32, delta: Int32) -> UInt32 {
      * they were, and the substitution is an undo step of its own. See
      * `Doc::substitute`.
      */
-open func substitute(from: UInt32, to: UInt32, text: String) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_substitute(self.uniffiClonePointer(),
+open func substitute(from: UInt32, to: UInt32, text: String) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_substitute(
+            self.uniffiCloneHandle(),
         FfiConverterUInt32.lower(from),
         FfiConverterUInt32.lower(to),
-        FfiConverterString.lower(text),$0
+        FfiConverterString.lower(text),uniffiCallStatus
     )
 })
 }
@@ -3039,9 +3333,11 @@ open func substitute(from: UInt32, to: UInt32, text: String) -> DocView {
     /**
      * Delete the caret's column (unless it is the only one).
      */
-open func tableDeleteColumn() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_table_delete_column(self.uniffiClonePointer(),$0
+open func tableDeleteColumn() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_table_delete_column(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -3049,9 +3345,11 @@ open func tableDeleteColumn() -> DocView {
     /**
      * Delete the caret's row (not the header or the last body row).
      */
-open func tableDeleteRow() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_table_delete_row(self.uniffiClonePointer(),$0
+open func tableDeleteRow() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_table_delete_row(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -3059,10 +3357,12 @@ open func tableDeleteRow() -> DocView {
     /**
      * Insert an empty column right (`right`) or left of the caret's column.
      */
-open func tableInsertColumn(right: Bool) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_table_insert_column(self.uniffiClonePointer(),
-        FfiConverterBool.lower(right),$0
+open func tableInsertColumn(right: Bool) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_table_insert_column(
+            self.uniffiCloneHandle(),
+        FfiConverterBool.lower(right),uniffiCallStatus
     )
 })
 }
@@ -3070,10 +3370,12 @@ open func tableInsertColumn(right: Bool) -> DocView {
     /**
      * Insert an empty row below (`below`) or above the caret's row.
      */
-open func tableInsertRow(below: Bool) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_table_insert_row(self.uniffiClonePointer(),
-        FfiConverterBool.lower(below),$0
+open func tableInsertRow(below: Bool) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_table_insert_row(
+            self.uniffiCloneHandle(),
+        FfiConverterBool.lower(below),uniffiCallStatus
     )
 })
 }
@@ -3081,10 +3383,12 @@ open func tableInsertRow(below: Bool) -> DocView {
     /**
      * Move the caret's column one place right (`right`) or left.
      */
-open func tableMoveColumn(right: Bool) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_table_move_column(self.uniffiClonePointer(),
-        FfiConverterBool.lower(right),$0
+open func tableMoveColumn(right: Bool) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_table_move_column(
+            self.uniffiCloneHandle(),
+        FfiConverterBool.lower(right),uniffiCallStatus
     )
 })
 }
@@ -3092,10 +3396,12 @@ open func tableMoveColumn(right: Bool) -> DocView {
     /**
      * Move the caret's row one place down (`down`) or up.
      */
-open func tableMoveRow(down: Bool) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_table_move_row(self.uniffiClonePointer(),
-        FfiConverterBool.lower(down),$0
+open func tableMoveRow(down: Bool) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_table_move_row(
+            self.uniffiCloneHandle(),
+        FfiConverterBool.lower(down),uniffiCallStatus
     )
 })
 }
@@ -3103,10 +3409,12 @@ open func tableMoveRow(down: Bool) -> DocView {
     /**
      * Set the caret's column to `alignment`.
      */
-open func tableSetAlignment(alignment: TableAlignment) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_table_set_alignment(self.uniffiClonePointer(),
-        FfiConverterTypeTableAlignment.lower(alignment),$0
+open func tableSetAlignment(alignment: TableAlignment) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_table_set_alignment(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeTableAlignment_lower(alignment),uniffiCallStatus
     )
 })
 }
@@ -3115,9 +3423,11 @@ open func tableSetAlignment(alignment: TableAlignment) -> DocView {
      * Whether the item at the caret has a box and which way it faces — `None`
      * for a plain list item or no item at all. Drives a toolbar's checked state.
      */
-open func taskCheckedAtCaret() -> Bool? {
+open func taskCheckedAtCaret() -> Bool?  {
     return try!  FfiConverterOptionBool.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_task_checked_at_caret(self.uniffiClonePointer(),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_task_checked_at_caret(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -3130,9 +3440,11 @@ open func taskCheckedAtCaret() -> Bool? {
      * `mark` node the caret is standing in. A `.rgb` is the author's own
      * triple, which the palette shows as a swatch of its own.
      */
-open func textColorAtCaret() -> TextColor? {
+open func textColorAtCaret() -> TextColor?  {
     return try!  FfiConverterOptionTypeTextColor.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_text_color_at_caret(self.uniffiClonePointer(),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_text_color_at_caret(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -3151,32 +3463,40 @@ open func textColorAtCaret() -> TextColor? {
      * a one-character drift did to a double-tapped word. The source view has
      * nothing hidden to begin with, so there this is exactly the raw slice.
      */
-open func textInRange(from: UInt32, to: UInt32) -> String {
+open func textInRange(from: UInt32, to: UInt32) -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_text_in_range(self.uniffiClonePointer(),
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_text_in_range(
+            self.uniffiCloneHandle(),
         FfiConverterUInt32.lower(from),
-        FfiConverterUInt32.lower(to),$0
+        FfiConverterUInt32.lower(to),uniffiCallStatus
     )
 })
 }
     
-open func toggleBlockquote() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_toggle_blockquote(self.uniffiClonePointer(),$0
+open func toggleBlockquote() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_toggle_blockquote(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
     
-open func toggleBold() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_toggle_bold(self.uniffiClonePointer(),$0
+open func toggleBold() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_toggle_bold(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
     
-open func toggleCode() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_toggle_code(self.uniffiClonePointer(),$0
+open func toggleCode() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_toggle_code(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -3187,38 +3507,48 @@ open func toggleCode() -> DocView {
      * [`leaf_core::Doc::toggle_code_block`]. Gate on
      * [`Capabilities::code_block`]; light from [`DocView::code_block`].
      */
-open func toggleCodeBlock() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_toggle_code_block(self.uniffiClonePointer(),$0
+open func toggleCodeBlock() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_toggle_code_block(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
     
-open func toggleItalic() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_toggle_italic(self.uniffiClonePointer(),$0
+open func toggleItalic() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_toggle_italic(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
     
-open func toggleList(ordered: Bool) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_toggle_list(self.uniffiClonePointer(),
-        FfiConverterBool.lower(ordered),$0
+open func toggleList(ordered: Bool) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_toggle_list(
+            self.uniffiCloneHandle(),
+        FfiConverterBool.lower(ordered),uniffiCallStatus
     )
 })
 }
     
-open func toggleMark() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_toggle_mark(self.uniffiClonePointer(),$0
+open func toggleMark() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_toggle_mark(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
     
-open func toggleStrike() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_toggle_strike(self.uniffiClonePointer(),$0
+open func toggleStrike() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_toggle_strike(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -3227,10 +3557,12 @@ open func toggleStrike() -> DocView {
      * Tick or untick the task item covering `offset` — a tap on a rendered
      * checkbox, which must not drag the caret across the document to get there.
      */
-open func toggleTaskAt(offset: UInt64) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_toggle_task_at(self.uniffiClonePointer(),
-        FfiConverterUInt64.lower(offset),$0
+open func toggleTaskAt(offset: UInt64) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_toggle_task_at(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt64.lower(offset),uniffiCallStatus
     )
 })
 }
@@ -3239,9 +3571,11 @@ open func toggleTaskAt(offset: UInt64) -> DocView {
      * Tick or untick the task item at the caret. See
      * [`leaf_core::Doc::toggle_task_checked`].
      */
-open func toggleTaskChecked() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_toggle_task_checked(self.uniffiClonePointer(),$0
+open func toggleTaskChecked() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_toggle_task_checked(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -3249,16 +3583,20 @@ open func toggleTaskChecked() -> DocView {
     /**
      * Give the list item at the caret a checkbox, or take its checkbox away.
      */
-open func toggleTaskItem() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_toggle_task_item(self.uniffiClonePointer(),$0
+open func toggleTaskItem() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_toggle_task_item(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
     
-open func toggleUnderline() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_toggle_underline(self.uniffiClonePointer(),$0
+open func toggleUnderline() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_toggle_underline(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -3266,16 +3604,20 @@ open func toggleUnderline() -> DocView {
     /**
      * Switch between the rendered WYSIWYG surface and the raw source.
      */
-open func toggleView() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_toggle_view(self.uniffiClonePointer(),$0
+open func toggleView() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_toggle_view(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
     
-open func undo() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_undo(self.uniffiClonePointer(),$0
+open func undo() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_undo(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -3292,10 +3634,12 @@ open func undo() -> DocView {
      * it gets back through `offset_for_utf16_index`, so Look Up, dictation, and
      * VoiceOver all index the same text the frontend drew.
      */
-open func utf16IndexForOffset(off: UInt32) -> UInt32 {
+open func utf16IndexForOffset(off: UInt32) -> UInt32  {
     return try!  FfiConverterUInt32.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_utf16_index_for_offset(self.uniffiClonePointer(),
-        FfiConverterUInt32.lower(off),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_utf16_index_for_offset(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(off),uniffiCallStatus
     )
 })
 }
@@ -3306,10 +3650,12 @@ open func utf16IndexForOffset(off: UInt32) -> UInt32 {
      * the frame at once, as a spell checker masking the visible text does:
      * thousands of runs, and a call across the binding for each was the cost.
      */
-open func utf16IndicesForOffsets(offs: [UInt32]) -> [UInt32] {
+open func utf16IndicesForOffsets(offs: [UInt32]) -> [UInt32]  {
     return try!  FfiConverterSequenceUInt32.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_utf16_indices_for_offsets(self.uniffiClonePointer(),
-        FfiConverterSequenceUInt32.lower(offs),$0
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_utf16_indices_for_offsets(
+            self.uniffiCloneHandle(),
+        FfiConverterSequenceUInt32.lower(offs),uniffiCallStatus
     )
 })
 }
@@ -3318,11 +3664,13 @@ open func utf16IndicesForOffsets(offs: [UInt32]) -> [UInt32] {
      * The offset one navigable row up/down from `off`, keeping its column —
      * `position(from:in: .up/.down)`. `None` at the top/bottom edge.
      */
-open func verticalOffset(off: UInt32, down: Bool) -> UInt32? {
+open func verticalOffset(off: UInt32, down: Bool) -> UInt32?  {
     return try!  FfiConverterOptionUInt32.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_vertical_offset(self.uniffiClonePointer(),
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_vertical_offset(
+            self.uniffiCloneHandle(),
         FfiConverterUInt32.lower(off),
-        FfiConverterBool.lower(down),$0
+        FfiConverterBool.lower(down),uniffiCallStatus
     )
 })
 }
@@ -3334,73 +3682,68 @@ open func verticalOffset(off: UInt32, down: Bool) -> UInt32? {
      *
      * [`set_incremental_frames`]: Self::set_incremental_frames
      */
-open func view() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_leaf_ffi_fn_method_leafdoc_view(self.uniffiClonePointer(),$0
+open func view() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_view(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
     
 
+    
 }
+
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
 public struct FfiConverterTypeLeafDoc: FfiConverter {
-
-    typealias FfiType = UnsafeMutableRawPointer
+    typealias FfiType = UInt64
     typealias SwiftType = LeafDoc
 
-    public static func lift(_ pointer: UnsafeMutableRawPointer) throws -> LeafDoc {
-        return LeafDoc(unsafeFromRawPointer: pointer)
+    public static func lift(_ handle: UInt64) throws -> LeafDoc {
+        return LeafDoc(unsafeFromHandle: handle)
     }
 
-    public static func lower(_ value: LeafDoc) -> UnsafeMutableRawPointer {
-        return value.uniffiClonePointer()
+    public static func lower(_ value: LeafDoc) -> UInt64 {
+        return value.uniffiCloneHandle()
     }
 
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LeafDoc {
-        let v: UInt64 = try readInt(&buf)
-        // The Rust code won't compile if a pointer won't fit in a UInt64.
-        // We have to go via `UInt` because that's the thing that's the size of a pointer.
-        let ptr = UnsafeMutableRawPointer(bitPattern: UInt(truncatingIfNeeded: v))
-        if (ptr == nil) {
-            throw UniffiInternalError.unexpectedNullPointer
-        }
-        return try lift(ptr!)
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
     }
 
     public static func write(_ value: LeafDoc, into buf: inout [UInt8]) {
-        // This fiddling is because `Int` is the thing that's the same size as a pointer.
-        // The Rust code won't compile if a pointer won't fit in a `UInt64`.
-        writeInt(&buf, UInt64(bitPattern: Int64(Int(bitPattern: lower(value)))))
+        writeInt(&buf, lower(value))
     }
 }
 
 
-
-
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeLeafDoc_lift(_ pointer: UnsafeMutableRawPointer) throws -> LeafDoc {
-    return try FfiConverterTypeLeafDoc.lift(pointer)
+public func FfiConverterTypeLeafDoc_lift(_ handle: UInt64) throws -> LeafDoc {
+    return try FfiConverterTypeLeafDoc.lift(handle)
 }
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeLeafDoc_lower(_ value: LeafDoc) -> UnsafeMutableRawPointer {
+public func FfiConverterTypeLeafDoc_lower(_ value: LeafDoc) -> UInt64 {
     return FfiConverterTypeLeafDoc.lower(value)
 }
+
+
 
 
 /**
  * What a drawn block boundary separates. The FFI mirror of
  * [`leaf_core::Boundary`].
  */
-public struct Boundary {
+public struct Boundary: Equatable, Hashable {
     public var above: BlockClass
     public var below: BlockClass
 
@@ -3410,27 +3753,15 @@ public struct Boundary {
         self.above = above
         self.below = below
     }
+
+    
+
+    
 }
 
-
-
-extension Boundary: Equatable, Hashable {
-    public static func ==(lhs: Boundary, rhs: Boundary) -> Bool {
-        if lhs.above != rhs.above {
-            return false
-        }
-        if lhs.below != rhs.below {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(above)
-        hasher.combine(below)
-    }
-}
-
+#if compiler(>=6)
+extension Boundary: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -3476,7 +3807,7 @@ public func FfiConverterTypeBoundary_lower(_ value: Boundary) -> RustBuffer {
  * an `@Observable`: `let caps = doc.capabilities()`, then
  * `.disabled(!caps.bold)` on each control.
  */
-public struct Capabilities {
+public struct Capabilities: Equatable, Hashable {
     public var bold: Bool
     public var italic: Bool
     public var code: Bool
@@ -3686,135 +4017,15 @@ public struct Capabilities {
         self.pageBreak = pageBreak
         self.moveBlock = moveBlock
     }
+
+    
+
+    
 }
 
-
-
-extension Capabilities: Equatable, Hashable {
-    public static func ==(lhs: Capabilities, rhs: Capabilities) -> Bool {
-        if lhs.bold != rhs.bold {
-            return false
-        }
-        if lhs.italic != rhs.italic {
-            return false
-        }
-        if lhs.code != rhs.code {
-            return false
-        }
-        if lhs.mark != rhs.mark {
-            return false
-        }
-        if lhs.underline != rhs.underline {
-            return false
-        }
-        if lhs.strike != rhs.strike {
-            return false
-        }
-        if lhs.markColor != rhs.markColor {
-            return false
-        }
-        if lhs.superscript != rhs.superscript {
-            return false
-        }
-        if lhs.`subscript` != rhs.`subscript` {
-            return false
-        }
-        if lhs.heading != rhs.heading {
-            return false
-        }
-        if lhs.blockquote != rhs.blockquote {
-            return false
-        }
-        if lhs.bulletList != rhs.bulletList {
-            return false
-        }
-        if lhs.orderedList != rhs.orderedList {
-            return false
-        }
-        if lhs.task != rhs.task {
-            return false
-        }
-        if lhs.link != rhs.link {
-            return false
-        }
-        if lhs.image != rhs.image {
-            return false
-        }
-        if lhs.thematicBreak != rhs.thematicBreak {
-            return false
-        }
-        if lhs.footnote != rhs.footnote {
-            return false
-        }
-        if lhs.codeBlock != rhs.codeBlock {
-            return false
-        }
-        if lhs.codeLanguage != rhs.codeLanguage {
-            return false
-        }
-        if lhs.table != rhs.table {
-            return false
-        }
-        if lhs.cellLineBreak != rhs.cellLineBreak {
-            return false
-        }
-        if lhs.alignment != rhs.alignment {
-            return false
-        }
-        if lhs.lineSpacing != rhs.lineSpacing {
-            return false
-        }
-        if lhs.fontSize != rhs.fontSize {
-            return false
-        }
-        if lhs.fontFamily != rhs.fontFamily {
-            return false
-        }
-        if lhs.textColor != rhs.textColor {
-            return false
-        }
-        if lhs.pageBreak != rhs.pageBreak {
-            return false
-        }
-        if lhs.moveBlock != rhs.moveBlock {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(bold)
-        hasher.combine(italic)
-        hasher.combine(code)
-        hasher.combine(mark)
-        hasher.combine(underline)
-        hasher.combine(strike)
-        hasher.combine(markColor)
-        hasher.combine(superscript)
-        hasher.combine(`subscript`)
-        hasher.combine(heading)
-        hasher.combine(blockquote)
-        hasher.combine(bulletList)
-        hasher.combine(orderedList)
-        hasher.combine(task)
-        hasher.combine(link)
-        hasher.combine(image)
-        hasher.combine(thematicBreak)
-        hasher.combine(footnote)
-        hasher.combine(codeBlock)
-        hasher.combine(codeLanguage)
-        hasher.combine(table)
-        hasher.combine(cellLineBreak)
-        hasher.combine(alignment)
-        hasher.combine(lineSpacing)
-        hasher.combine(fontSize)
-        hasher.combine(fontFamily)
-        hasher.combine(textColor)
-        hasher.combine(pageBreak)
-        hasher.combine(moveBlock)
-    }
-}
-
+#if compiler(>=6)
+extension Capabilities: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -3910,7 +4121,7 @@ public func FfiConverterTypeCapabilities_lower(_ value: Capabilities) -> RustBuf
  * since a bare attribute is a flag and the distinction from `key=""` has no
  * consumer on this side.
  */
-public struct DirectiveAttr {
+public struct DirectiveAttr: Equatable, Hashable {
     public var key: String
     public var value: String
 
@@ -3920,27 +4131,15 @@ public struct DirectiveAttr {
         self.key = key
         self.value = value
     }
+
+    
+
+    
 }
 
-
-
-extension DirectiveAttr: Equatable, Hashable {
-    public static func ==(lhs: DirectiveAttr, rhs: DirectiveAttr) -> Bool {
-        if lhs.key != rhs.key {
-            return false
-        }
-        if lhs.value != rhs.value {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(key)
-        hasher.combine(value)
-    }
-}
-
+#if compiler(>=6)
+extension DirectiveAttr: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -3988,7 +4187,7 @@ public func FfiConverterTypeDirectiveAttr_lower(_ value: DirectiveAttr) -> RustB
  * Core resolves nothing here and neither does this layer: the vocabulary
  * belongs to the app. See [`leaf_core::DirectiveInfo`].
  */
-public struct DirectiveView {
+public struct DirectiveView: Equatable, Hashable {
     /**
      * The [`DocView::rows`] indices the placeholder occupies.
      */
@@ -4030,39 +4229,15 @@ public struct DirectiveView {
         self.label = label
         self.attrs = attrs
     }
+
+    
+
+    
 }
 
-
-
-extension DirectiveView: Equatable, Hashable {
-    public static func ==(lhs: DirectiveView, rhs: DirectiveView) -> Bool {
-        if lhs.startRow != rhs.startRow {
-            return false
-        }
-        if lhs.endRow != rhs.endRow {
-            return false
-        }
-        if lhs.name != rhs.name {
-            return false
-        }
-        if lhs.label != rhs.label {
-            return false
-        }
-        if lhs.attrs != rhs.attrs {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(startRow)
-        hasher.combine(endRow)
-        hasher.combine(name)
-        hasher.combine(label)
-        hasher.combine(attrs)
-    }
-}
-
+#if compiler(>=6)
+extension DirectiveView: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -4124,7 +4299,7 @@ public func FfiConverterTypeDirectiveView_lower(_ value: DirectiveView) -> RustB
  * selection, the toolbar state, `tables`, `directives`, `media` and `math` —
  * is complete on every frame of either kind.
  */
-public struct DocView {
+public struct DocView: Equatable, Hashable {
     /**
      * The rows to paint: every row of the document on a whole frame, and on
      * a change (`basis != 0`) the rows that replace `replaced` of the frame
@@ -4522,135 +4697,15 @@ public struct DocView {
         self.link = link
         self.markColor = markColor
     }
+
+    
+
+    
 }
 
-
-
-extension DocView: Equatable, Hashable {
-    public static func ==(lhs: DocView, rhs: DocView) -> Bool {
-        if lhs.rows != rhs.rows {
-            return false
-        }
-        if lhs.frame != rhs.frame {
-            return false
-        }
-        if lhs.basis != rhs.basis {
-            return false
-        }
-        if lhs.rowStart != rhs.rowStart {
-            return false
-        }
-        if lhs.replaced != rhs.replaced {
-            return false
-        }
-        if lhs.rowCount != rhs.rowCount {
-            return false
-        }
-        if lhs.srcShift != rhs.srcShift {
-            return false
-        }
-        if lhs.tables != rhs.tables {
-            return false
-        }
-        if lhs.directives != rhs.directives {
-            return false
-        }
-        if lhs.media != rhs.media {
-            return false
-        }
-        if lhs.math != rhs.math {
-            return false
-        }
-        if lhs.caretRow != rhs.caretRow {
-            return false
-        }
-        if lhs.caretCol != rhs.caretCol {
-            return false
-        }
-        if lhs.caretCh != rhs.caretCh {
-            return false
-        }
-        if lhs.caretSrc != rhs.caretSrc {
-            return false
-        }
-        if lhs.hasSelection != rhs.hasSelection {
-            return false
-        }
-        if lhs.anchorRow != rhs.anchorRow {
-            return false
-        }
-        if lhs.anchorCh != rhs.anchorCh {
-            return false
-        }
-        if lhs.dirty != rhs.dirty {
-            return false
-        }
-        if lhs.canUndo != rhs.canUndo {
-            return false
-        }
-        if lhs.canRedo != rhs.canRedo {
-            return false
-        }
-        if lhs.view != rhs.view {
-            return false
-        }
-        if lhs.heading != rhs.heading {
-            return false
-        }
-        if lhs.codeBlock != rhs.codeBlock {
-            return false
-        }
-        if lhs.blockquote != rhs.blockquote {
-            return false
-        }
-        if lhs.task != rhs.task {
-            return false
-        }
-        if lhs.active != rhs.active {
-            return false
-        }
-        if lhs.link != rhs.link {
-            return false
-        }
-        if lhs.markColor != rhs.markColor {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(rows)
-        hasher.combine(frame)
-        hasher.combine(basis)
-        hasher.combine(rowStart)
-        hasher.combine(replaced)
-        hasher.combine(rowCount)
-        hasher.combine(srcShift)
-        hasher.combine(tables)
-        hasher.combine(directives)
-        hasher.combine(media)
-        hasher.combine(math)
-        hasher.combine(caretRow)
-        hasher.combine(caretCol)
-        hasher.combine(caretCh)
-        hasher.combine(caretSrc)
-        hasher.combine(hasSelection)
-        hasher.combine(anchorRow)
-        hasher.combine(anchorCh)
-        hasher.combine(dirty)
-        hasher.combine(canUndo)
-        hasher.combine(canRedo)
-        hasher.combine(view)
-        hasher.combine(heading)
-        hasher.combine(codeBlock)
-        hasher.combine(blockquote)
-        hasher.combine(task)
-        hasher.combine(active)
-        hasher.combine(link)
-        hasher.combine(markColor)
-    }
-}
-
+#if compiler(>=6)
+extension DocView: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -4747,7 +4802,7 @@ public func FfiConverterTypeDocView_lower(_ value: DocView) -> RustBuffer {
  * `offset` to hand [`LeafDoc::move_block`], and the `row` to draw the
  * indicator above — `rows.len()` for a drop below everything.
  */
-public struct DropTargetView {
+public struct DropTargetView: Equatable, Hashable {
     public var offset: UInt32
     public var row: UInt32
 
@@ -4757,27 +4812,15 @@ public struct DropTargetView {
         self.offset = offset
         self.row = row
     }
+
+    
+
+    
 }
 
-
-
-extension DropTargetView: Equatable, Hashable {
-    public static func ==(lhs: DropTargetView, rhs: DropTargetView) -> Bool {
-        if lhs.offset != rhs.offset {
-            return false
-        }
-        if lhs.row != rhs.row {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(offset)
-        hasher.combine(row)
-    }
-}
-
+#if compiler(>=6)
+extension DropTargetView: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -4823,7 +4866,7 @@ public func FfiConverterTypeDropTargetView_lower(_ value: DropTargetView) -> Rus
  * still comes back, with its `label` and no `offset`, for the reason an
  * undefined reference does — "nothing refers to this note" is worth saying.
  */
-public struct FootnoteDefView {
+public struct FootnoteDefView: Equatable, Hashable {
     /**
      * The definition's label — the `1` of `[^1]: …`, spelled exactly as
      * [`FootnoteView::label`] spells the same footnote's.
@@ -4849,27 +4892,15 @@ public struct FootnoteDefView {
         self.label = label
         self.offset = offset
     }
+
+    
+
+    
 }
 
-
-
-extension FootnoteDefView: Equatable, Hashable {
-    public static func ==(lhs: FootnoteDefView, rhs: FootnoteDefView) -> Bool {
-        if lhs.label != rhs.label {
-            return false
-        }
-        if lhs.offset != rhs.offset {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(label)
-        hasher.combine(offset)
-    }
-}
-
+#if compiler(>=6)
+extension FootnoteDefView: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -4914,7 +4945,7 @@ public func FfiConverterTypeFootnoteDefView_lower(_ value: FootnoteDefView) -> R
  * the reader, and it is not the same as the caret standing on no reference at
  * all (which is `None`).
  */
-public struct FootnoteView {
+public struct FootnoteView: Equatable, Hashable {
     /**
      * The reference's label — the `1` of `[^1]`, without the `^` or brackets.
      */
@@ -4962,35 +4993,15 @@ public struct FootnoteView {
         self.offset = offset
         self.end = end
     }
+
+    
+
+    
 }
 
-
-
-extension FootnoteView: Equatable, Hashable {
-    public static func ==(lhs: FootnoteView, rhs: FootnoteView) -> Bool {
-        if lhs.label != rhs.label {
-            return false
-        }
-        if lhs.text != rhs.text {
-            return false
-        }
-        if lhs.offset != rhs.offset {
-            return false
-        }
-        if lhs.end != rhs.end {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(label)
-        hasher.combine(text)
-        hasher.combine(offset)
-        hasher.combine(end)
-    }
-}
-
+#if compiler(>=6)
+extension FootnoteView: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -5034,7 +5045,7 @@ public func FfiConverterTypeFootnoteView_lower(_ value: FootnoteView) -> RustBuf
  * The heading a place sits under — what [`LeafDoc::heading_at`] answers
  * with, and the FFI mirror of [`leaf_core::Heading`].
  */
-public struct HeadingView {
+public struct HeadingView: Equatable, Hashable {
     /**
      * The heading's words with their markup stripped — what a `#slug` is made
      * from.
@@ -5074,35 +5085,15 @@ public struct HeadingView {
         self.start = start
         self.end = end
     }
+
+    
+
+    
 }
 
-
-
-extension HeadingView: Equatable, Hashable {
-    public static func ==(lhs: HeadingView, rhs: HeadingView) -> Bool {
-        if lhs.text != rhs.text {
-            return false
-        }
-        if lhs.level != rhs.level {
-            return false
-        }
-        if lhs.start != rhs.start {
-            return false
-        }
-        if lhs.end != rhs.end {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(text)
-        hasher.combine(level)
-        hasher.combine(start)
-        hasher.combine(end)
-    }
-}
-
+#if compiler(>=6)
+extension HeadingView: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -5147,7 +5138,7 @@ public func FfiConverterTypeHeadingView_lower(_ value: HeadingView) -> RustBuffe
  * hit. The FFI shape of `leaf_core::Highlight`; see
  * [`LeafDoc::set_highlights`].
  */
-public struct Highlight {
+public struct Highlight: Equatable, Hashable {
     /**
      * Byte offset in the source where the wash begins.
      */
@@ -5197,39 +5188,15 @@ public struct Highlight {
         self.color = color
         self.marker = marker
     }
+
+    
+
+    
 }
 
-
-
-extension Highlight: Equatable, Hashable {
-    public static func ==(lhs: Highlight, rhs: Highlight) -> Bool {
-        if lhs.start != rhs.start {
-            return false
-        }
-        if lhs.end != rhs.end {
-            return false
-        }
-        if lhs.id != rhs.id {
-            return false
-        }
-        if lhs.color != rhs.color {
-            return false
-        }
-        if lhs.marker != rhs.marker {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(start)
-        hasher.combine(end)
-        hasher.combine(id)
-        hasher.combine(color)
-        hasher.combine(marker)
-    }
-}
-
+#if compiler(>=6)
+extension Highlight: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -5280,7 +5247,7 @@ public func FfiConverterTypeHighlight_lower(_ value: Highlight) -> RustBuffer {
  * while peeking at one draws the rows between `start` and `end`. Only the first
  * can be recovered from an offset alone.
  */
-public struct LandingView {
+public struct LandingView: Equatable, Hashable {
     /**
      * The first byte of the block the locator names — where a caret goes.
      */
@@ -5304,27 +5271,15 @@ public struct LandingView {
         self.start = start
         self.end = end
     }
+
+    
+
+    
 }
 
-
-
-extension LandingView: Equatable, Hashable {
-    public static func ==(lhs: LandingView, rhs: LandingView) -> Bool {
-        if lhs.start != rhs.start {
-            return false
-        }
-        if lhs.end != rhs.end {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(start)
-        hasher.combine(end)
-    }
-}
-
+#if compiler(>=6)
+extension LandingView: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -5366,7 +5321,7 @@ public func FfiConverterTypeLandingView_lower(_ value: LandingView) -> RustBuffe
  * input half of the loop [`LeafDoc::set_math_rows`] closes. The Swift views
  * lay a formula out in points and never need this.
  */
-public struct MathHeight {
+public struct MathHeight: Equatable, Hashable {
     /**
      * The formula's `tex` as [`MathView`] handed it over.
      */
@@ -5388,27 +5343,15 @@ public struct MathHeight {
         self.tex = tex
         self.rows = rows
     }
+
+    
+
+    
 }
 
-
-
-extension MathHeight: Equatable, Hashable {
-    public static func ==(lhs: MathHeight, rhs: MathHeight) -> Bool {
-        if lhs.tex != rhs.tex {
-            return false
-        }
-        if lhs.rows != rhs.rows {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(tex)
-        hasher.combine(rows)
-    }
-}
-
+#if compiler(>=6)
+extension MathHeight: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -5448,7 +5391,7 @@ public func FfiConverterTypeMathHeight_lower(_ value: MathHeight) -> RustBuffer 
  * A typeset formula: a standalone SVG document and where its baseline is.
  * The peer of `leaf_math::MathPicture`; see [`typeset_math`].
  */
-public struct MathPicture {
+public struct MathPicture: Equatable, Hashable {
     /**
      * A self-contained SVG — every glyph an outline, no font to find. Its
      * `viewBox`, `width` and `height` are in pixels at the size it was
@@ -5496,35 +5439,15 @@ public struct MathPicture {
         self.height = height
         self.depth = depth
     }
+
+    
+
+    
 }
 
-
-
-extension MathPicture: Equatable, Hashable {
-    public static func ==(lhs: MathPicture, rhs: MathPicture) -> Bool {
-        if lhs.svg != rhs.svg {
-            return false
-        }
-        if lhs.width != rhs.width {
-            return false
-        }
-        if lhs.height != rhs.height {
-            return false
-        }
-        if lhs.depth != rhs.depth {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(svg)
-        hasher.combine(width)
-        hasher.combine(height)
-        hasher.combine(depth)
-    }
-}
-
+#if compiler(>=6)
+extension MathPicture: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -5582,7 +5505,7 @@ public func FfiConverterTypeMathPicture_lower(_ value: MathPicture) -> RustBuffe
  * A formula on the caret's line is not here: there it is its TeX, drawn as
  * `code` runs between `delimiter` runs, in every markup mode.
  */
-public struct MathView {
+public struct MathView: Equatable, Hashable {
     /**
      * The [`DocView::rows`] indices the formula occupies — its own row for an
      * inline one, the placeholder and its fillers for a block.
@@ -5636,43 +5559,15 @@ public struct MathView {
         self.display = display
         self.src = src
     }
+
+    
+
+    
 }
 
-
-
-extension MathView: Equatable, Hashable {
-    public static func ==(lhs: MathView, rhs: MathView) -> Bool {
-        if lhs.startRow != rhs.startRow {
-            return false
-        }
-        if lhs.endRow != rhs.endRow {
-            return false
-        }
-        if lhs.inline != rhs.inline {
-            return false
-        }
-        if lhs.tex != rhs.tex {
-            return false
-        }
-        if lhs.display != rhs.display {
-            return false
-        }
-        if lhs.src != rhs.src {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(startRow)
-        hasher.combine(endRow)
-        hasher.combine(inline)
-        hasher.combine(tex)
-        hasher.combine(display)
-        hasher.combine(src)
-    }
-}
-
+#if compiler(>=6)
+extension MathView: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -5720,7 +5615,7 @@ public func FfiConverterTypeMathView_lower(_ value: MathView) -> RustBuffer {
  * A per-destination measured height, the way Swift reports one back — the input
  * half of the loop [`LeafDoc::set_media_rows`] closes.
  */
-public struct MediaHeight {
+public struct MediaHeight: Equatable, Hashable {
     /**
      * The media's `src` as it appeared in the document, keying it to a
      * [`MediaView`].
@@ -5744,27 +5639,15 @@ public struct MediaHeight {
         self.destination = destination
         self.rows = rows
     }
+
+    
+
+    
 }
 
-
-
-extension MediaHeight: Equatable, Hashable {
-    public static func ==(lhs: MediaHeight, rhs: MediaHeight) -> Bool {
-        if lhs.destination != rhs.destination {
-            return false
-        }
-        if lhs.rows != rhs.rows {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(destination)
-        hasher.combine(rows)
-    }
-}
-
+#if compiler(>=6)
+extension MediaHeight: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -5810,7 +5693,7 @@ public func FfiConverterTypeMediaHeight_lower(_ value: MediaHeight) -> RustBuffe
  * resolved for the current appearance — and reaches in here only to pick a
  * codec `AVFoundation` can actually play.
  */
-public struct MediaSourceView {
+public struct MediaSourceView: Equatable, Hashable {
     /**
      * The `media="…"` query, or empty for an unconditional source.
      */
@@ -5840,31 +5723,15 @@ public struct MediaSourceView {
         self.src = src
         self.mime = mime
     }
+
+    
+
+    
 }
 
-
-
-extension MediaSourceView: Equatable, Hashable {
-    public static func ==(lhs: MediaSourceView, rhs: MediaSourceView) -> Bool {
-        if lhs.media != rhs.media {
-            return false
-        }
-        if lhs.src != rhs.src {
-            return false
-        }
-        if lhs.mime != rhs.mime {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(media)
-        hasher.combine(src)
-        hasher.combine(mime)
-    }
-}
-
+#if compiler(>=6)
+extension MediaSourceView: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -5909,7 +5776,7 @@ public func FfiConverterTypeMediaSourceView_lower(_ value: MediaSourceView) -> R
  * `start_row..end_row`** and lays its own view over them, rather than painting
  * the `🖼`/`🎬`/`🔊` placeholder glyphs core put there for a surface that can't.
  */
-public struct MediaView {
+public struct MediaView: Equatable, Hashable {
     /**
      * The [`DocView::rows`] indices the placeholder occupies.
      */
@@ -5977,47 +5844,15 @@ public struct MediaView {
         self.alt = alt
         self.sources = sources
     }
+
+    
+
+    
 }
 
-
-
-extension MediaView: Equatable, Hashable {
-    public static func ==(lhs: MediaView, rhs: MediaView) -> Bool {
-        if lhs.startRow != rhs.startRow {
-            return false
-        }
-        if lhs.endRow != rhs.endRow {
-            return false
-        }
-        if lhs.kind != rhs.kind {
-            return false
-        }
-        if lhs.src != rhs.src {
-            return false
-        }
-        if lhs.poster != rhs.poster {
-            return false
-        }
-        if lhs.alt != rhs.alt {
-            return false
-        }
-        if lhs.sources != rhs.sources {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(startRow)
-        hasher.combine(endRow)
-        hasher.combine(kind)
-        hasher.combine(src)
-        hasher.combine(poster)
-        hasher.combine(alt)
-        hasher.combine(sources)
-    }
-}
-
+#if compiler(>=6)
+extension MediaView: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -6067,7 +5902,7 @@ public func FfiConverterTypeMediaView_lower(_ value: MediaView) -> RustBuffer {
  * One visual line: its styled runs plus the row-level flags a frontend draws
  * chrome from.
  */
-public struct Row {
+public struct Row: Equatable, Hashable {
     public var runs: [Run]
     /**
      * Drawn but holds no caret (a table rule, a block-gap blank line): the
@@ -6205,59 +6040,15 @@ public struct Row {
         self.lineHeight = lineHeight
         self.boundary = boundary
     }
+
+    
+
+    
 }
 
-
-
-extension Row: Equatable, Hashable {
-    public static func ==(lhs: Row, rhs: Row) -> Bool {
-        if lhs.runs != rhs.runs {
-            return false
-        }
-        if lhs.decoration != rhs.decoration {
-            return false
-        }
-        if lhs.code != rhs.code {
-            return false
-        }
-        if lhs.codeLang != rhs.codeLang {
-            return false
-        }
-        if lhs.directive != rhs.directive {
-            return false
-        }
-        if lhs.directiveLabel != rhs.directiveLabel {
-            return false
-        }
-        if lhs.heading != rhs.heading {
-            return false
-        }
-        if lhs.align != rhs.align {
-            return false
-        }
-        if lhs.lineHeight != rhs.lineHeight {
-            return false
-        }
-        if lhs.boundary != rhs.boundary {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(runs)
-        hasher.combine(decoration)
-        hasher.combine(code)
-        hasher.combine(codeLang)
-        hasher.combine(directive)
-        hasher.combine(directiveLabel)
-        hasher.combine(heading)
-        hasher.combine(align)
-        hasher.combine(lineHeight)
-        hasher.combine(boundary)
-    }
-}
-
+#if compiler(>=6)
+extension Row: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -6315,7 +6106,7 @@ public func FfiConverterTypeRow_lower(_ value: Row) -> RustBuffer {
  * [`LeafDoc::pos_for_offset`], the bridge from a source offset (what a
  * `UITextPosition` wraps) to where it sits on screen.
  */
-public struct RowCol {
+public struct RowCol: Equatable, Hashable {
     public var row: UInt32
     public var ch: UInt32
 
@@ -6325,27 +6116,15 @@ public struct RowCol {
         self.row = row
         self.ch = ch
     }
+
+    
+
+    
 }
 
-
-
-extension RowCol: Equatable, Hashable {
-    public static func ==(lhs: RowCol, rhs: RowCol) -> Bool {
-        if lhs.row != rhs.row {
-            return false
-        }
-        if lhs.ch != rhs.ch {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(row)
-        hasher.combine(ch)
-    }
-}
-
+#if compiler(>=6)
+extension RowCol: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -6393,7 +6172,7 @@ public func FfiConverterTypeRowCol_lower(_ value: RowCol) -> RustBuffer {
  * always, so the pair is never empty — a range with no visible byte still
  * covers the row it opened on.
  */
-public struct RowRange {
+public struct RowRange: Equatable, Hashable {
     public var first: UInt32
     public var last: UInt32
 
@@ -6403,27 +6182,15 @@ public struct RowRange {
         self.first = first
         self.last = last
     }
+
+    
+
+    
 }
 
-
-
-extension RowRange: Equatable, Hashable {
-    public static func ==(lhs: RowRange, rhs: RowRange) -> Bool {
-        if lhs.first != rhs.first {
-            return false
-        }
-        if lhs.last != rhs.last {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(first)
-        hasher.combine(last)
-    }
-}
-
+#if compiler(>=6)
+extension RowRange: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -6463,7 +6230,7 @@ public func FfiConverterTypeRowRange_lower(_ value: RowRange) -> RustBuffer {
  * One maximal span of same-styled glyphs on a visual row — the unit the Swift
  * renderer turns into a single styled attributed-string run.
  */
-public struct Run {
+public struct Run: Equatable, Hashable {
     /**
      * The run's text, glyphs concatenated in column order.
      */
@@ -6725,87 +6492,15 @@ public struct Run {
         self.font = font
         self.textColor = textColor
     }
+
+    
+
+    
 }
 
-
-
-extension Run: Equatable, Hashable {
-    public static func ==(lhs: Run, rhs: Run) -> Bool {
-        if lhs.text != rhs.text {
-            return false
-        }
-        if lhs.role != rhs.role {
-            return false
-        }
-        if lhs.bold != rhs.bold {
-            return false
-        }
-        if lhs.italic != rhs.italic {
-            return false
-        }
-        if lhs.underline != rhs.underline {
-            return false
-        }
-        if lhs.strike != rhs.strike {
-            return false
-        }
-        if lhs.sup != rhs.sup {
-            return false
-        }
-        if lhs.sub != rhs.sub {
-            return false
-        }
-        if lhs.src != rhs.src {
-            return false
-        }
-        if lhs.sel != rhs.sel {
-            return false
-        }
-        if lhs.hl != rhs.hl {
-            return false
-        }
-        if lhs.hlColor != rhs.hlColor {
-            return false
-        }
-        if lhs.markColor != rhs.markColor {
-            return false
-        }
-        if lhs.token != rhs.token {
-            return false
-        }
-        if lhs.size != rhs.size {
-            return false
-        }
-        if lhs.font != rhs.font {
-            return false
-        }
-        if lhs.textColor != rhs.textColor {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(text)
-        hasher.combine(role)
-        hasher.combine(bold)
-        hasher.combine(italic)
-        hasher.combine(underline)
-        hasher.combine(strike)
-        hasher.combine(sup)
-        hasher.combine(sub)
-        hasher.combine(src)
-        hasher.combine(sel)
-        hasher.combine(hl)
-        hasher.combine(hlColor)
-        hasher.combine(markColor)
-        hasher.combine(token)
-        hasher.combine(size)
-        hasher.combine(font)
-        hasher.combine(textColor)
-    }
-}
-
+#if compiler(>=6)
+extension Run: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -6876,7 +6571,7 @@ public func FfiConverterTypeRun_lower(_ value: Run) -> RustBuffer {
  * surrounded it, and the byte range it came from. The FFI shape of
  * `leaf_core::Quote`; see [`LeafDoc::selection_quote`].
  */
-public struct SelectionQuote {
+public struct SelectionQuote: Equatable, Hashable {
     /**
      * The selected source, verbatim.
      */
@@ -6922,39 +6617,15 @@ public struct SelectionQuote {
         self.start = start
         self.end = end
     }
+
+    
+
+    
 }
 
-
-
-extension SelectionQuote: Equatable, Hashable {
-    public static func ==(lhs: SelectionQuote, rhs: SelectionQuote) -> Bool {
-        if lhs.exact != rhs.exact {
-            return false
-        }
-        if lhs.prefix != rhs.prefix {
-            return false
-        }
-        if lhs.suffix != rhs.suffix {
-            return false
-        }
-        if lhs.start != rhs.start {
-            return false
-        }
-        if lhs.end != rhs.end {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(exact)
-        hasher.combine(prefix)
-        hasher.combine(suffix)
-        hasher.combine(start)
-        hasher.combine(end)
-    }
-}
-
+#if compiler(>=6)
+extension SelectionQuote: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -7004,7 +6675,7 @@ public func FfiConverterTypeSelectionQuote_lower(_ value: SelectionQuote) -> Rus
  * needs holds within a line, which carries no break). The runs are *unwrapped*:
  * column width — and any soft wrap within it — is the frontend's to decide.
  */
-public struct TableCellLineView {
+public struct TableCellLineView: Equatable, Hashable {
     public var runs: [Run]
     /**
      * The source offsets bounding this line's content — the caret home at its
@@ -7024,31 +6695,15 @@ public struct TableCellLineView {
         self.start = start
         self.end = end
     }
+
+    
+
+    
 }
 
-
-
-extension TableCellLineView: Equatable, Hashable {
-    public static func ==(lhs: TableCellLineView, rhs: TableCellLineView) -> Bool {
-        if lhs.runs != rhs.runs {
-            return false
-        }
-        if lhs.start != rhs.start {
-            return false
-        }
-        if lhs.end != rhs.end {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(runs)
-        hasher.combine(start)
-        hasher.combine(end)
-    }
-}
-
+#if compiler(>=6)
+extension TableCellLineView: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -7091,7 +6746,7 @@ public func FfiConverterTypeTableCellLineView_lower(_ value: TableCellLineView) 
  * lines, the column alignment its text honours, and the source range the whole
  * cell occupies (where a click or the caret lands).
  */
-public struct TableCellView {
+public struct TableCellView: Equatable, Hashable {
     /**
      * The cell's lines, in order — one unless an in-cell `<br>` splits it.
      */
@@ -7125,35 +6780,15 @@ public struct TableCellView {
         self.start = start
         self.end = end
     }
+
+    
+
+    
 }
 
-
-
-extension TableCellView: Equatable, Hashable {
-    public static func ==(lhs: TableCellView, rhs: TableCellView) -> Bool {
-        if lhs.lines != rhs.lines {
-            return false
-        }
-        if lhs.align != rhs.align {
-            return false
-        }
-        if lhs.start != rhs.start {
-            return false
-        }
-        if lhs.end != rhs.end {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(lines)
-        hasher.combine(align)
-        hasher.combine(start)
-        hasher.combine(end)
-    }
-}
-
+#if compiler(>=6)
+extension TableCellView: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -7197,7 +6832,7 @@ public func FfiConverterTypeTableCellView_lower(_ value: TableCellView) -> RustB
  * One row of a table's structural grid; a header row draws bold and is ruled
  * off from the body below it.
  */
-public struct TableRowView {
+public struct TableRowView: Equatable, Hashable {
     public var head: Bool
     public var cells: [TableCellView]
 
@@ -7207,27 +6842,15 @@ public struct TableRowView {
         self.head = head
         self.cells = cells
     }
+
+    
+
+    
 }
 
-
-
-extension TableRowView: Equatable, Hashable {
-    public static func ==(lhs: TableRowView, rhs: TableRowView) -> Bool {
-        if lhs.head != rhs.head {
-            return false
-        }
-        if lhs.cells != rhs.cells {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(head)
-        hasher.combine(cells)
-    }
-}
-
+#if compiler(>=6)
+extension TableRowView: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -7271,7 +6894,7 @@ public func FfiConverterTypeTableRowView_lower(_ value: TableRowView) -> RustBuf
  * same source offsets, so the caret lands identically either way. See
  * [`leaf_core::TableInfo`].
  */
-public struct TableView {
+public struct TableView: Equatable, Hashable {
     /**
      * The [`DocView::rows`] indices the box-drawn picture occupies — the rows a
      * grid-drawing frontend skips.
@@ -7291,31 +6914,15 @@ public struct TableView {
         self.endRow = endRow
         self.grid = grid
     }
+
+    
+
+    
 }
 
-
-
-extension TableView: Equatable, Hashable {
-    public static func ==(lhs: TableView, rhs: TableView) -> Bool {
-        if lhs.startRow != rhs.startRow {
-            return false
-        }
-        if lhs.endRow != rhs.endRow {
-            return false
-        }
-        if lhs.grid != rhs.grid {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(startRow)
-        hasher.combine(endRow)
-        hasher.combine(grid)
-    }
-}
-
+#if compiler(>=6)
+extension TableView: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -7358,7 +6965,7 @@ public func FfiConverterTypeTableView_lower(_ value: TableView) -> RustBuffer {
  * selection. The FFI shape of `leaf_core::TextCounts`; see
  * [`LeafDoc::counts`] for what is counted and what isn't.
  */
-public struct TextCounts {
+public struct TextCounts: Equatable, Hashable {
     /**
      * Words, by UAX#29 word segmentation: a segment holding at least one
      * letter or digit, so `don't` is one and a lone dash is none.
@@ -7406,35 +7013,15 @@ public struct TextCounts {
         self.charactersWithoutSpaces = charactersWithoutSpaces
         self.paragraphs = paragraphs
     }
+
+    
+
+    
 }
 
-
-
-extension TextCounts: Equatable, Hashable {
-    public static func ==(lhs: TextCounts, rhs: TextCounts) -> Bool {
-        if lhs.words != rhs.words {
-            return false
-        }
-        if lhs.characters != rhs.characters {
-            return false
-        }
-        if lhs.charactersWithoutSpaces != rhs.charactersWithoutSpaces {
-            return false
-        }
-        if lhs.paragraphs != rhs.paragraphs {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(words)
-        hasher.combine(characters)
-        hasher.combine(charactersWithoutSpaces)
-        hasher.combine(paragraphs)
-    }
-}
-
+#if compiler(>=6)
+extension TextCounts: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -7473,8 +7060,7 @@ public func FfiConverterTypeTextCounts_lower(_ value: TextCounts) -> RustBuffer 
     return FfiConverterTypeTextCounts.lower(value)
 }
 
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
 /**
  * How a block's lines are set across the measure — the closed vocabulary
  * [`LeafDoc::set_alignment`] writes and [`LeafDoc::alignment_at_caret`]
@@ -7490,13 +7076,21 @@ public func FfiConverterTypeTextCounts_lower(_ value: TextCounts) -> RustBuffer 
  * control offers.
  */
 
-public enum Align {
+public enum Align: Equatable, Hashable {
     
     case center
     case right
     case justify
+
+
+
+
+
 }
 
+#if compiler(>=6)
+extension Align: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -7554,12 +7148,6 @@ public func FfiConverterTypeAlign_lower(_ value: Align) -> RustBuffer {
 
 
 
-extension Align: Equatable, Hashable {}
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * The block kinds core tells apart — the vocabulary a [`Boundary`] is spelled
  * in. The FFI mirror of [`leaf_core::BlockClass`]; `Other` covers every kind
@@ -7567,7 +7155,7 @@ extension Align: Equatable, Hashable {}
  * list grows.
  */
 
-public enum BlockClass {
+public enum BlockClass: Equatable, Hashable {
     
     case paragraph
     case heading
@@ -7589,8 +7177,16 @@ public enum BlockClass {
     case rule
     case footnote
     case other
+
+
+
+
+
 }
 
+#if compiler(>=6)
+extension BlockClass: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -7708,12 +7304,6 @@ public func FfiConverterTypeBlockClass_lower(_ value: BlockClass) -> RustBuffer 
 
 
 
-extension BlockClass: Equatable, Hashable {}
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * The face a run is set in: one of CSS's four generics, or the family the
  * author named.
@@ -7724,7 +7314,7 @@ extension BlockClass: Equatable, Hashable {}
  * it is not installed.
  */
 
-public enum FontFace {
+public enum FontFace: Equatable, Hashable {
     
     case generic(FontFamily
     )
@@ -7734,8 +7324,16 @@ public enum FontFace {
      */
     case named(String
     )
+
+
+
+
+
 }
 
+#if compiler(>=6)
+extension FontFace: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -7791,12 +7389,6 @@ public func FfiConverterTypeFontFace_lower(_ value: FontFace) -> RustBuffer {
 
 
 
-extension FontFace: Equatable, Hashable {}
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * The face a run is set in — CSS's generic families, less `fantasy` and
  * `system-ui`, neither of which an author asks for. What
@@ -7810,14 +7402,22 @@ extension FontFace: Equatable, Hashable {}
  * it is `setFontFamily(nil)`.
  */
 
-public enum FontFamily {
+public enum FontFamily: Equatable, Hashable {
     
     case serif
     case sansSerif
     case monospace
     case cursive
+
+
+
+
+
 }
 
+#if compiler(>=6)
+extension FontFamily: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -7881,12 +7481,6 @@ public func FfiConverterTypeFontFamily_lower(_ value: FontFamily) -> RustBuffer 
 
 
 
-extension FontFamily: Equatable, Hashable {}
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * How large a run is set: a [`SizeStep`] relative to the text around it, or
  * the point size the author asked for. What [`LeafDoc::set_font_size`] writes
@@ -7899,7 +7493,7 @@ extension FontFamily: Equatable, Hashable {}
  * size and not its ramp scaled.
  */
 
-public enum FontSize {
+public enum FontSize: Equatable, Hashable {
     
     case step(SizeStep
     )
@@ -7908,8 +7502,16 @@ public enum FontSize {
      */
     case points(Double
     )
+
+
+
+
+
 }
 
+#if compiler(>=6)
+extension FontSize: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -7965,17 +7567,13 @@ public func FfiConverterTypeFontSize_lower(_ value: FontSize) -> RustBuffer {
 
 
 
-extension FontSize: Equatable, Hashable {}
-
-
-
-
 /**
  * A parse failure constructing a document — the only fallible entry point. Every
  * other method is infallible (it operates on an already-parsed model), so they
  * return a [`DocView`] directly.
  */
-public enum LeafError {
+public 
+enum LeafError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
 
     
     
@@ -7995,8 +7593,21 @@ public enum LeafError {
      */
     case Math(message: String, position: UInt32?
     )
+
+    
+
+    
+
+    
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+    
 }
 
+#if compiler(>=6)
+extension LeafError: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -8053,28 +7664,41 @@ public struct FfiConverterTypeLeafError: FfiConverterRustBuffer {
 }
 
 
-extension LeafError: Equatable, Hashable {}
-
-extension LeafError: Foundation.LocalizedError {
-    public var errorDescription: String? {
-        String(reflecting: self)
-    }
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLeafError_lift(_ buf: RustBuffer) throws -> LeafError {
+    return try FfiConverterTypeLeafError.lift(buf)
 }
 
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLeafError_lower(_ value: LeafError) -> RustBuffer {
+    return FfiConverterTypeLeafError.lower(value)
+}
+
+
 /**
  * How the rich view treats a soft break (a bare newline inside a paragraph) —
  * the argument to [`LeafDoc::set_line_flow`]. Mirrors [`leaf_core::LineFlow`];
  * `Fold` is the default (soft breaks reflow into the paragraph, as before).
  */
 
-public enum LineFlow {
+public enum LineFlow: Equatable, Hashable {
     
     case fold
     case preserve
+
+
+
+
+
 }
 
+#if compiler(>=6)
+extension LineFlow: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -8126,12 +7750,6 @@ public func FfiConverterTypeLineFlow_lower(_ value: LineFlow) -> RustBuffer {
 
 
 
-extension LineFlow: Equatable, Hashable {}
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * How far apart a block's lines are set: a [`LineSpacing`] from the menu's
  * three, or the ratio the author asked for. [`FontSize`]'s peer one property
@@ -8142,7 +7760,7 @@ extension LineFlow: Equatable, Hashable {}
  * A ratio of 1 is single spacing, which is absence: it clears the key.
  */
 
-public enum LineHeight {
+public enum LineHeight: Equatable, Hashable {
     
     case step(LineSpacing
     )
@@ -8152,8 +7770,16 @@ public enum LineHeight {
      */
     case ratio(Double
     )
+
+
+
+
+
 }
 
+#if compiler(>=6)
+extension LineHeight: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -8209,12 +7835,6 @@ public func FfiConverterTypeLineHeight_lower(_ value: LineHeight) -> RustBuffer 
 
 
 
-extension LineHeight: Equatable, Hashable {}
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * How far apart a block's lines are set, as a multiple of the theme's own line
  * height — the vocabulary [`LeafDoc::set_line_spacing`] writes.
@@ -8223,7 +7843,7 @@ extension LineHeight: Equatable, Hashable {}
  * is the theme's, and the menu entry for it is `setLineSpacing(nil)`.
  */
 
-public enum LineSpacing {
+public enum LineSpacing: Equatable, Hashable {
     
     /**
      * `1.15` — the word processor's default "a little more air".
@@ -8237,8 +7857,16 @@ public enum LineSpacing {
      * `2` — double spacing.
      */
     case double
+
+
+
+
+
 }
 
+#if compiler(>=6)
+extension LineSpacing: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -8296,12 +7924,6 @@ public func FfiConverterTypeLineSpacing_lower(_ value: LineSpacing) -> RustBuffe
 
 
 
-extension LineSpacing: Equatable, Hashable {}
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * The colour of a highlight — the closed palette [`LeafDoc::set_mark_color`]
  * writes and [`DocView::mark_color`] reports.
@@ -8312,7 +7934,7 @@ extension LineSpacing: Equatable, Hashable {}
  * reader sees, and never in a [`Run`].
  */
 
-public enum MarkColor {
+public enum MarkColor: Equatable, Hashable {
     
     case red
     case orange
@@ -8321,8 +7943,16 @@ public enum MarkColor {
     case blue
     case purple
     case brown
+
+
+
+
+
 }
 
+#if compiler(>=6)
+extension MarkColor: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -8404,12 +8034,6 @@ public func FfiConverterTypeMarkColor_lower(_ value: MarkColor) -> RustBuffer {
 
 
 
-extension MarkColor: Equatable, Hashable {}
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * How much of the source markup the rich view exposes — the argument to
  * [`LeafDoc::set_markup_mode`]. Mirrors [`leaf_core::MarkupMode`]; `None`
@@ -8422,13 +8046,21 @@ extension MarkColor: Equatable, Hashable {}
  * for which one is left out and why.
  */
 
-public enum MarkupMode {
+public enum MarkupMode: Equatable, Hashable {
     
     case none
     case shortcuts
     case full
+
+
+
+
+
 }
 
+#if compiler(>=6)
+extension MarkupMode: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -8486,12 +8118,6 @@ public func FfiConverterTypeMarkupMode_lower(_ value: MarkupMode) -> RustBuffer 
 
 
 
-extension MarkupMode: Equatable, Hashable {}
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * What a block-level media placeholder is, so Swift knows which view to build
  * over the rows core reserved: an `NSImageView`/`UIImageView`, or an
@@ -8499,13 +8125,21 @@ extension MarkupMode: Equatable, Hashable {}
  * [`leaf_core::MediaKind`].
  */
 
-public enum MediaKind {
+public enum MediaKind: Equatable, Hashable {
     
     case image
     case video
     case audio
+
+
+
+
+
 }
 
+#if compiler(>=6)
+extension MediaKind: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -8563,12 +8197,6 @@ public func FfiConverterTypeMediaKind_lower(_ value: MediaKind) -> RustBuffer {
 
 
 
-extension MediaKind: Equatable, Hashable {}
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * How large a run is set relative to the text around it — CSS's
  * `<absolute-size>` keywords with `medium` removed, because `medium` is
@@ -8581,7 +8209,7 @@ extension MediaKind: Equatable, Hashable {}
  * wants a default ramp.
  */
 
-public enum SizeStep {
+public enum SizeStep: Equatable, Hashable {
     
     case xxSmall
     case xSmall
@@ -8590,8 +8218,16 @@ public enum SizeStep {
     case xLarge
     case xxLarge
     case xxxLarge
+
+
+
+
+
 }
 
+#if compiler(>=6)
+extension SizeStep: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -8673,25 +8309,27 @@ public func FfiConverterTypeSizeStep_lower(_ value: SizeStep) -> RustBuffer {
 
 
 
-extension SizeStep: Equatable, Hashable {}
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * A table column's text alignment — the argument to
  * [`LeafDoc::table_set_alignment`]. Mirrors twig's `Alignment`.
  */
 
-public enum TableAlignment {
+public enum TableAlignment: Equatable, Hashable {
     
     case `default`
     case left
     case right
     case center
+
+
+
+
+
 }
 
+#if compiler(>=6)
+extension TableAlignment: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -8755,12 +8393,6 @@ public func FfiConverterTypeTableAlignment_lower(_ value: TableAlignment) -> Rus
 
 
 
-extension TableAlignment: Equatable, Hashable {}
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * A run's *foreground* colour: one of the seven [`MarkColor`] names, or the
  * RGB triple the author asked for.
@@ -8770,14 +8402,22 @@ extension TableAlignment: Equatable, Hashable {}
  * is what "exact" means, and the theme does not soften it.
  */
 
-public enum TextColor {
+public enum TextColor: Equatable, Hashable {
     
     case named(MarkColor
     )
     case rgb(r: UInt8, g: UInt8, b: UInt8
     )
+
+
+
+
+
 }
 
+#if compiler(>=6)
+extension TextColor: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -8832,11 +8472,6 @@ public func FfiConverterTypeTextColor_lift(_ buf: RustBuffer) throws -> TextColo
 public func FfiConverterTypeTextColor_lower(_ value: TextColor) -> RustBuffer {
     return FfiConverterTypeTextColor.lower(value)
 }
-
-
-
-extension TextColor: Equatable, Hashable {}
-
 
 
 #if swift(>=5.8)
@@ -9706,8 +9341,9 @@ fileprivate struct FfiConverterSequenceTypeTableView: FfiConverterRustBuffer {
  * colour)` and nothing more. TeX the typesetter cannot read is a
  * [`LeafError::Math`]; the renderer shows the revealed source in its place.
  */
-public func typesetMath(tex: String, display: Bool, size: Double, r: UInt8, g: UInt8, b: UInt8, a: UInt8)throws  -> MathPicture {
-    return try  FfiConverterTypeMathPicture.lift(try rustCallWithError(FfiConverterTypeLeafError.lift) {
+public func typesetMath(tex: String, display: Bool, size: Double, r: UInt8, g: UInt8, b: UInt8, a: UInt8)throws  -> MathPicture  {
+    return try  FfiConverterTypeMathPicture_lift(try rustCallWithError(FfiConverterTypeLeafError_lift) {
+        uniffiCallStatus in
     uniffi_leaf_ffi_fn_func_typeset_math(
         FfiConverterString.lower(tex),
         FfiConverterBool.lower(display),
@@ -9715,7 +9351,7 @@ public func typesetMath(tex: String, display: Bool, size: Double, r: UInt8, g: U
         FfiConverterUInt8.lower(r),
         FfiConverterUInt8.lower(g),
         FfiConverterUInt8.lower(b),
-        FfiConverterUInt8.lower(a),$0
+        FfiConverterUInt8.lower(a),uniffiCallStatus
     )
 })
 }
@@ -9727,439 +9363,441 @@ private enum InitializationResult {
 }
 // Use a global variable to perform the versioning checks. Swift ensures that
 // the code inside is only computed once.
-private var initializationResult: InitializationResult = {
+private let initializationResult: InitializationResult = {
     // Get the bindings contract version from our ComponentInterface
-    let bindings_contract_version = 26
+    let bindings_contract_version = 30
     // Get the scaffolding contract version by calling the into the dylib
     let scaffolding_contract_version = ffi_leaf_ffi_uniffi_contract_version()
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
-    if (uniffi_leaf_ffi_checksum_func_typeset_math() != 6497) {
+    if (uniffi_leaf_ffi_checksum_func_typeset_math() != 60617) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_alignment_at_caret() != 11833) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_alignment_at_caret() != 31168) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_anchor_offset() != 45633) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_anchor_offset() != 25924) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_append_media() != 2756) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_append_media() != 41090) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_authorable() != 41474) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_authorable() != 38480) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_backspace() != 9512) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_backspace() != 16589) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_begin_undo_group() != 15508) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_begin_undo_group() != 46236) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_block_range_at() != 31197) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_block_range_at() != 55888) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_capabilities() != 2269) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_capabilities() != 48548) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_caret_in_mark() != 17292) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_caret_in_mark() != 15088) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_caret_in_table() != 18746) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_caret_in_table() != 54195) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_caret_offset() != 34752) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_caret_offset() != 14927) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_cell_line_break() != 24610) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_cell_line_break() != 63915) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_cell_return() != 47274) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_cell_return() != 50789) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_cell_tab() != 13651) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_cell_tab() != 31485) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_click() != 51451) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_click() != 9701) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_click_ch() != 39201) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_click_ch() != 10646) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_click_past_end() != 4646) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_click_past_end() != 52390) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_counts() != 50707) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_counts() != 16911) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_delete_forward() != 30834) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_delete_forward() != 16099) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_delete_word_back() != 4226) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_delete_word_back() != 45983) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_delete_word_forward() != 52440) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_delete_word_forward() != 16517) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_distance_offset() != 892) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_distance_offset() != 31045) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_doc_end_offset() != 21296) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_doc_end_offset() != 14286) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_drop_target_at() != 59322) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_drop_target_at() != 28018) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_end_undo_group() != 44716) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_end_undo_group() != 59997) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_font_family_at_caret() != 51206) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_font_family_at_caret() != 8115) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_font_size_at_caret() != 45536) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_font_size_at_caret() != 31405) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_footnote_at() != 35464) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_footnote_at() != 40667) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_footnote_at_caret() != 42621) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_footnote_at_caret() != 23696) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_footnote_definition_at_caret() != 43634) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_footnote_definition_at_caret() != 35136) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_heading_at() != 31582) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_heading_at() != 53016) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_heading_at_caret() != 30476) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_heading_at_caret() != 35062) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_highlight() != 22834) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_highlight() != 12666) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_highlight_at() != 39885) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_highlight_at() != 57713) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_highlights() != 31038) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_highlights() != 59843) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_image_destination_at_caret() != 61472) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_image_destination_at_caret() != 14148) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_indent() != 12990) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_indent() != 31661) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_insert() != 38145) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_insert() != 57472) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_insert_footnote() != 28779) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_insert_footnote() != 24840) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_insert_link() != 15766) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_insert_link() != 47321) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_insert_media() != 15569) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_insert_media() != 45211) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_insert_page_break() != 6660) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_insert_page_break() != 16944) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_insert_table() != 45407) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_insert_table() != 14065) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_insert_thematic_break() != 49135) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_insert_thematic_break() != 32071) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_line_flow() != 56552) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_line_flow() != 1676) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_line_spacing_at_caret() != 28751) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_line_spacing_at_caret() != 14649) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_link_destination_at() != 56247) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_link_destination_at() != 854) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_link_destination_at_caret() != 2894) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_link_destination_at_caret() != 7991) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_locate() != 63552) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_locate() != 32096) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_mark_saved() != 39249) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_mark_saved() != 6145) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_markup_mode() != 54804) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_markup_mode() != 63332) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_move_block() != 40208) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_move_block() != 25232) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_move_block_down() != 49498) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_move_block_down() != 29951) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_move_block_up() != 50391) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_move_block_up() != 39318) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_move_doc_end() != 9594) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_move_doc_end() != 38318) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_move_doc_start() != 50436) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_move_doc_start() != 54787) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_move_down() != 58491) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_move_down() != 53536) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_move_end() != 9015) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_move_end() != 51282) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_move_home() != 64196) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_move_home() != 3216) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_move_left() != 48530) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_move_left() != 32652) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_move_right() != 15459) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_move_right() != 5390) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_move_up() != 64896) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_move_up() != 33265) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_move_word_left() != 37099) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_move_word_left() != 52343) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_move_word_right() != 12426) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_move_word_right() != 34984) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_newline() != 6419) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_newline() != 53189) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_offset_for_pos() != 39143) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_offset_for_pos() != 20087) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_offset_for_utf16_index() != 13094) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_offset_for_utf16_index() != 1116) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_outdent() != 21680) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_outdent() != 42006) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_paper_view() != 8845) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_paper_view() != 57216) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_paste() != 18516) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_paste() != 37796) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_paste_rich() != 60284) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_paste_rich() != 29687) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_pos_for_offset() != 34494) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_pos_for_offset() != 5498) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_read_only() != 57038) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_read_only() != 2071) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_redo() != 1011) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_redo() != 52002) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_replace_range() != 46336) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_replace_range() != 23057) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_row_range_for() != 48420) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_row_range_for() != 62572) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_rows() != 4986) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_rows() != 56820) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_select_all() != 40746) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_select_all() != 56009) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_select_block_ch() != 21951) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_select_block_ch() != 16574) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_select_range() != 8760) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_select_range() != 17504) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_select_word_ch() != 21830) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_select_word_ch() != 8926) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_selected_text() != 14374) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_selected_text() != 41358) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_selection_counts() != 14635) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_selection_counts() != 15661) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_selection_html() != 4095) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_selection_html() != 12342) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_selection_quote() != 871) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_selection_quote() != 55397) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_alignment() != 10877) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_alignment() != 51222) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_dark_appearance() != 43306) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_dark_appearance() != 7107) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_font_family() != 57151) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_font_family() != 65323) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_font_size() != 31128) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_font_size() != 26353) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_heading() != 23018) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_heading() != 37206) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_highlights() != 7876) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_highlights() != 28613) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_incremental_frames() != 12112) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_incremental_frames() != 8340) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_inline_pictures() != 62763) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_inline_pictures() != 7793) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_line_flow() != 4051) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_line_flow() != 51197) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_line_spacing() != 55451) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_line_spacing() != 46307) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_mark_color() != 43839) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_mark_color() != 9103) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_markup_mode() != 44896) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_markup_mode() != 65432) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_math_rows() != 3301) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_math_rows() != 11518) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_media_rows() != 41969) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_media_rows() != 28680) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_paragraph() != 4217) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_paragraph() != 35833) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_read_only() != 20100) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_read_only() != 45340) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_selection() != 65230) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_selection() != 59217) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_selection_offsets() != 21825) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_selection_offsets() != 63140) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_text_color() != 22576) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_text_color() != 31420) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_unwrapped() != 31068) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_unwrapped() != 37212) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_width() != 51063) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_width() != 46220) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_snap_offset() != 63760) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_snap_offset() != 61626) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_source() != 56797) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_source() != 65464) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_step_offset() != 50224) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_step_offset() != 62613) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_substitute() != 40269) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_substitute() != 64447) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_table_delete_column() != 21726) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_table_delete_column() != 2068) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_table_delete_row() != 6620) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_table_delete_row() != 12211) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_table_insert_column() != 14409) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_table_insert_column() != 35315) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_table_insert_row() != 48659) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_table_insert_row() != 57158) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_table_move_column() != 693) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_table_move_column() != 32207) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_table_move_row() != 37110) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_table_move_row() != 54119) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_table_set_alignment() != 27683) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_table_set_alignment() != 48307) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_task_checked_at_caret() != 58214) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_task_checked_at_caret() != 18404) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_text_color_at_caret() != 17658) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_text_color_at_caret() != 13974) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_text_in_range() != 21460) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_text_in_range() != 3082) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_toggle_blockquote() != 28367) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_toggle_blockquote() != 16194) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_toggle_bold() != 2891) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_toggle_bold() != 43378) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_toggle_code() != 58218) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_toggle_code() != 6119) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_toggle_code_block() != 14995) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_toggle_code_block() != 60419) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_toggle_italic() != 51327) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_toggle_italic() != 58315) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_toggle_list() != 20434) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_toggle_list() != 48218) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_toggle_mark() != 37447) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_toggle_mark() != 39351) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_toggle_strike() != 44897) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_toggle_strike() != 40342) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_toggle_task_at() != 3163) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_toggle_task_at() != 49135) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_toggle_task_checked() != 48920) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_toggle_task_checked() != 55610) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_toggle_task_item() != 26563) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_toggle_task_item() != 38331) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_toggle_underline() != 64206) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_toggle_underline() != 16101) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_toggle_view() != 48895) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_toggle_view() != 35582) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_undo() != 43486) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_undo() != 47500) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_utf16_index_for_offset() != 5751) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_utf16_index_for_offset() != 31642) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_utf16_indices_for_offsets() != 33925) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_utf16_indices_for_offsets() != 53753) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_vertical_offset() != 6159) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_vertical_offset() != 12253) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_view() != 59140) {
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_view() != 17419) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_constructor_leafdoc_new() != 29760) {
+    if (uniffi_leaf_ffi_checksum_constructor_leafdoc_new() != 63804) {
         return InitializationResult.apiChecksumMismatch
     }
 
     return InitializationResult.ok
 }()
 
-private func uniffiEnsureInitialized() {
+// Make the ensure init function public so that other modules which have external type references to
+// our types can call it.
+public func uniffiEnsureLeafFfiInitialized() {
     switch initializationResult {
     case .ok:
         break
