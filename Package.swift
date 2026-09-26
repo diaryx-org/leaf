@@ -44,7 +44,7 @@ let package = Package(
         // same CGContext the text is drawn in. Its Rust half, `resvg-uniffi`,
         // is a dependency of crates/leaf-ffi so that its symbols are in the one
         // archive the app force-loads; this package only compiles the Swift.
-        .package(url: "https://github.com/diaryx-org/resvg-swift.git", from: "0.1.0"),
+        .package(url: "https://github.com/diaryx-org/resvg-swift.git", from: "0.1.4"),
     ],
     targets: [
         // The C ABI as a clang module (`import leaf_ffiFFI`). No library to link

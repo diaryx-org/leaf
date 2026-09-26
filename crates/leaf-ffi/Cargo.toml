@@ -58,7 +58,7 @@ unicode-segmentation = "1.13.3"
 # duplicate-`std` link error, so a second binding crate can only ride along
 # inside the first. The Swift side (`ResvgCoreGraphics`, from the resvg-swift
 # package leaf-swift depends on) finds its `resvg_uniffi` symbols there.
-resvg-uniffi = "0.1"
+resvg-uniffi = "0.1.4"
 
 # TeX to a self-contained SVG picture with its baseline metrics, for the Swift
 # views to draw in a line (a run delegate) or over a block's rows. Exposed as

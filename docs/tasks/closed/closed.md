@@ -28,6 +28,7 @@ contents:
 - '[Find on iOS](/docs/tasks/closed/ios-find-interaction.md)'
 - '[Replace All is one undo step](/docs/tasks/closed/replace-all-is-one-undo-step.md)'
 - '[Automatic correction and substitutions in the macOS view](/docs/tasks/closed/macos-text-checking.md)'
+- '[Uniffi 032 Needs A Resvg Release](/docs/tasks/closed/uniffi-032-needs-a-resvg-release.md)'
 ---
 
 # Closed tasks
