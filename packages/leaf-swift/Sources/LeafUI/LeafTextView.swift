@@ -1851,8 +1851,10 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             guard let self, let view, let fetched,
                   // The note itself may have gone while the host was reading a
                   // file — and a second popover outliving the first would be left
-                  // pointing at a window that isn't there.
-                  self.footnotePeek.isShowing,
+                  // pointing at a window that isn't there. *This* note, not
+                  // merely a note: one re-raised in the meantime is a new popover
+                  // around a new text view, and `view` is still the old one.
+                  self.footnotePeek.contains(view),
                   let content = FootnotePeekContent(peeking: fetched, theme: self.theme)
             else { return }
             self.nestedPeek.show(content, from: rect, in: view)
