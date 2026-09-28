@@ -1,8 +1,8 @@
 ---
-status: open
+status: done
 created: 2026-09-25
-updated: 2026-09-25
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+updated: 2026-09-28
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 # Android needs a twig release
 
@@ -19,3 +19,6 @@ Until it is, `cargo xtask android` builds against that checkout through
 **Done when** twig has released it, `twig-doc` in the workspace manifest is
 moved to that version, and `cargo xtask android` builds with no extra
 arguments — at which point the patch paragraph comes out of the README.
+
+**Done.** twig 3.11.1 released it; `twig-doc` is pinned to 3.11.1, and
+`cargo xtask android` builds and runs on the emulator with no extra arguments.
