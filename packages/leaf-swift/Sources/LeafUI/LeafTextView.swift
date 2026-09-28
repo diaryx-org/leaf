@@ -1701,7 +1701,10 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // pointer sweeps across a paragraph — and a popover that appeared the
         // instant the pointer touched a reference would strobe along the line
         // anyway. This is the delay a tooltip has, for the reason a tooltip has
-        // it.
+        // it. The rest starts over at each new offset, so the countdown for one
+        // the pointer has already left is cancelled here — with a peek up, the
+        // branch above schedules a close and nothing else stops it.
+        peekTimer?.invalidate()
         peekTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
             self?.showFootnotePeek(at: off, row: row, ch: ch)
         }
@@ -1822,6 +1825,12 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         if inside {
             peekCloseTimer?.invalidate()
             peekCloseTimer = nil
+            // A rest started on the way in is about a place the pointer only
+            // crossed. Left to fire, a crossing of the reference's own glyphs
+            // re-raised the note as a new popover under the reader, and
+            // anything they were resting on in the old one went with it.
+            peekTimer?.invalidate()
+            peekTimer = nil
         } else {
             scheduleFootnotePeekClose()
         }
