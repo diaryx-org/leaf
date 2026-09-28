@@ -88,11 +88,5 @@ field would clash with `Throwable.message`, so in Kotlin alone it is called
 `LeafException.Parse.reason` is what Swift calls `LeafError.Parse(message:)`.
 
 twig-sys builds for Android from its Zig source (bionic's thread-locals need
-API 29, which is `minSdk`); the release of twig that knows the two Android
-targets is not out yet, so until the pin moves the build takes the twig checkout
-beside this one — see [Android needs a twig release](../../docs/tasks/android-twig-release.md):
-
-```sh
-LEAF_ANDROID_CARGO_ARGS="--config 'patch.crates-io.twig-sys.path=\"../twig/bindings/rust/twig-sys\"'" \
-    cargo xtask android
-```
+API 29, which is `minSdk`); twig 3.11.1 is the first release that knows the two
+Android targets.

@@ -13,7 +13,6 @@ contents:
 - '[Enter in an HTML document writes whitespace](enter-in-html-writes-whitespace.md)'
 - '[Text glued under a closing `</div>` draws until the next full rebuild](text-glued-under-a-closing-div.md)'
 - '[Android block views](android-block-views.md)'
-- '[Android needs a twig release](android-twig-release.md)'
 - '[An IME composition undoes a keystroke at a time](ime-composition-undo.md)'
 - '[Closed tasks](/docs/tasks/closed/closed.md)'
 part_of: '[leaf](/README.md)'
