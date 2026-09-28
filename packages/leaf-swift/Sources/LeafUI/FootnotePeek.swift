@@ -62,12 +62,36 @@ final class FootnotePeekPresenter {
 
     var isShowing: Bool { popover?.isShown ?? false }
 
+    /// Whether `view` is part of the popover up right now.
+    ///
+    /// Narrower than `isShowing`, and the question an answer that arrives late
+    /// has to ask. A note is re-raised by building a new popover, not by
+    /// refilling the old one, so "a note is up" can be true while the view a
+    /// citation was rested on belongs to one that has already gone.
+    func contains(_ view: NSView) -> Bool {
+        guard let popover, popover.isShown,
+              let root = popover.contentViewController?.view
+        else { return false }
+        return view.isDescendant(of: root)
+    }
+
     /// Raise a popover for `content`, pointing at `rect` in `view`'s coordinates.
     ///
     /// Replacing rather than reusing any popover already up: the alternative is
     /// resizing a live one to different text, which AppKit animates as a lurch.
+    ///
+    /// Nothing is shown for a view that is not in a window, and it is not an
+    /// edge case. A peek of another file is shown when the host's read finishes,
+    /// and by then the editor may have been closed, or the note a citation was
+    /// rested in replaced. AppKit answers that by raising
+    /// `NSInvalidArgumentException`, and a host that finishes its read in a
+    /// Swift `Task` has that exception unwind through the concurrency runtime.
+    /// AppKit catches and logs it, but the runtime is left believing the main
+    /// thread is still inside the job, and the next isolation check made there
+    /// crashes somewhere unrelated.
     func show(_ content: FootnotePeekContent, from rect: CGRect, in view: NSView) {
         hide()
+        guard view.window != nil else { return }
         let popover = NSPopover()
         popover.contentViewController = controller(for: content)
         // `.applicationDefined` because this view decides when the peek is over —

@@ -137,6 +137,27 @@ final class LinkPeekTests: XCTestCase {
         XCTAssertLessThanOrEqual(many, oneLine * CGFloat(FootnotePeekPresenter.maxLines) + 1,
                                  "…and never taller than the lines it draws")
     }
+
+    // ── an answer that arrives after its view has gone ────────────────────────
+
+    /// A peek of another file is shown when the host's read finishes, and the
+    /// view it was asked from may have left its window by then: the editor
+    /// closed, or the note a citation was rested in re-raised as a new popover.
+    /// AppKit raises for a view with no window, and inside a host's `Task` that
+    /// exception left the concurrency runtime broken and crashed the app on its
+    /// next isolation check. Shown here, it would take the test process down.
+    func testAPeekForAViewWithNoWindowShowsNothing() throws {
+        let content = try XCTUnwrap(FootnotePeekContent(
+            peeking: LinkPeekSource(source: "A verse.\n", format: "markdown"),
+            theme: .default))
+        let presenter = FootnotePeekPresenter()
+        let orphan = NSView(frame: NSRect(x: 0, y: 0, width: 200, height: 40))
+
+        presenter.show(content, from: NSRect(x: 0, y: 0, width: 20, height: 10), in: orphan)
+
+        XCTAssertFalse(presenter.isShowing)
+        XCTAssertFalse(presenter.contains(orphan), "no popover is up to contain anything")
+    }
     #endif
 
     // ── what a menu offers ────────────────────────────────────────────────────
