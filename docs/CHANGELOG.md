@@ -37,6 +37,20 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.4.8 — 2026-09-28
+
+### Fixed
+
+- **leaf-swift** — a link peek whose view has left its window shows nothing, not an exception ([`9c2cb79`](https://github.com/diaryx-org/leaf/commit/9c2cb791ef12056c41c572301aae0ee340820a58))
+- **leaf-swift** — a footnote peek is not re-raised under a reader who has moved into it ([`a6f03b2`](https://github.com/diaryx-org/leaf/commit/a6f03b2badecd1e3c79c0a4cf2d5e58f4e71a467))
+
+### Behavioural changes
+
+- on macOS, a link or citation peek whose anchor view is no longer in a window when the host answers onPeekLink shows nothing, where NSPopover raised NSInvalidArgumentException (which AppKit logged and swallowed); a citation's peek that arrives after its footnote peek was re-raised is dropped instead of anchored to the old note.
+
+- on macOS, moving the pointer from a footnote reference into its peek no longer rebuilds the peek a moment later, and a rest over a link or reference the pointer only crossed on the way no longer raises a peek.
+
+
 ## v0.4.7 — 2026-09-26
 
 ### Breaking
