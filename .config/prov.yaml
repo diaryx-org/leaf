@@ -10,7 +10,6 @@ references:
   target: path
   label: false
 id_storage: both
-updated: ''
 identity: lazy
 fixity: attachments
 recycle_bin: false
