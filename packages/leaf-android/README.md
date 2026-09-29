@@ -32,8 +32,17 @@ Column(Modifier.imePadding()) {
 
 `LeafEditorState.chrome` is what a toolbar lights itself from, `onEdit` hears
 every change to the text, and `command { doc -> doc.toggleBold() }` runs any
-core command and repaints. Only the editing surface is here — saving, the
-document's name, and the window are the host's.
+core command and repaints. `requestFocus()` takes the keyboard without a tap,
+for a document opened to be written in. Only the editing surface is here —
+saving, the document's name, and the window are the host's.
+
+A link is followed from a chip that stands under the caret while it rests in
+one — a tap places the caret, so it cannot also be the gesture that leaves, and
+the platform's text menu has no room for an item of the editor's own. Open
+moves to a `#fragment` in the same document itself, then asks the host's
+`onOpenLink`, which returns true to claim a destination only it understands (a
+note app's `./sibling.md` or `id:6tzwsxg`), and otherwise hands the destination
+to the system.
 
 ## How it works
 
@@ -70,8 +79,8 @@ than the document across JNA.
 Tables draw as core's box-drawn picture in monospace rather than a grid, block
 media and display math as their placeholder rows, and a directive's panel is
 not outlined — see [Android block views](../../docs/tasks/android-block-views.md).
-The Apple views' footnote and link peeks, find, the presentation-vocabulary
-menus and page layout have no counterpart yet.
+The Apple views' footnote and link peeks, wikilink following, find, the
+presentation-vocabulary menus and page layout have no counterpart yet.
 
 ## Building
 

@@ -1,8 +1,11 @@
 package org.diaryx.leaf.compose
 
+import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.view.KeyEvent
 import android.view.View
 import android.view.inputmethod.InputMethodManager
@@ -50,6 +53,16 @@ class LeafEditorState(val doc: LeafDoc) {
     /** Called after every change to the document's text (not the caret) — a host's autosave hook. */
     var onEdit: (() -> Unit)? = null
 
+    /**
+     * Host hook for opening a link: called with the link's raw destination
+     * before the editor hands it to the system; return true to claim it. This
+     * is how a host follows a destination only it can make sense of — a note
+     * app's `./sibling.md` or `id:6tzwsxg` names a document in its own
+     * workspace, not a URL. Null (or false) leaves it to the system. The same
+     * hook as leaf-swift's `onOpenLink`.
+     */
+    var onOpenLink: ((String) -> Boolean)? = null
+
     internal var layout: EditorLayout? = null
 
     /** Set when the caret should be scrolled into view at the next layout. */
@@ -57,6 +70,9 @@ class LeafEditorState(val doc: LeafDoc) {
 
     /** Whether the host's software keyboard should show for this editor. */
     internal var focused by mutableStateOf(false)
+
+    /** Bumped by [requestFocus]; the editor takes focus when it changes. */
+    internal var focusRequests by mutableIntStateOf(0)
 
     // IME plumbing, filled in by the text-input session.
     internal var inputView: View? = null
@@ -194,6 +210,49 @@ class LeafEditorState(val doc: LeafDoc) {
 
     /** Mark the current text as saved, so [LeafEditorChrome.dirty] clears. */
     fun markSaved() = render(doc.markSaved())
+
+    /**
+     * Take focus and raise the soft keyboard, as a tap would — for a host that
+     * opens a document to be written in rather than read, a new one say.
+     */
+    fun requestFocus() {
+        focusRequests++
+    }
+
+    /**
+     * Open the link the caret stands in. A `#fragment` naming a place in this
+     * document moves the caret there, since there is nothing in it for a host
+     * or a browser; anything else goes to [onOpenLink] first, then to whatever
+     * the system opens it with. False when the caret is on no link, or nothing
+     * would take it.
+     */
+    fun openLinkAtCaret(): Boolean {
+        val destination = doc.linkDestinationAtCaret() ?: return false
+        selfLanding(destination)?.let {
+            render(doc.setSelectionOffsets(it, it))
+            return true
+        }
+        if (onOpenLink?.invoke(destination) == true) return true
+        val context = inputView?.context ?: return false
+        return try {
+            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(destination)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            true
+        } catch (_: ActivityNotFoundException) {
+            false
+        }
+    }
+
+    /**
+     * Where a `#fragment` lands in this document, or null. Both spellings of
+     * the fragment are tried — as written, then percent-decoded — as
+     * leaf-swift's `landing(for:)` does.
+     */
+    private fun selfLanding(destination: String): UInt? {
+        if (!destination.startsWith("#")) return null
+        val id = destination.drop(1)
+        val landing = doc.locate(id) ?: Uri.decode(id).takeIf { it != id }?.let { doc.locate(it) }
+        return landing?.start
+    }
 
     /** Switch between the rendered view and the source. */
     fun toggleView() = command { it.toggleView() }
