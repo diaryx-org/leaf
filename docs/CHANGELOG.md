@@ -37,6 +37,19 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.4.9 — 2026-09-29
+
+### Added
+
+- **leaf-android** — follow a link from the editor, and take focus on request ([`7fcea51`](https://github.com/diaryx-org/leaf/commit/7fcea513df99d5f108d9fe346308fe33282ed3bd))
+- **leaf-android** — land on the place a link names ([`dc91c86`](https://github.com/diaryx-org/leaf/commit/dc91c86a6b55dde19f5ff3c519e69c9e7bddb751))
+- **leaf-android** — a block image draws its picture ([`918a4f1`](https://github.com/diaryx-org/leaf/commit/918a4f10fc8a821f4302605111284264c32ba444))
+
+### Fixed
+
+- **leaf-android** — the text menu leaves with the editor ([`dc96a4b`](https://github.com/diaryx-org/leaf/commit/dc96a4ba7d8553d714883613aac8c61926717f9d))
+
+
 ## v0.4.8 — 2026-09-28
 
 ### Fixed
