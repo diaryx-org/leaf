@@ -1756,6 +1756,13 @@ impl LeafDoc {
         self.frame()
     }
 
+    /// `mark_saved` for a write that took a while: `saved` is the source read
+    /// before writing, and whatever was typed since stays dirty.
+    pub fn mark_saved_as(&mut self, saved: &str) -> Result<DocView, JsValue> {
+        self.doc.mark_saved_as(saved);
+        self.frame()
+    }
+
     // ── text input ──────────────────────────────────────────────────────────
 
     pub fn insert(&mut self, text: &str) -> Result<DocView, JsValue> {

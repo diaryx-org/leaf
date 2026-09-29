@@ -518,6 +518,9 @@ public final class LeafEditorModel: ObservableObject {
 
     public func source() -> String { doc.source() }
     public func markSaved() { textView?.markSaved() }
+    /// `markSaved` for a write that took a while: `saved` is the `source()`
+    /// read before writing, and what was typed since stays unsaved.
+    public func markSaved(as saved: String) { textView?.markSaved(as: saved) }
 
     /// Land the reader on the place `locator` names — the `#v2` of a
     /// `chapter.dj#v2`, once the host has opened the document that carries it.

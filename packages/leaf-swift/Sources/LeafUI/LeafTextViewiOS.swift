@@ -1899,6 +1899,10 @@ public final class LeafTextView: UIView, UITextInput {
 
     public func sourceText() -> String { doc.source() }
     public func markSaved() { render(doc.markSaved()) }
+    /// `markSaved` for a write that took a while: `saved` is the
+    /// `sourceText()` read before writing, and what was typed since stays
+    /// unsaved.
+    public func markSaved(as saved: String) { render(doc.markSavedAs(saved: saved)) }
 
     /// Run a leaf-core command from a toolbar. Because this changes text/selection
     /// outside the text-input system, it brackets the change with input-delegate

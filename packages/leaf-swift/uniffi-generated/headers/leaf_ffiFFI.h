@@ -508,6 +508,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_locate(uint64_t ptr, RustBuffer id,
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_mark_saved(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MARK_SAVED_AS
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MARK_SAVED_AS
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_mark_saved_as(uint64_t ptr, RustBuffer saved, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MARKUP_MODE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_MARKUP_MODE
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_markup_mode(uint64_t ptr, RustCallStatus *_Nonnull out_status
@@ -1516,6 +1521,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_locate(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_MARK_SAVED
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_MARK_SAVED
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_mark_saved(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_MARK_SAVED_AS
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_MARK_SAVED_AS
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_mark_saved_as(void
     
 );
 #endif

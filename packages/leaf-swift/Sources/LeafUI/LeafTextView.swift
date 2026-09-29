@@ -3664,6 +3664,10 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     public func sourceText() -> String { doc.source() }
     public func markSaved() { render(doc.markSaved()) }
+    /// `markSaved` for a write that took a while: `saved` is the
+    /// `sourceText()` read before writing, and what was typed since stays
+    /// unsaved.
+    public func markSaved(as saved: String) { render(doc.markSavedAs(saved: saved)) }
     public func command(_ op: (LeafDoc) -> DocView) { render(op(doc)) }
 }
 
