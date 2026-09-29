@@ -32,6 +32,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
@@ -64,7 +65,9 @@ import androidx.compose.ui.focus.FocusEventModifierNode
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import android.view.KeyEvent as AndroidKeyEvent
 
 /**
@@ -143,6 +146,21 @@ fun LeafEditor(
                 else -> return@LaunchedEffect
             }
             scrollState.animateScrollTo(target.toInt().coerceIn(0, scrollState.maxValue.coerceAtLeast(0)))
+        }
+
+        // A place the reader was sent to (`goTo`) stands near the top, where
+        // reading goes on from. It is asked for in the breath that opens the
+        // document, before the scroll has measured what it holds: wait (not
+        // for ever) for its range to reach the place, then open there rather
+        // than scrolling the reader past everything above it.
+        LaunchedEffect(state.landings, viewport) {
+            if (state.landings == 0) return@LaunchedEffect
+            val caret = state.caretRect() ?: return@LaunchedEffect
+            val want = (caret.top - viewport / 4).toInt().coerceAtLeast(0)
+            if (scrollState.maxValue < want) {
+                withTimeoutOrNull(1000) { snapshotFlow { scrollState.maxValue }.first { it >= want } }
+            }
+            scrollState.scrollTo(want.coerceAtMost(scrollState.maxValue.coerceAtLeast(0)))
         }
 
         LaunchedEffect(version) { if (version != menuFrame) toolbar.hide() }
