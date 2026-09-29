@@ -498,6 +498,14 @@ export class LeafEditor {
     this.render(this.doc.mark_saved());
   }
 
+  /**
+   * `markSaved` for a write that took a while: `saved` is the `source()` read
+   * before writing, and what was typed since stays dirty.
+   */
+  markSavedAs(saved) {
+    this.render(this.doc.mark_saved_as(saved));
+  }
+
   /** Whether the document refuses to change — see `setReadOnly`. */
   isReadOnly() {
     return this.doc.read_only();

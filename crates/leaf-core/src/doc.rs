@@ -7821,6 +7821,24 @@ impl Doc {
         self.status = Some(format!("saved {}", self.file_name()));
     }
 
+    /// [`Doc::mark_saved`] for a host whose write is not instantaneous: `saved`
+    /// is the source it read before writing, and the edits made since are
+    /// still unsaved.
+    ///
+    /// A host that reads [`Doc::source`], hands it to a write that takes a
+    /// while, and then calls `mark_saved` loses whatever was typed meanwhile:
+    /// the flag is cleared over text that never reached the disk, so nothing
+    /// saves it again. Here `saved` becomes the clean state and the disk
+    /// watermark, and `dirty` is whether the buffer has moved on from it.
+    pub fn mark_saved_as(&mut self, saved: &str) {
+        self.clean_source = saved.to_string();
+        self.dirty = self.source != self.clean_source;
+        self.disk_hash = Some(hash_bytes(saved.as_bytes()));
+        if !self.dirty {
+            self.status = Some(format!("saved {}", self.file_name()));
+        }
+    }
+
     /// What the file looks like now against the bytes leaf last read or wrote.
     ///
     /// Reads the file and hashes it (see `disk_hash` for why it isn't an mtime),
@@ -15457,6 +15475,26 @@ mod tests {
             !d.dirty,
             "undoing to the saved source is not a modification"
         );
+    }
+
+    #[test]
+    fn marking_saved_as_what_was_written_keeps_later_typing_dirty() {
+        let mut d = doc_with("saved_as", "Does this\n");
+        d.caret = 9;
+        d.insert(" ");
+        // The host reads the source, and its write takes a while…
+        let written = d.source.clone();
+        // …during which the rest of the sentence is typed.
+        d.insert("work?");
+        d.mark_saved_as(&written);
+        assert!(d.dirty, "what was typed during the write is not saved");
+        d.undo();
+        assert!(!d.dirty, "undoing to what was written is the saved state");
+
+        d.redo();
+        let written = d.source.clone();
+        d.mark_saved_as(&written);
+        assert!(!d.dirty, "nothing typed meanwhile: saved");
     }
 
     #[test]

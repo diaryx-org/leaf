@@ -2469,6 +2469,15 @@ impl LeafDoc {
         g.frame()
     }
 
+    /// [`LeafDoc::mark_saved`] for a write that took a while: `saved` is the
+    /// [`LeafDoc::source`] the host read before writing, and whatever was
+    /// typed since stays dirty.
+    pub fn mark_saved_as(&self, saved: String) -> DocView {
+        let mut g = self.lock();
+        g.doc.mark_saved_as(&saved);
+        g.frame()
+    }
+
     // ── text input ───────────────────────────────────────────────────────────
 
     pub fn insert(&self, text: String) -> DocView {

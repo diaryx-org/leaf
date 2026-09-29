@@ -245,6 +245,10 @@ class LeafEditorState(val doc: LeafDoc) {
     /** Mark the current text as saved, so [LeafEditorChrome.dirty] clears. */
     fun markSaved() = render(doc.markSaved())
 
+    /** [markSaved] for a write that took a while: [saved] is the source read
+     *  before writing, and what was typed since stays unsaved. */
+    fun markSavedAs(saved: String) = render(doc.markSavedAs(saved))
+
     /**
      * Take focus and raise the soft keyboard, as a tap would — for a host that
      * opens a document to be written in rather than read, a new one say.

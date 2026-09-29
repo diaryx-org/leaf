@@ -1017,6 +1017,13 @@ public protocol LeafDocProtocol: AnyObject, Sendable {
     func markSaved()  -> DocView
     
     /**
+     * [`LeafDoc::mark_saved`] for a write that took a while: `saved` is the
+     * [`LeafDoc::source`] the host read before writing, and whatever was
+     * typed since stays dirty.
+     */
+    func markSavedAs(saved: String)  -> DocView
+    
+    /**
      * The current markup-exposure preference (see [`MarkupMode`]).
      */
     func markupMode()  -> MarkupMode
@@ -2426,6 +2433,21 @@ open func markSaved() -> DocView  {
         uniffiCallStatus in
     uniffi_leaf_ffi_fn_method_leafdoc_mark_saved(
             self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * [`LeafDoc::mark_saved`] for a write that took a while: `saved` is the
+     * [`LeafDoc::source`] the host read before writing, and whatever was
+     * typed since stays dirty.
+     */
+open func markSavedAs(saved: String) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_mark_saved_as(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(saved),uniffiCallStatus
     )
 })
 }
@@ -9522,6 +9544,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_mark_saved() != 6145) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_mark_saved_as() != 1143) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_markup_mode() != 63332) {

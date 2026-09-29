@@ -234,6 +234,8 @@ export class LeafEditor {
   viewName(): "wysiwyg" | "source";
   /** Clear the dirty flag after the host persisted `source()` itself. */
   markSaved(): void;
+  /** `markSaved` for a write that took a while: `saved` is the `source()` read before writing. */
+  markSavedAs(saved: string): void;
   /** Whether the document refuses edits. */
   isReadOnly(): boolean;
   /**
