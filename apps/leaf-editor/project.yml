@@ -154,8 +154,9 @@ targets:
         shell: /bin/bash
         script: |
           set -euo pipefail
-          # Xcode's build env has a minimal PATH; add the user's toolchains.
-          export PATH="$HOME/.nix-profile/bin:$HOME/.cargo/bin:/opt/homebrew/bin:$PATH"
+          # Xcode's build env has a minimal PATH; add the user's toolchains (and
+          # $HOME/.local/bin, where ci_scripts/ci_post_clone.sh installs Zig).
+          export PATH="$HOME/.nix-profile/bin:$HOME/.cargo/bin:$HOME/.local/bin:/opt/homebrew/bin:$PATH"
           cd "${PROJECT_DIR}/../.."        # repo root (workspace Cargo.toml)
 
           case "${PLATFORM_NAME}" in
