@@ -1,0 +1,67 @@
+name: Publish
+# Publish the workspace's publishable crates to crates.io on a version tag — the
+# registry half of a release (its sibling, homebrew.yml, ships the `leaf` binary).
+# Both fire on the same `v*.*.*` tags, so one `release release <spec> --push`
+# cuts a complete release. Until this file, every upload was that command run
+# by hand after the tag.
+#
+# This file holds no knowledge of the workspace: which crates go up and in what
+# order is `cargo publish --workspace`, which reads both off the manifests —
+# `publish = false` members are skipped, and the uploads are ordered so nothing
+# goes up before something it depends on. Today that is `leaf-core`,
+# `leaf-math`, `leaf-raster`, `leaf-ffi`, `leaf-ratatui`, and `leaf-tui`;
+# `leaf-wasm`, `leaf-math-wasm`, and `xtask` are `publish = false`, and the gpui
+# crates are outside the workspace altogether. A crate that drops that line is
+# published by the next tag with no edit here, and `--workspace` verifies it
+# against the versions going up beside it rather than the last release on the
+# index.
+#
+# What this does not do is skip a version already on the index. So a re-run of
+# a tag that fully published fails on the first crate, and a run that died
+# partway is finished by naming what already went up:
+#
+#     cargo publish --workspace --exclude leaf-core --exclude leaf-math
+#
+# No toolchain action. rust-toolchain.toml pins 1.98.1 and outranks any `rustup
+# default`, so the runner's rustup installs the pinned channel from the file on
+# first use, as ci.yml's release-build job relies on. No Zig either: leaf's one
+# Zig-backed dependency is twig-doc -> twig-sys, which ships a prebuilt payload
+# for x86_64-unknown-linux-gnu, so the verification build never compiles Zig
+# source on this runner.
+#
+# Auth is the `CARGO_REGISTRY_TOKEN` secret, as in fig, twig, moid, prov, and
+# flower. It must carry `publish-update` for every release, and `publish-new`
+# for any release that adds a crate. Keep it unrestricted by crate, or it cannot
+# create the next one. Rotating is a repo-settings edit
+# (`gh secret set CARGO_REGISTRY_TOKEN`) and nothing here changes.
+on:
+  push: { tags: [v*.*.*] }
+  workflow_dispatch: null
+permissions:
+  contents: read
+jobs:
+  crates-io:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    - uses: Swatinem/rust-cache@v2
+
+    # On a tag, the tag must name the version being published — refuse a
+    # mismatch rather than publish a surprise. (workflow_dispatch has no tag, so
+    # the guard is skipped there.)
+    - name: Check the tag against the workspace version
+      if: github.ref_type == 'tag'
+      run: |
+        version=$(cargo metadata --no-deps --format-version 1 \
+          | jq -r '.packages[] | select(.name == "leaf-core") | .version')
+        echo "Workspace version: $version"
+        if [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+          echo "::error::tag ${GITHUB_REF_NAME} does not match workspace version ${version}"
+          exit 1
+        fi
+
+    - name: Publish every publishable crate, in dependency order
+      env:
+        CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      run: cargo publish --workspace

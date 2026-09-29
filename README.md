@@ -91,10 +91,11 @@ workspace tests, and a `cargo check` of each crate alone in each feature shape a
 host actually builds. `release release <patch|minor|major|X.Y.Z>` runs those
 checks, moves the version through every manifest and the lockfile, cuts the
 generated region of [`docs/CHANGELOG.md`](docs/CHANGELOG.md) into a released
-section, and commits and tags — locally. Pushing takes `--push`, and even a
-pushed tag publishes nothing: `cargo publish --workspace` is a separate,
-deliberate command, and `--dry-run` shows what it would upload, in dependency
-order, along with every crate it holds back.
+section, and commits and tags — locally. Pushing takes `--push`, and a pushed
+tag is a release: [`publish.yml`](.github/workflows/publish.yml) uploads every
+publishable crate to crates.io and `homebrew.yml` ships the `leaf` binary.
+`cargo publish --workspace --dry-run` shows beforehand what would go up, in
+dependency order, along with every crate it holds back.
 
 `leaf-wasm` and `leaf-ffi` are two projections of the same `leaf_core::Doc`, and
 `cargo xtask ci` holds them level: a method exported by one binding and not the
