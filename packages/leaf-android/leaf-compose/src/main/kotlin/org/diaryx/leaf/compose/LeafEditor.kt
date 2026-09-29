@@ -10,10 +10,18 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
@@ -24,7 +32,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.FocusState
@@ -36,6 +46,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.node.ModifierNodeElement
@@ -48,6 +59,7 @@ import androidx.compose.ui.platform.TextToolbar
 import androidx.compose.ui.platform.establishTextInputSession
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.focus.FocusEventModifierNode
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Job
@@ -92,6 +104,13 @@ fun LeafEditor(
     // The text menu is the window's, not this composable's: raised here, it
     // would float on over whatever the host shows next.
     DisposableEffect(toolbar) { onDispose { toolbar.hide() } }
+
+    // A host's `requestFocus`: what a tap does, without the tap.
+    LaunchedEffect(state.focusRequests) {
+        if (state.focusRequests == 0) return@LaunchedEffect
+        focus.requestFocus()
+        state.showKeyboard()
+    }
 
     BoxWithConstraints(modifier.background(theme.colors.background)) {
         val width = constraints.maxWidth
@@ -175,6 +194,59 @@ fun LeafEditor(
                         drawEditor(state, layout, theme, scrollState.value.toFloat(), viewport, caretOn && state.focused)
                     },
             )
+        }
+
+        // The link the caret stands in, and a way to follow it: a tap places
+        // the caret, so it cannot also be the gesture that leaves — and the
+        // platform's text menu has no room for an item of the editor's own.
+        val link = state.chrome.link
+        if (link != null && state.focused && !state.chrome.hasSelection) {
+            state.caretRect()?.let { caret ->
+                LinkChipOverlay(link, caret, scrollState, viewport) { state.openLinkAtCaret() }
+            }
+        }
+    }
+}
+
+/**
+ * [LinkChip] under the caret — above it when there is no room below — kept
+ * inside the editor's width. Placed in the layout phase, reading the scroll
+ * there, so scrolling moves it without recomposing it.
+ */
+@Composable
+private fun LinkChipOverlay(destination: String, caret: Rect, scroll: ScrollState, viewport: Float, onOpen: () -> Unit) {
+    Layout(
+        content = { LinkChip(destination, onOpen) },
+        modifier = Modifier.fillMaxSize().clipToBounds(),
+    ) { measurables, constraints ->
+        val chip = measurables.single().measure(constraints.copy(minWidth = 0, minHeight = 0))
+        layout(constraints.maxWidth, constraints.maxHeight) {
+            val gap = 6.dp.toPx()
+            val margin = 8.dp.toPx()
+            val top = caret.top - scroll.value
+            val bottom = caret.bottom - scroll.value
+            val y = if (bottom + gap + chip.height <= viewport) bottom + gap else top - gap - chip.height
+            val x = (caret.left - 24.dp.toPx())
+                .coerceAtMost(constraints.maxWidth - chip.width - margin)
+                .coerceAtLeast(margin)
+            chip.place(x.toInt(), y.toInt())
+        }
+    }
+}
+
+/** Where a link goes, and Open. */
+@Composable
+private fun LinkChip(destination: String, onOpen: () -> Unit) {
+    Surface(shape = RoundedCornerShape(8.dp), tonalElevation = 2.dp, shadowElevation = 4.dp) {
+        Row(Modifier.padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                destination,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 220.dp),
+            )
+            TextButton(onOpen) { Text("Open") }
         }
     }
 }
