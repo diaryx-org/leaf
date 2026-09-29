@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -87,6 +88,10 @@ fun LeafEditor(
     // A named colour is two inks and core resolves `<picture>` sources by
     // appearance, so it has to know which one it is drawn in.
     LaunchedEffect(state, theme.colors.dark) { state.render(state.doc.setDarkAppearance(theme.colors.dark)) }
+
+    // The text menu is the window's, not this composable's: raised here, it
+    // would float on over whatever the host shows next.
+    DisposableEffect(toolbar) { onDispose { toolbar.hide() } }
 
     BoxWithConstraints(modifier.background(theme.colors.background)) {
         val width = constraints.maxWidth
