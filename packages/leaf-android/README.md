@@ -45,6 +45,12 @@ moves to a `#fragment` in the same document itself, then asks the host's
 note app's `./sibling.md` or `id:6tzwsxg`), and otherwise hands the destination
 to the system.
 
+A block image draws its picture, fitted to the column and never enlarged past
+its natural size: a relative `src` resolves against `mediaBase` (the
+document's directory, which only the host knows), and `onLocateMedia` answers
+first for a spelling only the host can read. A picture that is not there yet,
+or will not load, keeps its placeholder row.
+
 ## How it works
 
 The contract every leaf frontend keeps: core owns the text, the caret and the
@@ -78,7 +84,7 @@ than the document across JNA.
 ## Not yet
 
 Tables draw as core's box-drawn picture in monospace rather than a grid, block
-media and display math as their placeholder rows, and a directive's panel is
+video, audio and display math as their placeholder rows, and a directive's panel is
 not outlined — see [Android block views](../../docs/tasks/android-block-views.md).
 The Apple views' footnote and link peeks, wikilink following, find, the
 presentation-vocabulary menus and page layout have no counterpart yet.

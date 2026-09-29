@@ -2,6 +2,8 @@ package org.diaryx.leaf.compose
 
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.text.AnnotatedString
@@ -23,9 +25,11 @@ import androidx.compose.ui.text.style.TextIndent
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.em
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import uniffi.leaf_ffi.BlockClass
 import uniffi.leaf_ffi.DocView
+import uniffi.leaf_ffi.MediaKind
 import uniffi.leaf_ffi.Row
 import uniffi.leaf_ffi.Run
 
@@ -51,6 +55,14 @@ internal class ShapedRow(
     val quoteBarXs: List<Float>,
     /** Shaped as part of a table's box-drawn picture: monospaced and never wrapped. */
     val tablePicture: Boolean,
+    /**
+     * A block image's picture, drawn in place of the row's text, at
+     * [mediaSize] and [mediaGap] below the row's top. Only on the first of the
+     * media's rows; the rest collapse to nothing.
+     */
+    val media: ImageBitmap? = null,
+    val mediaSize: Size = Size.Zero,
+    val mediaGap: Float = 0f,
 )
 
 /**
@@ -83,6 +95,9 @@ internal class EditorLayout(
     var height = 0f
         private set
     private var source = false
+
+    /** Where block images come from; null draws every one as its placeholder row. */
+    var media: MediaStore? = null
 
     val rowCount: Int get() = rows.size
     fun row(i: Int): Row = rows[i]
@@ -120,6 +135,7 @@ internal class EditorLayout(
         }
         rows = frame.rows
         shapes = next
+        if (!isSource) placeMedia(frame)
 
         tops = FloatArray(rows.size)
         var y = with(density) { theme.paddingVertical.toPx() }
@@ -128,6 +144,36 @@ internal class EditorLayout(
             y += shapes[i].height
         }
         height = y + with(density) { theme.paddingVertical.toPx() }
+    }
+
+    /**
+     * Each block image whose picture has loaded becomes a box on its first row
+     * — fitted to the column, never enlarged past its natural size (its pixels
+     * read as dp), and capped in height so one tall picture cannot push a
+     * screen of prose away — and the rest of its placeholder rows collapse. A
+     * picture still loading, or one that would not, keeps core's placeholder
+     * row. The rows keep their text, so the caret and the hit test on the
+     * first row are the placeholder's, as they are in leaf-swift.
+     */
+    private fun placeMedia(frame: DocView) {
+        val store = media ?: return
+        for (m in frame.media) {
+            if (m.kind != MediaKind.IMAGE) continue
+            val first = m.startRow.toInt()
+            if (first !in shapes.indices) continue
+            val still = store.still(m.src) ?: continue
+            val d = density.density
+            val natural = Size(still.width * d, still.height * d)
+            val maxH = with(density) { MEDIA_MAX_HEIGHT.dp.toPx() }
+            val scale = minOf(1f, columnWidth / natural.width, maxH / natural.height)
+            val size = Size(natural.width * scale, natural.height * scale)
+            val gap = with(density) { MEDIA_GAP.dp.toPx() }
+            val base = shapes[first]
+            shapes[first] = ShapedRow(base.text, size.height + 2 * gap, base.prefixWidth, base.quoteBarXs, false, still, size, gap)
+            for (i in first + 1 until m.endRow.toInt().coerceAtMost(shapes.size)) {
+                shapes[i] = ShapedRow(null, 0f, 0f, emptyList(), false)
+            }
+        }
     }
 
     /** The old shape of row [old], if it still fits the row now at [now]. */
@@ -407,5 +453,9 @@ internal class EditorLayout(
 
     companion object {
         fun isHeadingRole(role: String) = role.length == 2 && role[0] == 'h' && role[1] in '1'..'6'
+
+        /** A block image's tallest box, and the room above and below it, in dp. */
+        const val MEDIA_MAX_HEIGHT = 480
+        const val MEDIA_GAP = 8
     }
 }
