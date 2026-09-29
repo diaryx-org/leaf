@@ -90,6 +90,7 @@ fun LeafEditor(
     val measurer = rememberTextMeasurer(cacheSize = 0)
     val layout = remember(measurer, density) { EditorLayout(measurer, density) }
     state.layout = layout
+    layout.media = state.media
     state.inputView = LocalView.current
     val toolbar = LocalTextToolbar.current
     val focus = remember { FocusRequester() }
@@ -460,6 +461,17 @@ private fun DrawScope.drawEditor(
 
     for (r in first..last) {
         val s = layout.shape(r)
+        s.media?.let { still ->
+            // A block image, rounded like the code panel, at the column's left.
+            val topLeft = Offset(x0, layout.top(r) + s.mediaGap)
+            val dst = androidx.compose.ui.unit.IntSize(s.mediaSize.width.toInt(), s.mediaSize.height.toInt())
+            drawImage(
+                still,
+                dstOffset = androidx.compose.ui.unit.IntOffset(topLeft.x.toInt(), topLeft.y.toInt()),
+                dstSize = dst,
+            )
+            continue
+        }
         val text = s.text ?: continue
         drawText(text, topLeft = Offset(x0, layout.top(r)))
         if (layout.row(r).isThematicBreak) {

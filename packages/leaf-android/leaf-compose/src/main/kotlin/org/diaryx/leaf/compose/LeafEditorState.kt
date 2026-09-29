@@ -65,6 +65,32 @@ class LeafEditorState(val doc: LeafDoc) {
 
     internal var layout: EditorLayout? = null
 
+    /** The block images' pictures; a load bumps [version], which lays the box out at the picture's size. */
+    internal val media = MediaStore { version++ }
+
+    /**
+     * The document's own directory, which a relative image `src` resolves
+     * against. Core has no path context, so the host supplies it; null leaves
+     * a relative image as its placeholder.
+     */
+    var mediaBase: java.io.File?
+        get() = media.base
+        set(value) {
+            media.base = value
+        }
+
+    /**
+     * The host's own reading of an image `src`, asked first — an app may
+     * spell a reference no general editor can guess (diaryx reads a leading
+     * `/` as its library's root). A readable file draws; null is "no opinion",
+     * and [mediaBase] is tried. leaf-swift's `onLocateMedia`.
+     */
+    var onLocateMedia: ((String) -> java.io.File?)?
+        get() = media.locate
+        set(value) {
+            media.locate = value
+        }
+
     /** Set when the caret should be scrolled into view at the next layout. */
     internal var revealCaret by mutableStateOf(false)
 

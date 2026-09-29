@@ -16,7 +16,11 @@ rows other frontends replace with a view of their own:
   the Apple and web editors draw a grid from `DocView.tables`. The box-drawing
   glyphs are wider than the monospace advance in Android's fallback font, so
   the rules overrun the column on the right.
-- **Block media** (`DocView.media`) draw as their `🖼`/`🎬`/`🔊` placeholder rows.
+- **Block media** (`DocView.media`): an image draws its picture (`MediaStore`,
+  `EditorLayout.placeMedia`), its rows collapsed onto the first as leaf-swift
+  does; a video or an audio still draws its `🎬`/`🔊` placeholder row, with no
+  poster, play badge or `onOpenMedia`, and an SVG image draws none (Android has
+  no SVG codec; the resvg component in `libleaf_ffi.so` is the way).
 - **Math** (`DocView.math`) draws as its stand-in glyph, inline, and as the
   placeholder rows for a display formula; `typeset_math` is in the binding and
   unused.
