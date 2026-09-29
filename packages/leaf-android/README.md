@@ -33,7 +33,8 @@ Column(Modifier.imePadding()) {
 `LeafEditorState.chrome` is what a toolbar lights itself from, `onEdit` hears
 every change to the text, and `command { doc -> doc.toggleBold() }` runs any
 core command and repaints. `requestFocus()` takes the keyboard without a tap,
-for a document opened to be written in. Only the editing surface is here —
+for a document opened to be written in, and `goTo(locator)` opens the document
+at the place a link's `#v2` names. Only the editing surface is here —
 saving, the document's name, and the window are the host's.
 
 A link is followed from a chip that stands under the caret while it rests in

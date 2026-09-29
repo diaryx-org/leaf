@@ -68,6 +68,14 @@ class LeafEditorState(val doc: LeafDoc) {
     /** Set when the caret should be scrolled into view at the next layout. */
     internal var revealCaret by mutableStateOf(false)
 
+    /**
+     * Bumped when the caret is put somewhere to be read — a [goTo] — rather
+     * than moved by the person typing. The editor answers it apart from
+     * [revealCaret]: scrolled to even while unfocused, near the top, and not
+     * cancelled by the frames that follow a document's opening.
+     */
+    internal var landings by mutableIntStateOf(0)
+
     /** Whether the host's software keyboard should show for this editor. */
     internal var focused by mutableStateOf(false)
 
@@ -229,7 +237,7 @@ class LeafEditorState(val doc: LeafDoc) {
     fun openLinkAtCaret(): Boolean {
         val destination = doc.linkDestinationAtCaret() ?: return false
         selfLanding(destination)?.let {
-            render(doc.setSelectionOffsets(it, it))
+            reveal(it)
             return true
         }
         if (onOpenLink?.invoke(destination) == true) return true
@@ -240,6 +248,24 @@ class LeafEditorState(val doc: LeafDoc) {
         } catch (_: ActivityNotFoundException) {
             false
         }
+    }
+
+    /**
+     * Land on the place a locator names — a heading's slug, a block's id, the
+     * `v2` of a link's `#v2` — and scroll it into view. False when the
+     * document has no such place. A host calls it in the same breath as
+     * opening the document; the landing waits for the editor's first layout.
+     */
+    fun goTo(locator: String): Boolean {
+        val landing = doc.locate(locator) ?: return false
+        reveal(landing.start)
+        return true
+    }
+
+    /** Put the caret at `offset`, nothing selected, and land the reader on it. */
+    fun reveal(offset: UInt) {
+        render(doc.setSelectionOffsets(offset, offset))
+        landings++
     }
 
     /**
