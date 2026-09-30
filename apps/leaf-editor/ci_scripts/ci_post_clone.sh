@@ -84,11 +84,15 @@ cd "$ROOT/apps/leaf-editor"
 xcodegen generate
 
 # Pins. Xcode Cloud resolves with automatic resolution disabled, which needs a
-# Package.resolved — and this repository commits none: the root one is
-# gitignored because the root package is a library, and the project's lives
-# inside the gitignored .xcodeproj. Resolving here writes the project's, so
-# the cloud's own resolution finds one.
-echo "▸ Resolving package dependencies…"
-xcodebuild -resolvePackageDependencies -project Leaf.xcodeproj -scheme Leaf
+# Package.resolved inside the project's workspace — and that lives in the
+# gitignored .xcodeproj, so the pins are committed beside project.yml and
+# installed here. (Resolving at this point does not work: with resolution
+# disabled, xcodebuild refuses to fetch resvg-swift and exits 74.) After
+# changing a dependency, refresh apps/leaf-editor/Package.resolved from the
+# root Package.resolved that a local `swift package resolve` writes.
+echo "▸ Installing Package.resolved…"
+PINS_DIR="Leaf.xcodeproj/project.xcworkspace/xcshareddata/swiftpm"
+mkdir -p "$PINS_DIR"
+cp Package.resolved "$PINS_DIR/Package.resolved"
 
 echo "✓ Post-clone setup complete."

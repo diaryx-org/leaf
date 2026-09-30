@@ -1,0 +1,14 @@
+{
+  "pins" : [
+    {
+      "identity" : "resvg-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/diaryx-org/resvg-swift.git",
+      "state" : {
+        "revision" : "df505d1e936882f0e51f8cfc9dd5eae04b7d25df",
+        "version" : "0.1.4"
+      }
+    }
+  ],
+  "version" : 2
+}
