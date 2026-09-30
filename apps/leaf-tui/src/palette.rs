@@ -23,11 +23,12 @@
 //! up: letters landing at the start of a word score highest, consecutive runs
 //! next, anything else counts but barely. `ir` finds "Insert Row Above" ahead of
 //! "Horizontal Rule"; `hr` finds the rule. Ties break on the command's position
-//! in [`crate::commands::GROUPS`], which is the order a reader would scan.
+//! in [`crate::commands::palette_commands`], which is the order a reader
+//! would scan.
 
 use ratatui::layout::Rect;
 
-use crate::commands::{Command, Ctx, GROUPS};
+use crate::commands::{Command, Ctx, palette_commands};
 
 /// A palette row: the command, whether this document can run it, and the score
 /// that sorted it here (kept only so the sort is stable and inspectable).
@@ -84,28 +85,26 @@ impl Palette {
         let q = self.query.to_lowercase();
         let mut scored: Vec<(i32, usize, Row)> = Vec::new();
         let mut order = 0usize;
-        for (group, commands) in GROUPS {
-            for command in *commands {
-                order += 1;
-                // The group name is matched too, so "table" finds every table
-                // operation even though none of their labels contains the word.
-                let haystack = format!(
-                    "{} {}",
-                    group.to_lowercase(),
-                    command.label().to_lowercase()
-                );
-                let Some(score) = score(&haystack, &q) else {
-                    continue;
-                };
-                scored.push((
-                    score,
-                    order,
-                    Row {
-                        command: *command,
-                        enabled: command.enabled(ctx),
-                    },
-                ));
-            }
+        for (group, command) in palette_commands() {
+            order += 1;
+            // The group name is matched too, so "table" finds every table
+            // operation even though none of their labels contains the word.
+            let haystack = format!(
+                "{} {}",
+                group.to_lowercase(),
+                command.label().to_lowercase()
+            );
+            let Some(score) = score(&haystack, &q) else {
+                continue;
+            };
+            scored.push((
+                score,
+                order,
+                Row {
+                    command,
+                    enabled: command.enabled(ctx),
+                },
+            ));
         }
         // Available first, then by score, then by the order a reader would scan.
         scored.sort_by_key(|(score, order, row)| (!row.enabled, -score, *order));
@@ -235,8 +234,7 @@ mod tests {
     #[test]
     fn an_empty_query_lists_everything() {
         let p = Palette::new(&ctx("hi\n", leaf_core::Format::Markdown));
-        let total: usize = GROUPS.iter().map(|(_, c)| c.len()).sum();
-        assert_eq!(p.rows.len(), total);
+        assert_eq!(p.rows.len(), palette_commands().len());
     }
 
     #[test]

@@ -30,6 +30,8 @@ use leaf_core::{
 };
 use leaf_ratatui::Outcome;
 
+use crate::directives::CATALOGUE;
+
 /// Everything about the document a command needs in order to say whether it's
 /// available and whether it's currently on — read once per frame rather than
 /// per row, because a menu of thirty rows asking the AST thirty questions is
@@ -135,6 +137,11 @@ pub enum Command {
     Footnote,
     ThematicBreak,
     PageBreak,
+    /// One of this host's own directives — the row at this index of
+    /// [`crate::directives::CATALOGUE`]. An index rather than the item so the
+    /// table stays `Copy`; its label is the item's title, borrowed from the
+    /// catalogue, which lives as long as the program.
+    Directive(usize),
     CodeLanguage,
 
     // ── table ──
@@ -239,6 +246,7 @@ impl Command {
             Footnote => "Footnote",
             ThematicBreak => "Horizontal Rule",
             PageBreak => "Page Break",
+            Directive(i) => CATALOGUE.get(i).map_or("", |item| item.title.as_str()),
             CodeLanguage => "Code Language…",
 
             RowAbove => "Insert Row Above",
@@ -406,6 +414,9 @@ impl Command {
             Footnote => c.footnote,
             ThematicBreak => c.thematic_break,
             PageBreak => c.page_break,
+            // Narrower than a page break: only where what is written reads
+            // back as the same directive — Markdown and djot.
+            Directive(_) => c.directives,
             // Only ever offered with the caret already in a fence: there is no
             // "the language of no code block".
             CodeLanguage => c.code_language && ctx.in_code,
@@ -476,6 +487,12 @@ impl Command {
     /// Run it. Document mutations happen here and return `Outcome::Continue`;
     /// anything the host owns — the clipboard, the filesystem, a prompt — is
     /// named in the `Outcome` for `main` to carry out, exactly as a key press is.
+    ///
+    /// The one exception is a [`Directive`](Command::Directive) whose item
+    /// asks the author first: the question is this host's, not the widget's,
+    /// so there is no `Outcome` naming it. Run here, such a row writes nothing;
+    /// `main`'s `run_command` puts its prompt up instead, and is what every
+    /// door calls.
     pub fn run(self, doc: &mut Doc) -> Outcome {
         use Command::*;
         match self {
@@ -515,6 +532,11 @@ impl Command {
             Footnote => doc.insert_footnote(),
             ThematicBreak => doc.insert_thematic_break(),
             PageBreak => doc.insert_page_break(),
+            Directive(i) => {
+                if let Some(item) = CATALOGUE.get(i) {
+                    item.insert(doc);
+                }
+            }
             CodeLanguage => return Outcome::LanguagePrompt,
 
             RowAbove => doc.table_insert_row(false),
@@ -555,6 +577,22 @@ impl Command {
         }
         Outcome::Continue
     }
+}
+
+/// Every command the palette lists, with the group it is listed under: the
+/// fixed table of [`GROUPS`], and this host's directives under Insert after
+/// Page Break, the one directive leaf names itself.
+pub fn palette_commands() -> Vec<(&'static str, Command)> {
+    let mut out = Vec::new();
+    for (group, commands) in GROUPS {
+        for &command in *commands {
+            out.push((*group, command));
+            if command == Command::PageBreak {
+                out.extend((0..CATALOGUE.len()).map(|i| (*group, Command::Directive(i))));
+            }
+        }
+    }
+    out
 }
 
 /// Every command, grouped under the heading it belongs to — the order the

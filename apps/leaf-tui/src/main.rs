@@ -7,6 +7,7 @@
 //! stays a valid AST the whole time.
 
 mod commands;
+mod directives;
 mod find;
 mod palette;
 mod ui;
@@ -563,14 +564,20 @@ struct TextPrompt {
     /// Byte offset into `value`; only ever moved by whole `char`s, so always
     /// on a UTF-8 boundary.
     cursor: usize,
-    on_confirm: fn(&mut Doc, &str),
+    /// A closure rather than a `fn` pointer so that a prompt can carry what
+    /// it was opened for — which of the catalogue's directives an answer
+    /// writes, say.
+    on_confirm: OnConfirm,
 }
+
+/// What a [`TextPrompt`] does with its value on confirm.
+type OnConfirm = Box<dyn Fn(&mut Doc, &str)>;
 
 impl TextPrompt {
     fn new(
         label: &'static str,
         initial: impl Into<String>,
-        on_confirm: fn(&mut Doc, &str),
+        on_confirm: impl Fn(&mut Doc, &str) + 'static,
     ) -> Self {
         let value = initial.into();
         let cursor = value.len();
@@ -578,7 +585,7 @@ impl TextPrompt {
             label,
             value,
             cursor,
-            on_confirm,
+            on_confirm: Box::new(on_confirm),
         }
     }
 }
@@ -629,6 +636,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal, doc: &mut Doc, line_width: u16) 
     // actual background, not toward an assumed black one. `LEAF_THEME=light|dark`
     // overrides the answer for a terminal that won't give a straight one.
     app.editor.query_color_scheme();
+    // Draw this host's own directives — the embed card — over the rows core
+    // reserves for them. Every other directive keeps leaf's placeholder.
+    app.editor.set_directive_renderer(directives::draw);
     // Wipe whatever the two queries above left on the screen. They are written
     // as escape sequences a terminal is meant to swallow and answer; one that
     // doesn't recognise them prints what it can read of them instead, and
@@ -763,7 +773,7 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
             KeyCode::Enter => match entry {
                 MenuEntry::Action(cmd) => {
                     app.context_menu = None;
-                    let outcome = cmd.run(doc);
+                    let outcome = run_command(doc, app, cmd);
                     return apply_over_find(doc, app, outcome);
                 }
                 MenuEntry::Submenu(_, items) => menu.open_submenu(lvl, items, &ctx),
@@ -802,13 +812,13 @@ fn handle_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
     if let Some(prompt) = &mut app.text_prompt {
         match key.code {
             KeyCode::Enter => {
-                // Pull the value and callback out before dropping the prompt —
-                // same "read what's needed, then clear" order the context menu
+                // Take the prompt down before running its callback — same
+                // "read what's needed, then clear" order the context menu
                 // uses to run its highlighted action, so `on_confirm` sees a
                 // `doc` with no prompt left standing over it.
-                let value = std::mem::take(&mut prompt.value);
-                let on_confirm = prompt.on_confirm;
-                app.text_prompt = None;
+                let TextPrompt {
+                    value, on_confirm, ..
+                } = app.text_prompt.take().unwrap();
                 on_confirm(doc, &value);
                 // A Save-As opened by `attempt_save` leaves a `pending_action`
                 // behind for exactly this moment: the link prompt has none, so
@@ -1037,7 +1047,7 @@ fn handle_palette_key(doc: &mut Doc, key: KeyEvent, app: &mut App) -> Flow {
             let chosen = palette.chosen();
             app.palette = None;
             if let Some(cmd) = chosen {
-                let outcome = cmd.run(doc);
+                let outcome = run_command(doc, app, cmd);
                 return apply_over_find(doc, app, outcome);
             }
         }
@@ -1618,7 +1628,7 @@ fn dispatch_mouse(doc: &mut Doc, m: MouseEvent, app: &mut App) {
                     // open rather than closing it on an action that didn't run.
                     MenuEntry::Action(cmd) if cmd.enabled(&ctx) => {
                         app.context_menu = None;
-                        let outcome = cmd.run(doc);
+                        let outcome = run_command(doc, app, cmd);
                         apply_outcome(doc, app, outcome);
                     }
                     MenuEntry::Submenu(_, items) if !items.is_empty() => {
@@ -1652,7 +1662,7 @@ fn dispatch_mouse(doc: &mut Doc, m: MouseEvent, app: &mut App) {
             match chosen {
                 Some(cmd) => {
                     app.palette = None;
-                    let outcome = cmd.run(doc);
+                    let outcome = run_command(doc, app, cmd);
                     apply_outcome(doc, app, outcome);
                 }
                 // A press inside the list but on a dimmed row holds the palette
@@ -1675,6 +1685,24 @@ fn dispatch_mouse(doc: &mut Doc, m: MouseEvent, app: &mut App) {
             app.context_menu = Some(ContextMenu::new((x, y), &ctx));
         }
     }
+}
+
+/// Run a command chosen from the palette or the context menu — every door but
+/// the keyboard, whose keys the widget runs itself. [`Command::run`] with the
+/// one thing it cannot do: a catalogue directive that asks the author first
+/// puts its question up here, in the prompt the link destination uses, and
+/// writes what the answer makes of it on confirm.
+fn run_command(doc: &mut Doc, app: &mut App, cmd: Command) -> Outcome {
+    if let Command::Directive(i) = cmd
+        && let Some(item) = directives::CATALOGUE.get(i)
+        && let Some(prompt) = item.prompt()
+    {
+        app.text_prompt = Some(TextPrompt::new(prompt, String::new(), move |doc, reply| {
+            item.answer(doc, reply);
+        }));
+        return Outcome::Continue;
+    }
+    cmd.run(doc)
 }
 
 /// ⌥k: open the link prompt, prefilled with the destination of the link the
@@ -4788,6 +4816,111 @@ mod tests {
         // And one undo takes the whole press back, not half of it.
         doc.undo();
         assert_eq!(doc.source, "a word b\n");
+    }
+
+    /// The host's own directive, through the palette: the row asks for a URL
+    /// in the prompt the link destination uses, and the answer is written as
+    /// an `::embed` where the caret parts the paragraph — one undo step.
+    #[test]
+    fn the_palette_embeds_a_url_through_its_prompt() {
+        let mut doc = doc_with("palette_embed", "hello world\n");
+        doc.caret = 5;
+        let mut app = App::default();
+        handle_key(&mut doc, ctrl('p'), &mut app);
+        for c in "embed".chars() {
+            handle_key(&mut doc, plain(c), &mut app);
+        }
+        assert_eq!(
+            app.palette.as_ref().unwrap().chosen(),
+            Some(Command::Directive(0))
+        );
+        handle_key(&mut doc, keyp(KeyCode::Enter), &mut app);
+        assert!(app.palette.is_none());
+        let prompt = app.text_prompt.as_ref().expect("the row asks for a URL");
+        assert_eq!(prompt.label, "Embed URL");
+        assert_eq!(doc.source, "hello world\n", "nothing written yet");
+
+        for c in "https://x.org".chars() {
+            handle_key(&mut doc, plain(c), &mut app);
+        }
+        handle_key(&mut doc, keyp(KeyCode::Enter), &mut app);
+        assert!(app.text_prompt.is_none());
+        assert_eq!(
+            doc.source,
+            "hello\n\n::embed{src=\"https://x.org\"}\n\nworld\n"
+        );
+        doc.undo();
+        assert_eq!(doc.source, "hello world\n");
+    }
+
+    /// Where the format cannot write a host's directive the row is listed and
+    /// dimmed, as every row a format cannot run is.
+    #[test]
+    fn the_embed_row_is_dimmed_where_the_format_has_no_directives() {
+        let mut html = doc_with_html("palette_embed_html", "<p>hello</p>\n");
+        let ctx = Ctx::read(&mut html);
+        let mut p = Palette::new(&ctx);
+        p.query = "embed".into();
+        p.refilter(&ctx);
+        assert!(
+            p.rows
+                .iter()
+                .any(|r| r.command == Command::Directive(0) && !r.enabled)
+        );
+        assert_eq!(p.chosen(), None);
+
+        let mut dj = doc_with_dj("palette_embed_dj", "hello\n");
+        assert!(Command::Directive(0).enabled(&Ctx::read(&mut dj)));
+    }
+
+    /// leaf-tui draws the embed it inserts: a card over the rows core
+    /// reserved, which the caret crosses in one press each way, and text typed
+    /// on either side lands outside it.
+    #[test]
+    fn an_embed_is_drawn_as_a_card_and_the_caret_steps_over_it() {
+        let src = "before\n\n::embed{src=\"https://x.org\"}\n\nafter\n";
+        let mut doc = doc_with("embed_card", src);
+        doc.view = View::Wysiwyg;
+        let mut app = App::default();
+        app.editor.set_directive_renderer(directives::draw);
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 12)).unwrap();
+        let mut draw = |doc: &mut Doc, app: &mut App| -> Vec<String> {
+            term.draw(|f| leaf_ratatui::render(f, f.area(), doc, &mut app.editor))
+                .unwrap();
+            let buf = term.backend().buffer();
+            (0..buf.area.height)
+                .map(|y| {
+                    (0..buf.area.width - 1)
+                        .map(|x| buf[(x, y)].symbol())
+                        .collect::<String>()
+                        .trim_end()
+                        .to_string()
+                })
+                .collect()
+        };
+        let lines = draw(&mut doc, &mut app);
+        assert_eq!(
+            lines[2..5],
+            [
+                "╭─ Embed ───────╮",
+                "│ https://x.org │",
+                "╰───────────────╯",
+            ],
+            "\n{}",
+            lines.join("\n")
+        );
+        assert_eq!(doc.vmap.directives[0].rows_span.len(), 3);
+
+        // From the end of "before", two presses right: the directive's start,
+        // then past it.
+        let start = src.find("::").unwrap();
+        doc.caret = start;
+        handle_key(&mut doc, keyp(KeyCode::Right), &mut app);
+        draw(&mut doc, &mut app);
+        let end = src.find("}\n").unwrap() + 1;
+        assert_eq!(doc.caret, end, "one press crosses it");
+        handle_key(&mut doc, keyp(KeyCode::Left), &mut app);
+        assert_eq!(doc.caret, start, "and one press back");
     }
 
     /// The palette owns the keyboard completely: a letter typed into its query
