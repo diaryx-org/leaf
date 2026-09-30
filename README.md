@@ -97,7 +97,9 @@ checks, moves the version through every manifest and the lockfile, cuts the
 generated region of [`docs/CHANGELOG.md`](docs/CHANGELOG.md) into a released
 section, and commits and tags — locally. Pushing takes `--push`, and a pushed
 tag is a release: [`publish.yml`](.github/workflows/publish.yml) uploads every
-publishable crate to crates.io and `homebrew.yml` ships the `leaf` binary.
+publishable crate to crates.io, `homebrew.yml` ships the `leaf` binary, and
+[`mac-app.yml`](.github/workflows/mac-app.yml) attaches a signed, notarised
+`Leaf-<version>-aarch64.dmg` to the release.
 `cargo publish --workspace --dry-run` shows beforehand what would go up, in
 dependency order, along with every crate it holds back.
 

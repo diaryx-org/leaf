@@ -22,6 +22,8 @@
 //!   — the names diaryx's release workflow already gives its secrets.
 //!   `--no-notarize` skips both notarisations and needs neither.
 //!
+//! `.github/workflows/mac-app.yml` runs this on a release tag, from secrets.
+//!
 //! Apple Silicon only, for now: the project's pre-build script builds the Rust
 //! staticlib for `aarch64-apple-darwin` alone, and the file name says so.
 
