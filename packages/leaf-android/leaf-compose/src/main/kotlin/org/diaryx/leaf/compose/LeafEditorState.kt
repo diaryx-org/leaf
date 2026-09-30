@@ -310,6 +310,19 @@ class LeafEditorState(val doc: LeafDoc) {
         return landing?.start
     }
 
+    /**
+     * Insert [item] at the caret: what it says, or what its `ask` answers once
+     * the author has answered — nothing, if they cancel, or where the format
+     * cannot write a directive. Core refuses a name or a label it cannot spell
+     * (any label, in djot) with a status, and writes nothing.
+     */
+    suspend fun insertDirective(item: LeafDirectiveItem) {
+        if (!capabilities.directives) return
+        val answer = item.ask?.let { ask -> ask() ?: return } ?: LeafDirectiveAnswer(item.label, item.attrs)
+        val label = answer.label?.takeIf { it.isNotEmpty() }
+        command { it.insertDirective(item.name, label, answer.attrs) }
+    }
+
     /** Switch between the rendered view and the source. */
     fun toggleView() = command { it.toggleView() }
 

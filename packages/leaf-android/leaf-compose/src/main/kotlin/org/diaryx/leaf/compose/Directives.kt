@@ -1,6 +1,9 @@
 package org.diaryx.leaf.compose
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
+import androidx.compose.ui.graphics.vector.ImageVector
+import uniffi.leaf_ffi.DirectiveAttr
 import uniffi.leaf_ffi.DirectiveView
 
 // A host's leaf directives (`::name{…}`): the ones it offers to insert
@@ -21,6 +24,41 @@ import uniffi.leaf_ffi.DirectiveView
  * with a tap of its own is the host's.
  */
 typealias LeafDirectiveContent = (DirectiveView) -> (@Composable () -> Unit)?
+
+/**
+ * One directive a host offers to insert — a row of [LeafFormattingBar]'s
+ * Insert menu, dimmed where the document's format cannot write a directive
+ * (`Capabilities.directives`).
+ *
+ * The item writes [label] and [attrs] as they stand, or — given [ask] — what
+ * [ask] answers, which is how an embed asks for its URL. [ask] may show a
+ * dialog and suspend until it closes; null is Cancel, and writes nothing. It
+ * runs in [LeafFormattingBar]'s composition, so a host that takes the bar
+ * away while the author is answering cancels the question.
+ */
+@Immutable
+class LeafDirectiveItem(
+    /** Stable, as a tool id is (`"directive.embed"`). */
+    val id: String,
+    /** The directive's name, what `insert_directive` writes. */
+    val name: String,
+    /** The menu row's text, localised by the host. */
+    val title: String,
+    /** A Material icon beside [title], or none. */
+    val icon: ImageVector? = null,
+    /** The `[label]` to write; null or empty for none. djot has nowhere to put one. */
+    val label: String? = null,
+    /** The `{…}` attributes to write, in order; an empty value is a bare attribute. */
+    val attrs: List<DirectiveAttr> = emptyList(),
+    /** Asks the author for the label and attributes instead; null cancels. */
+    val ask: (suspend () -> LeafDirectiveAnswer?)? = null,
+)
+
+/** What a [LeafDirectiveItem.ask] answers: the label and the attributes to write. */
+data class LeafDirectiveAnswer(
+    val label: String? = null,
+    val attrs: List<DirectiveAttr> = emptyList(),
+)
 
 /** leaf's own directive, drawn by the editor and never offered to a host. */
 internal const val PAGE_BREAK = "page-break"

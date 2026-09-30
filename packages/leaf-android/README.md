@@ -51,6 +51,27 @@ document's directory, which only the host knows), and `onLocateMedia` answers
 first for a spelling only the host can read. A picture that is not there yet,
 or will not load, keeps its placeholder row.
 
+A host draws its own leaf directives (`::embed{src=…}`) through
+`LeafEditor`'s `directiveContent`: asked for each one but `::page-break`,
+which is leaf's, it answers a composable or null for the `⧉ name`
+placeholder. The composable is measured at the column's width (inside a
+quote's or a list's indent), the directive's rows collapse onto its first,
+which takes the measured height, and the caret stops before and after the
+drawing, never in it. `LeafFormattingBar`'s `directives` is the host's
+catalogue of them — `LeafDirectiveItem`s, each writing a name, label and
+attributes or asking for them (`ask`, which may suspend on a dialog and
+answer null to cancel) — offered in an Insert (`+`) menu at the bar's end and
+dimmed where the format cannot write a directive.
+
+```kotlin
+LeafEditor(state, directiveContent = { view ->
+    if (view.name == "embed") ({ EmbedCard(view) }) else null
+})
+LeafFormattingBar(state, directives = listOf(
+    LeafDirectiveItem(id = "directive.embed", name = "embed", title = "Embed…", ask = { askForUrl() }),
+))
+```
+
 ## How it works
 
 The contract every leaf frontend keeps: core owns the text, the caret and the
