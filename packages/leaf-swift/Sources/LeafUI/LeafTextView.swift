@@ -1588,9 +1588,10 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     }
 
     /// Open the link under the caret, if there is one. The host gets first
-    /// refusal (`onOpenLink`); otherwise it goes to the default app, which needs
-    /// the destination to parse as a URL. Used by ⌘-click and the "Open Link"
-    /// menu item — the two gestures that ask to *leave*, rather than to edit.
+    /// refusal (`onOpenLink`); otherwise it goes to the default app, as a URL
+    /// or as a file beside the document (`LinkDestination`). Used by ⌘-click
+    /// and the "Open Link" menu item — the two gestures that ask to *leave*,
+    /// rather than to edit.
     @discardableResult
     private func openLinkAtCaret() -> Bool {
         guard let dest = targetAtCaret() else { return false }
@@ -1599,9 +1600,19 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // system has nothing to open.
         if let landing = doc.selfLanding(of: dest) { reveal(offset: landing); return true }
         if onOpenLink?(dest) == true { return true }
-        guard let url = URL(string: dest) else { return false }
-        NSWorkspace.shared.open(url)
+        openWithSystem(dest)
         return true
+    }
+
+    /// Hand a destination the host declined to the default app, or beep when
+    /// it names nothing that can be opened.
+    private func openWithSystem(_ destination: String) {
+        guard let url = LinkDestination.url(for: destination, relativeTo: documentDirectory),
+              LinkDestination.isOpenable(url) else {
+            NSSound.beep()
+            return
+        }
+        NSWorkspace.shared.open(url)
     }
 
     /// The link the caret stands in, honouring this view's wikilink setting.
@@ -1924,8 +1935,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             // because a note's `./sibling.md` means what it means everywhere else
             // in this document.
             if onOpenLink?(destination) == true { return }
-            guard let url = URL(string: destination) else { return }
-            NSWorkspace.shared.open(url)
+            openWithSystem(destination)
         case .footnote(let offset):
             // Navigate rather than stack a second popover: the note it names is a
             // place in this document, and `render` scrolls the caret into view,
