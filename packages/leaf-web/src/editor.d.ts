@@ -5,6 +5,8 @@
 
 import type {
   CapabilitiesView,
+  DirectiveAttr,
+  DirectiveView,
   DocView,
   FootnoteDefView,
   FootnoteView,
@@ -153,6 +155,64 @@ export interface EditorOptions {
   autofocus?: boolean;
   /** Called after every repaint with the new caret/document state. */
   onChange?: (state: EditorState) => void;
+  /**
+   * The host's drawing of a leaf directive (`::name[label]{attrs}`), or null
+   * to leave it as leaf's `⧉ label` placeholder row.
+   *
+   * Asked about each directive a frame has that the frame before did not —
+   * one that survives an edit keeps the element it was answered with, as a
+   * picture keeps its `<img>`, and a null answer is remembered the same way;
+   * `redrawDirectives()` asks afresh. Two identical directives are asked about
+   * separately and must be answered with two elements. `::page-break` is
+   * leaf's own and is never offered.
+   *
+   * The element is wrapped as a `contenteditable="false"` atom standing in for
+   * the rows in `[view.start_row, view.end_row)`, with a caret stop before it
+   * and one after, so the caret steps over it in one press and never enters
+   * it. What it does with a click or a key of its own is the host's; the
+   * directive's source is edited by deleting it, or by the host writing it
+   * back. A hook that throws, or answers with something that is not an
+   * `HTMLElement`, is reported on the console and drawn as the placeholder.
+   */
+  directive?: (view: DirectiveView) => HTMLElement | null;
+  /**
+   * The directives this host names — its catalogue, for a toolbar or an
+   * Insert menu to list (`directiveItems()`) and run
+   * (`insertDirectiveItem()`), each row dimmed by `capabilities().directives`.
+   * Empty by default, which offers nothing: leaf has no free-form "insert
+   * directive", since a name no one draws is only a placeholder.
+   */
+  directives?: DirectiveItem[];
+}
+
+/**
+ * A directive's attributes as `insertDirective` takes them: the `{key, value}`
+ * list a `DirectiveView` carries — an empty value is a bare attribute — or a
+ * plain object of the same pairs.
+ */
+export type DirectiveAttrs = DirectiveAttr[] | Record<string, string>;
+
+/** One row of a host's directive catalogue — see `EditorOptions.directives`. */
+export interface DirectiveItem {
+  /** Stable, as a tool id is (`"directive.embed"`), so a saved arrangement survives. */
+  id: string;
+  /** The directive's name — what `insertDirective` writes. */
+  name: string;
+  /** The row's text, localised by the host. */
+  title?: string;
+  /** A glyph for the row. */
+  icon?: string;
+  /** The `[label]` to write. djot has nowhere to put one and refuses it. */
+  label?: string | null;
+  /** The attributes to write. */
+  attrs?: DirectiveAttrs;
+  /**
+   * Ask the author what to write — an embed's URL — and answer it, or null to
+   * cancel. What it answers wins over `label` and `attrs`. The caret is read
+   * before it is called, so a dialog that takes the focus does not move where
+   * the directive goes.
+   */
+  ask?: (item: DirectiveItem) => Promise<{ label?: string | null; attrs?: DirectiveAttrs } | null>;
 }
 
 /** A host-painted range of the source — see `LeafEditor.setHighlights`. */
@@ -380,7 +440,7 @@ export class LeafEditor {
   // returns the property to the theme's own; a name outside the vocabulary
   // throws. Dim each control by its own `capabilities()` flag — `alignment`,
   // `line_spacing`, `font_size`, `font_family`, `text_color`, `page_break`,
-  // `move_block`.
+  // `directives`, `move_block`.
 
   /** Align the caret's block, or `null` for the theme's default (left). */
   setAlignment(align?: Align | null): void;
@@ -398,6 +458,22 @@ export class LeafEditor {
   setTextColor(color?: TextColor | null): void;
   /** Write a page break at the caret (the `::page-break` leaf directive). */
   insertPageBreak(): void;
+  /**
+   * Write the leaf directive `::name[label]{attrs}` at the caret, placed as a
+   * page break is. A name twig will not write, a label in djot, and a format
+   * whose `capabilities().directives` is false are refused, writing nothing.
+   */
+  insertDirective(name: string, label?: string | null, attrs?: DirectiveAttrs): void;
+  /** The host's catalogue as given in `EditorOptions.directives`, frozen. */
+  directiveItems(): readonly DirectiveItem[];
+  /**
+   * Run a catalogue item, by id or itself: `ask()` if it has one, then write
+   * it at the caret. Resolves true once written; false when the author
+   * cancelled, the id names nothing, or core refused it.
+   */
+  insertDirectiveItem(item: string | DirectiveItem): Promise<boolean>;
+  /** Forget every drawing the `directive` hook answered, and ask it again. */
+  redrawDirectives(): void;
   /** The alignment in force at the caret, or null — which swatch is lit. */
   alignmentAtCaret(): Align | null;
   /** The line spacing in force at the caret, or null. */

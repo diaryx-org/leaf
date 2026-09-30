@@ -305,6 +305,15 @@ const isColorName = (token) => MARK_COLORS.includes(token);
  *  this name whichever format spelled it. */
 const PAGE_BREAK = "page-break";
 
+/** What the text walkers step around: a code block's language label, and every
+ *  atom the renderer draws in place of core's placeholder glyphs — block media,
+ *  and a host's drawing of a directive. None of it is document text, so none of
+ *  it may count toward a caret offset. */
+const NOT_TEXT = ".leaf-code-lang, .leaf-media, .leaf-directive";
+
+/** The keys `_onKeyDown` takes from the browser on a host's drawing. */
+const ARROWS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"]);
+
 export class LeafEditor {
   /**
    * Load and instantiate the wasm module. Call once before constructing any
@@ -363,7 +372,9 @@ export class LeafEditor {
    * @param {HTMLElement} container  the element to mount into (becomes the
    *   scroll viewport; its contents are replaced).
    * @param {{ source?: string, format?: string, theme?: Partial<typeof DEFAULT_THEME>,
-   *           autofocus?: boolean, onChange?: (state: EditorState) => void }} [opts]
+   *           autofocus?: boolean, onChange?: (state: EditorState) => void,
+   *           directive?: (view: object) => HTMLElement | null,
+   *           directives?: DirectiveItem[] }} [opts]
    */
   constructor(container, opts = {}) {
     if (!wasmReady) {
@@ -398,6 +409,16 @@ export class LeafEditor {
     /** Set once a row has been found that no budget can wrap narrower — see
      *  `_fitWidth`. Cleared by `refit`, since a resize can make room again. */
     this._acceptedOverflow = false;
+    /** The host's drawing of a leaf directive, or null — see `EditorOptions.directive`. */
+    this._directiveHook = typeof opts.directive === "function" ? opts.directive : null;
+    /** What the hook answered, under each directive's key, for the frame
+     *  last painted — so a directive that is still there is not asked again.
+     *  See `render`. @type {Map<string, HTMLElement | null>} */
+    this._directiveAnswers = new Map();
+    /** @type {[number, number][]} the `rows` spans a host's drawing stands in
+     *  for — `tableSpans`' peer, for placing a caret core put on a filler. */
+    this.directiveSpans = [];
+    this._directiveItems = catalogue(opts.directives);
 
     this.doc = new LeafDoc(opts.source ?? "", opts.format ?? "markdown");
     // A browser paints a picture in a line, so an inline formula arrives as an
@@ -463,6 +484,9 @@ export class LeafEditor {
     this.doc = doc;
     // A frame of the new document is no change to the old one's rows.
     this._lastView = null;
+    // Nor are its directives the old one's, however alike: the host draws a
+    // new document's afresh.
+    this._directiveAnswers = new Map();
     old.free?.();
     // A new document is a new measure: the surrender to an unwrappable row
     // belonged to the old one.
@@ -840,6 +864,79 @@ export class LeafEditor {
    *  here as a dashed rule and a `break-after: page` when the page is printed. */
   insertPageBreak() { this._command((d) => d.insert_page_break()); }
 
+  // ── a host's directives ───────────────────────────────────────────────────
+  // The vocabulary is the host's: it names which directives it has
+  // (`EditorOptions.directives`) and how each one looks
+  // (`EditorOptions.directive`). leaf writes and places them; it never offers
+  // a free-form "insert directive" of its own, since a name nobody draws is
+  // only the `⧉ name` row. See docs/proposals/host-directives.md.
+
+  /**
+   * Write the leaf directive `::name[label]{attrs}` at the caret, placed as a
+   * page break is: a paragraph parts around it and the caret lands under it.
+   * `attrs` is the `{key, value}` list a `DirectiveView` carries — an empty
+   * value is a bare attribute — or, for a host writing one by hand, a plain
+   * object of the same pairs. A name twig will not write, a label in djot
+   * (which has nowhere to put one), and a format whose
+   * `capabilities().directives` is false are each refused, writing nothing.
+   * @param {string} name
+   * @param {string | null} [label]
+   * @param {{key: string, value: string}[] | Record<string, string>} [attrs]
+   */
+  insertDirective(name, label = null, attrs = []) {
+    const list = directiveAttrs(attrs);
+    this._command((d) => d.insert_directive(String(name), label || undefined, list));
+  }
+
+  /** The host's catalogue as it was handed to the constructor — what a
+   *  toolbar or an Insert menu lists, each row dimmed by
+   *  `capabilities().directives`. Frozen; empty when the host gave none. */
+  directiveItems() {
+    return this._directiveItems;
+  }
+
+  /**
+   * Run one of the catalogue's items — by its `id`, or the item itself: ask
+   * the author through its `ask()` if it has one, then write it at the caret
+   * `insertDirective`'s way. Resolves `true` once the directive is written,
+   * and `false` when the author cancelled (`ask()` answered null), the id names
+   * nothing, or core refused it.
+   *
+   * The caret is read before asking, so a dialog that takes the focus away
+   * (a field in the host's own chrome) does not move where the directive goes.
+   * @param {string | DirectiveItem} item
+   * @returns {Promise<boolean>}
+   */
+  async insertDirectiveItem(item) {
+    const it = typeof item === "string" ? this._directiveItems.find((i) => i.id === item) : item;
+    if (!it) return false;
+    this._syncFromDom();
+    let label = it.label ?? null;
+    let attrs = it.attrs ?? [];
+    if (typeof it.ask === "function") {
+      const answer = await it.ask(it);
+      if (!answer || this._destroyed) return false;
+      label = answer.label ?? label;
+      attrs = answer.attrs ?? attrs;
+    }
+    const before = this.doc.source();
+    this.focus();
+    this.render(this.doc.insert_directive(it.name, label || undefined, directiveAttrs(attrs)));
+    return this.doc.source() !== before;
+  }
+
+  /**
+   * Forget every drawing the `directive` hook has answered and ask it again
+   * for each directive on the page — for a host whose answer has changed
+   * without the document changing (a preview it fetched has arrived, a
+   * setting it draws by was flipped). A directive the hook keeps answering
+   * the same way costs a rebuild of its one row.
+   */
+  redrawDirectives() {
+    this._directiveAnswers = new Map();
+    if (this._lastView) this.render(this._lastView);
+  }
+
   /** The alignment in force at the caret, or null for the theme's default —
    *  which swatch of an alignment control is lit. */
   alignmentAtCaret() {
@@ -1078,9 +1175,48 @@ export class LeafEditor {
     // `docs/tasks/web-directive-hook.md` argues for — the vocabulary here is
     // leaf's own, so it needs no hook to know what the name means.
     const breakAt = new Set();
+    // Every other leaf directive is the host's to draw, if it has a hook: its
+    // answer stands in for the rows in `[start_row, end_row)` as one atom, the
+    // way a picture stands in for its placeholder — the first row carries it,
+    // the rest are skipped. The hook is asked about a directive the frame
+    // before did not have; one it did keeps the answer it got, null included,
+    // as a picture keeps its element (`redrawDirectives` asks afresh). Two
+    // identical directives are told apart by their order, so each has an
+    // element of its own — and a hook that hands one element to two of them
+    // has drawn the second nowhere, so that one keeps its placeholder.
+    const directiveAt = new Map();
+    const answers = new Map();
+    const seen = new Map();
+    const drawn = new Set();
+    this.directiveSpans = [];
     for (const d of view.directives || []) {
-      if (d.name === PAGE_BREAK) breakAt.add(d.start_row);
+      if (d.name === PAGE_BREAK) {
+        breakAt.add(d.start_row);
+        continue;
+      }
+      if (!this._directiveHook) continue;
+      const base = directiveKey(d);
+      const n = seen.get(base) ?? 0;
+      seen.set(base, n + 1);
+      const key = base + "#" + n;
+      const answer = this._directiveAnswers.has(key)
+        ? this._directiveAnswers.get(key)
+        : this._askDirective(d);
+      answers.set(key, answer);
+      if (!answer) continue;
+      if (drawn.has(answer)) {
+        console.error(`leaf: the directive hook answered two directives with one element (::${d.name})`);
+        continue;
+      }
+      drawn.add(answer);
+      directiveAt.set(d.start_row, { d, el: answer });
+      this.directiveSpans.push([d.start_row, d.end_row]);
+      for (let r = d.start_row + 1; r < d.end_row; r++) covered.add(r);
     }
+    // The source view lists no directives — each is the text being edited —
+    // so a frame of it is no news about them, and the drawings are kept for
+    // the way back.
+    if (view.view !== "source") this._directiveAnswers = answers;
     for (let i = 0; i < view.rows.length; i++) {
       // A filler row core reserved under the media: the element built on the
       // first row already occupies that height in the flow, so drawing these
@@ -1112,8 +1248,11 @@ export class LeafEditor {
       const media = mediaAt.get(i) || null;
       const mathBlock = mathBlockAt.get(i) || null;
       const pageBreak = breakAt.has(i);
+      const directive = directiveAt.get(i) || null;
       const runs = canonicalRuns(row.runs);
-      const key = pageBreak
+      const key = directive
+        ? directiveRowKey(directive.el, row)
+        : pageBreak
         ? pageBreakKey(row)
         : media
           ? mediaKey(media, row)
@@ -1124,6 +1263,8 @@ export class LeafEditor {
       if (el) {
         this._adoptRow(el, runs);
         this.rowEls.push(el);
+      } else if (directive) {
+        el = this._directiveRowEl(directive.d, directive.el, row);
       } else {
         el = this._rowEl(row, i, view.rows, media, false, runs, pageBreak, mathBlock);
       }
@@ -1466,6 +1607,85 @@ export class LeafEditor {
   }
 
   /**
+   * Whether an event was raised inside a host's drawing — a key in a field the
+   * host put there, a paste into it. Those are the host's: the editor's
+   * handlers, which would turn the key into a caret move or the paste into an
+   * edit of the document, stand aside.
+   */
+  _fromDrawing(e) {
+    const t = e.target;
+    return t !== this.contentEl && t?.nodeType === 1 && !!t.closest(".leaf-directive");
+  }
+
+  /**
+   * Ask the host's `directive` hook for its drawing of one leaf directive, and
+   * say what it answered: an element, or null for the placeholder. The hook is
+   * handed a copy of the `DirectiveView`, so nothing it does to it reaches the
+   * frame. A hook that throws, or answers with something that is not an
+   * element, is a host bug — reported on the console — and the directive is
+   * drawn as though it had said null, rather than taking the frame down with
+   * it.
+   */
+  _askDirective(d) {
+    const view = {
+      start_row: d.start_row,
+      end_row: d.end_row,
+      name: d.name,
+      label: d.label,
+      attrs: d.attrs.map((a) => ({ key: a.key, value: a.value })),
+    };
+    let answer;
+    try {
+      answer = this._directiveHook(view);
+    } catch (e) {
+      console.error(`leaf: the directive hook threw on ::${d.name}`, e);
+      return null;
+    }
+    if (answer == null) return null;
+    if (!(answer instanceof HTMLElement)) {
+      console.error(`leaf: the directive hook answered ::${d.name} with something not an HTMLElement`, answer);
+      return null;
+    }
+    return answer;
+  }
+
+  /**
+   * Build the row for a leaf directive the host drew: its element, in place of
+   * the `⧉ label` placeholder glyphs core laid out for a surface that knows
+   * nothing of the name, standing in for every row in `[start_row, end_row)`.
+   *
+   * The media row's shape exactly, because that is what a host's drawing is to
+   * the caret — a thing it sits either side of, never inside. The host's
+   * element goes in a `contenteditable="false"` wrapper, so the browser will
+   * not let the caret enter it, edit it or split it, and so the text walkers
+   * can step around it (`NOT_TEXT`); what the host does with a click on it is
+   * the host's. A zero-width space on each side is the row's only editable
+   * text, the caret's two homes; and `leafCoreLen` is what core counts on the
+   * row, so its two stops — at the directive's start and past its end — map
+   * onto those two homes through `atomCoreLen`, as a picture's do. One way
+   * this row is not a picture's: a DOM point counts by which side of the
+   * drawing it is on (`offsetTo`), and the arrows on it are core's
+   * (`_onKeyDown`), so the browser's caret is never drawn on one side of the
+   * drawing while core has it on the other.
+   *
+   * The row grows to fit the element, so nothing here calls
+   * `set_directive_rows`: that is for a surface that reserves character rows.
+   */
+  _directiveRowEl(d, answer, row) {
+    const div = el("div", "leaf-row leaf-media-row leaf-directive-row");
+    div.dataset.leafCoreLen = String((row?.runs || []).reduce((n, r) => n + r.text.length, 0));
+    div.dataset.directive = d.name;
+    div.appendChild(document.createTextNode(ZWSP));
+    const atom = el("div", "leaf-directive");
+    atom.setAttribute("contenteditable", "false");
+    atom.appendChild(answer);
+    div.appendChild(atom);
+    div.appendChild(document.createTextNode(ZWSP));
+    this.rowEls.push(div);
+    return div;
+  }
+
+  /**
    * Build a real `<table>` from core's structural [`TableView`], in place of the
    * box-drawn rows it names.
    *
@@ -1741,6 +1961,16 @@ export class LeafEditor {
       }
       if (rowEl === this.rowEls[row]) return null; // a break with nothing after it
     }
+    // A filler under a host's drawing is tracked but never drawn — the drawing
+    // on the span's first row stands in for it. Core anchors a filler past the
+    // directive, so that is where the caret is put: on the drawing's far side.
+    if (rowEl && !rowEl.isConnected) {
+      const span = this.directiveSpans.find(([a, b]) => row > a && row < b);
+      if (span) {
+        rowEl = this.rowEls[span[0]];
+        ch = Infinity;
+      }
+    }
     return rowEl && rowEl.isConnected ? rangeAtOffset(rowEl, ch) : null;
   }
 
@@ -1843,7 +2073,7 @@ export class LeafEditor {
       if (offset < this.rowEls.length) return { row: offset, ch: 0 };
       const row = this.rowEls.length - 1;
       const rowEl = this.rowEls[row];
-      return rowEl ? { row, ch: rowTextLength(rowEl) } : null;
+      return rowEl ? { row, ch: atomCoreLen(rowEl) ?? rowTextLength(rowEl) } : null;
     }
     const rowEl = this._rowOf(node);
     if (!rowEl) {
@@ -2186,6 +2416,7 @@ export class LeafEditor {
     // Rich clipboard (mirrors leaf-tui / leaf-gpui): copy/cut write both the
     // plain source and twig's HTML; paste prefers the HTML flavor.
     on(ce, "copy", (e) => {
+      if (this._fromDrawing(e)) return;
       const text = this.doc.selected_text();
       if (text == null) return;
       e.clipboardData.setData("text/plain", text);
@@ -2194,6 +2425,7 @@ export class LeafEditor {
       e.preventDefault();
     });
     on(ce, "cut", (e) => {
+      if (this._fromDrawing(e)) return;
       const text = this.doc.selected_text();
       if (text == null) return;
       e.clipboardData.setData("text/plain", text);
@@ -2204,6 +2436,7 @@ export class LeafEditor {
       e.preventDefault();
     });
     on(ce, "paste", (e) => {
+      if (this._fromDrawing(e)) return;
       const plain = this._plainPaste;
       this._plainPaste = false;
       const html = plain ? "" : e.clipboardData.getData("text/html");
@@ -2531,6 +2764,7 @@ export class LeafEditor {
    * repaint and restore the selection. Composition is handled separately.
    */
   _onBeforeInput(e) {
+    if (this._fromDrawing(e)) return;
     if (this._composing || e.inputType === "insertCompositionText") return;
     const d = this.doc;
     // Act where the user is: sync core's selection from the DOM first.
@@ -2647,6 +2881,7 @@ export class LeafEditor {
    * selection → `selectionchange`).
    */
   _onKeyDown(e) {
+    if (this._fromDrawing(e)) return;
     if (this._composing || e.isComposing || e.keyCode === 229) return;
     const d = this.doc;
 
@@ -2676,6 +2911,35 @@ export class LeafEditor {
       this._syncFromDom();
       this.render(e.key === "ArrowUp" ? d.move_block_up() : d.move_block_down());
       return;
+    }
+
+    // The arrows on a host's drawing of a directive are core's, not the
+    // browser's. The browser's step from the caret home in front of the
+    // drawing is only to the far side of the zero-width space there, still in
+    // front of it, and its vertical step off the drawing lands in the other
+    // home on the same row. Core has exactly two stops on the row, one either
+    // side, so asking it moves over the drawing in one press each way — and
+    // off the row in one more — and the repaint puts the browser's caret where
+    // core says it is. Shift extends, as it does in core. Everywhere else the
+    // motion stays the browser's.
+    if (ARROWS.has(e.key) && !e.altKey && !e.ctrlKey && !primaryModifier(e)
+        && this.viewName() !== "source") {
+      // Asked of the DOM rather than of core: syncing core on every arrow
+      // would take the frame a caret move repaints by (see `selectionchange`).
+      const focus = window.getSelection()?.focusNode;
+      const rowEl = focus ? this._rowOf(focus) : null;
+      if (rowEl?.classList.contains("leaf-directive-row")) {
+        e.preventDefault();
+        this._syncFromDom();
+        const x = e.shiftKey;
+        this.render(
+          e.key === "ArrowLeft" ? d.move_left(x)
+            : e.key === "ArrowRight" ? d.move_right(x)
+            : e.key === "ArrowUp" ? d.move_up(x)
+            : d.move_down(x)
+        );
+        return;
+      }
     }
 
     if (e.key === "Tab") {
@@ -2790,6 +3054,20 @@ export class LeafEditor {
  *   uncoloured one
  * @property {boolean} hasSelection  a non-empty selection is live
  * @property {number} caretSrc  the caret's source byte offset
+ */
+
+/**
+ * @typedef {Object} DirectiveItem  one row of the host's catalogue — see
+ *   `EditorOptions.directives` in editor.d.ts
+ * @property {string} id      stable (`"directive.embed"`), as a tool id is
+ * @property {string} name    the directive's name, what `insertDirective` writes
+ * @property {string} [title] the menu row's text, localised by the host
+ * @property {string} [icon]  a glyph for the row
+ * @property {string | null} [label]  the `[label]` to write
+ * @property {{key: string, value: string}[] | Record<string, string>} [attrs]
+ * @property {(item: DirectiveItem) => Promise<{label?: string | null,
+ *   attrs?: {key: string, value: string}[] | Record<string, string>} | null>} [ask]
+ *   asks the author, and answers what to write — or null to cancel
  */
 
 // ── module-private helpers ────────────────────────────────────────────────────
@@ -2993,6 +3271,62 @@ function pageBreakKey(row) {
   return "pb" + len;
 }
 
+/** What a directive is, for the hook's answers to be kept under: its name,
+ *  label and attributes — core's `DirectiveKey`, and exactly what the hook is
+ *  told. Not its rows, which move with every edit above it. */
+function directiveKey(d) {
+  return JSON.stringify([d.name, d.label, d.attrs.map((a) => [a.key, a.value])]);
+}
+
+/** Each host element a `directive` hook has answered with, numbered the first
+ *  time it is seen — what a directive row's key names it by. */
+const DRAWING_IDS = new WeakMap();
+let nextDrawingId = 0;
+
+/** `rowKey` for a directive the host drew: *which* element it answered with,
+ *  and the row core addresses. The element rather than the directive, so a
+ *  fresh answer (`redrawDirectives`) is a fresh row, and the same answer is
+ *  the same row however far an edit above it moved it. */
+function directiveRowKey(answer, row) {
+  let id = DRAWING_IDS.get(answer);
+  if (id === undefined) DRAWING_IDS.set(answer, (id = ++nextDrawingId));
+  const len = (row?.runs || []).reduce((n, r) => n + r.text.length, 0);
+  return "d" + len + "|" + id;
+}
+
+/** A directive's attributes as `insert_directive` takes them — the
+ *  `{key, value}` list a `DirectiveView` carries, or a plain object of the
+ *  same pairs, a value of `""`, `true` or null being a bare attribute. */
+function directiveAttrs(attrs) {
+  if (attrs == null) return [];
+  const pairs = Array.isArray(attrs)
+    ? attrs.map((a) => [a.key, a.value])
+    : Object.entries(attrs);
+  return pairs.map(([key, value]) => ({
+    key: String(key),
+    value: value == null || value === true ? "" : String(value),
+  }));
+}
+
+/** The host's catalogue, checked once and frozen: every item needs an `id` to
+ *  be found by and a `name` to write, and a catalogue with two items under
+ *  one id could not say which a toolbar meant. */
+function catalogue(items) {
+  if (items == null) return Object.freeze([]);
+  if (!Array.isArray(items)) throw new Error("directives must be an array of items");
+  const ids = new Set();
+  return Object.freeze(
+    items.map((item) => {
+      if (!item || typeof item.id !== "string" || typeof item.name !== "string") {
+        throw new Error("a directive item needs a string id and a string name");
+      }
+      if (ids.has(item.id)) throw new Error(`two directive items share the id ${item.id}`);
+      ids.add(item.id);
+      return Object.freeze({ ...item });
+    })
+  );
+}
+
 /** `rowKey` for a drawn grid: its shape, alignment, and every cell's runs. */
 function tableKey(t) {
   let key = "t";
@@ -3019,7 +3353,7 @@ function tableKey(t) {
 function textWalker(rowEl) {
   return document.createTreeWalker(rowEl, NodeFilter.SHOW_TEXT, {
     acceptNode: (n) =>
-      n.parentElement && n.parentElement.closest(".leaf-code-lang, .leaf-media")
+      n.parentElement && n.parentElement.closest(NOT_TEXT)
         ? NodeFilter.FILTER_REJECT
         : NodeFilter.FILTER_ACCEPT,
   });
@@ -3037,7 +3371,8 @@ function rowTextLength(rowEl) {
 /**
  * How long core believes a *drawn* row is, or null for an ordinary one.
  *
- * A row the renderer draws its own element on — block media, a page break — is
+ * A row the renderer draws its own element on — block media, a page break, a
+ * host's drawing of a directive — is
  * where the text core addresses and the text the browser renders are unrelated.
  * Core lays out `🖼 alt` — nine columns for a picture with a short caption — and
  * publishes two caret stops on it, one in front of the media and one past it.
@@ -3094,6 +3429,19 @@ function rangeAtOffset(rowEl, off) {
  */
 function offsetTo(rowEl, node, offset) {
   const coreLen = atomCoreLen(rowEl);
+  // A host's drawing is placed by which side of it the point is on: in front
+  // of it is its near stop, and past it — or inside it — is its far one. The
+  // arrows over it are core's (see `_onKeyDown`), so no point needs to count
+  // as past the drawing while the browser draws its caret in front of it.
+  const atom = coreLen != null && rowEl.querySelector(":scope > .leaf-directive");
+  if (atom) {
+    // Against the point just in front of the drawing, not a range around it:
+    // `comparePoint` calls a range's own boundary inside it, and the row
+    // offset at the drawing's index is in front of it.
+    const front = document.createRange();
+    front.setStartBefore(atom);
+    return front.comparePoint(node, offset) <= 0 ? 0 : coreLen;
+  }
   if (coreLen != null) {
     // Anywhere but hard against the row's start counts as past the media, so a
     // single ArrowRight steps over a picture instead of landing in the gap
@@ -3181,16 +3529,19 @@ function utf8Length(text) {
  * media translation `offsetTo` applies on top of it.
  */
 function domOffsetIn(rowEl, node, offset) {
+  // A point inside an atom — a host's drawing of a directive is arbitrary DOM,
+  // and a click can leave the selection anywhere in it — is a point just past
+  // the atom, which is where a text node inside one already counts from.
+  const atom = (node.nodeType === 1 ? node : node.parentElement)?.closest(NOT_TEXT);
+  if (atom && atom !== rowEl && rowEl.contains(atom) && atom.parentNode) {
+    offset = Array.prototype.indexOf.call(atom.parentNode.childNodes, atom) + 1;
+    node = atom.parentNode;
+  }
   if (node.nodeType !== 3) {
     let acc = 0;
     for (let i = 0; i < offset && i < node.childNodes.length; i++) {
       const c = node.childNodes[i];
-      if (
-        c.nodeType === 1 &&
-        (c.classList.contains("leaf-code-lang") || c.classList.contains("leaf-media"))
-      ) {
-        continue;
-      }
+      if (c.nodeType === 1 && c.matches(NOT_TEXT)) continue;
       acc += c.textContent.length;
     }
     return acc;
@@ -3492,6 +3843,20 @@ const EDITOR_CSS = `
    than something to fit a box. */
 audio.leaf-media { width: 100%; max-width: 420px; border-radius: 999px; }
 img.leaf-media, video.leaf-media { max-height: 60vh; }
+
+/* A host's drawing of a leaf directive, in place of the placeholder glyphs: the
+   media row's shape, holding whatever element the host answered with. The row
+   zeroes its leading for the zero-width spaces either side, so the wrapper
+   puts the surface's own back for a drawing that has text in it; and it is an
+   atom, selected with the row and never internally. */
+.leaf-directive {
+  display: block;
+  line-height: var(--leaf-line);
+  white-space: normal;
+  cursor: default;
+  -webkit-user-select: none;
+  user-select: none;
+}
 
 /* A block being dragged, and where it would land: the block's rows fade while
    it is carried, and a line marks the boundary under the pointer. The margin a
