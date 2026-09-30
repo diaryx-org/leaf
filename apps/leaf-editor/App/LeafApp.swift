@@ -22,14 +22,17 @@ struct LeafApp: App {
             ContentView(model: file.document.model, fileURL: file.fileURL)
                 .sized(fileURL: file.fileURL)
         }
+        .documentWindowSize()
         DocumentGroup(newDocument: { DjotDocument() }) { file in
             ContentView(model: file.document.model, fileURL: file.fileURL)
                 .sized(fileURL: file.fileURL)
         }
+        .documentWindowSize()
         DocumentGroup(newDocument: { HTMLDocument() }) { file in
             ContentView(model: file.document.model, fileURL: file.fileURL)
                 .sized(fileURL: file.fileURL)
         }
+        .documentWindowSize()
         // Format and View menus aimed at whichever editor the window shows —
         // `LeafEditor` publishes itself as the scene's focused editor.
         .commands {
@@ -42,10 +45,24 @@ struct LeafApp: App {
     }
 }
 
+private extension Scene {
+    /// A new document's window is page-shaped, US Letter's 8.5 × 11 at a
+    /// width that holds the Medium column with its margins; macOS shrinks it
+    /// to a screen too short for it. A document that has been open before
+    /// reopens at its own size instead (`remembersWindowFrame`).
+    func documentWindowSize() -> some Scene {
+        #if os(macOS)
+        defaultSize(width: 700, height: 906)
+        #else
+        self
+        #endif
+    }
+}
+
 private extension View {
     func sized(fileURL: URL?) -> some View {
         #if os(macOS)
-        frame(minWidth: 480, idealWidth: 720, minHeight: 320, idealHeight: 640)
+        frame(minWidth: 480, minHeight: 320)
             .remembersWindowFrame(for: fileURL)
         #else
         self
