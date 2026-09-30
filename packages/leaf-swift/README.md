@@ -163,6 +163,23 @@ toolbar too; with no host listening the bar falls back to a plain field of its
 own. Seed empty means "make one", seed non-empty means "re-point this one" —
 title the prompt for both.
 
+**The host's directives.** A leaf directive (`::embed{src=…}`) means what the
+app says it means. `model.directiveCatalogue` lists the ones it offers —
+`DirectiveItem`s with an id, a name, a title, an SF Symbol, and either a fixed
+label and attributes or an `ask` that prompts the author and may cancel — and
+they join Insert on the iOS row and panel, in the Mac bar, and in the menu bar's
+Format menu, dimmed by `capabilities.directives`. `model.directiveView` draws
+them: answer a directive with an `NSView`/`UIView` and it replaces core's
+`⧉ name` placeholder, as wide as the text column and as tall as its
+`intrinsicContentSize` (else its fitting size at that width). The directive's
+rows collapse onto that box, pages flow around it as around a picture, and the
+caret has a picture's two stops, in front of it and past it. A nil answer, and
+`::page-break`, which is leaf's own and never asked about, keep leaf's drawing.
+The view is the host's: make it ignore hits (`hitTest` → nil, or
+`isUserInteractionEnabled = false`) and a click on it places the caret.
+`apps/leaf-editor` draws an `::embed` as a titled card and offers Insert ▸
+Embed…. See `docs/proposals/host-directives.md`.
+
 `LeafEditorModel` exposes every formatting command (`toggleBold`, `setHeading`,
 `toggleList`, `insertLink`, `undo`, …), `source()` / `markSaved()` for
 persistence — with `onEdit`, called after each edit that changed the text,

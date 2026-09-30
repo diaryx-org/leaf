@@ -329,6 +329,12 @@ private struct FormatMenuItems: View {
         // AsciiDoc) rather than failing on the press.
         Button(loc("menu.pageBreak", "Insert Page Break")) { editor.insertPageBreak() }
             .disabled(!editable || !editor.capabilities.pageBreak)
+        // The host's own directives, beside leaf's one, in the host's words.
+        // None, and the menu is as it was.
+        ForEach(editor.directiveCatalogue) { item in
+            Button(item.title) { editor.insert(item) }
+                .disabled(!editable || !editor.capabilities.directives)
+        }
         // The same rows the formatting bar's Table button drops — one
         // definition, as with the highlight colours above.
         Menu(loc("menu.table", "Table")) {

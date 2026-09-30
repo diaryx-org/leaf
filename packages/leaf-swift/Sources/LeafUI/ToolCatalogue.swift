@@ -323,18 +323,36 @@ struct ToolCatalogue {
     // MARK: insert
 
     /// The things written *into* the document rather than restyling what is
-    /// there: a table, a rule, a footnote, a page break.
+    /// there: a table, a rule, a footnote, a page break — and under them, apart,
+    /// the host's own directives, when it has any.
     var insert: ToolItem {
         let editor = self.editor
+        let hosted = directives
         let rows = Group {
             Menu(loc("menu.table", "Table")) { TableRows(editor: editor) }
                 .disabled(!editor.capabilities.table)
             ToolMenuRow(item: rule)
             ToolMenuRow(item: footnote)
             ToolMenuRow(item: pageBreak)
+            if !hosted.isEmpty {
+                Divider()
+                ForEach(hosted) { ToolMenuRow(item: $0) }
+            }
         }
         return ToolItem(id: "insert", glyph: .symbol("plus"), label: loc("toolbar.insert", "Insert"),
                         variants: AnyView(rows))
+    }
+
+    /// The host's catalogue as tools, in its order — `directive(_:)` of each.
+    var directives: [ToolItem] { editor.directiveCatalogue.map(directive) }
+
+    /// One of the host's directives as a tool: its id, its symbol and its
+    /// title, and a press that writes it (asking first, if it asks). Dimmed
+    /// where the format cannot write a directive of the host's, as Page Break
+    /// is where it cannot write a break.
+    func directive(_ item: DirectiveItem) -> ToolItem {
+        ToolItem(id: item.id, glyph: .symbol(item.icon), label: item.title,
+                 enabled: editor.capabilities.directives, action: { editor.insert(item) })
     }
 
     var rule: ToolItem {
