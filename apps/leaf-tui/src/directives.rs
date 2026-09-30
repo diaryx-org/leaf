@@ -39,7 +39,8 @@ pub static CATALOGUE: LazyLock<Vec<DirectiveItem>> = LazyLock::new(|| {
 });
 
 /// The fewest columns a card is drawn in: room for its title in the top
-/// border and a few characters of URL.
+/// border and a few characters of URL. A narrower pane, or an embed nested
+/// deep enough in quotes and lists, gets leaf's placeholder instead.
 const MIN_CARD: usize = 16;
 
 /// leaf-tui's [`leaf_ratatui::DirectiveRenderer`]: an embed with a `src` is a
@@ -56,7 +57,7 @@ pub fn draw(info: &DirectiveInfo, width: u16, theme: &Theme) -> Option<Vec<Line<
     }
     let src = info.attr("src").filter(|s| !s.is_empty())?;
     let width = width as usize;
-    if width < 4 {
+    if width < MIN_CARD {
         return None;
     }
     // Two border columns and a space either side of the URL.
@@ -138,6 +139,17 @@ mod tests {
     fn a_short_url_still_has_room_for_the_title() {
         let lines = draw(&embed("u"), 40, &Theme::dark()).unwrap();
         assert!(text(&lines)[0].contains(" Embed "));
+    }
+
+    #[test]
+    fn too_narrow_for_a_card_is_left_to_the_placeholder() {
+        let info = embed("https://x.org/a");
+        for width in 0..MIN_CARD as u16 {
+            assert!(draw(&info, width, &Theme::dark()).is_none(), "{width}");
+        }
+        let lines = draw(&info, MIN_CARD as u16, &Theme::dark()).unwrap();
+        let t = text(&lines);
+        assert!(t.iter().all(|l| l.chars().count() == MIN_CARD), "{t:?}");
     }
 
     #[test]
