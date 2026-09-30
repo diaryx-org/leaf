@@ -1,10 +1,22 @@
 ---
-status: open
+status: done
 created: 2026-09-30
 updated: 2026-09-30
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
-# Text typed after a leaf directive joins the directive's line
+# Text typed at either stop of a leaf directive joins the directive's line
+
+**Status.** Done, in the leaf commit `fix(leaf-core): text typed at a leaf
+directive's stops opens a paragraph beside it`. Both of a block leaf
+directive's stops are now the block picture's
+(`VisualMap::block_directive_stop`, the peer of `block_media_stop`): text
+typed, pasted or committed by an IME at the stop after it opens a paragraph
+under it, and at the stop before it one above it, in Markdown and djot
+alike, `::page-break` included, and a djot `{…}` attribute line stays with
+its fence. Backspace and Delete, which took one byte of the hidden markup at
+either stop (`::embed{src=x`), now take the directive whole or step out of
+it, as they do a picture. The tests are the `doc_at_directive` group in
+`doc.rs`.
 
 **Where.** `crates/leaf-core`: text insertion at a caret that sits at the end
 of a block leaf directive's placeholder row (`::name[label]{attrs}`, drawn as

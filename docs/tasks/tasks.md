@@ -13,7 +13,6 @@ contents:
 - '[Text glued under a closing `</div>` draws until the next full rebuild](text-glued-under-a-closing-div.md)'
 - '[Android block views](android-block-views.md)'
 - '[An IME composition undoes a keystroke at a time](ime-composition-undo.md)'
-- '[Text typed after a leaf directive joins the directive''s line](text-typed-after-a-leaf-directive-joins-its-line.md)'
 - '[Closed tasks](/docs/tasks/closed/closed.md)'
 part_of: '[leaf](/README.md)'
 ---

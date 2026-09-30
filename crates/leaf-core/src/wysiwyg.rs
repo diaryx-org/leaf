@@ -434,8 +434,8 @@ pub enum MediaKind {
     Audio,
 }
 
-/// Which of the two caret homes a block media has — see
-/// [`VisualMap::block_media_stop`].
+/// Which of the two caret homes a block media or a block leaf directive has —
+/// see [`VisualMap::block_media_stop`] and [`VisualMap::block_directive_stop`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MediaStop {
     /// The stop in front of the picture. What is typed here belongs above it.
@@ -920,28 +920,46 @@ impl VisualMap {
     ///
     /// [`Doc::backspace`]: crate::Doc::backspace
     pub fn block_media_stop(&self, off: usize) -> Option<(MediaStop, Range<usize>)> {
-        for m in &self.media {
-            let Some(row) = self.rows.get(m.rows_span.start) else {
-                continue;
-            };
-            // Every glyph of the `🖼 alt` label maps to the media's start offset;
-            // the row's end is past its markup. Read the start off the label
-            // rather than the first glyph, which on a quoted or listed picture is
-            // the block prefix and points at the gutter.
-            let Some(start) = row
-                .glyphs
-                .iter()
-                .find(|g| g.style.role == Role::Image)
-                .map(|g| g.src)
-            else {
-                continue;
-            };
-            if off == start {
-                return Some((MediaStop::Before, start..row.end_src));
-            }
-            if off == row.end_src {
-                return Some((MediaStop::After, start..row.end_src));
-            }
+        self.media
+            .iter()
+            .find_map(|m| self.placeholder_stop(m.rows_span.start, off))
+    }
+
+    /// Which of a block leaf directive's two caret homes `off` is, or `None`
+    /// for every other offset — [`block_media_stop`](Self::block_media_stop)
+    /// for the [`directives`](Self::directives), for the same reason.
+    ///
+    /// A leaf directive is drawn on the picture's recipe (`⧉ label`, one stop
+    /// in front of it and one just past it), and dissolves the same way: text
+    /// typed against `::embed{src=x}` either end is a paragraph of raw source
+    /// (`X::embed{src=x}`, `::embed{src=x}X`), and djot's empty `::: name`
+    /// fence either stops opening or stops closing. `::page-break` is one of
+    /// these. Answers with the directive's own span, as its peer does.
+    pub fn block_directive_stop(&self, off: usize) -> Option<(MediaStop, Range<usize>)> {
+        self.directives
+            .iter()
+            .find_map(|d| self.placeholder_stop(d.rows_span.start, off))
+    }
+
+    /// Whether `off` is one of the two stops of the placeholder row `row` —
+    /// a block picture's or a leaf directive's, which share the recipe — and
+    /// the span the placeholder stands for.
+    fn placeholder_stop(&self, row: usize, off: usize) -> Option<(MediaStop, Range<usize>)> {
+        let row = self.rows.get(row)?;
+        // Every glyph of the `🖼 alt` / `⧉ label` label maps to the block's
+        // start offset; the row's end is past its markup. Read the start off
+        // the label rather than the first glyph, which on a quoted or listed
+        // picture is the block prefix and points at the gutter.
+        let start = row
+            .glyphs
+            .iter()
+            .find(|g| g.style.role == Role::Image)
+            .map(|g| g.src)?;
+        if off == start {
+            return Some((MediaStop::Before, start..row.end_src));
+        }
+        if off == row.end_src {
+            return Some((MediaStop::After, start..row.end_src));
         }
         None
     }

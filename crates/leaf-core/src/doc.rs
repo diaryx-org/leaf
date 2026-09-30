@@ -2213,6 +2213,13 @@ impl Doc {
     /// a row of it — `| 1 | 2 |x` is a three-cell row, not a paragraph. So the
     /// break goes in there too, and the text lands under the table.
     ///
+    /// A block leaf directive (`::embed{src=x}`, `::page-break`, djot's empty
+    /// `::: name` fence) is drawn on the picture's recipe and dissolves the
+    /// same way — `X::embed{src=x}` and `::embed{src=x}X` are paragraphs of
+    /// raw source — so its two stops ([`VisualMap::block_directive_stop`])
+    /// open a paragraph too. Two directives in a row with nothing between
+    /// them get one between them, from either side.
+    ///
     /// Only in the rendered view. Source view is for typing raw markup, where
     /// putting a character against an image is exactly what it looks like.
     fn open_paragraph_at_block_edge(&mut self, text: &str) {
@@ -2228,10 +2235,17 @@ impl Doc {
         // is whenever a frontend drew a frame between keystrokes.
         self.rebuild_map();
         let at = self.caret;
-        let side = match self.vmap.block_media_stop(at) {
-            Some((side, _)) => side,
-            None if self.vmap.table_end_stop(at) => MediaStop::After,
+        let (side, span) = match self.block_atom_stop(at) {
+            Some(stop) => stop,
+            None if self.vmap.table_end_stop(at) => (MediaStop::After, at..at),
             None => return,
+        };
+        // In front of the block, the break goes in front of all of it — a
+        // djot `{…}` line above it included, or the typed text would take
+        // the block's attributes.
+        let at = match side {
+            MediaStop::Before => span.start,
+            MediaStop::After => at,
         };
         if !self.splice(at, at, "\n\n", EditKind::Other) {
             return;
@@ -2250,9 +2264,43 @@ impl Doc {
         }
     }
 
-    /// A delete key pressed at one of a block picture's two caret stops, handled
-    /// as the picture being an *atom* rather than a run of bytes. Returns whether
-    /// the key was consumed.
+    /// Which of a block atom's two caret stops `at` is — a block picture's
+    /// ([`VisualMap::block_media_stop`]) or a block leaf directive's
+    /// ([`VisualMap::block_directive_stop`]) — with the span that is the atom
+    /// whole. In djot that span reaches back over a `{…}` attribute line
+    /// written above the block: the line is the block's markup, drawn as
+    /// nothing, and a paragraph opened between it and the block would take
+    /// the attributes, as a delete that left it would hand them to the block
+    /// below.
+    ///
+    /// Reads the map, so the caller rebuilds it first.
+    fn block_atom_stop(&mut self, at: usize) -> Option<(MediaStop, Range<usize>)> {
+        let (side, mut span) = self
+            .vmap
+            .block_media_stop(at)
+            .or_else(|| self.vmap.block_directive_stop(at))?;
+        if self.format == Format::Djot {
+            let starts_here: Vec<NodeId> = self
+                .nodes()
+                .into_iter()
+                .filter(|n| n.span.start == span.start)
+                .map(|n| n.id)
+                .collect();
+            let attrs = self.editor.document().ok().and_then(|mut d| {
+                starts_here
+                    .into_iter()
+                    .find_map(|id| d.attrs_span(id).ok().flatten())
+            });
+            if let Some(a) = attrs.filter(|a| a.end <= span.start) {
+                span.start = a.start;
+            }
+        }
+        Some((side, span))
+    }
+
+    /// A delete key pressed at one of a block picture's or a block leaf
+    /// directive's two caret stops, handled as the block being an *atom* rather
+    /// than a run of bytes. Returns whether the key was consumed.
     ///
     /// The caret rests in front of a block image and just past it, never inside
     /// its markup — which the rendered view doesn't show. So the byte a delete
@@ -2276,11 +2324,11 @@ impl Doc {
     /// word-deletes included (⌥⌫ in front of a picture is aimed at the prose
     /// above, and reaches it on the second press rather than taking the break and
     /// the picture with it on the first).
-    fn delete_around_block_media(&mut self, forward: bool) -> bool {
+    fn delete_around_block_atom(&mut self, forward: bool) -> bool {
         // The map answers about offsets, so it has to be this revision's — see
         // the same call in `open_paragraph_at_block_edge`.
         self.rebuild_map();
-        let Some((side, span)) = self.vmap.block_media_stop(self.caret) else {
+        let Some((side, span)) = self.block_atom_stop(self.caret) else {
             return false;
         };
         let aimed_at_it = side
@@ -3589,8 +3637,8 @@ impl Doc {
         }
         // WYSIWYG: at a block picture's stops, a byte-at-a-time delete would take
         // the markup apart under a caret that cannot see it — see
-        // `delete_around_block_media`.
-        if self.view != View::Source && self.delete_around_block_media(false) {
+        // `delete_around_block_atom`.
+        if self.view != View::Source && self.delete_around_block_atom(false) {
             return;
         }
         // WYSIWYG: Backspace at a table's trailing stop steps back into its last
@@ -4536,7 +4584,7 @@ impl Doc {
         } else if self.caret < self.source.len() {
             // The mirror of Backspace's: forward-delete in front of a picture
             // would eat the `!` off its markup and leave a link where a photo was.
-            if self.view != View::Source && self.delete_around_block_media(true) {
+            if self.view != View::Source && self.delete_around_block_atom(true) {
                 return;
             }
             // And of Backspace's cell wall: Delete at a cell's end would take
@@ -4612,8 +4660,8 @@ impl Doc {
             // A word back from just past a picture is a word *of its markup*, and
             // a word back from in front of one runs through the paragraph break
             // into the prose above — dissolving the picture either way. See
-            // `delete_around_block_media`.
-            if self.view != View::Source && self.delete_around_block_media(false) {
+            // `delete_around_block_atom`.
+            if self.view != View::Source && self.delete_around_block_atom(false) {
                 return;
             }
             let start = self.word_left_from(self.caret).max(self.caret_floor());
@@ -4631,7 +4679,7 @@ impl Doc {
             self.splice(s, e, "", EditKind::Other);
         } else {
             // The mirror: a word forward from in front of a picture is its markup.
-            if self.view != View::Source && self.delete_around_block_media(true) {
+            if self.view != View::Source && self.delete_around_block_atom(true) {
                 return;
             }
             let end = self.word_right_from(self.caret);
@@ -13132,6 +13180,260 @@ mod tests {
         d.caret = "![](p.png)".len();
         d.backspace();
         assert_eq!(d.source, "![](p.png\n", "raw editing, byte by byte");
+    }
+
+    // ── typing against a block leaf directive ─────────────────────────────────
+
+    /// A rendered-view `fmt` document with the caret on one of the stops of
+    /// the directive spelled `mark`, and the map built — [`doc_at_picture`]
+    /// for a directive, in either format.
+    fn doc_at_directive(src: &str, fmt: Format, mark: &str, side: MediaStop) -> Doc {
+        let mut d = Doc::from_source(src.into(), fmt).unwrap();
+        d.view = View::Wysiwyg;
+        d.build_visual_unwrapped();
+        let start = src.find(mark).unwrap();
+        d.caret = match side {
+            MediaStop::Before => start,
+            MediaStop::After => start + mark.len(),
+        };
+        assert!(d.vmap.is_stop(d.caret), "{src:?} {side:?}");
+        d
+    }
+
+    /// The leaf directives the map publishes, by name, after rebuilding it —
+    /// "is this still a directive, or has it become a paragraph of source?"
+    fn directive_names(d: &mut Doc) -> Vec<String> {
+        d.build_visual_unwrapped();
+        d.vmap.directives.iter().map(|i| i.name.clone()).collect()
+    }
+
+    /// Markdown's `::embed{…}` and djot's empty fence, each with the source
+    /// typing at its before and after stops should leave.
+    const DIRECTIVE_CASES: [(Format, &str, &str, &str, &str); 3] = [
+        (
+            Format::Markdown,
+            "hi\n\n::embed{src=x}\n",
+            "::embed{src=x}",
+            "hi\n\nB\n\n::embed{src=x}\n",
+            "hi\n\n::embed{src=x}\n\nB\n",
+        ),
+        (
+            Format::Markdown,
+            "hi\n\n::page-break\n\nbye\n",
+            "::page-break",
+            "hi\n\nB\n\n::page-break\n\nbye\n",
+            "hi\n\n::page-break\n\nB\n\nbye\n",
+        ),
+        (
+            Format::Djot,
+            "hi\n\n::: page-break\n:::\n\nbye\n",
+            "::: page-break\n:::",
+            "hi\n\nB\n\n::: page-break\n:::\n\nbye\n",
+            "hi\n\n::: page-break\n:::\n\nB\n\nbye\n",
+        ),
+    ];
+
+    #[test]
+    fn typing_past_a_leaf_directive_opens_a_paragraph_under_it() {
+        // The task's accident: `::page[…]{…}TWO` is a paragraph of raw source.
+        for (fmt, src, mark, _, after) in DIRECTIVE_CASES {
+            let mut d = doc_at_directive(src, fmt, mark, MediaStop::After);
+            let names = directive_names(&mut d);
+            d.insert("B");
+            assert_eq!(d.source, after, "{fmt:?}");
+            assert_eq!(directive_names(&mut d), names, "{fmt:?}: still a directive");
+        }
+    }
+
+    #[test]
+    fn typing_in_front_of_a_leaf_directive_opens_a_paragraph_above_it() {
+        // Found in leaf-tui: `B` typed here made `B::embed{src=…}`.
+        for (fmt, src, mark, before, _) in DIRECTIVE_CASES {
+            let mut d = doc_at_directive(src, fmt, mark, MediaStop::Before);
+            let names = directive_names(&mut d);
+            d.insert("B");
+            assert_eq!(d.source, before, "{fmt:?}");
+            assert_eq!(directive_names(&mut d), names, "{fmt:?}: still a directive");
+        }
+        // And one that opens the document takes a paragraph above it too.
+        let mut d = doc_at_directive(
+            "::embed{src=x}\n",
+            Format::Markdown,
+            "::",
+            MediaStop::Before,
+        );
+        d.insert("B");
+        assert_eq!(d.source, "B\n\n::embed{src=x}\n");
+        assert_eq!(directive_names(&mut d), ["embed"]);
+    }
+
+    #[test]
+    fn two_directives_in_a_row_take_a_paragraph_between_them_from_either_side() {
+        // The task's document: no paragraph between the marks to click into, so
+        // the end of the first mark's row, or the front of the second's, is the
+        // only way in.
+        let md = "::page[Page 1 of 2]{card=\"a\"}\n\n::page[Page 2 of 2]{card=\"b\"}\n";
+        let md_want = "::page[Page 1 of 2]{card=\"a\"}\n\nTWO\n\n::page[Page 2 of 2]{card=\"b\"}\n";
+        let dj = "::: page-break\n:::\n\n::: x-card\n:::\n";
+        let dj_want = "::: page-break\n:::\n\nTWO\n\n::: x-card\n:::\n";
+        for (fmt, src, first, second, want) in [
+            (
+                Format::Markdown,
+                md,
+                "::page[Page 1 of 2]{card=\"a\"}",
+                "::page[Page 2",
+                md_want,
+            ),
+            (
+                Format::Djot,
+                dj,
+                "::: page-break\n:::",
+                "::: x-card",
+                dj_want,
+            ),
+        ] {
+            for (mark, side) in [(first, MediaStop::After), (second, MediaStop::Before)] {
+                let mut d = doc_at_directive(src, fmt, mark, side);
+                let names = directive_names(&mut d);
+                assert_eq!(names.len(), 2);
+                d.insert("T");
+                d.insert("W");
+                d.insert("O");
+                assert_eq!(d.source, want, "{fmt:?} {side:?}");
+                assert_eq!(directive_names(&mut d), names, "{fmt:?} {side:?}");
+                let labels: Vec<_> = d.vmap.directives.iter().map(|i| i.label.clone()).collect();
+                if fmt == Format::Markdown {
+                    assert_eq!(labels, ["Page 1 of 2", "Page 2 of 2"]);
+                    assert_eq!(d.vmap.directives[1].attr("card"), Some("b"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_djot_directive_s_attribute_line_stays_with_it() {
+        // The `{…}` line above the fence is the directive's markup: a paragraph
+        // opened between the two would take the attributes, and a delete that
+        // left the line would hand them to the paragraph below.
+        let src = "hi\n\n{.wide src=\"x\"}\n::: x-card\n:::\n\nbye\n";
+        let mark = "::: x-card\n:::";
+        let mut d = doc_at_directive(src, Format::Djot, mark, MediaStop::Before);
+        d.insert("B");
+        assert_eq!(
+            d.source,
+            "hi\n\nB\n\n{.wide src=\"x\"}\n::: x-card\n:::\n\nbye\n"
+        );
+        assert_eq!(directive_names(&mut d), ["x-card"]);
+        assert_eq!(d.vmap.directives[0].attr("src"), Some("x"));
+
+        let mut d = doc_at_directive(src, Format::Djot, mark, MediaStop::After);
+        d.backspace();
+        assert_eq!(
+            d.source, "hi\n\nbye\n",
+            "the directive went with its attributes"
+        );
+        let mut d = doc_at_directive(src, Format::Djot, mark, MediaStop::Before);
+        d.delete_forward();
+        assert_eq!(d.source, "hi\n\nbye\n");
+
+        // A djot block picture's attribute line is the same markup, kept the
+        // same way.
+        let pic = "hi\n\n{.wide}\n![](p.png)\n";
+        let mut d = doc_at_directive(pic, Format::Djot, "![](p.png)", MediaStop::Before);
+        d.insert("B");
+        assert_eq!(d.source, "hi\n\nB\n\n{.wide}\n![](p.png)\n");
+        assert_eq!(media_count(&mut d), 1);
+        let mut d = doc_at_directive(pic, Format::Djot, "![](p.png)", MediaStop::After);
+        d.backspace();
+        assert_eq!(d.source, "hi\n");
+
+        // Where the attribute line opens the document, too.
+        let src = "{.wide}\n::: x-card\n:::\n";
+        let mut d = doc_at_directive(src, Format::Djot, mark, MediaStop::Before);
+        d.insert("B");
+        assert_eq!(d.source, "B\n\n{.wide}\n::: x-card\n:::\n");
+        assert_eq!(directive_names(&mut d), ["x-card"]);
+    }
+
+    #[test]
+    fn a_directive_drawn_taller_still_takes_a_paragraph_under_it() {
+        // Reserved filler rows are decoration: the after-stop is still the
+        // directive's end, and a click on the drawing's lower part lands there.
+        let src = "hi\n\n::embed{src=x}\n";
+        let mut d = doc_at_directive(src, Format::Markdown, "::embed{src=x}", MediaStop::After);
+        let key = d.vmap.directives[0].key();
+        d.set_directive_rows(HashMap::from([(key, 4)]));
+        d.build_visual_unwrapped();
+        assert_eq!(d.vmap.directives[0].rows_span.len(), 4);
+        d.insert("B");
+        assert_eq!(d.source, "hi\n\n::embed{src=x}\n\nB\n");
+    }
+
+    #[test]
+    fn pasting_against_a_leaf_directive_opens_a_paragraph_too() {
+        for (fmt, src, mark, before, after) in DIRECTIVE_CASES {
+            for (side, want) in [(MediaStop::Before, before), (MediaStop::After, after)] {
+                let mut d = doc_at_directive(src, fmt, mark, side);
+                d.paste("pasted");
+                assert_eq!(d.source, want.replace("B", "pasted"), "{fmt:?} {side:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn one_undo_puts_a_directive_back_the_way_it_was_found() {
+        for (fmt, src, mark, ..) in DIRECTIVE_CASES {
+            for side in [MediaStop::Before, MediaStop::After] {
+                let mut d = doc_at_directive(src, fmt, mark, side);
+                d.insert("x");
+                d.insert("y");
+                assert_ne!(d.source, src);
+                d.undo();
+                assert_eq!(d.source, src, "{fmt:?} {side:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn delete_keys_take_a_leaf_directive_whole_or_step_out_of_it() {
+        // The picture's rule: the key aimed at the directive takes it whole, the
+        // key aimed away steps over the boundary — never a byte of its markup.
+        for (fmt, src, mark, ..) in DIRECTIVE_CASES {
+            let gone = src
+                .replace(&format!("{mark}\n\n"), "")
+                .replace(&format!("\n\n{mark}"), "");
+            let mut d = doc_at_directive(src, fmt, mark, MediaStop::After);
+            d.backspace();
+            assert_eq!(d.source, gone, "{fmt:?}: Backspace past it");
+            d.undo();
+            assert_eq!(d.source, src, "{fmt:?}: and back in one piece");
+
+            let mut d = doc_at_directive(src, fmt, mark, MediaStop::Before);
+            d.delete_forward();
+            assert_eq!(d.source, gone, "{fmt:?}: Delete in front of it");
+
+            let mut d = doc_at_directive(src, fmt, mark, MediaStop::Before);
+            d.backspace();
+            assert_eq!(d.source, src, "{fmt:?}: Backspace in front deletes nothing");
+            assert_eq!(d.caret, 2, "{fmt:?}: it steps up to the end of `hi`");
+
+            let mut d = doc_at_directive(src, fmt, mark, MediaStop::After);
+            let at = d.caret;
+            d.delete_forward();
+            assert_eq!(d.source, src, "{fmt:?}: Delete past it deletes nothing");
+            assert!(
+                d.caret > at || src.ends_with(&format!("{mark}\n")),
+                "{fmt:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn source_view_types_raw_markup_against_a_directive_untouched() {
+        let mut d = doc_in(View::Source, "dir_src", "::embed{src=x}\n");
+        d.caret = "::embed{src=x}".len();
+        d.insert("x");
+        assert_eq!(d.source, "::embed{src=x}x\n");
     }
 
     #[test]
