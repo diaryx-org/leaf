@@ -126,8 +126,28 @@ final class LeafTokenizer: UITextInputStringTokenizer {
         guard granularity == .line else {
             return super.rangeEnclosingPosition(position, with: granularity, inDirection: direction)
         }
-        guard let line = line(at: position) else { return nil }
-        return LeafTextRange(LeafTextPosition(line.start), LeafTextPosition(line.end))
+        guard let o = (position as? LeafTextPosition)?.offset, let line = line(at: position) else { return nil }
+        // The range enclosing a position is the one the reading direction goes
+        // into, so a line's edge belongs to the line past it — and never to a
+        // range that ends where it began. UIKit walks a range line by line,
+        // each step from the end of the last enclosing range (iOS 26's
+        // autocorrect underline does, on the space after a word), and a range
+        // ending at the position it was asked about holds that walk in place
+        // for good: the main thread spins and the keyboard stops typing.
+        if reads(on: direction) {
+            guard o >= line.end else {
+                return LeafTextRange(LeafTextPosition(line.start), LeafTextPosition(line.end))
+            }
+            let next = Int(view.doc.stepOffset(off: UInt32(o), delta: 1))
+            guard next > o, let after = view.visualLineBounds(at: next) else { return nil }
+            return LeafTextRange(LeafTextPosition(o), LeafTextPosition(max(after.end, next)))
+        }
+        guard o <= line.start else {
+            return LeafTextRange(LeafTextPosition(line.start), LeafTextPosition(line.end))
+        }
+        let prev = Int(view.doc.stepOffset(off: UInt32(o), delta: -1))
+        guard prev < o, let before = view.visualLineBounds(at: prev) else { return nil }
+        return LeafTextRange(LeafTextPosition(min(before.start, prev)), LeafTextPosition(o))
     }
 
     override func isPosition(_ position: UITextPosition, withinTextUnit granularity: UITextGranularity,
