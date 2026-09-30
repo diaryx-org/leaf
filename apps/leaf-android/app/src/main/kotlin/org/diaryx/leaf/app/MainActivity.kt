@@ -94,6 +94,8 @@ private fun LeafApp(handedOver: Uri?) {
     var document by remember { mutableStateOf<Document?>(null) }
     var menu by remember { mutableStateOf(false) }
     var saveJob by remember { mutableStateOf<Job?>(null) }
+    val embed = remember { EmbedAsk() }
+    val directives = remember(embed) { listOf(embed.item) }
 
     fun saveNow() {
         val d = document ?: return
@@ -192,11 +194,12 @@ private fun LeafApp(handedOver: Uri?) {
                 if (d != null) {
                     // Keyed by the document, so a new one gets a fresh editor and scroll.
                     androidx.compose.runtime.key(d) {
-                        LeafEditor(d.editor, Modifier.weight(1f).fillMaxWidth(), theme)
-                        LeafFormattingBar(d.editor, Modifier.fillMaxWidth())
+                        LeafEditor(d.editor, Modifier.weight(1f).fillMaxWidth(), theme, directiveContent = embedContent)
+                        LeafFormattingBar(d.editor, Modifier.fillMaxWidth(), directives = directives)
                     }
                 }
             }
         }
+        EmbedDialog(embed)
     }
 }
