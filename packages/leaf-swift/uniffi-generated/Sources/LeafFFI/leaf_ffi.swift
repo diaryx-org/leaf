@@ -1136,6 +1136,15 @@ public protocol LeafDocProtocol: AnyObject, Sendable {
     func replaceRange(from: UInt32, to: UInt32, text: String)  -> DocView
     
     /**
+     * Bring the source to `text`, replacing only the span that differs and
+     * leaving the caret and selection on the characters they were on — how a
+     * host lays a change that arrived from elsewhere under an open editor.
+     * `text` is source, written exactly; one undo step. See
+     * `Doc::replace_source`.
+     */
+    func replaceSource(text: String)  -> DocView
+    
+    /**
      * The rows a source range covers, inclusive — for drawing a block away
      * from where it sits (a footnote peek, a link peek, a landing flash).
      *
@@ -2756,6 +2765,23 @@ open func replaceRange(from: UInt32, to: UInt32, text: String) -> DocView  {
             self.uniffiCloneHandle(),
         FfiConverterUInt32.lower(from),
         FfiConverterUInt32.lower(to),
+        FfiConverterString.lower(text),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Bring the source to `text`, replacing only the span that differs and
+     * leaving the caret and selection on the characters they were on — how a
+     * host lays a change that arrived from elsewhere under an open editor.
+     * `text` is source, written exactly; one undo step. See
+     * `Doc::replace_source`.
+     */
+open func replaceSource(text: String) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_replace_source(
+            self.uniffiCloneHandle(),
         FfiConverterString.lower(text),uniffiCallStatus
     )
 })
@@ -9622,6 +9648,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_replace_range() != 23057) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_replace_source() != 39478) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_row_range_for() != 62572) {

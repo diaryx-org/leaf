@@ -3599,6 +3599,17 @@ impl LeafDoc {
         g.frame()
     }
 
+    /// Bring the source to `text`, replacing only the span that differs and
+    /// leaving the caret and selection on the characters they were on — how a
+    /// host lays a change that arrived from elsewhere under an open editor.
+    /// `text` is source, written exactly; one undo step. See
+    /// `Doc::replace_source`.
+    pub fn replace_source(&self, text: String) -> DocView {
+        let mut g = self.lock();
+        g.doc.replace_source(&text);
+        g.frame()
+    }
+
     /// Replace the source range `[from, to]` with `text` — `replace(_:withText:)`.
     pub fn replace_range(&self, from: u32, to: u32, text: String) -> DocView {
         let mut g = self.lock();
