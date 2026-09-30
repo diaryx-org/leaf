@@ -3,7 +3,7 @@ options:
   bundleIdPrefix: org.diaryx
   deploymentTarget:
     iOS: "16.0"
-    macOS: "12.0"
+    macOS: "13.0"
   createIntermediateGroups: true
 
 # Leaf, the document app — one cross-platform host for the `LeafUI` editor. The
@@ -108,6 +108,8 @@ targets:
         ONLY_ACTIVE_ARCH: YES
         # Simulator/local run needs no signing — no Apple developer team
         # required, and `cargo xtask swift` builds on a machine without one.
+        # `cargo xtask package` turns Developer ID signing back on from the
+        # xcodebuild command line, which outranks these.
         "CODE_SIGNING_ALLOWED[sdk=macosx*]": NO
         "CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]": NO
         "CODE_SIGNING_REQUIRED[sdk=macosx*]": NO
@@ -123,10 +125,10 @@ targets:
         # as diaryx's apps/swift/project.yml.
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: V4322HH5HU
-        # macOS won't launch a sandboxed app that isn't signed, and a sandboxed
-        # document app cannot read the images beside a file it was handed
-        # without asking for the folder — see docs/tasks/sandboxed-mac-app.md.
-        # Until both are answered it runs unsandboxed.
+        # A sandboxed document app cannot read the images beside a file it was
+        # handed without asking for the folder — see
+        # docs/tasks/sandboxed-mac-app.md. Until that is answered it runs
+        # unsandboxed. (Signing is `cargo xtask package`'s, on its command line.)
         "ENABLE_APP_SANDBOX[sdk=macosx*]": NO
         # Force-load the Rust staticlib the pre-build script produces. The path is
         # SDK-conditional (mac vs sim vs device); $(LEAF_STATIC_LIB) picks the match.
