@@ -10,11 +10,32 @@ part_of: '[Proposals](/docs/proposals/proposals.md)'
 
 ## Status
 
-`accepted` on 2026-09-30. The first pass is leaf directives (`::name{…}`),
-on every frontend: steps 1–5 of the sequence. Container directives are argued
-for here and wait on a twig gesture, as the last section says. The
-[web directive hook](/docs/tasks/closed/web-directive-hook.md) task is the web frontend's
-step, and closes with it.
+`accepted` on 2026-09-30. Steps 1–5 were built the same day, so every
+frontend now handles leaf directives (`::name{…}`). Core and both bindings are
+in `ffdd8b2` and `c27d753`, leaf-web in `0a02aa2`, leaf-swift in `cabc9d1`,
+`ecd69f2` and `5bf7847`, leaf-android in `2fbb408`, `f7ef085` and `65cbd0c`,
+and leaf-ratatui in `2151531` and `54721f9`. The
+[web directive hook](/docs/tasks/closed/web-directive-hook.md) task closed with
+the web step. Step 6, containers, is still open and waits on a twig gesture, so
+the proposal stays `accepted` until it lands.
+
+What the text below did not foresee:
+
+- Typing at either caret stop of a drawn directive went into the directive's
+  own source line, and the result was no longer a directive. Block media
+  already guarded its stops; leaf directives now share that guard
+  (`36a466b`). Backspace and Delete at a stop also treat the directive the way
+  they treat a picture.
+- Djot cannot round-trip two of the shapes twig writes: a bare attribute, and
+  a label. leaf writes a bare attribute as `key=""` and refuses a label in
+  djot. The twig-side half is twig's task
+  `djot-insert-directive-round-trip`.
+- `Capabilities::directives` is false for HTML and AsciiDoc. twig writes both,
+  but the walker reads neither back as a directive by name.
+- leaf-swift and leaf-android lay out in points, so, like media, they never
+  report heights through `set_directive_rows`. Only the terminal reports them.
+- On Android, a hardware Ctrl+Z under Gboard bypasses leaf's undo
+  ([task](/docs/tasks/ctrl-z-under-gboard.md)). The on-screen undo is correct.
 
 ## The picture
 
