@@ -1,10 +1,15 @@
 ---
-status: open
+status: in-progress
 created: 2026-09-04
-updated: 2026-09-18
+updated: 2026-09-30
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 # A host hook for directives in the web editor
+
+**The web step of a wider plan.** The
+[host directives proposal](../proposals/host-directives.md) gives every
+frontend the same hook, a general insert gesture and a host catalogue; this
+task is its second step, and closes with it.
 
 **Still open, with one directive drawn by hand.** The presentation
 vocabulary's page break needed exactly the narrow half of this: `render` reads
