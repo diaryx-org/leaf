@@ -38,6 +38,13 @@ row is where the caret lands.
 `::page[Page 1 of 2]{…}\n\n::page[Page 2 of 2]{…}\n`: tap the end of the
 first mark's row and type.
 
+**The other stop too.** The same thing happens at the row's first stop. In
+leaf-web, with a host drawing `::embed{src=…}` over the row, a caret in front
+of the drawing that types `Y` writes `Y::embed{…}`, and the drawing becomes a
+paragraph of raw source. Return there does not help: the caret stays at the
+directive's start with only blank lines above it, because Markdown has no empty
+paragraph to put it in.
+
 **Done when.** Text typed at the end of a block leaf directive's row opens a
 paragraph under it, as Return does, and the directive's source line is never
 extended. A test in `doc.rs` inserts at that caret and checks the directive
