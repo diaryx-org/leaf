@@ -37,6 +37,49 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.4.12 — 2026-09-30
+
+### Breaking
+
+- **leaf-swift** — require macOS 13, the floor the linked Rust library already had ([`16aa6e6`](https://github.com/diaryx-org/leaf/commit/16aa6e6ed0b0016f60c8f5a949d10d3a4fecae23))
+
+### Added
+
+- **leaf-core** — insert a host's directive, and reserve rows for its drawing ([`30821db`](https://github.com/diaryx-org/leaf/commit/30821db515e2cac686a560cd1155ef9216e817cd))
+- **leaf-ffi,leaf-wasm** — export insert_directive, set_directive_rows and the directives capability ([`8eb4855`](https://github.com/diaryx-org/leaf/commit/8eb48558590887207b9d903485c74627c8d04e85))
+- **leaf-ratatui** — draw a host's directives and offer its catalogue rows ([`6aa9f40`](https://github.com/diaryx-org/leaf/commit/6aa9f40e04e93c5b12c001e7e2cebb1399736bbf))
+- **leaf-tui** — an Embed palette row and the embed drawn as a card ([`423a18f`](https://github.com/diaryx-org/leaf/commit/423a18f55fdc93cdbebcacb5205af52b8538e13d))
+- **leaf-web** — draw a host's directives through a hook, and insert them from its catalogue ([`80516d1`](https://github.com/diaryx-org/leaf/commit/80516d119d7d9a76a02db821cd4b241c02da8b23))
+- **leaf-swift** — draw a leaf directive with a view the host supplies ([`f18da6c`](https://github.com/diaryx-org/leaf/commit/f18da6cb2792fe6d441125ce2110c607de4bcaa0))
+- **leaf-swift** — offer a host's directives in Insert ([`66a2e4e`](https://github.com/diaryx-org/leaf/commit/66a2e4ef0d6c399b1423d80936fb77c01d87c077))
+- **leaf-editor** — draw ::embed as a titled card and offer Insert ▸ Embed… ([`1dbde19`](https://github.com/diaryx-org/leaf/commit/1dbde193bfc238a7e23d97ab4518b4362a402418))
+- **leaf-compose** — draw a leaf directive with a composable the host supplies ([`ae29107`](https://github.com/diaryx-org/leaf/commit/ae291070f4fcfd23524ecf73d9e6e2abdf348dee))
+- **leaf-compose** — offer a host's directives in the formatting bar's Insert menu ([`7ea2899`](https://github.com/diaryx-org/leaf/commit/7ea2899ae80ae9504221a575bf33fc77911992db))
+- **leaf-android** — draw ::embed as a titled card and offer Insert ▸ Embed… ([`c161e48`](https://github.com/diaryx-org/leaf/commit/c161e48fc387e2d3bb1830abb57e03495db31088))
+- **xtask** — package a signed, notarised Leaf.app in a .dmg ([`1f08e5d`](https://github.com/diaryx-org/leaf/commit/1f08e5dbbb424547383b48e31b7b6111fdc7133a))
+
+### Fixed
+
+- **leaf-editor** — install committed Package.resolved in Xcode Cloud post-clone ([`5088a9a`](https://github.com/diaryx-org/leaf/commit/5088a9a79cd2152d73bd04e6155f7d66a65029b1))
+- **leaf-core** — text typed at a leaf directive's stops opens a paragraph beside it ([`403c084`](https://github.com/diaryx-org/leaf/commit/403c0848df3d58d07af086ccb5b6146b890b50cc))
+- **leaf-tui** — leave an embed too narrow for its card to the placeholder ([`19dd5c0`](https://github.com/diaryx-org/leaf/commit/19dd5c0a57071a3fdb2cf93e01c758811589feec))
+- **leaf-editor** — raise the Mac app's deployment target to macOS 13 ([`72551a4`](https://github.com/diaryx-org/leaf/commit/72551a4d65bc511a8d90ea7e348250588dbc1c4b))
+
+### Behavioural changes
+
+- a djot `::: name` fence under an attribute line carrying classes is now named by the fence's word, not by the first class, which it used to be.
+
+- a selection endpoint on the surface past the last row, when that row is a picture or formula, now maps to the row's far caret stop rather than to column 2.
+
+- In the rendered view, text typed or pasted at either caret stop of a block leaf directive now opens a paragraph above or below it instead of joining the directive's source line.
+
+- In the rendered view, Backspace past a block leaf directive or Delete in front of one removes the whole directive (one undo step); the key aimed away from it moves the caret over it and deletes nothing, where both used to delete one byte of its markup.
+
+- In djot, typing in front of a block picture or directive that has a `{...}` attribute line now opens the paragraph above the attribute line, and deleting the block removes that line with it.
+
+- LeafFFI/LeafUI now require macOS 13; an app targeting macOS 12 no longer resolves the package.
+
+
 ## v0.4.11 — 2026-09-30
 
 ### Added
