@@ -36,7 +36,11 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.runtime.key
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.unit.Constraints
+import uniffi.leaf_ffi.DirectiveView
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.FocusState
 import androidx.compose.ui.focus.focusRequester
@@ -78,6 +82,11 @@ import android.view.KeyEvent as AndroidKeyEvent
  * Only the editing surface: a toolbar ([LeafFormattingBar]), saving, and the
  * window's chrome are the host's. Give it the space the keyboard leaves (an
  * `imePadding()` on an ancestor) and it keeps the caret in view.
+ *
+ * [directiveContent] is the host's drawing of its own leaf directives
+ * (`::embed{src=…}`): asked for each one but `::page-break`, which is leaf's,
+ * it answers a composable to stand in the directive's place or null for the
+ * `⧉ name` placeholder. See [LeafDirectiveContent].
  */
 @Composable
 fun LeafEditor(
@@ -85,6 +94,7 @@ fun LeafEditor(
     modifier: Modifier = Modifier,
     theme: LeafTheme = LeafTheme(colors = if (isSystemInDarkTheme()) LeafColors.dark() else LeafColors.light()),
     scrollState: ScrollState = rememberScrollState(),
+    directiveContent: LeafDirectiveContent? = null,
 ) {
     val density = LocalDensity.current
     val measurer = rememberTextMeasurer(cacheSize = 0)
@@ -121,7 +131,7 @@ fun LeafEditor(
         val viewport = constraints.maxHeight.toFloat()
         val version = state.version
         state.layoutFor(theme, width)
-        val contentHeight = with(density) { layout.height.toDp() }
+        val hosts = hostedDirectives(state, directiveContent)
 
         // The caret blinks, and holds still for a moment after anything moves it.
         LaunchedEffect(version, state.focused) {
@@ -136,6 +146,9 @@ fun LeafEditor(
         // of room above and below.
         LaunchedEffect(version, viewport) {
             if (!state.revealCaret) return@LaunchedEffect
+            // A frame's rows can move once more when it is measured — a host's
+            // drawing taking its height — so read the caret a frame later.
+            withFrameNanos { }
             state.revealCaret = false
             if (!state.focused) return@LaunchedEffect
             val caret = state.caretRect() ?: return@LaunchedEffect
@@ -156,6 +169,7 @@ fun LeafEditor(
         // than scrolling the reader past everything above it.
         LaunchedEffect(state.landings, viewport) {
             if (state.landings == 0) return@LaunchedEffect
+            withFrameNanos { }
             val caret = state.caretRect() ?: return@LaunchedEffect
             val want = (caret.top - viewport / 4).toInt().coerceAtLeast(0)
             if (scrollState.maxValue < want) {
@@ -183,10 +197,17 @@ fun LeafEditor(
         val showMenu: () -> Unit = { showMenuLatest.value() }
 
         Box(Modifier.fillMaxSize().verticalScroll(scrollState)) {
-            Box(
-                Modifier
+            // The document, with the host's drawings of its directives laid
+            // over their rows. Each drawing is measured first, at the width
+            // its row leaves it, and the rows take its height before anything
+            // is placed — so the document's height, and every row below a
+            // drawing, are right in the frame that draws it.
+            Layout(
+                content = {
+                    for (h in hosts) key(h.slot) { Box { h.content() } }
+                },
+                modifier = Modifier
                     .fillMaxWidth()
-                    .height(maxOf(contentHeight, with(density) { viewport.toDp() }))
                     .onGloballyPositioned { coordinates = it }
                     .then(LeafTextInputElement(state))
                     .onKeyEvent { e ->
@@ -205,14 +226,45 @@ fun LeafEditor(
                     .pointerInputTaps(state, focus, toolbar, showMenu)
                     .pointerInputLongPress(state, focus, showMenu, toolbar)
                     .pointerInputHandles(state, layout, theme, showMenu)
-                    .drawBehind {
+                    .drawWithContent {
                         // Read here, in the draw phase, so every frame
                         // repaints: the lambda captures nothing that changes
                         // with a frame, and would otherwise be kept as it was.
                         state.version
-                        drawEditor(state, layout, theme, scrollState.value.toFloat(), viewport, caretOn && state.focused)
+                        layout.geometry.intValue
+                        drawEditor(state, layout, theme, scrollState.value.toFloat(), viewport)
+                        drawContent()
+                        // The caret and the handles over the host's drawings,
+                        // which stand beside them.
+                        drawCaret(state, layout, theme, caretOn && state.focused)
                     },
-            )
+            ) { measurables, constraints ->
+                // Read so that every frame measures again: the document's
+                // height is decided here, and nothing else this block reads
+                // changes with a frame when no host draws anything.
+                state.version
+                // Each drawing is found by its slot in the frame the layout
+                // holds now, which a frame applied since this composition
+                // (a command from a coroutine) may have moved or removed.
+                val rows = hosts.map { layout.slotRow(it.slot) }
+                val drawn = measurables.mapIndexed { i, m ->
+                    val row = rows[i] ?: return@mapIndexed null
+                    m.measure(Constraints(maxWidth = layout.directiveWidth(row).toInt().coerceAtLeast(0)))
+                }
+                val sizes = HashMap<DirectiveSlot, Size>()
+                for (i in hosts.indices) {
+                    val p = drawn[i] ?: continue
+                    sizes[hosts[i].slot] = Size(p.width.toFloat(), p.height.toFloat())
+                }
+                if (layout.setHosted(sizes)) layout.geometry.intValue++
+                this.layout(constraints.maxWidth, maxOf(layout.height, viewport).toInt()) {
+                    for (i in hosts.indices) {
+                        val p = drawn[i] ?: continue
+                        val at = layout.hostedRect(rows[i]!!)
+                        p.place(at.left.toInt(), at.top.toInt())
+                    }
+                }
+            }
         }
 
         // The link the caret stands in, and a way to follow it: a tap places
@@ -225,6 +277,26 @@ fun LeafEditor(
             }
         }
     }
+}
+
+/** A leaf directive the host draws: its view, its composition key, and the drawing. */
+private class HostedDirective(
+    val view: DirectiveView,
+    val slot: Pair<DirectiveKey, Int>,
+    val content: @Composable () -> Unit,
+)
+
+/**
+ * The frame's leaf directives the host answers for, in document order —
+ * never `::page-break`, which is leaf's own. Empty without a hook, and in the
+ * source view, where core lists no directives.
+ */
+private fun hostedDirectives(state: LeafEditorState, hook: LeafDirectiveContent?): List<HostedDirective> {
+    hook ?: return emptyList()
+    val views = state.frame.directives.filter { it.name != PAGE_BREAK }
+    if (views.isEmpty()) return emptyList()
+    val slots = slotKeys(views.map { it.key })
+    return views.indices.mapNotNull { i -> hook(views[i])?.let { HostedDirective(views[i], slots[i], it) } }
 }
 
 /**
@@ -416,7 +488,6 @@ private fun DrawScope.drawEditor(
     theme: LeafTheme,
     scrollTop: Float,
     viewport: Float,
-    caretOn: Boolean,
 ) {
     if (layout.rowCount == 0) return
     val c = theme.colors
@@ -472,6 +543,8 @@ private fun DrawScope.drawEditor(
             )
             continue
         }
+        // A host's drawing stands here, laid over the row by the editor.
+        if (s.hosted != null) continue
         val text = s.text ?: continue
         drawText(text, topLeft = Offset(x0, layout.top(r)))
         if (layout.row(r).isThematicBreak) {
@@ -492,7 +565,20 @@ private fun DrawScope.drawEditor(
             }
         }
     }
+}
 
+/**
+ * What stands over the host's drawings: the selection where it covers one,
+ * and the caret or the selection's handles.
+ */
+private fun DrawScope.drawCaret(state: LeafEditorState, layout: EditorLayout, theme: LeafTheme, caretOn: Boolean) {
+    if (layout.rowCount == 0) return
+    val c = theme.colors
+    val v = state.frame
+    if (v.hasSelection) {
+        val over = layout.selectionPath(v.anchorRow.toInt() to v.anchorCh.toInt(), v.caretRow.toInt() to v.caretCh.toInt(), overDrawings = true)
+        drawPath(over, c.selection)
+    }
     if (!v.hasSelection && caretOn) {
         layout.caretRect(v.caretRow.toInt(), v.caretCh.toInt())?.let {
             drawRect(c.caret, it.topLeft, Size(theme.caretWidth.toPx(), it.height))
