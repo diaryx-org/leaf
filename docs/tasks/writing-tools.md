@@ -59,7 +59,7 @@ iOS 18.2).
 `NSAttributedString`, maps its ranges to geometry through
 `EditorLayout.rangeRects` (as find does), and applies each rewritten range
 through core's `replaceRange`. The proofreading marks and the rewrite
-previews are drawn over the rows. The package's floor is macOS 12 / iOS 16,
+previews are drawn over the rows. The package's floor is macOS 13 / iOS 16,
 so all of it sits behind `#available`, and the panel stays the fallback
 below it.
 
