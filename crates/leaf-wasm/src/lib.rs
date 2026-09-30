@@ -2581,6 +2581,15 @@ impl LeafDoc {
         self.frame()
     }
 
+    /// Bring the source to `text`, replacing only the span that differs and
+    /// leaving the caret and selection on the characters they were on — a
+    /// change from elsewhere laid under an open editor. `text` is source,
+    /// written exactly; one undo step. See `Doc::replace_source`.
+    pub fn replace_source(&mut self, text: &str) -> Result<DocView, JsValue> {
+        self.doc.replace_source(text);
+        self.frame()
+    }
+
     /// Replace the source range `[from, to)` with `text`.
     pub fn replace_range(
         &mut self,

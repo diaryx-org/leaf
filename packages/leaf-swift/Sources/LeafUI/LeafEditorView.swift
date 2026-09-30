@@ -522,6 +522,18 @@ public final class LeafEditorModel: ObservableObject {
     /// read before writing, and what was typed since stays unsaved.
     public func markSaved(as saved: String) { textView?.markSaved(as: saved) }
 
+    /// Bring the document to `source` without disturbing the person in it:
+    /// only the span that differs is replaced, and the caret, the selection
+    /// and the scroll stay on the text they were on. For a host whose file
+    /// changed under the open editor — another device's edit arriving — where
+    /// building a new model would put the reader back at the top. `source` is
+    /// written exactly, as source, and is one undo step. Follow it with
+    /// `markSaved(as:)` when `source` is what the file now holds.
+    public func replaceSource(_ source: String) {
+        guard source != doc.source() else { return }
+        run { $0.replaceSource(text: source) }
+    }
+
     /// Land the reader on the place `locator` names — the `#v2` of a
     /// `chapter.dj#v2`, once the host has opened the document that carries it.
     /// `false` when this document answers to no such name, which is a host's cue

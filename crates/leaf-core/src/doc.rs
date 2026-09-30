@@ -1953,6 +1953,67 @@ impl Doc {
             self.record_caret();
             return false;
         }
+        self.carry_selection(
+            caret,
+            anchor,
+            (pending_marks, pending_at),
+            start,
+            end,
+            before,
+        );
+        true
+    }
+
+    /// Bring the source to `text` in one step that leaves the caret where it
+    /// was — what a host does when the file changed under an open editor, as
+    /// another device's edit arriving does.
+    ///
+    /// Only the span that differs is replaced: the longest prefix and suffix
+    /// the two share are kept, so a caret or selection outside the change
+    /// stays on the characters it was on, and one inside it goes to the end
+    /// of what replaced it, as [`substitute`](Self::substitute) moves them.
+    /// Unlike a substitution, `text` is source and written exactly — nothing
+    /// in it is escaped — since it is the document as it now stands, not
+    /// something typed. An undo step of its own. `true` with nothing done
+    /// when the source is already `text`; `false` when the document is
+    /// read-only or the edit was refused.
+    pub fn replace_source(&mut self, text: &str) -> bool {
+        if self.source == text {
+            return true;
+        }
+        if self.read_only {
+            return false;
+        }
+        let (start, end, with) = differing_span(&self.source, text);
+        let with = with.to_owned();
+        let before = self.source.len();
+        let (caret, anchor) = (self.caret, self.anchor);
+        let pending = (self.pending_marks, self.pending_at);
+        self.last_edit_kind = None;
+        if !self.splice_exact(start, end, &with, EditKind::Other) {
+            self.caret = caret;
+            self.anchor = anchor;
+            self.record_caret();
+            return false;
+        }
+        self.carry_selection(caret, anchor, pending, start, end, before);
+        true
+    }
+
+    /// Put the caret and selection back after an edit of `[start, end)` that
+    /// left them wherever the edit did, moved along by it — see
+    /// [`substitute`](Self::substitute). `before` is the source's length
+    /// before the edit; `pending` the sticky marks armed at the old caret.
+    fn carry_selection(
+        &mut self,
+        caret: usize,
+        anchor: Option<usize>,
+        pending: (InlineMarks, Option<usize>),
+        start: usize,
+        end: usize,
+        before: usize,
+    ) {
+        let (pending_marks, pending_at) = pending;
         let delta = self.source.len() as isize - before as isize;
         let new_end = (end as isize + delta).max(start as isize) as usize;
         // A place after the range moves with it, one inside it goes to the end
@@ -1979,7 +2040,6 @@ impl Doc {
         self.clamp_caret();
         // The caret the step leaves, so a redo puts it back here too.
         self.record_caret();
-        true
     }
 
     /// Put back `deleted`, the bytes a half-made [`substitute`](Self::substitute)
@@ -9508,6 +9568,30 @@ fn detect_format(path: &Path) -> Result<Format> {
     })
 }
 
+/// The one span `from` and `to` differ in: `[start, end)` of `from`, and
+/// what `to` holds there. The longest shared prefix, then the longest shared
+/// suffix of what is left — never overlapping it — each ended on a character
+/// boundary of both.
+fn differing_span<'a>(from: &str, to: &'a str) -> (usize, usize, &'a str) {
+    let (a, b) = (from.as_bytes(), to.as_bytes());
+    let mut prefix = a.iter().zip(b).take_while(|(x, y)| x == y).count();
+    while !(from.is_char_boundary(prefix) && to.is_char_boundary(prefix)) {
+        prefix -= 1;
+    }
+    let most = a.len().min(b.len()) - prefix;
+    let mut suffix = a
+        .iter()
+        .rev()
+        .zip(b.iter().rev())
+        .take(most)
+        .take_while(|(x, y)| x == y)
+        .count();
+    while !(from.is_char_boundary(a.len() - suffix) && to.is_char_boundary(b.len() - suffix)) {
+        suffix -= 1;
+    }
+    (prefix, a.len() - suffix, &to[prefix..b.len() - suffix])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -15010,6 +15094,48 @@ mod tests {
         assert_eq!(d.source, "one\n");
         assert!(d.redo());
         assert_eq!(d.source, "onex\n");
+    }
+
+    #[test]
+    fn replacing_the_source_keeps_the_caret_on_its_characters() {
+        let mut d = wysiwyg_doc("replace", "One.\n\nTwo.\n\nThree.\n");
+        let on = d.source.find("Three").unwrap() + 2;
+        d.caret = on;
+        // Another device's edit, before the caret: the caret moves along.
+        assert!(d.replace_source("One, and more.\n\nTwo.\n\nThree.\n"));
+        assert_eq!(d.source, "One, and more.\n\nTwo.\n\nThree.\n");
+        assert_eq!(&d.source[d.caret..], "ree.\n", "still inside Three");
+        // After the caret: it stays.
+        let at = d.caret;
+        assert!(d.replace_source("One, and more.\n\nTwo.\n\nThree.\n\nFour.\n"));
+        assert_eq!(d.caret, at);
+        assert!(d.selection().is_none());
+        // One undo step, the caret where it stood.
+        assert!(d.undo());
+        assert_eq!(d.source, "One, and more.\n\nTwo.\n\nThree.\n");
+        assert_eq!(d.caret, at);
+    }
+
+    #[test]
+    fn replacing_the_source_writes_markup_as_markup() {
+        let mut d = wysiwyg_doc("replace-markup", "plain\n");
+        assert!(d.replace_source("**bold** and *it*\n"));
+        assert_eq!(
+            d.source, "**bold** and *it*\n",
+            "source, not typing: nothing escaped"
+        );
+        assert!(d.replace_source("**bold** and *it*\n"), "already there");
+    }
+
+    #[test]
+    fn the_differing_span_ends_on_characters() {
+        assert_eq!(differing_span("abc", "abc"), (3, 3, ""));
+        assert_eq!(differing_span("abXc", "abYc"), (2, 3, "Y"));
+        assert_eq!(differing_span("aaa", "aaaa"), (3, 3, "a"));
+        assert_eq!(differing_span("aaaa", "aa"), (2, 4, ""));
+        // é and è share their first byte; the span must not split it.
+        assert_eq!(differing_span("café", "cafè"), (3, 5, "è"));
+        assert_eq!(differing_span("", "x"), (0, 0, "x"));
     }
 
     #[test]

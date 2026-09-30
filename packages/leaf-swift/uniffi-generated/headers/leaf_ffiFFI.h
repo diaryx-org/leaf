@@ -638,6 +638,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_redo(uint64_t ptr, RustCallStatus *
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_replace_range(uint64_t ptr, uint32_t from, uint32_t to, RustBuffer text, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_REPLACE_SOURCE
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_REPLACE_SOURCE
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_replace_source(uint64_t ptr, RustBuffer text, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_ROW_RANGE_FOR
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_ROW_RANGE_FOR
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_row_range_for(uint64_t ptr, uint32_t start, uint32_t end, RustCallStatus *_Nonnull out_status
@@ -1677,6 +1682,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_redo(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_REPLACE_RANGE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_REPLACE_RANGE
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_replace_range(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_REPLACE_SOURCE
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_REPLACE_SOURCE
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_replace_source(void
     
 );
 #endif
