@@ -20,15 +20,15 @@ struct LeafApp: App {
         // screen's Create make; the others hang under New as a submenu.
         DocumentGroup(newDocument: { MarkdownDocument() }) { file in
             ContentView(model: file.document.model, fileURL: file.fileURL)
-                .sized()
+                .sized(fileURL: file.fileURL)
         }
         DocumentGroup(newDocument: { DjotDocument() }) { file in
             ContentView(model: file.document.model, fileURL: file.fileURL)
-                .sized()
+                .sized(fileURL: file.fileURL)
         }
         DocumentGroup(newDocument: { HTMLDocument() }) { file in
             ContentView(model: file.document.model, fileURL: file.fileURL)
-                .sized()
+                .sized(fileURL: file.fileURL)
         }
         // Format and View menus aimed at whichever editor the window shows —
         // `LeafEditor` publishes itself as the scene's focused editor.
@@ -43,9 +43,10 @@ struct LeafApp: App {
 }
 
 private extension View {
-    func sized() -> some View {
+    func sized(fileURL: URL?) -> some View {
         #if os(macOS)
         frame(minWidth: 480, idealWidth: 720, minHeight: 320, idealHeight: 640)
+            .remembersWindowFrame(for: fileURL)
         #else
         self
         #endif
