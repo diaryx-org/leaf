@@ -1,5 +1,6 @@
 package org.diaryx.leaf.compose
 
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
@@ -63,6 +64,20 @@ internal class ShapedRow(
     val media: ImageBitmap? = null,
     val mediaSize: Size = Size.Zero,
     val mediaGap: Float = 0f,
+    /**
+     * The size of a host's drawing of the leaf directive on this row, placed
+     * [mediaGap] below the row's top and [prefixWidth] in; the row's text is
+     * not drawn. Only on the first of the directive's rows, as [media] is.
+     */
+    val hosted: Size? = null,
+    /**
+     * The row as core's text shaped it, under a picture or a host's drawing
+     * that replaced it — what the next frame starts from, so a drawing that
+     * goes away leaves the row as it was.
+     */
+    val base: ShapedRow? = null,
+    /** On a row collapsed under a picture or a drawing, the row it collapsed onto; else -1. */
+    val under: Int = -1,
 )
 
 /**
@@ -98,6 +113,22 @@ internal class EditorLayout(
 
     /** Where block images come from; null draws every one as its placeholder row. */
     var media: MediaStore? = null
+
+    /** The frame last laid out, which [setHosted] lays out again. */
+    private var frame: DocView? = null
+
+    /** The measured size of each host drawing, by its directive's slot. */
+    private var hosted: Map<DirectiveSlot, Size> = emptyMap()
+
+    /** The first row of each leaf directive in the frame last laid out, by slot. */
+    private var slotRows: Map<DirectiveSlot, Int> = emptyMap()
+
+    /**
+     * Bumped whenever the rows move without a new frame — a host's drawing
+     * measured at a new height — so the editor's drawing, which reads it,
+     * repaints.
+     */
+    val geometry = mutableIntStateOf(0)
 
     val rowCount: Int get() = rows.size
     fun row(i: Int): Row = rows[i]
@@ -135,8 +166,32 @@ internal class EditorLayout(
         }
         rows = frame.rows
         shapes = next
-        if (!isSource) placeMedia(frame)
+        this.frame = frame
+        decorate()
+    }
 
+    /**
+     * Take [sizes] as the host's drawings' measured sizes, and lay the rows
+     * out again if any changed. True when they did.
+     */
+    fun setHosted(sizes: Map<DirectiveSlot, Size>): Boolean {
+        if (sizes == hosted) return false
+        hosted = sizes
+        if (frame != null && shapes.size == rows.size) decorate()
+        return true
+    }
+
+    /**
+     * Lay the pictures and the host's drawings over the shaped rows — from the
+     * rows as core's text shaped them — and stack every row down the column.
+     */
+    private fun decorate() {
+        for (i in shapes.indices) shapes[i].base?.let { shapes[i] = it }
+        val f = frame
+        if (f != null && !source) {
+            placeMedia(f)
+            placeDirectives(f)
+        }
         tops = FloatArray(rows.size)
         var y = with(density) { theme.paddingVertical.toPx() }
         for (i in rows.indices) {
@@ -169,16 +224,87 @@ internal class EditorLayout(
             val size = Size(natural.width * scale, natural.height * scale)
             val gap = with(density) { MEDIA_GAP.dp.toPx() }
             val base = shapes[first]
-            shapes[first] = ShapedRow(base.text, size.height + 2 * gap, base.prefixWidth, base.quoteBarXs, false, still, size, gap)
-            for (i in first + 1 until m.endRow.toInt().coerceAtMost(shapes.size)) {
-                shapes[i] = ShapedRow(null, 0f, 0f, emptyList(), false)
-            }
+            shapes[first] = ShapedRow(base.text, size.height + 2 * gap, base.prefixWidth, base.quoteBarXs, false, still, size, gap, base = base)
+            collapse(first + 1, m.endRow.toInt(), first)
         }
+    }
+
+    /**
+     * Each leaf directive the host draws becomes a box on its first row, the
+     * height of the host's drawing, and the rest of its rows collapse —
+     * [placeMedia]'s shape, with the size measured rather than decoded. The
+     * first row keeps its text, which is where its caret stops come from: the
+     * one before the drawing and the one after it.
+     */
+    private fun placeDirectives(frame: DocView) {
+        val views = frame.directives.filter { it.name != PAGE_BREAK }
+        val slots = slotKeys(views.map { it.key })
+        slotRows = views.indices.associate { slots[it] to views[it].startRow.toInt() }
+        if (hosted.isEmpty()) return
+        val gap = with(density) { MEDIA_GAP.dp.toPx() }
+        for ((i, d) in views.withIndex()) {
+            val size = hosted[slots[i]] ?: continue
+            val first = d.startRow.toInt()
+            if (first !in shapes.indices || shapes[first].text == null) continue
+            val base = shapes[first]
+            shapes[first] = ShapedRow(
+                base.text, size.height + 2 * gap, base.prefixWidth, base.quoteBarXs, false,
+                mediaGap = gap, hosted = size, base = base,
+            )
+            collapse(first + 1, d.endRow.toInt(), first)
+        }
+    }
+
+    /** The rows `from until to` collapsed to nothing under the block above them. */
+    private fun collapse(from: Int, to: Int, under: Int) {
+        for (i in from until to.coerceAtMost(shapes.size)) {
+            shapes[i] = ShapedRow(null, 0f, 0f, emptyList(), false, base = shapes[i].base ?: shapes[i], under = under)
+        }
+    }
+
+    /**
+     * The first row of the directive in [slot] as this layout last laid it
+     * out, or null when the frame has no such directive — the editor places a
+     * host's drawing by it, rather than by the row the frame it composed
+     * against said, which a frame applied since may have moved.
+     */
+    fun slotRow(slot: DirectiveSlot): Int? = slotRows[slot]?.takeIf { it in shapes.indices }
+
+    /**
+     * Where the host's drawing on [row] — a directive's first — goes: past
+     * the row's prefix, below the gap above it, at its measured size.
+     */
+    fun hostedRect(row: Int): Rect {
+        val s = shapes.getOrNull(row) ?: return Rect.Zero
+        val size = s.hosted ?: Size.Zero
+        val left = originX + s.prefixWidth
+        val top = tops[row] + s.mediaGap
+        return Rect(left, top, left + size.width, top + size.height)
+    }
+
+    /**
+     * How wide a host's drawing on [row] may be: the column past the row's
+     * prefix, so a directive in a quote or a list stands inside its gutter.
+     */
+    fun directiveWidth(row: Int): Float {
+        val s = shapes.getOrNull(row) ?: return columnWidth
+        return (columnWidth - (s.base ?: s).prefixWidth).coerceAtLeast(0f)
+    }
+
+    /** The UTF-16 length of [row]'s prefix — where the stop before a directive's drawing is. */
+    private fun prefixLength(row: Int): Int = rows[row].prefixRuns.sumOf { it.text.length }
+
+    private fun rowLength(row: Int): Int = shapes[row].text?.layoutInput?.text?.length ?: 0
+
+    /** The stop a point at [x] lands on over the host's drawing on [row]. */
+    private fun hostedStop(row: Int, x: Float): Int {
+        val box = hostedRect(row)
+        return directiveStop(x, box.left, box.width, prefixLength(row), rowLength(row))
     }
 
     /** The old shape of row [old], if it still fits the row now at [now]. */
     private fun keep(old: Int, now: Int, row: Row, inTable: Boolean): ShapedRow {
-        val s = shapes.getOrNull(old)
+        val s = shapes.getOrNull(old)?.let { it.base ?: it }
         // A gap row's height depends on what it divides, which is the row's own
         // `boundary`; kept rows are the same rows, so only the table flag can
         // have moved under them (a table grown by a row above).
@@ -364,6 +490,19 @@ internal class EditorLayout(
         if (row !in rows.indices) return null
         val s = shapes[row]
         val top = tops[row]
+        // A row collapsed under a host's drawing stands for its far side.
+        if (s.under >= 0 && shapes.getOrNull(s.under)?.hosted != null) {
+            return caretRect(s.under, rowLength(s.under))
+        }
+        if (s.hosted != null) {
+            // Beside the drawing and clear of it, as tall as it: the stop
+            // before it on the left, the one after on the right.
+            val box = hostedRect(row)
+            val clear = CARET_CLEARANCE * density.density
+            val x = if (isAfterDirective(ch, rowLength(row))) box.right + clear
+            else box.left - clear - with(density) { theme.caretWidth.toPx() }
+            return Rect(x, box.top, x, box.bottom)
+        }
         val text = s.text ?: return Rect(originX + s.prefixWidth, top, originX + s.prefixWidth, top + s.height)
         val r = text.getCursorRect(ch.coerceIn(0, text.layoutInput.text.length))
         return r.translate(originX, top)
@@ -385,6 +524,7 @@ internal class EditorLayout(
             val down = (i + 1 until rows.size).firstOrNull { rows[it].holdsCaret }
             i = (if (point.y < mid) up ?: down else down ?: up) ?: return null
         }
+        if (shapes[i].hosted != null) return i to hostedStop(i, point.x)
         val text = shapes[i].text ?: return i to 0
         val local = Offset(point.x - originX, (point.y - tops[i]).coerceIn(0f, shapes[i].height - 1f))
         return i to text.getOffsetForPosition(local)
@@ -408,15 +548,19 @@ internal class EditorLayout(
      * the document's edge.
      */
     fun verticalMove(row: Int, ch: Int, x: Float, down: Boolean): Pair<Int, Int>? {
-        val text = shapes.getOrNull(row)?.text ?: return null
-        val line = text.getLineForOffset(ch.coerceIn(0, text.layoutInput.text.length))
-        val target: Pair<Int, Int> = if (down && line < text.lineCount - 1) row to line + 1
+        val here = shapes.getOrNull(row) ?: return null
+        val text = here.text ?: return null
+        // A host's drawing is one line, whatever its placeholder text would wrap to.
+        val lines = if (here.hosted != null) 1 else text.lineCount
+        val line = if (here.hosted != null) 0 else text.getLineForOffset(ch.coerceIn(0, text.layoutInput.text.length))
+        val target: Pair<Int, Int> = if (down && line < lines - 1) row to line + 1
         else if (!down && line > 0) row to line - 1
         else {
             val step = if (down) 1 else -1
             var j = row + step
             while (j in rows.indices && (!rows[j].holdsCaret || shapes[j].text == null)) j += step
             if (j !in rows.indices) return null
+            if (shapes[j].hosted != null) return j to hostedStop(j, x)
             val t = shapes[j].text!!
             j to if (down) 0 else t.lineCount - 1
         }
@@ -425,8 +569,13 @@ internal class EditorLayout(
         return target.first to t.getOffsetForPosition(Offset(x - originX, y))
     }
 
-    /** The selection's painted shape between two `(row, ch)` ends, in content coordinates. */
-    fun selectionPath(from: Pair<Int, Int>, to: Pair<Int, Int>): Path {
+    /**
+     * The selection's painted shape between two `(row, ch)` ends, in content
+     * coordinates. With [overDrawings], only the host's drawings it covers —
+     * painted over them, since they stand over the text layer; without, the
+     * rest.
+     */
+    fun selectionPath(from: Pair<Int, Int>, to: Pair<Int, Int>, overDrawings: Boolean = false): Path {
         val (s, e) = if (compareValuesBy(from, to, { it.first }, { it.second }) <= 0) from to to else to to from
         val path = Path()
         val nub = 6f * density.density
@@ -436,6 +585,14 @@ internal class EditorLayout(
             val len = text.layoutInput.text.length
             val a = if (r == s.first) s.second.coerceIn(0, len) else 0
             val b = if (r == e.first) e.second.coerceIn(0, len) else len
+            if (shapes[r].hosted != null) {
+                // A host's drawing is selected whole or not at all.
+                val box = hostedRect(r)
+                if (overDrawings && a < b && b > prefixLength(r)) path.addRect(box)
+                if (!overDrawings && r < e.first) path.addRect(Rect(box.right, box.top, box.right + nub, box.bottom))
+                continue
+            }
+            if (overDrawings) continue
             if (a < b) {
                 val p = text.getPathForRange(a, b)
                 p.translate(Offset(originX, tops[r]))
@@ -457,5 +614,8 @@ internal class EditorLayout(
         /** A block image's tallest box, and the room above and below it, in dp. */
         const val MEDIA_MAX_HEIGHT = 480
         const val MEDIA_GAP = 8
+
+        /** How far the caret beside a host's drawing stands from its edge, in dp. */
+        const val CARET_CLEARANCE = 3
     }
 }
