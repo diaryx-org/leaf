@@ -299,6 +299,14 @@ Highlight Colour and in the palette, dim wherever there is nothing to colour, an
 tick the one the caret is standing in. Over a selection that isn't highlighted
 yet, one press does both: the highlight and its colour, as a single undo step.
 
+**Embed…** in the palette asks for a URL and writes `::embed{src="…"}` where
+the caret is, and the rich view draws every embed as a card titled "Embed"
+holding its URL; the caret steps over the card in one press each way. It is
+leaf-tui showing a host's directives — the ones leaf-ratatui lets a host name,
+insert (`DirectiveItem`) and draw (`DirectiveRenderer`) — rather than a name
+leaf adopts, so it is offered in Markdown and djot only, and dimmed elsewhere.
+Any other leaf directive is still the `⧉ name` placeholder.
+
 The palette, the context menu, and the key reference are all generated from one
 command table (`apps/leaf-tui/src/commands.rs`), so a command cannot gain a key
 without gaining a menu row and a line in the help. Every one of those surfaces

@@ -19,7 +19,7 @@ use leaf_ratatui::Theme;
 use leaf_core::Doc;
 use leaf_core::wysiwyg::text_width;
 
-use crate::commands::{Ctx, GROUPS};
+use crate::commands::{Command, Ctx, GROUPS};
 use crate::find::{Find, FindField};
 use crate::palette::Palette;
 use crate::{App, ContextMenu, DirtyAction, MenuEntry, TextPrompt};
@@ -656,7 +656,7 @@ fn render_palette(f: &mut Frame, screen: Rect, palette: &mut Palette, ctx: &Ctx,
                 format!(
                     " {check} {label:<label_w$} {hint:>8} ",
                     check = if active { '✓' } else { ' ' },
-                    label = truncate(row.command.label(), label_w),
+                    label = truncate(&palette_label(row.command), label_w),
                     hint = row.command.hint()
                 ),
                 style,
@@ -691,6 +691,18 @@ fn render_palette(f: &mut Frame, screen: Rect, palette: &mut Palette, ctx: &Ctx,
     let cursor_x = rect.x + 3 + palette.query[..palette.cursor].chars().count() as u16;
     if cursor_x < rect.x + rect.width {
         f.set_cursor_position(Position::new(cursor_x, rect.y));
+    }
+}
+
+/// A palette row's words: the command's label, and in front of a catalogue
+/// directive's the glyph its host gave it, the terminal's icon for the row.
+fn palette_label(command: Command) -> String {
+    match command {
+        Command::Directive(i) => match crate::directives::CATALOGUE.get(i) {
+            Some(item) if !item.glyph.is_empty() => format!("{} {}", item.glyph, item.title),
+            _ => command.label().to_string(),
+        },
+        _ => command.label().to_string(),
     }
 }
 
