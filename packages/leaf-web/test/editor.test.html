@@ -1424,6 +1424,246 @@ await test("the page-break gesture writes a directive the renderer knows", () =>
   return ed;
 });
 
+// ── a host's directives ───────────────────────────────────────────────────
+
+/** The demo's drawing of `::embed{src=…}`: a card with a title and the URL.
+ *  Every other name is left to the placeholder. Counts what it was asked. */
+function embedHook(asked = []) {
+  return (d) => {
+    asked.push(d.name + " " + d.attrs.map((a) => a.key + "=" + a.value).join(" "));
+    if (d.name !== "embed") return null;
+    const card = document.createElement("div");
+    card.className = "test-embed";
+    card.textContent = "Embed " + (d.attrs.find((a) => a.key === "src")?.value ?? "");
+    return card;
+  };
+}
+
+const EMBED_DOC = 'before\n\n::embed{src="https://x.org/a"}\n\nafter\n';
+
+await test("a directive the host draws stands in for its row, with a caret stop either side", () => {
+  const ed = editor(EMBED_DOC, { directive: embedHook() });
+  const d = ed._lastView.directives[0];
+  const rowEl = ed.rowEls[d.start_row];
+  assert(rowEl.isConnected, "the directive's row is not in the document");
+  const atom = rowEl.querySelector(".leaf-directive");
+  assert(atom && atom.getAttribute("contenteditable") === "false", "no non-editable atom");
+  assert(atom.querySelector(".test-embed"), "the host's element is not in the atom");
+  assert(!ed.contentEl.textContent.includes("⧉"), "the placeholder is painted beside the drawing");
+  const zwsps = [...rowEl.childNodes].filter((n) => n.nodeType === 3);
+  eq(zwsps.length, 2, "the caret homes either side of the drawing");
+  const coreLen = Number(rowEl.dataset.leafCoreLen);
+  assert(coreLen > 0, "the row's core length was not recorded");
+  eq(ed._domPoint(zwsps[0], 0), { row: d.start_row, ch: 0 }, "the near stop");
+  eq(ed._domPoint(zwsps[1], 1), { row: d.start_row, ch: coreLen }, "the far stop");
+  // A point inside the host's drawing is past it, not a column in its text.
+  eq(ed._domPoint(atom.querySelector(".test-embed").firstChild, 3).ch, coreLen, "inside the drawing");
+  // Row offsets either side of the drawing, as a click beside a block reports.
+  const at = [...rowEl.childNodes].indexOf(atom);
+  eq(ed._domPoint(rowEl, at).ch, 0, "the row offset in front of the drawing");
+  eq(ed._domPoint(rowEl, at + 1).ch, coreLen, "the row offset past it");
+  return ed;
+});
+
+await test("a caret on a row the hook replaced round-trips through _syncFromDom", () => {
+  const ed = editor(EMBED_DOC, { directive: embedHook() });
+  const src = ed.source();
+  const start = src.indexOf("::embed");
+  const end = src.indexOf("}", start) + 1;
+  const rowAt = () => ed.rowEls[ed._lastView.directives[0].start_row];
+  for (const [side, want] of [["far", end], ["near", start]]) {
+    const zwsps = [...rowAt().childNodes].filter((n) => n.nodeType === 3);
+    if (side === "far") place(zwsps[1], 1);
+    else place(zwsps[0], 0);
+    assert(ed._syncFromDom(), `the ${side} stop did not map`);
+    eq(ed._lastView.caret_src, want, `the ${side} stop's source offset`);
+    // Repaint from the model, then read the browser's selection back: core's
+    // column has to come out of the DOM where it went in.
+    ed.render(ed.doc.view());
+    assert(rowAt().contains(window.getSelection().anchorNode), `the ${side} caret left the row`);
+    assert(ed._syncFromDom(), `the restored ${side} selection did not map back`);
+    eq(ed._lastView.caret_src, want, `the ${side} caret moved across a repaint`);
+  }
+  return ed;
+});
+
+await test("the caret steps over a drawn directive in one press each way", () => {
+  const ed = editor(EMBED_DOC, { directive: embedHook() });
+  const src = ed.source();
+  const start = src.indexOf("::embed");
+  const end = src.indexOf("}", start) + 1;
+  const rowEl = ed.rowEls[ed._lastView.directives[0].start_row];
+  const zwsps = [...rowEl.childNodes].filter((n) => n.nodeType === 3);
+  const sel = window.getSelection();
+  // The keys themselves, as the browser runs them: a synthetic keydown moves
+  // no native caret, so the editor's own handler is asked first and the
+  // browser's motion stands in for the default it did not prevent.
+  const press = (key) => {
+    const e = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+    if (ed.contentEl.dispatchEvent(e)) {
+      const forward = key === "ArrowRight" || key === "ArrowDown";
+      const unit = key === "ArrowUp" || key === "ArrowDown" ? "line" : "character";
+      sel.modify("move", forward ? "forward" : "backward", unit);
+    }
+    ed._syncFromDom();
+    return ed._lastView.caret_src;
+  };
+  place(zwsps[0], 0);
+  ed._syncFromDom();
+  eq(ed._lastView.caret_src, start, "the caret starts before the drawing");
+  // Where the browser draws its caret, not only where core thinks it is: a
+  // point the offsets count as past the drawing can still sit in front of it.
+  const side = () => {
+    const atom = ed.rowEls[ed._lastView.directives[0].start_row].querySelector(".leaf-directive");
+    const pos = atom.compareDocumentPosition(sel.anchorNode);
+    return pos & Node.DOCUMENT_POSITION_FOLLOWING ? "after" : "before";
+  };
+  eq(press("ArrowRight"), end, "one press right did not clear the drawing");
+  eq(side(), "after", "core is past the drawing and the browser's caret is not");
+  eq(press("ArrowLeft"), start, "one press left did not clear the drawing");
+  eq(side(), "before", "core is before the drawing and the browser's caret is not");
+  // And on out of the row, either way, in one more press each.
+  eq(press("ArrowLeft"), src.indexOf("before") + "before".length, "left off the row");
+  place(zwsps[1], 1);
+  ed._syncFromDom();
+  eq(press("ArrowRight"), src.indexOf("after"), "right off the row");
+  // Up and down leave the row from either stop, rather than stepping to the
+  // other stop on the way.
+  place(zwsps[1], 1);
+  const down = press("ArrowDown");
+  assert(down >= src.indexOf("after") && down <= src.indexOf("after") + 5, `down off the row went to ${down}`);
+  place(zwsps[0], 0);
+  assert(press("ArrowUp") <= "before".length, "up off the row");
+  // A point in front of the drawing is its near stop wherever in the gap it
+  // sits, and a point behind it the far one — so the browser never draws a
+  // caret on one side of the drawing that core has on the other.
+  eq(ed._domPoint(zwsps[0], 1).ch, 0, "between the space and the drawing");
+  eq(ed._domPoint(zwsps[1], 0).ch, Number(rowEl.dataset.leafCoreLen), "just past the drawing");
+  return ed;
+});
+
+await test("a key in a field of the host's drawing is the host's", () => {
+  const ed = editor(EMBED_DOC, {
+    directive: () => {
+      const field = document.createElement("input");
+      field.className = "test-field";
+      return field;
+    },
+  });
+  const field = ed.contentEl.querySelector(".test-field");
+  field.focus();
+  const before = ed.source();
+  for (const [type, init] of [
+    ["keydown", { key: "ArrowLeft" }],
+    ["keydown", { key: "Tab" }],
+    ["beforeinput", { inputType: "insertText", data: "x" }],
+  ]) {
+    const Ev = type === "keydown" ? KeyboardEvent : InputEvent;
+    const e = new Ev(type, { ...init, bubbles: true, cancelable: true });
+    assert(field.dispatchEvent(e), `the editor took a ${type} ${init.key ?? init.inputType} from the field`);
+  }
+  eq(ed.source(), before, "the document changed under a key in the host's field");
+  return ed;
+});
+
+await test("a drawing is kept under its directive's key, and not asked for again", () => {
+  const asked = [];
+  const ed = editor(EMBED_DOC, { directive: embedHook(asked) });
+  eq(asked.length, 1, "the hook is asked once for the one directive");
+  const card = ed.contentEl.querySelector(".test-embed");
+  // An edit above it moves the directive's rows and source; its key is the same.
+  place(firstText(ed.rowEls[0]), 0);
+  input(ed, "insertText", "x");
+  input(ed, "insertParagraph");
+  eq(asked.length, 1, "an edit elsewhere asked the hook again");
+  assert(ed.contentEl.querySelector(".test-embed") === card, "the drawing was rebuilt");
+  assert(card.isConnected, "the drawing left the page");
+  // The source view lists no directives; coming back from it is no news.
+  ed.toggleView();
+  ed.toggleView();
+  eq(asked.length, 1, "a trip through the source view asked the hook again");
+  assert(ed.contentEl.querySelector(".test-embed") === card, "the drawing did not survive the trip");
+  // Two identical directives are two drawings, not one element moved between them.
+  ed.load(EMBED_DOC + '\n::embed{src="https://x.org/a"}\n');
+  eq(ed.contentEl.querySelectorAll(".test-embed").length, 2, "identical directives share a drawing");
+  // A changed attribute is a different directive, and is drawn afresh.
+  const n = asked.length;
+  ed.load(EMBED_DOC.replace("/a", "/b"));
+  eq(asked.length, n + 1, "a changed attribute was not asked about");
+  assert(ed.contentEl.querySelector(".test-embed").textContent.endsWith("/b"), "stale drawing");
+  // And a host whose answer changed says so.
+  ed.redrawDirectives();
+  eq(asked.length, n + 2, "redrawDirectives did not ask again");
+  return ed;
+});
+
+await test("a null answer keeps the placeholder, and a page break is never asked about", () => {
+  const asked = [];
+  const ed = editor("::toc\n\n::page-break\n\nafter\n", { directive: embedHook(asked) });
+  eq(asked, ["toc "], "the hook was asked about the wrong directives");
+  assert(ed.contentEl.textContent.includes("⧉ toc"), "the placeholder is gone");
+  assert(!ed.contentEl.querySelector(".leaf-directive"), "a null answer was wrapped");
+  assert(ed.rowEls.some((r) => r.classList.contains("leaf-page-break")), "the break lost its rule");
+  // Remembered like an element: an edit does not ask again.
+  place(firstText(ed.rowEls.find((r) => r.textContent === "after")), 0);
+  input(ed, "insertText", "x");
+  eq(asked.length, 1, "a null answer was asked for again");
+  // A hook that throws is a host bug, drawn as the placeholder; so is one
+  // element handed to two directives, which could only stand in one place.
+  const quiet = console.error;
+  console.error = () => {};
+  try {
+    const bad = editor("::embed{src=x}\n", { directive: () => { throw new Error("host bug"); } });
+    assert(bad.contentEl.textContent.includes("⧉ embed"), "a throwing hook took the placeholder");
+    bad.destroy();
+    const one = document.createElement("div");
+    const twice = editor("::embed{src=x}\n\n::embed{src=y}\n", { directive: () => one });
+    eq(twice.contentEl.querySelectorAll(".leaf-directive").length, 1, "one element drawn twice");
+    assert(twice.contentEl.textContent.includes("⧉ embed"), "the second lost its placeholder");
+    twice.destroy();
+  } finally {
+    console.error = quiet;
+  }
+  return ed;
+});
+
+await test("an item from the catalogue asks, then writes where the caret was", async () => {
+  const items = [
+    {
+      id: "directive.embed",
+      name: "embed",
+      title: "Embed",
+      icon: "⧉",
+      ask: async () => ({ attrs: [{ key: "src", value: "https://x.org/c" }] }),
+    },
+    { id: "directive.toc", name: "toc", title: "Contents", attrs: { depth: "2", wide: "" } },
+    { id: "directive.none", name: "embed", ask: async () => null },
+  ];
+  const ed = editor("one\n\ntwo\n", { directive: embedHook(), directives: items });
+  eq(ed.directiveItems().map((i) => i.id), items.map((i) => i.id), "the catalogue as given");
+  assert(Object.isFrozen(ed.directiveItems()), "the catalogue can be changed under the editor");
+  assert(ed.capabilities().directives, "markdown spells a directive");
+  place(firstText(ed.rowEls[0]), 3);
+  ed._syncFromDom();
+  eq(await ed.insertDirectiveItem("directive.none"), false, "a cancelled ask wrote something");
+  eq(ed.source(), "one\n\ntwo\n");
+  eq(await ed.insertDirectiveItem("directive.embed"), true, "the embed was not written");
+  assert(ed.source().includes('::embed{src="https://x.org/c"}'), `wrote ${JSON.stringify(ed.source())}`);
+  assert(ed.source().indexOf("::embed") < ed.source().indexOf("two"), "written in the wrong place");
+  assert(ed.contentEl.querySelector(".test-embed"), "the new directive was not drawn");
+  ed.insertDirective("toc", null, { depth: "2", wide: "" });
+  assert(ed.source().includes("::toc{depth=2 wide}"), `wrote ${JSON.stringify(ed.source())}`);
+  eq(await ed.insertDirectiveItem("no.such.item"), false);
+  // A format that cannot read an arbitrary name back says so, and the gesture
+  // is refused rather than written.
+  const html = editor("<p>x</p>", { format: "html" });
+  assert(!html.capabilities().directives, "html claims to spell a host's directive");
+  html.insertDirective("embed", null, { src: "y" });
+  assert(!html.source().includes("embed"), "html wrote a directive it cannot read back");
+  html.destroy();
+  return ed;
+});
+
 await test("every presentation token the package offers is one core writes", () => {
   const ed = editor("hello\n");
   for (const [tokens, set, read] of [

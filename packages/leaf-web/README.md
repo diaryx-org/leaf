@@ -103,6 +103,15 @@ for a host that decides later.
   from `dropTargetAt`). One undo step either way, and a block dropped into a
   quote or out of a list arrives spelled for where it landed. A drag inside
   text is still a selection. Dim on `capabilities().move_block`.
+- **A host's directives.** A leaf directive (`::embed{src=…}`) is the host's
+  vocabulary, so the host draws it and offers it. `EditorOptions.directive`
+  answers each one with an element — wrapped as an atom the caret steps over
+  in one press either way, like a picture — or with null for leaf's `⧉ name`
+  placeholder. `EditorOptions.directives` is the catalogue a toolbar lists
+  (`directiveItems()`) and runs (`insertDirectiveItem(id)`, which asks the
+  author through the item's `ask()` first); `insertDirective(name, label,
+  attrs)` is the gesture underneath. Dim on `capabilities().directives`.
+  `::page-break` is leaf's own and is never offered to the hook.
 - **Math.** A `$…$` formula is its picture in the line, stretched over the
   one-character atom core counts the row by, and a `$$` block a centred
   picture in a row of its own — a self-contained SVG from `leaf-math`, the

@@ -1,10 +1,25 @@
 ---
-status: in-progress
+status: done
 created: 2026-09-04
 updated: 2026-09-30
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 # A host hook for directives in the web editor
+
+**Status.** Done in the leaf commit `feat(leaf-web): draw a host's
+directives through a hook, and insert them from its catalogue`.
+`EditorOptions.directive` is the hook and `EditorOptions.directives` the
+catalogue (`directiveItems`, `insertDirectiveItem`, `insertDirective`). The
+demo draws `::embed{src=…}` as a card and offers it from the toolbar. The
+mapping went one step past `atomCoreLen`. On a drawn row a DOM point counts by
+which side of the drawing it is on, and the arrows are core's, so the browser
+never draws the caret on one side of the drawing while core has it on the
+other. `test/editor.test.html` round-trips a caret over a replaced row
+through `_syncFromDom` and steps over the drawing in one press each way.
+Typing at either stop still writes into the directive's own line. That is
+leaf-core's
+[text typed after a leaf directive](text-typed-after-a-leaf-directive-joins-its-line.md)
+task.
 
 **The web step of a wider plan.** The
 [host directives proposal](../proposals/host-directives.md) gives every

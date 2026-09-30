@@ -44,6 +44,15 @@
   #toolbar select:disabled { opacity: 0.32; cursor: default; }
   #toolbar .sep { width: 1px; background: var(--border); margin: 2px 4px; }
 
+  /* The demo host's drawing of `::embed{src=…}`: a card naming what is
+     embedded rather than the embed itself, so it shows the hook and stays a
+     demonstration. leaf wraps it as an atom the caret steps over. */
+  .embed-card { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px;
+    background: var(--panel); font-size: 14px; max-width: 480px; }
+  .embed-card .title { font-weight: 600; color: var(--text); }
+  .embed-card .url { color: var(--muted); font-family: ui-monospace, Menlo, monospace;
+    font-size: 12px; overflow-wrap: anywhere; }
+
   /* The editor mounts here; LeafEditor injects its own surface styles. */
   #editor { flex: 1; min-height: 0; }
 
@@ -119,6 +128,10 @@
       <option value="">face</option>
     </select>
     <button data-cmd="insertPageBreak" data-cap="page_break">⇟ break</button>
+    <!-- The host's own directives, one button per catalogue item, built from
+         `editor.directiveItems()` — see DIRECTIVES below. leaf offers none of
+         its own: the vocabulary is the host's. -->
+    <span id="directives" style="display:contents"></span>
     <div class="sep"></div>
     <button data-cmd="insertFootnote" data-cap="footnote">[^]</button>
     <button data-cmd="insertThematicBreak" data-cap="thematic_break">──</button>
@@ -237,6 +250,13 @@ a highlight already uses.
 Past the break. On this surface it is a dashed rule the caret steps over; in
 print it is \`break-after: page\`, and in leaf-swift's paginated view it opens a
 new page.
+
+## Directives are the host's
+leaf reads every \`::name{…}\` and draws none of them itself: the host says which
+it has and how each one looks. This page draws an embed as a card, and the
+⧉ Embed button up top writes one. The caret steps over it like a picture.
+
+::embed{src="https://diaryx.org"}
 
 ## Attachments
 Images, video, and audio are block media — core reserves the row, the browser
@@ -376,19 +396,66 @@ function syncChrome(state) {
   if (window.leafEditor) applyCapabilities(window.leafEditor, state);
 }
 
+// The host's directives. The catalogue says which it has — here one, an embed
+// that asks for its URL — and the hook says how each looks: an `::embed{src=…}`
+// is a titled card showing the URL, and any other name is left to leaf's
+// placeholder by answering null.
+const DIRECTIVES = [
+  {
+    id: "directive.embed",
+    name: "embed",
+    title: "Embed",
+    icon: "⧉",
+    ask: async () => {
+      const url = prompt("Embed — the URL to embed", "https://")?.trim();
+      return url && url !== "https://" ? { attrs: [{ key: "src", value: url }] } : null;
+    },
+  },
+];
+
+function drawDirective(d) {
+  if (d.name !== "embed") return null;
+  const card = document.createElement("div");
+  card.className = "embed-card";
+  const title = document.createElement("div");
+  title.className = "title";
+  title.textContent = "Embed";
+  const url = document.createElement("div");
+  url.className = "url";
+  url.textContent = d.attrs.find((a) => a.key === "src")?.value || "(no src)";
+  card.append(title, url);
+  return card;
+}
+
 async function main() {
   await LeafEditor.init();
   const editor = new LeafEditor(document.getElementById("editor"), {
     source: SAMPLE,
     format: "markdown",
     onChange: syncChrome,
+    directive: drawDirective,
+    directives: DIRECTIVES,
   });
   // Exposed for poking at from the console (and for driving the demo in tests).
   window.leafEditor = editor;
+
+  // One button per catalogue item, dimmed by `capabilities().directives` in
+  // `applyCapabilities` as the page break is by `page_break`.
+  for (const item of editor.directiveItems()) {
+    const btn = document.createElement("button");
+    btn.dataset.cap = "directives";
+    btn.dataset.directive = item.id;
+    btn.textContent = `${item.icon ?? ""} ${item.title ?? item.name}`.trim();
+    btn.addEventListener("click", async () => {
+      await editor.insertDirectiveItem(item.id);
+      editor.focus();
+    });
+    document.getElementById("directives").append(btn);
+  }
   applyCapabilities(editor);
 
   // Wire the app's toolbar to the editor's command API.
-  for (const btn of document.querySelectorAll("#toolbar button")) {
+  for (const btn of document.querySelectorAll("#toolbar button:not([data-directive])")) {
     btn.addEventListener("click", () => {
       const cmd = btn.dataset.cmd, arg = btn.dataset.arg;
       // The alignment group is one command with four arguments, the first of
