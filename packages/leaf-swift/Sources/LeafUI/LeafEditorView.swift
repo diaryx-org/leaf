@@ -763,6 +763,13 @@ public final class LeafEditorModel: ObservableObject {
     // leaves every other as the `⧉ name` placeholder. See
     // `docs/proposals/host-directives.md`.
 
+    /// The directives this app offers in Insert — the formatting bar's Insert
+    /// menu on the Mac, Insert on the iOS row and on the key panel, and the
+    /// Format menu in the menu bar. Each is dimmed where the document's format
+    /// cannot write a directive of the host's (`capabilities.directives`).
+    /// Empty, the default, adds no row anywhere.
+    @Published public var directiveCatalogue: [DirectiveItem] = []
+
     /// Asked for a view to draw each leaf directive with — an `NSView` or a
     /// `UIView` — or nil to leave it core's placeholder. See
     /// `LeafTextView.directiveView`, which this reaches.
@@ -788,6 +795,20 @@ public final class LeafEditorModel: ObservableObject {
     /// `capabilities.directives` is false.
     public func insertDirective(name: String, label: String? = nil, attrs: [DirectiveAttr] = []) {
         run { $0.insertDirective(name: name, label: label, attrs: attrs) }
+    }
+
+    /// Insert `item` — asking the author first, if it asks.
+    public func insert(_ item: DirectiveItem) {
+        switch item.source {
+        case .fixed(let content):
+            insertDirective(name: item.name, label: content.label, attrs: content.attrs)
+        case .ask(let ask):
+            let name = item.name
+            ask { [weak self] content in
+                guard let content else { return }
+                self?.insertDirective(name: name, label: content.label, attrs: content.attrs)
+            }
+        }
     }
 
     /// Move the caret's block one place up — ⌥↑ and the Format menu's Move
