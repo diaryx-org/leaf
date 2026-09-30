@@ -912,6 +912,23 @@ public protocol LeafDocProtocol: AnyObject, Sendable {
     func insert(text: String)  -> DocView
     
     /**
+     * Insert the leaf directive `name` at the caret, with `label` and `attrs`
+     * — a host's catalogue item. Placed as
+     * [`insert_page_break`](Self::insert_page_break) places a page break,
+     * which is this gesture with leaf's own name. It arrives in
+     * [`DocView::directives`] as it went in: `attrs` is the
+     * [`DirectiveAttr`] list a [`DirectiveView`] carries, an empty value a
+     * bare attribute.
+     *
+     * A name twig will not write (it is an ASCII letter and then letters,
+     * digits, `-` and `_`), a label holding a line end or a square bracket,
+     * a label in djot, which has nowhere to put one, and a format where
+     * [`Capabilities::directives`] is false are each refused with a status
+     * and nothing written.
+     */
+    func insertDirective(name: String, label: String?, attrs: [DirectiveAttr])  -> DocView
+    
+    /**
      * Write a footnote at the caret — the toolbar's Footnote button. Both the
      * `[^1]` and the definition it needs go in as one edit (one undo takes both
      * back), the label is the lowest number the document has free, and the caret
@@ -1241,6 +1258,18 @@ public protocol LeafDocProtocol: AnyObject, Sendable {
      * URLs, and a renderer keying its views by `src` tears nothing down.
      */
     func setDarkAppearance(dark: Bool)  -> DocView
+    
+    /**
+     * Report how many visual rows each leaf directive a host draws needs,
+     * keyed by its name, label and attributes as [`DirectiveView`] handed
+     * them over — [`set_media_rows`]'s peer for a renderer that reserves rows
+     * and draws the host's picture over them. One that lays a directive out
+     * in its own units never calls this, and every directive stays the
+     * one-row placeholder.
+     *
+     * [`set_media_rows`]: Self::set_media_rows
+     */
+    func setDirectiveRows(heights: [DirectiveHeight])  -> DocView
     
     /**
      * Set the face of the selected run, or of the caret's whole block.
@@ -2250,6 +2279,33 @@ open func insert(text: String) -> DocView  {
 }
     
     /**
+     * Insert the leaf directive `name` at the caret, with `label` and `attrs`
+     * — a host's catalogue item. Placed as
+     * [`insert_page_break`](Self::insert_page_break) places a page break,
+     * which is this gesture with leaf's own name. It arrives in
+     * [`DocView::directives`] as it went in: `attrs` is the
+     * [`DirectiveAttr`] list a [`DirectiveView`] carries, an empty value a
+     * bare attribute.
+     *
+     * A name twig will not write (it is an ASCII letter and then letters,
+     * digits, `-` and `_`), a label holding a line end or a square bracket,
+     * a label in djot, which has nowhere to put one, and a format where
+     * [`Capabilities::directives`] is false are each refused with a status
+     * and nothing written.
+     */
+open func insertDirective(name: String, label: String?, attrs: [DirectiveAttr]) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_insert_directive(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(name),
+        FfiConverterOptionString.lower(label),
+        FfiConverterSequenceTypeDirectiveAttr.lower(attrs),uniffiCallStatus
+    )
+})
+}
+    
+    /**
      * Write a footnote at the caret — the toolbar's Footnote button. Both the
      * `[^1]` and the definition it needs go in as one edit (one undo takes both
      * back), the label is the lowest number the document has free, and the caret
@@ -2978,6 +3034,26 @@ open func setDarkAppearance(dark: Bool) -> DocView  {
     uniffi_leaf_ffi_fn_method_leafdoc_set_dark_appearance(
             self.uniffiCloneHandle(),
         FfiConverterBool.lower(dark),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Report how many visual rows each leaf directive a host draws needs,
+     * keyed by its name, label and attributes as [`DirectiveView`] handed
+     * them over — [`set_media_rows`]'s peer for a renderer that reserves rows
+     * and draws the host's picture over them. One that lays a directive out
+     * in its own units never calls this, and every directive stays the
+     * one-row placeholder.
+     *
+     * [`set_media_rows`]: Self::set_media_rows
+     */
+open func setDirectiveRows(heights: [DirectiveHeight]) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_set_directive_rows(
+            self.uniffiCloneHandle(),
+        FfiConverterSequenceTypeDirectiveHeight.lower(heights),uniffiCallStatus
     )
 })
 }
@@ -3953,6 +4029,14 @@ public struct Capabilities: Equatable, Hashable {
      */
     public var pageBreak: Bool
     /**
+     * The directives a host names — [`LeafDoc::insert_directive`]. Markdown
+     * and djot: the same gesture as [`page_break`](Self::page_break), but
+     * only where the walker reads an arbitrary name back as a directive, and
+     * HTML's and AsciiDoc's spellings come back as something else. Dim a
+     * host's catalogue items on this, as the page-break button is on that.
+     */
+    public var directives: Bool
+    /**
      * Moving a block — [`LeafDoc::move_block`] and the
      * [`move_block_up`](LeafDoc::move_block_up)/`down` pair. Every format
      * with blocks a caret can name; XML has none.
@@ -4031,6 +4115,13 @@ public struct Capabilities: Equatable, Hashable {
          * same placeholder row.
          */pageBreak: Bool, 
         /**
+         * The directives a host names — [`LeafDoc::insert_directive`]. Markdown
+         * and djot: the same gesture as [`page_break`](Self::page_break), but
+         * only where the walker reads an arbitrary name back as a directive, and
+         * HTML's and AsciiDoc's spellings come back as something else. Dim a
+         * host's catalogue items on this, as the page-break button is on that.
+         */directives: Bool, 
+        /**
          * Moving a block — [`LeafDoc::move_block`] and the
          * [`move_block_up`](LeafDoc::move_block_up)/`down` pair. Every format
          * with blocks a caret can name; XML has none.
@@ -4063,6 +4154,7 @@ public struct Capabilities: Equatable, Hashable {
         self.fontFamily = fontFamily
         self.textColor = textColor
         self.pageBreak = pageBreak
+        self.directives = directives
         self.moveBlock = moveBlock
     }
 
@@ -4110,6 +4202,7 @@ public struct FfiConverterTypeCapabilities: FfiConverterRustBuffer {
                 fontFamily: FfiConverterBool.read(from: &buf), 
                 textColor: FfiConverterBool.read(from: &buf), 
                 pageBreak: FfiConverterBool.read(from: &buf), 
+                directives: FfiConverterBool.read(from: &buf), 
                 moveBlock: FfiConverterBool.read(from: &buf)
         )
     }
@@ -4143,6 +4236,7 @@ public struct FfiConverterTypeCapabilities: FfiConverterRustBuffer {
         FfiConverterBool.write(value.fontFamily, into: &buf)
         FfiConverterBool.write(value.textColor, into: &buf)
         FfiConverterBool.write(value.pageBreak, into: &buf)
+        FfiConverterBool.write(value.directives, into: &buf)
         FfiConverterBool.write(value.moveBlock, into: &buf)
     }
 }
@@ -4220,6 +4314,80 @@ public func FfiConverterTypeDirectiveAttr_lift(_ buf: RustBuffer) throws -> Dire
 #endif
 public func FfiConverterTypeDirectiveAttr_lower(_ value: DirectiveAttr) -> RustBuffer {
     return FfiConverterTypeDirectiveAttr.lower(value)
+}
+
+
+/**
+ * A per-directive height, the way a renderer that reserves rows reports one
+ * back — the input half of the loop [`LeafDoc::set_directive_rows`] closes.
+ * Keyed by what the directive says, exactly as [`DirectiveView`] handed it
+ * over: its name, its label and its attributes.
+ */
+public struct DirectiveHeight: Equatable, Hashable {
+    public var name: String
+    public var label: String
+    public var attrs: [DirectiveAttr]
+    /**
+     * How many visual rows the host's drawing needs.
+     */
+    public var rows: UInt32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(name: String, label: String, attrs: [DirectiveAttr], 
+        /**
+         * How many visual rows the host's drawing needs.
+         */rows: UInt32) {
+        self.name = name
+        self.label = label
+        self.attrs = attrs
+        self.rows = rows
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension DirectiveHeight: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeDirectiveHeight: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DirectiveHeight {
+        return
+            try DirectiveHeight(
+                name: FfiConverterString.read(from: &buf), 
+                label: FfiConverterString.read(from: &buf), 
+                attrs: FfiConverterSequenceTypeDirectiveAttr.read(from: &buf), 
+                rows: FfiConverterUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: DirectiveHeight, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterString.write(value.label, into: &buf)
+        FfiConverterSequenceTypeDirectiveAttr.write(value.attrs, into: &buf)
+        FfiConverterUInt32.write(value.rows, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDirectiveHeight_lift(_ buf: RustBuffer) throws -> DirectiveHeight {
+    return try FfiConverterTypeDirectiveHeight.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDirectiveHeight_lower(_ value: DirectiveHeight) -> RustBuffer {
+    return FfiConverterTypeDirectiveHeight.lower(value)
 }
 
 
@@ -9056,6 +9224,31 @@ fileprivate struct FfiConverterSequenceTypeDirectiveAttr: FfiConverterRustBuffer
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeDirectiveHeight: FfiConverterRustBuffer {
+    typealias SwiftType = [DirectiveHeight]
+
+    public static func write(_ value: [DirectiveHeight], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeDirectiveHeight.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [DirectiveHeight] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [DirectiveHeight]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeDirectiveHeight.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeDirectiveView: FfiConverterRustBuffer {
     typealias SwiftType = [DirectiveView]
 
@@ -9536,6 +9729,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_insert() != 57472) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_insert_directive() != 45079) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_insert_footnote() != 24840) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -9687,6 +9883,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_dark_appearance() != 7107) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_directive_rows() != 14815) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_font_family() != 65323) {
