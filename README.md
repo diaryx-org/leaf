@@ -99,7 +99,8 @@ section, and commits and tags — locally. Pushing takes `--push`, and a pushed
 tag is a release: [`publish.yml`](.github/workflows/publish.yml) uploads every
 publishable crate to crates.io, `homebrew.yml` ships the `leaf` binary, and
 [`mac-app.yml`](.github/workflows/mac-app.yml) attaches a signed, notarised
-`Leaf-<version>-aarch64.dmg` to the release.
+`Leaf-<version>-aarch64.dmg` to the release and points the tap's
+`leaf-editor` cask at it (`brew install --cask diaryx-org/tap/leaf-editor`).
 `cargo publish --workspace --dry-run` shows beforehand what would go up, in
 dependency order, along with every crate it holds back.
 
