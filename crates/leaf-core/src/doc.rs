@@ -738,8 +738,8 @@ pub struct Doc {
     block_cache: wysiwyg::BlockCache,
     /// What the frontend has said about itself — how tall its pictures came
     /// out, keyed by destination or by TeX, and whether it paints a picture in
-    /// a line — set through [`Doc::set_media_rows`], [`Doc::set_math_rows`] and
-    /// [`Doc::set_inline_pictures`]. Core does no I/O and lays out in glyphs,
+    /// a line — set through [`Doc::set_media_rows`], [`Doc::set_math_rows`],
+    /// [`Doc::set_directive_rows`] and [`Doc::set_inline_pictures`]. Core does no I/O and lays out in glyphs,
     /// so this is the only way it learns a height or a capability. Threaded
     /// into every build; a change drops both caches, since none of it is in a
     /// block's bytes.
@@ -957,6 +957,18 @@ pub struct Capabilities {
     /// as an empty `::: page-break` fence, HTML (`<page-break></page-break>`)
     /// and AsciiDoc (`<<<`) — each drawn as the same placeholder row.
     pub page_break: bool,
+    /// The directives a host names — [`Doc::insert_directive`], twig's
+    /// `Gesture::InsertDirective` for any name. **Narrower than
+    /// [`page_break`](Self::page_break)**, which is the same gesture: twig
+    /// spells an arbitrary directive in HTML (a custom element) and AsciiDoc
+    /// (an open block with a style), and the walker reads back neither as a
+    /// directive — it reads their spellings of `page-break` and no other name.
+    /// So this is Markdown under the `directives` extension and djot, the two
+    /// formats where what is written comes back in
+    /// [`VisualMap::directives`](crate::wysiwyg::VisualMap::directives) with
+    /// its name. djot has no leaf directive label: see
+    /// [`Doc::insert_directive`].
+    pub directives: bool,
     /// Moving a block — [`Doc::move_block`] and the Alt+↑/↓ pair, twig's
     /// `Gesture::MoveBlock`. Every format with blocks a caret can name; XML
     /// has none.
@@ -1017,6 +1029,10 @@ impl Capabilities {
             // HTML's `<page-break>` and AsciiDoc's `<<<` as the same
             // placeholder Markdown's `::page-break` and djot's fence get.
             page_break: supports(Gesture::InsertDirective),
+            // Only where the walker reads an arbitrary name back — see the
+            // field. twig's own answer is also `true` for HTML and AsciiDoc.
+            directives: supports(Gesture::InsertDirective)
+                && matches!(format, Format::Markdown | Format::Djot),
             move_block: supports(Gesture::MoveBlock),
         }
     }
@@ -1451,6 +1467,30 @@ impl Doc {
             return;
         }
         self.surface.media_rows = rows;
+        self.surface_changed();
+    }
+
+    /// Tell the model how many visual rows each leaf directive should reserve,
+    /// keyed by its [`DirectiveKey`](wysiwyg::DirectiveKey) — its name, label
+    /// and attributes, as [`DirectiveInfo::key`](wysiwyg::DirectiveInfo::key)
+    /// hands it over. The peer of [`set_media_rows`](Self::set_media_rows) for
+    /// a terminal host that draws a directive as lines of its own: it asks its
+    /// renderer for the lines, counts them, and reports back, and the next
+    /// build lays the placeholder out that tall — the label row plus blank
+    /// filler rows the host's lines are drawn over, holding no caret. A
+    /// directive left out of the map is the one-row placeholder, which is what
+    /// a host with no drawing for it, or a frontend laying directives out in
+    /// its own units, gets by never calling this.
+    ///
+    /// Keyed by what the directive says rather than where it stands, as a
+    /// picture is keyed by its destination, so the height holds across an
+    /// edit above it and two directives spelled alike share one entry. Cheap
+    /// to call every frame with the same map: only a change drops the caches.
+    pub fn set_directive_rows(&mut self, rows: HashMap<wysiwyg::DirectiveKey, usize>) {
+        if self.surface.directive_rows == rows {
+            return;
+        }
+        self.surface.directive_rows = rows;
         self.surface_changed();
     }
 
@@ -5501,36 +5541,127 @@ impl Doc {
     /// no label and no attributes, which twig spells in every format that names
     /// a leaf container (Markdown under the `directives` extension
     /// [`parse_extensions`] turns on, and djot, where it is an empty `:::
-    /// page-break` fence).
+    /// page-break` fence), and HTML and AsciiDoc in spellings of their own that
+    /// the walker reads back for this one name.
     ///
-    /// Placed exactly as [`insert_thematic_break`](Self::insert_thematic_break)
-    /// places a rule, and for the same reason: a directive is a block, so twig
-    /// alone has nowhere to put one mid-paragraph and lands it after the
-    /// caret's whole block. A bare paragraph is therefore parted at the caret
-    /// first and the break aimed at the *first* half. See that method for the
-    /// whole of the rule, including why a code block, a list item, a table and
-    /// a setext heading are left unsplit.
+    /// [`insert_directive`](Self::insert_directive) with [`PAGE_BREAK`], gated
+    /// on [`Capabilities::page_break`] rather than
+    /// [`Capabilities::directives`], since the walker reads HTML's and
+    /// AsciiDoc's page break back and no other name of theirs.
     ///
     /// The frontends that paginate read the row's
     /// [`DirectiveMark`](crate::wysiwyg::DirectiveMark) and open a page there;
     /// the ones that do not draw the `⧉ page-break` placeholder every leaf
     /// directive gets.
     pub fn insert_page_break(&mut self) {
-        if self.read_only || self.refuse_unsupported("page break", Gesture::InsertDirective) {
+        let supported = self.capabilities().page_break;
+        self.write_directive("page break", supported, PAGE_BREAK, None, &[]);
+    }
+
+    /// Insert the leaf directive `name` at the caret — `::name[label]{attrs}`
+    /// in Markdown, an empty `::: name` fence in djot — for a host whose
+    /// vocabulary it is. leaf draws it as the `⧉` placeholder row and publishes
+    /// it in [`VisualMap::directives`](crate::wysiwyg::VisualMap::directives),
+    /// where a host that knows the name paints the real thing.
+    ///
+    /// Placed exactly as [`insert_thematic_break`](Self::insert_thematic_break)
+    /// places a rule, and for the same reason: a directive is a block, so twig
+    /// alone has nowhere to put one mid-paragraph and lands it after the
+    /// caret's whole block. A bare paragraph is therefore parted at the caret
+    /// first and the directive aimed at the *first* half, and the caret lands
+    /// on a line under it. A selection is replaced by it. See that method for
+    /// the whole of the rule, including why a code block, a list item, a table
+    /// and a setext heading are left unsplit.
+    ///
+    /// `attrs` are `(key, value)` pairs in the order they are written, a `None`
+    /// value a bare attribute — the shape
+    /// [`DirectiveMark::attrs`](crate::wysiwyg::DirectiveMark::attrs) reads
+    /// back.
+    ///
+    /// Refused, with a status and nothing written, where
+    /// [`Capabilities::directives`] is `false`, and for a `name` or `label`
+    /// twig will not write: a name is an ASCII letter followed by letters,
+    /// digits, `-` and `_`, and a label may hold no line end and no square
+    /// bracket. twig is the judge of both, asked before anything is parted.
+    ///
+    /// djot needs two things of its own, since its spelling is a fence under
+    /// an attribute line. A bare attribute is written `key=""`: twig writes
+    /// `{wide}`, which djot does not read as an attribute at all, and
+    /// Markdown reads its own `{wide}` back as `wide=""` regardless. And a
+    /// label is refused, because djot has nowhere to put one: twig writes it
+    /// as the fence's body, which reads back as a container holding a
+    /// paragraph and not as a directive.
+    pub fn insert_directive(
+        &mut self,
+        name: &str,
+        label: Option<&str>,
+        attrs: &[(String, Option<String>)],
+    ) {
+        let supported = self.capabilities().directives;
+        if self.format != Format::Djot {
+            self.write_directive("directive", supported, name, label, attrs);
+            return;
+        }
+        if label.is_some_and(|l| !l.is_empty()) {
+            if !self.read_only {
+                self.status = Some("directive: djot has no label for a leaf directive".into());
+            }
+            return;
+        }
+        let attrs: Attrs = attrs
+            .iter()
+            .map(|(k, v)| (k.clone(), Some(v.clone().unwrap_or_default())))
+            .collect();
+        self.write_directive("directive", supported, name, None, &attrs);
+    }
+
+    /// The gesture behind [`insert_directive`](Self::insert_directive) and
+    /// [`insert_page_break`](Self::insert_page_break), which differ in the
+    /// word a refusal uses and in the capability that gates them.
+    fn write_directive(
+        &mut self,
+        what: &str,
+        supported: bool,
+        name: &str,
+        label: Option<&str>,
+        attrs: &[(String, Option<String>)],
+    ) {
+        if self.read_only || self.refuse_unless(what, supported) {
+            return;
+        }
+        let attrs: Vec<(&str, Option<&str>)> = attrs
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_deref()))
+            .collect();
+        // Ask twig first, on an empty document of the same format, so that a
+        // name or label it refuses is refused before the selection is cut or
+        // the paragraph parted: the refusal writes nothing at all. An empty
+        // document is a fine place for any directive the format spells, so
+        // the only thing this can refuse is the name, the label or the
+        // attributes.
+        if let Err(e) = new_editor(b"", self.format)
+            .map_err(|e| e.to_string())
+            .and_then(|mut scratch| {
+                scratch
+                    .insert_directive(0, name, label, &attrs)
+                    .map_err(|e| e.to_string())
+            })
+        {
+            self.status = Some(format!("{what}: {e}"));
             return;
         }
         self.caret = self.skip_trailing_close_delims(self.caret);
-        // A selection is replaced by the break, as a rule replaces one.
+        // A selection is replaced by the directive, as a rule replaces one.
         if let Some((s, e)) = self.selection() {
             self.splice(s, e, "", EditKind::Other);
         }
         self.anchor = None;
         self.record_caret();
         let at = self.caret;
-        // A failure here is not fatal: the break still lands after the
+        // A failure here is not fatal: the directive still lands after the
         // block, which is what this call was trying to improve on.
         let parted = self.part_for_block(at);
-        match self.editor.insert_directive(at, PAGE_BREAK, None, &[]) {
+        match self.editor.insert_directive(at, name, label, &attrs) {
             Ok(change) => {
                 self.last_edit_kind = None;
                 self.refresh();
@@ -5545,7 +5676,7 @@ impl Doc {
                 self.record_caret();
                 self.caret_under_written_block(change.new, parted);
             }
-            Err(e) => self.status = Some(format!("page break: {e}")),
+            Err(e) => self.status = Some(format!("{what}: {e}")),
         }
     }
 
@@ -19914,6 +20045,260 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(marks, [PAGE_BREAK], "{fmt:?}");
         }
+    }
+
+    /// The general gesture a host's catalogue calls: a directive named by the
+    /// host, with a label and attributes, written where the caret parts the
+    /// paragraph, and read back into the map with all three — the way the
+    /// view hands it to the host that draws it.
+    #[test]
+    fn insert_directive_round_trips_name_label_and_attrs() {
+        let attrs: Attrs = vec![
+            ("src".into(), Some("https://x.org/a".into())),
+            ("title".into(), Some("a \"quoted\" b".into())),
+            ("wide".into(), None),
+        ];
+        let mut md = doc_with("directive_md", "hello world\n");
+        md.caret = 5;
+        md.insert_directive("x-card", Some("A card"), &attrs);
+        assert_eq!(md.status, None);
+        assert_eq!(
+            md.source,
+            "hello\n\n::x-card[A card]{src=\"https://x.org/a\" title=\"a \\\"quoted\\\" b\" wide}\n\nworld\n"
+        );
+        assert!(md.dirty);
+        md.view = View::Wysiwyg;
+        md.build_visual(80);
+        let [d] = md.vmap.directives.as_slice() else {
+            panic!("one directive, got {:?}", md.vmap.directives)
+        };
+        assert_eq!(d.name, "x-card");
+        assert_eq!(d.label, "A card");
+        // A bare attribute reads back with an empty value: that is what twig
+        // reports for Markdown's `{wide}`.
+        assert_eq!(
+            d.key().attrs,
+            [
+                ("src".to_string(), "https://x.org/a".to_string()),
+                ("title".to_string(), "a \"quoted\" b".to_string()),
+                ("wide".to_string(), String::new()),
+            ]
+        );
+        assert_eq!(d.attr("src"), Some("https://x.org/a"));
+
+        // djot: the attributes on a line of their own over the fence, a bare
+        // one spelled `key=""` so that djot reads it as an attribute at all,
+        // and a class kept apart from the name the fence gives.
+        let mut dj = fmt_doc("hello world\n", Format::Djot);
+        dj.caret = 5;
+        let dj_attrs: Attrs = vec![
+            ("class".into(), Some("wide".into())),
+            ("src".into(), Some("https://x.org/a".into())),
+            ("flag".into(), None),
+        ];
+        dj.insert_directive("x-card", None, &dj_attrs);
+        assert_eq!(dj.status, None);
+        assert_eq!(
+            dj.source,
+            "hello\n\n{.wide src=\"https://x.org/a\" flag=\"\"}\n::: x-card\n:::\n\nworld\n"
+        );
+        dj.view = View::Wysiwyg;
+        dj.build_visual(80);
+        let [d] = dj.vmap.directives.as_slice() else {
+            panic!("one directive, got {:?}", dj.vmap.directives)
+        };
+        assert_eq!(
+            d.name, "x-card",
+            "the fence's word, not the attribute line's class"
+        );
+        assert_eq!(d.label, "");
+        assert_eq!(d.attr("class"), Some("wide"));
+        assert_eq!(d.attr("src"), Some("https://x.org/a"));
+        assert_eq!(d.attr("flag"), Some(""));
+    }
+
+    /// `insert_page_break` is `insert_directive` with leaf's own name: the
+    /// same bytes, the same caret, the same one undo step.
+    #[test]
+    fn insert_directive_places_the_caret_as_a_page_break_does() {
+        for (fmt, body, caret) in [
+            (Format::Markdown, "a\n\nb\n", 1),
+            (Format::Markdown, "a\n", 1),
+            (Format::Markdown, "hello world\n", 5),
+            (Format::Djot, "a\n\nb\n", 1),
+            (Format::Djot, "hello world\n", 5),
+        ] {
+            let run = |f: &dyn Fn(&mut Doc)| {
+                let mut d = Doc::from_source(body.into(), fmt).unwrap();
+                d.view = View::Wysiwyg;
+                d.caret = caret;
+                f(&mut d);
+                (d.source.clone(), d.caret)
+            };
+            assert_eq!(
+                run(&|d| d.insert_page_break()),
+                run(&|d| d.insert_directive(PAGE_BREAK, None, &[])),
+                "{fmt:?} {body:?}"
+            );
+        }
+
+        // And a host's name lands the caret on a line under it, typed into
+        // there, and taken back in one step with that line.
+        let mut d = Doc::from_source("a\n\nb\n".into(), Format::Markdown).unwrap();
+        d.view = View::Wysiwyg;
+        d.caret = 1;
+        d.insert_directive("x-card", Some("A"), &[("k".into(), Some("v".into()))]);
+        assert_eq!(d.source, "a\n\n::x-card[A]{k=v}\n\n\n\nb\n");
+        d.build_visual(80);
+        let (row, col) = d.vmap.pos_of_offset(d.caret);
+        assert_eq!(col, 0);
+        assert!(d.vmap.rows[row].glyphs.is_empty(), "an empty line");
+        assert!(d.vmap.rows[row - 2].leaf_directive.is_some(), "under it");
+        d.insert("X");
+        assert_eq!(d.source, "a\n\n::x-card[A]{k=v}\n\nX\n\nb\n");
+        d.undo();
+        d.undo();
+        assert_eq!(
+            d.source, "a\n\nb\n",
+            "the directive and its line are one step"
+        );
+    }
+
+    /// A name or a label twig will not write is refused before anything is
+    /// touched — the selection it would have replaced and the paragraph it
+    /// would have parted are both left as they were.
+    #[test]
+    fn insert_directive_refuses_a_bad_name_or_label_and_writes_nothing() {
+        let src = "hello world\n";
+        for (fmt, name, label) in [
+            (Format::Markdown, "1x", None),
+            (Format::Markdown, "a b", None),
+            (Format::Markdown, "a:b", None),
+            (Format::Markdown, "", None),
+            (Format::Markdown, "ok", Some("a]b")),
+            (Format::Markdown, "ok", Some("a\nb")),
+            (Format::Djot, "a b", None),
+            // djot has nowhere for a label to go.
+            (Format::Djot, "ok", Some("A card")),
+        ] {
+            let mut d = fmt_doc(src, fmt);
+            d.anchor = Some(2);
+            d.caret = 5;
+            d.insert_directive(name, label, &[]);
+            assert_eq!(d.source, src, "{fmt:?} {name:?} {label:?}");
+            assert!(!d.dirty, "{fmt:?} {name:?} {label:?}");
+            assert!(!d.can_undo(), "{fmt:?} {name:?} {label:?}");
+            let status = d.status.as_deref().unwrap_or("");
+            assert!(
+                status.starts_with("directive: "),
+                "{fmt:?} {name:?} {label:?}: {status:?}"
+            );
+        }
+    }
+
+    /// `directives` is claimed only where what is written comes back as a
+    /// directive with its name. twig spells one in HTML and AsciiDoc too — and
+    /// `page_break` is true there — but the walker reads their spellings of
+    /// `page-break` alone, so an arbitrary name would be written and then
+    /// drawn as something else, or not at all.
+    #[test]
+    fn directives_are_offered_only_where_the_walker_reads_them_back() {
+        for (fmt, src) in [
+            (Format::Markdown, "hello\n"),
+            (Format::Djot, "hello\n"),
+            (Format::Html, "<p>hello</p>\n"),
+            (Format::Asciidoc, "hello\n"),
+        ] {
+            // What twig writes for a host's name, read back by the walker.
+            let mut ed = twig::Editor::new_ext(src.as_bytes(), fmt, parse_extensions()).unwrap();
+            ed.insert_directive(src.len() - 1, "x-card", None, &[("k", Some("v"))])
+                .unwrap_or_else(|e| panic!("{fmt:?}: twig spells it: {e}"));
+            let written = String::from_utf8(ed.source().unwrap()).unwrap();
+            let mut d = fmt_doc(&written, fmt);
+            d.view = View::Wysiwyg;
+            d.build_visual(80);
+            let read_back = d
+                .vmap
+                .directives
+                .iter()
+                .any(|m| m.name == "x-card" && m.attr("k") == Some("v"));
+            let c = Capabilities::of(fmt);
+            assert_eq!(c.directives, read_back, "{fmt:?}: {written:?}");
+            assert!(c.page_break, "{fmt:?}");
+
+            // And where it is not offered, it is refused in the format's name.
+            if !c.directives {
+                let mut d = fmt_doc(src, fmt);
+                d.caret = d.source.find("hello").unwrap() + 5;
+                d.insert_directive("x-card", None, &[]);
+                assert_eq!(d.source, src, "{fmt:?}");
+                let status = d.status.as_deref().unwrap_or("");
+                assert!(status.contains("not supported"), "{fmt:?}: {status:?}");
+            }
+        }
+        assert!(!Capabilities::of(Format::Xml).directives);
+    }
+
+    /// A terminal draws a host's directive as lines of its own and reports how
+    /// many, keyed by what the directive says; the placeholder grows to that
+    /// height the way a picture does, with blank fillers holding no caret.
+    #[test]
+    fn set_directive_rows_reserves_filler_rows_for_a_host_drawing() {
+        let body = "intro\n\n::x-card[A]{src=\"u\"}\n\n::x-card[B]\n\nend\n";
+        let mut d = wysiwyg_doc("directive_rows", body);
+        assert_eq!(d.vmap.directives.len(), 2);
+        assert!(d.vmap.directives.iter().all(|i| i.rows_span.len() == 1));
+        let stops = |d: &mut Doc| {
+            d.caret = 0;
+            let mut seen = vec![d.caret];
+            loop {
+                d.move_right(false);
+                if *seen.last().unwrap() == d.caret {
+                    break;
+                }
+                seen.push(d.caret);
+            }
+            seen
+        };
+        let before = stops(&mut d);
+
+        let key = d.vmap.directives[0].key();
+        assert_eq!(
+            key,
+            wysiwyg::DirectiveKey {
+                name: "x-card".into(),
+                label: "A".into(),
+                attrs: vec![("src".into(), "u".into())],
+            }
+        );
+        d.set_directive_rows(HashMap::from([(key, 4)]));
+        d.build_visual(80);
+        let span = d.vmap.directives[0].rows_span.clone();
+        assert_eq!(span.len(), 4, "the four rows asked for");
+        assert_eq!(
+            d.vmap.rows[span.start]
+                .leaf_directive
+                .as_ref()
+                .map(|m| m.rows),
+            Some(4)
+        );
+        for r in span.start + 1..span.end {
+            let row = &d.vmap.rows[r];
+            assert!(row.decoration && row.glyphs.is_empty(), "filler {r}");
+            assert!(row.leaf_directive.is_none(), "only the first row is marked");
+        }
+        assert_eq!(
+            d.vmap.directives[1].rows_span.len(),
+            1,
+            "another label is another key"
+        );
+        assert_eq!(stops(&mut d), before, "reserving rows adds no stops");
+
+        // Keyed by what it says, not where it stands: an edit above keeps it.
+        d.caret = 0;
+        d.insert("more ");
+        d.build_visual(80);
+        assert_eq!(d.vmap.directives[0].rows_span.len(), 4);
     }
 
     /// The vocabulary's capabilities, per format. The two block properties are
