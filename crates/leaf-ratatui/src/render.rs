@@ -18,7 +18,10 @@ use ratatui::widgets::Clear;
 use leaf_core::VisualMap;
 use leaf_core::{Doc, Highlight, HighlightCursor, SourceMap, View};
 
+use std::collections::HashMap;
+
 use crate::EditorState;
+use crate::directive;
 use crate::style::{CODE_INSET, Theme, align_pad, composed, wysiwyg_lines};
 
 /// The glyph a page break's rule is drawn from — dashed, against the solid `─`
@@ -132,13 +135,13 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
         // the first after an edit.
         doc.build_source();
     }
-    if doc.view == View::Wysiwyg {
+    let drawings = if doc.view == View::Wysiwyg {
         doc.build_visual(width);
         // With image support: learn which images the document has, decode and
         // measure them, tell core how many rows each reserves, then rebuild at
         // those heights. The second build is a cache hit whenever nothing changed.
         // Without the feature, block images keep core's default reservation and
-        // render as the inline `🖼 alt` placeholder — no decode, no rebuild.
+        // render as the inline `🖼 alt` placeholder, with nothing decoded.
         #[cfg(feature = "images")]
         {
             let heights = state.images.reserve(
@@ -154,9 +157,17 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
                 .images
                 .reserve_math(&doc.vmap.math, width as u16, height as u16);
             doc.set_math_rows(heights);
-            doc.build_visual(width);
         }
-    }
+        // The host's directives the same way: asked for their drawings at this
+        // width, their line counts reported as the rows each reserves. Then one
+        // rebuild at every height reported above — a cache hit whenever none of
+        // them changed, so a still document costs nothing here.
+        let drawings = directive::reserve(doc, state.directives.as_mut(), width, &theme);
+        doc.build_visual(width);
+        drawings
+    } else {
+        HashMap::new()
+    };
 
     // Oversized headings are a presentation of core's ordinary editable rows: the
     // map above is canonical, and the filler rows an inactive H1/H2 stands on go
@@ -331,6 +342,80 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
                 ))),
                 rect,
             );
+        }
+    }
+
+    // Each directive the host drew: its lines over the rows core reserved for
+    // them, after the gutter of whatever block it stands in. Every reserved row
+    // is wiped first, so the `⧉ name` placeholder core laid down on the first
+    // does not show through beside a short line. Cells clip, so a drawing
+    // partly scrolled off shows the part that is on screen. Inside the
+    // selection it is drawn reversed, as the selected text around it is.
+    if doc.view == View::Wysiwyg && !drawings.is_empty() {
+        for info in &doc.vmap.directives {
+            let Some(lines) = drawings.get(&info.key()) else {
+                continue;
+            };
+            let indent = directive::indent_of(doc, info) as u16;
+            let selected = sel.is_some_and(|(s, e)| {
+                let (start, end) = directive_span(doc, info);
+                s <= start && end <= e
+            });
+            // A quote's bars carried down the filler rows, which core leaves
+            // bare: the first row's prefix with everything but the bars blanked,
+            // so a list's bullet is not repeated beside every line.
+            let gutter: String = doc.vmap.rows[info.rows_span.start]
+                .glyphs
+                .iter()
+                .take(indent as usize)
+                .map(|g| {
+                    if g.style.role == leaf_core::Role::QuoteGutter {
+                        g.drawn()
+                    } else {
+                        ' '
+                    }
+                })
+                .collect();
+            let gutter = (!gutter.trim().is_empty()).then_some(gutter);
+            for (i, row) in info.rows_span.clone().enumerate() {
+                if row < doc.scroll || (height > 0 && row >= doc.scroll + height) {
+                    continue;
+                }
+                if i > 0
+                    && let Some(gutter) = &gutter
+                {
+                    let rect = Rect {
+                        x: content_area.x,
+                        y: content_area.y + (row - doc.scroll) as u16,
+                        width: indent.min(content_area.width),
+                        height: 1,
+                    };
+                    f.render_widget(
+                        Paragraph::new(Span::styled(
+                            gutter.clone(),
+                            Style::default().fg(theme.quote_gutter),
+                        )),
+                        rect,
+                    );
+                }
+                let rect = Rect {
+                    x: content_area.x + indent.min(content_area.width),
+                    y: content_area.y + (row - doc.scroll) as u16,
+                    width: content_area.width.saturating_sub(indent),
+                    height: 1,
+                };
+                f.render_widget(ratatui::widgets::Clear, rect);
+                let Some(line) = lines.get(i) else {
+                    continue;
+                };
+                let mut line = line.clone();
+                if selected {
+                    line = line.patch_style(
+                        Style::default().add_modifier(ratatui::style::Modifier::REVERSED),
+                    );
+                }
+                f.render_widget(Paragraph::new(line), rect);
+            }
         }
     }
 
@@ -519,6 +604,36 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
         let col_visible = col >= scroll_x && (width == 0 || col < scroll_x + width);
         col_visible.then(|| content_area.x + (col - scroll_x) as u16)
     };
+    // On a directive the host drew, the caret is either before it or after
+    // it — core gives the placeholder those two stops and no others — and the
+    // label its column counts along is covered. So it is drawn at the drawing's
+    // own edges instead: before it at its top-left corner, after it just past
+    // the end of its last line.
+    let (caret_row, caret_x) = match (doc.view == View::Wysiwyg)
+        .then(|| {
+            doc.vmap
+                .directives
+                .iter()
+                .find(|d| d.rows_span.start == caret_row && drawings.contains_key(&d.key()))
+        })
+        .flatten()
+    {
+        Some(info) => {
+            let indent = directive::indent_of(doc, info);
+            let (start, _) = directive_span(doc, info);
+            if doc.caret <= start {
+                (caret_row, Some(content_area.x + indent as u16))
+            } else {
+                let last = info.rows_span.end - 1;
+                let drawn = drawings[&info.key()]
+                    .get(last - info.rows_span.start)
+                    .map_or(0, Line::width);
+                let col = (indent + drawn).min(width.saturating_sub(1));
+                (last, Some(content_area.x + col as u16))
+            }
+        }
+        None => (caret_row, caret_x),
+    };
     if !caret_in_raster
         && let Some(x) = caret_x
         && caret_row >= doc.scroll
@@ -527,6 +642,14 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
         let y = content_area.y + (caret_row - doc.scroll) as u16;
         f.set_cursor_position(Position::new(x, y));
     }
+}
+
+/// The source bytes a leaf directive stands for: its start, which every glyph
+/// of its label carries, and its end, where its first row ends.
+fn directive_span(doc: &Doc, info: &leaf_core::DirectiveInfo) -> (usize, usize) {
+    let row = &doc.vmap.rows[info.rows_span.start];
+    let start = row.glyphs.last().map_or(row.end_src, |g| g.src);
+    (start, row.end_src)
 }
 
 /// A heading block the terminal will paint as a graphics-protocol raster: its
@@ -1770,5 +1893,279 @@ mod math_render_tests {
         let buf = term.backend().buffer();
         assert!(!rows_containing(buf, "∑ \\frac{").is_empty());
         assert_eq!(doc.vmap.math[0].rows_span.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod directive_render_tests {
+    use super::*;
+    use crate::EditorState;
+    use leaf_core::{ColorScheme, DirectiveInfo, Doc, Format};
+    use ratatui::backend::Backend;
+    use ratatui::{Terminal, backend::TestBackend};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    type Draw = fn(&DirectiveInfo, u16, &Theme) -> Option<Vec<Line<'static>>>;
+
+    /// A three-line card for `::x-card{src=…}`, as wide as the URL and never
+    /// wider than it is allowed: the shape leaf-tui's embed card has, without
+    /// leaf-tui.
+    fn card(info: &DirectiveInfo, width: u16, _: &Theme) -> Option<Vec<Line<'static>>> {
+        if info.name != "x-card" {
+            return None;
+        }
+        let src = info.attr("src")?.to_string();
+        let inner = (src.chars().count() + 2).min(width.saturating_sub(2) as usize);
+        Some(vec![
+            Line::from(format!("╭{}╮", "─".repeat(inner))),
+            Line::from(format!("│ {src:<w$}│", w = inner - 1)),
+            Line::from(format!("╰{}╯", "─".repeat(inner))),
+        ])
+    }
+
+    fn state_with(renderer: Option<Draw>) -> EditorState {
+        let mut state = EditorState::new();
+        state.set_color_scheme(ColorScheme::Dark);
+        if let Some(r) = renderer {
+            state.set_directive_renderer(r);
+        }
+        state
+    }
+
+    /// One frame of `doc` through `state`: the drawn lines (the scrollbar's
+    /// column left off, trailing blanks trimmed) and where the terminal caret
+    /// was put.
+    fn frame(doc: &mut Doc, state: &mut EditorState, w: u16, h: u16) -> (Vec<String>, (u16, u16)) {
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| render(f, f.area(), doc, state)).unwrap();
+        let buf = term.backend().buffer().clone();
+        let lines = (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width - 1)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect();
+        let p = term.backend_mut().get_cursor_position().unwrap();
+        (lines, (p.x, p.y))
+    }
+
+    fn wysiwyg(src: &str) -> Doc {
+        let mut doc = Doc::from_source(src.into(), Format::Markdown).unwrap();
+        doc.view = View::Wysiwyg;
+        doc
+    }
+
+    const SRC: &str = "above\n\n::x-card{src=\"https://x.org\"}\n\nbelow\n";
+
+    /// The host's lines are drawn over the rows core reserved for them — as
+    /// many rows as it drew lines, reported back through
+    /// `set_directive_rows` — and the placeholder label is gone from under
+    /// them. The rows after the first are fillers that hold no caret.
+    #[test]
+    fn a_drawn_directive_reserves_its_rows_and_covers_its_placeholder() {
+        let mut doc = wysiwyg(SRC);
+        let mut state = state_with(Some(card));
+        let (lines, _) = frame(&mut doc, &mut state, 40, 12);
+        let joined = lines.join("\n");
+        assert_eq!(
+            lines[..7],
+            [
+                "above",
+                "",
+                "╭───────────────╮",
+                "│ https://x.org │",
+                "╰───────────────╯",
+                "",
+                "below",
+            ],
+            "\n{joined}"
+        );
+        assert!(
+            !joined.contains('⧉'),
+            "the placeholder showed through:\n{joined}"
+        );
+
+        let [info] = doc.vmap.directives.as_slice() else {
+            panic!("one directive: {:?}", doc.vmap.directives)
+        };
+        assert_eq!(info.rows_span, 2..5, "three rows, one per line drawn");
+        for r in 3..5 {
+            assert!(doc.vmap.rows[r].decoration, "row {r} is a filler");
+            assert!(doc.vmap.rows[r].glyphs.is_empty());
+        }
+    }
+
+    /// No renderer, or one that answers `None` for this name, and the
+    /// directive is the one-row `⧉ name` placeholder it has always been.
+    #[test]
+    fn a_directive_nobody_draws_keeps_its_placeholder() {
+        for mut state in [state_with(None), state_with(Some(|_, _, _| None))] {
+            let mut doc = wysiwyg(SRC);
+            let (lines, _) = frame(&mut doc, &mut state, 40, 8);
+            assert_eq!(lines[2], "⧉ x-card", "\n{}", lines.join("\n"));
+            assert_eq!(lines[4], "below");
+            assert_eq!(doc.vmap.directives[0].rows_span.len(), 1);
+        }
+    }
+
+    /// Every caret stop is where it was without the drawing — the caret steps
+    /// over the directive in one press each way — and the terminal caret is
+    /// drawn at the drawing's edges: before it at its corner, after it past
+    /// the end of its last line.
+    #[test]
+    fn the_caret_steps_over_a_drawn_directive_and_sits_at_its_edges() {
+        let stops = |renderer: Option<Draw>| {
+            let mut doc = wysiwyg(SRC);
+            let mut state = state_with(renderer);
+            frame(&mut doc, &mut state, 40, 12);
+            doc.caret = 0;
+            let mut seen = vec![0];
+            loop {
+                doc.move_right(false);
+                frame(&mut doc, &mut state, 40, 12);
+                if *seen.last().unwrap() == doc.caret {
+                    break;
+                }
+                seen.push(doc.caret);
+            }
+            seen
+        };
+        let drawn = stops(Some(card));
+        assert_eq!(drawn, stops(None));
+
+        let start = SRC.find("::").unwrap();
+        let end = SRC.find("}\n").unwrap() + 1;
+        let at = drawn
+            .iter()
+            .position(|&c| c == start)
+            .expect("a stop before it");
+        assert_eq!(drawn[at + 1], end, "one press crosses the whole directive");
+
+        let mut doc = wysiwyg(SRC);
+        let mut state = state_with(Some(card));
+        doc.caret = start;
+        let (_, cursor) = frame(&mut doc, &mut state, 40, 12);
+        assert_eq!(cursor, (0, 2), "before: the card's top-left corner");
+        doc.caret = end;
+        let (_, cursor) = frame(&mut doc, &mut state, 40, 12);
+        assert_eq!(cursor, (17, 4), "after: past the end of its last line");
+
+        // Down from the line above lands on the directive, and the next step
+        // down clears all three of its rows to the line below.
+        doc.caret = 0;
+        let mut downs = vec![0];
+        loop {
+            doc.move_down(false);
+            frame(&mut doc, &mut state, 40, 12);
+            if *downs.last().unwrap() == doc.caret {
+                break;
+            }
+            downs.push(doc.caret);
+        }
+        assert_eq!(downs[..3], [0, start, SRC.find("below").unwrap()]);
+    }
+
+    /// A drawing that depends on the width is asked again when the width
+    /// changes, and the rows it reserves follow — and a frame at the same
+    /// width asks core to rebuild nothing.
+    #[test]
+    fn a_new_width_re_reports_the_height_and_a_still_frame_rebuilds_nothing() {
+        // The URL folded into as many lines as the width takes.
+        fn folding(info: &DirectiveInfo, width: u16, _: &Theme) -> Option<Vec<Line<'static>>> {
+            let chars: Vec<char> = info.attr("src")?.chars().collect();
+            Some(
+                chars
+                    .chunks((width as usize).max(1))
+                    .map(|c| Line::from(c.iter().collect::<String>()))
+                    .collect(),
+            )
+        }
+        let long = format!("::x-card{{src=\"{}\"}}\n", "a".repeat(60));
+        let mut doc = wysiwyg(&long);
+        let mut state = state_with(Some(folding));
+        frame(&mut doc, &mut state, 61, 20);
+        assert_eq!(doc.vmap.directives[0].rows_span.len(), 1);
+        frame(&mut doc, &mut state, 31, 20);
+        assert_eq!(doc.vmap.directives[0].rows_span.len(), 2);
+        frame(&mut doc, &mut state, 21, 20);
+        assert_eq!(doc.vmap.directives[0].rows_span.len(), 3);
+
+        let key = doc.visual_key();
+        frame(&mut doc, &mut state, 21, 20);
+        assert_eq!(doc.visual_key(), key, "a still frame rebuilt the map");
+    }
+
+    /// `page-break` is leaf's: the renderer is never asked about it, and it
+    /// stays the dashed rule. A key two directives share is asked about once.
+    #[test]
+    fn the_renderer_is_never_asked_about_a_page_break() {
+        let asked = Rc::new(RefCell::new(Vec::new()));
+        let log = asked.clone();
+        let mut state = EditorState::new();
+        state.set_directive_renderer(move |info: &DirectiveInfo, w: u16, t: &Theme| {
+            log.borrow_mut().push(info.name.clone());
+            card(info, w, t)
+        });
+        let mut doc = wysiwyg(&format!("{SRC}\n::page-break\n\n{SRC}"));
+        let (lines, _) = frame(&mut doc, &mut state, 40, 20);
+        assert_eq!(
+            *asked.borrow(),
+            ["x-card"],
+            "asked once, and not about the break"
+        );
+        assert!(
+            lines.iter().any(|l| l.starts_with(PAGE_BREAK_DASH)),
+            "\n{}",
+            lines.join("\n")
+        );
+    }
+
+    /// Selected along with the text around it, the drawing is drawn reversed.
+    #[test]
+    fn a_selected_drawing_is_drawn_reversed() {
+        let mut doc = wysiwyg(SRC);
+        let mut state = state_with(Some(card));
+        doc.anchor = Some(0);
+        doc.caret = SRC.len();
+        let mut term = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        term.draw(|f| render(f, f.area(), &mut doc, &mut state))
+            .unwrap();
+        let buf = term.backend().buffer();
+        assert!(
+            buf[(0, 3)]
+                .style()
+                .add_modifier
+                .contains(ratatui::style::Modifier::REVERSED)
+        );
+    }
+
+    /// Inside a quote the drawing stands after the quote's gutter, which still
+    /// shows, and is asked for in the columns left over.
+    #[test]
+    fn a_quoted_directive_is_drawn_after_the_gutter() {
+        let mut doc = wysiwyg("> ::x-card{src=\"u\"}\n");
+        let mut state = state_with(Some(card));
+        let (lines, _) = frame(&mut doc, &mut state, 40, 8);
+        let joined = lines.join("\n");
+        let top = lines
+            .iter()
+            .position(|l| l.contains('╭'))
+            .unwrap_or_else(|| panic!("no card:\n{joined}"));
+        let indent = directive::indent_of(&doc, &doc.vmap.directives[0]);
+        assert!(indent > 0, "a quote has a gutter:\n{joined}");
+        assert_eq!(
+            lines[top].chars().position(|c| c == '╭'),
+            Some(indent),
+            "\n{joined}"
+        );
+        assert!(!joined.contains('⧉'), "\n{joined}");
+        // The quote's bar runs down beside every line of it.
+        for line in &lines[top..top + 3] {
+            assert!(line.starts_with('│'), "\n{joined}");
+        }
     }
 }
