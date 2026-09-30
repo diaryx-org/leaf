@@ -31,6 +31,7 @@ contents:
 - '[Uniffi 032 Needs A Resvg Release](/docs/tasks/closed/uniffi-032-needs-a-resvg-release.md)'
 - '[Android Twig Release](/docs/tasks/closed/android-twig-release.md)'
 - '[Web Directive Hook](/docs/tasks/closed/web-directive-hook.md)'
+- '[Text typed at either stop of a leaf directive joins the directive''s line](/docs/tasks/closed/text-typed-after-a-leaf-directive-joins-its-line.md)'
 ---
 
 # Closed tasks

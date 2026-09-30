@@ -18,7 +18,7 @@ other. `test/editor.test.html` round-trips a caret over a replaced row
 through `_syncFromDom` and steps over the drawing in one press each way.
 Typing at either stop still writes into the directive's own line. That is
 leaf-core's
-[text typed after a leaf directive](/docs/tasks/text-typed-after-a-leaf-directive-joins-its-line.md)
+[text typed after a leaf directive](/docs/tasks/closed/text-typed-after-a-leaf-directive-joins-its-line.md)
 task.
 
 **The web step of a wider plan.** The
