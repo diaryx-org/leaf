@@ -16,6 +16,9 @@
 //!   return an [`Outcome`] / [`MouseOutcome`] naming what the *host* must do
 //!   (quit, save, clipboard, open a prompt or context menu), so the host keeps
 //!   ownership of everything that isn't the editing surface.
+//! - [`DirectiveRenderer`] / [`DirectiveItem`] — the host's own directives
+//!   (`::embed{src=…}`): how each is drawn over the rows core reserves for it,
+//!   and the catalogue rows a host offers to insert them.
 //!
 //! ```no_run
 //! # use leaf_core::Doc;
@@ -34,12 +37,16 @@
 use std::ops::Range;
 use std::time::{Duration, Instant};
 
+mod directive;
 #[cfg(feature = "images")]
 pub mod image;
 mod input;
 mod render;
 pub mod style;
 
+pub use directive::{
+    DirectiveAnswer, DirectiveContent, DirectiveFill, DirectiveItem, DirectiveRenderer,
+};
 #[cfg(feature = "images")]
 pub use image::Images;
 pub use input::{
@@ -120,6 +127,11 @@ pub struct EditorState {
     /// directly; a host with its own opinion calls
     /// [`EditorState::set_color_scheme`] or [`EditorState::set_theme`].
     theme: Theme,
+    /// The host's drawing for its directives, if it has one — see
+    /// [`EditorState::set_directive_renderer`]. `None` draws every leaf
+    /// directive as core's `⧉ name` placeholder, as a host with no vocabulary
+    /// of its own wants.
+    directives: Option<Box<dyn DirectiveRenderer>>,
 }
 
 impl Default for EditorState {
@@ -141,6 +153,7 @@ impl Default for EditorState {
             peek: None,
             last_click: None,
             theme: Theme::for_scheme(style::detect_color_scheme()),
+            directives: None,
         }
     }
 }
@@ -281,6 +294,19 @@ impl EditorState {
         self.theme = theme;
         #[cfg(feature = "images")]
         self.images.set_color_scheme(theme.scheme);
+    }
+
+    /// Draw the host's leaf directives with `renderer`, from the next frame
+    /// on. Each directive it answers for is laid out as tall as its drawing and
+    /// drawn over the rows that reserves; one it answers `None` for keeps the
+    /// `⧉ name` placeholder. See [`DirectiveRenderer`].
+    pub fn set_directive_renderer(&mut self, renderer: impl DirectiveRenderer + 'static) {
+        self.directives = Some(Box::new(renderer));
+    }
+
+    /// Go back to drawing every directive as its placeholder.
+    pub fn clear_directive_renderer(&mut self) {
+        self.directives = None;
     }
 
     /// The palette in force, for a host drawing chrome that should match the
