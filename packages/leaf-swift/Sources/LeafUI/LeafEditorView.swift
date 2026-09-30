@@ -1532,6 +1532,36 @@ final class LeafEditorController: UIViewController {
         if let keyboardObserver { NotificationCenter.default.removeObserver(keyboardObserver) }
     }
 
+    /// Whether the controller is on screen, between `viewDidAppear` and
+    /// `viewDidDisappear` — past any push or column slide that brought it.
+    private var isShown = false
+    /// The text view to focus once the controller is shown.
+    private var pendingFocus: LeafTextView?
+
+    /// Focus `textView` — now, if the controller is already on screen, or once
+    /// it is. An editor pushed onto a navigation stack is built as the push
+    /// begins; focused then, the keyboard rises, the content inset animates and
+    /// the host's own chrome answers the keyboard, all under the slide, which
+    /// stutters. Focused as the push lands, the keyboard rises alone.
+    func focusWhenShown(_ textView: LeafTextView) {
+        guard isShown else { pendingFocus = textView; return }
+        DispatchQueue.main.async { _ = textView.becomeFirstResponder() }
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        isShown = true
+        guard let textView = pendingFocus else { return }
+        pendingFocus = nil
+        // Still ours: a model swap during the push replaces the text view.
+        if textView === self.textView { _ = textView.becomeFirstResponder() }
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        isShown = false
+    }
+
     override func viewSafeAreaInsetsDidChange() {
         super.viewSafeAreaInsetsDidChange()
         updateFill()
@@ -1693,9 +1723,7 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
             footer: makeFooter(context: context))
 
         // A reader is opened to be read — see the AppKit peer.
-        if !model.isReadOnly {
-            DispatchQueue.main.async { _ = textView.becomeFirstResponder() }
-        }
+        if !model.isReadOnly { controller.focusWhenShown(textView) }
         return controller
     }
 
@@ -1727,9 +1755,7 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
             // forces an immediate render → `onStateChange`, rather than waiting on
             // whatever layout pass happens to come next.
             textView.command { $0.view() }
-            if !model.isReadOnly {
-                DispatchQueue.main.async { _ = textView.becomeFirstResponder() }
-            }
+            if !model.isReadOnly { controller.focusWhenShown(textView) }
             return
         }
         hosted.theme = theme
