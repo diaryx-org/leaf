@@ -50,8 +50,9 @@ pub use style::{
     LineHeight, LineSpacing, MarkColor, Role, SizeStep, Style, TextColor, Token,
 };
 pub use wysiwyg::{
-    BlockClass, Boundary, CodeBlockInfo, ColorScheme, Glyph, MathInfo, MathMark, MediaInfo,
-    MediaKind, MediaSource, Reveal, Surface, TableCell, TableInfo, TableRow, VRow, VisualMap,
+    BlockClass, Boundary, CodeBlockInfo, ColorScheme, DirectiveInfo, DirectiveKey, DirectiveMark,
+    Glyph, MathInfo, MathMark, MediaInfo, MediaKind, MediaSource, Reveal, Surface, TableCell,
+    TableInfo, TableRow, VRow, VisualMap,
 };
 
 // Re-export the twig types a frontend needs to name when calling into a `Doc`

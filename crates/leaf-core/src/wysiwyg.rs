@@ -368,11 +368,52 @@ pub struct DirectiveMark {
     pub label: String,
     /// How many visual rows this directive reserves — the label row plus blank
     /// filler rows below it, so a frontend painting something real has the
-    /// vertical room. `1` is the bare placeholder, and the only value core
-    /// produces today: unlike an image (whose height a terminal frontend
-    /// measures and reports back), nothing has told core how tall an embed is.
-    /// A pixel-laid-out GUI sets its own height regardless.
+    /// vertical room. `1` is the bare placeholder, and what every directive
+    /// gets until a frontend that reserves rows — a terminal, which draws the
+    /// host's lines over them — reports a height back through
+    /// [`crate::Doc::set_directive_rows`], keyed by [`key`](Self::key). A
+    /// pixel-laid-out GUI sets its own height regardless.
     pub rows: usize,
+}
+
+impl DirectiveMark {
+    /// What [`crate::Doc::set_directive_rows`] knows this directive by.
+    pub fn key(&self) -> DirectiveKey {
+        DirectiveKey::new(&self.name, &self.label, &self.attrs)
+    }
+}
+
+/// What a directive's reported height is keyed by: everything a host draws it
+/// from — its name, its label and its attributes — and nothing about where it
+/// stands. The peer of a picture's destination, which keys
+/// [`crate::Doc::set_media_rows`]: two directives spelled alike draw alike and
+/// so stand as tall, and the height survives an edit above them, which a key
+/// by position would not.
+///
+/// An attribute's value is flattened, a bare attribute to `""`, because that is
+/// the shape both bindings hand a host (`DirectiveAttr`, a string value) and so
+/// the shape a host's report comes back in; the difference between `{wide}` and
+/// `{wide=""}` is not one a drawing is expected to make.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct DirectiveKey {
+    pub name: String,
+    pub label: String,
+    pub attrs: Vec<(String, String)>,
+}
+
+impl DirectiveKey {
+    /// The key for a directive named `name` with `label` (`""` for none) and
+    /// `attrs` in source order.
+    pub fn new(name: &str, label: &str, attrs: &[(String, Option<String>)]) -> Self {
+        Self {
+            name: name.to_string(),
+            label: label.to_string(),
+            attrs: attrs
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone().unwrap_or_default()))
+                .collect(),
+        }
+    }
 }
 
 /// What a block-level media placeholder actually is, so a frontend knows which
@@ -1654,6 +1695,10 @@ pub struct Surface {
     /// [`crate::Doc::set_math_rows`] once the frontend has typeset and
     /// measured the picture.
     pub math_rows: HashMap<String, usize>,
+    /// The same for each leaf directive, keyed by its [`DirectiveKey`] — set
+    /// through [`crate::Doc::set_directive_rows`] by a frontend that draws a
+    /// host's lines for the directive over reserved rows, as a terminal does.
+    pub directive_rows: HashMap<DirectiveKey, usize>,
     /// Whether the surface can paint a picture *inside* a line of text, so an
     /// inline formula may render to one atom glyph it draws over
     /// ([`MathInfo`]). A pixel-laid-out frontend says yes; a terminal cannot
@@ -3785,7 +3830,7 @@ impl Builder<'_> {
                     && node.directive_form == Some(DirectiveForm::Container)
                     && node.name.as_deref().unwrap_or_default().is_empty()
                     && self.children(id).is_empty()
-                    && !leaf_directive_identity(node).0.is_empty() =>
+                    && !leaf_directive_identity(node, self.source).0.is_empty() =>
             {
                 self.block_directive(id, pf);
             }
@@ -4718,9 +4763,18 @@ impl Builder<'_> {
     fn block_directive(&mut self, id: usize, pf: &[Glyph]) {
         let node = &self.nodes[id];
         let (start, end) = (node.span.start, node.span.end);
-        let (name, attrs) = leaf_directive_identity(node);
+        let (name, attrs) = leaf_directive_identity(node, self.source);
         let label = self.image_alt(id); // its `[label]` children, flattened
         let shown = if label.is_empty() { &name } else { &label };
+        // How many rows the frontend drew the directive in: the label row plus
+        // the blank fillers below it. Absent means the bare placeholder.
+        let rows = self
+            .surface
+            .directive_rows
+            .get(&DirectiveKey::new(&name, &label, &attrs))
+            .copied()
+            .unwrap_or(1)
+            .max(1);
         let style = Style::default().role(Role::Image);
         let mut glyphs = pf.to_vec();
         for ch in format!("⧉ {shown}").chars() {
@@ -4740,7 +4794,30 @@ impl Builder<'_> {
                 name,
                 attrs,
                 label,
-                rows: 1,
+                rows,
+            });
+        }
+        // The rest of the host's drawing as blank `decoration` rows, holding no
+        // caret — `block_media`'s fillers, anchored at the directive's end for
+        // the same reason: a click on the drawing's lower part lands after it.
+        for _ in 1..rows {
+            self.rows.push(VRow {
+                glyphs: Vec::new(),
+                end_src: end,
+                decoration: true,
+                code: false,
+                code_lang: None,
+                directive: false,
+                directive_label: None,
+                media: None,
+                task: None,
+                leaf_directive: None,
+                heading: None,
+                align: None,
+                line_height: None,
+                boundary: None,
+                mark_ends: Vec::new(),
+                math: Vec::new(),
             });
         }
         self.last_off = end;
@@ -5869,6 +5946,12 @@ impl DirectiveInfo {
             .find(|(k, _)| k == key)
             .and_then(|(_, v)| v.as_deref())
     }
+
+    /// What [`crate::Doc::set_directive_rows`] knows this directive by — the
+    /// key a terminal reports the height of its drawing under.
+    pub fn key(&self) -> DirectiveKey {
+        DirectiveKey::new(&self.name, &self.label, &self.attrs)
+    }
 }
 
 impl MediaInfo {
@@ -6401,10 +6484,17 @@ pub(crate) fn element_tag(node: &FlatNode) -> Option<&str> {
 /// with no attributes, and this returns it verbatim. Djot has no leaf form:
 /// `insert_directive` writes the same document as an empty `::: page-break`
 /// fence, whose container is anonymous (a djot div carries no name) and whose
-/// name arrives as the fence's one class. So where the node has no name of its
-/// own the first `class` token *is* the name, and whatever else the class said
-/// — an author's `::: page-break {.wide}` — stays an attribute.
-fn leaf_directive_identity(node: &FlatNode) -> (String, Vec<(String, Option<String>)>) {
+/// name arrives as a class. Where the node has no name of its own, then, the
+/// name is the word on the fence line when there is one — djot appends it
+/// *after* the classes of an attribute line above (`{.wide}` over `:::
+/// x-card` reads back as `class="wide x-card"`), so it is found by what the
+/// fence says rather than by position — and otherwise, for a bare `:::` under
+/// `{.page-break .wide}`, the first class. Whatever else the class said stays
+/// an attribute.
+fn leaf_directive_identity(
+    node: &FlatNode,
+    source: &str,
+) -> (String, Vec<(String, Option<String>)>) {
     let named = node.name.clone().unwrap_or_default();
     if !named.is_empty() {
         return (named, node.attrs.clone());
@@ -6415,11 +6505,20 @@ fn leaf_directive_identity(node: &FlatNode) -> (String, Vec<(String, Option<Stri
         .find(|(k, _)| k == "class")
         .and_then(|(_, v)| v.as_deref())
         .unwrap_or_default();
-    let mut tokens = class.split_whitespace();
-    let Some(name) = tokens.next().map(str::to_string) else {
+    let mut tokens = class.split_whitespace().collect::<Vec<_>>();
+    let fence_word = source
+        .get(node.span.start..)
+        .and_then(|rest| rest.lines().next())
+        .map(|line| line.trim_start_matches(['>', ' ', '\t', ':']).trim())
+        .and_then(|word| word.split_whitespace().next());
+    let at = fence_word
+        .and_then(|word| tokens.iter().rposition(|t| *t == word))
+        .unwrap_or(0);
+    if tokens.is_empty() {
         return (named, node.attrs.clone());
-    };
-    let rest = tokens.collect::<Vec<_>>().join(" ");
+    }
+    let name = tokens.remove(at).to_string();
+    let rest = tokens.join(" ");
     let attrs = node
         .attrs
         .iter()
@@ -10343,8 +10442,8 @@ mod tests {
     }
 
     /// A djot fence carrying more than its name keeps the rest as an attribute
-    /// rather than folding it into the name: the *first* class token is the
-    /// name, because that is where `insert_directive` puts it.
+    /// rather than folding it into the name: with a bare `:::` fence, which
+    /// names nothing itself, the *first* class token is the name.
     #[test]
     fn a_djot_fence_s_first_class_is_the_directive_s_name_and_the_rest_is_attributes() {
         let m = map_leaf("{.page-break .wide}\n:::\n:::\n", Format::Djot);
@@ -10358,6 +10457,33 @@ mod tests {
             mark.attrs,
             vec![("class".to_string(), Some("wide".to_string()))]
         );
+    }
+
+    /// With the name on the fence line, djot appends it *after* the classes of
+    /// the attribute line above, so the name is the fence's word wherever it
+    /// lands in the class — here, and inside a quote.
+    #[test]
+    fn a_djot_fence_s_word_is_the_directive_s_name_behind_an_attribute_line() {
+        for src in [
+            "{.wide src=\"u\"}\n::: x-card\n:::\n",
+            "> {.wide src=\"u\"}\n> ::: x-card\n> :::\n",
+        ] {
+            let m = map_leaf(src, Format::Djot);
+            let mark = m
+                .rows
+                .iter()
+                .find_map(|r| r.leaf_directive.as_ref())
+                .unwrap_or_else(|| panic!("a placeholder for {src:?}"));
+            assert_eq!(mark.name, "x-card", "{src:?}");
+            assert_eq!(
+                mark.attrs,
+                vec![
+                    ("class".to_string(), Some("wide".to_string())),
+                    ("src".to_string(), Some("u".to_string())),
+                ],
+                "{src:?}"
+            );
+        }
     }
 
     // ── math ─────────────────────────────────────────────────────────────────
