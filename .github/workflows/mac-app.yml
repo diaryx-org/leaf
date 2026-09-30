@@ -11,16 +11,26 @@ name: Mac app
 #   APPLE_API_KEY_ID            its key id,
 #   APPLE_API_ISSUER_ID         and its issuer id
 #
+# Then the `cask` job points `Casks/leaf-editor.rb` in diaryx-org/homebrew-tap
+# at the new image, pushing as the diaryx-bot GitHub App (TAP_APP_ID,
+# TAP_APP_KEY) the way homebrew.yml's formula bump does.
+#
 # Fires on the same `v*.*.*` tags homebrew.yml does. Dispatched by hand it
 # builds, signs and notarises whatever ref it is run on and keeps the image as
 # a workflow artifact, touching no release — the way to rehearse this before a
-# tag depends on it.
+# tag depends on it. Dispatched with `cask-tag` it builds nothing and only
+# writes the cask for that tag's already-attached image.
 on:
   push: { tags: [v*.*.*] }
   workflow_dispatch:
+    inputs:
+      cask-tag:
+        description: "Only write the tap's cask for this released tag (e.g. v0.4.12), building nothing"
+        required: false
+        type: string
 
 permissions:
-  contents: write # attaches the image to the GitHub Release
+  contents: write # attaches the image to the GitHub Release; the tap is the App's
 
 concurrency:
   group: mac-app-${{ github.ref }}
@@ -34,6 +44,7 @@ jobs:
     name: Sign and notarise Leaf.app
     # Apple Silicon: the image is aarch64 only, as the Rust staticlib is.
     runs-on: macos-latest
+    if: inputs.cask-tag == ''
     steps:
     - uses: actions/checkout@v7
 
@@ -131,3 +142,58 @@ jobs:
     - name: Delete the keychain
       if: always() && env.KEYCHAIN != ''
       run: security delete-keychain "$KEYCHAIN"
+
+  cask:
+    name: Bump tap cask
+    needs: [package]
+    # `always()` so that a `cask-tag` dispatch, which skips `package`, still
+    # runs; on a tag it waits for the image to be attached.
+    if: >-
+      always() && (inputs.cask-tag != '' ||
+      (github.ref_type == 'tag' && needs.package.result == 'success'))
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+
+    # Hashed from the released URL itself — the bytes `brew install` will
+    # download, not a copy that passed between jobs.
+    - name: Render the cask
+      env:
+        TAG: ${{ inputs.cask-tag || github.ref_name }}
+        REPO: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+        version="${TAG#v}"
+        url="https://github.com/$REPO/releases/download/$TAG/Leaf-$version-aarch64.dmg"
+        sha256=$(curl -fsSL "$url" | sha256sum | cut -d' ' -f1)
+        scripts/render-cask.sh "$version" "$sha256" > "$RUNNER_TEMP/leaf-editor.rb"
+        cat "$RUNNER_TEMP/leaf-editor.rb"
+        echo "VERSION=$version" >> "$GITHUB_ENV"
+
+    - name: Mint a tap token from the GitHub App
+      id: tap_token
+      uses: actions/create-github-app-token@v2
+      with:
+        app-id: ${{ secrets.TAP_APP_ID }}
+        private-key: ${{ secrets.TAP_APP_KEY }}
+        owner: diaryx-org
+        repositories: homebrew-tap
+
+    - name: Push to the tap
+      env:
+        COMMITTER_TOKEN: ${{ steps.tap_token.outputs.token }}
+      run: |
+        set -euo pipefail
+        git clone "https://x-access-token:${COMMITTER_TOKEN}@github.com/diaryx-org/homebrew-tap" tap
+        mkdir -p tap/Casks
+        cp "$RUNNER_TEMP/leaf-editor.rb" tap/Casks/leaf-editor.rb
+        cd tap
+        git config user.name "diaryx-bot[bot]"
+        git config user.email "306900725+diaryx-bot[bot]@users.noreply.github.com"
+        git add Casks/leaf-editor.rb
+        if git diff --cached --quiet; then
+          echo "Cask unchanged — skipping commit"
+        else
+          git commit -m "leaf-editor $VERSION"
+          git push
+        fi
