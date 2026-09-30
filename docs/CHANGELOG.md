@@ -37,6 +37,21 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.4.10 — 2026-09-29
+
+### Added
+
+- **leaf-core** — mark the source a slow write read as saved, not the buffer ([`33314a2`](https://github.com/diaryx-org/leaf/commit/33314a2adb3b6b20fd25947438bf695e5adeba5b))
+
+### Fixed
+
+- **leaf-swift** — focus a pushed editor once it lands, and never stretch its text mid-animation ([`9c56a29`](https://github.com/diaryx-org/leaf/commit/9c56a29d4c6a046d3e62f078fd36599d4f8e8715))
+
+### Behavioural changes
+
+- on iOS, LeafEditor takes focus (and raises the keyboard) when its controller appears, after any push or column slide that brings it, rather than one run-loop turn after it is built. The text view's contents are pinned top-left instead of scaled while its bounds animate.
+
+
 ## v0.4.9 — 2026-09-29
 
 ### Added
