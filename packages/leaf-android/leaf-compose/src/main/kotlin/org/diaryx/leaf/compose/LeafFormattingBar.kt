@@ -16,7 +16,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -52,14 +55,24 @@ import androidx.compose.ui.unit.sp
  * One scrolling row, since a phone is narrower than the controls are many.
  * The glyphs are type rather than icons, which is what a formatting bar has
  * always drawn them as and needs no icon set to ship.
+ *
+ * [directives] is the host's catalogue: each item a row of an Insert menu
+ * (`+`) at the bar's end, dimmed where the format cannot write a directive.
+ * Empty, there is no menu.
  */
 @Composable
-fun LeafFormattingBar(state: LeafEditorState, modifier: Modifier = Modifier) {
+fun LeafFormattingBar(
+    state: LeafEditorState,
+    modifier: Modifier = Modifier,
+    directives: List<LeafDirectiveItem> = emptyList(),
+) {
     val chrome = state.chrome
     val caps = state.capabilities
     val source = chrome.view == "source"
     var styleMenu by remember { mutableStateOf(false) }
     var linkDialog by remember { mutableStateOf(false) }
+    var insertMenu by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
 
     Surface(modifier, tonalElevation = 3.dp) {
         Row(
@@ -111,6 +124,25 @@ fun LeafFormattingBar(state: LeafEditorState, modifier: Modifier = Modifier) {
             Key("⇤", "Outdent", !source) { state.command { it.outdent() } }
             Key("⇥", "Indent", !source) { state.command { it.indent() } }
             Key("―", "Horizontal rule", caps.thematicBreak && !source) { state.command { it.insertThematicBreak() } }
+            if (directives.isNotEmpty()) {
+                val can = caps.directives && !source
+                Box {
+                    Key("+", "Insert", can) { insertMenu = true }
+                    DropdownMenu(insertMenu, onDismissRequest = { insertMenu = false }) {
+                        for (item in directives) {
+                            DropdownMenuItem(
+                                { Text(item.title) },
+                                leadingIcon = item.icon?.let { icon -> { Icon(icon, contentDescription = null) } },
+                                enabled = can,
+                                onClick = {
+                                    insertMenu = false
+                                    scope.launch { state.insertDirective(item) }
+                                },
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 
