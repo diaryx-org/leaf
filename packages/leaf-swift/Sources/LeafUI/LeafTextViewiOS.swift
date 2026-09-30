@@ -730,6 +730,22 @@ public final class LeafTextView: UIView, UITextInput {
         set { mediaStore.onLocateMedia = newValue }
     }
 
+    /// Asked for a view to draw each leaf directive (`::name{…}`) with, in place
+    /// of core's `⧉ name` placeholder. The AppKit peer's `directiveView`; see it
+    /// for the whole contract. The view sits in this view's own coordinates, so
+    /// the zoom's transform scales it with the text. To leave the caret a tap
+    /// on it, turn off its `isUserInteractionEnabled`.
+    public var directiveView: ((DirectiveView) -> LeafView?)? {
+        get { directiveHost.provider }
+        set {
+            directiveHost.provider = newValue
+            render(docView, reflow: true)
+        }
+    }
+
+    /// The host's views for the document's directives.
+    private let directiveHost = DirectiveHost()
+
     /// Loads and caches the stills the media boxes draw.
     private let mediaStore = MediaStore()
     /// The AVKit players currently installed over media boxes.
@@ -1386,14 +1402,20 @@ public final class LeafTextView: UIView, UITextInput {
         traitCollection.performAsCurrent {
             if reflow {
                 layoutEngine = EditorLayout(view, theme: renderTheme, viewWidth: viewWidth, page: pageSetup,
-                                            cache: &shapeCache, media: mediaStore)
+                                            cache: &shapeCache, media: mediaStore,
+                                            directives: directiveHost.measure)
             } else if change != nil || blocksChanged || layoutEngine.rows.isEmpty {
                 layoutEngine = EditorLayout(view, theme: renderTheme, viewWidth: viewWidth, page: pageSetup,
                                             cache: &shapeCache, media: mediaStore, previous: layoutEngine,
-                                            change: change)
+                                            change: change, directives: directiveHost.measure)
             }
         }
         let relaid = reflow || change != nil || blocksChanged
+        // The host's views follow their boxes; one whose directive was edited
+        // away goes with it.
+        if relaid, !directiveHost.isEmpty {
+            directiveHost.place(layoutEngine.directiveRects(), in: self)
+        }
         // Installed players follow their boxes; media edited out of the document
         // is absent from the rects, which is what stops its playback.
         if relaid, !mediaPlayers.isEmpty {
@@ -1571,6 +1593,8 @@ public final class LeafTextView: UIView, UITextInput {
                 }
                 continue
             }
+            // A directive the host draws is its view, a subview over the box.
+            if rl.directive != nil { continue }
             // The row's bands, not one rect over its whole height: a split row has
             // a sheet edge — or a column gutter — through the middle of it, and a
             // code fill drawn over that would tile the backdrop or the gutter too.
@@ -2028,7 +2052,7 @@ public final class LeafTextView: UIView, UITextInput {
             // Probe from the caret's full line band (a table cell's padding is
             // cleared) and resolve the table-aware way, or a probe into a table
             // teleports to its top-left cell. See the AppKit peer's `moveVertical`.
-            let band = layoutEngine.caretBand(src: cur)
+            let band = layoutEngine.caretBand(src: cur, row: Int(rc.row))
             var probeY = up ? (band?.minY ?? caret.minY) - 1 : (band?.maxY ?? caret.maxY) + 1
             let probe = CGPoint(x: caret.minX, y: probeY)
             let next: Int
