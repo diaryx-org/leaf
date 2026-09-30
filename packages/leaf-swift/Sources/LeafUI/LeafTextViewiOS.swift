@@ -1002,8 +1002,8 @@ public final class LeafTextView: UIView, UITextInput {
     // MARK: link following
 
     /// Open the link under the caret, if there is one. The host gets first
-    /// refusal (`onOpenLink`); otherwise it goes to the system, which needs the
-    /// destination to parse as a URL.
+    /// refusal (`onOpenLink`); otherwise it goes to the system, as a URL or as
+    /// a file beside the document (`LinkDestination`).
     ///
     /// Reached from the edit menu rather than from a tap: with no ⌘ to hold and
     /// no pointer to hover, a long press is the phone's "do something else to
@@ -1016,7 +1016,15 @@ public final class LeafTextView: UIView, UITextInput {
         // rather than a departure — the AppKit peer's rule, and the same one.
         if let landing = doc.selfLanding(of: dest) { reveal(offset: landing); return true }
         if onOpenLink?(dest) == true { return true }
-        guard let url = URL(string: dest) else { return false }
+        return openWithSystem(dest)
+    }
+
+    /// Hand a destination the host declined to the system. False when it
+    /// names nothing that can be opened.
+    @discardableResult
+    private func openWithSystem(_ destination: String) -> Bool {
+        guard let url = LinkDestination.url(for: destination, relativeTo: documentDirectory),
+              LinkDestination.isOpenable(url) else { return false }
         UIApplication.shared.open(url)
         return true
     }
@@ -1126,8 +1134,7 @@ public final class LeafTextView: UIView, UITextInput {
             // to, so it navigates here rather than going out to the host.
             if let landing = doc.selfLanding(of: destination) { reveal(offset: landing); return }
             if onOpenLink?(destination) == true { return }
-            guard let url = URL(string: destination) else { return }
-            UIApplication.shared.open(url)
+            openWithSystem(destination)
         case .footnote(let offset):
             render(doc.caretMoved(to: offset))
             followFootnoteAtCaret()
