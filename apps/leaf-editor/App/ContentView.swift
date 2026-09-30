@@ -127,6 +127,11 @@ struct ContentView: View {
                 model?.insertLink(destination)
             }
         }
+        // The app's own directive: Insert ▸ Embed… writes an `::embed{src=…}`,
+        // and the editor draws each one as the app's card. Every other directive
+        // stays leaf's placeholder.
+        if model.directiveCatalogue.isEmpty { model.directiveCatalogue = [EmbedDirective.item] }
+        if model.directiveView == nil { model.directiveView = EmbedDirective.view(for:) }
     }
 
     #if os(macOS)
