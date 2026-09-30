@@ -1354,7 +1354,6 @@ struct LeafEditorSurface: NSViewRepresentable {
     /// arrives, the column reports a new maximum on every constraints pass,
     /// and the pass never settles — the five-picture crash again, reached
     /// through the inspector rather than a scroll bar. See `surfaceSize`.
-    @available(macOS 13.0, *)
     public func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView,
                              context: Context) -> CGSize? {
         Self.surfaceSize(for: proposal)
@@ -1368,7 +1367,6 @@ struct LeafEditorSurface: NSViewRepresentable {
     /// stack it sits in: nothing at the minimum, the whole of what is offered
     /// at the maximum, and never a number read off the document. Infinity
     /// passes through, as it does for any fill.
-    @available(macOS 13.0, *)
     static func surfaceSize(for proposal: ProposedViewSize) -> CGSize {
         CGSize(width: proposal.width ?? 0, height: proposal.height ?? 0)
     }

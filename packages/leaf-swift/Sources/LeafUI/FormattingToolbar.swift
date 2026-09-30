@@ -228,22 +228,12 @@ public struct LeafFormattingToolbar: View {
     /// tools, or a large Dynamic Type size, make the row wider than the
     /// screen, it scrolls as the whole row used to: a finger can flick it,
     /// and it can't clip.
-    ///
-    /// `ViewThatFits` is macOS 13, and this style can be asked for on the
-    /// Mac too, so macOS 12 takes the scroll unconditionally.
-    @ViewBuilder
     private var accessoryRow: some View {
         let tools = ToolCatalogue(editor: editor, beginLink: beginLink)
-        Group {
-            if #available(macOS 13, iOS 16, *) {
-                ViewThatFits(in: .horizontal) {
-                    accessoryTools(tools)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    ScrollView(.horizontal, showsIndicators: false) { accessoryTools(tools) }
-                }
-            } else {
-                ScrollView(.horizontal, showsIndicators: false) { accessoryTools(tools) }
-            }
+        return ViewThatFits(in: .horizontal) {
+            accessoryTools(tools)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            ScrollView(.horizontal, showsIndicators: false) { accessoryTools(tools) }
         }
         .frame(height: metrics.barHeight)
         .background(.bar)
@@ -292,8 +282,6 @@ public struct LeafFormattingToolbar: View {
     /// hold it open, and the row is laid over it at that width. Measured on
     /// the row itself it could never be narrower than the row's own tools, so
     /// the row would run past the container's edge and report that it fit.
-    /// A `GeometryReader` in the background rather than `onGeometryChange`,
-    /// which is a macOS 13 modifier and this package is macOS 12.
     private var pagedRow: some View {
         Color.clear
             .frame(height: metrics.barHeight)
@@ -438,9 +426,8 @@ public struct LeafFormattingToolbar: View {
     /// one with both (tap to act, press-and-hold or right-click for the
     /// rest), and a plain menu for one that is only its variants.
     ///
-    /// `.buttonStyle(.plain)` rather than `.menuStyle(.button)`: the latter is
-    /// macOS 13, this package is macOS 12, and a plain button style reaches a
-    /// menu's own label the same way — a bare glyph on the bar's material.
+    /// `.buttonStyle(.plain)` reaches a menu's own label as well as a
+    /// button's — a bare glyph on the bar's material.
     @ViewBuilder
     private func target(_ item: ToolItem, width: CGFloat, indicator: Indicator = .none) -> some View {
         let face = targetFace(item, width: width, indicator: indicator)

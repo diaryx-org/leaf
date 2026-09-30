@@ -11,7 +11,6 @@ import SwiftUI
 import XCTest
 @testable import LeafUI
 
-@available(macOS 13.0, *)
 final class EditorSurfaceTests: XCTestCase {
     func testAFullProposalIsTheAnswer() {
         let size = LeafEditorSurface.surfaceSize(for: ProposedViewSize(width: 640, height: 480))
