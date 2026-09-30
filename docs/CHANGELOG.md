@@ -37,6 +37,21 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.4.11 — 2026-09-30
+
+### Added
+
+- **leaf-core** — replace the source under an open editor, keeping the caret ([`fa015d2`](https://github.com/diaryx-org/leaf/commit/fa015d2dc1f4264112a88c45274cf96027d8dadf))
+
+### Fixed
+
+- **leaf-swift** — never answer a line walk with a range that ends where it began ([`55c5370`](https://github.com/diaryx-org/leaf/commit/55c5370bb79da37699dc7f761a1f66145dce1e88))
+
+### Behavioural changes
+
+- LeafTextView's tokenizer returns nil for rangeEnclosingPosition(_:with: .line, inDirection:) at the end of the document reading forward and at its start reading backward, and at any other line edge returns the adjacent line in the reading direction instead of the line the position ends or starts.
+
+
 ## v0.4.10 — 2026-09-29
 
 ### Added
