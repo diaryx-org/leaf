@@ -2,7 +2,7 @@
 title: Tasks
 description: Deferred work on leaf, one file each — a commitment with a done state
 created: 2026-09-04
-updated: 2026-09-26
+updated: 2026-09-30
 contents:
 - '[Writing Tools in the Apple views](writing-tools.md)'
 - '[Right-to-left text](right-to-left-text.md)'
@@ -14,6 +14,7 @@ contents:
 - '[Text glued under a closing `</div>` draws until the next full rebuild](text-glued-under-a-closing-div.md)'
 - '[Android block views](android-block-views.md)'
 - '[An IME composition undoes a keystroke at a time](ime-composition-undo.md)'
+- '[Text typed after a leaf directive joins the directive''s line](text-typed-after-a-leaf-directive-joins-its-line.md)'
 - '[Closed tasks](/docs/tasks/closed/closed.md)'
 part_of: '[leaf](/README.md)'
 ---
