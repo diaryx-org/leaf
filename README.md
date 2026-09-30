@@ -74,6 +74,7 @@ build behind a static server. Each is one word through the task runner in
 cargo xtask swift            # build + launch Leaf on macOS, with a copy of the sample open
 cargo xtask swift notes.md   # …with a document of your own
 cargo xtask swift --ios      # …on its own `iPhone 17 (leaf)` simulator (--device for another)
+cargo xtask package          # a signed, notarised Leaf.app in a .dmg, in target/package/
 cargo xtask android        # build + install Leaf on the attached Android device or emulator
 cargo xtask web            # build the wasm, serve apps/leaf-web-demo, open it
 cargo xtask web --test     # …serve the leaf-web editor tests instead
@@ -83,7 +84,10 @@ cargo xtask web --headless # …run those tests in Chrome and exit with the outc
 `cargo xtask swift` regenerates the UniFFI binding and the Xcode project when
 they're missing, so a fresh checkout needs no separate bootstrap step; pass
 `--regen` to force it after changing the Rust *API* surface. `cargo xtask --help`
-lists every task and flag.
+lists every task and flag. `cargo xtask package` needs a Developer ID identity
+in the keychain and notary credentials in the environment; the head of
+[`xtask/src/package.rs`](xtask/src/package.rs) names them, and
+`--no-notarize` does without the second.
 
 The runner holds the checks; releasing is its own tool. `cargo xtask ci` runs
 everything a release has to pass — rustfmt, clippy with warnings denied, the

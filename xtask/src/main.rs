@@ -16,6 +16,7 @@
 
 mod android;
 mod ci;
+mod package;
 mod swift;
 mod util;
 mod versions;
@@ -43,6 +44,8 @@ enum Task {
     Web(web::Args),
     /// Build and launch the Android app (apps/leaf-android) over packages/leaf-android.
     Android(android::Args),
+    /// Build a signed, notarised Leaf.app in a .dmg for other Macs (target/package/).
+    Package(package::Args),
 
     /// Run the checks a release has to pass — all of them, or one by id.
     Ci(ci::Args),
@@ -57,6 +60,7 @@ fn main() -> Result<()> {
         Task::Swift(args) => swift::run_task(args),
         Task::Web(args) => web::run_task(args),
         Task::Android(args) => android::run_task(args),
+        Task::Package(args) => package::run_task(args),
         Task::Ci(args) => ci::run_task(args),
         Task::SyncVersions => versions::run_task(),
     }

@@ -8,7 +8,7 @@ contents:
 - '[Right-to-left text](right-to-left-text.md)'
 - '[The heading the caret is under is a question `Doc` cannot answer](heading-at-offset.md)'
 - '[`can_undo` counts edits, and twig counts steps](can-undo-counts-edits-not-steps.md)'
-- '[The Mac app runs unsandboxed and unsigned](sandboxed-mac-app.md)'
+- '[The Mac app runs unsandboxed](sandboxed-mac-app.md)'
 - '[Enter in an HTML document writes whitespace](enter-in-html-writes-whitespace.md)'
 - '[Text glued under a closing `</div>` draws until the next full rebuild](text-glued-under-a-closing-div.md)'
 - '[Android block views](android-block-views.md)'

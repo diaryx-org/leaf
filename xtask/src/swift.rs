@@ -17,7 +17,7 @@ use std::process::Stdio;
 /// Matches `PRODUCT_BUNDLE_IDENTIFIER` in `apps/leaf-editor/project.yml`; the
 /// simulator addresses an installed app by id, not by path.
 const BUNDLE_ID: &str = "org.diaryx.leaf";
-const SCHEME: &str = "Leaf";
+pub const SCHEME: &str = "Leaf";
 
 /// The simulator `--ios` runs on when `--device` names none: leaf's own,
 /// created from [`DEVICE_TYPE`] on first use. A stock `iPhone 17` is shared
@@ -69,7 +69,9 @@ pub struct Args {
     file: Option<std::path::PathBuf>,
 }
 
-pub fn run_task(args: Args) -> Result<()> {
+/// The Xcode project, generated first if it is missing or `regen` asks for it.
+/// Shared with `cargo xtask package`, which builds the same project.
+pub fn project(regen: bool) -> Result<std::path::PathBuf> {
     require_tool("xcodebuild", "install Xcode and its command-line tools")?;
     require_tool("xcodegen", "brew install xcodegen")?;
 
@@ -82,9 +84,16 @@ pub fn run_task(args: Args) -> Result<()> {
     // guard its absence too — e.g. a checkout mid-rebase), so a fresh checkout
     // lands here on the first run rather than in an xcodebuild error about a
     // missing package.
-    if args.regen || !project.exists() || !binding.exists() {
+    if regen || !project.exists() || !binding.exists() {
         run(cmd("bash").arg(app_dir.join("bootstrap.sh")))?;
     }
+    Ok(project)
+}
+
+pub fn run_task(args: Args) -> Result<()> {
+    let project = project(args.regen)?;
+    let root = crate::util::root();
+    let app_dir = root.join("apps/leaf-editor");
 
     let ios = args.ios || args.device.is_some();
     let device = if ios {
