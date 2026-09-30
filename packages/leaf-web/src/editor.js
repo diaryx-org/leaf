@@ -1172,7 +1172,7 @@ export class LeafEditor {
     // The one leaf directive this frontend has a drawing for: a page break,
     // which is a rule across the measure rather than the `⧉ page-break`
     // placeholder every other directive gets. The narrow half of the host hook
-    // `docs/tasks/web-directive-hook.md` argues for — the vocabulary here is
+    // `docs/tasks/closed/web-directive-hook.md` argues for — the vocabulary here is
     // leaf's own, so it needs no hook to know what the name means.
     const breakAt = new Set();
     // Every other leaf directive is the host's to draw, if it has a hook: its

@@ -30,6 +30,7 @@ contents:
 - '[Automatic correction and substitutions in the macOS view](/docs/tasks/closed/macos-text-checking.md)'
 - '[Uniffi 032 Needs A Resvg Release](/docs/tasks/closed/uniffi-032-needs-a-resvg-release.md)'
 - '[Android Twig Release](/docs/tasks/closed/android-twig-release.md)'
+- '[Web Directive Hook](/docs/tasks/closed/web-directive-hook.md)'
 ---
 
 # Closed tasks

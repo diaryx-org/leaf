@@ -2,7 +2,7 @@
 status: done
 created: 2026-09-04
 updated: 2026-09-30
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 # A host hook for directives in the web editor
 
@@ -18,11 +18,11 @@ other. `test/editor.test.html` round-trips a caret over a replaced row
 through `_syncFromDom` and steps over the drawing in one press each way.
 Typing at either stop still writes into the directive's own line. That is
 leaf-core's
-[text typed after a leaf directive](text-typed-after-a-leaf-directive-joins-its-line.md)
+[text typed after a leaf directive](/docs/tasks/text-typed-after-a-leaf-directive-joins-its-line.md)
 task.
 
 **The web step of a wider plan.** The
-[host directives proposal](../proposals/host-directives.md) gives every
+[host directives proposal](/docs/proposals/host-directives.md) gives every
 frontend the same hook, a general insert gesture and a host catalogue; this
 task is its second step, and closes with it.
 

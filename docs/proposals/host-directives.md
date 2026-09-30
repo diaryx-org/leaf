@@ -13,7 +13,7 @@ part_of: '[Proposals](/docs/proposals/proposals.md)'
 `accepted` on 2026-09-30. The first pass is leaf directives (`::name{…}`),
 on every frontend: steps 1–5 of the sequence. Container directives are argued
 for here and wait on a twig gesture, as the last section says. The
-[web directive hook](../tasks/web-directive-hook.md) task is the web frontend's
+[web directive hook](/docs/tasks/closed/web-directive-hook.md) task is the web frontend's
 step, and closes with it.
 
 ## The picture
@@ -91,7 +91,7 @@ answer leaves the placeholder as it is, so an unknown directive, or a host
 with no hook, is drawn exactly as it is today.
 
 - **leaf-web**: `EditorOptions.directive(view) => HTMLElement | null`, as the
-  [task](../tasks/web-directive-hook.md) specifies. It is asked per directive
+  [task](/docs/tasks/closed/web-directive-hook.md) specifies. It is asked per directive
   on each frame, and the answer is keyed on name and attributes and reused the
   way a media row is. It is wrapped as a `contenteditable="false"` atom over the
   rows in `[start_row, end_row)`, with a caret stop either side. `_domPoint` and
