@@ -448,6 +448,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_indent(uint64_t ptr, RustCallStatus
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_insert(uint64_t ptr, RustBuffer text, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INSERT_DIRECTIVE
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INSERT_DIRECTIVE
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_insert_directive(uint64_t ptr, RustBuffer name, RustBuffer label, RustBuffer attrs, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INSERT_FOOTNOTE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INSERT_FOOTNOTE
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_insert_footnote(uint64_t ptr, RustCallStatus *_Nonnull out_status
@@ -701,6 +706,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_alignment(uint64_t ptr, RustBuf
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_DARK_APPEARANCE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_DARK_APPEARANCE
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_dark_appearance(uint64_t ptr, int8_t dark, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_DIRECTIVE_ROWS
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_DIRECTIVE_ROWS
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_directive_rows(uint64_t ptr, RustBuffer heights, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_FONT_FAMILY
@@ -1457,6 +1467,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_insert(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_INSERT_DIRECTIVE
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_INSERT_DIRECTIVE
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_insert_directive(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_INSERT_FOOTNOTE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_INSERT_FOOTNOTE
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_insert_footnote(void
@@ -1760,6 +1776,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_alignment(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_DARK_APPEARANCE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_DARK_APPEARANCE
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_dark_appearance(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_DIRECTIVE_ROWS
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_DIRECTIVE_ROWS
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_directive_rows(void
     
 );
 #endif

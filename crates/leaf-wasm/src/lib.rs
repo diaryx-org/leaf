@@ -50,7 +50,7 @@ use leaf_core::style::{
     FontSize as CoreFontSize, LineHeight as CoreLineHeight, MarkColor as CoreMarkColor, Role,
     Style as LStyle, TextColor as CoreTextColor,
 };
-use leaf_core::wysiwyg::text_width;
+use leaf_core::wysiwyg::{DirectiveKey, text_width};
 use leaf_core::{
     Alignment, BlockClass, BlockKind, ColorScheme, Doc, Format, Glyph, Highlight as CoreHighlight,
     InlineKind, LineFlow as CoreLineFlow, MarkupMode as CoreMarkupMode, MediaKind, SourceMap,
@@ -298,8 +298,12 @@ pub struct TableView {
 }
 
 /// One `{key=value}` attribute of a [`DirectiveView`]. A bare attribute
-/// (`{public}`) has an empty value, which a consumer reads as a flag.
-#[derive(Serialize, Tsify)]
+/// (`{public}`) has an empty value, which a consumer reads as a flag. The same
+/// record goes the other way, into [`LeafDoc::insert_directive`] and
+/// [`LeafDoc::set_directive_rows`], so a directive goes in the way it comes
+/// out.
+#[derive(Serialize, Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
 pub struct DirectiveAttr {
     key: String,
     value: String,
@@ -661,6 +665,12 @@ pub struct CapabilitiesView {
     /// AsciiDoc, each spelling it its own way and each drawn as the same
     /// placeholder row.
     page_break: bool,
+    /// The directives a host names — `insert_directive`. Markdown and djot:
+    /// the same gesture as `page_break`, but only where the walker reads an
+    /// arbitrary name back as a directive, and HTML's and AsciiDoc's
+    /// spellings come back as something else. Dim a host's catalogue items on
+    /// this, as the page-break button is on that.
+    directives: bool,
     /// Moving a block — `moveBlock`, `moveBlockUp`, `moveBlockDown`, and a
     /// drag. Every format with blocks a caret can name; XML has none.
     move_block: bool,
@@ -697,6 +707,7 @@ impl From<leaf_core::Capabilities> for CapabilitiesView {
             font_family: c.font_family,
             text_color: c.text_color,
             page_break: c.page_break,
+            directives: c.directives,
             move_block: c.move_block,
         }
     }
@@ -749,6 +760,20 @@ pub struct MathHeight {
     /// The formula's `tex` as [`MathView`] handed it over.
     tex: String,
     /// How many visual rows the rendered picture needs.
+    rows: usize,
+}
+
+/// A per-directive height, the way a renderer that reserves rows reports one
+/// back — the input half of the loop [`LeafDoc::set_directive_rows`] closes.
+/// Keyed by what the directive says, exactly as [`DirectiveView`] handed it
+/// over: its name, its label and its attributes.
+#[derive(Deserialize, Tsify)]
+#[tsify(from_wasm_abi)]
+pub struct DirectiveHeight {
+    name: String,
+    label: String,
+    attrs: Vec<DirectiveAttr>,
+    /// How many visual rows the host's drawing needs.
     rows: usize,
 }
 
@@ -1556,6 +1581,33 @@ impl LeafDoc {
         self.frame()
     }
 
+    /// Report how many visual rows each leaf directive a host draws needs,
+    /// keyed by its name, label and attributes as [`DirectiveView`] handed
+    /// them over — [`set_media_rows`]'s peer for a renderer that reserves rows
+    /// and draws the host's picture over them. The web editor lays a
+    /// directive's element out in pixels and seldom needs this.
+    ///
+    /// [`set_media_rows`]: Self::set_media_rows
+    pub fn set_directive_rows(
+        &mut self,
+        heights: Vec<DirectiveHeight>,
+    ) -> Result<DocView, JsValue> {
+        self.doc.set_directive_rows(
+            heights
+                .into_iter()
+                .map(|h| {
+                    let key = DirectiveKey {
+                        name: h.name,
+                        label: h.label,
+                        attrs: h.attrs.into_iter().map(|a| (a.key, a.value)).collect(),
+                    };
+                    (key, h.rows)
+                })
+                .collect(),
+        );
+        self.frame()
+    }
+
     /// Report how many visual rows each display formula needs, keyed by its
     /// TeX as [`MathView`] handed it over — [`set_media_rows`]'s peer.
     ///
@@ -2223,6 +2275,30 @@ impl LeafDoc {
     /// is.
     pub fn insert_page_break(&mut self) -> Result<DocView, JsValue> {
         self.doc.insert_page_break();
+        self.frame()
+    }
+
+    /// Insert the leaf directive `name` at the caret, with `label` and `attrs`
+    /// — a host's catalogue item. Placed as `insert_page_break` places a page
+    /// break, which is this gesture with leaf's own name. It arrives in
+    /// `DocView.directives` as it went in: `attrs` is the [`DirectiveAttr`]
+    /// list a [`DirectiveView`] carries, an empty value a bare attribute.
+    ///
+    /// A name twig will not write (an ASCII letter and then letters, digits,
+    /// `-` and `_`), a label holding a line end or a square bracket, a label in
+    /// djot, which has nowhere to put one, and a format whose `directives`
+    /// capability is false are each refused with a status and nothing written.
+    pub fn insert_directive(
+        &mut self,
+        name: String,
+        label: Option<String>,
+        attrs: Vec<DirectiveAttr>,
+    ) -> Result<DocView, JsValue> {
+        let attrs: Vec<(String, Option<String>)> = attrs
+            .into_iter()
+            .map(|a| (a.key, (!a.value.is_empty()).then_some(a.value)))
+            .collect();
+        self.doc.insert_directive(&name, label.as_deref(), &attrs);
         self.frame()
     }
 
@@ -3994,6 +4070,67 @@ mod tests {
         assert!(d.doc.source.contains("page-break"));
     }
 
+    /// A host's directive goes in as the view hands it out — name, label and
+    /// the `DirectiveAttr` list, an empty value a bare attribute — and a
+    /// reported height reserves its rows under the same key.
+    #[test]
+    fn a_directive_goes_in_the_way_it_comes_out() {
+        let mut d = handle("before\n\nafter\n");
+        let attrs = vec![
+            DirectiveAttr {
+                key: "src".into(),
+                value: "https://x.org/a".into(),
+            },
+            DirectiveAttr {
+                key: "wide".into(),
+                value: String::new(),
+            },
+        ];
+        assert!(
+            d.insert_directive("x-card".into(), Some("A card".into()), attrs)
+                .is_ok()
+        );
+        assert!(
+            d.doc
+                .source
+                .contains("::x-card[A card]{src=\"https://x.org/a\" wide}")
+        );
+        let views = wysiwyg_directives(&d.doc.vmap);
+        let [x] = views.as_slice() else {
+            panic!("one directive");
+        };
+        assert_eq!((x.name.as_str(), x.label.as_str()), ("x-card", "A card"));
+        let attrs: Vec<(&str, &str)> = x
+            .attrs
+            .iter()
+            .map(|a| (a.key.as_str(), a.value.as_str()))
+            .collect();
+        assert_eq!(attrs, [("src", "https://x.org/a"), ("wide", "")]);
+        assert_eq!(x.end_row - x.start_row, 1);
+
+        let height = DirectiveHeight {
+            name: x.name.clone(),
+            label: x.label.clone(),
+            attrs: x
+                .attrs
+                .iter()
+                .map(|a| DirectiveAttr {
+                    key: a.key.clone(),
+                    value: a.value.clone(),
+                })
+                .collect(),
+            rows: 3,
+        };
+        assert!(d.set_directive_rows(vec![height]).is_ok());
+        let views = wysiwyg_directives(&d.doc.vmap);
+        assert_eq!(views[0].end_row - views[0].start_row, 3);
+
+        // A name twig will not write is refused, and nothing is written.
+        let before = d.doc.source.clone();
+        assert!(d.insert_directive("a b".into(), None, vec![]).is_ok());
+        assert_eq!(d.doc.source, before);
+    }
+
     /// One flag per new control, answered by the format — the toolbar builds
     /// itself from these rather than discovering each refusal on a press.
     /// Markdown spells all six; XML spells none of them, being parse-only.
@@ -4002,13 +4139,16 @@ mod tests {
         let md = CapabilitiesView::from(handle("x\n").doc.capabilities());
         assert!(md.alignment && md.line_spacing);
         assert!(md.font_size && md.font_family && md.text_color);
-        assert!(md.page_break);
+        assert!(md.page_break && md.directives);
+        let html = LeafDoc::new("<p>x</p>", "html").expect("html parses");
+        let html = CapabilitiesView::from(html.doc.capabilities());
+        assert!(html.page_break && !html.directives);
 
         let xml = LeafDoc::new("<a>x</a>", "xml").expect("xml parses");
         let xml = CapabilitiesView::from(xml.doc.capabilities());
         assert!(!xml.alignment && !xml.line_spacing);
         assert!(!xml.font_size && !xml.font_family && !xml.text_color);
-        assert!(!xml.page_break);
+        assert!(!xml.page_break && !xml.directives);
     }
 
     #[test]
