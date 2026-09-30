@@ -827,7 +827,13 @@ public final class LeafTextView: UIView, UITextInput {
             self.playIfAwaited(src)
         }
         backgroundColor = .clear
-        contentMode = .redraw
+        // Redrawn on a bounds change, as `.redraw` would, but pinned top-left
+        // rather than scaled: a bounds change inside an animation (the fill
+        // following a keyboard's inset, a column sliding away) animates the
+        // layer's bounds from the old size to the new, and `.redraw`'s gravity
+        // squeezes the bitmap drawn at the new size into every frame between.
+        contentMode = .topLeft
+        layer.needsDisplayOnBoundsChange = true
         addInteraction(textInteraction)
         addGestureRecognizer(mediaTap)
         addGestureRecognizer(linkPress)
