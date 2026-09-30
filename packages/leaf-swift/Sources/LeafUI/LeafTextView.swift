@@ -385,6 +385,34 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         set { mediaStore.onResolveMedia = newValue }
     }
 
+    /// Asked for a view to draw each leaf directive (`::name{…}`) with, in place
+    /// of the `⧉ name` placeholder core leaves for it — how a host that knows
+    /// its own vocabulary paints an `::embed{src=…}` as the real thing. Nil,
+    /// the default, and a nil answer both leave the placeholder as it is.
+    ///
+    /// Asked once per directive while it stays in the document, the answer
+    /// kept under what the directive says (its name, label and attributes) and
+    /// placed over its box on every frame after. The directive's rows collapse
+    /// onto one box the view's height — its `intrinsicContentSize`, else its
+    /// `fittingSize` at the text column's width — and the column's width;
+    /// pages flow around it as around a picture, and the caret has the
+    /// picture's two homes, in front of it and past it. `::page-break` is leaf's
+    /// and is never asked about.
+    ///
+    /// The view is the host's to draw and to answer events in; to leave the
+    /// caret a click on it, return `nil` from its `hitTest(_:)`. Setting this
+    /// takes down every view the old hook made.
+    public var directiveView: ((DirectiveView) -> LeafView?)? {
+        get { directiveHost.provider }
+        set {
+            directiveHost.provider = newValue
+            render(docView, keepVerticalGoal: true, reflow: true)
+        }
+    }
+
+    /// The host's views for the document's directives.
+    private let directiveHost = DirectiveHost()
+
     /// Loads and caches the stills the media boxes draw.
     private let mediaStore = MediaStore()
     /// The AVKit players currently installed over media boxes.
@@ -756,14 +784,21 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         effectiveAppearance.performAsCurrentDrawingAppearance {
             if reflow {
                 layoutEngine = EditorLayout(view, theme: theme, viewWidth: viewWidth, page: pageSetup,
-                                            cache: &shapeCache, media: mediaStore)
+                                            cache: &shapeCache, media: mediaStore,
+                                            directives: directiveHost.measure)
             } else if change != nil || blocksChanged || layoutEngine.rows.isEmpty {
                 layoutEngine = EditorLayout(view, theme: theme, viewWidth: viewWidth, page: pageSetup,
                                             cache: &shapeCache, media: mediaStore, previous: layoutEngine,
-                                            change: change)
+                                            change: change, directives: directiveHost.measure)
             }
         }
         let relaid = reflow || change != nil || blocksChanged
+        // The host's views follow their boxes, as the players do, and a view
+        // whose directive was edited away goes with it. Scaled by hand: this
+        // view zooms its drawing, not itself.
+        if relaid, !directiveHost.isEmpty {
+            directiveHost.place(layoutEngine.directiveRects(), in: self, scale: zoomScale)
+        }
         // The misspellings still stand where the text did not change, but the
         // layout under them is new: map them onto it again. A text change
         // clears them instead, below, and asks the checker afresh.
@@ -868,6 +903,9 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
                 }
                 continue
             }
+            // A directive the host draws is its view, a subview over the box;
+            // nothing of core's placeholder is painted under it.
+            if rl.directive != nil { continue }
             // The row's bands, not one rect over its whole height: a split row has
             // a sheet edge — or a column gutter — through the middle of it, and a
             // code fill drawn over that would tile the backdrop or the gutter too.
@@ -2300,7 +2338,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // actually crosses into the next line/cell instead of stalling. Hit-test
         // the table-aware way (`hitRowCh`), or a probe into a table resolves to the
         // collapsed picture row and teleports the caret to its top-left cell.
-        let band = layoutEngine.caretBand(src: Int(docView.caretSrc))
+        let band = layoutEngine.caretBand(src: Int(docView.caretSrc), row: Int(docView.caretRow))
         let goalX = verticalGoalX ?? caret.minX
         var probeY = up ? (band?.minY ?? caret.minY) - 1 : (band?.maxY ?? caret.maxY) + 1
         var (row, ch) = hitRowCh(CGPoint(x: goalX, y: probeY))

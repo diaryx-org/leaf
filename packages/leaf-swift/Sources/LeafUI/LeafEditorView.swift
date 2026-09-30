@@ -757,6 +757,39 @@ public final class LeafEditorModel: ObservableObject {
     /// and no page, so the first sheet is never blank.
     public func insertPageBreak() { run { $0.insertPageBreak() } }
 
+    // ── the host's directives ─────────────────────────────────────────────────
+    // A leaf directive (`::name{…}`) means whatever the host says it means:
+    // leaf writes the ones the host lists and draws the ones the host draws, and
+    // leaves every other as the `⧉ name` placeholder. See
+    // `docs/proposals/host-directives.md`.
+
+    /// Asked for a view to draw each leaf directive with — an `NSView` or a
+    /// `UIView` — or nil to leave it core's placeholder. See
+    /// `LeafTextView.directiveView`, which this reaches.
+    public var directiveView: ((DirectiveView) -> LeafView?)? {
+        didSet { textView?.directiveView = directiveViewBridge }
+    }
+
+    /// `directiveView` as the view is handed it: read through to the model,
+    /// so a host that swaps its hook is asked, and nil while the host has set
+    /// none, so a view with no hook lays out no directive of its own.
+    var directiveViewBridge: ((DirectiveView) -> LeafView?)? {
+        guard directiveView != nil else { return nil }
+        return { [weak self] directive in self?.directiveView?(directive) }
+    }
+
+    /// Write the leaf directive `name` at the caret, with `label` and `attrs`,
+    /// placed as a page break is: a paragraph parts around it and the caret
+    /// lands on a line under it. An empty attribute value is a bare attribute.
+    ///
+    /// Writes nothing, with a status, where core refuses: a name that is not a
+    /// letter and then letters, digits, `-` and `_`; a label holding a line end
+    /// or a bracket; any label in djot; and a format where
+    /// `capabilities.directives` is false.
+    public func insertDirective(name: String, label: String? = nil, attrs: [DirectiveAttr] = []) {
+        run { $0.insertDirective(name: name, label: label, attrs: attrs) }
+    }
+
     /// Move the caret's block one place up — ⌥↑ and the Format menu's Move
     /// Block Up: above the block before it, and out of its container to just
     /// above it when it is the first block there. A list item goes with its
@@ -1392,6 +1425,9 @@ struct LeafEditorSurface: NSViewRepresentable {
         // Through the bridge, not read through: the menu gates on it. See
         // `showMediaBridge`.
         textView.onShowMedia = model.showMediaBridge
+        // The host's drawings, through the bridge for the same reason; set only
+        // when there is a hook, since setting it lays the document out again.
+        if let draw = model.directiveViewBridge { textView.directiveView = draw }
         textView.isReadOnly = model.isReadOnly
         textView.onTapHighlight = model.tapHighlightBridge
         model.textView = textView
@@ -1912,6 +1948,9 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
         // Through the bridge, not read through: the menu gates on it. See
         // `showMediaBridge`.
         textView.onShowMedia = model.showMediaBridge
+        // The host's drawings, through the bridge for the same reason; set only
+        // when there is a hook, since setting it lays the document out again.
+        if let draw = model.directiveViewBridge { textView.directiveView = draw }
         textView.isReadOnly = model.isReadOnly
         textView.selectionMenuActions = model.selectionMenuBridge
         textView.onTapHighlight = model.tapHighlightBridge
