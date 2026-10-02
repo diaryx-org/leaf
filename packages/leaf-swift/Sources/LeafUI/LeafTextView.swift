@@ -46,6 +46,9 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// page supersedes. See `PageSetup`.
     public var pageSetup: PageSetup? {
         didSet {
+            // Held sound, so the zoom, the sheet frames and the layout all read
+            // the same setup — see `PageSetup.sanitized`.
+            if let set = pageSetup, set != set.sanitized { pageSetup = set.sanitized }
             guard pageSetup != oldValue else { return }
             // The column width changed, and the shape cache is only valid at the
             // width it was built for.
@@ -580,6 +583,8 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             self.render(self.docView, keepVerticalGoal: true, reflow: true)
             self.playIfAwaited(src)
         }
+        // A picture's pixels arrive after the box was laid out at their size.
+        mediaStore.onDecoded = { [weak self] in self?.needsDisplay = true }
         // Seed with the initial caret so the first reflow opens at the top rather
         // than scrolling to wherever the caret happens to start.
         lastCaretOffset = doc.caretOffset()
@@ -708,6 +713,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// delimiters. What the paper sheet a PDF or a printout is drawn from
     /// calls once, having no caret of its own. See `LeafDoc.paperView()`.
     func layOutAsPaper() {
+        mediaStore.decodesForPaper = true
         render(doc.paperView(), reflow: true)
     }
 

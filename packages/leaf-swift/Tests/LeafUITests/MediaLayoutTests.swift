@@ -742,6 +742,42 @@ final class MediaLayoutTests: XCTestCase {
         XCTAssertTrue(isRed(still, x: 24, y: 24), "half a turn puts it opposite")
     }
 
+    func testABigPictureIsMeasuredWholeAndDecodedAtTheSizeItIsDrawn() throws {
+        // Layout reads the header, so the box is the shape of the whole picture;
+        // the pixels are decoded for the box, not for the camera.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try cornerMarkedJPEG(width: 4000, height: 2000, orientation: nil)
+            .write(to: dir.appendingPathComponent("big.jpg"))
+        let store = MediaStore(baseURL: dir)
+        store.decodesForPaper = true
+        guard case .bitmap(let bitmap) = try XCTUnwrap(store.still(for: mkMedia("big.jpg"))) else {
+            return XCTFail("a JPEG is a raster")
+        }
+        XCTAssertEqual(bitmap.naturalSize, CGSize(width: 4000, height: 2000))
+        XCTAssertNil(bitmap.image, "nothing decoded until it is drawn")
+        let pixels = try XCTUnwrap(bitmap.pixels(for: CGSize(width: 300, height: 150), scale: 2))
+        XCTAssertLessThan(pixels.width, 4000)
+        XCTAssertGreaterThanOrEqual(pixels.width, 300 * Int(MediaBitmap.paperDensity))
+    }
+
+    func testAScreenDecodesOffTheMainThreadAndSaysWhenItHas() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try cornerMarkedJPEG(width: 800, height: 400, orientation: nil)
+            .write(to: dir.appendingPathComponent("pic.jpg"))
+        let store = MediaStore(baseURL: dir)
+        let decoded = expectation(description: "decoded")
+        store.onDecoded = { decoded.fulfill() }
+        guard case .bitmap(let bitmap) = try XCTUnwrap(store.still(for: mkMedia("pic.jpg"))) else {
+            return XCTFail("a JPEG is a raster")
+        }
+        let size = CGSize(width: 400, height: 200)
+        XCTAssertNil(bitmap.pixels(for: size, scale: 2), "the first draw has nothing yet")
+        wait(for: [decoded], timeout: 5)
+        XCTAssertNotNil(bitmap.pixels(for: size, scale: 2))
+    }
+
     func testAQuarterTurnSwapsTheSizeTheBoxIsMeasuredFrom() throws {
         // Why this isn't only a drawing nicety: `MediaLayout` measures the box
         // from the picture's own dimensions, and a quarter turn exchanges them.
@@ -886,7 +922,7 @@ final class MediaLayoutTests: XCTestCase {
 /// The tests that read a still's pixels want the raster; an SVG has none.
 extension MediaStill {
     var bitmap: CGImage? {
-        if case .bitmap(let image) = self { return image }
+        if case .bitmap(let bitmap) = self { return bitmap.decodedWhole() }
         return nil
     }
 }

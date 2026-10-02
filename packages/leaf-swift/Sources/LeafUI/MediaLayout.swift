@@ -60,11 +60,11 @@ import UIKit
 import AVFoundation
 #endif
 
-/// What a media box paints: decoded pixels, or a vector picture drawn at
+/// What a media box paints: a raster's pixels, or a vector picture drawn at
 /// whatever size it is asked for.
 enum MediaStill {
-    /// A raster image, decoded and oriented.
-    case bitmap(CGImage)
+    /// A raster image — measured now, decoded when it is first drawn.
+    case bitmap(MediaBitmap)
     /// An SVG, parsed; drawn as paths.
     case vector(SVGPicture)
 
@@ -73,8 +73,8 @@ enum MediaStill {
     /// fits to.
     var naturalSize: CGSize {
         switch self {
-        case .bitmap(let image):
-            return CGSize(width: CGFloat(image.width), height: CGFloat(image.height))
+        case .bitmap(let bitmap):
+            return bitmap.naturalSize
         case .vector(let picture):
             return picture.size
         }
@@ -86,20 +86,154 @@ enum MediaStill {
     /// SVG is y-down like the context. `scale` is the context's device pixels
     /// per point, read off its CTM: the parts of an SVG that have to be
     /// rasterized (filters, masks) come out at that grid rather than blurry.
-    func draw(in rect: CGRect, ctx: CGContext) {
+    ///
+    /// `false` when there was nothing to draw yet: a raster whose pixels are
+    /// still decoding, which the caller covers with the box's plain fill.
+    @discardableResult
+    func draw(in rect: CGRect, ctx: CGContext) -> Bool {
+        // The x basis vector's length is the horizontal scale whatever the
+        // flip or translation — 2 on a Retina view, 1 on a PDF page.
+        let scale = hypot(ctx.ctm.a, ctx.ctm.b)
         switch self {
-        case .bitmap(let image):
+        case .bitmap(let bitmap):
+            guard let image = bitmap.pixels(for: rect.size, scale: scale) else { return false }
             ctx.saveGState()
             ctx.translateBy(x: 0, y: rect.maxY)
             ctx.scaleBy(x: 1, y: -1)
             ctx.draw(image, in: CGRect(x: rect.minX, y: 0, width: rect.width, height: rect.height))
             ctx.restoreGState()
         case .vector(let picture):
-            // The x basis vector's length is the horizontal scale whatever the
-            // flip or translation — 2 on a Retina view, 1 on a PDF page.
-            let scale = hypot(ctx.ctm.a, ctx.ctm.b)
             picture.draw(in: ctx, rect: rect, scale: scale)
         }
+        return true
+    }
+}
+
+/// A raster still: its size, read off the file's header when the box is laid
+/// out, and its pixels, decoded the first time it is drawn — at the size it is
+/// drawn, not the size the camera took it.
+///
+/// Both halves are about a document with pictures in it. A 48-megapixel photo
+/// decoded whole is some 190 MB for a box a few hundred points across, and a
+/// journal holds dozens; decoded on the main thread it is also a stall in
+/// whatever layout first met it. So layout reads the header and nothing else,
+/// the pixels are decoded off the main thread at the box's drawn size (the
+/// box is a placeholder fill meanwhile, and the view repaints when they
+/// land), and the store drops the least recently drawn when the decoded
+/// pixels pass its budget — to be decoded again if they are scrolled back to.
+final class MediaBitmap {
+    /// The picture's pixel size, the way up it says it goes — what the box is
+    /// measured from.
+    let naturalSize: CGSize
+    private let source: CGImageSource
+    /// The pixels decoded so far, if any, and whether a decode is under way and
+    /// to what long edge.
+    private(set) var image: CGImage?
+    private var decoding: Int?
+    /// Where decoded pixels are budgeted, and whether to decode on the spot.
+    fileprivate weak var store: MediaStore?
+
+    /// The bitmap `source` holds, or `nil` when it isn't a raster ImageIO reads.
+    /// Reads the header only.
+    init?(_ source: CGImageSource, store: MediaStore?) {
+        guard CGImageSourceGetCount(source) > 0,
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let w = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue,
+              let h = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue,
+              w > 0, h > 0
+        else { return nil }
+        // A quarter turn — EXIF 5 through 8 — swaps the stored width and height.
+        let raw = (properties[kCGImagePropertyOrientation] as? NSNumber)?.uint32Value ?? 1
+        let quarter = (5...8).contains(raw)
+        self.naturalSize = quarter ? CGSize(width: h, height: w) : CGSize(width: w, height: h)
+        self.source = source
+        self.store = store
+    }
+
+    /// The bytes the decoded pixels hold, which is what the store budgets.
+    fileprivate var cost: Int { image.map { $0.bytesPerRow * $0.height } ?? 0 }
+
+    /// The pixels to draw a box `size` points across at `scale` pixels per
+    /// point, or `nil` when there are none yet.
+    ///
+    /// Pixels already decoded at least that fine are drawn as they are. Short
+    /// of that, a store drawing for paper decodes on the spot, at print
+    /// density; a screen's starts a decode off the main thread and, meanwhile,
+    /// draws whatever coarser pixels it already has — a zoom in shows the
+    /// picture softly for a moment rather than not at all.
+    func pixels(for size: CGSize, scale: CGFloat) -> CGImage? {
+        let forPaper = store?.decodesForPaper ?? true
+        let want = edge(for: size, scale: forPaper ? max(scale, MediaBitmap.paperDensity) : scale)
+        if let image, max(image.width, image.height) >= want {
+            store?.touch(self)
+            return image
+        }
+        if forPaper {
+            if let fresh = MediaBitmap.decode(source, edge: want) { settle(fresh) }
+            return image
+        }
+        guard (decoding ?? 0) < want else { return image }
+        decoding = want
+        let source = self.source
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let fresh = MediaBitmap.decode(source, edge: want)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if self.decoding == want { self.decoding = nil }
+                guard let fresh else { return }
+                self.settle(fresh)
+                self.store?.onDecoded?()
+            }
+        }
+        return image
+    }
+
+    /// Keep `fresh` unless finer pixels landed first, and budget it.
+    private func settle(_ fresh: CGImage) {
+        if let image, max(image.width, image.height) >= max(fresh.width, fresh.height) { return }
+        image = fresh
+        store?.admit(self)
+    }
+
+    /// The whole picture, decoded now — what a test reads pixels from.
+    func decodedWhole() -> CGImage? {
+        MediaBitmap.decode(source, edge: Int(max(naturalSize.width, naturalSize.height)))
+    }
+
+    /// Drop the pixels; the next draw decodes them again.
+    fileprivate func evict() { image = nil }
+
+    /// The long edge, in pixels, a box `size` points across at `scale` needs —
+    /// the picture's own at most, and rounded up to a step so a pinch through
+    /// a dozen zoom levels is a few decodes rather than a dozen.
+    private func edge(for size: CGSize, scale: CGFloat) -> Int {
+        let own = max(naturalSize.width, naturalSize.height)
+        let fit = max(size.width / naturalSize.width, size.height / naturalSize.height)
+        let needed = own * min(1, max(0, fit * scale))
+        let step: CGFloat = 256
+        return Int(min(own, max(step, (needed / step).rounded(.up) * step)))
+    }
+
+    /// Pixels a paper sheet decodes to per point: 288 dpi, finer than the
+    /// printer needs and far coarser than a photo off a phone.
+    static let paperDensity: CGFloat = 4
+
+    /// The picture at `edge` pixels along its longer side, the way up it says
+    /// it goes. Safe off the main thread — ImageIO's sources are.
+    ///
+    /// A camera writes the sensor's pixels and a tag saying how the phone was
+    /// held; every photo taken in any orientation but one is stored turned.
+    /// The thumbnail path is the one API that applies the tag, and the one that
+    /// decodes to a size rather than decoding whole and scaling — which for a
+    /// JPEG reads a fraction of the file.
+    static func decode(_ source: CGImageSource, edge: Int) -> CGImage? {
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: max(1, edge),
+            kCGImageSourceShouldCacheImmediately: true,
+        ]
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
 }
 
@@ -279,6 +413,31 @@ final class MediaStore {
     /// thread.
     var onLoaded: ((String) -> Void)?
 
+    /// Fired when a picture's pixels finish decoding, so the view repaints the
+    /// box that was showing its plain fill. The layout is already right — the
+    /// box was measured from the header — so this is a repaint, not a relayout.
+    /// Always called on the main thread.
+    var onDecoded: (() -> Void)?
+
+    /// Whether a picture's pixels are decoded on the spot, at print density,
+    /// rather than off the main thread at the screen's. A paper sheet sets it:
+    /// it is drawn once, straight into a PDF, and has no later frame for the
+    /// pixels to arrive in.
+    var decodesForPaper = false
+
+    /// The decoded pixels held, least recently drawn first, and their bytes.
+    private var resident: [MediaBitmap] = []
+    private var residentBytes = 0
+    /// The most decoded pixels the store holds before dropping the least
+    /// recently drawn. Room for a screenful at the display's density several
+    /// times over, which is all the bitmaps decode to; smaller on a phone,
+    /// where memory pressure ends the app rather than slowing it.
+    #if os(iOS)
+    static let pixelBudget = 96 << 20
+    #else
+    static let pixelBudget = 384 << 20
+    #endif
+
     /// What is known about one source.
     private enum Entry {
         /// Handed to the host; nothing to draw until it answers.
@@ -302,7 +461,28 @@ final class MediaStore {
     /// when they arrive.
     func flush() {
         entries.removeAll()
+        resident.removeAll()
+        residentBytes = 0
         generation &+= 1
+    }
+
+    /// Mark `bitmap` the most recently drawn.
+    fileprivate func touch(_ bitmap: MediaBitmap) {
+        guard let i = resident.lastIndex(where: { $0 === bitmap }), i != resident.count - 1 else { return }
+        resident.append(resident.remove(at: i))
+    }
+
+    /// Count `bitmap`'s new pixels against the budget, dropping the least
+    /// recently drawn others' until it fits — never the newcomer's own.
+    fileprivate func admit(_ bitmap: MediaBitmap) {
+        resident.removeAll { $0 === bitmap }
+        resident.append(bitmap)
+        residentBytes = resident.reduce(0) { $0 + $1.cost }
+        while residentBytes > Self.pixelBudget, resident.count > 1 {
+            let old = resident.removeFirst()
+            residentBytes -= old.cost
+            old.evict()
+        }
     }
 
     /// Drop what is known about one source so the next draw settles it again —
@@ -374,7 +554,7 @@ final class MediaStore {
         // A `data:` URI carries its own bytes: decode and be done, no host, no
         // network, no file on disk for playback to point at.
         if source.lowercased().hasPrefix("data:") {
-            let still = MediaStore.decodeDataURI(source).flatMap(MediaStore.decode)
+            let still = MediaStore.decodeDataURI(source).flatMap(decode)
             let entry = Entry.ready(file: nil, still: still)
             entries[source] = entry
             return entry
@@ -392,7 +572,7 @@ final class MediaStore {
         // decode, and its URL is exactly what playback needs.
         if let url = onLocateMedia?(source) ?? resolve(source),
            FileManager.default.isReadableFile(atPath: url.path) {
-            let entry = Entry.ready(file: url, still: MediaStore.load(url))
+            let entry = Entry.ready(file: url, still: load(url))
             entries[source] = entry
             return entry
         }
@@ -420,7 +600,8 @@ final class MediaStore {
             // belong to the main thread.
             MediaStore.onMain {
                 guard let self, self.generation == token else { return }
-                let still = url.flatMap(MediaStore.load)
+                // Reads a raster's header only; the pixels wait for a draw.
+                let still = url.flatMap(self.load)
                 let entry = Entry.ready(file: url, still: still)
                 self.entries[source] = entry
                 if asking {
@@ -486,69 +667,35 @@ final class MediaStore {
     /// or a format neither decoder reads.
     ///
     /// ImageIO first, since it reads everything raster and is what a photo
-    /// wants; an SVG, which it doesn't read, falls through to usvg. The file's
-    /// directory is handed along so an `<image href="…">` inside the SVG can
-    /// resolve — resvg-swift reads only local files, never the network, the
-    /// same rule this store keeps for the document's own media.
-    private static func load(_ url: URL) -> MediaStill? {
-        if let src = CGImageSourceCreateWithURL(url as CFURL, nil),
-           CGImageSourceGetCount(src) > 0, let image = decode(src) {
-            return .bitmap(image)
+    /// wants — the header only, here; see `MediaBitmap`. An SVG, which it
+    /// doesn't read, falls through to usvg. The file's directory is handed
+    /// along so an `<image href="…">` inside the SVG can resolve — resvg-swift
+    /// reads only local files, never the network, the same rule this store
+    /// keeps for the document's own media.
+    private func load(_ url: URL) -> MediaStill? {
+        if let src = CGImageSourceCreateWithURL(url as CFURL, MediaStore.lazily),
+           let bitmap = MediaBitmap(src, store: self) {
+            return .bitmap(bitmap)
         }
-        return (try? SVGPicture(contentsOf: url, options: svgOptions)).map(MediaStill.vector)
+        return (try? SVGPicture(contentsOf: url, options: MediaStore.svgOptions)).map(MediaStill.vector)
     }
 
-    /// Decode image bytes already in memory — a `data:` URI's payload. Same
+    /// Read image bytes already in memory — a `data:` URI's payload. Same
     /// order as `load`; an inline SVG has no directory to resolve against.
-    private static func decode(_ data: Data) -> MediaStill? {
-        if let src = CGImageSourceCreateWithData(data as CFData, nil),
-           CGImageSourceGetCount(src) > 0, let image = decode(src) {
-            return .bitmap(image)
+    private func decode(_ data: Data) -> MediaStill? {
+        if let src = CGImageSourceCreateWithData(data as CFData, MediaStore.lazily),
+           let bitmap = MediaBitmap(src, store: self) {
+            return .bitmap(bitmap)
         }
-        return (try? SVGPicture(data: data, options: svgOptions)).map(MediaStill.vector)
+        return (try? SVGPicture(data: data, options: MediaStore.svgOptions)).map(MediaStill.vector)
     }
+
+    /// A source that keeps no decoded pixels of its own: `MediaBitmap` decides
+    /// which it holds, and the store's budget counts them.
+    private static let lazily = [kCGImageSourceShouldCache: false] as CFDictionary
 
     /// How an SVG is parsed. System fonts are loaded so `<text>` in a face the
     /// document doesn't embed still lays out — a directory walk done once per
     /// process, on the first SVG.
     private static var svgOptions: ParseOptions { ParseOptions(loadSystemFonts: true) }
-
-    /// The picture a source holds, the way up it says it goes.
-    ///
-    /// A camera writes the sensor's pixels and a tag saying how the phone was
-    /// held; every photo taken in any orientation but one is stored turned.
-    /// `CGImageSourceCreateImageAtIndex` hands back those raw pixels and drops
-    /// the tag, so a picture off a phone draws sideways or upside down — which
-    /// is not a rendering nicety, since a quarter turn also swaps the width and
-    /// height `MediaLayout` measures the box from.
-    ///
-    /// The turn is ImageIO's to do rather than a matrix here: the thumbnail path
-    /// is the one API that applies the tag, and asked for no maximum size it
-    /// returns the whole picture at its own resolution. It is only reached for
-    /// an image that is actually turned — an untagged screenshot or a drawing,
-    /// which is most of what a document holds, still takes the cheap path
-    /// untouched.
-    private static func decode(_ source: CGImageSource) -> CGImage? {
-        if orientation(of: source) != .up {
-            let options: [CFString: Any] = [
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceCreateThumbnailWithTransform: true,
-            ]
-            if let turned = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
-                return turned
-            }
-        }
-        return CGImageSourceCreateImageAtIndex(source, 0, nil)
-    }
-
-    /// The EXIF orientation a source declares, or `.up` when it declares none —
-    /// which is both the default and the answer for every format that has no
-    /// place to put one.
-    private static func orientation(of source: CGImageSource) -> CGImagePropertyOrientation {
-        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
-                as? [CFString: Any],
-              let raw = properties[kCGImagePropertyOrientation] as? UInt32,
-              let declared = CGImagePropertyOrientation(rawValue: raw) else { return .up }
-        return declared
-    }
 }

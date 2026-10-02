@@ -842,7 +842,7 @@ struct EditorLayout {
     init(_ docView: DocView, theme: EditorTheme, viewWidth: CGFloat, page: PageSetup? = nil,
          cache: inout [Row: ShapedRow], media: MediaStore? = nil, previous: EditorLayout? = nil,
          change: RowChange? = nil, directives measure: DirectiveMeasure? = nil) {
-        if let page {
+        if let page = page?.sanitized {
             let x = page.sheetX(in: viewWidth)
             self.init(docView, theme: theme, originX: x + page.margins.left,
                       columnWidth: page.columnWidth, page: page, sheetX: x,
@@ -869,6 +869,8 @@ struct EditorLayout {
          page: PageSetup? = nil, sheetX: CGFloat = 0,
          cache: inout [Row: ShapedRow], media: MediaStore? = nil, previous: EditorLayout? = nil,
          change known: RowChange? = nil, directives measure: DirectiveMeasure? = nil) {
+        // Every setup the flow walks is a sound one — see `PageSetup.sanitized`.
+        let page = page?.sanitized
         let wrapWidth = columnWidth
         self.originX = originX
         self.columnWidth = max(0, columnWidth)

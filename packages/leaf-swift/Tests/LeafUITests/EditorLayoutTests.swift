@@ -205,6 +205,27 @@ final class EditorLayoutTests: XCTestCase {
         XCTAssertEqual(many, [CGFloat](repeating: TableMetrics.minColumnWidth, count: 4))
     }
 
+    func testAFormulaTooLargeToDrawIsTreatedAsOneThatFailed() {
+        // TeX typesets a rule 10^20 em wide without complaint; turned into
+        // pixels it is an integer overflow. Core's glyphs stand in for it.
+        XCTAssertNil(MathStore.glyph(tex: "\\rule{100000000000000000000em}{1em}", display: false,
+                                     size: 16, ink: .black))
+        XCTAssertNotNil(MathStore.glyph(tex: "x^2", display: false, size: 16, ink: .black))
+    }
+
+    func testFitCutsEveryOverWideColumnToOneLevelAtOnce() {
+        // The grid the point-at-a-time walk took over a second to fit: a hundred
+        // columns of long cells. Solved, every column that gave anything ends at
+        // the same width, the narrow one is untouched, and the grid fits.
+        var widths = [CGFloat](repeating: 10_000, count: 99) + [30]
+        let avail: CGFloat = 20_000
+        TableLayout.fit(&widths, avail: avail)
+        let chrome = 100 * (TableMetrics.border + 2 * TableMetrics.padX) + TableMetrics.border
+        XCTAssertEqual(widths.reduce(0, +), avail - chrome, accuracy: 0.5)
+        XCTAssertEqual(Set(widths.dropLast()).count, 1)
+        XCTAssertEqual(widths.last, 30)
+    }
+
     func testAWideTableIsSqueezedToTheColumnAndItsLongCellWraps() throws {
         // One cell holds a sentence far wider than the column; the other a word.
         // Fitted, the grid is no wider than the column, the sentence wraps into

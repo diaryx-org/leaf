@@ -56,8 +56,12 @@ enum BlockChrome {
             // Both surfaces draw into a flipped context (AppKit's `isFlipped`,
             // UIKit's native top-left origin) so rows can be laid out top-down;
             // `MediaStill.draw` is written for exactly that, and does the flip a
-            // raster needs itself.
-            still.draw(in: rect, ctx: ctx)
+            // raster needs itself. A raster still decoding leaves the box its
+            // plain fill until the pixels land and the view repaints.
+            if !still.draw(in: rect, ctx: ctx) {
+                ctx.setFillColor(theme.codeBackground.cgColor)
+                ctx.fill(rect)
+            }
             ctx.restoreGState()
         } else {
             // Nothing to show: a filled chip carrying the media's name, so the row

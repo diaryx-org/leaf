@@ -67,6 +67,34 @@ public struct PageSetup: Equatable {
         return out
     }
 
+    /// This setup with every measurement made one the layout can walk: finite,
+    /// a sheet at least a point tall and wide, nothing negative, and a sane
+    /// number of columns.
+    ///
+    /// The fields are public and mutable, so nothing stops a host from setting a
+    /// zero-height sheet or a gap that cancels it — and a pitch of zero or less
+    /// is a division by zero in `index(at:)` and a page-turning loop that never
+    /// gets below the `y` it is looking for. The views and the layout read a
+    /// setup through this, so a nonsense value draws a strange page rather than
+    /// trapping or hanging. A setup that is already sound comes back unchanged.
+    public var sanitized: PageSetup {
+        func clean(_ v: CGFloat, atLeast lo: CGFloat) -> CGFloat { v.isFinite ? max(lo, v) : lo }
+        var out = self
+        out.size = CGSize(width: clean(size.width, atLeast: 1), height: clean(size.height, atLeast: 1))
+        out.margins = LeafInsets(top: clean(margins.top, atLeast: 0), left: clean(margins.left, atLeast: 0),
+                                 bottom: clean(margins.bottom, atLeast: 0), right: clean(margins.right, atLeast: 0))
+        out.gap = clean(gap, atLeast: 0)
+        out.backdrop = clean(backdrop, atLeast: 0)
+        out.columnGutter = clean(columnGutter, atLeast: 0)
+        out.columns = min(max(1, columns), PageSetup.maxColumns)
+        return out
+    }
+
+    /// The most columns a sheet is divided into. Far past any that would leave
+    /// room for a word; the bound is there so `slot`'s `sheet * columns` can't
+    /// overflow.
+    static let maxColumns = 64
+
     /// One inch on every side — the default a word processor opens with.
     public static let inch = LeafInsets(top: 72, left: 72, bottom: 72, right: 72)
 

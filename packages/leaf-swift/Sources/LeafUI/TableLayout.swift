@@ -260,7 +260,8 @@ struct TableLayout {
     /// last. No column goes below `TableMetrics.minColumnWidth`; a table with more
     /// columns than the surface has room for still overflows, which is the honest
     /// outcome — there's nothing left to give. The pixel counterpart of
-    /// leaf-core's `fit_widths`, and the same walk as leaf-gpui's `fit_widths_px`.
+    /// leaf-core's `fit_widths`, solved directly where leaf-gpui's `fit_widths_px`
+    /// walks a point at a time to the same place.
     static func fit(_ widths: inout [CGFloat], avail: CGFloat) {
         // Chrome: every column carries a border and a gutter either side, and one
         // more border closes the grid.
@@ -268,19 +269,35 @@ struct TableLayout {
             + TableMetrics.border
         let budget = max(0, avail - chrome)
         let floor = TableMetrics.minColumnWidth
-        // A whole point at a time: the widths are a few hundred at most, and
-        // stepping keeps the shrink hitting the widest column rather than scaling
-        // every column by a ratio (which would squeeze a narrow column that was
-        // already fine).
-        while widths.reduce(0, +) > budget {
-            guard let i = widths.indices
-                .filter({ widths[$0] > floor })
-                .max(by: { widths[$0] < widths[$1] })
-            else { return }
-            // Clamped, not just decremented: real widths are fractional, so a
-            // column at 24.5 would step straight through a 24.0 floor.
-            widths[i] = max(floor, widths[i] - 1)
+        guard widths.reduce(0, +) > budget else { return }
+        // Taking from the widest each time ends with every column that gave
+        // anything cut to one common level, and the rest untouched — so solve
+        // for that level outright rather than walking down to it, which in
+        // points is a scan of every column per point and stalls the layout on a
+        // wide grid of long cells. Capping, not scaling by a ratio: a narrow
+        // column that was already fine is left alone.
+        let kept = widths.filter { $0 <= floor }.reduce(0, +)
+        let tall = widths.filter { $0 > floor }.sorted(by: >)
+        guard !tall.isEmpty else { return }
+        let room = budget - kept
+        var level = floor
+        if CGFloat(tall.count) * floor < room {
+            // Cap the widest `k + 1` at the level that spends exactly the room
+            // the rest leave; it is the answer once it clears the next column
+            // down, which then fits under it uncut.
+            var rest = tall.reduce(0, +)
+            for (k, w) in tall.enumerated() {
+                rest -= w
+                let candidate = (room - rest) / CGFloat(k + 1)
+                if candidate >= (k + 1 < tall.count ? tall[k + 1] : floor) {
+                    level = candidate
+                    break
+                }
+            }
         }
+        // Nothing goes below the floor, so a grid that doesn't fit even there
+        // overflows with every column at it.
+        for i in widths.indices where widths[i] > level { widths[i] = level }
     }
 
     /// The source offset of every character in a cell line's runs, alongside

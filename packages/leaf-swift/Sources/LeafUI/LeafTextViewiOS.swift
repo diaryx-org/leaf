@@ -254,6 +254,9 @@ public final class LeafTextView: UIView, UITextInput {
     /// viewport's.
     public var pageSetup: PageSetup? {
         didSet {
+            // Held sound, so the zoom, the sheet frames and the layout all read
+            // the same setup — see `PageSetup.sanitized`.
+            if let set = pageSetup, set != set.sanitized { pageSetup = set.sanitized }
             guard pageSetup != oldValue else { return }
             // The column width changed, and the shape cache is only valid at the
             // width it was built for.
@@ -480,7 +483,10 @@ public final class LeafTextView: UIView, UITextInput {
     /// its delimiters — which paper, having no caret, lays out from
     /// `paperView()` instead.
     var isPaper = false {
-        didSet { if isPaper, !oldValue { render(doc.paperView(), reflow: true) } }
+        didSet {
+            mediaStore.decodesForPaper = isPaper
+            if isPaper, !oldValue { render(doc.paperView(), reflow: true) }
+        }
     }
 
     private var docView: DocView
@@ -862,6 +868,8 @@ public final class LeafTextView: UIView, UITextInput {
             self.render(self.docView, reflow: true)
             self.playIfAwaited(src)
         }
+        // A picture's pixels arrive after the box was laid out at their size.
+        mediaStore.onDecoded = { [weak self] in self?.setNeedsDisplay() }
         backgroundColor = .clear
         // Redrawn on a bounds change, as `.redraw` would, but pinned top-left
         // rather than scaled: a bounds change inside an animation (the fill

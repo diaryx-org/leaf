@@ -48,6 +48,22 @@ struct MathGlyph {
     /// The reach below it, in points — the descent.
     let descent: CGFloat
     var size: CGSize { CGSize(width: width, height: ascent + descent) }
+
+    /// The largest a formula may measure either way, in points — dozens of
+    /// screens. TeX will typeset `\rule{1e20em}{1em}` without complaint, and a
+    /// box that size is an integer overflow when it is turned into pixels and
+    /// an allocation nothing can make well before that.
+    static let maxExtent: CGFloat = 16_384
+
+    /// Whether the metrics describe a box a surface can lay out and draw:
+    /// finite, not inside out, and within `maxExtent`. One that isn't is
+    /// treated as a formula that failed to typeset, and core's own glyphs
+    /// stand in for it.
+    var isDrawable: Bool {
+        let h = ascent + descent
+        return [width, ascent, descent].allSatisfy { $0.isFinite && abs($0) <= Self.maxExtent }
+            && width >= 0 && h >= 0 && h <= Self.maxExtent
+    }
 }
 
 /// The typeset-formula cache, shared by every view in the process: a formula
@@ -70,10 +86,11 @@ enum MathStore {
                   let data = p.svg.data(using: .utf8),
                   let picture = try? SVGPicture(data: data)
             else { return nil }
-            return MathGlyph(picture: picture,
-                             width: CGFloat(p.width) * size,
-                             ascent: CGFloat(p.height) * size,
-                             descent: CGFloat(p.depth) * size)
+            let glyph = MathGlyph(picture: picture,
+                                  width: CGFloat(p.width) * size,
+                                  ascent: CGFloat(p.height) * size,
+                                  descent: CGFloat(p.depth) * size)
+            return glyph.isDrawable ? glyph : nil
         }()
         cache[key] = glyph
         return glyph
@@ -136,12 +153,21 @@ final class MathAttachment: NSTextAttachment {
 
     required init?(coder: NSCoder) { fatalError("MathAttachment is never archived") }
 
+    /// The most pixels an inline formula's bitmap holds: 16 MB of RGBA, a
+    /// formula some 650 points square at 3×.
+    private static let maxPixels: CGFloat = 4_000_000
+
     /// The picture as a bitmap at 3× — crisp on every Retina density, and
     /// small: a formula is a few hundred points across at most. TextKit scales
     /// it into `bounds`, and a formula drawn through this path in a PDF is a
     /// raster at that density; the block path draws vectors.
+    ///
+    /// A formula that is not small is drawn at less than 3×, down to whatever
+    /// keeps the bitmap within `maxPixels` — soft rather than a bitmap of
+    /// hundreds of megabytes for one character.
     private static func render(_ glyph: MathGlyph) -> LeafImage? {
-        let scale: CGFloat = 3
+        let area = glyph.width * (glyph.ascent + glyph.descent)
+        let scale = area > 0 ? min(3, (maxPixels / area).squareRoot()) : 3
         let w = Int((glyph.width * scale).rounded(.up)), h = Int(((glyph.ascent + glyph.descent) * scale).rounded(.up))
         guard w > 0, h > 0,
               let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
