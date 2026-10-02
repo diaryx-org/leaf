@@ -1577,6 +1577,14 @@ public struct LeafEditor: View {
 /// scroll view works in either host: one that runs the editor under the
 /// keyboard (`.ignoresSafeArea(.keyboard)`) gets the full inset, and one
 /// that still shrinks the frame gets an overlap of zero and nothing changes.
+///
+/// The overlap is the keyboard against the frame *now*, so it is taken again
+/// whenever the frame or its safe area moves, not only when the keyboard
+/// does. A host's layout answers the keyboard a pass or more behind the
+/// notification — the frame shrinking toward it, a bar leaving the safe
+/// area — and an inset reckoned once, at the notification, kept whatever
+/// was true then: a band of blank paper above the keys as tall as whatever
+/// moved afterwards.
 final class LeafEditorController: UIViewController {
     let scroll = UIScrollView()
     /// `text.bottom - content.top >= frame.height - insets`, the fill
@@ -1586,6 +1594,9 @@ final class LeafEditorController: UIViewController {
     /// height of whatever covers the edges.
     var fill: NSLayoutConstraint?
     private var keyboardObserver: Any?
+    /// Where the keyboard last said it would end, in screen coordinates —
+    /// kept so the inset can be taken again when the frame moves under it.
+    private var keyboardFrame: CGRect?
 
     override func loadView() { view = scroll }
 
@@ -1634,7 +1645,13 @@ final class LeafEditorController: UIViewController {
 
     override func viewSafeAreaInsetsDidChange() {
         super.viewSafeAreaInsetsDidChange()
+        applyKeyboardInset()
         updateFill()
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        applyKeyboardInset()
     }
 
     /// Told when the window turns or resizes: a formatting panel that is up
@@ -1654,19 +1671,14 @@ final class LeafEditorController: UIViewController {
         else { return }
         // A keyboard raised in another scene of this app is not over this one.
         if let local = info[UIResponder.keyboardIsLocalUserInfoKey] as? Bool, !local { return }
-        // Screen coordinates, to the window's, to the scroll view's. A hidden
-        // keyboard's frame sits below the screen, so its overlap is nothing.
-        let inView = view.convert(window.convert(end, from: nil), from: window)
-        let overlap = max(0, view.bounds.maxY - inView.minY)
+        keyboardFrame = end
         // The system keyboard's own height, for the formatting panel to take
         // its place at — measured only while it *is* the system keyboard.
         if let textView, textView.isFirstResponder, !textView.showsFormattingPanel, !textView.isReadOnly {
             FormattingPanelHost.noteKeyboard(frame: end, accessory: textView.inputAccessoryView, in: window)
         }
-        // The safe area under the frame is already an inset (`adjustedContentInset`
-        // adds it); the keyboard covers that band too, so count it once.
-        let inset = max(0, overlap - view.safeAreaInsets.bottom)
-        guard abs(scroll.contentInset.bottom - inset) > 0.5 else { return }
+        guard let inset = keyboardInset(in: window),
+              abs(scroll.contentInset.bottom - inset) > 0.5 else { return }
         let duration = info[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double ?? 0.25
         let curve = info[UIResponder.keyboardAnimationCurveUserInfoKey] as? UInt ?? 7
         UIView.animate(withDuration: duration, delay: 0,
@@ -1683,6 +1695,29 @@ final class LeafEditorController: UIViewController {
         if inset > 0, let textView, textView.isFirstResponder {
             textView.revealCaret()
         }
+    }
+
+    /// The bottom inset that clears the keyboard from the frame as it stands.
+    func keyboardInset(in window: UIWindow) -> CGFloat? {
+        guard let keyboardFrame else { return nil }
+        // Screen coordinates, to the window's, to the scroll view's. A hidden
+        // keyboard's frame sits below the screen, so its overlap is nothing.
+        let inView = view.convert(window.convert(keyboardFrame, from: nil), from: window)
+        let overlap = max(0, view.bounds.maxY - inView.minY)
+        // The safe area under the frame is already an inset (`adjustedContentInset`
+        // adds it); the keyboard covers that band too, so count it once.
+        return max(0, overlap - view.safeAreaInsets.bottom)
+    }
+
+    /// Take the inset again after the frame or its safe area moved, the
+    /// keyboard staying put. Unanimated: the move it follows was the
+    /// host's, already animated or not as the host chose.
+    private func applyKeyboardInset() {
+        guard let window = view.window, let inset = keyboardInset(in: window),
+              abs(scroll.contentInset.bottom - inset) > 0.5 else { return }
+        scroll.contentInset.bottom = inset
+        scroll.verticalScrollIndicatorInsets.bottom = inset
+        updateFill()
     }
 
     /// The text view in the scroll, through the wrapper that carries its zoom.
