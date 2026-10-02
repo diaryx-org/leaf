@@ -37,6 +37,40 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.4.13 — 2026-10-01
+
+### Added
+
+- **leaf-editor** — open a new document in a page-shaped window ([`7cfd87d`](https://github.com/diaryx-org/leaf/commit/7cfd87de63877efdce29a05861bcf77da4063abf))
+
+### Fixed
+
+- **leaf-editor** — reopen a document's window at the size and place it was left ([`d9cda76`](https://github.com/diaryx-org/leaf/commit/d9cda76b48c0bb3da0d2871a654a32a4cc9f9bda))
+- **leaf-swift** — open a relative link as the file beside the document ([`9746fc7`](https://github.com/diaryx-org/leaf/commit/9746fc7e7658fa21ba76a7f9730ee65b013140e8))
+- **leaf-swift** — bound formula, table, image and page work that could crash or stall ([`6cde5e2`](https://github.com/diaryx-org/leaf/commit/6cde5e2ee12f0f9d73ebef312bfac1737dbef47c))
+- **leaf-ratatui** — keep the view in place when the terminal is resized ([`4e72259`](https://github.com/diaryx-org/leaf/commit/4e72259db0b30cf329df9a6b3c478e214b272e4c))
+- **leaf-swift** — play audio in a strip that fits its box, not AVKit's video player ([`0ee4087`](https://github.com/diaryx-org/leaf/commit/0ee4087c668ae9fb2a6343e0affbcfd43f4091cb))
+- **leaf-swift** — take the keyboard inset again when the frame or safe area moves ([`f0bf2a1`](https://github.com/diaryx-org/leaf/commit/f0bf2a10d8c99b53ba8189b3d63fc5815e8fa4fc))
+
+### Behavioural changes
+
+- LeafUI's fallback now opens a relative link destination as a file beside the document, and beeps for a missing file.
+
+- an on-screen image box shows its plain fill until its pixels finish decoding, then repaints.
+
+- setting `pageSetup` to non-finite, negative or zero-sized values stores the sanitized setup, which is what reading it back returns.
+
+- a formula larger than 16,384pt either way falls back to core's glyphs instead of drawing.
+
+- after a resize render keeps the caret's screen line (or the top text, if the caret was out of view) instead of the row number.
+
+- an activated audio box plays in leaf's own strip instead of AVKit's player, on iOS and macOS.
+
+- a play badge on a chip with no picture is drawn in the theme's handle colour, not translucent black.
+
+- on iOS the editor's bottom content inset follows later changes to its frame and safe area while a keyboard is up, rather than holding the value computed at the keyboard notification.
+
+
 ## v0.4.12 — 2026-09-30
 
 ### Breaking
