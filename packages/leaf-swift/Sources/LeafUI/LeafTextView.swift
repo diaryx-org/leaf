@@ -29,6 +29,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     let doc: LeafDoc
     public var theme: EditorTheme {
         didSet {
+            mediaPlayers.retheme(theme)
             // Re-wrap only when the geometry changed; a colour-only (or identical)
             // theme just repaints. Guarding this breaks the relayout⇄state-publish
             // loop that otherwise re-scrolled the view to the caret every frame.
@@ -1136,7 +1137,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             if let url = mediaStore.playableURL(for: media.src) {
                 let rects = layoutEngine.mediaRects()
                 if let rect = rects[media.src],
-                   mediaPlayers.activate(media, at: rect, in: self, url: url) {
+                   mediaPlayers.activate(media, at: rect, in: self, url: url, theme: theme) {
                     needsDisplay = true   // the badge under the player must stop drawing
                     return true
                 }
@@ -1163,7 +1164,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
               let info = layoutEngine.rows.compactMap(\.media).first(where: { $0.media.src == src })
         else { return }
         if let rect = layoutEngine.mediaRects()[src] {
-            mediaPlayers.activate(info.media, at: rect, in: self, url: url)
+            mediaPlayers.activate(info.media, at: rect, in: self, url: url, theme: theme)
             needsDisplay = true
         }
     }
