@@ -44,6 +44,32 @@ final class PaginationTests: XCTestCase {
 
     // MARK: the sheet
 
+    func testASetupThatCannotAdvanceIsMadeOneThatCan() {
+        // The fields are public, so a host can set a sheet with no height or a
+        // gap that cancels it: a pitch of zero divides by zero finding a sheet,
+        // and a negative one turns pages that never get below the caret's y.
+        var bad = page
+        bad.size = CGSize(width: CGFloat.nan, height: 0)
+        bad.gap = -400
+        bad.margins.top = -.infinity
+        bad.columns = 0
+        bad.columnGutter = -5
+        let sound = bad.sanitized
+        XCTAssertGreaterThan(sound.pitch, 0)
+        XCTAssertGreaterThanOrEqual(sound.size.width, 1)
+        XCTAssertEqual(sound.margins.top, 0)
+        XCTAssertEqual(sound.columns, 1)
+        XCTAssertEqual(sound.columnGutter, 0)
+        XCTAssertEqual(page.sanitized, page, "a sound setup comes back unchanged")
+
+        // And the layout lays a long document out over it rather than hanging.
+        var cache: [Row: ShapedRow] = [:]
+        let rows = (0..<6).map { _ in row([mkRun(longText)]) }
+        let layout = EditorLayout(docView(rows), theme: theme, viewWidth: viewWidth,
+                                  page: bad, cache: &cache)
+        XCTAssertFalse(layout.pages.isEmpty)
+    }
+
     func testTheColumnComesFromTheSheetsMarginsAndOverridesTheThemesMeasure() {
         // A page is a mode, not a style: it takes the text column away from
         // `measure` entirely rather than being clamped by it. An absurd measure
