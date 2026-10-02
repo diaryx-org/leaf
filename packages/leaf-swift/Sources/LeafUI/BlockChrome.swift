@@ -81,7 +81,7 @@ enum BlockChrome {
         ctx.strokePath()
         ctx.setLineDash(phase: 0, lengths: [])
 
-        if box.showsPlayBadge { drawPlayBadge(in: rect, theme: theme, ctx: ctx) }
+        if box.showsPlayBadge { drawPlayBadge(in: rect, tinted: box.still == nil, theme: theme, ctx: ctx) }
     }
 
     /// The media's name, centred in a chip that has no picture. Left-aligned and
@@ -134,7 +134,12 @@ enum BlockChrome {
     /// A play badge — a translucent disc with a triangle — so a video or audio box
     /// reads as something to start rather than something to look at. Centred on a
     /// picture, left-aligned on a chip where the label takes the rest of the room.
-    private static func drawPlayBadge(in rect: CGRect, theme: EditorTheme, ctx: CGContext) {
+    ///
+    /// On a picture the disc is a translucent black, which reads over any
+    /// frame. On a chip it is `tinted`, the accent: a black disc on a chip
+    /// filled a few percent off the page vanishes in dark mode, and the badge is
+    /// the only thing saying the box can be played.
+    private static func drawPlayBadge(in rect: CGRect, tinted: Bool, theme: EditorTheme, ctx: CGContext) {
         let d = min(MediaMetrics.badge, rect.height - 8, rect.width - 8)
         guard d > 8 else { return }
         // A tall picture centres the badge; a short chip keeps it at the left so
@@ -143,7 +148,11 @@ enum BlockChrome {
         let centre = CGPoint(x: cx, y: rect.midY)
         let disc = CGRect(x: centre.x - d / 2, y: centre.y - d / 2, width: d, height: d)
 
-        ctx.setFillColor(gray: 0, alpha: 0.45)
+        if tinted {
+            ctx.setFillColor(theme.handleColor.cgColor)
+        } else {
+            ctx.setFillColor(gray: 0, alpha: 0.45)
+        }
         ctx.fillEllipse(in: disc)
 
         // An equilateral triangle inside the disc, nudged right so it reads as

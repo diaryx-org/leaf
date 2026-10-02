@@ -58,15 +58,26 @@ public enum MediaPlaybackMode {
 /// `reposition` after every layout so installed players follow their boxes and
 /// any whose media has left the frame are removed.
 final class MediaPlayerHost {
-    /// One installed player: its AVKit view and the item it is playing.
+    /// One installed player: the view over its box and the item it is playing.
+    /// A video gets AVKit's player; audio gets leaf's own strip, because
+    /// AVKit's is a video player whose controls don't fit a line-high box.
     private struct Installed {
         let player: AVPlayer
         #if canImport(AppKit) && !targetEnvironment(macCatalyst)
-        let view: AVPlayerView
+        let video: AVPlayerView?
         #elseif canImport(UIKit)
-        let controller: AVPlayerViewController
-        var view: UIView { controller.view }
+        let controller: AVPlayerViewController?
         #endif
+        let strip: AudioStrip?
+
+        var view: LeafView {
+            if let strip { return strip }
+            #if canImport(AppKit) && !targetEnvironment(macCatalyst)
+            return video!
+            #elseif canImport(UIKit)
+            return controller!.view
+            #endif
+        }
     }
 
     private var installed: [String: Installed] = [:]
@@ -89,8 +100,13 @@ final class MediaPlayerHost {
     /// Re-activating an already-installed media just toggles play/pause, so a
     /// second tap on a playing video does the obvious thing.
     @discardableResult
-    func activate(_ media: MediaView, at rect: CGRect, in container: LeafView, url: URL) -> Bool {
+    func activate(_ media: MediaView, at rect: CGRect, in container: LeafView, url: URL,
+                  theme: EditorTheme) -> Bool {
         if let existing = installed[media.src] {
+            if let strip = existing.strip {
+                strip.toggle()
+                return true
+            }
             // Already installed: treat the tap as a transport control.
             if existing.player.timeControlStatus == .paused {
                 existing.player.play()
@@ -101,6 +117,19 @@ final class MediaPlayerHost {
         }
 
         let player = AVPlayer(url: url)
+
+        if media.kind == .audio {
+            let strip = AudioStrip(player: player, name: Self.name(of: media), theme: theme)
+            strip.frame = rect
+            container.addSubview(strip)
+            #if canImport(AppKit) && !targetEnvironment(macCatalyst)
+            installed[media.src] = Installed(player: player, video: nil, strip: strip)
+            #elseif canImport(UIKit)
+            installed[media.src] = Installed(player: player, controller: nil, strip: strip)
+            #endif
+            strip.toggle()
+            return true
+        }
 
         #if canImport(AppKit) && !targetEnvironment(macCatalyst)
         let view = AVPlayerView()
@@ -113,7 +142,7 @@ final class MediaPlayerHost {
         view.layer?.masksToBounds = true
         view.frame = rect
         container.addSubview(view)
-        installed[media.src] = Installed(player: player, view: view)
+        installed[media.src] = Installed(player: player, video: view, strip: nil)
         #elseif canImport(UIKit)
         // AVPlayerViewController must be a child of a real view controller — it
         // installs gesture recognisers and manages its own presentation. A UIView
@@ -135,7 +164,7 @@ final class MediaPlayerHost {
         parent.addChild(controller)
         container.addSubview(controller.view)
         controller.didMove(toParent: parent)
-        installed[media.src] = Installed(player: player, controller: controller)
+        installed[media.src] = Installed(player: player, controller: controller, strip: nil)
         #endif
 
         player.play()
@@ -162,15 +191,39 @@ final class MediaPlayerHost {
     func remove(_ src: String) {
         guard let entry = installed.removeValue(forKey: src) else { return }
         entry.player.pause()
+        if let strip = entry.strip {
+            strip.tearDown()
+            strip.removeFromSuperview()
+            return
+        }
         #if canImport(AppKit) && !targetEnvironment(macCatalyst)
-        entry.view.player = nil
-        entry.view.removeFromSuperview()
+        entry.video?.player = nil
+        entry.video?.removeFromSuperview()
         #elseif canImport(UIKit)
-        entry.controller.willMove(toParent: nil)
-        entry.controller.view.removeFromSuperview()
-        entry.controller.removeFromParent()
-        entry.controller.player = nil
+        entry.controller?.willMove(toParent: nil)
+        entry.controller?.view.removeFromSuperview()
+        entry.controller?.removeFromParent()
+        entry.controller?.player = nil
         #endif
+    }
+
+    /// Whether `point` is on an installed audio strip, which answers its own
+    /// taps — the text view's media tap must leave those alone, or a press on
+    /// the strip's button would toggle playback twice.
+    func ownsTouch(at point: CGPoint) -> Bool {
+        installed.values.contains { $0.strip?.frame.contains(point) == true }
+    }
+
+    /// Hand a new theme to the installed strips, which draw in its colours.
+    func retheme(_ theme: EditorTheme) {
+        for entry in installed.values { entry.strip?.theme = theme }
+    }
+
+    /// What a strip calls the recording: the alt text, else the file's name.
+    private static func name(of media: MediaView) -> String {
+        if !media.alt.isEmpty { return media.alt }
+        let name = (media.src as NSString).lastPathComponent
+        return name.isEmpty ? media.src : name
     }
 
     /// Stop and remove everything — a document swap, or the view going away.

@@ -169,7 +169,7 @@ public final class LeafTextView: UIView, UITextInput {
     /// and on paper is this unchanged — see `typeZoom`.
     public var theme: EditorTheme {
         get { hostTheme }
-        set { hostTheme = newValue; applyDynamicType() }
+        set { hostTheme = newValue; applyDynamicType(); mediaPlayers.retheme(renderTheme) }
     }
     private var hostTheme: EditorTheme
     private(set) var renderTheme: EditorTheme
@@ -772,6 +772,14 @@ public final class LeafTextView: UIView, UITextInput {
     /// desktop rule is the same one — the editor is an editor first, and a tap
     /// that navigated made link text the one span you couldn't get a caret into
     /// without leaving the document.
+    /// Where the touch `mediaTap` is recognising came down, in this view's
+    /// coordinates, recorded as it arrives. Not `location(in:)` at recognition:
+    /// `textInteraction` places the caret for the same tap first, and placing it
+    /// scrolls the page to the caret — so by the time the tap is answered, the
+    /// finger's screen point stands over another part of the document, and a
+    /// first tap on a recording while the caret was elsewhere missed its box.
+    fileprivate var mediaTapPoint: CGPoint?
+
     private lazy var mediaTap: UITapGestureRecognizer = {
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleMediaTap(_:)))
         tap.numberOfTapsRequired = 1
@@ -971,7 +979,8 @@ public final class LeafTextView: UIView, UITextInput {
         // A tap ends whatever the last press was about, so the next menu cannot
         // inherit its attachment.
         pressedMediaSource = nil
-        let point = gesture.location(in: self)
+        let point = mediaTapPoint ?? gesture.location(in: self)
+        mediaTapPoint = nil
         // A margin marker outranks everything at its point — it is chrome, and
         // the whole reason it sits in the margin is to be the one tap that
         // opens the annotation while the washed text underneath stays ordinary
@@ -981,6 +990,8 @@ public final class LeafTextView: UIView, UITextInput {
             onTapHighlight(hit.id)
             return
         }
+        // A playing recording's strip answers its own taps.
+        if mediaPlayers.ownsTouch(at: point) { return }
         // A tap on a video or audio box starts it, and a tap on an *empty*
         // picture box asks the host for it.
         if let hit = layoutEngine.mediaBox(at: point) {
@@ -1193,7 +1204,7 @@ public final class LeafTextView: UIView, UITextInput {
             if let url = mediaStore.playableURL(for: media.src) {
                 let rects = layoutEngine.mediaRects()
                 if let rect = rects[media.src],
-                   mediaPlayers.activate(media, at: rect, in: self, url: url) {
+                   mediaPlayers.activate(media, at: rect, in: self, url: url, theme: renderTheme) {
                     setNeedsDisplay()   // the badge under the player must stop drawing
                     return true
                 }
@@ -1219,7 +1230,7 @@ public final class LeafTextView: UIView, UITextInput {
               let info = layoutEngine.rows.compactMap(\.media).first(where: { $0.media.src == src })
         else { return }
         if let rect = layoutEngine.mediaRects()[src] {
-            mediaPlayers.activate(info.media, at: rect, in: self, url: url)
+            mediaPlayers.activate(info.media, at: rect, in: self, url: url, theme: renderTheme)
             setNeedsDisplay()
         }
     }
@@ -2294,6 +2305,14 @@ extension LeafTextView: UIGestureRecognizerDelegate {
         _ gestureRecognizer: UIGestureRecognizer,
         shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
     ) -> Bool { true }
+
+    /// Note where a touch for `mediaTap` came down, before anything can scroll
+    /// the page out from under it (see `mediaTapPoint`).
+    public func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                                  shouldReceive touch: UITouch) -> Bool {
+        if gestureRecognizer === mediaTap { mediaTapPoint = touch.location(in: self) }
+        return true
+    }
 }
 
 // MARK: - Edit menu
