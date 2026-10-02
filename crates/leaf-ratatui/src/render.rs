@@ -257,7 +257,12 @@ pub fn render(f: &mut Frame, area: Rect, doc: &mut Doc, state: &mut EditorState)
         }
     };
     let line_count = lines.len();
+    let geometry = (content_area.width, content_area.height);
+    if let Some(last) = state.anchor.take() {
+        last.restore(doc, geometry, caret_row);
+    }
     doc.follow_caret(caret_row, height, line_count);
+    state.anchor = Some(ViewAnchor::take(doc, geometry, caret_row));
 
     // Stash geometry for mouse hit-testing.
     doc.body_origin = (content_area.x, content_area.y);
@@ -650,6 +655,89 @@ fn directive_span(doc: &Doc, info: &leaf_core::DirectiveInfo) -> (usize, usize) 
     let row = &doc.vmap.rows[info.rows_span.start];
     let start = row.glyphs.last().map_or(row.end_src, |g| g.src);
     (start, row.end_src)
+}
+
+/// Where a frame stood in the document, kept so the next frame can stand in
+/// the same place after the terminal changes size.
+///
+/// `doc.scroll` is a row, and a row means nothing across a resize: the
+/// WYSIWYG view rewraps at the new width (and an image or formula re-measures
+/// at the new height), so the same row number lands on different text — a
+/// reader narrowing the window halfway down a long document is thrown back up
+/// it, with the caret left far below the bottom edge. `follow_caret` won't
+/// bring the caret back either, since it follows the caret only when the
+/// caret *moves*, which a resize doesn't do.
+///
+/// So the frame records what it showed, and a frame at another size shows the
+/// same: the caret on the same screen line when it was in view — that line is
+/// where the writer is looking — and otherwise the same text at the top, for a
+/// reader who has scrolled away from the caret.
+pub(crate) struct ViewAnchor {
+    /// The content area's `(width, height)` the frame was laid out in.
+    geometry: (u16, u16),
+    view: View,
+    /// The scroll the frame ended on. A host or the wheel that moves the view
+    /// between frames has said where it wants to be, and an anchor taken from
+    /// a scroll that no longer holds is dropped.
+    scroll: usize,
+    at: Anchor,
+}
+
+enum Anchor {
+    /// The caret was in view, this many lines below the top.
+    Caret(usize),
+    /// The caret was out of view: the first caret stop at or below the top
+    /// row, and how many rows below the top it sat (a decoration row — a
+    /// table's border, an image's frame — holds no stop of its own).
+    Top(usize, usize),
+    /// Nothing to hold on to: the caret was out of view in the source view,
+    /// whose lines don't wrap and so keep their rows through a resize.
+    None,
+}
+
+impl ViewAnchor {
+    fn take(doc: &Doc, geometry: (u16, u16), caret_row: usize) -> Self {
+        let height = geometry.1 as usize;
+        let at = if caret_row >= doc.scroll && caret_row < doc.scroll + height {
+            Anchor::Caret(caret_row - doc.scroll)
+        } else if doc.view == View::Wysiwyg {
+            (doc.scroll..doc.vmap.rows.len())
+                .find_map(|r| {
+                    doc.vmap
+                        .row_start(r)
+                        .map(|off| Anchor::Top(off, r - doc.scroll))
+                })
+                .unwrap_or(Anchor::None)
+        } else {
+            Anchor::None
+        };
+        ViewAnchor {
+            geometry,
+            view: doc.view,
+            scroll: doc.scroll,
+            at,
+        }
+    }
+
+    /// Put `doc.scroll` back where this frame stood, if the next one is laid
+    /// out at a different size. `follow_caret` runs after and only clamps:
+    /// the caret hasn't moved.
+    fn restore(self, doc: &mut Doc, geometry: (u16, u16), caret_row: usize) {
+        if self.geometry == geometry || self.view != doc.view || self.scroll != doc.scroll {
+            return;
+        }
+        match self.at {
+            // A window shortened past the caret's line keeps it on the last.
+            Anchor::Caret(line) => {
+                let last = (geometry.1 as usize).saturating_sub(1);
+                doc.scroll = caret_row.saturating_sub(line.min(last));
+            }
+            Anchor::Top(offset, lead) => {
+                doc.scroll = doc.vmap.pos_of_offset(offset).0.saturating_sub(lead);
+            }
+            Anchor::None => {}
+        }
+    }
 }
 
 /// A heading block the terminal will paint as a graphics-protocol raster: its
@@ -2166,6 +2254,108 @@ mod directive_render_tests {
         // The quote's bar runs down beside every line of it.
         for line in &lines[top..top + 3] {
             assert!(line.starts_with('│'), "\n{joined}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod resize_tests {
+    use super::*;
+    use leaf_core::{ColorScheme, Format};
+    use ratatui::{Terminal, backend::TestBackend};
+
+    /// Sixty numbered paragraphs, each long enough to wrap at any width a test
+    /// here draws at, so a resize always changes how many rows each takes.
+    fn long_doc() -> Doc {
+        let src: String = (1..=60)
+            .map(|i| format!("P{i} {}\n\n", "lorem ipsum dolor sit amet ".repeat(6)))
+            .collect();
+        Doc::from_source(src, Format::Markdown).unwrap()
+    }
+
+    fn state() -> EditorState {
+        let mut state = EditorState::new();
+        state.set_color_scheme(ColorScheme::Dark);
+        state
+    }
+
+    /// Draw one frame at `w`×`h` and return the drawn lines and the caret's
+    /// line on screen, if it's on screen.
+    fn frame(doc: &mut Doc, state: &mut EditorState, w: u16, h: u16) -> (Vec<String>, Option<u16>) {
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| render(f, f.area(), doc, state)).unwrap();
+        let buf = term.backend().buffer().clone();
+        let lines = (0..h)
+            .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect())
+            .collect();
+        let at = doc
+            .caret_pos()
+            .0
+            .checked_sub(doc.scroll)
+            .filter(|&r| r < h as usize)
+            .map(|r| r as u16);
+        (lines, at)
+    }
+
+    /// The caret in view keeps its screen line through a narrower window and
+    /// back, rather than the row number — which after a rewrap is other text,
+    /// with the caret dozens of rows below the bottom edge.
+    #[test]
+    fn the_caret_keeps_its_line_through_a_rewrap() {
+        let mut doc = long_doc();
+        let mut state = state();
+        frame(&mut doc, &mut state, 80, 20);
+        doc.caret = doc.source.find("P20 ").unwrap();
+        let (_, at) = frame(&mut doc, &mut state, 80, 20);
+        let line = at.expect("the caret is drawn");
+        let before = doc.scroll;
+
+        for w in [40, 25, 80] {
+            let (lines, at) = frame(&mut doc, &mut state, w, 20);
+            assert_eq!(at, Some(line), "at width {w}:\n{}", lines.join("\n"));
+            assert!(
+                lines[line as usize].contains("P20"),
+                "at width {w}:\n{}",
+                lines.join("\n")
+            );
+        }
+        assert_eq!(doc.scroll, before, "the round trip ends where it began");
+    }
+
+    /// A window shortened past the caret's line keeps the caret, on the last
+    /// line there is.
+    #[test]
+    fn a_shorter_window_keeps_the_caret_on_its_last_line() {
+        let mut doc = long_doc();
+        let mut state = state();
+        frame(&mut doc, &mut state, 80, 20);
+        doc.caret = doc.source.find("P8 ").unwrap();
+        let (_, at) = frame(&mut doc, &mut state, 80, 20);
+        assert!(at.unwrap() > 6);
+
+        let (lines, at) = frame(&mut doc, &mut state, 80, 6);
+        assert_eq!(at, Some(5), "\n{}", lines.join("\n"));
+    }
+
+    /// A reader who has scrolled away from the caret keeps the text they were
+    /// reading at the top, and the caret isn't pulled back into view.
+    #[test]
+    fn a_reader_scrolled_away_keeps_the_text_at_the_top() {
+        let mut doc = long_doc();
+        let mut state = state();
+        frame(&mut doc, &mut state, 80, 20);
+        doc.scroll = doc.vmap.pos_of_offset(doc.source.find("P30 ").unwrap()).0;
+        let (lines, _) = frame(&mut doc, &mut state, 80, 20);
+        assert!(lines[0].contains("P30"), "\n{}", lines.join("\n"));
+
+        for w in [40, 25, 100] {
+            let (lines, at) = frame(&mut doc, &mut state, w, 20);
+            assert!(
+                lines[0].contains("P30"),
+                "at width {w}:\n{}",
+                lines.join("\n")
+            );
+            assert_eq!(at, None, "the caret stays where the reader left it");
         }
     }
 }

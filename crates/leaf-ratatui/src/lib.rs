@@ -132,6 +132,9 @@ pub struct EditorState {
     /// directive as core's `⧉ name` placeholder, as a host with no vocabulary
     /// of its own wants.
     directives: Option<Box<dyn DirectiveRenderer>>,
+    /// Where the last frame stood in the document, so a frame drawn at a new
+    /// size can stand in the same place — see [`render::ViewAnchor`].
+    anchor: Option<render::ViewAnchor>,
 }
 
 impl Default for EditorState {
@@ -154,6 +157,7 @@ impl Default for EditorState {
             last_click: None,
             theme: Theme::for_scheme(style::detect_color_scheme()),
             directives: None,
+            anchor: None,
         }
     }
 }
