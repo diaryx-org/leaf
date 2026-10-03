@@ -844,6 +844,16 @@ public final class LeafEditorModel: ObservableObject {
     public func indent()  { run { $0.indent() } }
     public func outdent() { run { $0.outdent() } }
     public func insertLink(_ destination: String) { run { $0.insertLink(destination: destination) } }
+    /// Link to `destination` with `label` as the link's text — for a host that
+    /// links something it has just made and knows the name of. At a bare caret
+    /// the label is written, escaped for the body, and the caret lands after
+    /// the link with nothing selected. Over a selection, or with the caret in
+    /// a link (which is re-pointed and keeps its text), this is
+    /// `insertLink(_:)` and the label is ignored. See
+    /// `leaf_core::Doc::insert_link_labelled`.
+    public func insertLink(_ destination: String, label: String) {
+        run { $0.insertLinkLabelled(destination: destination, label: label) }
+    }
 
     /// Insert a block image, video, or audio at the caret, pointing at
     /// `destination`. Any selection becomes the alt / fallback text.

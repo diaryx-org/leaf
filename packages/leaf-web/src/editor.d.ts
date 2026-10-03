@@ -413,6 +413,13 @@ export class LeafEditor {
   toggleList(ordered: boolean): void;
   insertLink(dest: string): void;
   /**
+   * Link to `dest` with `label` as the link's text. At a bare caret the label
+   * is written, escaped for the body, and the caret lands after the link with
+   * nothing selected; over a selection, or with the caret in a link it
+   * re-points, this is `insertLink` and the label is ignored.
+   */
+  insertLinkLabelled(dest: string, label: string): void;
+  /**
    * Give the list item at the caret a checkbox, or take its away. Gate on
    * `capabilities().task`; `EditorState.task` is non-null while the caret
    * stands in one.

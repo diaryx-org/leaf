@@ -2352,6 +2352,19 @@ impl LeafDoc {
         self.frame()
     }
 
+    /// Link to `destination` with `label` as the link's text. At a bare caret
+    /// the label is written, escaped for the body, and the caret lands after
+    /// the link; over a selection, or in a link it re-points, the label is
+    /// ignored. See `leaf_core::Doc::insert_link_labelled`.
+    pub fn insert_link_labelled(
+        &mut self,
+        destination: &str,
+        label: &str,
+    ) -> Result<DocView, JsValue> {
+        self.doc.insert_link_labelled(destination, label);
+        self.frame()
+    }
+
     pub fn undo(&mut self) -> Result<DocView, JsValue> {
         self.doc.undo();
         self.frame()

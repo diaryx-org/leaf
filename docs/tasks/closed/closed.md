@@ -32,6 +32,7 @@ contents:
 - '[Android Twig Release](/docs/tasks/closed/android-twig-release.md)'
 - '[Web Directive Hook](/docs/tasks/closed/web-directive-hook.md)'
 - '[Text typed at either stop of a leaf directive joins the directive''s line](/docs/tasks/closed/text-typed-after-a-leaf-directive-joins-its-line.md)'
+- '[A host cannot insert a link with a label of its own](/docs/tasks/closed/insert-link-with-a-label.md)'
 ---
 
 # Closed tasks

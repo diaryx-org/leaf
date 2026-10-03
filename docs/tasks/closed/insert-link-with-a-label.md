@@ -1,10 +1,24 @@
 ---
-status: open
+status: done
 created: 2026-10-02
-updated: 2026-10-02
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+updated: 2026-10-03
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 # A host cannot insert a link with a label of its own
+
+**Status.** Done, after leaf 0.4.13, in the leaf commit `feat(leaf-core):
+insert a link with a label of its own`, as a new verb so `insert_link`'s
+callers are untouched: `Doc::insert_link_labelled(destination, label)`,
+exported as `LeafDoc.insert_link_labelled` (leaf-ffi; `insertLinkLabelled`
+in Swift and Kotlin), `LeafDoc.insert_link_labelled` in leaf-wasm,
+`insertLinkLabelled(dest, label)` on the web editor, and
+`LeafEditorModel.insertLink(_:label:)`. At a bare caret the label goes in
+through twig's `insert_literal` and is wrapped by `insert_link`, one undo
+step, caret after the link. With a selection, an empty label, or a caret
+standing inside a link or autolink, it is `insert_link` and the label is
+ignored — the last so a host's Edit Link can call the one verb and still
+re-point. The tests are the `insert_link_labelled_*` group in `doc.rs` and
+`testInsertLinkWithALabelWritesTheLabel` in leaf-swift.
 
 **Where.** `crates/leaf-core/src/doc.rs`, `Doc::insert_link`, and its
 exports in leaf-ffi, the wasm binding and `LeafEditorModel.insertLink`.
