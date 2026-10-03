@@ -803,6 +803,14 @@ export class LeafEditor {
   toggleCodeBlock() { this._command((d) => d.toggle_code_block()); }
   insertLink(dest) { this._command((d) => d.insert_link(dest)); }
   /**
+   * Link to `dest` with `label` as the link's text — for a host linking
+   * something it knows the name of. At a bare caret the label is written,
+   * escaped for the body, and the caret lands after the link with nothing
+   * selected; over a selection, or with the caret in a link it re-points,
+   * this is `insertLink` and the label is ignored.
+   */
+  insertLinkLabelled(dest, label) { this._command((d) => d.insert_link_labelled(dest, label)); }
+  /**
    * Give the list item at the caret a checkbox, or take its away. Gate on
    * `capabilities().task`; `EditorState.task` is non-null while the caret
    * stands in one.

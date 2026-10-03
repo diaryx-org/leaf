@@ -940,6 +940,16 @@ public protocol LeafDocProtocol: AnyObject, Sendable {
     func insertLink(destination: String)  -> DocView
     
     /**
+     * Link to `destination` with `label` as the link's text — for a host that
+     * links something it knows the name of. At a bare caret the label is
+     * written, escaped for the body, and the caret lands after the link with
+     * nothing selected; over a selection, or with the caret in a link it
+     * re-points, this is [`insert_link`](Self::insert_link) and the label is
+     * ignored. See [`leaf_core::Doc::insert_link_labelled`].
+     */
+    func insertLinkLabelled(destination: String, label: String)  -> DocView
+    
+    /**
      * Insert a block-level image, video, or audio at the caret. Any selection
      * becomes the alt / fallback text. See [`leaf_core::Doc::insert_media`] for
      * the markup each kind spells.
@@ -2327,6 +2337,25 @@ open func insertLink(destination: String) -> DocView  {
     uniffi_leaf_ffi_fn_method_leafdoc_insert_link(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(destination),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Link to `destination` with `label` as the link's text — for a host that
+     * links something it knows the name of. At a bare caret the label is
+     * written, escaped for the body, and the caret lands after the link with
+     * nothing selected; over a selection, or with the caret in a link it
+     * re-points, this is [`insert_link`](Self::insert_link) and the label is
+     * ignored. See [`leaf_core::Doc::insert_link_labelled`].
+     */
+open func insertLinkLabelled(destination: String, label: String) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_insert_link_labelled(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(destination),
+        FfiConverterString.lower(label),uniffiCallStatus
     )
 })
 }
@@ -9736,6 +9765,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_insert_link() != 47321) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_insert_link_labelled() != 21336) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_insert_media() != 45211) {

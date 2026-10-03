@@ -6837,6 +6837,76 @@ impl Doc {
         }
     }
 
+    /// Insert a link to `destination` whose text is `label` — for a host that
+    /// links something it has just made and knows the name of, where
+    /// [`insert_link`](Self::insert_link)'s `[dest](dest)` would leave a file
+    /// name where a title belongs.
+    ///
+    /// With no selection, `label` is written at the caret as the link's text
+    /// and the caret lands just past the link, nothing selected: the link is
+    /// finished, not a stand-in to type over. The label goes in through twig's
+    /// `insert_literal`, so it is escaped in the body's own grammar the way the
+    /// destination is — a `]` or `*` in a title stays that character rather
+    /// than closing the link or opening emphasis. The label and the link are
+    /// one undo step.
+    ///
+    /// Everywhere else this is [`insert_link`](Self::insert_link) and the
+    /// label is ignored: with a selection, which is linked as it stands; with
+    /// a caret standing inside a link or an autolink, which is re-pointed and
+    /// keeps the text it has, so a host's Edit Link can call this one verb for
+    /// both; and with an empty `label`.
+    pub fn insert_link_labelled(&mut self, destination: &str, label: &str) {
+        if self.selection().is_some() || label.is_empty() {
+            return self.insert_link(destination);
+        }
+        if self.read_only || self.refuse_unsupported("link", Gesture::InsertLink) {
+            return;
+        }
+        let caret = self.caret;
+        if self
+            .nodes()
+            .into_iter()
+            .any(|n| n.kind == Kind::Link && n.span.start < caret && caret < n.span.end)
+        {
+            return self.insert_link(destination);
+        }
+        self.record_caret();
+        let text = match self.editor.insert_literal(caret, label) {
+            Ok(change) => change.new,
+            Err(e) => {
+                self.status = Some(format!("link: {e}"));
+                return;
+            }
+        };
+        match self.editor.insert_link(text.start, text.end, destination) {
+            Ok(change) => {
+                // Two twig steps, the label's and the link's: each counted as
+                // `refresh` counts an edit, then folded into one, so the label
+                // is never on the history without its link. Inside a host's
+                // undo group the second `refresh` has folded it already.
+                self.last_edit_kind = None;
+                self.refresh();
+                self.refresh();
+                self.coalesce_last_undo();
+                self.anchor = None;
+                self.caret = change.new.end;
+                self.goal_col = None;
+                self.dirty = self.source != self.clean_source;
+                self.status = None;
+                self.clamp_caret();
+                self.record_caret();
+            }
+            Err(e) => {
+                // Take the label back out, so a destination twig refuses
+                // leaves the document as it found it. Writing the label ended
+                // whatever was undone before it, so nothing is left to redo.
+                let _ = self.editor.undo();
+                self.redo_steps = 0;
+                self.status = Some(format!("link: {e}"));
+            }
+        }
+    }
+
     /// Insert a block-level image at the caret: `![alt](destination)`. Any
     /// selection becomes the alt text (so "select a caption, insert image" labels
     /// it); with no selection, `alt` is used — empty for none. The caret lands
@@ -14188,6 +14258,134 @@ mod tests {
         d.build_visual(80);
         d.move_right(false);
         d.move_left(false);
+    }
+
+    #[test]
+    fn insert_link_labelled_writes_the_label_and_lands_after_the_link() {
+        // A host that knows the title of what it links: the label is the
+        // text, and the link is finished — caret past it, nothing selected.
+        for fmt in [Format::Markdown, Format::Djot] {
+            let mut d = Doc::from_source("see \n".into(), fmt).unwrap();
+            d.caret = 4;
+            d.insert_link_labelled("2026-10-02.md", "Title");
+            assert_eq!(d.source, "see [Title](2026-10-02.md)\n", "{fmt:?}");
+            assert_eq!(d.selection(), None, "{fmt:?}");
+            assert_eq!(d.caret, "see [Title](2026-10-02.md)".len(), "{fmt:?}");
+            assert_eq!(
+                d.link_destination_at(5).as_deref(),
+                Some("2026-10-02.md"),
+                "{fmt:?}"
+            );
+            assert!(d.dirty);
+        }
+    }
+
+    #[test]
+    fn insert_link_labelled_escapes_the_label_so_it_round_trips() {
+        // A `]` must not close the link early, nor a `*` open emphasis: the
+        // label goes in as literal text in the body's own grammar.
+        for fmt in [Format::Markdown, Format::Djot] {
+            let label = "a] *b* [c` <d>";
+            let mut d = Doc::from_source("\n".into(), fmt).unwrap();
+            d.caret = 0;
+            d.insert_link_labelled("x.md", label);
+            assert_eq!(d.selection(), None, "{fmt:?}");
+            assert_eq!(d.caret, d.source.len() - 1, "{fmt:?}: {:?}", d.source);
+            let link = d
+                .nodes()
+                .into_iter()
+                .find(|n| n.kind == Kind::Link)
+                .unwrap_or_else(|| panic!("{fmt:?}: no link in {:?}", d.source));
+            assert_eq!(link.span, 0..d.source.len() - 1, "{fmt:?}: {:?}", d.source);
+            assert_eq!(d.link_destination_at(1).as_deref(), Some("x.md"));
+            // What the link's text reads as, markup and escapes aside.
+            let text: String = d
+                .nodes()
+                .into_iter()
+                .filter(|n| n.span.start >= link.span.start && n.span.end <= link.span.end)
+                .inspect(|n| {
+                    assert!(
+                        matches!(n.kind, Kind::Para | Kind::Link | Kind::Str),
+                        "{fmt:?}: the label minted {:?} in {:?}",
+                        n.kind,
+                        d.source
+                    )
+                })
+                .filter(|n| n.kind == Kind::Str)
+                .filter_map(|n| n.text)
+                .collect();
+            assert_eq!(text, label, "{fmt:?}: {:?}", d.source);
+        }
+    }
+
+    #[test]
+    fn insert_link_labelled_ignores_the_label_over_a_selection() {
+        let mut d = doc_with("link_lab_sel", "word here\n");
+        d.anchor = Some(0);
+        d.caret = 4;
+        d.insert_link_labelled("http://x.dev", "Ignored");
+        assert_eq!(d.source, "[word](http://x.dev) here\n");
+        assert_eq!(d.selected_text(), Some("word"));
+    }
+
+    #[test]
+    fn insert_link_labelled_repoints_the_link_the_caret_stands_in() {
+        // A host's Edit Link calls the labelled verb too: inside a link it
+        // re-points and keeps the text there is, as `insert_link` does.
+        let mut d = doc_with("link_lab_repoint", "[word](http://x.dev)\n");
+        d.caret = 3;
+        d.insert_link_labelled("http://y.dev", "Ignored");
+        assert_eq!(d.source, "[word](http://y.dev)\n");
+        assert_eq!(d.selected_text(), Some("word"));
+
+        let mut d = doc_with("link_lab_repoint_auto", "see <https://x.dev> ok\n");
+        d.caret = 10;
+        d.insert_link_labelled("https://y.dev", "Ignored");
+        assert_eq!(d.source, "see <https://y.dev> ok\n");
+    }
+
+    #[test]
+    fn insert_link_labelled_just_past_a_link_writes_a_new_one() {
+        // The caret at a link's end is not in it: nothing to re-point.
+        let mut d = doc_with("link_lab_after", "[a](x.md)\n");
+        d.caret = 9;
+        d.insert_link_labelled("y.md", "B");
+        assert_eq!(d.source, "[a](x.md)[B](y.md)\n");
+        assert_eq!(d.caret, 18);
+    }
+
+    #[test]
+    fn insert_link_labelled_is_one_undo_step() {
+        let mut d = doc_with("link_lab_undo", "see \n");
+        d.caret = 4;
+        let steps = d.undo_steps;
+        d.insert_link_labelled("x.md", "Title");
+        assert_eq!(d.undo_steps, steps + 1);
+        assert!(d.undo());
+        assert_eq!(d.source, "see \n");
+        assert_eq!(d.caret, 4);
+        assert!(d.redo());
+        assert_eq!(d.source, "see [Title](x.md)\n");
+    }
+
+    #[test]
+    fn insert_link_labelled_refuses_a_bad_destination_and_leaves_no_label() {
+        let mut d = doc_with("link_lab_bad", "see \n");
+        d.caret = 4;
+        d.insert_link_labelled("a\nb", "Title");
+        assert_eq!(d.source, "see \n");
+        assert!(d.status.is_some());
+        assert!(!d.dirty);
+    }
+
+    #[test]
+    fn insert_link_labelled_refuses_a_read_only_document() {
+        let mut d = doc_with("link_lab_ro", "see \n");
+        d.set_read_only(true);
+        d.caret = 4;
+        d.insert_link_labelled("x.md", "Title");
+        assert_eq!(d.source, "see \n");
+        assert!(!d.dirty);
     }
 
     #[test]

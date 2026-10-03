@@ -3226,6 +3226,18 @@ impl LeafDoc {
         g.frame()
     }
 
+    /// Link to `destination` with `label` as the link's text — for a host that
+    /// links something it knows the name of. At a bare caret the label is
+    /// written, escaped for the body, and the caret lands after the link with
+    /// nothing selected; over a selection, or with the caret in a link it
+    /// re-points, this is [`insert_link`](Self::insert_link) and the label is
+    /// ignored. See [`leaf_core::Doc::insert_link_labelled`].
+    pub fn insert_link_labelled(&self, destination: String, label: String) -> DocView {
+        let mut g = self.lock();
+        g.doc.insert_link_labelled(&destination, &label);
+        g.frame()
+    }
+
     /// The destination of the link under the caret, if the caret is inside one —
     /// so a frontend can open it (⌘-click / "Open Link") or show it. `None` when the
     /// caret isn't on a link.

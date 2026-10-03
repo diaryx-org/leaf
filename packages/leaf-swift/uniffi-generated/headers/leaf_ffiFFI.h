@@ -463,6 +463,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_insert_footnote(uint64_t ptr, RustC
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_insert_link(uint64_t ptr, RustBuffer destination, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INSERT_LINK_LABELLED
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INSERT_LINK_LABELLED
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_insert_link_labelled(uint64_t ptr, RustBuffer destination, RustBuffer label, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INSERT_MEDIA
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_INSERT_MEDIA
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_insert_media(uint64_t ptr, RustBuffer kind, RustBuffer destination, RustBuffer alt, RustCallStatus *_Nonnull out_status
@@ -1482,6 +1487,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_insert_footnote(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_INSERT_LINK
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_INSERT_LINK
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_insert_link(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_INSERT_LINK_LABELLED
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_INSERT_LINK_LABELLED
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_insert_link_labelled(void
     
 );
 #endif

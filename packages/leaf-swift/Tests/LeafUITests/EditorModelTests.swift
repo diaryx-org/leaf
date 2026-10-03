@@ -52,6 +52,19 @@ final class EditorModelTests: XCTestCase {
         XCTAssertEqual(edits, 1)
     }
 
+    /// A host that links something it knows the name of gets the name as the
+    /// link's text, not the destination doubling as it, and the caret past
+    /// the link — `insertLink(_:label:)` over `insert_link_labelled`.
+    func testInsertLinkWithALabelWritesTheLabel() throws {
+        let model = try LeafEditorModel(source: "see \n")
+        _ = model.doc.setSelectionOffsets(anchor: 4, focus: 4)
+
+        model.insertLink("2026-10-02.md", label: "A [draft]")
+
+        XCTAssertEqual(model.source(), "see [A \\[draft\\]](2026-10-02.md)\n")
+        XCTAssertTrue(model.state.dirty)
+    }
+
     /// A command that changes nothing is not an edit: no `onEdit`, and the
     /// state is simply republished.
     func testANoOpCommandIsNotAnEdit() throws {
