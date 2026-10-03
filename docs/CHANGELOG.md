@@ -37,6 +37,25 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.5.0 — 2026-10-03
+
+### Breaking
+
+- **deps** — move to twig 4 ([`2cc655e`](https://github.com/diaryx-org/leaf/commit/2cc655e24b89a4ec11d615eb10f9ae67d988f665))
+
+### Added
+
+- **leaf-core** — insert a link with a label of its own ([`d3266bc`](https://github.com/diaryx-org/leaf/commit/d3266bc8d9bad9d72aba15adb5c387d81f105783))
+
+### Behavioural changes
+
+- `Doc::set_block(BlockKind::Heading(_))` over a
+  Markdown paragraph of several lines writes one heading with its lines
+  joined by spaces (`a\nb` becomes `## a b`), where it made a heading of
+  the first line and left the rest a paragraph. A paragraph holding a
+  hard break is refused, and the refusal lands in `status`.
+
+
 ## v0.4.13 — 2026-10-01
 
 ### Added
