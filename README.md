@@ -96,13 +96,13 @@ host actually builds. `release release <patch|minor|major|X.Y.Z>` runs those
 checks, moves the version through every manifest and the lockfile, cuts the
 generated region of [`docs/CHANGELOG.md`](docs/CHANGELOG.md) into a released
 section, and commits and tags — locally. Pushing takes `--push`, and a pushed
-tag is a release: [`publish.yml`](.github/workflows/publish.yml) uploads every
-publishable crate to crates.io, `homebrew.yml` ships the `leaf` binary, and
+tag is a release: `homebrew.yml` ships the `leaf` binary, and
 [`mac-app.yml`](.github/workflows/mac-app.yml) attaches a signed, notarised
 `Leaf-<version>-aarch64.dmg` to the release and points the tap's
 `leaf-editor` cask at it (`brew install --cask diaryx-org/tap/leaf-editor`).
-`cargo publish --workspace --dry-run` shows beforehand what would go up, in
-dependency order, along with every crate it holds back.
+The crates are not on crates.io (0.5.0 was the last upload): provui and the
+Diaryx app name them from git, `{ git = "https://github.com/diaryx-org/leaf",
+branch = "main" }`, and lock the commit they build.
 
 `leaf-wasm` and `leaf-ffi` are two projections of the same `leaf_core::Doc`, and
 `cargo xtask ci` holds them level: a method exported by one binding and not the
