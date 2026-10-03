@@ -46,6 +46,8 @@ jobs:
       cargo-package: leaf-tui
       rust-toolchain: "1.98.1"
       needs-zig: true
+      # The reusable workflow's default trails twig 4.0.1's minimum, 0.17.0.
+      zig-version: "0.17.0"
     secrets:
       TAP_APP_ID: ${{ secrets.TAP_APP_ID }}
       TAP_APP_KEY: ${{ secrets.TAP_APP_KEY }}
