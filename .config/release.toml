@@ -16,12 +16,12 @@ verify = "cargo xtask ci"
 post_bump = "cargo xtask sync-versions"
 extra_version_files = ["packages/leaf-web/package.json", "apps/leaf-editor/project.yml"]
 
+# Not on crates.io: leaf is consumed from git, by commit, so a tag is a name
+# for a commit and the start of whatever else is listed below.
+publishes = false
+
 # What pushing the tag sets off, most consequential first. The warning printed
 # before the push is handed back to you is composed from these.
-[[tag_starts]]
-workflow = "publish.yml"
-does = "uploads every publishable crate to crates.io"
-
 [[tag_starts]]
 workflow = "homebrew.yml"
 does = "builds the `leaf` CLI binaries and writes the tap formula"

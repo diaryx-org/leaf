@@ -1,5 +1,6 @@
 [package]
 name = "leaf-ffi"
+publish = false
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -57,8 +58,10 @@ unicode-segmentation = "1.13.3"
 # one archive the app force-loads — two Rust archives in one executable is a
 # duplicate-`std` link error, so a second binding crate can only ride along
 # inside the first. The Swift side (`ResvgCoreGraphics`, from the resvg-swift
-# package leaf-swift depends on) finds its `resvg_uniffi` symbols there.
-resvg-uniffi = "0.1.4"
+# package leaf-swift depends on) finds its `resvg_uniffi` symbols there. From
+# git, `branch = "main"`, spelled as thorn-svg-ffi spells it, so a host that
+# links both gets one resvg-uniffi.
+resvg-uniffi = { git = "https://github.com/diaryx-org/resvg-swift", branch = "main" }
 
 # TeX to a self-contained SVG picture with its baseline metrics, for the Swift
 # views to draw in a line (a run delegate) or over a block's rows. Exposed as
