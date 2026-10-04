@@ -8382,7 +8382,15 @@ impl Doc {
     /// letter hit-tests to the boundary after it, and still means that word.
     /// `None` between words, where a double-click would select the space; a
     /// host looking a word up has nothing to look up there.
+    ///
+    /// In WYSIWYG the word is found among the characters drawn, as word motion
+    /// finds it: `_` is a word character, so a raw walk of `_important_` would
+    /// take the hidden delimiters with it, and a host would look up, case-change
+    /// or highlight markup the reader cannot see.
     pub fn word_at(&self, offset: usize) -> Option<Range<usize>> {
+        if self.view == View::Wysiwyg && self.vmap.num_rows() > 0 {
+            return self.glyph_word_at(offset);
+        }
         let s = &self.source;
         let mut off = offset.min(s.len());
         while off > 0 && !s.is_char_boundary(off) {
@@ -8402,6 +8410,34 @@ impl Doc {
             (None, None) => return None,
         };
         let (start, end) = word_range_at(s, probe);
+        Some(start..end)
+    }
+
+    /// [`word_at`](Self::word_at) in glyph space: the run of word-class stops
+    /// holding the glyph drawn at `offset` (where a caret there draws), or the
+    /// glyph before it. Ends after the last word glyph's own character, so a
+    /// closing delimiter hidden behind it is left out.
+    fn glyph_word_at(&self, offset: usize) -> Option<Range<usize>> {
+        let word = |off: usize| self.class_at(off) == Class::Word;
+        let at = self.vmap.stop_at_or_after(offset);
+        let before = at.map_or_else(
+            || self.vmap.stop_at_or_before(offset),
+            |a| self.vmap.stop_before(a),
+        );
+        let probe = match (at, before) {
+            (Some(a), _) if word(a) => a,
+            (_, Some(b)) if word(b) => b,
+            _ => return None,
+        };
+        let mut start = probe;
+        while let Some(prev) = self.vmap.stop_before(start).filter(|&p| word(p)) {
+            start = prev;
+        }
+        let mut last = probe;
+        while let Some(next) = self.vmap.stop_after(last).filter(|&n| word(n)) {
+            last = next;
+        }
+        let end = last + self.source[last..].chars().next().map_or(0, char::len_utf8);
         Some(start..end)
     }
 
@@ -10395,6 +10431,26 @@ mod tests {
         // Asking moves nothing.
         assert_eq!(d.selection(), None);
         assert_eq!(d.caret, 0);
+    }
+
+    #[test]
+    fn word_at_leaves_hidden_delimiters_out_of_the_word() {
+        let body = "a _important_ un**believ**able x\n";
+        let d = wysiwyg_doc("word_at_hidden", body);
+        let at = |needle: &str| body.find(needle).unwrap();
+        let text = |r: Range<usize>| body[r].replace(['*', '_'], "");
+        // Inside the emphasis, on its hidden opening `_`, and on the boundary
+        // after its hidden closing one: the word is the drawn `important`.
+        let important = at("important")..at("important") + "important".len();
+        assert_eq!(d.word_at(at("port")), Some(important.clone()));
+        assert_eq!(d.word_at(at("_important")), Some(important.clone()));
+        assert_eq!(d.word_at(at("_ un")), Some(important.clone()));
+        // A word the markup splits is still one word on screen.
+        let w = d.word_at(at("believ")).unwrap();
+        assert_eq!((w.start, text(w)), (at("un**"), "unbelievable".to_string()));
+        // The source view reads the source, where `_` is a word character.
+        let s = doc_with("word_at_hidden_src", body);
+        assert_eq!(s.word_at(at("port")), Some(at("_important")..at(" un")));
     }
 
     #[test]
