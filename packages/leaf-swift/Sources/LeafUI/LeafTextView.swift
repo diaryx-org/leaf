@@ -2345,6 +2345,12 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         #selector(insertNewline(_:)), #selector(insertLineBreak(_:)), #selector(insertTab(_:)),
         #selector(insertBacktab(_:)), #selector(deleteBackward(_:)), #selector(deleteForward(_:)),
         #selector(deleteWordBackward(_:)), #selector(deleteWordForward(_:)),
+        #selector(deleteToBeginningOfLine(_:)), #selector(deleteToEndOfLine(_:)),
+        #selector(deleteToBeginningOfParagraph(_:)), #selector(deleteToEndOfParagraph(_:)),
+        #selector(deleteToMark(_:)), #selector(yank(_:)), #selector(transpose(_:)),
+        #selector(insertNewlineIgnoringFieldEditor(_:)), #selector(insertTabIgnoringFieldEditor(_:)),
+        #selector(deleteBackwardByDecomposingPreviousCharacter(_:)),
+        #selector(uppercaseWord(_:)), #selector(lowercaseWord(_:)), #selector(capitalizeWord(_:)),
     ]
 
     // MARK: visual-line motion (the wrap is ours, so core can't do these)
@@ -2399,6 +2405,348 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             target -= 1
         }
         render(doc.clickCh(row: UInt32(row), ch: UInt32(target), extend: extend))
+    }
+
+    // MARK: the rest of Cocoa's standard key bindings
+    //
+    // What `NSTextView` answers and this view did not: every selector below is
+    // one `NSStandardKeyBindingResponding` names, bound by the system's
+    // `StandardKeyBinding.dict` (⌘⌫, ⌃K, ⌃Y, ⌃T, ⌃A/⌃E, page keys…) or by the
+    // user's own `DefaultKeyBinding.dict`, and some reached from the Edit menu
+    // too (Transformations). They are overrides rather than cases in
+    // `doCommand(by:)`, so a key binding and a menu item are the same call:
+    // `doCommand`'s fallback, `super`, performs any method the view has and
+    // beeps only at what it truly lacks.
+    //
+    // "Line" is the visual line — the wrap is this view's, and it is what ⌘⌫
+    // deletes in every Mac text view — and "paragraph" is core's row, which in
+    // the unwrapped map is one block.
+
+    /// The source bytes of the caret's visual line, its end before a soft
+    /// wrap's trailing space (the way `moveToVisualLineBoundary` stops).
+    private func visualLineBytes() -> (start: Int, end: Int)? {
+        let row = Int(docView.caretRow), ch = Int(docView.caretCh)
+        guard let vl = layoutEngine.visualLine(row: row, ch: ch) else { return nil }
+        let rl = layoutEngine.rows[row]
+        var end = vl.end
+        if vl.index < rl.wrapped.count - 1, rl.wrapped[vl.index].attributed.string.hasSuffix(" ") { end -= 1 }
+        let start = max(vl.start, vl.index == 0 ? rl.row.prefixLength : vl.start)
+        return (Int(doc.offsetForPos(row: UInt32(row), ch: UInt32(start))),
+                Int(doc.offsetForPos(row: UInt32(row), ch: UInt32(end))))
+    }
+
+    /// The source bytes of the caret's paragraph — its row, past the row's
+    /// block decoration (a bullet, a quote's gutter), which is not text.
+    private func paragraphBytes(row: Int? = nil) -> (start: Int, end: Int)? {
+        let row = row ?? Int(docView.caretRow)
+        guard layoutEngine.rows.indices.contains(row) else { return nil }
+        let rl = layoutEngine.rows[row]
+        return (Int(doc.offsetForPos(row: UInt32(row), ch: UInt32(rl.row.prefixLength))),
+                Int(doc.offsetForPos(row: UInt32(row), ch: UInt32(rl.attributed.length))))
+    }
+
+    /// The text the deleting commands below put away for ⌃Y, shared by every
+    /// view in the app as `NSTextView`'s is. Visible text, not source: a kill
+    /// that starts inside `**bold**` would otherwise carry half a delimiter.
+    static var killBuffer = ""
+    /// The frame a kill left behind. A kill made straight after another, with
+    /// nothing in between, adds to the buffer rather than replacing it — so
+    /// ⌃K ⌃K ⌃K then ⌃Y gives back all three, as in Emacs and `NSTextView`.
+    private var lastKillFrame: UInt32?
+    /// The emacs mark — `setMark:` and the three commands that use it.
+    private var markByte: Int?
+
+    /// Delete `[from, to)` as one undo step and keep its text for ⌃Y. An
+    /// empty range is the edge case each caller answers its own way.
+    private func kill(from: Int, to: Int, forward: Bool) {
+        guard to > from, !isReadOnly else { return }
+        closeWritingToolsGroupForUserEdit()
+        let text = doc.textInRange(from: UInt32(from), to: UInt32(to))
+        let chained = lastKillFrame != nil && lastKillFrame == docView.frame
+        Self.killBuffer = !chained ? text : forward ? Self.killBuffer + text : text + Self.killBuffer
+        render(doc.replaceRange(from: UInt32(from), to: UInt32(to), text: ""))
+        lastKillFrame = docView.frame
+    }
+
+    /// Delete the selection (one undo step), if there is one, and say so —
+    /// what every `deleteTo…` does first, as in `NSTextView`.
+    private func deleteSelectionIfAny() -> Bool {
+        guard hasSelection else { return false }
+        closeWritingToolsGroupForUserEdit()
+        render(doc.backspace())
+        return true
+    }
+
+    public override func deleteToBeginningOfLine(_ sender: Any?) {
+        guard !deleteSelectionIfAny() else { return }
+        // At the line's start ⌘⌫ joins it to the line above, as Backspace does.
+        guard let line = visualLineBytes(), line.start < caretByte else { return doCommand(by: #selector(deleteBackward(_:))) }
+        kill(from: line.start, to: caretByte, forward: false)
+    }
+
+    public override func deleteToEndOfLine(_ sender: Any?) {
+        guard !deleteSelectionIfAny() else { return }
+        guard let line = visualLineBytes(), caretByte < line.end else { return doCommand(by: #selector(deleteForward(_:))) }
+        kill(from: caretByte, to: line.end, forward: true)
+    }
+
+    public override func deleteToBeginningOfParagraph(_ sender: Any?) {
+        guard !deleteSelectionIfAny() else { return }
+        guard let para = paragraphBytes(), para.start < caretByte else { return doCommand(by: #selector(deleteBackward(_:))) }
+        kill(from: para.start, to: caretByte, forward: false)
+    }
+
+    /// ⌃K. At the paragraph's end it takes the break, joining the next
+    /// paragraph on — so repeated ⌃K walks down a document as it does in Emacs.
+    public override func deleteToEndOfParagraph(_ sender: Any?) {
+        guard !deleteSelectionIfAny() else { return }
+        guard let para = paragraphBytes(), caretByte < para.end else {
+            guard !isReadOnly else { return }
+            let next = Int(doc.stepOffset(off: UInt32(caretByte), delta: 1))
+            guard next > caretByte else { return }
+            let chained = lastKillFrame != nil && lastKillFrame == docView.frame
+            Self.killBuffer = (chained ? Self.killBuffer : "") + "\n"
+            closeWritingToolsGroupForUserEdit()
+            render(doc.deleteForward())
+            lastKillFrame = docView.frame
+            return
+        }
+        kill(from: caretByte, to: para.end, forward: true)
+    }
+
+    public override func deleteToMark(_ sender: Any?) {
+        guard let mark = markByte else { return NSSound.beep() }
+        let (from, to) = (min(mark, caretByte), max(mark, caretByte))
+        markByte = from
+        kill(from: from, to: to, forward: mark > caretByte)
+    }
+
+    /// ⌃Y — the kill buffer, typed over the selection as a plain paste.
+    public override func yank(_ sender: Any?) {
+        guard !isReadOnly, !Self.killBuffer.isEmpty else { return }
+        closeWritingToolsGroupForUserEdit()
+        render(doc.pasteRich(html: nil, text: Self.killBuffer))
+    }
+
+    public override func moveForward(_ sender: Any?) { render(doc.moveRight(extend: false)) }
+    public override func moveBackward(_ sender: Any?) { render(doc.moveLeft(extend: false)) }
+    public override func moveForwardAndModifySelection(_ sender: Any?) { render(doc.moveRight(extend: true)) }
+    public override func moveBackwardAndModifySelection(_ sender: Any?) { render(doc.moveLeft(extend: true)) }
+
+    /// ⌃A / ⌃E — the ends of the paragraph, however it wraps.
+    public override func moveToBeginningOfParagraph(_ sender: Any?) { moveToParagraphEdge(end: false, extend: false) }
+    public override func moveToEndOfParagraph(_ sender: Any?) { moveToParagraphEdge(end: true, extend: false) }
+    public override func moveToBeginningOfParagraphAndModifySelection(_ sender: Any?) {
+        moveToParagraphEdge(end: false, extend: true)
+    }
+    public override func moveToEndOfParagraphAndModifySelection(_ sender: Any?) {
+        moveToParagraphEdge(end: true, extend: true)
+    }
+
+    /// ⌥⇧↓ / ⌥⇧↑ — to the paragraph's edge, and from an edge on to the next
+    /// paragraph's, so a held chord walks paragraph by paragraph.
+    public override func moveParagraphForwardAndModifySelection(_ sender: Any?) {
+        moveToParagraphEdge(end: true, extend: true, onward: true)
+    }
+    public override func moveParagraphBackwardAndModifySelection(_ sender: Any?) {
+        moveToParagraphEdge(end: false, extend: true, onward: true)
+    }
+
+    private func moveToParagraphEdge(end: Bool, extend: Bool, onward: Bool = false) {
+        var row = Int(docView.caretRow)
+        guard var para = paragraphBytes(row: row) else {
+            return render(end ? doc.moveEnd(extend: extend) : doc.moveHome(extend: extend))
+        }
+        if onward, caretByte == (end ? para.end : para.start) {
+            // Already at this edge: the same edge of the next paragraph with
+            // text in it, past the half-line gaps between blocks.
+            let rows = layoutEngine.rows
+            repeat { row += end ? 1 : -1 } while rows.indices.contains(row) && rows[row].row.isBlockGap
+            guard rows.indices.contains(row), let next = paragraphBytes(row: row) else { return }
+            para = next
+        }
+        let target = UInt32(end ? para.end : para.start)
+        render(extend ? doc.setSelectionOffsets(anchor: UInt32(anchorByte), focus: target)
+                      : doc.setSelectionOffsets(anchor: target, focus: target))
+    }
+
+    /// ⌃T — swap the characters either side of the caret, or the two before
+    /// it at a paragraph's end, and step past them. Only where both are plain
+    /// source standing side by side: across hidden markup, swapping the
+    /// visible characters would mean rewriting the markup between them.
+    public override func transpose(_ sender: Any?) {
+        guard !isReadOnly, !hasSelection else { return NSSound.beep() }
+        var mid = caretByte
+        if let para = paragraphBytes(), mid >= para.end { mid = Int(doc.stepOffset(off: UInt32(mid), delta: -1)) }
+        let before = Int(doc.stepOffset(off: UInt32(mid), delta: -1))
+        let after = Int(doc.stepOffset(off: UInt32(mid), delta: 1))
+        let a = doc.textInRange(from: UInt32(before), to: UInt32(mid))
+        let b = doc.textInRange(from: UInt32(mid), to: UInt32(after))
+        guard before < mid, mid < after, a.count == 1, b.count == 1, a != "\n", b != "\n",
+              sourceBytes(before, after) == a + b
+        else { return NSSound.beep() }
+        closeWritingToolsGroupForUserEdit()
+        render(doc.replaceRange(from: UInt32(before), to: UInt32(after), text: b + a))
+    }
+
+    public override func insertNewlineIgnoringFieldEditor(_ sender: Any?) { doCommand(by: #selector(insertNewline(_:))) }
+    public override func insertTabIgnoringFieldEditor(_ sender: Any?) { doCommand(by: #selector(insertTab(_:))) }
+
+    /// ⌃⌫ — take the last mark off the character before the caret (`é`
+    /// becomes `e`), and delete it outright when it has none.
+    public override func deleteBackwardByDecomposingPreviousCharacter(_ sender: Any?) {
+        guard !deleteSelectionIfAny() else { return }
+        let before = Int(doc.stepOffset(off: UInt32(caretByte), delta: -1))
+        let char = doc.textInRange(from: UInt32(before), to: UInt32(caretByte))
+        let scalars = Array(char.decomposedStringWithCanonicalMapping.unicodeScalars)
+        guard !isReadOnly, before < caretByte, scalars.count > 1, sourceBytes(before, caretByte) == char else {
+            return doCommand(by: #selector(deleteBackward(_:)))
+        }
+        var rest = String.UnicodeScalarView()
+        rest.append(contentsOf: scalars.dropLast())
+        closeWritingToolsGroupForUserEdit()
+        render(doc.replaceRange(from: UInt32(before), to: UInt32(caretByte),
+                                text: String(rest).precomposedStringWithCanonicalMapping))
+    }
+
+    // Paging. `scroll…` moves the view and leaves the caret; `page…` moves the
+    // caret a screenful too, as Page Up/Down do with ⌥ in `NSTextView`.
+
+    /// A screenful, less a line of overlap so the reader keeps their place.
+    private var pageStep: CGFloat {
+        guard let clip = enclosingScrollView?.contentView else { return bounds.height }
+        let insets = clip.contentInsets
+        return max(theme.lineHeight * zoomScale,
+                   clip.bounds.height - insets.top - insets.bottom - theme.lineHeight * zoomScale)
+    }
+
+    private func scrollVertically(to y: CGFloat) {
+        guard let clip = enclosingScrollView?.contentView else { return }
+        clip.scroll(to: CGPoint(x: clip.bounds.origin.x, y: clampedScrollY(y, in: clip)))
+        enclosingScrollView?.reflectScrolledClipView(clip)
+    }
+
+    private func scrollVertically(by dy: CGFloat) {
+        guard let clip = enclosingScrollView?.contentView else { return }
+        scrollVertically(to: clip.bounds.origin.y + dy)
+    }
+
+    public override func scrollPageUp(_ sender: Any?) { scrollVertically(by: -pageStep) }
+    public override func scrollPageDown(_ sender: Any?) { scrollVertically(by: pageStep) }
+    public override func scrollLineUp(_ sender: Any?) { scrollVertically(by: -theme.lineHeight * zoomScale) }
+    public override func scrollLineDown(_ sender: Any?) { scrollVertically(by: theme.lineHeight * zoomScale) }
+    public override func scrollToBeginningOfDocument(_ sender: Any?) { scrollVertically(to: -.greatestFiniteMagnitude) }
+    public override func scrollToEndOfDocument(_ sender: Any?) { scrollVertically(to: .greatestFiniteMagnitude) }
+
+    public override func pageUp(_ sender: Any?) { movePage(down: false, extend: false) }
+    public override func pageDown(_ sender: Any?) { movePage(down: true, extend: false) }
+    public override func pageUpAndModifySelection(_ sender: Any?) { movePage(down: false, extend: true) }
+    public override func pageDownAndModifySelection(_ sender: Any?) { movePage(down: true, extend: true) }
+
+    /// Move the caret a screenful, holding its x as ↑/↓ do, and scroll the
+    /// view by the same amount so the caret keeps its place on screen.
+    private func movePage(down: Bool, extend: Bool) {
+        guard let caret = layoutEngine.caretRect(docView, theme: theme) else {
+            return render(down ? doc.moveDocEnd(extend: extend) : doc.moveDocStart(extend: extend))
+        }
+        let step = pageStep / zoomScale
+        let goalX = verticalGoalX ?? caret.minX
+        let y = caret.midY + (down ? step : -step)
+        scrollVertically(by: down ? pageStep : -pageStep)
+        verticalGoalX = goalX
+        if y < 0 { return render(doc.moveDocStart(extend: extend)) }
+        if y > layoutEngine.contentHeight { return render(doc.moveDocEnd(extend: extend)) }
+        let (row, ch) = hitRowCh(CGPoint(x: goalX, y: y))
+        render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: extend), keepVerticalGoal: true)
+    }
+
+    // The emacs mark.
+
+    public override func setMark(_ sender: Any?) { markByte = caretByte }
+
+    public override func selectToMark(_ sender: Any?) {
+        guard let mark = markByte else { return NSSound.beep() }
+        render(doc.setSelectionOffsets(anchor: UInt32(min(mark, Int(doc.docEndOffset()))), focus: UInt32(caretByte)))
+    }
+
+    public override func swapWithMark(_ sender: Any?) {
+        guard let mark = markByte else { return NSSound.beep() }
+        markByte = caretByte
+        let to = UInt32(min(mark, Int(doc.docEndOffset())))
+        render(doc.setSelectionOffsets(anchor: to, focus: to))
+    }
+
+    // Selection by unit — what a double- and triple-click select, by key.
+
+    public override func selectWord(_ sender: Any?) {
+        render(doc.selectWordCh(row: docView.caretRow, ch: docView.caretCh))
+    }
+
+    public override func selectLine(_ sender: Any?) {
+        guard let line = visualLineBytes() else { return }
+        render(doc.setSelectionOffsets(anchor: UInt32(line.start), focus: UInt32(line.end)))
+    }
+
+    public override func selectParagraph(_ sender: Any?) {
+        render(doc.selectBlockCh(row: docView.caretRow, ch: docView.caretCh))
+    }
+
+    // Edit ▸ Transformations, and the ⌥U/⌥L/⌥C of an emacs key binding.
+
+    public override func uppercaseWord(_ sender: Any?) { changeCase { $1.uppercased() } }
+    public override func lowercaseWord(_ sender: Any?) { changeCase { $1.lowercased() } }
+    public override func capitalizeWord(_ sender: Any?) {
+        changeCase { startsWord, char in startsWord ? char.uppercased() : char.lowercased() }
+    }
+
+    /// The range a case change works on: the selection, or the word the caret
+    /// is in, as `NSTextView` does it.
+    private func caseChangeBytes() -> (from: Int, to: Int)? {
+        if hasSelection { return (selLowByte, selHighByte) }
+        return doc.wordRangeAt(off: UInt32(caretByte)).map { (Int($0.start), Int($0.end)) }
+    }
+
+    /// Re-case the selection (or the caret's word) a character at a time,
+    /// rewriting only characters that change, each in its own source bytes —
+    /// so the markup around and between them, a link's destination included,
+    /// is never touched. `transform` is given whether the character starts a
+    /// word. One undo step, the selection kept over the same text.
+    private func changeCase(_ transform: (_ startsWord: Bool, _ char: String) -> String) {
+        guard !isReadOnly, let (from, to) = caseChangeBytes(), to > from else { return }
+        let text = doc.textInRange(from: UInt32(from), to: UInt32(to))
+        let base = Int(doc.utf16IndexForOffset(off: UInt32(from)))
+        let source = Array(doc.source().utf8)
+        var edits: [(at: Int, length: Int, text: String)] = []
+        var utf16 = 0
+        var previous: Character?
+        for char in text {
+            let width = String(char).utf16.count
+            defer { utf16 += width; previous = char }
+            let startsWord = previous.map { !($0.isLetter || $0.isNumber || $0 == "'" || $0 == "’") } ?? true
+            let original = String(char), changed = transform(startsWord, original)
+            guard changed != original else { continue }
+            let at = Int(doc.offsetForUtf16Index(index: UInt32(base + utf16)))
+            let bytes = Array(original.utf8)
+            // A character that is not spelled as itself in the source — an
+            // escape, an entity — is left as it is rather than guessed at.
+            guard at >= from, at + bytes.count <= source.count,
+                  Array(source[at..<(at + bytes.count)]) == bytes else { continue }
+            edits.append((at, bytes.count, changed))
+        }
+        guard !edits.isEmpty else { return }
+        closeWritingToolsGroupForUserEdit()
+        let (anchor, focus) = (anchorByte, caretByte)
+        doc.beginUndoGroup()
+        // Last first, so an edit that changes a length (ß to SS) moves nothing
+        // still to be edited.
+        for edit in edits.reversed() {
+            _ = doc.replaceRange(from: UInt32(edit.at), to: UInt32(edit.at + edit.length), text: edit.text)
+        }
+        doc.endUndoGroup()
+        func shifted(_ off: Int) -> Int {
+            off + edits.filter { $0.at < off }.reduce(0) { $0 + $1.text.utf8.count - $1.length }
+        }
+        render(doc.setSelectionOffsets(anchor: UInt32(shifted(anchor)), focus: UInt32(shifted(focus))))
     }
 
     /// The chords with no standard menu item to fire them. Undo, Redo, Select
@@ -2491,6 +2839,12 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         case #selector(toggleAutomaticDashSubstitution(_:)):
             return validateSubstitution(item, on: isAutomaticDashSubstitutionEnabled)
         case #selector(printView(_:)), #selector(printDocument(_:)): return !docView.rows.isEmpty
+        // Edit ▸ Transformations: something to re-case, in a document that can change.
+        case #selector(uppercaseWord(_:)), #selector(lowercaseWord(_:)), #selector(capitalizeWord(_:)):
+            return !isReadOnly && caseChangeBytes() != nil
+        case #selector(yank(_:)): return !isReadOnly && !Self.killBuffer.isEmpty
+        case #selector(selectToMark(_:)), #selector(swapWithMark(_:)), #selector(deleteToMark(_:)):
+            return markByte != nil && (item.action != #selector(deleteToMark(_:)) || !isReadOnly)
         // Anything else is enabled by whether the view answers it at all — what
         // AppKit does for a responder with no validation of its own.
         default: return item.action.map { responds(to: $0) } ?? false
