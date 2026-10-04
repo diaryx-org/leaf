@@ -436,10 +436,12 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     private var docView: DocView
     /// Readable by the tests, which check that a caret move keeps it.
     private(set) var layoutEngine: EditorLayout {
-        didSet { accessibilityLineCache = nil }
+        didSet { accessibilityLineCache = nil; accessibilityTextCache = nil }
     }
     /// `accessibilityLines`, until the next layout.
     private var accessibilityLineCache: [AccessibilityLine]?
+    /// `accessibilityText`, until the next layout or edit.
+    private var accessibilityTextCache: NSString?
     /// The selection an assistive app was last told of, as `(anchor, caret)`.
     private var lastAccessibilitySelection: (UInt32, UInt32)?
     /// The view width the current layout was built for. The text column inside it
@@ -799,6 +801,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         let view = docView
         if textChanged {
             textFinder.noteClientStringWillChange()
+            accessibilityTextCache = nil
         }
         // The document changed, as distinct from what is shown of it: a toggle
         // between source and rendered rewrites every row and edits nothing.
@@ -3634,8 +3637,19 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     public override func isAccessibilityElement() -> Bool { true }
     public override func accessibilityRole() -> NSAccessibility.Role? { .textArea }
-    public override func accessibilityValue() -> Any? { fullText() }
-    public override func accessibilityNumberOfCharacters() -> Int { (fullText() as NSString).length }
+    public override func accessibilityValue() -> Any? { accessibilityText as String }
+    public override func accessibilityNumberOfCharacters() -> Int { accessibilityText.length }
+
+    /// `fullText()` for the questions below. VoiceOver asks one per step of a
+    /// read-through — a line's range, its string, its frame — and building the
+    /// whole text across the binding for each made reading a document through
+    /// quadratic, so it is kept until the next layout or edit, as the lines are.
+    var accessibilityText: NSString {
+        if let cached = accessibilityTextCache { return cached }
+        let text = fullText() as NSString
+        accessibilityTextCache = text
+        return text
+    }
 
     /// The caret's visual line, found by where the caret is *drawn*: at a soft
     /// wrap one index is both the end of a line and the start of the next, and
@@ -3667,7 +3681,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     }
 
     public override func accessibilityString(for range: NSRange) -> String? {
-        let full = fullText() as NSString
+        let full = accessibilityText
         guard range.location >= 0, range.location + range.length <= full.length else { return nil }
         return full.substring(with: range)
     }
@@ -3696,7 +3710,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             }
         }
         let starts = doc.utf16IndicesForOffsets(offs: offsets).map(Int.init)
-        let length = (fullText() as NSString).length
+        let length = accessibilityText.length
         var lines: [AccessibilityLine] = []
         for (k, start) in starts.enumerated() {
             // A line whose start is not past the last one's adds nothing — a
@@ -3741,7 +3755,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// The composed character at `index` — a whole emoji, a letter with its
     /// marks — which is what VoiceOver steps by.
     public override func accessibilityRange(for index: Int) -> NSRange {
-        let full = fullText() as NSString
+        let full = accessibilityText
         guard index >= 0, index < full.length else { return NSRange(location: NSNotFound, length: 0) }
         return full.rangeOfComposedCharacterSequence(at: index)
     }
@@ -3751,7 +3765,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     public override func accessibilityRange(for point: NSPoint) -> NSRange {
         let index = characterIndex(for: point)
         guard index != NSNotFound else { return NSRange(location: NSNotFound, length: 0) }
-        let full = fullText() as NSString
+        let full = accessibilityText
         guard full.length > 0 else { return NSRange(location: 0, length: 0) }
         return full.rangeOfComposedCharacterSequence(at: min(index, full.length - 1))
     }
@@ -3761,8 +3775,14 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// empty range.
     public override func accessibilityFrame(for range: NSRange) -> NSRect {
         let (from, to) = byteBounds(range)
-        let boxes = rangeRects(fromByte: from, toByte: to)
-        guard let first = boxes.first else { return .zero }
+        let boxes = to > from ? rangeRects(fromByte: from, toByte: to) : []
+        // An empty range is drawn as nothing at all, and `.zero` sends
+        // VoiceOver's cursor and Zoom to the corner of the screen.
+        guard let first = boxes.first else {
+            let s = doc.posForOffset(off: UInt32(from))
+            guard let caret = layoutEngine.rect(row: Int(s.row), ch: Int(s.ch)) else { return .zero }
+            return screenRect(fromView: viewRect(caret))
+        }
         return screenRect(fromView: viewRect(boxes.dropFirst().reduce(first) { $0.union($1) }))
     }
 

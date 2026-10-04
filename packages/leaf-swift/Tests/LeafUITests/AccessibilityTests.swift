@@ -114,5 +114,26 @@ final class AccessibilityTests: XCTestCase {
         XCTAssertEqual(lines(view).count, 2)
         XCTAssertEqual(view.accessibilityString(for: view.accessibilityRange(forLine: 1)), "two")
     }
+
+    func testAnEmptyRangesFrameIsTheCaretsBox() throws {
+        let view = try editor("hello world\n")
+        let frame = view.accessibilityFrame(for: NSRange(location: 6, length: 0))
+        XCTAssertNotEqual(frame, .zero)
+        let caret = try XCTUnwrap(view.layoutEngine.rect(row: 0, ch: 6))
+        XCTAssertEqual(frame.minX, caret.minX, accuracy: 0.5, "before `world`, not the screen's corner")
+        XCTAssertEqual(frame.height, caret.height, accuracy: 0.5)
+        let world = try XCTUnwrap(view.layoutEngine.rangeRects(fromByte: 6, toByte: 11, in: view.doc).first)
+        XCTAssertEqual(frame.minX, world.minX, accuracy: 0.5)
+    }
+
+    func testTheTextIsBuiltOnceAndFollowsAnEdit() throws {
+        let view = try editor("one\n")
+        XCTAssertTrue(view.accessibilityText === view.accessibilityText, "kept between questions")
+        view.command { $0.moveDocEnd(extend: false) }
+        XCTAssertTrue(view.accessibilityText === view.accessibilityText)
+        view.insertText(" more", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertEqual(view.accessibilityValue() as? String, "one more")
+        XCTAssertEqual(view.accessibilityNumberOfCharacters(), 8)
+    }
 }
 #endif
