@@ -15,6 +15,7 @@ contents:
 - '[An IME composition undoes a keystroke at a time](ime-composition-undo.md)'
 - '[Ctrl+Z under Gboard undoes the keyboard''s text, not leaf''s step](ctrl-z-under-gboard.md)'
 - '[Handoff of an open document between the Mac and iOS apps](handoff.md)'
+- '[A force click on a date spins in Look Up](date-event-popover.md)'
 - '[Closed tasks](/docs/tasks/closed/closed.md)'
 part_of: '[leaf](/README.md)'
 ---
