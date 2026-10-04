@@ -21,11 +21,11 @@
 //  same experience the iOS peer gets from `UITextInput`, reached a different way.
 //
 //  Look Up is the one the system cannot do alone, since it has no layout to
-//  read words out of: `quickLook(with:)` answers a force click or three-finger
-//  tap by hit-testing the point itself — the selection, a footnote's or link's
-//  peek, else the word core names there — and `showDefinition(for:at:)` is
-//  handed the word as it is drawn, font and baseline, so the system's highlight
-//  lands on it exactly. The context menu's Look Up goes the same way.
+//  read words out of: a force click (seen as its pressure reaching stage 2)
+//  and a three-finger tap (`quickLook(with:)`) are answered by hit-testing the
+//  point itself — the selection, a footnote's or link's peek, else the word
+//  core names there — and `showDefinition(for:at:)` is handed the word as it
+//  is drawn, font and baseline, so the system's highlight lands on it exactly. The context menu's Look Up goes the same way.
 
 #if canImport(AppKit) && !targetEnvironment(macCatalyst)
 import AppKit
@@ -346,6 +346,11 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// and the rows it covers. Resolved the way `dragCandidate` is: a drag in
     /// `mouseDragged`, a click on the row in `mouseUp`.
     private var blockDragCandidate: (point: CGPoint, event: NSEvent, from: Int, rows: RowRange)?
+
+    /// The stage the press under way has reached on a Force Touch trackpad: 1
+    /// for a click, 2 for a force click, 0 between presses. What a force click
+    /// is, is the step from 1 to 2.
+    private var pressureStage = 0
 
     /// The block being carried by a dragging session this view started, and
     /// where it would land — `nil` between drags. The target is core's
@@ -3203,6 +3208,28 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// words; a date, an address or a number the data detectors know; and
     /// otherwise the word, in the system's Look Up panel.
     public override func quickLook(with event: NSEvent) {
+        lookUpUnderPointer(event)
+    }
+
+    /// A force click, answered here because AppKit does not answer it: it
+    /// sends `quickLook(with:)` to a custom view for a three-finger tap, but
+    /// a force click on one reaches it only as pressure, its stage rising to
+    /// 2 — so the step up to 2 is looked up as the tap would be. Only when the
+    /// reader's Look Up gesture is the force click (Trackpad settings' "Look
+    /// up & data detectors", on unless turned off), so that a reader who
+    /// chose the tap does not get both.
+    public override func pressureChange(with event: NSEvent) {
+        let stage = event.stage
+        defer { pressureStage = stage }
+        guard stage == 2, pressureStage < 2,
+              UserDefaults.standard.object(forKey: "com.apple.trackpad.forceClick") as? Bool ?? true
+        else { return super.pressureChange(with: event) }
+        lookUpUnderPointer(event)
+    }
+
+    /// What `quickLook(with:)` and a force click both do with the point
+    /// `event` is at.
+    private func lookUpUnderPointer(_ event: NSEvent) {
         let p = layoutPoint(convert(event.locationInWindow, from: nil))
         if hasSelection, selectionContains(p) {
             lookUp(fromByte: selLowByte, toByte: selHighByte)
