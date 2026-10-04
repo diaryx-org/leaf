@@ -31,15 +31,18 @@ final class DataDetectorTests: XCTestCase {
         let found = try XCTUnwrap(detected("555", in: view))
         XCTAssertEqual(found.result.resultType, .phoneNumber)
         XCTAssertTrue(found.text.contains("123-4567"))
-        let url = LeafTextView.dataDetectorURL(for: found.result, text: found.text)
-        XCTAssertEqual(url?.absoluteString, "tel:5551234567")
+        let action = LeafTextView.dataDetectorAction(for: found.result, text: found.text)
+        XCTAssertEqual(action, .open(URL(string: "tel:5551234567")!))
     }
 
     func testABareURLIsOpened() throws {
         let view = try editor("Read https://example.com/page now\n")
         let found = try XCTUnwrap(detected("example", in: view))
         XCTAssertEqual(found.result.resultType, .link)
-        XCTAssertEqual(LeafTextView.dataDetectorURL(for: found.result, text: found.text)?.host, "example.com")
+        guard case .open(let url) = LeafTextView.dataDetectorAction(for: found.result, text: found.text) else {
+            return XCTFail("a URL is opened")
+        }
+        XCTAssertEqual(url.host, "example.com")
     }
 
     func testADateIsAnEventForCalendar() throws {
@@ -55,13 +58,33 @@ final class DataDetectorTests: XCTestCase {
         XCTAssertTrue(ics.contains("BEGIN:VEVENT"))
         XCTAssertTrue(ics.contains("SUMMARY:Lunch\\, with Sam"), "commas are escaped in iCalendar text")
         XCTAssertTrue(ics.contains("DTEND:"))
+        // Resolving the action writes nothing; only taking it does.
+        guard case .addEvent(let event) = LeafTextView.dataDetectorAction(for: found.result, text: found.text) else {
+            return XCTFail("a date is an event to add")
+        }
+        XCTAssertTrue(event.contains("BEGIN:VEVENT"))
+    }
+
+    func testAnEventFileReplacesTheLastOne() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LeafTests-Events-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let first = try XCTUnwrap(LeafTextView.writeCalendarEvent("one", in: directory))
+        let second = try XCTUnwrap(LeafTextView.writeCalendarEvent("two", in: directory))
+        XCTAssertEqual(second.pathExtension, "ics")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: first.path), "the last event goes")
+        let left = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        XCTAssertEqual(left, [second.lastPathComponent])
+        XCTAssertEqual(try String(contentsOf: second, encoding: .utf8), "two")
     }
 
     func testAnAddressGoesToMaps() throws {
         let view = try editor("Office: 1 Apple Park Way, Cupertino, CA 95014 is where.\n")
         let found = try XCTUnwrap(detected("Apple Park", in: view))
         XCTAssertEqual(found.result.resultType, .address)
-        let url = try XCTUnwrap(LeafTextView.dataDetectorURL(for: found.result, text: found.text))
+        guard case .open(let url) = LeafTextView.dataDetectorAction(for: found.result, text: found.text) else {
+            return XCTFail("an address is opened in Maps")
+        }
         XCTAssertEqual(url.host, "maps.apple.com")
         XCTAssertTrue(url.query?.contains("Cupertino") == true)
     }

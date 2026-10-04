@@ -3369,35 +3369,62 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     @objc private func performDataDetectorAction(_ sender: NSMenuItem) {
         guard let found = sender.representedObject as? DetectedData,
-              let url = Self.dataDetectorURL(for: found.result, text: found.text) else { return NSSound.beep() }
-        NSWorkspace.shared.open(url)
+              let action = Self.dataDetectorAction(for: found.result, text: found.text) else { return NSSound.beep() }
+        switch action {
+        case .open(let url):
+            NSWorkspace.shared.open(url)
+        case .addEvent(let ics):
+            guard let file = Self.writeCalendarEvent(ics) else { return NSSound.beep() }
+            NSWorkspace.shared.open(file)
+        }
+    }
+
+    /// What a match's action hands on: a URL to open, or a date's event,
+    /// which becomes a file only when the action is actually taken.
+    enum DataDetectorAction: Equatable {
+        case open(URL)
+        /// One event as iCalendar text, for Calendar to offer to add.
+        case addEvent(String)
     }
 
     /// Where a match's action goes: `tel:` for a number (FaceTime, or the
     /// paired iPhone), Apple Maps for an address, the URL itself, and for a
     /// date a one-event calendar file, which Calendar opens as an event to
-    /// add. Static and pure but for the file, so a test can read it.
-    static func dataDetectorURL(for result: NSTextCheckingResult, text: String) -> URL? {
+    /// add. Static and pure, so a test can read it.
+    static func dataDetectorAction(for result: NSTextCheckingResult, text: String) -> DataDetectorAction? {
         switch result.resultType {
         case .phoneNumber:
             let digits = (result.phoneNumber ?? text).filter { $0.isNumber || $0 == "+" }
-            return digits.isEmpty ? nil : URL(string: "tel:" + digits)
+            guard !digits.isEmpty, let url = URL(string: "tel:" + digits) else { return nil }
+            return .open(url)
         case .address:
             var maps = URLComponents(string: "https://maps.apple.com/")
             maps?.queryItems = [URLQueryItem(name: "q", value: text.replacingOccurrences(of: "\n", with: ", "))]
-            return maps?.url
+            return maps?.url.map { .open($0) }
         case .link:
-            return result.url
+            return result.url.map { .open($0) }
         case .date:
             guard let date = result.date else { return nil }
-            let file = FileManager.default.temporaryDirectory
-                .appendingPathComponent("Leaf-\(UUID().uuidString)").appendingPathExtension("ics")
-            let ics = calendarEvent(starting: date, lasting: result.duration, title: text)
-            guard (try? ics.write(to: file, atomically: true, encoding: .utf8)) != nil else { return nil }
-            return file
+            return .addEvent(calendarEvent(starting: date, lasting: result.duration, title: text))
         default:
             return nil
         }
+    }
+
+    /// Where the events Calendar is handed are written: one directory for the
+    /// process, in its temporary directory.
+    static let calendarEventDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("Leaf-Events-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
+
+    /// Write `ics` as a file Calendar can open, in `directory` — emptied
+    /// first, so it never holds more than the one event last handed over.
+    static func writeCalendarEvent(_ ics: String, in directory: URL = calendarEventDirectory) -> URL? {
+        let files = FileManager.default
+        try? files.removeItem(at: directory)
+        guard (try? files.createDirectory(at: directory, withIntermediateDirectories: true)) != nil else { return nil }
+        let file = directory.appendingPathComponent("Event-\(UUID().uuidString)").appendingPathExtension("ics")
+        guard (try? ics.write(to: file, atomically: true, encoding: .utf8)) != nil else { return nil }
+        return file
     }
 
     /// One event as iCalendar text: what Calendar opens to offer "add this".
