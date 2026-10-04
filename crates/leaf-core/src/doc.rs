@@ -4792,9 +4792,9 @@ impl Doc {
     /// same on one line: `a **bold** text` lost `ld te` and kept `a **boxt`.
     ///
     /// So a run whose text survives keeps the delimiters that fall in the
-    /// range, written after `text`, which leaves the new text where the
-    /// selection began: inside a run cut at its end, outside one cut at its
-    /// start. A run whose text the range takes whole goes whole, as
+    /// range, which leaves the new text where the selection began: inside a
+    /// run cut at its end, which closes after the text's first line, and
+    /// outside one cut at its start, which opens after all of it. A run whose text the range takes whole goes whole, as
     /// [`widen_over_emptied_inlines`](Self::widen_over_emptied_inlines) has a
     /// word-delete take it — unless the range lies inside that run, which is
     /// the mark-edge rule's case: it takes the delimiters and arms the marks,
@@ -4828,25 +4828,46 @@ impl Doc {
                 break;
             }
         }
-        let mut kept: Vec<Range<usize>> = nodes
-            .iter()
-            .filter(|(_, body)| body.start < s || body.end > e)
-            .flat_map(|(span, body)| [span.start..body.start, body.end..span.end])
-            .map(|d| d.start.max(s)..d.end.min(e))
-            .filter(|d| d.start < d.end)
-            .collect();
-        kept.sort_by_key(|d| d.start);
-        kept.dedup();
-        let kept: String = kept.into_iter().map(|d| &self.source[d]).collect();
-        if kept.is_empty() {
+        // The delimiters in the range of the runs whose text survives: the
+        // closing ones of a run cut at its end, the opening ones of a run cut
+        // at its start. A run cut at both ends holds the whole range, so
+        // neither of its delimiters is in it.
+        let kept = |side: fn(&Range<usize>, &Range<usize>) -> Range<usize>| -> String {
+            let mut kept: Vec<Range<usize>> = nodes
+                .iter()
+                .filter(|(_, body)| body.start < s || body.end > e)
+                .map(|(span, body)| side(span, body))
+                .map(|d| d.start.max(s)..d.end.min(e))
+                .filter(|d| d.start < d.end)
+                .collect();
+            kept.sort_by_key(|d| d.start);
+            kept.dedup();
+            kept.into_iter().map(|d| &self.source[d]).collect()
+        };
+        let closes = kept(|span, body| body.end..span.end);
+        let opens = kept(|span, body| span.start..body.start);
+        if closes.is_empty() && opens.is_empty() {
             return self.splice(s, e, text, kind);
         }
-        if !self.splice(s, e, &format!("{text}{kept}"), kind) {
+        // A run closes on the line it opened on, so a run cut at its end
+        // takes the text up to the first line break, less the whitespace a
+        // closing delimiter cannot follow; a paste of several paragraphs puts
+        // the rest after the run. A run cut at its start opens after all of
+        // `text`, so the new text stays out of it.
+        let line = text.find('\n').unwrap_or(text.len());
+        let cut = text[..line].trim_end().len();
+        let replacement = format!("{}{closes}{}{opens}", &text[..cut], &text[cut..]);
+        if !self.splice(s, e, &replacement, kind) {
             return false;
         }
-        // The caret after `text`, before the delimiters written behind it.
-        let at = s + text.len();
-        if self.source.get(at..at + kept.len()) == Some(kept.as_str()) {
+        // The caret after `text`: inside a run it ended in, before the
+        // delimiters written behind it.
+        let at = if cut == text.len() {
+            s + text.len()
+        } else {
+            s + text.len() + closes.len()
+        };
+        if self.source.get(s..s + replacement.len()) == Some(replacement.as_str()) {
             self.caret = at;
             self.record_caret();
         }
@@ -21689,6 +21710,28 @@ mod tests {
         d.place_caret(d.source.find("xt").unwrap(), true);
         d.backspace();
         assert_eq!(d.source, "a xt\n");
+    }
+
+    /// A paste of several paragraphs over a selection that cuts runs: the run
+    /// cut at its end closes after the paste's first line, and the run cut
+    /// at its start opens after its last, so each stays on one paragraph.
+    #[test]
+    fn a_paste_of_paragraphs_over_a_cut_run_closes_it_on_its_own_line() {
+        let src = "a **bold** and *italic* text\n";
+        let mut d = wysiwyg_doc("sel_cut_paste", src);
+        d.place_caret(d.source.find("ld").unwrap(), false);
+        d.place_caret(d.source.find("alic").unwrap(), true);
+        d.paste("one\n\ntwo");
+        assert_eq!(d.source, "a **boone**\n\ntwo*alic* text\n");
+        assert_eq!(d.caret, d.source.find("*alic").unwrap(), "after the paste");
+
+        // A paste ending in a space puts the space outside the run, where a
+        // closing delimiter can still close it.
+        let mut d = wysiwyg_doc("sel_cut_paste_space", "a **bold** text\n");
+        d.place_caret(d.source.find("ld").unwrap(), false);
+        d.place_caret(d.source.find("xt").unwrap(), true);
+        d.paste("X ");
+        assert_eq!(d.source, "a **boX** xt\n");
     }
 
     /// Enter over a selection that cuts a run deletes it and splits there,
