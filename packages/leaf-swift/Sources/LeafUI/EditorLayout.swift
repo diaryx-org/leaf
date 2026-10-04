@@ -1997,9 +1997,6 @@ struct EditorLayout {
         return (row, ch)
     }
 
-    /// The visual line index within row `row` that offset `ch` sits on, and that
-    /// line's `[start, end)` UTF-16 range — for visual-line motion (Home/End/↑/↓).
-    /// Returns `nil` if the row is out of range.
     /// The baseline origin of the glyph at `(row, ch)`, in layout coordinates —
     /// where a string set in that glyph's font would have to start to sit on
     /// top of it. A line is drawn from the top of its box
@@ -2017,6 +2014,9 @@ struct EditorLayout {
         return CGPoint(x: o.x + wl.offset + x, y: o.y + ascent)
     }
 
+    /// The visual line index within row `row` that offset `ch` sits on, and that
+    /// line's `[start, end)` UTF-16 range — for visual-line motion (Home/End/↑/↓).
+    /// Returns `nil` if the row is out of range.
     func visualLine(row: Int, ch: Int) -> (index: Int, start: Int, end: Int)? {
         guard rows.indices.contains(row) else { return nil }
         let lines = rows[row].wrapped
