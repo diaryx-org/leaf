@@ -15,10 +15,17 @@
 //  this view paints the selection itself. What makes it *native* is that the OS is
 //  told the truth about it: `NSTextInputClient` reports the real `selectedRange` and
 //  answers `attributedSubstring`/`firstRect`/`characterIndex`, the view is an
-//  `NSServicesMenuRequestor`, and it exposes an `NSAccessibility` text area. So Look
-//  Up, the Services menu, dictation, the right-click menu, VoiceOver, and the
+//  `NSServicesMenuRequestor`, and it exposes an `NSAccessibility` text area. So
+//  the Services menu, dictation, the right-click menu, VoiceOver, and the
 //  emphasized/unemphasized (key-window-aware) highlight all behave natively — the
 //  same experience the iOS peer gets from `UITextInput`, reached a different way.
+//
+//  Look Up is the one the system cannot do alone, since it has no layout to
+//  read words out of: `quickLook(with:)` answers a force click or three-finger
+//  tap by hit-testing the point itself — the selection, a footnote's or link's
+//  peek, else the word core names there — and `showDefinition(for:at:)` is
+//  handed the word as it is drawn, font and baseline, so the system's highlight
+//  lands on it exactly. The context menu's Look Up goes the same way.
 
 #if canImport(AppKit) && !targetEnvironment(macCatalyst)
 import AppKit
@@ -2622,6 +2629,15 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             menu.addItem(withTitle: String(format: loc("menu.lookUp", "Look Up “%@”"), String(shown)),
                          action: #selector(lookUpSelection(_:)), keyEquivalent: "")
             menu.addItem(withTitle: loc("menu.share", "Share…"), action: #selector(shareSelection(_:)), keyEquivalent: "")
+        } else if let word = doc.wordRangeAt(off: clickOffset),
+                  case let text = doc.textInRange(from: word.start, to: word.end), !text.isEmpty {
+            // With nothing selected a native text view still offers the word
+            // under the click, without selecting it first.
+            menu.addItem(.separator())
+            let item = menu.addItem(withTitle: String(format: loc("menu.lookUp", "Look Up “%@”"), text),
+                                    action: #selector(lookUpSelection(_:)), keyEquivalent: "")
+            item.representedObject = NSValue(range: NSRange(location: Int(word.start),
+                                                            length: Int(word.end - word.start)))
         }
         return menu
     }
@@ -2693,12 +2709,136 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             && text.substring(with: correction.range) == correction.original
     }
 
+    /// The context menu's "Look Up": the selection, or — with none — the word
+    /// the menu was raised over, which the item carries.
     @objc private func lookUpSelection(_ sender: Any?) {
-        guard let text = doc.selectedText(), !text.isEmpty else { return }
-        let rc = doc.posForOffset(off: UInt32(selLowByte))
-        let origin = layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch))?.origin ?? .zero
-        showDefinition(for: NSAttributedString(string: text),
-                       at: NSPoint(x: origin.x, y: origin.y + theme.lineHeight))
+        if let word = (sender as? NSMenuItem)?.representedObject as? NSValue {
+            let range = word.rangeValue
+            lookUp(fromByte: range.location, toByte: NSMaxRange(range))
+            return
+        }
+        guard hasSelection else { return }
+        lookUp(fromByte: selLowByte, toByte: selHighByte)
+    }
+
+    // MARK: Look Up — force click, three-finger tap, and the menu's item
+
+    /// A force click (or a three-finger tap, or ⌃⌘D's mouse-driven cousin)
+    /// asks what is under the pointer. What a native text view answers, in its
+    /// order: the selection when the point is on it; a footnote or a link's
+    /// own preview, as Safari and Mail peek a link rather than define its
+    /// words; a date, an address or a number the data detectors know; and
+    /// otherwise the word, in the system's Look Up panel.
+    public override func quickLook(with event: NSEvent) {
+        let p = layoutPoint(convert(event.locationInWindow, from: nil))
+        if hasSelection, selectionContains(p) {
+            lookUp(fromByte: selLowByte, toByte: selHighByte)
+            return
+        }
+        let (row, ch) = hitRowCh(p)
+        let off = doc.offsetForPos(row: UInt32(row), ch: UInt32(ch))
+        if peekUnderPoint(off, row: row, ch: ch) { return }
+        // The word must actually be under the pointer. The hit-test clamps a
+        // point past a line's end onto its last stop, and the word before that
+        // stop is not what a force click in the margin is asking about.
+        guard let word = doc.wordRangeAt(off: off),
+              rangeRects(fromByte: Int(word.start), toByte: Int(word.end))
+                .contains(where: { $0.insetBy(dx: -2, dy: 0).contains(p) })
+        else { return super.quickLook(with: event) }
+        lookUp(fromByte: Int(word.start), toByte: Int(word.end))
+    }
+
+    /// Raise the footnote's or the link's peek at `off`, if there is one this
+    /// view can show — a `#v2` always, another file when the host can fetch it
+    /// — and say whether it did. A link nothing can preview falls through to
+    /// Look Up on its words, which is more use than nothing at all.
+    private func peekUnderPoint(_ off: UInt32, row: Int, ch: Int) -> Bool {
+        // The note a reference opens, not merely "a footnote is here": the
+        // note's own definition has nothing to peek at, and its words are as
+        // worth looking up as any other.
+        let footnote = doc.footnotePeekContent(at: off, in: docView, theme: theme) != nil
+        let link = doc.linkDestinationAt(off: off).map { $0.hasPrefix("#") || onPeekLink != nil } ?? false
+        guard footnote || link else { return false }
+        dismissFootnotePeek()
+        // The offset the peek is about, for the same staleness check a hover's
+        // answer goes through when the host fetches asynchronously.
+        peekOffset = off
+        showFootnotePeek(at: off, row: row, ch: ch)
+        return true
+    }
+
+    /// Show the system's Look Up panel for the source bytes `[from, to)`, its
+    /// yellow highlight laid exactly over the words as they are drawn.
+    private func lookUp(fromByte from: Int, toByte to: Int) {
+        guard let (text, baseline) = lookUpPresentation(fromByte: from, toByte: to) else { return }
+        showDefinition(for: text, at: baseline)
+    }
+
+    /// What `showDefinition(for:at:)` is handed for `[from, to)`: the text as the
+    /// rows draw it — their fonts, sizes and colours, scaled to the zoom — and
+    /// the baseline origin of its first character in this view's coordinates.
+    ///
+    /// The system draws its highlight by setting that string itself at that
+    /// point, so a plain string at a guessed point is a yellow box in the
+    /// system font, a line too low, beside the word it is about: it has to be
+    /// the drawn run's own attributes on the drawn line's own baseline.
+    func lookUpPresentation(fromByte from: Int, toByte to: Int) -> (text: NSAttributedString, baseline: CGPoint)? {
+        guard to > from else { return nil }
+        let s = doc.posForOffset(off: UInt32(from)), e = doc.posForOffset(off: UInt32(to))
+        let rows = layoutEngine.rows
+        let first = Int(s.row), last = min(Int(e.row), rows.count - 1)
+        guard rows.indices.contains(first) else { return nil }
+        let text = NSMutableAttributedString()
+        // Rows that draw as text, joined as the visible text joins blocks. A
+        // table, a picture or a formula is drawn as something other than its
+        // row's glyphs, so a range starting in one has no run to borrow.
+        if rows[first].drawsItsGlyphs {
+            for row in first...max(first, last) where !rows[row].row.isBlockGap {
+                let rl = rows[row]
+                guard rl.drawsItsGlyphs else { break }
+                let lo = row == first ? Int(s.ch) : rl.row.prefixLength
+                let hi = row == Int(e.row) ? min(Int(e.ch), rl.attributed.length) : rl.attributed.length
+                if text.length > 0 {
+                    text.append(NSAttributedString(string: "\n", attributes: text.attributes(at: text.length - 1, effectiveRange: nil)))
+                }
+                if lo < hi { text.append(rl.attributed.attributedSubstring(from: NSRange(location: lo, length: hi - lo))) }
+            }
+        }
+        let origin: CGPoint
+        if text.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // Nothing drawn to borrow from: the visible text in the body face,
+            // at the top-left of the range's first box.
+            let plain = doc.textInRange(from: UInt32(from), to: UInt32(to))
+            guard !plain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  let box = rangeRects(fromByte: from, toByte: to).first else { return nil }
+            let font = theme.proportionalFont(size: theme.fontSize, bold: false, italic: false)
+            text.setAttributedString(NSAttributedString(string: plain, attributes: [.font: font]))
+            origin = CGPoint(x: box.minX, y: box.minY + font.ascender)
+        } else {
+            guard let baseline = layoutEngine.baselineOrigin(row: first, ch: Int(s.ch)) else { return nil }
+            origin = baseline
+        }
+        return (scaledForZoom(text), CGPoint(x: origin.x * zoomScale, y: origin.y * zoomScale))
+    }
+
+    /// `text` at the size it is on screen: the layout's points times the zoom,
+    /// which `draw` applies to the context and the system's overlay never sees.
+    private func scaledForZoom(_ text: NSAttributedString) -> NSAttributedString {
+        guard zoomScale != 1 else { return text }
+        let scaled = NSMutableAttributedString(attributedString: text)
+        let whole = NSRange(location: 0, length: scaled.length)
+        scaled.enumerateAttribute(.font, in: whole) { value, range, _ in
+            guard let font = value as? NSFont,
+                  let resized = NSFont(descriptor: font.fontDescriptor, size: font.pointSize * zoomScale) else { return }
+            scaled.addAttribute(.font, value: resized, range: range)
+        }
+        for key in [NSAttributedString.Key.baselineOffset, .kern] {
+            scaled.enumerateAttribute(key, in: whole) { value, range, _ in
+                guard let n = value as? CGFloat else { return }
+                scaled.addAttribute(key, value: n * zoomScale, range: range)
+            }
+        }
+        return scaled
     }
 
     @objc private func shareSelection(_ sender: Any?) {

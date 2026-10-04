@@ -8372,6 +8372,39 @@ impl Doc {
         self.clamp_caret();
     }
 
+    /// The word at `offset`, as source bytes, without touching the selection —
+    /// what a host asks before it does something *with* a word rather than to
+    /// the selection: the Mac's Look Up under a force click, a case change at
+    /// a bare caret.
+    ///
+    /// The word the character at `offset` is in, or failing that the one the
+    /// character before it ends — a point on the trailing half of a word's last
+    /// letter hit-tests to the boundary after it, and still means that word.
+    /// `None` between words, where a double-click would select the space; a
+    /// host looking a word up has nothing to look up there.
+    pub fn word_at(&self, offset: usize) -> Option<Range<usize>> {
+        let s = &self.source;
+        let mut off = offset.min(s.len());
+        while off > 0 && !s.is_char_boundary(off) {
+            off -= 1;
+        }
+        let at = s[off..]
+            .chars()
+            .next()
+            .filter(|&c| classify(c) == Class::Word);
+        let before = s[..off]
+            .chars()
+            .next_back()
+            .filter(|&c| classify(c) == Class::Word);
+        let probe = match (at, before) {
+            (Some(_), _) => off,
+            (None, Some(c)) => off - c.len_utf8(),
+            (None, None) => return None,
+        };
+        let (start, end) = word_range_at(s, probe);
+        Some(start..end)
+    }
+
     /// Select the whole enclosing text block (paragraph, heading, list item's
     /// text…) at `offset` — the triple-click gesture. Reads the range straight
     /// from the AST (twig's `content_span`), so it selects the entire *logical*
@@ -10344,6 +10377,24 @@ mod tests {
         // Double-clicking at end-of-word still grabs the word to its left.
         d.select_word_at(5); // the space between the words
         assert_eq!(d.selection(), Some((5, 6)));
+    }
+
+    #[test]
+    fn word_at_names_the_word_without_selecting_it() {
+        let d = doc_with("word_at", "hello café, world\n");
+        assert_eq!(d.word_at(1), Some(0..5));
+        // The boundary after a word still means it: a point on the trailing
+        // half of its last letter hit-tests there.
+        assert_eq!(d.word_at(5), Some(0..5));
+        // Multi-byte letters are word characters, and the range ends on a
+        // character boundary; an offset inside `é` is the word it is in.
+        assert_eq!(d.word_at(9), Some(6..11));
+        assert_eq!(d.word_at(10), Some(6..11));
+        // Between two non-word characters there is nothing to look up.
+        assert_eq!(d.word_at(12), None);
+        // Asking moves nothing.
+        assert_eq!(d.selection(), None);
+        assert_eq!(d.caret, 0);
     }
 
     #[test]

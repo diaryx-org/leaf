@@ -2726,6 +2726,20 @@ impl LeafDoc {
         g.frame()
     }
 
+    /// The source range of the word at source offset `off`, or `None` between
+    /// words. Read-only — the selection and caret stay where they are — so a
+    /// host can act on the word under a point (the Mac's force-click Look Up)
+    /// or at a bare caret (a case change) without the selection flickering
+    /// through a double-click and back. See [`leaf_core::Doc::word_at`].
+    pub fn word_range_at(&self, off: u32) -> Option<LandingView> {
+        let mut g = self.lock();
+        g.sync();
+        g.doc.word_at(off as usize).map(|r| LandingView {
+            start: r.start as u32,
+            end: r.end as u32,
+        })
+    }
+
     /// Select the whole logical text block under a click (row, `ch`) — the
     /// triple-click gesture. Grabs the entire block even where it soft-wraps.
     pub fn select_block_ch(&self, row: u32, ch: u32) -> DocView {
@@ -4181,6 +4195,18 @@ mod tests {
 
     fn doc(src: &str) -> Arc<LeafDoc> {
         LeafDoc::new(src.to_string(), "markdown".to_string()).unwrap()
+    }
+
+    #[test]
+    fn word_range_at_reads_the_word_and_leaves_the_caret() {
+        let d = doc("some **bold** text\n");
+        let caret = d.caret_offset();
+        let w = d.word_range_at(8).expect("`bold` is a word");
+        assert_eq!((w.start, w.end), (7, 11));
+        assert_eq!(d.text_in_range(w.start, w.end), "bold");
+        assert!(d.word_range_at(4).is_some(), "the boundary after `some`");
+        assert_eq!(d.caret_offset(), caret);
+        assert!(d.selected_text().is_none());
     }
 
     #[test]

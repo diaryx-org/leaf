@@ -1642,6 +1642,15 @@ public protocol LeafDocProtocol: AnyObject, Sendable {
      */
     func view()  -> DocView
     
+    /**
+     * The source range of the word at source offset `off`, or `None` between
+     * words. Read-only — the selection and caret stay where they are — so a
+     * host can act on the word under a point (the Mac's force-click Look Up)
+     * or at a bare caret (a case change) without the selection flickering
+     * through a double-click and back. See [`leaf_core::Doc::word_at`].
+     */
+    func wordRangeAt(off: UInt32)  -> LandingView?
+    
 }
 /**
  * A live leaf document bound for a native Apple frontend: `leaf_core::Doc` plus
@@ -3840,6 +3849,23 @@ open func view() -> DocView  {
         uniffiCallStatus in
     uniffi_leaf_ffi_fn_method_leafdoc_view(
             self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The source range of the word at source offset `off`, or `None` between
+     * words. Read-only — the selection and caret stay where they are — so a
+     * host can act on the word under a point (the Mac's force-click Look Up)
+     * or at a bare caret (a case change) without the selection flickering
+     * through a double-click and back. See [`leaf_core::Doc::word_at`].
+     */
+open func wordRangeAt(off: UInt32) -> LandingView?  {
+    return try!  FfiConverterOptionTypeLandingView.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_word_range_at(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(off),uniffiCallStatus
     )
 })
 }
@@ -10071,6 +10097,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_view() != 17419) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_word_range_at() != 44185) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_constructor_leafdoc_new() != 63804) {
