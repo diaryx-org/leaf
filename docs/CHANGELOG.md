@@ -37,6 +37,59 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.5.1 — 2026-10-04
+
+### Breaking
+
+- **deps** — take resvg-uniffi from git, and stop publishing to crates.io ([`b2885bd`](https://github.com/diaryx-org/leaf/commit/b2885bd26207f581b3c0ec74159233381aad24b5))
+
+### Added
+
+- **leaf-swift** — force-click Look Up on the Mac, laid over the word as drawn ([`f13156e`](https://github.com/diaryx-org/leaf/commit/f13156e9d3056734044c4fd99bd8502402586cd2))
+- **leaf-swift** — answer the rest of Cocoa's standard key bindings on the Mac ([`c4c279e`](https://github.com/diaryx-org/leaf/commit/c4c279eb5a3639b7608d666b9ebcf1b9fb0a0f26))
+- **leaf-swift** — Edit ▸ Speech and the Substitutions panel on the Mac ([`0950638`](https://github.com/diaryx-org/leaf/commit/095063850705c25e0bb4c32979535ec81f986f4c))
+- **leaf-swift** — read the Mac editor by visual line, range and style for VoiceOver ([`26300a7`](https://github.com/diaryx-org/leaf/commit/26300a7482171faa744bdde0959fed36becaa389))
+- **leaf-swift** — find dates, addresses, numbers and URLs under a force click on the Mac ([`682c540`](https://github.com/diaryx-org/leaf/commit/682c54068e5072d52a12eca44ff6d08f8ec1d612))
+- **leaf-swift** — give Mac input methods real attributes, clauses and line geometry ([`55d5d20`](https://github.com/diaryx-org/leaf/commit/55d5d20e5ec13250dd4e69bcd7dd22661dfb06f1))
+- **leaf-swift** — drag a picture out of the Mac editor as its file ([`b09a083`](https://github.com/diaryx-org/leaf/commit/b09a0831b3555cf5828323a1a7aa3d43fde1a8c1))
+
+### Fixed
+
+- **leaf-core** — find the word at an offset among drawn glyphs in WYSIWYG ([`97b03e1`](https://github.com/diaryx-org/leaf/commit/97b03e17af0253b134f50c1273e60611c9a95e52))
+- **leaf-swift** — put visualLine's doc comment back on visualLine ([`b8c9345`](https://github.com/diaryx-org/leaf/commit/b8c9345a46282919ddea7c5e1e8eec9396480f29))
+- **leaf-swift** — break a kill chain on a kill elsewhere, and carry the mark through edits ([`4582a2b`](https://github.com/diaryx-org/leaf/commit/4582a2b3b9e4ea150b3e159761a4caef982a325d))
+- **leaf-swift** — frame an empty accessibility range as the caret, and keep VoiceOver's text ([`9914689`](https://github.com/diaryx-org/leaf/commit/99146897e0e2bc4d3e7b39aab2736eb192c7e5e1))
+- **leaf-swift** — look up only what a click is on, and claim a force click only for a peek ([`5e9689c`](https://github.com/diaryx-org/leaf/commit/5e9689c4b97bc90a7a65957ad1de2c851ef98475))
+- **leaf-swift** — write a detected date's calendar file only when it is added ([`d5dcf87`](https://github.com/diaryx-org/leaf/commit/d5dcf8788f37b4a6acca626208540c3feb9384cd))
+- **leaf-swift** — judge a marked clause thick by its line style, not its whole bitmask ([`0838498`](https://github.com/diaryx-org/leaf/commit/0838498b70fc2355537d6e587cbf0a7b486c1e6c))
+- **leaf-swift** — answer a force click from its pressure, since AppKit never sends quickLook for one ([`17dd8fa`](https://github.com/diaryx-org/leaf/commit/17dd8fab2d912f578057b2222145667ca7d997d1))
+- **leaf-swift** — look up a force-clicked date a word at a time, since Look Up never answers the phrase ([`2be688c`](https://github.com/diaryx-org/leaf/commit/2be688cb5b0512f53882b4a77b070bf5cbfd7492))
+
+### Behavioural changes
+
+- leaf-core, leaf-ffi, leaf-ratatui, leaf-math, leaf-raster and leaf-tui get no new versions on crates.io after 0.5.0; depend on them from git, `branch = "main"`.
+
+- on macOS a force click or three-finger tap looks up the selection or the word under the pointer, or peeks the footnote or previewable link there, instead of doing nothing.
+
+- the macOS context menu offers Look Up for the word under the click when nothing is selected, and Look Up's highlight is drawn in the word's own font on its baseline.
+
+- on macOS ⌘⌫, ⌃K, ⌃Y, ⌃T, ⌃⌫, ⌃A/⌃E, page and scroll keys, the emacs mark commands and Edit ▸ Transformations now act in the editor instead of beeping.
+
+- on macOS Edit ▸ Speech ▸ Start/Stop Speaking and Edit ▸ Substitutions ▸ Show Substitutions are enabled and work in the editor.
+
+- on macOS `accessibilityInsertionPointLineNumber` is the caret's visual line rather than its core row, and the editor posts value- and selection-changed accessibility notifications.
+
+- on macOS a force click on a detected date, address, phone number or URL looks up the whole phrase, and the context menu over one offers Call, Show in Maps, Open URL, New Email or Add to Calendar.
+
+- on macOS a multi-clause IME composition is underlined per clause (thick for the active one), and `firstRect(forCharacterRange:)` returns the range's first full line with a matching `actualRange` instead of one character's box.
+
+- on macOS dragging a loaded picture out of the editor to the Finder or another app delivers the image file (or a promised one for a `data:` image), with the block's markup still offered as text.
+
+- on macOS a force click on the editor now looks up the word, selection or detected data under the pointer, or peeks the footnote or link there, where before it did nothing.
+
+- on macOS a force click on a detected date looks up the word under the pointer rather than the whole date.
+
+
 ## v0.5.0 — 2026-10-03
 
 ### Breaking
