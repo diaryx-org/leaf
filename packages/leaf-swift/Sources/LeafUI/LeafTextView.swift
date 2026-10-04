@@ -454,7 +454,15 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     private var verticalGoalX: CGFloat?
     /// The byte range of the in-flight IME composition (marked text), drawn with a
     /// composing underline. Nil when not composing. Committed text clears it.
-    private var markedByteRange: NSRange?
+    private var markedByteRange: NSRange? {
+        didSet { if markedByteRange == nil { markedClauses = [] } }
+    }
+    /// The composition's clauses, as source byte ranges, and whether each is
+    /// the one the input method is converting — drawn with a thick underline,
+    /// the rest thin, as every Mac text view draws a Japanese or Chinese
+    /// composition. Empty for an input method that marks no clauses, which is
+    /// drawn as one thin clause.
+    private(set) var markedClauses: [(range: NSRange, selected: Bool)] = []
 
     // MARK: spelling
 
@@ -1258,10 +1266,22 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     /// Underline the in-flight IME composition, one segment per visual line — the
     /// native "you're still composing this" affordance.
+    ///
+    /// A composition the input method split into clauses is drawn a clause at
+    /// a time — the one being converted thick, the others thin — with a small
+    /// gap between neighbours so the reader can see where one ends.
     private func drawMarkedUnderline(in ctx: CGContext) {
         guard let m = markedByteRange, m.length > 0 else { return }
+        guard !markedClauses.isEmpty else { return drawMarkedUnderline(m, thick: false, in: ctx) }
+        for clause in markedClauses { drawMarkedUnderline(clause.range, thick: clause.selected, gap: true, in: ctx) }
+    }
+
+    private func drawMarkedUnderline(_ m: NSRange, thick: Bool, gap: Bool = false, in ctx: CGContext) {
+        guard m.length > 0 else { return }
         let s = doc.posForOffset(off: UInt32(m.location))
         let e = doc.posForOffset(off: UInt32(m.location + m.length))
+        let height: CGFloat = thick ? 2 : 1
+        let inset: CGFloat = gap ? 1 : 0
         ctx.setFillColor(theme.caretColor.cgColor)
         for row in Int(s.row)...Int(e.row) where layoutEngine.rows.indices.contains(row) {
             let rl = layoutEngine.rows[row]
@@ -1274,8 +1294,8 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
                 let x0 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(cs - lineStart), nil)
                 let x1 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(ce - lineStart), nil)
                 let o = rl.lineOrigin(i)
-                ctx.fill(CGRect(x: o.x + wl.offset + x0, y: o.y + rl.lineHeight - 1.5,
-                                width: x1 - x0, height: 1))
+                ctx.fill(CGRect(x: o.x + wl.offset + x0 + inset, y: o.y + rl.lineHeight - 0.5 - height,
+                                width: max(0, x1 - x0 - 2 * inset), height: height))
             }
         }
     }
@@ -4533,10 +4553,14 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             start = selLowByte; end = selHighByte
         }
         render(doc.replaceRange(from: UInt32(max(0, start)), to: UInt32(max(start, end)), text: text))
+        markedClauses = []
         if text.isEmpty {
             markedByteRange = nil
         } else {
             markedByteRange = NSRange(location: start, length: text.utf8.count)
+            if let attributed = string as? NSAttributedString {
+                markedClauses = Self.clauses(of: attributed, selectedRange: selectedRange, at: start)
+            }
             // Place the caret within the composition per the IME's selected range.
             let ns = text as NSString
             let uptoUTF16 = min(max(0, selectedRange.location + selectedRange.length), ns.length)
@@ -4547,12 +4571,53 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     }
 
     public func unmarkText() { markedByteRange = nil; needsDisplay = true }
+
+    /// The clauses an input method marked in `string`, as source byte ranges
+    /// from `start`. A clause is a run of one `.markedClauseSegment`, or of one
+    /// underline style where the method sends only those; the selected one is
+    /// the one it underlined thick, or failing that the one holding the
+    /// method's selection.
+    static func clauses(of string: NSAttributedString, selectedRange: NSRange,
+                        at start: Int) -> [(range: NSRange, selected: Bool)] {
+        let whole = NSRange(location: 0, length: string.length)
+        var runs: [(range: NSRange, thick: Bool?)] = []
+        var segmented = false
+        string.enumerateAttribute(.markedClauseSegment, in: whole) { value, range, _ in
+            if value != nil { segmented = true }
+            runs.append((range, nil))
+        }
+        if !segmented {
+            runs = []
+            string.enumerateAttribute(.underlineStyle, in: whole) { value, range, _ in
+                runs.append((range, (value as? Int).map { $0 > NSUnderlineStyle.single.rawValue }))
+            }
+        } else {
+            runs = runs.map { run in
+                let style = string.attribute(.underlineStyle, at: run.range.location, effectiveRange: nil) as? Int
+                return (run.range, style.map { $0 > NSUnderlineStyle.single.rawValue })
+            }
+        }
+        guard runs.count > 1 || runs.first?.thick == true else { return [] }
+        let anyThick = runs.contains { $0.thick == true }
+        let ns = string.string as NSString
+        return runs.map { run in
+            let selected = anyThick ? run.thick == true
+                : NSLocationInRange(selectedRange.location, run.range) && selectedRange.location != NSMaxRange(run.range)
+            let from = start + ns.substring(to: run.range.location).utf8.count
+            let length = ns.substring(with: run.range).utf8.count
+            return (NSRange(location: from, length: length), selected)
+        }
+    }
     public func hasMarkedText() -> Bool { markedByteRange != nil }
     public func markedRange() -> NSRange {
         guard let m = markedByteRange else { return NSRange(location: NSNotFound, length: 0) }
         return utf16Range(fromByte: m.location, toByte: m.location + m.length)
     }
-    public func validAttributesForMarkedText() -> [NSAttributedString.Key] { [] }
+    /// What an input method may mark its composition with: the underline it
+    /// wants and the clause boundaries, which `drawMarkedUnderline` honours.
+    public func validAttributesForMarkedText() -> [NSAttributedString.Key] {
+        [.underlineStyle, .underlineColor, .markedClauseSegment]
+    }
 
     public func selectedRange() -> NSRange {
         utf16Range(fromByte: selLowByte, toByte: selHighByte)
@@ -4565,7 +4630,16 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // one may have started inside a surrogate pair or run past the end.
         actualRange?.pointee = NSRange(location: Int(doc.utf16IndexForOffset(off: UInt32(from))),
                                        length: text.utf16.count)
-        return NSAttributedString(string: text)
+        // As drawn, so an input method's candidate window and Look Up's
+        // ⌃⌘D set the text in the font it is shown in. The drawn rows spell
+        // the visible text except where a block draws as something else; there
+        // the body font is the honest answer, and the string must stay the
+        // range's either way.
+        let drawn = drawnText(fromByte: from, toByte: to)
+        if drawn.string == text { return drawn }
+        return NSAttributedString(string: text, attributes: [
+            .font: theme.proportionalFont(size: theme.fontSize, bold: false, italic: false),
+        ])
     }
 
     public func characterIndex(for point: NSPoint) -> Int {
@@ -4575,13 +4649,44 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         return Int(doc.utf16IndexForOffset(off: doc.offsetForPos(row: UInt32(row), ch: UInt32(ch))))
     }
 
+    /// The box the range's *first line* occupies — the whole of it, not one
+    /// character's — with `actualRange` cut back to what is on that line. An
+    /// input method sets its candidate window under it, and dictation and
+    /// the Character Viewer anchor there; a range that wraps is answered one
+    /// line at a time, as the protocol asks, and the caller comes back for
+    /// the rest.
     public func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
-        guard let window else { return .zero }
-        actualRange?.pointee = range
-        let rc = doc.posForOffset(off: UInt32(byteBounds(range).from))
-        guard let rect = layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch)) else { return .zero }
-        return window.convertToScreen(convert(viewRect(rect), to: nil))
+        let (from, to) = byteBounds(range)
+        let s = doc.posForOffset(off: UInt32(from))
+        guard to > from, let line = layoutEngine.visualLine(row: Int(s.row), ch: Int(s.ch)),
+              let first = rangeRects(fromByte: from, toByte: to).first
+        else {
+            actualRange?.pointee = NSRange(location: range.location, length: 0)
+            guard let caret = layoutEngine.rect(row: Int(s.row), ch: Int(s.ch)) else { return .zero }
+            return screenRect(fromView: viewRect(caret))
+        }
+        let lineEnd = Int(doc.offsetForPos(row: s.row, ch: UInt32(line.end)))
+        let end = lineEnd > from ? min(to, lineEnd) : to
+        actualRange?.pointee = utf16Range(fromByte: from, toByte: end)
+        return screenRect(fromView: viewRect(first))
     }
+
+    /// The selection's visible part, on screen — where macOS 14 puts the
+    /// input-source indicator and the dictation glyph. The caret's box for a
+    /// bare caret.
+    public func unionRectInVisibleSelectedRange() -> NSRect {
+        let visible = layoutRect(visibleRect)
+        let boxes = rangeRects(fromByte: selLowByte, toByte: selHighByte)
+            .map { $0.intersection(visible) }.filter { !$0.isNull && !$0.isEmpty }
+        guard let first = boxes.first else {
+            guard let caret = layoutEngine.caretRect(docView, theme: theme) else { return .zero }
+            return screenRect(fromView: viewRect(caret))
+        }
+        return screenRect(fromView: viewRect(boxes.dropFirst().reduce(first) { $0.union($1) }))
+    }
+
+    /// What of the document is on screen, on screen.
+    public func documentVisibleRect() -> NSRect { screenRect(fromView: visibleRect) }
 
     // MARK: host access
 
