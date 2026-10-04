@@ -1866,15 +1866,22 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             footnotePeek.show(content, from: viewRect(anchor), in: self)
             return
         }
+        fetchLinkPeek(destination, at: off, anchor: anchor)
+    }
+
+    /// Ask the host for the file `destination` names and peek at it when the
+    /// answer comes. `otherwise` runs if the host could not read it, and the
+    /// question is still the one being asked.
+    private func fetchLinkPeek(_ destination: String, at off: UInt32, anchor: CGRect,
+                               otherwise: (() -> Void)? = nil) {
         guard let onPeekLink else { return }
         onPeekLink(destination) { [weak self] fetched in
-            guard let self, let fetched,
-                  // The pointer may have moved on, or moved on and come back to a
-                  // different link, while the host was reading a file. Answering
-                  // the old question over the new one is worse than not answering.
-                  self.peekOffset == off,
-                  let content = FootnotePeekContent(peeking: fetched, theme: self.theme)
-            else { return }
+            // The pointer may have moved on, or moved on and come back to a
+            // different link, while the host was reading a file. Answering the
+            // old question over the new one is worse than not answering.
+            guard let self, self.peekOffset == off else { return }
+            guard let fetched, let content = FootnotePeekContent(peeking: fetched, theme: self.theme)
+            else { otherwise?(); return }
             self.peekAnchor = anchor
             self.footnotePeek.show(content, from: self.viewRect(anchor), in: self)
         }
@@ -3071,7 +3078,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // A date, an address, a number or a bare URL in the prose under the
         // click: its one action, where nothing above already claimed the spot.
         let detected = links.isEmpty && footnotes.isEmpty
-            ? detectedData(atByte: Int(clickOffset), row: hit.row).flatMap(dataDetectorItem) : nil
+            ? detectedData(under: point).flatMap(dataDetectorItem) : nil
         if let detected { menu.addItem(detected) }
         if !links.isEmpty || !footnotes.isEmpty || media != nil || detected != nil {
             menu.addItem(.separator())
@@ -3095,15 +3102,15 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             menu.addItem(withTitle: String(format: loc("menu.lookUp", "Look Up “%@”"), String(shown)),
                          action: #selector(lookUpSelection(_:)), keyEquivalent: "")
             menu.addItem(withTitle: loc("menu.share", "Share…"), action: #selector(shareSelection(_:)), keyEquivalent: "")
-        } else if let word = doc.wordRangeAt(off: clickOffset),
-                  case let text = doc.textInRange(from: word.start, to: word.end), !text.isEmpty {
+        } else if let word = word(under: point),
+                  case let text = doc.textInRange(from: UInt32(word.from), to: UInt32(word.to)), !text.isEmpty {
             // With nothing selected a native text view still offers the word
-            // under the click, without selecting it first.
+            // under the click, without selecting it first — when the click is
+            // on it, as a force click must be.
             menu.addItem(.separator())
             let item = menu.addItem(withTitle: String(format: loc("menu.lookUp", "Look Up “%@”"), text),
                                     action: #selector(lookUpSelection(_:)), keyEquivalent: "")
-            item.representedObject = NSValue(range: NSRange(location: Int(word.start),
-                                                            length: Int(word.end - word.start)))
+            item.representedObject = NSValue(range: NSRange(location: word.from, length: word.to - word.from))
         }
         return menu
     }
@@ -3203,42 +3210,102 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         }
         let (row, ch) = hitRowCh(p)
         let off = doc.offsetForPos(row: UInt32(row), ch: UInt32(ch))
-        if peekUnderPoint(off, row: row, ch: ch) { return }
-        // A date, an address, a phone number or a bare URL is looked up whole —
-        // "5 October at 3pm", not "October" — so the system's highlight covers
-        // the phrase, and what it finds is about the phrase.
-        if let found = detectedData(atByte: Int(off), row: row),
-           rangeRects(fromByte: found.from, toByte: found.to).contains(where: { $0.insetBy(dx: -2, dy: 0).contains(p) }) {
-            lookUp(fromByte: found.from, toByte: found.to)
-            return
+        // Should the host find it cannot read the link's file after all, the
+        // point is looked up as if there had been no link — unless the
+        // document has changed under it while the host was reading.
+        let frame = docView.frame
+        let otherwise = { [weak self] in
+            guard let self, self.docView.frame == frame else { return }
+            self.lookUp(under: p, event: event)
         }
-        // The word must actually be under the pointer. The hit-test clamps a
-        // point past a line's end onto its last stop, and the word before that
-        // stop is not what a force click in the margin is asking about.
-        guard let word = doc.wordRangeAt(off: off),
-              rangeRects(fromByte: Int(word.start), toByte: Int(word.end))
-                .contains(where: { $0.insetBy(dx: -2, dy: 0).contains(p) })
-        else { return super.quickLook(with: event) }
-        lookUp(fromByte: Int(word.start), toByte: Int(word.end))
+        if peekUnderPoint(off, row: row, ch: ch, otherwise: otherwise) { return }
+        lookUp(under: p, event: event)
     }
 
-    /// Raise the footnote's or the link's peek at `off`, if there is one this
-    /// view can show — a `#v2` always, another file when the host can fetch it
-    /// — and say whether it did. A link nothing can preview falls through to
-    /// Look Up on its words, which is more use than nothing at all.
-    private func peekUnderPoint(_ off: UInt32, row: Int, ch: Int) -> Bool {
-        // The note a reference opens, not merely "a footnote is here": the
-        // note's own definition has nothing to peek at, and its words are as
-        // worth looking up as any other.
-        let footnote = doc.footnotePeekContent(at: off, in: docView, theme: theme) != nil
-        let link = doc.linkDestinationAt(off: off).map { $0.hasPrefix("#") || onPeekLink != nil } ?? false
-        guard footnote || link else { return false }
+    /// Look up what is under layout point `p`: a date, an address, a phone
+    /// number or a bare URL whole — "5 October at 3pm", not "October" — so the
+    /// system's highlight covers the phrase and what it finds is about the
+    /// phrase; otherwise the word; and with neither, the event goes on.
+    private func lookUp(under p: CGPoint, event: NSEvent) {
+        if let found = detectedData(under: p) {
+            lookUp(fromByte: found.from, toByte: found.to)
+        } else if let word = word(under: p) {
+            lookUp(fromByte: word.from, toByte: word.to)
+        } else {
+            super.quickLook(with: event)
+        }
+    }
+
+    /// What a force click at `off` would peek at.
+    enum ForceClickPeek {
+        /// Shown now: the note a footnote reference opens, or the place a `#v2`
+        /// names in this document.
+        case content(FootnotePeekContent)
+        /// Another file, which only the host can read, and only its answer —
+        /// whenever that comes — says whether it could.
+        case host(String)
+    }
+
+    /// The peek a force click at `off` would raise, or nil for none: so a link
+    /// nothing can preview — a `#v99` naming no block, another file with no
+    /// host to read it — is left to Look Up on its words, which is more use
+    /// than nothing at all. The note a reference opens, not merely "a
+    /// footnote is here": the note's own definition has nothing to peek at,
+    /// and its words are as worth looking up as any other.
+    func forceClickPeek(at off: UInt32) -> ForceClickPeek? {
+        if let note = doc.footnotePeekContent(at: off, in: docView, theme: theme) { return .content(note) }
+        guard let destination = doc.linkDestinationAt(off: off) else { return nil }
+        if destination.hasPrefix("#") {
+            return FootnotePeekContent(peeking: String(destination.dropFirst()), of: doc, in: docView, theme: theme)
+                .map { .content($0) }
+        }
+        return onPeekLink != nil ? .host(destination) : nil
+    }
+
+    /// Raise the peek `forceClickPeek` finds at `off`, and say whether there
+    /// was one. Another file's is claimed before the host has answered; if it
+    /// answers that it cannot read it, `otherwise` stands in for the Look Up
+    /// the event would have had.
+    private func peekUnderPoint(_ off: UInt32, row: Int, ch: Int, otherwise: @escaping () -> Void) -> Bool {
+        guard let peek = forceClickPeek(at: off), let caret = layoutEngine.rect(row: row, ch: ch) else { return false }
         dismissFootnotePeek()
         // The offset the peek is about, for the same staleness check a hover's
         // answer goes through when the host fetches asynchronously.
         peekOffset = off
-        showFootnotePeek(at: off, row: row, ch: ch)
+        // Widened, as a hover's is, so the arrow points at the reference.
+        let anchor = caret.insetBy(dx: -6, dy: 0)
+        switch peek {
+        case .content(let content):
+            peekAnchor = anchor
+            footnotePeek.show(content, from: viewRect(anchor), in: self)
+        case .host(let destination):
+            fetchLinkPeek(destination, at: off, anchor: anchor, otherwise: otherwise)
+        }
         return true
+    }
+
+    /// Whether layout point `p` is on the glyphs of `[from, to)`, give or take
+    /// the two points either side a pointer is allowed to miss by. The
+    /// hit-test clamps a point past a line's end onto its last stop, and what
+    /// ends at that stop is not what a click in the margin is asking about.
+    private func isOnGlyphs(_ p: CGPoint, from: Int, to: Int) -> Bool {
+        rangeRects(fromByte: from, toByte: to).contains { $0.insetBy(dx: -2, dy: 0).contains(p) }
+    }
+
+    /// The word whose glyphs are under layout point `p`, as source bytes.
+    func word(under p: CGPoint) -> (from: Int, to: Int)? {
+        let (row, ch) = hitRowCh(p)
+        guard let word = doc.wordRangeAt(off: doc.offsetForPos(row: UInt32(row), ch: UInt32(ch))),
+              isOnGlyphs(p, from: Int(word.start), to: Int(word.end)) else { return nil }
+        return (Int(word.start), Int(word.end))
+    }
+
+    /// The detectors' match whose glyphs are under layout point `p`.
+    func detectedData(under p: CGPoint) -> DetectedData? {
+        let (row, ch) = hitRowCh(p)
+        guard let found = detectedData(atByte: Int(doc.offsetForPos(row: UInt32(row), ch: UInt32(ch))), row: row),
+              isOnGlyphs(p, from: found.from, to: found.to) else { return nil }
+        return found
     }
 
     // MARK: data detectors — dates, addresses, numbers and URLs in plain text
