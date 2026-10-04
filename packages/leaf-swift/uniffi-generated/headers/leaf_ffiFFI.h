@@ -973,6 +973,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_vertical_offset(uint64_t ptr, uint3
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_view(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_WORD_RANGE_AT
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_WORD_RANGE_AT
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_word_range_at(uint64_t ptr, uint32_t off, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_FUNC_TYPESET_MATH
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_FUNC_TYPESET_MATH
 RustBuffer uniffi_leaf_ffi_fn_func_typeset_math(RustBuffer tex, int8_t display, double size, uint8_t r, uint8_t g, uint8_t b, uint8_t a, RustCallStatus *_Nonnull out_status
@@ -2099,6 +2104,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_vertical_offset(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_VIEW
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_VIEW
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_view(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_WORD_RANGE_AT
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_WORD_RANGE_AT
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_word_range_at(void
     
 );
 #endif

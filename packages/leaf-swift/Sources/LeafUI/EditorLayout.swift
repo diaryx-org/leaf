@@ -134,6 +134,11 @@ extension Row {
         Array(runs.prefix { Self.isPrefixRole($0.role) })
     }
 
+    /// The UTF-16 length of `prefixRuns` — where the row's own text starts in
+    /// its attributed string, which is what a range continuing onto this row
+    /// from the one above begins at.
+    var prefixLength: Int { prefixRuns.reduce(0) { $0 + $1.text.utf16.count } }
+
     /// The task checkbox this row draws, as core's `☐ `/`☑ ` list marker and
     /// the UTF-16 offset it starts at — nil on every row that carries no box,
     /// a plain bullet's included. Core puts the box in the marker's place on a
@@ -606,6 +611,11 @@ struct RowLayout {
             }
         }
     }
+
+    /// Whether the row's glyphs are what is drawn for it. A table's grid, a
+    /// picture, a formula and a host's directive view are each drawn *instead*
+    /// of the placeholder glyphs core puts on their rows.
+    var drawsItsGlyphs: Bool { table == nil && media == nil && math == nil && directive == nil }
 
     /// Whether this row belongs inside a directive's dashed outline — a
     /// `:::name{.class}` aside, which reads as a bordered panel.
@@ -1990,6 +2000,23 @@ struct EditorLayout {
     /// The visual line index within row `row` that offset `ch` sits on, and that
     /// line's `[start, end)` UTF-16 range — for visual-line motion (Home/End/↑/↓).
     /// Returns `nil` if the row is out of range.
+    /// The baseline origin of the glyph at `(row, ch)`, in layout coordinates —
+    /// where a string set in that glyph's font would have to start to sit on
+    /// top of it. A line is drawn from the top of its box
+    /// (`.usesLineFragmentOrigin`), which puts its baseline one ascent down.
+    func baselineOrigin(row: Int, ch: Int) -> CGPoint? {
+        guard rows.indices.contains(row) else { return nil }
+        let rl = rows[row]
+        guard rl.drawsItsGlyphs, !rl.wrapped.isEmpty else { return nil }
+        let i = rl.wrapped.firstIndex { ch < $0.start + $0.length } ?? rl.wrapped.count - 1
+        let wl = rl.wrapped[i]
+        var ascent: CGFloat = 0
+        CTLineGetTypographicBounds(wl.line, &ascent, nil, nil)
+        let x = CTLineGetOffsetForStringIndex(wl.line, CFIndex(max(0, ch - wl.start)), nil)
+        let o = rl.lineOrigin(i)
+        return CGPoint(x: o.x + wl.offset + x, y: o.y + ascent)
+    }
+
     func visualLine(row: Int, ch: Int) -> (index: Int, start: Int, end: Int)? {
         guard rows.indices.contains(row) else { return nil }
         let lines = rows[row].wrapped

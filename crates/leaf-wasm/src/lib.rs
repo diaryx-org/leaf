@@ -2784,6 +2784,18 @@ impl LeafDoc {
         })
     }
 
+    /// The source range of the word at source offset `off`, or `undefined`
+    /// between words. Read-only — the caret and selection stay put — for a
+    /// host acting on the word under a pointer or at a bare caret (a lookup,
+    /// a case change) without selecting it first. See `Doc::word_at`.
+    pub fn word_range_at(&mut self, off: usize) -> Option<LandingView> {
+        self.sync();
+        self.doc.word_at(off).map(|r| LandingView {
+            start: r.start,
+            end: r.end,
+        })
+    }
+
     /// Where a block dragged over rendered `row` would land: the boundary
     /// before the row's block when the row is in its upper half, after it
     /// otherwise, the document's end for a row below everything. `undefined`
