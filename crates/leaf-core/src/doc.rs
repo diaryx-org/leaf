@@ -2180,7 +2180,7 @@ impl Doc {
     /// markup by design and must not be escaped.
     fn insert_raw(&mut self, text: &str) {
         let (s, e) = self.selection().unwrap_or((self.caret, self.caret));
-        self.splice(s, e, text, typed_edit_kind(text));
+        self.splice_selection(s, e, text, typed_edit_kind(text));
     }
 
     /// Open a paragraph for text about to be inserted at one of a block media's
@@ -2372,7 +2372,7 @@ impl Doc {
         let kind = typed_edit_kind(text);
         match self.selection() {
             Some((s, e)) => {
-                if !self.splice(s, e, "", EditKind::Other) {
+                if !self.splice_selection(s, e, "", EditKind::Other) {
                     return;
                 }
                 // Typing over a whole marked run takes its delimiters with it
@@ -2798,7 +2798,7 @@ impl Doc {
         // `open_paragraph_at_block_edge`.
         self.open_paragraph_at_block_edge(text);
         let (s, e) = self.selection().unwrap_or((self.caret, self.caret));
-        self.splice(s, e, text, EditKind::Other);
+        self.splice_selection(s, e, text, EditKind::Other);
     }
 
     /// Replace `[start, end)` with `text` as one step of an IME composition —
@@ -3120,9 +3120,12 @@ impl Doc {
             self.insert_raw("\n");
             return;
         }
-        // Enter over a selection replaces it with a paragraph break.
-        if let Some((s, e)) = self.selection() {
-            self.splice(s, e, "\n\n", EditKind::Other);
+        // Enter over a selection deletes it and splits the block where it
+        // was, as Enter at a caret does: a `"\n\n"` spliced in its place would
+        // put the closing delimiters of a run it cut in the paragraph below.
+        if let Some((s, e)) = self.selection()
+            && !self.splice_selection(s, e, "", EditKind::Other)
+        {
             return;
         }
         // On a blank page there is no block to push down, and a blank line
@@ -3611,7 +3614,7 @@ impl Doc {
 
     pub fn backspace(&mut self) {
         if let Some((s, e)) = self.selection() {
-            self.splice(s, e, "", EditKind::Other);
+            self.splice_selection(s, e, "", EditKind::Other);
             return;
         }
         // WYSIWYG: Backspace at the very start of a list item's content is a
@@ -4580,7 +4583,7 @@ impl Doc {
 
     pub fn delete_forward(&mut self) {
         if let Some((s, e)) = self.selection() {
-            self.splice(s, e, "", EditKind::Other);
+            self.splice_selection(s, e, "", EditKind::Other);
         } else if self.caret < self.source.len() {
             // The mirror of Backspace's: forward-delete in front of a picture
             // would eat the `!` off its markup and leave a link where a photo was.
@@ -4655,7 +4658,7 @@ impl Doc {
     /// Ctrl+⌫). Deletes the selection instead when one is active.
     pub fn delete_word_back(&mut self) {
         if let Some((s, e)) = self.selection() {
-            self.splice(s, e, "", EditKind::Other);
+            self.splice_selection(s, e, "", EditKind::Other);
         } else {
             // A word back from just past a picture is a word *of its markup*, and
             // a word back from in front of one runs through the paragraph break
@@ -4676,7 +4679,7 @@ impl Doc {
     /// Ctrl+Del). Deletes the selection instead when one is active.
     pub fn delete_word_forward(&mut self) {
         if let Some((s, e)) = self.selection() {
-            self.splice(s, e, "", EditKind::Other);
+            self.splice_selection(s, e, "", EditKind::Other);
         } else {
             // The mirror: a word forward from in front of a picture is its markup.
             if self.view != View::Source && self.delete_around_block_atom(true) {
@@ -4701,7 +4704,7 @@ impl Doc {
     /// left at column 0 is one press of Home away from either.
     pub fn delete_to_line_start(&mut self) {
         if let Some((s, e)) = self.selection() {
-            self.splice(s, e, "", EditKind::Other);
+            self.splice_selection(s, e, "", EditKind::Other);
             return;
         }
         // Never back across the floor: hidden frontmatter isn't on this line, or
@@ -4727,7 +4730,7 @@ impl Doc {
     /// already the key that joins.
     pub fn delete_to_line_end(&mut self) {
         if let Some((s, e)) = self.selection() {
-            self.splice(s, e, "", EditKind::Other);
+            self.splice_selection(s, e, "", EditKind::Other);
             return;
         }
         let (_, end) = self.line_span();
@@ -4774,6 +4777,80 @@ impl Doc {
                 return (s, e);
             }
         }
+    }
+
+    /// Replace a selection with `text`, taking the words it covers and none of
+    /// the markup of the runs it only cuts.
+    ///
+    /// A selection is a range of what the rich view draws, but its ends are
+    /// source offsets, and a run's delimiters are hidden between two of them.
+    /// From the end of a bold word to the start of the next paragraph — the one
+    /// stop a `"\n"` is, and what iOS hands `replace(_:withText:)` — the
+    /// source is the run's closing `***` and the blank line, and splicing it
+    /// left `***HENRY B EYRINGWhy`, the opening delimiters on screen with
+    /// nothing to close them. A selection from inside a word to past it did the
+    /// same on one line: `a **bold** text` lost `ld te` and kept `a **boxt`.
+    ///
+    /// So a run whose text survives keeps the delimiters that fall in the
+    /// range, written after `text`, which leaves the new text where the
+    /// selection began: inside a run cut at its end, outside one cut at its
+    /// start. A run whose text the range takes whole goes whole, as
+    /// [`widen_over_emptied_inlines`](Self::widen_over_emptied_inlines) has a
+    /// word-delete take it — unless the range lies inside that run, which is
+    /// the mark-edge rule's case: it takes the delimiters and arms the marks,
+    /// so text typed over a selected bold word is still bold.
+    ///
+    /// Source view edits the literal, and splices the range as it is.
+    fn splice_selection(&mut self, start: usize, end: usize, text: &str, kind: EditKind) -> bool {
+        if self.view == View::Source || start >= end {
+            return self.splice(start, end, text, kind);
+        }
+        let nodes: Vec<(Range<usize>, Range<usize>)> = self
+            .nodes()
+            .iter()
+            .filter(|n| wysiwyg::is_inline(n))
+            .filter_map(|n| Some((n.span.clone(), inline_content_span(n, &self.source)?)))
+            .filter(|(span, text)| *span != *text)
+            .collect();
+        let (mut s, mut e) = (start, end);
+        loop {
+            let mut grew = false;
+            for (span, body) in &nodes {
+                let emptied = s <= body.start && body.end <= e;
+                let inside = span.start <= s && e <= span.end;
+                if emptied && !inside && (span.start < s || span.end > e) {
+                    s = s.min(span.start);
+                    e = e.max(span.end);
+                    grew = true;
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
+        let mut kept: Vec<Range<usize>> = nodes
+            .iter()
+            .filter(|(_, body)| body.start < s || body.end > e)
+            .flat_map(|(span, body)| [span.start..body.start, body.end..span.end])
+            .map(|d| d.start.max(s)..d.end.min(e))
+            .filter(|d| d.start < d.end)
+            .collect();
+        kept.sort_by_key(|d| d.start);
+        kept.dedup();
+        let kept: String = kept.into_iter().map(|d| &self.source[d]).collect();
+        if kept.is_empty() {
+            return self.splice(s, e, text, kind);
+        }
+        if !self.splice(s, e, &format!("{text}{kept}"), kind) {
+            return false;
+        }
+        // The caret after `text`, before the delimiters written behind it.
+        let at = s + text.len();
+        if self.source.get(at..at + kept.len()) == Some(kept.as_str()) {
+            self.caret = at;
+            self.record_caret();
+        }
+        true
     }
 
     /// One splice of document text, keeping the **mark-edge rule**: an inline
@@ -5701,7 +5778,7 @@ impl Doc {
         self.caret = self.skip_trailing_close_delims(self.caret);
         // A selection is replaced by the directive, as a rule replaces one.
         if let Some((s, e)) = self.selection() {
-            self.splice(s, e, "", EditKind::Other);
+            self.splice_selection(s, e, "", EditKind::Other);
         }
         self.anchor = None;
         self.record_caret();
@@ -7096,7 +7173,7 @@ impl Doc {
         // A selection is replaced by the rule, so collapse it first and let the
         // split-and-rule below run from the caret it leaves behind.
         if let Some((s, e)) = self.selection() {
-            self.splice(s, e, "", EditKind::Other);
+            self.splice_selection(s, e, "", EditKind::Other);
         }
         self.anchor = None;
         self.record_caret();
@@ -7319,7 +7396,7 @@ impl Doc {
         }
         self.caret = self.skip_trailing_close_delims(self.caret);
         if let Some((s, e)) = self.selection() {
-            self.splice(s, e, "", EditKind::Other);
+            self.splice_selection(s, e, "", EditKind::Other);
         }
         self.anchor = None;
         self.record_caret();
@@ -21568,6 +21645,61 @@ mod tests {
             "one paragraph, the tag gone whole"
         );
         assert_eq!(h.caret, h.source.find("below").unwrap());
+    }
+
+    /// A selection from the end of a run's text to the next block's start is
+    /// the run's closing delimiters and a blank line in the source, and one
+    /// `"\n"` on screen: deleting it — iOS's `replace(_:withText:)` one stop
+    /// back — joins the blocks and keeps the run closed. It took the `***`
+    /// with the newlines and left the opening ones on screen.
+    #[test]
+    fn deleting_a_selection_keeps_the_delimiters_of_a_run_it_cuts() {
+        let src = "good.\n\n***HENRY B EYRING***\n\nWhy is life\n";
+        let mut d = wysiwyg_doc("sel_cut_close", src);
+        let end = d.source.find("G***").unwrap() + 1;
+        d.place_caret(end, false);
+        d.place_caret(d.source.find("Why").unwrap(), true);
+        d.insert("");
+        assert_eq!(d.source, "good.\n\n***HENRY B EYRING***Why is life\n");
+        assert_eq!(d.caret, end, "at the end of the run's text");
+
+        // On one line, from inside a run to past it, and typing over it.
+        let mut d = wysiwyg_doc("sel_cut_line", "a **bold** text\n");
+        d.place_caret(d.source.find("ld").unwrap(), false);
+        d.place_caret(d.source.find("xt").unwrap(), true);
+        d.backspace();
+        assert_eq!(d.source, "a **bo**xt\n");
+        let mut d = wysiwyg_doc("sel_cut_type", "a **bold** text\n");
+        d.place_caret(d.source.find("ld").unwrap(), false);
+        d.place_caret(d.source.find("xt").unwrap(), true);
+        d.insert("X");
+        assert_eq!(d.source, "a **boX**xt\n", "the text lands in the run");
+
+        // Cut at its start, the run keeps its opening delimiters, and the
+        // text typed goes in front of them.
+        let mut d = wysiwyg_doc("sel_cut_open", "plain **bold**\n");
+        d.place_caret(3, false);
+        d.place_caret(d.source.find("ld").unwrap(), true);
+        d.insert("X");
+        assert_eq!(d.source, "plaX**ld**\n");
+
+        // A run whose whole text goes, with more past it, goes whole.
+        let mut d = wysiwyg_doc("sel_cut_whole", "a **bold** text\n");
+        d.place_caret(d.source.find("bold").unwrap(), false);
+        d.place_caret(d.source.find("xt").unwrap(), true);
+        d.backspace();
+        assert_eq!(d.source, "a xt\n");
+    }
+
+    /// Enter over a selection that cuts a run deletes it and splits there,
+    /// so the run closes on the line it is on.
+    #[test]
+    fn enter_over_a_selection_that_cuts_a_run_splits_where_it_was() {
+        let mut d = wysiwyg_doc("sel_cut_enter", "a **bold** text\n");
+        d.place_caret(d.source.find("ld").unwrap(), false);
+        d.place_caret(d.source.find("xt").unwrap(), true);
+        d.newline();
+        assert_eq!(d.source, "a **bo**\n\nxt\n");
     }
 
     /// Delete at the end of a block's content is the same join aimed at the
