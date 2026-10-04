@@ -2973,7 +2973,12 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             item.representedObject = media
             item.target = self
         }
-        if !links.isEmpty || !footnotes.isEmpty || media != nil {
+        // A date, an address, a number or a bare URL in the prose under the
+        // click: its one action, where nothing above already claimed the spot.
+        let detected = links.isEmpty && footnotes.isEmpty
+            ? detectedData(atByte: Int(clickOffset), row: hit.row).flatMap(dataDetectorItem) : nil
+        if let detected { menu.addItem(detected) }
+        if !links.isEmpty || !footnotes.isEmpty || media != nil || detected != nil {
             menu.addItem(.separator())
         }
         if hasSelection {
@@ -3104,6 +3109,14 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         let (row, ch) = hitRowCh(p)
         let off = doc.offsetForPos(row: UInt32(row), ch: UInt32(ch))
         if peekUnderPoint(off, row: row, ch: ch) { return }
+        // A date, an address, a phone number or a bare URL is looked up whole —
+        // "5 October at 3pm", not "October" — so the system's highlight covers
+        // the phrase, and what it finds is about the phrase.
+        if let found = detectedData(atByte: Int(off), row: row),
+           rangeRects(fromByte: found.from, toByte: found.to).contains(where: { $0.insetBy(dx: -2, dy: 0).contains(p) }) {
+            lookUp(fromByte: found.from, toByte: found.to)
+            return
+        }
         // The word must actually be under the pointer. The hit-test clamps a
         // point past a line's end onto its last stop, and the word before that
         // stop is not what a force click in the margin is asking about.
@@ -3131,6 +3144,116 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         peekOffset = off
         showFootnotePeek(at: off, row: row, ch: ch)
         return true
+    }
+
+    // MARK: data detectors — dates, addresses, numbers and URLs in plain text
+    //
+    // What `NSTextView` finds with the system's data detectors, found the same
+    // way: `NSDataDetector` over the paragraph under the pointer. The detectors'
+    // own popovers (the Calendar and Maps cards a force click raises in Mail)
+    // are private API, so this does the two things a public client can: a
+    // force click looks the whole phrase up, and the context menu carries the
+    // one action each kind of thing has — Call, Show in Maps, Open, Add to
+    // Calendar — each handed to the app the system has for it.
+
+    /// A detector's match under a point, as source bytes, with what it found.
+    final class DetectedData: NSObject {
+        let from: Int, to: Int
+        let text: String
+        let result: NSTextCheckingResult
+        init(from: Int, to: Int, text: String, result: NSTextCheckingResult) {
+            (self.from, self.to, self.text, self.result) = (from, to, text, result)
+        }
+    }
+
+    private static let dataDetector = try? NSDataDetector(
+        types: NSTextCheckingResult.CheckingType([.date, .address, .phoneNumber, .link]).rawValue)
+
+    /// The detector's match at source offset `off` on visual row `row`, if
+    /// any — the one holding the character at `off`, or the one ending there,
+    /// as a word is found at a point.
+    func detectedData(atByte off: Int, row: Int) -> DetectedData? {
+        guard let detector = Self.dataDetector, docView.view != "source",
+              let para = paragraphBytes(row: row), para.end > para.start else { return nil }
+        let text = doc.textInRange(from: UInt32(para.start), to: UInt32(para.end))
+        let base = Int(doc.utf16IndexForOffset(off: UInt32(para.start)))
+        let at = Int(doc.utf16IndexForOffset(off: UInt32(off))) - base
+        let ns = text as NSString
+        let hit = detector.matches(in: text, range: NSRange(location: 0, length: ns.length)).first {
+            NSLocationInRange(at, $0.range) || (at > 0 && NSLocationInRange(at - 1, $0.range))
+        }
+        guard let hit else { return nil }
+        let (from, to) = byteBounds(NSRange(location: base + hit.range.location, length: hit.range.length))
+        return DetectedData(from: from, to: to, text: ns.substring(with: hit.range), result: hit)
+    }
+
+    /// The menu item a match offers, or nil for a kind with nothing to do.
+    private func dataDetectorItem(_ found: DetectedData) -> NSMenuItem? {
+        let title: String
+        switch found.result.resultType {
+        case .phoneNumber: title = String(format: loc("menu.call", "Call “%@”"), found.text)
+        case .address: title = loc("menu.showInMaps", "Show in Maps")
+        case .date: title = loc("menu.addToCalendar", "Add to Calendar…")
+        case .link:
+            guard let url = found.result.url else { return nil }
+            title = url.scheme == "mailto" ? loc("menu.newEmail", "New Email") : loc("menu.openURL", "Open URL")
+        default: return nil
+        }
+        let item = NSMenuItem(title: title, action: #selector(performDataDetectorAction(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = found
+        return item
+    }
+
+    @objc private func performDataDetectorAction(_ sender: NSMenuItem) {
+        guard let found = sender.representedObject as? DetectedData,
+              let url = Self.dataDetectorURL(for: found.result, text: found.text) else { return NSSound.beep() }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// Where a match's action goes: `tel:` for a number (FaceTime, or the
+    /// paired iPhone), Apple Maps for an address, the URL itself, and for a
+    /// date a one-event calendar file, which Calendar opens as an event to
+    /// add. Static and pure but for the file, so a test can read it.
+    static func dataDetectorURL(for result: NSTextCheckingResult, text: String) -> URL? {
+        switch result.resultType {
+        case .phoneNumber:
+            let digits = (result.phoneNumber ?? text).filter { $0.isNumber || $0 == "+" }
+            return digits.isEmpty ? nil : URL(string: "tel:" + digits)
+        case .address:
+            var maps = URLComponents(string: "https://maps.apple.com/")
+            maps?.queryItems = [URLQueryItem(name: "q", value: text.replacingOccurrences(of: "\n", with: ", "))]
+            return maps?.url
+        case .link:
+            return result.url
+        case .date:
+            guard let date = result.date else { return nil }
+            let file = FileManager.default.temporaryDirectory
+                .appendingPathComponent("Leaf-\(UUID().uuidString)").appendingPathExtension("ics")
+            let ics = calendarEvent(starting: date, lasting: result.duration, title: text)
+            guard (try? ics.write(to: file, atomically: true, encoding: .utf8)) != nil else { return nil }
+            return file
+        default:
+            return nil
+        }
+    }
+
+    /// One event as iCalendar text: what Calendar opens to offer "add this".
+    /// An hour long when the text gave no end, as Calendar's own default is.
+    static func calendarEvent(starting start: Date, lasting duration: TimeInterval, title: String) -> String {
+        let stamp = DateFormatter()
+        stamp.locale = Locale(identifier: "en_US_POSIX")
+        stamp.timeZone = TimeZone(identifier: "UTC")
+        stamp.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
+        let end = start.addingTimeInterval(duration > 0 ? duration : 3600)
+        let summary = title.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: ",", with: "\\,")
+            .replacingOccurrences(of: ";", with: "\\;").replacingOccurrences(of: "\n", with: "\\n")
+        return [
+            "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Diaryx//Leaf//EN",
+            "BEGIN:VEVENT", "UID:\(UUID().uuidString)", "DTSTAMP:\(stamp.string(from: Date()))",
+            "DTSTART:\(stamp.string(from: start))", "DTEND:\(stamp.string(from: end))",
+            "SUMMARY:\(summary)", "END:VEVENT", "END:VCALENDAR", "",
+        ].joined(separator: "\r\n")
     }
 
     /// Show the system's Look Up panel for the source bytes `[from, to)`, its
