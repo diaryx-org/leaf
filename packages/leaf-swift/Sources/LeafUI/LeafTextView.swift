@@ -435,7 +435,13 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     private var docView: DocView
     /// Readable by the tests, which check that a caret move keeps it.
-    private(set) var layoutEngine: EditorLayout
+    private(set) var layoutEngine: EditorLayout {
+        didSet { accessibilityLineCache = nil }
+    }
+    /// `accessibilityLines`, until the next layout.
+    private var accessibilityLineCache: [AccessibilityLine]?
+    /// The selection an assistive app was last told of, as `(anchor, caret)`.
+    private var lastAccessibilitySelection: (UInt32, UInt32)?
     /// The view width the current layout was built for. The text column inside it
     /// — where it starts, how wide it wraps — is the theme's to decide (see
     /// `EditorTheme.column(in:)`), and the layout carries the answer.
@@ -843,6 +849,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             writingToolsTextMoved(edited: textChanged && !writingTools.applying)
         }
         if !textChanged { offerReversionAtCaret() }
+        postAccessibilityChanges(textChanged: textChanged)
         onStateChange?(EditorState(view))
         if relaid { onLayoutChange?() }
         if edited { onEdit?() }
@@ -3143,26 +3150,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// the drawn run's own attributes on the drawn line's own baseline.
     func lookUpPresentation(fromByte from: Int, toByte to: Int) -> (text: NSAttributedString, baseline: CGPoint)? {
         guard to > from else { return nil }
-        let s = doc.posForOffset(off: UInt32(from)), e = doc.posForOffset(off: UInt32(to))
-        let rows = layoutEngine.rows
-        let first = Int(s.row), last = min(Int(e.row), rows.count - 1)
-        guard rows.indices.contains(first) else { return nil }
-        let text = NSMutableAttributedString()
-        // Rows that draw as text, joined as the visible text joins blocks. A
-        // table, a picture or a formula is drawn as something other than its
-        // row's glyphs, so a range starting in one has no run to borrow.
-        if rows[first].drawsItsGlyphs {
-            for row in first...max(first, last) where !rows[row].row.isBlockGap {
-                let rl = rows[row]
-                guard rl.drawsItsGlyphs else { break }
-                let lo = row == first ? Int(s.ch) : rl.row.prefixLength
-                let hi = row == Int(e.row) ? min(Int(e.ch), rl.attributed.length) : rl.attributed.length
-                if text.length > 0 {
-                    text.append(NSAttributedString(string: "\n", attributes: text.attributes(at: text.length - 1, effectiveRange: nil)))
-                }
-                if lo < hi { text.append(rl.attributed.attributedSubstring(from: NSRange(location: lo, length: hi - lo))) }
-            }
-        }
+        let text = NSMutableAttributedString(attributedString: drawnText(fromByte: from, toByte: to))
         let origin: CGPoint
         if text.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             // Nothing drawn to borrow from: the visible text in the body face,
@@ -3174,10 +3162,37 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             text.setAttributedString(NSAttributedString(string: plain, attributes: [.font: font]))
             origin = CGPoint(x: box.minX, y: box.minY + font.ascender)
         } else {
-            guard let baseline = layoutEngine.baselineOrigin(row: first, ch: Int(s.ch)) else { return nil }
+            let s = doc.posForOffset(off: UInt32(from))
+            guard let baseline = layoutEngine.baselineOrigin(row: Int(s.row), ch: Int(s.ch)) else { return nil }
             origin = baseline
         }
         return (scaledForZoom(text), CGPoint(x: origin.x * zoomScale, y: origin.y * zoomScale))
+    }
+
+    /// The source bytes `[from, to)` as the rows draw them — their own
+    /// attributed text, in layout points, the rows joined by a newline as the
+    /// visible text joins blocks and each row's block decoration (a bullet, a
+    /// quote's gutter) left out, since it is not text. Empty when the range
+    /// starts on a row drawn as something other than its glyphs: a table, a
+    /// picture, a formula, a host's view.
+    func drawnText(fromByte from: Int, toByte to: Int) -> NSAttributedString {
+        let text = NSMutableAttributedString()
+        guard to > from else { return text }
+        let s = doc.posForOffset(off: UInt32(from)), e = doc.posForOffset(off: UInt32(to))
+        let rows = layoutEngine.rows
+        let first = Int(s.row), last = min(Int(e.row), rows.count - 1)
+        guard rows.indices.contains(first), rows[first].drawsItsGlyphs else { return text }
+        for row in first...max(first, last) where !rows[row].row.isBlockGap {
+            let rl = rows[row]
+            guard rl.drawsItsGlyphs else { break }
+            let lo = row == first ? Int(s.ch) : rl.row.prefixLength
+            let hi = row == Int(e.row) ? min(Int(e.ch), rl.attributed.length) : rl.attributed.length
+            if text.length > 0 {
+                text.append(NSAttributedString(string: "\n", attributes: text.attributes(at: text.length - 1, effectiveRange: nil)))
+            }
+            if lo < hi { text.append(rl.attributed.attributedSubstring(from: NSRange(location: lo, length: hi - lo))) }
+        }
+        return text
     }
 
     /// `text` at the size it is on screen: the layout's points times the zoom,
@@ -3393,12 +3408,31 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     }
 
     // MARK: accessibility — expose the document as a native text area
+    //
+    // VoiceOver reads a text area by asking for ranges in the UTF-16 space of
+    // its value (`fullText()`), and by *line*: read this line, move to the
+    // next, what line is the caret on, where on screen is this range. A line
+    // here is a visual line — what the reader sees, the wrap this view made —
+    // so every line question goes through one table of them, below, and the
+    // answers agree with each other: the range of line `n` holds exactly the
+    // indices `accessibilityLine(for:)` calls line `n`.
 
     public override func isAccessibilityElement() -> Bool { true }
     public override func accessibilityRole() -> NSAccessibility.Role? { .textArea }
     public override func accessibilityValue() -> Any? { fullText() }
     public override func accessibilityNumberOfCharacters() -> Int { (fullText() as NSString).length }
-    public override func accessibilityInsertionPointLineNumber() -> Int { Int(docView.caretRow) }
+
+    /// The caret's visual line, found by where the caret is *drawn*: at a soft
+    /// wrap one index is both the end of a line and the start of the next, and
+    /// the caret's row and column say which of the two it is on.
+    public override func accessibilityInsertionPointLineNumber() -> Int {
+        let row = Int(docView.caretRow)
+        if let vl = layoutEngine.visualLine(row: row, ch: Int(docView.caretCh)),
+           let n = accessibilityLines.firstIndex(where: { $0.row == row && $0.index == vl.index }) {
+            return n
+        }
+        return accessibilityLine(for: accessibilitySelectedTextRange().location)
+    }
 
     public override func accessibilitySelectedText() -> String? {
         doc.textInRange(from: UInt32(selLowByte), to: UInt32(selHighByte))
@@ -3421,6 +3455,179 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         let full = fullText() as NSString
         guard range.location >= 0, range.location + range.length <= full.length else { return nil }
         return full.substring(with: range)
+    }
+
+    /// One visual line: its range of `fullText()`, and the row and wrapped
+    /// line it is drawn as.
+    struct AccessibilityLine: Equatable {
+        let range: NSRange
+        let row: Int
+        let index: Int
+    }
+
+    /// Every visual line, top to bottom, partitioning `fullText()`: each starts
+    /// where the one before it ends, the first at 0 and the last running to
+    /// the end, so every index — a block gap's `\n` included — is on exactly
+    /// one line. Built on first use after each layout (`layoutEngine`'s
+    /// `didSet` drops it) with one crossing of the binding for all its offsets.
+    var accessibilityLines: [AccessibilityLine] {
+        if let cached = accessibilityLineCache { return cached }
+        var offsets: [UInt32] = []
+        var places: [(row: Int, index: Int)] = []
+        for (r, rl) in layoutEngine.rows.enumerated() where !rl.row.isBlockGap {
+            for (i, wl) in rl.wrapped.enumerated() {
+                offsets.append(doc.offsetForPos(row: UInt32(r), ch: UInt32(i == 0 ? 0 : wl.start)))
+                places.append((r, i))
+            }
+        }
+        let starts = doc.utf16IndicesForOffsets(offs: offsets).map(Int.init)
+        let length = (fullText() as NSString).length
+        var lines: [AccessibilityLine] = []
+        for (k, start) in starts.enumerated() {
+            // A line whose start is not past the last one's adds nothing — a
+            // row drawn as a picture can map onto the same index as its
+            // neighbour — and would be a line no index could ever be on.
+            let begin = lines.isEmpty ? 0 : start
+            if let last = lines.last, begin <= last.range.location { continue }
+            if let last = lines.popLast() {
+                lines.append(AccessibilityLine(range: NSRange(location: last.range.location, length: begin - last.range.location),
+                                               row: last.row, index: last.index))
+            }
+            lines.append(AccessibilityLine(range: NSRange(location: min(begin, length), length: 0),
+                                           row: places[k].row, index: places[k].index))
+        }
+        if let last = lines.popLast() {
+            lines.append(AccessibilityLine(range: NSRange(location: last.range.location,
+                                                          length: max(0, length - last.range.location)),
+                                           row: last.row, index: last.index))
+        }
+        accessibilityLineCache = lines
+        return lines
+    }
+
+    public override func accessibilityLine(for index: Int) -> Int {
+        let lines = accessibilityLines
+        guard !lines.isEmpty else { return 0 }
+        // The last line that starts at or before the index.
+        var lo = 0, hi = lines.count - 1
+        while lo < hi {
+            let mid = (lo + hi + 1) / 2
+            if lines[mid].range.location <= index { lo = mid } else { hi = mid - 1 }
+        }
+        return lo
+    }
+
+    public override func accessibilityRange(forLine line: Int) -> NSRange {
+        let lines = accessibilityLines
+        guard lines.indices.contains(line) else { return NSRange(location: NSNotFound, length: 0) }
+        return lines[line].range
+    }
+
+    /// The composed character at `index` — a whole emoji, a letter with its
+    /// marks — which is what VoiceOver steps by.
+    public override func accessibilityRange(for index: Int) -> NSRange {
+        let full = fullText() as NSString
+        guard index >= 0, index < full.length else { return NSRange(location: NSNotFound, length: 0) }
+        return full.rangeOfComposedCharacterSequence(at: index)
+    }
+
+    /// The character under a point on screen — what a pointer hovering with
+    /// VoiceOver's cursor, or Hover Text, asks about.
+    public override func accessibilityRange(for point: NSPoint) -> NSRange {
+        let index = characterIndex(for: point)
+        guard index != NSNotFound else { return NSRange(location: NSNotFound, length: 0) }
+        let full = fullText() as NSString
+        guard full.length > 0 else { return NSRange(location: 0, length: 0) }
+        return full.rangeOfComposedCharacterSequence(at: min(index, full.length - 1))
+    }
+
+    /// Where `range` is on screen — VoiceOver's cursor is drawn around it. The
+    /// union of the boxes the range is drawn in, or the caret's box for an
+    /// empty range.
+    public override func accessibilityFrame(for range: NSRange) -> NSRect {
+        let (from, to) = byteBounds(range)
+        let boxes = rangeRects(fromByte: from, toByte: to)
+        guard let first = boxes.first else { return .zero }
+        return screenRect(fromView: viewRect(boxes.dropFirst().reduce(first) { $0.union($1) }))
+    }
+
+    /// A rect in this view's coordinates on the screen, as the accessibility
+    /// and text-input APIs speak. A view not yet in a window answers in its
+    /// own coordinates, which is all it has.
+    private func screenRect(fromView rect: CGRect) -> CGRect {
+        guard let window else { return rect }
+        return window.convertToScreen(convert(rect, to: nil))
+    }
+
+    public override func accessibilityVisibleCharacterRange() -> NSRange {
+        visibleCharacterRanges.first?.rangeValue ?? NSRange(location: 0, length: 0)
+    }
+
+    /// `range` with what VoiceOver can say about its look — font, colour,
+    /// underline, strikethrough — in the accessibility attributes it reads.
+    /// From the rows as drawn when they spell exactly the range's text; plain
+    /// text otherwise (a table, a picture's placeholder), never a string that
+    /// is not the range's.
+    public override func accessibilityAttributedString(for range: NSRange) -> NSAttributedString? {
+        guard let plain = accessibilityString(for: range) else { return nil }
+        let (from, to) = byteBounds(range)
+        let drawn = drawnText(fromByte: from, toByte: to)
+        guard drawn.string == plain else { return NSAttributedString(string: plain) }
+        let out = NSMutableAttributedString(string: plain)
+        drawn.enumerateAttributes(in: NSRange(location: 0, length: drawn.length)) { attrs, sub, _ in
+            out.addAttributes(Self.accessibilityAttributes(attrs), range: sub)
+        }
+        return out
+    }
+
+    /// The run of one style around `index` — where VoiceOver's "next style
+    /// change" goes. Read off the drawn text of the index's line; a line the
+    /// rows do not spell character for character is one run.
+    public override func accessibilityStyleRange(for index: Int) -> NSRange {
+        let line = accessibilityRange(forLine: accessibilityLine(for: index))
+        guard line.location != NSNotFound, line.length > 0 else { return line }
+        let (from, to) = byteBounds(line)
+        let drawn = drawnText(fromByte: from, toByte: to)
+        let local = index - line.location
+        guard drawn.string == accessibilityString(for: line),
+              local >= 0, local < drawn.length else { return line }
+        var effective = NSRange()
+        _ = drawn.attribute(.font, at: local, longestEffectiveRange: &effective,
+                            in: NSRange(location: 0, length: drawn.length))
+        return NSRange(location: line.location + effective.location, length: effective.length)
+    }
+
+    /// AppKit's drawing attributes as the accessibility ones VoiceOver reads.
+    static func accessibilityAttributes(_ attrs: [NSAttributedString.Key: Any]) -> [NSAttributedString.Key: Any] {
+        var out: [NSAttributedString.Key: Any] = [:]
+        if let font = attrs[.font] as? NSFont {
+            let description: [NSAccessibility.FontAttributeKey: Any] = [
+                .fontName: font.fontName,
+                .fontFamily: font.familyName ?? font.fontName,
+                .visibleName: font.displayName ?? font.fontName,
+                .fontSize: font.pointSize,
+            ]
+            out[.accessibilityFont] = description
+        }
+        if let color = attrs[.foregroundColor] as? NSColor { out[.accessibilityForegroundColor] = color.cgColor }
+        if let color = attrs[.backgroundColor] as? NSColor { out[.accessibilityBackgroundColor] = color.cgColor }
+        if let style = attrs[.underlineStyle] as? Int, style != 0 { out[.accessibilityUnderline] = true }
+        if let style = attrs[.strikethroughStyle] as? Int, style != 0 { out[.accessibilityStrikethrough] = true }
+        if let offset = attrs[.baselineOffset] as? CGFloat, offset != 0 {
+            out[.accessibilitySuperscript] = offset > 0 ? 1 : -1
+        }
+        return out
+    }
+
+    /// Tell an assistive app what changed, once per change: the value when the
+    /// text did, the selection when it moved. Called at the end of every
+    /// `render`, which most frames reach with neither.
+    private func postAccessibilityChanges(textChanged: Bool) {
+        let selection = (doc.anchorOffset(), doc.caretOffset())
+        let moved = lastAccessibilitySelection.map { $0 != selection } ?? true
+        lastAccessibilitySelection = selection
+        if textChanged { NSAccessibility.post(element: self, notification: .valueChanged) }
+        if moved || textChanged { NSAccessibility.post(element: self, notification: .selectedTextChanged) }
     }
 
     // MARK: focus + caret blink
