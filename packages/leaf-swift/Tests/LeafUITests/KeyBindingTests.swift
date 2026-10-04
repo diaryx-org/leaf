@@ -62,6 +62,18 @@ final class KeyBindingTests: XCTestCase {
         XCTAssertEqual(LeafTextView.killBuffer, "two\n", "a kill straight after a kill adds to it")
     }
 
+    func testAKillInAnotherViewBreaksTheChain() throws {
+        let view = try editor("one two\n\nthree four\n", caret: 4)
+        let other = try editor("elsewhere\n", caret: 0)
+        send(#selector(NSResponder.deleteToEndOfParagraph(_:)), to: view)
+        send(#selector(NSResponder.deleteToEndOfParagraph(_:)), to: other)
+        XCTAssertEqual(LeafTextView.killBuffer, "elsewhere")
+        // Nothing happened in `view` since its kill, but the buffer is not
+        // what it left: this kill starts it afresh rather than adding to it.
+        send(#selector(NSResponder.deleteToEndOfParagraph(_:)), to: view)
+        XCTAssertEqual(LeafTextView.killBuffer, "\n")
+    }
+
     func testCommandBackspaceDeletesToTheVisualLinesStart() throws {
         let view = try editor("hello world\n", caret: 8)
         send(#selector(NSResponder.deleteToBeginningOfLine(_:)), to: view)
@@ -174,6 +186,62 @@ final class KeyBindingTests: XCTestCase {
         place(view, 8)
         send(#selector(NSResponder.swapWithMark(_:)), to: view)
         XCTAssertEqual(view.doc.caretOffset(), 2)
+    }
+
+    func testTheMarkMovesWithAnEditBeforeIt() throws {
+        let view = try editor("hello world\n", caret: 6)
+        send(#selector(NSResponder.setMark(_:)), to: view)
+        place(view, 0)
+        view.insertText("say ", replacementRange: NSRange(location: NSNotFound, length: 0))
+        place(view, 15)
+        send(#selector(NSResponder.selectToMark(_:)), to: view)
+        XCTAssertEqual(view.doc.selectedText(), "world", "the mark is still before `world`")
+    }
+
+    func testTheMarkStaysPutForAnEditAfterIt() throws {
+        let view = try editor("hello world\n", caret: 2)
+        send(#selector(NSResponder.setMark(_:)), to: view)
+        place(view, 11)
+        view.insertText("!", replacementRange: NSRange(location: NSNotFound, length: 0))
+        send(#selector(NSResponder.selectToMark(_:)), to: view)
+        XCTAssertEqual(view.doc.selectedText(), "llo world!")
+    }
+
+    func testAMarkWhoseTextWasDeletedGoesToWhereTheDeletionWas() throws {
+        let view = try editor("one two four\n", caret: 6)
+        send(#selector(NSResponder.setMark(_:)), to: view)
+        select(view, 4, 8)
+        send(#selector(NSResponder.deleteBackward(_:)), to: view)
+        XCTAssertEqual(view.sourceText(), "one four\n")
+        XCTAssertEqual(view.currentMark(), 4)
+    }
+
+    func testAMarkPastTheEndOfAShortenedDocumentIsClamped() throws {
+        let view = try editor("hello world\n", caret: 11)
+        send(#selector(NSResponder.setMark(_:)), to: view)
+        view.command { $0.replaceSource(text: "hi\n") }
+        let mark = try XCTUnwrap(view.currentMark())
+        XCTAssertLessThanOrEqual(mark, Int(view.doc.docEndOffset()))
+        place(view, 0)
+        send(#selector(NSResponder.deleteToMark(_:)), to: view)
+        XCTAssertEqual(view.sourceText(), "\n")
+        XCTAssertEqual(LeafTextView.killBuffer, "hi")
+    }
+
+    func testTheMarkNeverLandsInsideMarkup() throws {
+        // The mark is on `bold`'s first letter. Deleting what is before the
+        // `**` moves the word three bytes left; the mark's old byte would now
+        // be inside it, and one byte less would be inside the `**`.
+        let view = try editor("ab **bold** end\n", caret: 5)
+        send(#selector(NSResponder.setMark(_:)), to: view)
+        select(view, 0, 3)
+        send(#selector(NSResponder.deleteBackward(_:)), to: view)
+        XCTAssertEqual(view.sourceText(), "**bold** end\n")
+        let mark = try XCTUnwrap(view.currentMark())
+        XCTAssertEqual(mark, Int(view.doc.snapOffset(off: UInt32(mark))), "a caret stop")
+        place(view, 6)
+        send(#selector(NSResponder.selectToMark(_:)), to: view)
+        XCTAssertEqual(view.doc.selectedText(), "bold")
     }
 
     // MARK: Edit ▸ Transformations

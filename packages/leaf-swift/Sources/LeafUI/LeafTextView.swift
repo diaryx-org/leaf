@@ -2512,12 +2512,21 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// view in the app as `NSTextView`'s is. Visible text, not source: a kill
     /// that starts inside `**bold**` would otherwise carry half a delimiter.
     static var killBuffer = ""
-    /// The frame a kill left behind. A kill made straight after another, with
-    /// nothing in between, adds to the buffer rather than replacing it — so
-    /// ⌃K ⌃K ⌃K then ⌃Y gives back all three, as in Emacs and `NSTextView`.
-    private var lastKillFrame: UInt32?
-    /// The emacs mark — `setMark:` and the three commands that use it.
-    private var markByte: Int?
+    /// The view that made the kill the buffer ends with, and the frame it left
+    /// behind. A kill made straight after another, with nothing in between,
+    /// adds to the buffer rather than replacing it — so ⌃K ⌃K ⌃K then ⌃Y gives
+    /// back all three, as in Emacs and `NSTextView`. Shared with the buffer:
+    /// a kill in another window comes in between, though this view's frame
+    /// never saw it.
+    private static weak var lastKillView: LeafTextView?
+    private static var lastKillFrame: UInt32?
+    /// Whether a kill now adds to the buffer rather than replacing it.
+    private var killChains: Bool { Self.lastKillView === self && Self.lastKillFrame == docView.frame }
+    /// Note this view's last kill as the buffer's latest, once it has rendered.
+    private func noteKill() { (Self.lastKillView, Self.lastKillFrame) = (self, docView.frame) }
+    /// The emacs mark — `setMark:` and the three commands that use it — with
+    /// the source it was set in, which `currentMark()` carries it forward from.
+    private var mark: (byte: Int, source: String)?
 
     /// Delete `[from, to)` as one undo step and keep its text for ⌃Y. An
     /// empty range is the edge case each caller answers its own way.
@@ -2525,10 +2534,9 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         guard to > from, !isReadOnly else { return }
         closeWritingToolsGroupForUserEdit()
         let text = doc.textInRange(from: UInt32(from), to: UInt32(to))
-        let chained = lastKillFrame != nil && lastKillFrame == docView.frame
-        Self.killBuffer = !chained ? text : forward ? Self.killBuffer + text : text + Self.killBuffer
+        Self.killBuffer = !killChains ? text : forward ? Self.killBuffer + text : text + Self.killBuffer
         render(doc.replaceRange(from: UInt32(from), to: UInt32(to), text: ""))
-        lastKillFrame = docView.frame
+        noteKill()
     }
 
     /// Delete the selection (one undo step), if there is one, and say so —
@@ -2567,21 +2575,20 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             guard !isReadOnly else { return }
             let next = Int(doc.stepOffset(off: UInt32(caretByte), delta: 1))
             guard next > caretByte else { return }
-            let chained = lastKillFrame != nil && lastKillFrame == docView.frame
-            Self.killBuffer = (chained ? Self.killBuffer : "") + "\n"
+            Self.killBuffer = (killChains ? Self.killBuffer : "") + "\n"
             closeWritingToolsGroupForUserEdit()
             render(doc.deleteForward())
-            lastKillFrame = docView.frame
+            noteKill()
             return
         }
         kill(from: caretByte, to: para.end, forward: true)
     }
 
     public override func deleteToMark(_ sender: Any?) {
-        guard let mark = markByte else { return NSSound.beep() }
+        guard let mark = currentMark() else { return NSSound.beep() }
         let (from, to) = (min(mark, caretByte), max(mark, caretByte))
-        markByte = from
         kill(from: from, to: to, forward: mark > caretByte)
+        setMark(at: from)
     }
 
     /// ⌃Y — the kill buffer, typed over the selection as a plain paste.
@@ -2725,18 +2732,48 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     // The emacs mark.
 
-    public override func setMark(_ sender: Any?) { markByte = caretByte }
+    public override func setMark(_ sender: Any?) { setMark(at: caretByte) }
+
+    private func setMark(at byte: Int) { mark = (byte, doc.source()) }
+
+    /// The mark in the document as it is now, on a caret stop. Core keeps no
+    /// offset but the selection's through an edit, so the mark is carried
+    /// through every edit since it was set — typed, undone, or the host's —
+    /// when it is used, by what they changed: the bytes before the first
+    /// difference and after the last are common to both sources. A mark in
+    /// the first stays, one in the second moves with it, and one in the text
+    /// an edit replaced goes to where the edit began, as an Emacs marker does
+    /// when its text is deleted. The snap then puts it on a stop, never inside
+    /// markup and never past the end.
+    func currentMark() -> Int? {
+        guard let mark else { return nil }
+        let now = doc.source()
+        var byte = mark.byte
+        let old = Array(mark.source.utf8), new = Array(now.utf8)
+        if old != new {
+            let shorter = min(old.count, new.count)
+            var prefix = 0
+            while prefix < shorter, old[prefix] == new[prefix] { prefix += 1 }
+            var suffix = 0
+            while suffix < shorter - prefix, old[old.count - 1 - suffix] == new[new.count - 1 - suffix] { suffix += 1 }
+            if byte > prefix {
+                byte = byte >= old.count - suffix ? byte + new.count - old.count : prefix
+            }
+        }
+        byte = Int(doc.snapOffset(off: UInt32(max(0, byte))))
+        self.mark = (byte, now)
+        return byte
+    }
 
     public override func selectToMark(_ sender: Any?) {
-        guard let mark = markByte else { return NSSound.beep() }
-        render(doc.setSelectionOffsets(anchor: UInt32(min(mark, Int(doc.docEndOffset()))), focus: UInt32(caretByte)))
+        guard let mark = currentMark() else { return NSSound.beep() }
+        render(doc.setSelectionOffsets(anchor: UInt32(mark), focus: UInt32(caretByte)))
     }
 
     public override func swapWithMark(_ sender: Any?) {
-        guard let mark = markByte else { return NSSound.beep() }
-        markByte = caretByte
-        let to = UInt32(min(mark, Int(doc.docEndOffset())))
-        render(doc.setSelectionOffsets(anchor: to, focus: to))
+        guard let mark = currentMark() else { return NSSound.beep() }
+        setMark(at: caretByte)
+        render(doc.setSelectionOffsets(anchor: UInt32(mark), focus: UInt32(mark)))
     }
 
     // Selection by unit — what a double- and triple-click select, by key.
@@ -2911,7 +2948,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         case #selector(stopSpeaking(_:)): return Self.isSpeaking
         case #selector(orderFrontSubstitutionsPanel(_:)): return true
         case #selector(selectToMark(_:)), #selector(swapWithMark(_:)), #selector(deleteToMark(_:)):
-            return markByte != nil && (item.action != #selector(deleteToMark(_:)) || !isReadOnly)
+            return mark != nil && (item.action != #selector(deleteToMark(_:)) || !isReadOnly)
         // Anything else is enabled by whether the view answers it at all — what
         // AppKit does for a responder with no validation of its own.
         default: return item.action.map { responds(to: $0) } ?? false
