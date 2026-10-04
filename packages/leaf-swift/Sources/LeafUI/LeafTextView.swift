@@ -2000,7 +2000,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         if let candidate = blockDragCandidate {
             guard hypot(p.x - candidate.point.x, p.y - candidate.point.y) > 3 else { return }
             blockDragCandidate = nil
-            beginDraggingBlock(from: candidate.from, rows: candidate.rows, with: candidate.event)
+            beginDraggingBlock(from: candidate.from, rows: candidate.rows, with: candidate.event, at: candidate.point)
             return
         }
         if let candidate = dragCandidate {
@@ -2051,14 +2051,22 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// Start carrying a block: its source on the pasteboard, so a drop
     /// elsewhere gets the text, under an image of the block as drawn. Within
     /// this view the drop is a `moveBlock`, not a paste — `performDragOperation`
-    /// tells the two apart by `blockDrag`.
-    private func beginDraggingBlock(from: Int, rows: RowRange, with event: NSEvent) {
+    /// tells the two apart by `blockDrag`. Picked up by a picture that has
+    /// drawn, it carries the picture's file too (`pictureDragWriter`).
+    private func beginDraggingBlock(from: Int, rows: RowRange, with event: NSEvent, at point: CGPoint) {
         let source = doc.source()
         guard let range = doc.blockRangeAt(row: rows.first, ch: 0) else { return }
         let bytes = Array(source.utf8)
         let lo = min(Int(range.start), bytes.count), hi = min(Int(range.end), bytes.count)
-        let item = NSPasteboardItem()
-        item.setString(String(decoding: bytes[lo..<hi], as: UTF8.self), forType: .string)
+        let text = String(decoding: bytes[lo..<hi], as: UTF8.self)
+        let item: NSPasteboardWriting
+        if let picture = layoutEngine.mediaBox(at: point), let writer = pictureDragWriter(for: picture, text: text) {
+            item = writer
+        } else {
+            let plain = NSPasteboardItem()
+            plain.setString(text, forType: .string)
+            item = plain
+        }
         let boxes = (Int(rows.first)...Int(rows.last)).compactMap { layoutEngine.rows.indices.contains($0) ? layoutEngine.rows[$0] : nil }
             .flatMap(\.lineBoxes)
         guard let first = boxes.first else { return }
@@ -2067,6 +2075,33 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         dragging.setDraggingFrame(frame, contents: dragImage(of: frame))
         blockDrag = (from, rows)
         beginDraggingSession(with: [dragging], event: event, source: self)
+    }
+
+    /// What a picture picked up hands a receiver outside the document: its
+    /// file where it has one, a promise of one where its bytes are in the
+    /// markup, and the block's `text` either way. Nil for anything that has
+    /// not drawn a picture — a chip with nothing behind it is not a file to
+    /// give anybody — and for video and audio, whose box is a poster or a
+    /// strip rather than the thing itself.
+    func pictureDragWriter(for picture: MediaView, text: String) -> NSPasteboardWriting? {
+        guard picture.kind == .image, mediaStore.still(for: picture) != nil else { return nil }
+        if let file = mediaStore.playableURL(for: picture.src), file.isFileURL,
+           FileManager.default.fileExists(atPath: file.path) {
+            let item = NSPasteboardItem()
+            item.setString(file.absoluteString, forType: .fileURL)
+            item.setString(text, forType: .string)
+            return item
+        }
+        guard let data = MediaStore.decodeDataURI(picture.src) else { return nil }
+        let base = picture.alt.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
+        guard let (type, name) = PictureFilePromise.describe(data, named: base.isEmpty ? "Picture" : base)
+        else { return nil }
+        let promise = PictureFilePromise(data: data, fileName: name)
+        let provider = PictureFilePromiseProvider(fileType: type.identifier, delegate: promise)
+        provider.promise = promise
+        provider.text = text
+        return provider
     }
 
     public func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
