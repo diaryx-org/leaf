@@ -4197,6 +4197,25 @@ mod tests {
         LeafDoc::new(src.to_string(), "markdown".to_string()).unwrap()
     }
 
+    /// iOS deletes through `replace(_:withText:)` as well as `deleteBackward`,
+    /// over the range from one stop back to the caret. At the start of the
+    /// paragraph under a bold one, that range is the run's closing `***` and
+    /// the blank line, and the run has to keep its delimiters — in either
+    /// markup mode, since the two type through different paths.
+    #[test]
+    fn replace_one_stop_back_across_a_block_keeps_the_run_closed() {
+        for mode in [MarkupMode::None, MarkupMode::Full] {
+            let d = doc("good.\n\n***HENRY B EYRING***\n\nWhy is life\n");
+            d.set_markup_mode(mode);
+            let caret = d.source().find("Why").unwrap() as u32;
+            let back = d.step_offset(caret, -1);
+            assert_eq!(d.text_in_range(back, caret), "\n");
+            d.replace_range(back, caret, String::new());
+            assert_eq!(d.source(), "good.\n\n***HENRY B EYRING***Why is life\n");
+            assert_eq!(d.caret_offset(), back);
+        }
+    }
+
     #[test]
     fn word_range_at_reads_the_word_and_leaves_the_caret() {
         let d = doc("some **bold** text\n");
