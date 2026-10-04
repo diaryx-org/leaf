@@ -29,6 +29,7 @@
 
 #if canImport(AppKit) && !targetEnvironment(macCatalyst)
 import AppKit
+import AVFoundation
 import LeafFFI
 
 public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuRequestor, NSUserInterfaceValidations,
@@ -2843,6 +2844,10 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         case #selector(uppercaseWord(_:)), #selector(lowercaseWord(_:)), #selector(capitalizeWord(_:)):
             return !isReadOnly && caseChangeBytes() != nil
         case #selector(yank(_:)): return !isReadOnly && !Self.killBuffer.isEmpty
+        // Edit ▸ Speech: something to say, and something being said.
+        case #selector(startSpeaking(_:)): return hasSelection || doc.docEndOffset() > 0
+        case #selector(stopSpeaking(_:)): return Self.isSpeaking
+        case #selector(orderFrontSubstitutionsPanel(_:)): return true
         case #selector(selectToMark(_:)), #selector(swapWithMark(_:)), #selector(deleteToMark(_:)):
             return markByte != nil && (item.action != #selector(deleteToMark(_:)) || !isReadOnly)
         // Anything else is enabled by whether the view answers it at all — what
@@ -3699,6 +3704,45 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// markup, and a word is whatever the markup needs it to be — the rule the
     /// iOS view's text input traits keep too.
     var substitutionsApply: Bool { docView.view != "source" && !isReadOnly }
+
+    /// Edit ▸ Substitutions ▸ Show Substitutions — the system's panel. Its
+    /// checkboxes send the same `toggleAutomatic…` actions the menu items do,
+    /// to whatever is first responder, so they reach this view's settings.
+    @objc public func orderFrontSubstitutionsPanel(_ sender: Any?) {
+        NSSpellChecker.shared.substitutionsPanel.orderFront(sender)
+    }
+
+    // MARK: Edit ▸ Speech
+
+    /// The voice every editor in the app speaks with. One, as `NSTextView`'s
+    /// is, so Stop Speaking stops whatever any of them started, and starting
+    /// in a second window cuts off the first rather than talking over it.
+    ///
+    /// `AVSpeechSynthesizer` rather than the `NSSpeechSynthesizer` the text
+    /// system used to speak through, which is deprecated; with
+    /// `prefersAssistiveTechnologySettings` it speaks in the voice and at the
+    /// rate the user chose under Accessibility ▸ Spoken Content, as Speech
+    /// does in every other app.
+    private static let speech = AVSpeechSynthesizer()
+
+    /// Start Speaking: the selection, or the whole document when nothing is
+    /// selected — the visible text, so the markup is never read out.
+    @objc public func startSpeaking(_ sender: Any?) {
+        let text = textToSpeak()
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return NSSound.beep() }
+        Self.speech.stopSpeaking(at: .immediate)
+        let utterance = AVSpeechUtterance(string: text)
+        if #available(macOS 14, *) { utterance.prefersAssistiveTechnologySettings = true }
+        Self.speech.speak(utterance)
+    }
+
+    /// What Start Speaking says from here.
+    func textToSpeak() -> String { hasSelection ? (doc.selectedText() ?? "") : fullText() }
+
+    @objc public func stopSpeaking(_ sender: Any?) { Self.speech.stopSpeaking(at: .immediate) }
+
+    /// Whether the app's voice is speaking — what enables Stop Speaking.
+    static var isSpeaking: Bool { speech.isSpeaking }
 
     @objc private func systemSubstitutionSettingChanged(_ note: Notification) {
         switch note.name {
