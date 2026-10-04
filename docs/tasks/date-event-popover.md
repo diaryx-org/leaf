@@ -4,17 +4,17 @@ created: 2026-10-04
 updated: 2026-10-04
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
-# A force click on a date spins in Look Up
+# A force click on a date shows no Calendar card
 
 **Where.** `packages/leaf-swift/Sources/LeafUI/LeafTextView.swift` —
 `lookUp(under:event:)` and the data detectors beside it — and
 `apps/leaf-editor/project.yml` for the usage string.
 
 **What.** A force click on a date the data detectors find ("Oct 3rd, 2026")
-hands the whole phrase to `showDefinition(for:at:)`, and the Look Up panel
-searches it and never comes back. `NSTextView` answers the same force click
-with Calendar's card for a new event, in a popover anchored to the date, all
-day when the text gave no time. That card is the private DataDetectors
+looks up the one word under the pointer, as in any other prose, because
+handed the whole phrase the Look Up panel searches it and never comes back.
+`NSTextView` answers the same force click with Calendar's card for a new
+event, in a popover anchored to the date, all day when the text gave no time. That card is the private DataDetectors
 framework's, which a custom view cannot reach.
 
 Handing Calendar the context menu's one-event `.ics` instead was tried and
