@@ -3249,12 +3249,14 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         lookUp(under: p, event: event)
     }
 
-    /// Look up what is under layout point `p`: a date, an address, a phone
-    /// number or a bare URL whole — "5 October at 3pm", not "October" — so the
-    /// system's highlight covers the phrase and what it finds is about the
-    /// phrase; otherwise the word; and with neither, the event goes on.
+    /// Look up what is under layout point `p`: an address, a phone number or
+    /// a bare URL whole, so the system's highlight covers the phrase and what
+    /// it finds is about the phrase; otherwise the word; and with neither, the
+    /// event goes on. A date is looked up a word at a time, like any other
+    /// prose: given "5 October at 3pm" whole, Look Up searches and never
+    /// comes back.
     private func lookUp(under p: CGPoint, event: NSEvent) {
-        if let found = detectedData(under: p) {
+        if let found = detectedData(under: p), found.result.resultType != .date {
             lookUp(fromByte: found.from, toByte: found.to)
         } else if let word = word(under: p) {
             lookUp(fromByte: word.from, toByte: word.to)
@@ -3341,9 +3343,10 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     // way: `NSDataDetector` over the paragraph under the pointer. The detectors'
     // own popovers (the Calendar and Maps cards a force click raises in Mail)
     // are private API, so this does the two things a public client can: a
-    // force click looks the whole phrase up, and the context menu carries the
-    // one action each kind of thing has — Call, Show in Maps, Open, Add to
-    // Calendar — each handed to the app the system has for it.
+    // force click looks the whole phrase up (a date's word, since Look Up
+    // cannot answer a date), and the context menu carries the one action each
+    // kind of thing has — Call, Show in Maps, Open, Add to Calendar — each
+    // handed to the app the system has for it.
 
     /// A detector's match under a point, as source bytes, with what it found.
     final class DetectedData: NSObject {
