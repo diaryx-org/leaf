@@ -55,8 +55,16 @@
 //  apart from the view so a test can drive it, and it takes each group's
 //  width rather than a count, because Style's name is wider than a glyph.
 //
+//  **The accessory floats.** It is a capsule of Liquid Glass inset from the
+//  screen's edges and lifted clear of the keyboard, the way Notes' row is on
+//  iOS 26, rather than a strip of `.bar` material the keyboard's width: the
+//  document shows round it and, refracted, through it. A row that fits spreads
+//  its tools across the capsule; one that doesn't scrolls inside it, clipped
+//  at the capsule's rounded ends. Before iOS 26 the capsule is a material
+//  with a hairline and a shadow.
+//
 //  The buttons are bare glyphs rather than filled capsules: the bar already sits
-//  on its own `.bar` material, and a row of capsules on top of that reads as
+//  on its own glass or material, and a row of capsules on top of that reads as
 //  chrome stacked on chrome. It also gives the active state somewhere to go — an
 //  accent-tinted pill behind the glyph, which a bordered button's tint could
 //  barely express.
@@ -109,7 +117,7 @@ public struct LeafFormattingToolbar: View {
     /// and `.bar` on macOS, which is what a host wants unless it's deliberately
     /// putting the iOS-sized bar somewhere other than above the keyboard.
     public enum Style {
-        /// Keyboard-accessory metrics: 44pt tall, finger-sized targets, the
+        /// Keyboard-accessory metrics: a floating capsule, finger-sized targets, the
         /// most-used tools and an `Aa` for the panel of the rest, and a
         /// row that scrolls when it does not fit. On macOS there is no panel
         /// and no `Aa`.
@@ -232,41 +240,82 @@ public struct LeafFormattingToolbar: View {
         let tools = ToolCatalogue(editor: editor, beginLink: beginLink)
         return ViewThatFits(in: .horizontal) {
             accessoryTools(tools)
-                .frame(maxWidth: .infinity, alignment: .leading)
             ScrollView(.horizontal, showsIndicators: false) { accessoryTools(tools) }
         }
         .frame(height: metrics.barHeight)
-        .background(.bar)
+        .clipShape(Capsule())
+        .modifier(FloatingCapsule())
+        .padding(.horizontal, metrics.outerMargin)
+        .padding(.top, metrics.outerTop)
+        .padding(.bottom, metrics.outerBottom)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func accessoryTools(_ tools: ToolCatalogue) -> some View {
         HStack(spacing: 0) {
-            HStack(spacing: metrics.spacing) {
-                #if canImport(UIKit)
-                if FormattingPanelHost.isAvailable {
-                    target(tools.panel, width: metrics.buttonWidth)
+            #if canImport(UIKit)
+            if FormattingPanelHost.isAvailable {
+                target(tools.panel, width: metrics.buttonWidth)
+                spread
+            }
+            #endif
+            target(tools.style, width: rowStyleWidth, indicator: .corner)
+                .modifier(StyleValue(name: tools.styleValue))
+            spread
+            target(tools.bold, width: metrics.buttonWidth)
+            spread
+            target(tools.italic, width: metrics.buttonWidth)
+            spread
+            target(tools.list, width: metrics.buttonWidth, indicator: .corner)
+            spread
+            target(tools.insert, width: metrics.buttonWidth, indicator: .corner)
+            spread
+            target(tools.link, width: metrics.buttonWidth)
+                #if !canImport(UIKit)
+                .popover(isPresented: $askingForDestination) {
+                    LinkDestinationField(text: $typedDestination, commit: commitLink)
+                        .focused($destinationFocused)
                 }
                 #endif
-                target(tools.style, width: rowStyleWidth, indicator: .corner)
-                    .modifier(StyleValue(name: tools.styleValue))
-                target(tools.bold, width: metrics.buttonWidth)
-                target(tools.italic, width: metrics.buttonWidth)
-                target(tools.list, width: metrics.buttonWidth, indicator: .corner)
-                target(tools.insert, width: metrics.buttonWidth, indicator: .corner)
-                target(tools.link, width: metrics.buttonWidth)
-                    #if !canImport(UIKit)
-                    .popover(isPresented: $askingForDestination) {
-                        LinkDestinationField(text: $typedDestination, commit: commitLink)
-                            .focused($destinationFocused)
-                    }
-                    #endif
-            }
             if !hostTools.isEmpty {
+                spread
                 separator
-                hostGroup
+                spread
+                ForEach(Array(hostTools.enumerated()), id: \.element.id) { offset, tool in
+                    if offset > 0 { spread }
+                    target(item(for: tool), width: metrics.buttonWidth)
+                }
             }
         }
         .padding(.horizontal, metrics.edgePadding)
+    }
+
+    /// The space between two of the accessory's targets: `spacing` at the
+    /// least, which is all a scrolling row gets — a scroll view offers no
+    /// width to grow into — and up to `maxSpread` where the capsule has room,
+    /// so a row that fits is spaced out across the screen the way the
+    /// system's own bars are rather than bunched at the leading end. The cap
+    /// keeps an iPad's row a capsule of tools, not a rail the width of the
+    /// keyboard.
+    private var spread: some View {
+        Spacer(minLength: metrics.spacing)
+            .frame(maxWidth: metrics.maxSpread)
+    }
+
+    /// The accessory's capsule: Liquid Glass where the system has it, and a
+    /// material with a hairline and a soft shadow before, so the row floats
+    /// over the document either way.
+    private struct FloatingCapsule: ViewModifier {
+        func body(content: Content) -> some View {
+            if #available(iOS 26, macOS 26, *) {
+                content.glassEffect(.regular, in: Capsule())
+            } else {
+                content
+                    .background(.regularMaterial, in: Capsule())
+                    .overlay(Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5))
+                    .shadow(color: .black.opacity(0.12), radius: 8, y: 2)
+            }
+        }
     }
 
     /// The row's Style key: as wide as the widest short name ("Body", "Code"),
@@ -500,7 +549,7 @@ public struct LeafFormattingToolbar: View {
                 Image(systemName: "arrowtriangle.down.fill")
                     .font(.system(size: metrics.glyphSize * 0.3))
                     .foregroundStyle(.secondary)
-                    .padding(metrics.cornerRadius * 0.5)
+                    .padding(metrics.buttonHeight * 0.1)
             }
         }
         // `.plain` leaves a disabled button looking pressed-and-ignored; the
@@ -508,7 +557,7 @@ public struct LeafFormattingToolbar: View {
         .foregroundStyle(!item.enabled ? Color(Palette.tertiary)
                          : item.active ? Color.accentColor : Color.primary)
         .background(
-            RoundedRectangle(cornerRadius: metrics.cornerRadius)
+            RoundedRectangle(cornerRadius: metrics.cornerRadius, style: .continuous)
                 .fill(item.active ? Color.accentColor.opacity(0.15) : Color.clear)
         )
         .contentShape(Rectangle())
@@ -646,19 +695,32 @@ public struct LeafFormattingToolbar: View {
         /// The space between two of the Mac's categories, where a hairline
         /// would read as a border round each.
         var categoryGap: CGFloat
+        /// The most a row that fits spreads between two targets (`spread`).
+        var maxSpread: CGFloat
+        /// The accessory's capsule floats: inset from the screen's edges, a
+        /// little below whatever is above it, and clear of the keyboard. All
+        /// three are nothing on the Mac's strip, which is not a capsule.
+        var outerMargin: CGFloat
+        var outerTop: CGFloat
+        var outerBottom: CGFloat
 
-        /// 44 is the tap-target floor, and the row spends all of it — there's no
-        /// indicator strip to leave room for any more.
+        /// A capsule 48 tall, floating 8 points in from the screen's edges and
+        /// 8 above the keyboard, the way Notes' row does on iOS 26. Its
+        /// targets are 40 square — a 44pt finger lands on the capsule's
+        /// padding as readily as on the glyph — inset 4 from its ends, so
+        /// a lit target's rounded pill sits concentric with the capsule.
         ///
-        /// The row's seven tools are 40 wide with a point between them, and
-        /// the Style key as wide as a quoted "“Body" (56): 314 points with the
-        /// edges, measured in the simulator, which leaves an iPhone 15's 393
-        /// room for two of a host's tools before the row has to scroll.
+        /// The row's seven tools at their least spacing, with the Style key as
+        /// wide as a quoted "“Body", come to about 312 points with the edges,
+        /// which in an iPhone 15's 393, less the margins, leaves room for a
+        /// host's tool before the row has to scroll. What is left over spreads
+        /// between the targets.
         static let accessory = Metrics(
-            barHeight: 44, buttonWidth: 40, buttonHeight: 36,
-            glyphSize: 17, labelSize: 15, cornerRadius: 8,
-            spacing: 1, edgePadding: 6, separatorHeight: 22, separatorPadding: 6,
-            indicatorWidth: 10, textInset: 6, categoryGap: 4
+            barHeight: 48, buttonWidth: 40, buttonHeight: 40,
+            glyphSize: 20, labelSize: 17, cornerRadius: 12,
+            spacing: 1, edgePadding: 4, separatorHeight: 24, separatorPadding: 4,
+            indicatorWidth: 10, textInset: 5, categoryGap: 4,
+            maxSpread: 20, outerMargin: 8, outerTop: 4, outerBottom: 8
         )
 
         /// A pointer hits a much smaller target than a fingertip, and the strip
@@ -668,7 +730,8 @@ public struct LeafFormattingToolbar: View {
             barHeight: 32, buttonWidth: 26, buttonHeight: 24,
             glyphSize: 13, labelSize: 12, cornerRadius: 5,
             spacing: 1, edgePadding: 8, separatorHeight: 16, separatorPadding: 6,
-            indicatorWidth: 10, textInset: 3, categoryGap: 6
+            indicatorWidth: 10, textInset: 3, categoryGap: 6,
+            maxSpread: 1, outerMargin: 0, outerTop: 0, outerBottom: 0
         )
 
         /// How far Dynamic Type is allowed to take the bar. The tools scale like
@@ -703,6 +766,10 @@ public struct LeafFormattingToolbar: View {
             m.indicatorWidth *= factor
             m.textInset *= factor
             m.categoryGap *= factor
+            m.maxSpread *= factor
+            m.outerMargin *= factor
+            m.outerTop *= factor
+            m.outerBottom *= factor
             return m
         }
     }

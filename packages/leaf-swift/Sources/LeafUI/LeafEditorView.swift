@@ -1797,7 +1797,12 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
             sizeObserver = NotificationCenter.default.addObserver(
                 forName: UIContentSizeCategory.didChangeNotification,
                 object: nil, queue: .main
-            ) { [weak self] _ in self?.resizeAccessory() }
+            ) { [weak self] _ in
+                // On the next turn: the notification lands before the hosting
+                // view has its new trait collection, so measured now the
+                // content is still at the old size and the frame keeps it.
+                DispatchQueue.main.async { self?.resizeAccessory() }
+            }
         }
 
         /// Fit the hosting view's frame to the height its SwiftUI content wants,
