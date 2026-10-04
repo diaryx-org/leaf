@@ -69,6 +69,17 @@ final class TextInputTests: XCTestCase {
         XCTAssertEqual(clauses.first?.range, NSRange(location: 10, length: 2))
     }
 
+    func testAPatternedSingleUnderlineIsNotTheSelectedClause() {
+        // Thin and dotted by word, then thick: the pattern bits make the first
+        // style's raw value large, and it is still the lighter line.
+        let marked = NSMutableAttributedString(string: "abcd")
+        let dotted = NSUnderlineStyle([.single, .patternDot, .byWord]).rawValue
+        marked.addAttribute(.underlineStyle, value: dotted, range: NSRange(location: 0, length: 2))
+        marked.addAttribute(.underlineStyle, value: NSUnderlineStyle.thick.rawValue, range: NSRange(location: 2, length: 2))
+        let clauses = LeafTextView.clauses(of: marked, selectedRange: NSRange(location: 4, length: 0), at: 0)
+        XCTAssertEqual(clauses.map(\.selected), [false, true])
+    }
+
     func testAPlainCompositionHasNoClauses() {
         let clauses = LeafTextView.clauses(of: NSAttributedString(string: "ni"),
                                            selectedRange: NSRange(location: 2, length: 0), at: 0)

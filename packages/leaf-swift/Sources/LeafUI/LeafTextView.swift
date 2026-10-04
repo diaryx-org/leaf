@@ -4758,6 +4758,12 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
 
     public func unmarkText() { markedByteRange = nil; needsDisplay = true }
 
+    /// Whether an underline style draws heavier than a single line. The style
+    /// is a bitmask: its low byte is the line (single, thick, double), and the
+    /// bits above it a pattern and `byWord`, which say how the line is drawn,
+    /// not how heavy it is.
+    private static func isThick(_ style: Int) -> Bool { style & 0xFF > NSUnderlineStyle.single.rawValue }
+
     /// The clauses an input method marked in `string`, as source byte ranges
     /// from `start`. A clause is a run of one `.markedClauseSegment`, or of one
     /// underline style where the method sends only those; the selected one is
@@ -4775,20 +4781,19 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         if !segmented {
             runs = []
             string.enumerateAttribute(.underlineStyle, in: whole) { value, range, _ in
-                runs.append((range, (value as? Int).map { $0 > NSUnderlineStyle.single.rawValue }))
+                runs.append((range, (value as? Int).map(Self.isThick)))
             }
         } else {
             runs = runs.map { run in
                 let style = string.attribute(.underlineStyle, at: run.range.location, effectiveRange: nil) as? Int
-                return (run.range, style.map { $0 > NSUnderlineStyle.single.rawValue })
+                return (run.range, style.map(Self.isThick))
             }
         }
         guard runs.count > 1 || runs.first?.thick == true else { return [] }
         let anyThick = runs.contains { $0.thick == true }
         let ns = string.string as NSString
         return runs.map { run in
-            let selected = anyThick ? run.thick == true
-                : NSLocationInRange(selectedRange.location, run.range) && selectedRange.location != NSMaxRange(run.range)
+            let selected = anyThick ? run.thick == true : NSLocationInRange(selectedRange.location, run.range)
             let from = start + ns.substring(to: run.range.location).utf8.count
             let length = ns.substring(with: run.range).utf8.count
             return (NSRange(location: from, length: length), selected)
