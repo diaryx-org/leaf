@@ -4947,19 +4947,19 @@ impl Builder<'_> {
                 } else {
                     out.last().map(|g| g.src + g.ch.len_utf8()).unwrap_or(0)
                 };
-                // A *hard* break renders as this run's break glyph — a newline
-                // inside a table cell (its own line), the same space in prose the
-                // frontend re-wraps. A soft break normally folds into a space;
-                // under `LineFlow::Preserve` it renders as a `'\n'` too, so the
-                // author's line break shows where it was written. Never inside a
-                // cell (`break_glyph` is `'\n'` there): a cell is one line and
-                // folds its own soft breaks regardless.
-                let ch = if node.kind == Kind::HardBreak {
-                    self.break_glyph.get()
-                } else if node.kind == Kind::SoftBreak
+                // A *hard* break is a line break wherever it is written — a
+                // `\` or two trailing spaces in prose, a `<br>` in a cell — so
+                // it renders as `'\n'`, which ends the row. It drew as a space
+                // in prose, folding a poem's lines into one paragraph. A soft
+                // break normally folds into a space; under `LineFlow::Preserve`
+                // it renders as a `'\n'` too, so the author's line break shows
+                // where it was written. Never inside a cell (`break_glyph` is
+                // `'\n'` there): a cell is one line and folds its own soft
+                // breaks regardless.
+                let preserved_soft = node.kind == Kind::SoftBreak
                     && self.preserve_soft
-                    && self.break_glyph.get() == ' '
-                {
+                    && self.break_glyph.get() == ' ';
+                let ch = if node.kind == Kind::HardBreak || preserved_soft {
                     '\n'
                 } else {
                     ' '
@@ -10892,5 +10892,48 @@ mod tests {
                 assert_eq!(plain.stops, cached.stops, "{src:?}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod hard_break_tests {
+    use super::*;
+    use twig::Format;
+
+    fn map(src: &str, format: Format, wrap: Option<usize>) -> VisualMap {
+        let mut ed =
+            Editor::new_ext(src.as_bytes(), format, crate::doc::parse_extensions()).unwrap();
+        build(
+            &ed.nodes().unwrap(),
+            src,
+            wrap,
+            false,
+            &Surface::default(),
+            None,
+        )
+    }
+
+    fn texts(m: &VisualMap) -> Vec<String> {
+        m.rows
+            .iter()
+            .map(|r| r.glyphs.iter().map(|g| g.ch).collect())
+            .collect()
+    }
+
+    #[test]
+    fn a_hard_break_in_prose_ends_the_row() {
+        // `\` and two trailing spaces are line breaks, in Markdown and djot,
+        // wrapped or not. They drew as a space, folding a poem into prose.
+        for wrap in [Some(80), None] {
+            let m = map("one\\\ntwo  \nthree\n", Format::Markdown, wrap);
+            assert_eq!(texts(&m), ["one", "two", "three"], "wrap {wrap:?}");
+            let m = map("one\\\ntwo\n", Format::Djot, wrap);
+            assert_eq!(texts(&m), ["one", "two"], "djot, wrap {wrap:?}");
+        }
+        // Each row ends where its break begins, so End on `one` lands before
+        // the `\`, and the next row starts past the newline.
+        let m = map("one\\\ntwo\n", Format::Markdown, None);
+        assert_eq!(m.rows[0].end_src, 3);
+        assert_eq!(m.rows[1].glyphs[0].src, 5);
     }
 }
