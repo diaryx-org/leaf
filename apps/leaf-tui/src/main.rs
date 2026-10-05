@@ -366,6 +366,7 @@ pub const FORMAT_MENU: &[MenuEntry] = &[
     MenuEntry::Action(Command::NumberedList),
     MenuEntry::Action(Command::Quote),
     MenuEntry::Action(Command::CodeBlock),
+    MenuEntry::Action(Command::Verse),
     MenuEntry::Action(Command::TaskItem),
     MenuEntry::Action(Command::TaskChecked),
     MenuEntry::Action(Command::CycleAlign),

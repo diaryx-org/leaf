@@ -801,6 +801,14 @@ export class LeafEditor {
    * lit while the caret stands in one.
    */
   toggleCodeBlock() { this._command((d) => d.toggle_code_block()); }
+  /**
+   * Make the selected paragraphs — or the caret's — a verse, a block whose
+   * line breaks are the content, or the verse at the caret prose again.
+   * Markdown writes `<div class="verse">`, djot `::: verse`. Gate on
+   * `capabilities().verse`; `EditorState.verse` is lit while the caret stands
+   * in one.
+   */
+  toggleVerse() { this._command((d) => d.toggle_verse()); }
   insertLink(dest) { this._command((d) => d.insert_link(dest)); }
   /**
    * Link to `dest` with `label` as the link's text — for a host linking
@@ -3023,6 +3031,8 @@ export class LeafEditor {
       // Rides the frame for `heading`'s reason: walking the caret into a fence
       // changes no mark, so a button asking for itself would never be told.
       codeBlock: view.code_block,
+      // Likewise for a verse.
+      verse: view.verse,
       // Likewise: stepping from a bullet into a task item changes no mark.
       task: view.task ?? null,
       active: view.active,
@@ -3053,6 +3063,7 @@ export class LeafEditor {
  * @property {boolean} readOnly the document refuses edits — see `setReadOnly`
  * @property {number | null} heading  heading level at the caret, or null
  * @property {boolean} codeBlock  the caret stands in a code block
+ * @property {boolean} verse  the caret stands in a verse
  * @property {boolean | null} task  the task item at the caret is ticked
  *   (`true`) or not (`false`); null for a plain item or no item at all
  * @property {string[]} active  inline marks active at the caret

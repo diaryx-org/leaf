@@ -51,6 +51,8 @@ export interface EditorState {
   heading: number | null;
   /** Whether the caret stands in a code block — what lights a Code Block button. */
   codeBlock: boolean;
+  /** Whether the caret stands in a verse — what lights a Verse button. */
+  verse: boolean;
   /**
    * Whether the list item at the caret carries a checkbox, and which way it
    * faces — `true` ticked, `false` empty, null for a plain item or no item at
@@ -410,6 +412,12 @@ export class LeafEditor {
    * `capabilities().code_block`; `EditorState.codeBlock` lights the button.
    */
   toggleCodeBlock(): void;
+  /**
+   * Make the selected paragraphs — or the caret's — a verse, or the verse at
+   * the caret prose again. Gate on `capabilities().verse`; `EditorState.verse`
+   * lights the button.
+   */
+  toggleVerse(): void;
   toggleList(ordered: boolean): void;
   insertLink(dest: string): void;
   /**
