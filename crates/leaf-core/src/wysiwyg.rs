@@ -192,6 +192,17 @@ pub struct VRow {
     /// [`align`](Self::align) is, and one of the menu's three names or the
     /// exact ratio the author asked for.
     pub line_height: Option<LineHeight>,
+    /// How many ems past its prefix a frontend that wraps this row itself
+    /// hangs the row's later lines — a verse line's turnover, set deeper than
+    /// the line it continues so a reader can tell a wrapped line from a new
+    /// one. `None` on every other row, whose later lines hang at the prefix.
+    ///
+    /// The em count includes the line's own indent, which is drawn as real em
+    /// spaces at the row's start rather than as prefix, so a frontend's hang
+    /// is its measured prefix plus this many ems of the body face. A frontend
+    /// that lets core wrap ([`Builder::emit_line`] with a column budget) needs
+    /// none of it: the continuation prefix core writes already carries it.
+    pub hang: Option<u8>,
     /// What this row divides, on the blank rows a block boundary is *drawn* with
     /// and `None` on every other row — including the navigable blank lines of
     /// preserve-soft flow, which are somewhere text can go rather than a gap
@@ -320,7 +331,10 @@ impl BlockClass {
     /// walk (which has only a query match's kind) reach it by this one door.
     pub fn from_node_kind(kind: &Kind) -> BlockClass {
         match kind {
-            Kind::Para => BlockClass::Paragraph,
+            // A verse is spaced from its neighbours as a paragraph is: it is
+            // prose set in lines, and a frontend needs no class of its own to
+            // put it in its place.
+            Kind::Para | Kind::LineBlock => BlockClass::Paragraph,
             Kind::Heading => BlockClass::Heading,
             Kind::BulletList | Kind::OrderedList | Kind::TaskList => BlockClass::List,
             Kind::ListItem | Kind::TaskListItem => BlockClass::ListItem,
@@ -2669,6 +2683,7 @@ fn shift_row(row: &VRow, delta: isize) -> VRow {
         // block still wears — like `code_lang`.
         align: row.align,
         line_height: row.line_height,
+        hang: row.hang,
         // Structure, not offsets: a reused block's rows divide the same blocks
         // wherever the edit above moved them to.
         boundary: row.boundary,
@@ -3506,6 +3521,7 @@ impl Builder<'_> {
                 // around it, and keeps its spacing and alignment.
                 align: (!drawn).then_some(self.presentation.align).flatten(),
                 line_height: (!drawn).then_some(self.presentation.line_height).flatten(),
+                hang: None,
                 boundary: drawn.then_some(boundary),
                 mark_ends: Vec::new(),
                 math: Vec::new(),
@@ -3560,6 +3576,7 @@ impl Builder<'_> {
                 heading: None,
                 align: None,
                 line_height: None,
+                hang: None,
                 boundary: drawn.then_some(Boundary {
                     above: BlockClass::Paragraph,
                     below,
@@ -3645,6 +3662,7 @@ impl Builder<'_> {
                 heading: None,
                 align: (!drawn).then_some(self.presentation.align).flatten(),
                 line_height: (!drawn).then_some(self.presentation.line_height).flatten(),
+                hang: None,
                 boundary: drawn.then_some(Boundary {
                     above,
                     below: BlockClass::Paragraph,
@@ -3983,6 +4001,7 @@ impl Builder<'_> {
             // walk past its bytes rather than count them as blank lines.
             "reference" => {}
             "table" => self.table(id, pf, pc),
+            "line_block" => self.verse(id, pf, pc),
             "code_block" => {
                 let style = Style::default().role(Role::Code);
                 let text = node.text.clone().unwrap_or_default();
@@ -4138,6 +4157,210 @@ impl Builder<'_> {
                 }
             }
         }
+    }
+
+    /// A verse — twig's `line_block`, whichever spelling it came from:
+    /// Markdown's `<div class="verse">`, djot's `::: verse`, AsciiDoc's
+    /// `[verse]`. Every line is a row of its own, the way a source line is in
+    /// [`LineFlow::Preserve`](crate::LineFlow::Preserve), and the blank lines
+    /// between them are rows too, navigable, so editing a poem is editing
+    /// lines: a stanza break is the blank line it is spelled with, and Enter
+    /// and Backspace make and unmake lines the way a text editor does.
+    ///
+    /// A line's indent is the em spaces it starts with in the source, drawn as
+    /// the em spaces they are — real glyphs with real offsets, so the caret
+    /// walks across them and Backspace takes one. A line too long for the
+    /// measure wraps with a *hanging* indent, [`VERSE_HANG`] ems deeper than
+    /// the line itself, which is how a reader tells a turnover from a new
+    /// line: core writes it into the continuation prefix where it wraps, and
+    /// stamps [`VRow::hang`] for a frontend that wraps rows itself.
+    ///
+    /// The blank line Markdown needs between `<div class="verse">` and the
+    /// first line, and between the last line and `</div>`, is syntax and
+    /// draws nothing; any more than that is a line the author opened (Enter
+    /// at the end of the poem) and draws. djot and AsciiDoc need none.
+    ///
+    /// Verse is never justified: the right edge of a poem is the poet's.
+    fn verse(&mut self, id: usize, pf: &[Glyph], pc: &[Glyph]) {
+        let node = &self.nodes[id];
+        let span = node.span.clone();
+        let saved = self.presentation;
+        let mut pres = self.presentation.under(&node.attrs, &self.faces);
+        if pres.align == Some(Align::Justify) {
+            pres.align = None;
+        }
+        self.presentation = pres;
+        let style = pres.over(Style::default());
+        // Markdown's tag lines take a blank line each side; djot's fence and
+        // AsciiDoc's delimiter do not.
+        let tagged = self
+            .source
+            .get(span.start..)
+            .is_some_and(|s| s.starts_with('<'));
+        let lines: Vec<usize> = self
+            .children(id)
+            .into_iter()
+            .filter(|&l| self.nodes[l].first_child.is_some())
+            .collect();
+
+        let open_end = self.source[span.start.min(self.source.len())..]
+            .find('\n')
+            .map_or(span.start, |k| span.start + k);
+        let mut prev_end = open_end;
+        // The block's opening prefix (a list bullet, say) goes on the first row
+        // it draws, whatever that row is; every later one takes `pc`.
+        let mut lead_used = false;
+        for (k, &line) in lines.iter().enumerate() {
+            let start = self.nodes[line].span.start;
+            let mut blanks = self.blank_rows_between(prev_end, start);
+            if k == 0 && tagged && !blanks.is_empty() {
+                blanks.remove(0);
+            }
+            self.verse_blank_rows(&blanks, pf, pc, &mut lead_used);
+
+            let indent = self.nodes[line].level.unwrap_or_default();
+            let mut glyphs = self.verse_indent_glyphs(line, style);
+            glyphs.extend(self.inline_children(line, style));
+            glyphs.extend(self.verse_trailing_space(line, style));
+            let hang = (indent as usize + VERSE_HANG).min(u8::MAX as usize);
+            let turnover = concat(
+                pc,
+                &synth(&"\u{2003}".repeat(hang), Role::ListIndent, start),
+            );
+            let lead = if lead_used { pc } else { pf };
+            lead_used = true;
+            let first = self.rows.len();
+            self.emit_wrapped(glyphs, start, lead, &turnover);
+            for row in &mut self.rows[first..] {
+                row.align = pres.align;
+                row.line_height = pres.line_height;
+                row.hang = Some(hang as u8);
+            }
+            prev_end = self.nodes[line].span.end;
+        }
+
+        if lines.is_empty() {
+            // A verse with no line yet — nothing else would give the caret a
+            // home inside it.
+            let home = self.nodes[id]
+                .content_span
+                .clone()
+                .map_or(span.start, |c| c.start);
+            self.push_row_at(pf.to_vec(), home.min(self.source.len()));
+        } else {
+            // The lines opened under the last one, before the closing tag.
+            let end = span.end.min(self.source.len());
+            let close_line = self.source[..end]
+                .trim_end_matches(['\n', '\r'])
+                .rfind('\n')
+                .map_or(0, |p| p + 1);
+            if close_line > prev_end {
+                let mut blanks = self.blank_rows_between(prev_end, close_line.max(prev_end + 1));
+                // `blank_rows_between` stops before the line holding its end,
+                // which here is the closing line itself, so every blank line
+                // above it is counted; Markdown's last one is syntax.
+                if tagged && !blanks.is_empty() {
+                    blanks.pop();
+                }
+                self.verse_blank_rows(&blanks, pf, pc, &mut lead_used);
+            }
+        }
+
+        self.presentation = saved;
+        // Step past the closing tag or fence, as the div arm in
+        // [`Builder::block`] does: the rich view draws nothing for it, and left
+        // behind it reads as a blank line under the poem.
+        self.last_off = self.last_off.max(span.end);
+        self.stepped_over = self.stepped_over.max(span.end);
+    }
+
+    /// One navigable empty row per blank line of a verse, at `offs` — the
+    /// first row the verse draws wearing its opening prefix `pf`.
+    fn verse_blank_rows(
+        &mut self,
+        offs: &[usize],
+        pf: &[Glyph],
+        pc: &[Glyph],
+        lead_used: &mut bool,
+    ) {
+        for &end_src in offs {
+            let prefix = if *lead_used { pc } else { pf };
+            *lead_used = true;
+            self.rows.push(VRow {
+                glyphs: prefix.to_vec(),
+                end_src,
+                decoration: false,
+                code: false,
+                code_lang: None,
+                directive: false,
+                directive_label: None,
+                media: None,
+                task: None,
+                leaf_directive: None,
+                heading: None,
+                align: self.presentation.align,
+                line_height: self.presentation.line_height,
+                hang: None,
+                boundary: None,
+                mark_ends: Vec::new(),
+                math: Vec::new(),
+            });
+            self.last_off = end_src;
+        }
+    }
+
+    /// The em spaces a verse line starts with, as glyphs at their own source
+    /// offsets — one per step of the line's indent, whether the source spells
+    /// it raw or as `&emsp;`, `&#8195;` or `&#x2003;`. twig has already taken
+    /// them out of the line's text; they are between the line's start and its
+    /// first child's.
+    fn verse_indent_glyphs(&self, line: usize, style: Style) -> Vec<Glyph> {
+        let start = self.nodes[line].span.start;
+        let text_start = self.nodes[line]
+            .first_child
+            .map_or(start, |c| self.nodes[c.0 as usize].span.start);
+        let mut out = Vec::new();
+        let mut at = start;
+        while at < text_start {
+            let Some(len) = em_space_at(self.source, at) else {
+                break;
+            };
+            out.push(Glyph {
+                ch: '\u{2003}',
+                style,
+                src: at,
+                stop: true,
+            });
+            at += len;
+        }
+        out
+    }
+
+    /// Glyphs for the spaces a verse line's source carries past its last
+    /// inline node — the space just typed at the end of a line, which twig
+    /// drops as insignificant — so the caret is drawn past it. The paragraph
+    /// path reads these off `content_span`; a line has none.
+    fn verse_trailing_space(&self, line: usize, style: Style) -> Vec<Glyph> {
+        let mut at = self.nodes[line].span.end;
+        let mut out = Vec::new();
+        while let Some(&b) = self.source.as_bytes().get(at) {
+            if b != b' ' && b != b'\t' {
+                break;
+            }
+            out.push(Glyph {
+                ch: ' ',
+                style,
+                src: at,
+                stop: true,
+            });
+            at += 1;
+        }
+        // Two spaces before the newline are Markdown's hard break, not text the
+        // caret stands past.
+        if self.source.as_bytes().get(at) == Some(&b'\n') && out.len() >= 2 {
+            out.clear();
+        }
+        out
     }
 
     /// Render a table as a box-drawn grid: every column as wide as its widest
@@ -4313,6 +4536,7 @@ impl Builder<'_> {
             heading: None,
             align: None,
             line_height: None,
+            hang: None,
             boundary: None,
             mark_ends: Vec::new(),
             math: Vec::new(),
@@ -4413,6 +4637,7 @@ impl Builder<'_> {
                 heading: None,
                 align: None,
                 line_height: None,
+                hang: None,
                 boundary: None,
                 mark_ends,
                 math,
@@ -4528,6 +4753,7 @@ impl Builder<'_> {
                 heading: None,
                 align: None,
                 line_height: None,
+                hang: None,
                 boundary: None,
                 mark_ends: Vec::new(),
                 math: Vec::new(),
@@ -4756,6 +4982,7 @@ impl Builder<'_> {
                 heading: None,
                 align: None,
                 line_height: None,
+                hang: None,
                 boundary: None,
                 mark_ends: Vec::new(),
                 math: Vec::new(),
@@ -4833,6 +5060,7 @@ impl Builder<'_> {
                 heading: None,
                 align: None,
                 line_height: None,
+                hang: None,
                 boundary: None,
                 mark_ends: Vec::new(),
                 math: Vec::new(),
@@ -5407,6 +5635,7 @@ impl Builder<'_> {
             heading: None,
             align: None,
             line_height: None,
+            hang: None,
             boundary: None,
             mark_ends,
             math,
@@ -5584,6 +5813,7 @@ impl Builder<'_> {
                 heading: None,
                 align: None,
                 line_height: None,
+                hang: None,
                 // The one drawn row here is a block boundary like any other —
                 // "rendered the way a block boundary is rendered" is the whole
                 // point of it — so it says so, and a frontend spacing boundaries
@@ -6380,6 +6610,20 @@ fn push_escaped_text(
                 .map_or(ch.len_utf8(), char::len_utf8);
         }
     }
+}
+
+/// How many ems deeper than its own line a verse line's turnover hangs.
+pub const VERSE_HANG: usize = 2;
+
+/// The byte length of the em space (U+2003) `source` spells at `at`, raw or as
+/// an entity, or `None` — the spellings twig's verse pass reads as one step of
+/// a line's indent.
+pub fn em_space_at(source: &str, at: usize) -> Option<usize> {
+    let rest = source.get(at..)?;
+    ["&#x2003;", "&#X2003;", "&#8195;", "&emsp;", "\u{2003}"]
+        .into_iter()
+        .find(|s| rest.starts_with(s))
+        .map(str::len)
 }
 
 /// Build synthetic decoration glyphs (a bullet, a gutter) all pointing at `src`,
@@ -10896,7 +11140,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod hard_break_tests {
+mod verse_tests {
     use super::*;
     use twig::Format;
 
@@ -10935,5 +11179,88 @@ mod hard_break_tests {
         let m = map("one\\\ntwo\n", Format::Markdown, None);
         assert_eq!(m.rows[0].end_src, 3);
         assert_eq!(m.rows[1].glyphs[0].src, 5);
+    }
+
+    #[test]
+    fn a_verse_draws_a_row_per_line_and_a_navigable_row_per_stanza_break() {
+        let src = "<div class=\"verse\">\n\nRoses are red,\\\nviolets blue.\n\nSugar is sweet.\n\n</div>\n";
+        let m = map(src, Format::Markdown, Some(80));
+        assert_eq!(
+            texts(&m),
+            ["Roses are red,", "violets blue.", "", "Sugar is sweet."]
+        );
+        // The stanza break is somewhere text can go, not a drawn gap.
+        assert!(!m.rows[2].decoration);
+        assert_eq!(m.rows[2].boundary, None);
+        // The blank line Markdown needs above `</div>` draws nothing, and
+        // neither does the tag.
+        assert_eq!(m.rows.len(), 4);
+        // Every line row says how far its turnover hangs.
+        assert!(
+            m.rows
+                .iter()
+                .filter(|r| !r.glyphs.is_empty())
+                .all(|r| r.hang == Some(VERSE_HANG as u8))
+        );
+    }
+
+    #[test]
+    fn a_verse_line_s_indent_is_its_em_spaces_drawn_as_caret_stops() {
+        // Markdown, whose entities decode: djot has none, and reads `&emsp;`
+        // as the text it spells.
+        let src = "<div class=\"verse\">\n\nzero\n\u{2003}one\n&emsp;&emsp;two\n\n</div>\n";
+        let m = map(src, Format::Markdown, None);
+        assert_eq!(texts(&m), ["zero", "\u{2003}one", "\u{2003}\u{2003}two"]);
+        // Each em space is a real glyph at its own spelling's offset.
+        let at = src.find("&emsp;").unwrap();
+        let row = &m.rows[2];
+        assert_eq!(row.glyphs[0].src, at);
+        assert_eq!(row.glyphs[1].src, at + "&emsp;".len());
+        assert!(row.glyphs[0].stop && row.glyphs[1].stop);
+        assert_eq!(m.rows[1].hang, Some(1 + VERSE_HANG as u8));
+        assert_eq!(m.rows[2].hang, Some(2 + VERSE_HANG as u8));
+    }
+
+    #[test]
+    fn a_verse_line_too_long_for_the_measure_hangs_its_turnover() {
+        let src = "::: verse\n\u{2003}one two three four five six\n:::\n";
+        let m = map(src, Format::Djot, Some(16));
+        assert!(m.rows.len() >= 2, "{:?}", texts(&m));
+        // The turnover's prefix is the line's indent plus the hang, in ems,
+        // drawn blank: one em space of indent and two of hang.
+        let cont = &m.rows[1];
+        let lead: Vec<_> = cont
+            .glyphs
+            .iter()
+            .take_while(|g| g.style.role == Role::ListIndent)
+            .collect();
+        assert_eq!(lead.len(), 1 + VERSE_HANG);
+    }
+
+    #[test]
+    fn lines_opened_under_a_verse_s_last_line_draw_before_the_closing_tag() {
+        // Enter at the end of the poem leaves an extra blank line above
+        // `</div>`; it is a line the author is about to type on, so it draws.
+        let src = "<div class=\"verse\">\n\nlast\n\n\n</div>\n";
+        let m = map(src, Format::Markdown, Some(80));
+        assert_eq!(texts(&m), ["last", ""]);
+        assert!(!m.rows[1].decoration);
+        assert_eq!(m.rows[1].end_src, src.find("\n\n\n").unwrap() + 1);
+    }
+
+    #[test]
+    fn a_justified_verse_stays_ragged_and_a_centred_one_centres() {
+        let m = map(
+            "<div class=\"verse justify\">\n\na\nb\n\n</div>\n",
+            Format::Markdown,
+            Some(80),
+        );
+        assert!(m.rows.iter().all(|r| r.align.is_none()));
+        let m = map(
+            "<div class=\"verse center\">\n\na\nb\n\n</div>\n",
+            Format::Markdown,
+            Some(80),
+        );
+        assert!(m.rows.iter().all(|r| r.align == Some(Align::Center)));
     }
 }

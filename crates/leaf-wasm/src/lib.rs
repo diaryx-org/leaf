@@ -674,6 +674,9 @@ pub struct CapabilitiesView {
     /// Moving a block — `moveBlock`, `moveBlockUp`, `moveBlockDown`, and a
     /// drag. Every format with blocks a caret can name; XML has none.
     move_block: bool,
+    /// Verse — `toggleVerse`. Markdown, djot and AsciiDoc; not HTML, whose
+    /// spelling reads back as a plain container.
+    verse: bool,
 }
 
 impl From<leaf_core::Capabilities> for CapabilitiesView {
@@ -709,6 +712,7 @@ impl From<leaf_core::Capabilities> for CapabilitiesView {
             page_break: c.page_break,
             directives: c.directives,
             move_block: c.move_block,
+            verse: c.verse,
         }
     }
 }
@@ -897,6 +901,9 @@ pub struct DocView {
     /// into a fence changes no mark, so a button asking for itself would never
     /// be told.
     code_block: bool,
+    /// Whether the caret stands in a verse — the Verse control ticks from it.
+    /// Rides the frame for `heading`'s reason.
+    verse: bool,
     /// Whether the list item at the caret carries a checkbox, and which way it
     /// faces — `Some(true)` ticked, `Some(false)` empty, `None` for a plain
     /// item or no item at all. Rides the frame for `heading`'s reason: stepping
@@ -1485,6 +1492,7 @@ impl LeafDoc {
         };
         let heading = self.doc.current_heading_level();
         let code_block = self.doc.caret_in_code_block();
+        let verse = self.doc.caret_in_verse();
         let task = self.doc.task_checked_at_caret();
         // Read before the frame is assembled: it needs `&mut self`, which the
         // struct literal's other fields are already borrowing out of.
@@ -1528,6 +1536,7 @@ impl LeafDoc {
             view: self.doc.view_name().to_string(),
             heading,
             code_block,
+            verse,
             task,
             active,
             caret_src: self.doc.caret,
@@ -2141,6 +2150,14 @@ impl LeafDoc {
     /// `capabilities().code_block`; light from the frame's `code_block`.
     pub fn toggle_code_block(&mut self) -> Result<DocView, JsValue> {
         self.doc.toggle_code_block();
+        self.frame()
+    }
+
+    /// Make the selected paragraphs — or the caret's — a verse, or the verse
+    /// at the caret prose again. Gate on `capabilities().verse`; tick from the
+    /// frame's `verse`.
+    pub fn toggle_verse(&mut self) -> Result<DocView, JsValue> {
+        self.doc.toggle_verse();
         self.frame()
     }
 

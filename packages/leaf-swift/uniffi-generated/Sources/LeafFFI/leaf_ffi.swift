@@ -1599,6 +1599,13 @@ public protocol LeafDocProtocol: AnyObject, Sendable {
     func toggleUnderline()  -> DocView
     
     /**
+     * Make the selected paragraphs — or the caret's — a verse, or the verse
+     * at the caret prose again. See [`leaf_core::Doc::toggle_verse`]. Gate on
+     * [`Capabilities::verse`]; tick from [`DocView::verse`].
+     */
+    func toggleVerse()  -> DocView
+    
+    /**
      * Switch between the rendered WYSIWYG surface and the raw source.
      */
     func toggleView()  -> DocView
@@ -3764,6 +3771,20 @@ open func toggleUnderline() -> DocView  {
 }
     
     /**
+     * Make the selected paragraphs — or the caret's — a verse, or the verse
+     * at the caret prose again. See [`leaf_core::Doc::toggle_verse`]. Gate on
+     * [`Capabilities::verse`]; tick from [`DocView::verse`].
+     */
+open func toggleVerse() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_toggle_verse(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
      * Switch between the rendered WYSIWYG surface and the raw source.
      */
 open func toggleView() -> DocView  {
@@ -4097,6 +4118,11 @@ public struct Capabilities: Equatable, Hashable {
      * with blocks a caret can name; XML has none.
      */
     public var moveBlock: Bool
+    /**
+     * Verse — [`LeafDoc::toggle_verse`]. Markdown, djot and AsciiDoc; not
+     * HTML, whose spelling reads back as a plain container.
+     */
+    public var verse: Bool
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -4180,7 +4206,11 @@ public struct Capabilities: Equatable, Hashable {
          * Moving a block — [`LeafDoc::move_block`] and the
          * [`move_block_up`](LeafDoc::move_block_up)/`down` pair. Every format
          * with blocks a caret can name; XML has none.
-         */moveBlock: Bool) {
+         */moveBlock: Bool, 
+        /**
+         * Verse — [`LeafDoc::toggle_verse`]. Markdown, djot and AsciiDoc; not
+         * HTML, whose spelling reads back as a plain container.
+         */verse: Bool) {
         self.bold = bold
         self.italic = italic
         self.code = code
@@ -4211,6 +4241,7 @@ public struct Capabilities: Equatable, Hashable {
         self.pageBreak = pageBreak
         self.directives = directives
         self.moveBlock = moveBlock
+        self.verse = verse
     }
 
     
@@ -4258,7 +4289,8 @@ public struct FfiConverterTypeCapabilities: FfiConverterRustBuffer {
                 textColor: FfiConverterBool.read(from: &buf), 
                 pageBreak: FfiConverterBool.read(from: &buf), 
                 directives: FfiConverterBool.read(from: &buf), 
-                moveBlock: FfiConverterBool.read(from: &buf)
+                moveBlock: FfiConverterBool.read(from: &buf), 
+                verse: FfiConverterBool.read(from: &buf)
         )
     }
 
@@ -4293,6 +4325,7 @@ public struct FfiConverterTypeCapabilities: FfiConverterRustBuffer {
         FfiConverterBool.write(value.pageBreak, into: &buf)
         FfiConverterBool.write(value.directives, into: &buf)
         FfiConverterBool.write(value.moveBlock, into: &buf)
+        FfiConverterBool.write(value.verse, into: &buf)
     }
 }
 
@@ -4712,6 +4745,11 @@ public struct DocView: Equatable, Hashable {
      */
     public var codeBlock: Bool
     /**
+     * Whether the caret stands in a verse — the Verse item ticks from it.
+     * Rides the frame for `heading`'s reason.
+     */
+    public var verse: Bool
+    /**
      * Whether the caret stands inside a block quote, at any depth — the
      * toolbar lights and ticks its Block Quote control from it. A quote wraps
      * blocks rather than being one, so this is true alongside `heading` or
@@ -4888,6 +4926,10 @@ public struct DocView: Equatable, Hashable {
          * would never be told.
          */codeBlock: Bool, 
         /**
+         * Whether the caret stands in a verse — the Verse item ticks from it.
+         * Rides the frame for `heading`'s reason.
+         */verse: Bool, 
+        /**
          * Whether the caret stands inside a block quote, at any depth — the
          * toolbar lights and ticks its Block Quote control from it. A quote wraps
          * blocks rather than being one, so this is true alongside `heading` or
@@ -4962,6 +5004,7 @@ public struct DocView: Equatable, Hashable {
         self.view = view
         self.heading = heading
         self.codeBlock = codeBlock
+        self.verse = verse
         self.blockquote = blockquote
         self.task = task
         self.active = active
@@ -5009,6 +5052,7 @@ public struct FfiConverterTypeDocView: FfiConverterRustBuffer {
                 view: FfiConverterString.read(from: &buf), 
                 heading: FfiConverterOptionUInt32.read(from: &buf), 
                 codeBlock: FfiConverterBool.read(from: &buf), 
+                verse: FfiConverterBool.read(from: &buf), 
                 blockquote: FfiConverterBool.read(from: &buf), 
                 task: FfiConverterOptionBool.read(from: &buf), 
                 active: FfiConverterSequenceString.read(from: &buf), 
@@ -5042,6 +5086,7 @@ public struct FfiConverterTypeDocView: FfiConverterRustBuffer {
         FfiConverterString.write(value.view, into: &buf)
         FfiConverterOptionUInt32.write(value.heading, into: &buf)
         FfiConverterBool.write(value.codeBlock, into: &buf)
+        FfiConverterBool.write(value.verse, into: &buf)
         FfiConverterBool.write(value.blockquote, into: &buf)
         FfiConverterOptionBool.write(value.task, into: &buf)
         FfiConverterSequenceString.write(value.active, into: &buf)
@@ -6232,6 +6277,15 @@ public struct Row: Equatable, Hashable {
      */
     public var lineHeight: String?
     /**
+     * How many ems past its prefix a renderer that wraps this row itself
+     * hangs the row's later lines — a verse line's turnover, deeper than the
+     * line it continues. `None` on every other row. The em count includes the
+     * line's own indent, which arrives as real em spaces in `runs`, so the
+     * hang is the measured prefix plus this many ems of the body face. See
+     * [`leaf_core::VRow::hang`].
+     */
+    public var hang: UInt8?
+    /**
      * What this row divides, on the blank rows a block boundary is drawn with
      * and `None` everywhere else — so `boundary != nil` is exactly "this row is
      * a drawn block boundary". A frontend spaces a boundary by the pair it
@@ -6293,6 +6347,14 @@ public struct Row: Equatable, Hashable {
          * heading's size. See [`leaf_core::VRow::line_height`].
          */lineHeight: String?, 
         /**
+         * How many ems past its prefix a renderer that wraps this row itself
+         * hangs the row's later lines — a verse line's turnover, deeper than the
+         * line it continues. `None` on every other row. The em count includes the
+         * line's own indent, which arrives as real em spaces in `runs`, so the
+         * hang is the measured prefix plus this many ems of the body face. See
+         * [`leaf_core::VRow::hang`].
+         */hang: UInt8?, 
+        /**
          * What this row divides, on the blank rows a block boundary is drawn with
          * and `None` everywhere else — so `boundary != nil` is exactly "this row is
          * a drawn block boundary". A frontend spaces a boundary by the pair it
@@ -6309,6 +6371,7 @@ public struct Row: Equatable, Hashable {
         self.heading = heading
         self.align = align
         self.lineHeight = lineHeight
+        self.hang = hang
         self.boundary = boundary
     }
 
@@ -6337,6 +6400,7 @@ public struct FfiConverterTypeRow: FfiConverterRustBuffer {
                 heading: FfiConverterOptionUInt8.read(from: &buf), 
                 align: FfiConverterOptionString.read(from: &buf), 
                 lineHeight: FfiConverterOptionString.read(from: &buf), 
+                hang: FfiConverterOptionUInt8.read(from: &buf), 
                 boundary: FfiConverterOptionTypeBoundary.read(from: &buf)
         )
     }
@@ -6351,6 +6415,7 @@ public struct FfiConverterTypeRow: FfiConverterRustBuffer {
         FfiConverterOptionUInt8.write(value.heading, into: &buf)
         FfiConverterOptionString.write(value.align, into: &buf)
         FfiConverterOptionString.write(value.lineHeight, into: &buf)
+        FfiConverterOptionUInt8.write(value.hang, into: &buf)
         FfiConverterOptionTypeBoundary.write(value.boundary, into: &buf)
     }
 }
@@ -10079,6 +10144,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_toggle_underline() != 16101) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_toggle_verse() != 27177) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_toggle_view() != 35582) {

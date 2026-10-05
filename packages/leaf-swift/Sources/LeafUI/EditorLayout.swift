@@ -65,6 +65,9 @@ public struct EditorState: Equatable {
     /// a fence moves no mark and no heading, so a button asking core for itself
     /// would never be republished.
     public var codeBlock: Bool
+    /// Whether the caret stands in a verse — what ticks Format's Verse item and
+    /// lights its Style row. Here for `codeBlock`'s reason.
+    public var verse: Bool
     /// Whether the caret stands inside a block quote, at any depth — what
     /// ticks Style's Block Quote row and marks the Style key. A quote wraps
     /// blocks rather than being one, so this is true alongside `heading` or
@@ -84,13 +87,13 @@ public struct EditorState: Equatable {
                 canUndo: Bool = false, canRedo: Bool = false,
                 markColor: MarkColor? = nil, hasSelection: Bool = false,
                 align: Align? = nil, codeBlock: Bool = false, blockquote: Bool = false,
-                task: Bool? = nil) {
+                task: Bool? = nil, verse: Bool = false) {
         self.view = view; self.dirty = dirty; self.heading = heading
         self.active = active; self.link = link
         self.canUndo = canUndo; self.canRedo = canRedo
         self.markColor = markColor; self.hasSelection = hasSelection
         self.align = align; self.codeBlock = codeBlock; self.blockquote = blockquote
-        self.task = task
+        self.task = task; self.verse = verse
     }
 
     /// Project a full `DocView` down to the chrome-facing state.
@@ -102,7 +105,7 @@ public struct EditorState: Equatable {
                   canUndo: v.canUndo, canRedo: v.canRedo,
                   markColor: v.markColor, hasSelection: v.hasSelection,
                   align: v.rows.indices.contains(caretRow) ? Align(name: v.rows[caretRow].align) : nil,
-                  codeBlock: v.codeBlock, blockquote: v.blockquote, task: v.task)
+                  codeBlock: v.codeBlock, blockquote: v.blockquote, task: v.task, verse: v.verse)
     }
 }
 
@@ -1280,7 +1283,7 @@ struct EditorLayout {
                                               codeLang: nil, directive: false,
                                               directiveLabel: nil, heading: nil,
                                               align: nil, lineHeight: nil,
-                                              boundary: nil),
+                                              hang: nil, boundary: nil),
                                      shaped: emptyShape, top: flow.y,
                                      originX: originX, columnWidth: wrapWidth))
             flow.y += theme.lineHeight
@@ -1491,9 +1494,15 @@ struct EditorLayout {
             }
         }
 
+        // A verse line's turnover hangs deeper than the line itself — core says
+        // how many ems past the prefix, its indent included, since the indent
+        // is real em spaces in the runs rather than prefix. An em is the body
+        // face's size in points.
+        let hang = row.hang.map { CGFloat($0) * theme.fontSize } ?? 0
+
         return ShapedRow(
             attributed: attributed,
-            wrapped: wrap(attributed, width: wrapWidth, indent: prefixWidth,
+            wrapped: wrap(attributed, width: wrapWidth, indent: prefixWidth + hang,
                           align: row.align,
                           prefixLength: prefix.reduce(0) { $0 + $1.text.utf16.count }),
             lineHeight: theme.rowHeight(for: row),

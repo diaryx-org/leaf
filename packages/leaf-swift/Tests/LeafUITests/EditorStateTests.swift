@@ -67,6 +67,11 @@ final class EditorStateTests: XCTestCase {
         XCTAssertNotEqual(inside, outside)
     }
 
+    func testVerseTicksFromTheFrame() {
+        XCTAssertTrue(EditorState(docView([row([mkRun("x")])], verse: true)).verse)
+        XCTAssertFalse(EditorState(docView([row([mkRun("x")])])).verse)
+    }
+
     /// Stepping into a quote, likewise — and it stacks: a heading in a quote
     /// is both, where a heading in a code block could not be.
     func testSteppingIntoAQuoteIsAChangedState() {

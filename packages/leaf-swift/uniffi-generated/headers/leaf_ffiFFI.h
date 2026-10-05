@@ -943,6 +943,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_task_item(uint64_t ptr, Rust
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_underline(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TOGGLE_VERSE
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TOGGLE_VERSE
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_verse(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TOGGLE_VIEW
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_TOGGLE_VIEW
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_toggle_view(uint64_t ptr, RustCallStatus *_Nonnull out_status
@@ -2068,6 +2073,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_toggle_task_item(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_TOGGLE_UNDERLINE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_TOGGLE_UNDERLINE
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_toggle_underline(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_TOGGLE_VERSE
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_TOGGLE_VERSE
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_toggle_verse(void
     
 );
 #endif

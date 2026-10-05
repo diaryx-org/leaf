@@ -145,6 +145,7 @@ struct ToolCatalogue {
             Divider()
             ToolMenuRow(item: quote)
             ToolMenuRow(item: codeBlock)
+            ToolMenuRow(item: verse)
         }
         return ToolItem(id: "style", glyph: .text(styleName(short: true)),
                         label: loc("toolbar.style", "Style"), variants: AnyView(rows))
@@ -221,6 +222,14 @@ struct ToolCatalogue {
         ToolItem(id: "code-block", glyph: .symbol("curlybraces"), label: loc("menu.codeBlock", "Code Block"),
                  active: editor.state.codeBlock, enabled: editor.capabilities.codeBlock, toggles: true,
                  action: { editor.toggleCodeBlock() })
+    }
+
+    /// Lit while the caret stands in a verse. Three lines of falling length,
+    /// the shape a stanza makes on the page.
+    var verse: ToolItem {
+        ToolItem(id: "verse", glyph: .symbol("line.3.horizontal.decrease"), label: loc("menu.verse", "Verse"),
+                 active: editor.state.verse, enabled: editor.capabilities.verse, toggles: true,
+                 action: { editor.toggleVerse() })
     }
 
     // MARK: lists and structure

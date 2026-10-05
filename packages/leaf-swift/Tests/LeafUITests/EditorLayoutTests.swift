@@ -1056,6 +1056,21 @@ final class EditorLayoutTests: XCTestCase {
                        "the second box starts at the continuation line's own left edge")
     }
 
+    func testAVerseLinesTurnoverHangsDeeperThanTheLineByItsHang() {
+        // Core says a verse line's later lines hang `hang` ems past the prefix
+        // (its indent included, which arrives as real em spaces); the layout
+        // turns that into points at the body size. A plain row's continuation
+        // stays at the prefix.
+        let long = "the quick brown fox jumps over the lazy dog and then keeps on running"
+        let verse = EditorLayout(docView([row([mkRun(long)], hang: 2)]), theme: theme, wrapWidth: 160)
+        let prose = EditorLayout(docView([row([mkRun(long)])]), theme: theme, wrapWidth: 160)
+        let v = verse.rows[0].wrapped
+        XCTAssertGreaterThan(v.count, 1, "the fixture must wrap")
+        XCTAssertEqual(v[0].indent, 0, accuracy: 0.5, "the line itself starts at the margin")
+        XCTAssertEqual(v[1].indent, 2 * theme.fontSize, accuracy: 0.5, "its turnover hangs two ems")
+        XCTAssertEqual(prose.rows[0].wrapped[1].indent, 0, accuracy: 0.5)
+    }
+
     func testARangeAcrossRowsCoversTheTailAndTheHead() {
         let dv = docView([row([mkRun("first row")]), row([mkRun("second row")])])
         let layout = EditorLayout(dv, theme: theme, wrapWidth: 400)
