@@ -286,6 +286,12 @@ private struct FormatMenuItems: View {
                isOn: block(editor.state.codeBlock) { editor.toggleCodeBlock() })
             .keyboardShortcut("c", modifiers: [.command, .option])
             .disabled(!editable || !editor.capabilities.codeBlock)
+        // Ticked while the caret stands in one, for Code Block's reason. A
+        // verse keeps its lines as they were written: Enter makes a line, Tab
+        // indents it by an em, and a line too long for the page hangs.
+        Toggle(loc("menu.verse", "Verse"),
+               isOn: block(editor.state.verse) { editor.toggleVerse() })
+            .disabled(!editable || !editor.capabilities.verse)
         // The task pair, beside the lists they belong to, on Notes' bindings.
         // Checklist is ticked while the caret's item carries a box, whichever
         // way it faces; Checked is ticked while that box is, and offered only
@@ -418,6 +424,7 @@ private struct FormatMenuItems: View {
             Button(loc("menu.numberedList", "Numbered List")) {}.keyboardShortcut("7", modifiers: [.command, .shift])
             Toggle(loc("menu.blockQuote", "Block Quote"), isOn: .constant(false)).keyboardShortcut("9", modifiers: [.command, .shift])
             Toggle(loc("menu.codeBlock", "Code Block"), isOn: .constant(false)).keyboardShortcut("c", modifiers: [.command, .option])
+            Toggle(loc("menu.verse", "Verse"), isOn: .constant(false))
             Toggle(loc("menu.checklist", "Checklist"), isOn: .constant(false)).keyboardShortcut("l", modifiers: [.command, .shift])
             Toggle(loc("menu.checked", "Checked"), isOn: .constant(false)).keyboardShortcut("u", modifiers: [.command, .shift])
             Button(loc("menu.indent", "Indent")) {}.keyboardShortcut("]", modifiers: .command)

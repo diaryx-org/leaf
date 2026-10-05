@@ -55,6 +55,8 @@ func row(
     // (`1.5`).
     align: String? = nil,
     lineHeight: String? = nil,
+    // A verse line's turnover, in ems past the prefix — see `Row.hang`.
+    hang: UInt8? = nil,
     boundary: Boundary? = nil
 ) -> Row {
     Row(
@@ -67,6 +69,7 @@ func row(
         heading: heading,
         align: align,
         lineHeight: lineHeight,
+        hang: hang,
         boundary: boundary
     )
 }
@@ -156,6 +159,8 @@ func docView(
     markColor: MarkColor? = nil,
     // Whether the caret stands in a code block — what lights the Code Block button.
     codeBlock: Bool = false,
+    // Whether the caret stands in a verse — what ticks Verse.
+    verse: Bool = false,
     // Whether the caret stands in a quote — what ticks Block Quote.
     blockquote: Bool = false,
     // Whether the caret's item has a box, and which way it faces — what lights
@@ -188,6 +193,7 @@ func docView(
         view: view,
         heading: heading,
         codeBlock: codeBlock,
+        verse: verse,
         blockquote: blockquote,
         task: task,
         active: active,

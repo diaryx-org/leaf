@@ -831,6 +831,12 @@ public final class LeafEditorModel: ObservableObject {
     /// `state.codeBlock` lights the button while the caret is in one. See
     /// `leaf_core::Doc::toggle_code_block`.
     public func toggleCodeBlock() { run { $0.toggleCodeBlock() } }
+    /// Make the selected paragraphs — or the caret's — a verse, a block whose
+    /// line breaks are the content, or the verse at the caret prose again.
+    /// Markdown writes it as `<div class="verse">`, djot as `::: verse`.
+    /// `state.verse` ticks the item while the caret is in one. See
+    /// `leaf_core::Doc::toggle_verse`.
+    public func toggleVerse() { run { $0.toggleVerse() } }
     /// Give the list item at the caret a checkbox, or take its checkbox away —
     /// the toolbar's Checklist button and the Format menu's item of the same
     /// name. A new box arrives unticked; `state.task` is non-nil while the caret

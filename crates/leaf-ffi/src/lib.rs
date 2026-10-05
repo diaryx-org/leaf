@@ -435,6 +435,13 @@ pub struct Row {
     /// it; one drawing a row per terminal line ignores it, the way it ignores a
     /// heading's size. See [`leaf_core::VRow::line_height`].
     pub line_height: Option<String>,
+    /// How many ems past its prefix a renderer that wraps this row itself
+    /// hangs the row's later lines — a verse line's turnover, deeper than the
+    /// line it continues. `None` on every other row. The em count includes the
+    /// line's own indent, which arrives as real em spaces in `runs`, so the
+    /// hang is the measured prefix plus this many ems of the body face. See
+    /// [`leaf_core::VRow::hang`].
+    pub hang: Option<u8>,
     /// What this row divides, on the blank rows a block boundary is drawn with
     /// and `None` everywhere else — so `boundary != nil` is exactly "this row is
     /// a drawn block boundary". A frontend spaces a boundary by the pair it
@@ -846,6 +853,9 @@ pub struct DocView {
     /// the caret into a fence changes no mark, and a button asking for itself
     /// would never be told.
     pub code_block: bool,
+    /// Whether the caret stands in a verse — the Verse item ticks from it.
+    /// Rides the frame for `heading`'s reason.
+    pub verse: bool,
     /// Whether the caret stands inside a block quote, at any depth — the
     /// toolbar lights and ticks its Block Quote control from it. A quote wraps
     /// blocks rather than being one, so this is true alongside `heading` or
@@ -1440,6 +1450,9 @@ pub struct Capabilities {
     /// [`move_block_up`](LeafDoc::move_block_up)/`down` pair. Every format
     /// with blocks a caret can name; XML has none.
     pub move_block: bool,
+    /// Verse — [`LeafDoc::toggle_verse`]. Markdown, djot and AsciiDoc; not
+    /// HTML, whose spelling reads back as a plain container.
+    pub verse: bool,
 }
 
 impl From<CoreCapabilities> for Capabilities {
@@ -1478,6 +1491,7 @@ impl From<CoreCapabilities> for Capabilities {
             page_break: c.page_break,
             directives: c.directives,
             move_block: c.move_block,
+            verse: c.verse,
         }
     }
 }
@@ -1894,6 +1908,7 @@ impl Inner {
         };
         let heading = self.doc.current_heading_level();
         let code_block = self.doc.caret_in_code_block();
+        let verse = self.doc.caret_in_verse();
         let blockquote = self.doc.caret_in_blockquote();
         let task = self.doc.task_checked_at_caret();
         let active = self
@@ -1931,6 +1946,7 @@ impl Inner {
             view: self.doc.view_name().to_string(),
             heading,
             code_block,
+            verse,
             blockquote,
             task,
             active,
@@ -1991,6 +2007,7 @@ fn same_row_shifted(a: &Row, b: &Row, shift: i64) -> bool {
         heading,
         align,
         line_height,
+        hang,
         boundary,
     } = a;
     *decoration == b.decoration
@@ -2001,6 +2018,7 @@ fn same_row_shifted(a: &Row, b: &Row, shift: i64) -> bool {
         && *heading == b.heading
         && *align == b.align
         && *line_height == b.line_height
+        && *hang == b.hang
         && *boundary == b.boundary
         && runs.len() == b.runs.len()
         && runs
@@ -2909,6 +2927,15 @@ impl LeafDoc {
     pub fn toggle_code_block(&self) -> DocView {
         let mut g = self.lock();
         g.doc.toggle_code_block();
+        g.frame()
+    }
+
+    /// Make the selected paragraphs — or the caret's — a verse, or the verse
+    /// at the caret prose again. See [`leaf_core::Doc::toggle_verse`]. Gate on
+    /// [`Capabilities::verse`]; tick from [`DocView::verse`].
+    pub fn toggle_verse(&self) -> DocView {
+        let mut g = self.lock();
+        g.doc.toggle_verse();
         g.frame()
     }
 
@@ -3828,6 +3855,7 @@ fn wysiwyg_rows(vmap: &VisualMap, ss: usize, se: usize, hls: &[leaf_core::Highli
                 // paragraph just centred has no run to carry them.
                 align: vrow.align.map(|a| a.name().to_string()),
                 line_height: vrow.line_height.map(|l| l.name().to_string()),
+                hang: vrow.hang,
                 boundary: vrow.boundary.map(|b| Boundary {
                     above: b.above.into(),
                     below: b.below.into(),
@@ -4141,6 +4169,7 @@ fn source_rows(
             heading: None, // source view is raw text — no resolved heading rows
             align: None,   // …no attributes resolved onto a block…
             line_height: None,
+            hang: None,
             boundary: None, // …and no resolved block structure to divide
         });
         byte = end + 1; // skip the '\n' that `split` consumed

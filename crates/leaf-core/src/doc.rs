@@ -973,6 +973,12 @@ pub struct Capabilities {
     /// `Gesture::MoveBlock`. Every format with blocks a caret can name; XML
     /// has none.
     pub move_block: bool,
+    /// Verse — [`Doc::toggle_verse`], twig's `Gesture::ToggleLineBlock`. A
+    /// block of lines whose breaks are the content: Markdown's
+    /// `<div class="verse">` (under the `html_elements` extension leaf always
+    /// parses with), djot's `::: verse`, AsciiDoc's `[verse]`. HTML's spelling
+    /// reads back as a plain container, so it answers `false`.
+    pub verse: bool,
 }
 
 impl Capabilities {
@@ -1034,6 +1040,7 @@ impl Capabilities {
             directives: supports(Gesture::InsertDirective)
                 && matches!(format, Format::Markdown | Format::Djot),
             move_block: supports(Gesture::MoveBlock),
+            verse: supports(Gesture::ToggleLineBlock),
         }
     }
 }
@@ -2934,6 +2941,11 @@ impl Doc {
     /// Indent the selected lines — or the caret's line, with no selection — by
     /// one level (Tab).
     pub fn indent(&mut self) {
+        // A verse line's indent is em spaces, the one leading space twig reads
+        // back as an indent there — two ASCII spaces would be stripped.
+        if self.verse_reindent(true) {
+            return;
+        }
         self.reindent(true);
         // Nesting changes an ordered list's numbering (the nested item restarts,
         // its old siblings resume) — keep the source markers in step.
@@ -2953,6 +2965,9 @@ impl Doc {
     /// was never a clean multiple of anything. Refusing there would strand the
     /// line at a depth Shift+Tab couldn't undo.
     pub fn outdent(&mut self) {
+        if self.verse_reindent(false) {
+            return;
+        }
         self.reindent(false);
         self.renumber_here();
     }
@@ -3155,6 +3170,12 @@ impl Doc {
 
         if has(Kind::CodeBlock) {
             self.insert_raw("\n");
+            return;
+        }
+        // In a verse a line break is the content, so Enter makes a line — the
+        // text editor's Enter, in every flow. See `verse_newline`.
+        if has(Kind::LineBlock) {
+            self.verse_newline();
             return;
         }
         // An *empty* list item exits the list — the standard double-Enter — which
@@ -3663,6 +3684,13 @@ impl Doc {
         // that what a join is in each format is not this file's to know. After
         // the picture and table cases, which are block starts with their own
         // answers.
+        // WYSIWYG: in a verse, Backspace at a line's start joins it to the
+        // line above — the text editor's join, taking the `\` that broke the
+        // line with the newline — and at the first line's start turns the verse
+        // back into prose, the way it un-lists a list. See `backspace_verse`.
+        if self.view != View::Source && self.backspace_verse() {
+            return;
+        }
         if self.view != View::Source && self.backspace_joins_block() {
             return;
         }
@@ -6378,6 +6406,279 @@ impl Doc {
         });
     }
 
+    /// Make the paragraphs the selection touches — or the caret's paragraph —
+    /// a verse, or the verse the caret is in back into prose: the Format
+    /// menu's Verse item.
+    ///
+    /// The shape is twig's ([`Editor::toggle_line_block`]): each paragraph a
+    /// stanza, each line break inside it a line, a line's leading em spaces
+    /// its indent; and back, a paragraph per stanza with the indents kept as
+    /// em spaces, so the toggle round-trips. Markdown spells it
+    /// `<div class="verse">`, djot `::: verse`, AsciiDoc `[verse]`.
+    ///
+    /// The caret stays on the same line of text at the same column, across the
+    /// tag lines written above it or taken away.
+    pub fn toggle_verse(&mut self) {
+        if self.read_only {
+            return;
+        }
+        if self.refuse_unsupported("verse", Gesture::ToggleLineBlock) {
+            return;
+        }
+        let selected = self.selection();
+        let (start, end) = match selected {
+            Some(range) => range,
+            None => {
+                let off = self.block_offset_for_caret().unwrap_or(self.caret);
+                (off, off)
+            }
+        };
+        self.record_caret();
+        let place = selected.is_none().then(|| self.verse_caret_place());
+        match self.editor.toggle_line_block(start, end) {
+            Ok(change) => {
+                self.last_edit_kind = None;
+                self.refresh();
+                match place.flatten() {
+                    Some((line, col)) => {
+                        self.anchor = None;
+                        self.caret = self.verse_caret_at(&change.new, line, col);
+                    }
+                    None => {
+                        self.anchor = Some(change.new.start);
+                        self.caret = change.new.end.min(self.source.len());
+                    }
+                }
+                self.dirty = self.source != self.clean_source;
+                self.status = None;
+                self.clamp_caret();
+                self.record_caret();
+            }
+            Err(e) => self.status = Some(format!("verse: {e}")),
+        }
+    }
+
+    /// Where the caret is as a line of *text*, for [`toggle_verse`] to put it
+    /// back: how many lines of text come before its own in the source above
+    /// it, counted from the start of its block, and its column on the line.
+    /// Blank lines and the tag or fence lines a verse is spelled with are not
+    /// lines of text, which is what makes the count survive the toggle.
+    ///
+    /// [`toggle_verse`]: Self::toggle_verse
+    fn verse_caret_place(&mut self) -> Option<(usize, usize)> {
+        let block_start = self.verse_region_start(self.caret)?;
+        let line_start = self.source[..self.caret].rfind('\n').map_or(0, |p| p + 1);
+        let before = &self.source[block_start..line_start];
+        let line = before
+            .split_terminator('\n')
+            .filter(|l| is_text_line(l))
+            .count();
+        Some((line, self.caret - line_start))
+    }
+
+    /// The start of the block the caret's toggle will rewrite: the verse
+    /// around `off` if there is one, else the paragraph's first line.
+    fn verse_region_start(&mut self, off: usize) -> Option<usize> {
+        if let Some(lb) = self.verse_at(off) {
+            return Some(lb.span.start);
+        }
+        let probe = self.block_offset_for_caret().unwrap_or(off);
+        let chain = self.editor.ancestors_at(probe).ok()?;
+        chain
+            .iter()
+            .rev()
+            .find(|m| m.kind == Kind::Para)
+            .map(|m| m.span.start)
+    }
+
+    /// The offset of column `col` on the `line`th line of text in `region`,
+    /// clamped to that line's text — short of a trailing `\` break.
+    fn verse_caret_at(&self, region: &std::ops::Range<usize>, line: usize, col: usize) -> usize {
+        let end = region.end.min(self.source.len());
+        let mut at = region.start.min(end);
+        let mut seen = 0;
+        for l in self.source[at..end].split('\n') {
+            if is_text_line(l) {
+                if seen == line {
+                    let body = l.trim_end_matches('\r');
+                    let body = body.strip_suffix('\\').unwrap_or(body);
+                    let mut c = col.min(body.len());
+                    while !body.is_char_boundary(c) {
+                        c -= 1;
+                    }
+                    return at + c;
+                }
+                seen += 1;
+            }
+            at += l.len() + 1;
+        }
+        region.start.min(self.source.len())
+    }
+
+    /// The verse (`line_block`) whose span holds `off`, if any.
+    fn verse_at(&mut self, off: usize) -> Option<twig::QueryMatch> {
+        let chain = self.editor.ancestors_at(off.min(self.source.len())).ok()?;
+        chain.into_iter().rev().find(|m| m.kind == Kind::LineBlock)
+    }
+
+    /// Enter inside a verse: a new line, the way a text editor makes one.
+    ///
+    /// At a line that ends in a `\` break the break is rewritten as a blank
+    /// line and the caret put on it — an empty line between two lines, which
+    /// the first character typed there makes a line. A newline written in
+    /// front of the `\` would have left the `\` alone on the next line, where
+    /// it breaks nothing, and the empty line the caret stood on would not
+    /// exist. Everywhere else — mid-line, on a blank line, at a line with a
+    /// plain newline after it — a newline is the line break itself.
+    fn verse_newline(&mut self) {
+        let c = self.caret;
+        let rest = &self.source[c..];
+        let brk = if rest.starts_with("\\\r\n") {
+            3
+        } else if rest.starts_with("\\\n") {
+            2
+        } else {
+            0
+        };
+        if brk == 0 {
+            self.insert_raw("\n");
+            return;
+        }
+        if self.splice(c, c + brk, "\n\n", EditKind::Other) {
+            self.caret = c + 1;
+            self.record_caret();
+        }
+    }
+
+    /// Backspace at the start of a line inside a verse. `true` when it acted.
+    ///
+    /// Below the first line it joins the line to the one above by taking the
+    /// newline that parts them, and the `\` before it that made the break a
+    /// hard one — leaving the `\` would put a literal backslash between the
+    /// two halves. A blank line above (a stanza break) goes the same way, one
+    /// newline at a time. At the first line's start the verse turns back into
+    /// prose ([`toggle_verse`](Self::toggle_verse)), as Backspace at a list's
+    /// first item takes the list away.
+    fn backspace_verse(&mut self) -> bool {
+        let c = self.caret;
+        if c == 0 || !self.source[..c].ends_with('\n') {
+            return false;
+        }
+        let Some(lb) = self.verse_at(c) else {
+            return false;
+        };
+        let first_line = self.editor.nodes().ok().and_then(|nodes| {
+            let mut child = nodes.get(lb.node_id as usize)?.first_child;
+            while let Some(id) = child {
+                let n = nodes.get(id.0 as usize)?;
+                if n.first_child.is_some() {
+                    return Some(n.span.start);
+                }
+                child = n.next_sibling;
+            }
+            None
+        });
+        let Some(first_line) = first_line else {
+            return false;
+        };
+        if c < first_line {
+            return false;
+        }
+        if c == first_line {
+            self.toggle_verse();
+            return true;
+        }
+        let mut from = c - 1;
+        if self.source[..from].ends_with('\r') {
+            from -= 1;
+        }
+        let above = &self.source[..from];
+        if above.ends_with('\\') && !above.ends_with("\\\\") {
+            from -= 1;
+        }
+        if self.splice(from, c, "", EditKind::Delete) {
+            self.caret = from;
+            self.record_caret();
+        }
+        true
+    }
+
+    /// Tab / Shift+Tab inside a verse: one em space more, or one fewer, at the
+    /// start of each selected line — the caret's line with no selection. `true`
+    /// when the caret is in a verse, whether or not a line moved.
+    ///
+    /// One splice for the whole range, as [`reindent`](Self::reindent) makes,
+    /// so a Tab is one undo step. A blank line is skipped: it has no text to
+    /// indent, and an em space on it would make it a line.
+    fn verse_reindent(&mut self, add: bool) -> bool {
+        if self.view == View::Source {
+            return false;
+        }
+        let (sel_start, sel_end) = self.selection().unwrap_or((self.caret, self.caret));
+        let Some(lb) = self.verse_at(sel_start) else {
+            return false;
+        };
+        let start = source_line_range(&self.source, sel_start)
+            .start
+            .max(lb.span.start);
+        let end = source_line_range(&self.source, sel_end)
+            .end
+            .min(lb.span.end);
+        if start >= end {
+            return true;
+        }
+        let region = self.source[start..end].to_string();
+        let mut out = String::with_capacity(region.len() + 8);
+        let mut caret_delta: isize = 0;
+        let mut anchor_delta: isize = 0;
+        let caret_line = source_line_range(&self.source, self.caret).start;
+        let anchor_line = self
+            .anchor
+            .map(|a| source_line_range(&self.source, a).start);
+        let mut line_off = start;
+        for (i, line) in region.split('\n').enumerate() {
+            if i > 0 {
+                out.push('\n');
+            }
+            let delta: isize = if !is_text_line(line) {
+                out.push_str(line);
+                0
+            } else if add {
+                out.push('\u{2003}');
+                out.push_str(line);
+                '\u{2003}'.len_utf8() as isize
+            } else if let Some(n) = crate::wysiwyg::em_space_at(line, 0) {
+                out.push_str(&line[n..]);
+                -(n as isize)
+            } else {
+                out.push_str(line);
+                0
+            };
+            if line_off <= caret_line
+                && caret_line <= line_off + line.len()
+                && line_off == caret_line
+            {
+                caret_delta = delta;
+            }
+            if anchor_line == Some(line_off) {
+                anchor_delta = delta;
+            }
+            line_off += line.len() + 1;
+        }
+        if out == region {
+            return true;
+        }
+        let caret = self.caret;
+        let anchor = self.anchor;
+        if self.splice(start, end, &out, EditKind::Other) {
+            self.caret = (caret as isize + caret_delta).max(start as isize) as usize;
+            self.anchor = anchor.map(|a| (a as isize + anchor_delta).max(start as isize) as usize);
+            self.clamp_caret();
+            self.record_caret();
+        }
+        true
+    }
+
     /// Toggle a fenced code block over the selection, or over the block at the
     /// caret — the toolbar's Code Block button, and the only way the rich view
     /// offers to open one: a typed backtick is escaped there, since it is a
@@ -6532,6 +6833,11 @@ impl Doc {
     /// narrower question a language prompt needs.
     pub fn caret_in_code_block(&mut self) -> bool {
         self.code_block_start_at_caret().is_some()
+    }
+
+    /// Whether the caret stands in a verse — what ticks the Verse item.
+    pub fn caret_in_verse(&mut self) -> bool {
+        self.verse_at(self.caret).is_some()
     }
 
     /// Whether the caret stands anywhere inside a block quote, however deep —
@@ -9566,6 +9872,20 @@ fn is_block_container(kind: &Kind) -> bool {
             // paragraph that actually holds it.
             | Kind::Container
     )
+}
+
+/// Whether `line` is a line of *text* — not blank, and not one of the lines a
+/// verse is spelled with around its text: Markdown's `<div …>` and `</div>`,
+/// djot's `:::` fence, AsciiDoc's `[verse…]` and `____`.
+fn is_text_line(line: &str) -> bool {
+    let t = line.trim();
+    !(t.is_empty()
+        || t.starts_with("<div")
+        || t == "</div>"
+        || t.starts_with(":::")
+        || t.starts_with("[verse")
+        || (t.len() >= 4 && t.bytes().all(|b| b == b'_'))
+        || (t.starts_with('{') && t.ends_with('}')))
 }
 
 /// The `[start, end)` byte range of the source line containing `off` (newline
@@ -22229,5 +22549,91 @@ mod tests {
         // display block is not a paragraph of text.
         assert_eq!(c.words, 3);
         assert_eq!(c.paragraphs, 1);
+    }
+}
+
+#[cfg(test)]
+mod verse_tests {
+    use super::*;
+
+    fn md(src: &str) -> Doc {
+        Doc::from_source(src.into(), Format::Markdown).unwrap()
+    }
+
+    #[test]
+    fn verse_is_a_capability_of_markdown_djot_and_asciidoc_not_html() {
+        assert!(Capabilities::of(Format::Markdown).verse);
+        assert!(Capabilities::of(Format::Djot).verse);
+        assert!(Capabilities::of(Format::Asciidoc).verse);
+        assert!(!Capabilities::of(Format::Html).verse);
+    }
+
+    #[test]
+    fn toggle_verse_wraps_the_caret_s_paragraph_and_keeps_the_caret_on_its_line() {
+        let mut d = md("Roses are red,\nviolets blue.\n");
+        d.caret = "Roses are red,\nviol".len();
+        d.toggle_verse();
+        assert_eq!(
+            d.source,
+            "<div class=\"verse\">\n\nRoses are red,\\\nviolets blue.\n\n</div>\n"
+        );
+        assert_eq!(&d.source[d.caret..d.caret + 3], "ets");
+        // And off again, with the caret still on `violets`.
+        d.toggle_verse();
+        assert_eq!(d.source, "Roses are red,\nviolets blue.\n");
+        assert_eq!(&d.source[d.caret..d.caret + 3], "ets");
+    }
+
+    #[test]
+    fn enter_in_a_verse_makes_a_line_and_typing_on_it_keeps_the_stanza() {
+        let mut d = md("<div class=\"verse\">\n\none\\\ntwo\n\n</div>\n");
+        d.caret = d.source.find("one").unwrap() + 3;
+        d.newline();
+        // The `\` break became a blank line with the caret on it…
+        assert_eq!(d.source, "<div class=\"verse\">\n\none\n\ntwo\n\n</div>\n");
+        assert_eq!(d.caret, d.source.find("one").unwrap() + 4);
+        // …which the first character makes a line of the same stanza.
+        d.insert("x");
+        assert_eq!(d.source, "<div class=\"verse\">\n\none\nx\ntwo\n\n</div>\n");
+    }
+
+    #[test]
+    fn enter_mid_line_in_a_verse_splits_the_line() {
+        let mut d = md("<div class=\"verse\">\n\nonetwo\n\n</div>\n");
+        d.caret = d.source.find("two").unwrap();
+        d.newline();
+        assert_eq!(d.source, "<div class=\"verse\">\n\none\ntwo\n\n</div>\n");
+    }
+
+    #[test]
+    fn backspace_at_a_verse_line_s_start_joins_it_and_takes_the_break_with_it() {
+        let mut d = md("<div class=\"verse\">\n\none\\\ntwo\n\n</div>\n");
+        d.caret = d.source.find("two").unwrap();
+        d.backspace();
+        assert_eq!(d.source, "<div class=\"verse\">\n\nonetwo\n\n</div>\n");
+        assert_eq!(d.caret, d.source.find("two").unwrap());
+    }
+
+    #[test]
+    fn backspace_at_a_verse_s_first_line_turns_it_back_into_prose() {
+        let mut d = md("<div class=\"verse\">\n\none\\\ntwo\n\n</div>\n");
+        d.caret = d.source.find("one").unwrap();
+        d.backspace();
+        assert_eq!(d.source, "one\ntwo\n");
+    }
+
+    #[test]
+    fn tab_in_a_verse_indents_by_an_em_space_and_shift_tab_takes_it_back() {
+        let mut d = md("<div class=\"verse\">\n\none\\\ntwo\n\n</div>\n");
+        d.caret = d.source.find("two").unwrap() + 1;
+        d.indent();
+        assert_eq!(
+            d.source,
+            "<div class=\"verse\">\n\none\\\n\u{2003}two\n\n</div>\n"
+        );
+        assert_eq!(&d.source[d.caret..d.caret + 2], "wo");
+        d.outdent();
+        assert_eq!(d.source, "<div class=\"verse\">\n\none\\\ntwo\n\n</div>\n");
+        assert_eq!(&d.source[d.caret..d.caret + 2], "wo");
     }
 }
