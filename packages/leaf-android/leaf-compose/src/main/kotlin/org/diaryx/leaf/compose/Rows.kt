@@ -103,6 +103,8 @@ data class LeafEditorChrome(
     val canRedo: Boolean = false,
     val hasSelection: Boolean = false,
     val codeBlock: Boolean = false,
+    /** Whether the caret stands in a verse — what lights the Verse key. */
+    val verse: Boolean = false,
     val blockquote: Boolean = false,
     /** True ticked, false an empty box, null a plain item or no item at all. */
     val task: Boolean? = null,
@@ -118,6 +120,7 @@ data class LeafEditorChrome(
             canRedo = v.canRedo,
             hasSelection = v.hasSelection,
             codeBlock = v.codeBlock,
+            verse = v.verse,
             blockquote = v.blockquote,
             task = v.task,
         )

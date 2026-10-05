@@ -360,9 +360,13 @@ internal class EditorLayout(
 
         val drawn = if (row.isThematicBreak) prefix else row.runs
         val (text, holders) = annotate(drawn, row, tablePicture)
+        // A verse line's turnover hangs `hang` ems past the prefix — its indent
+        // included, which arrives as real em spaces in the runs — so a reader
+        // tells a wrapped line from a new one. An em is the body size.
+        val hang = (row.hang?.toInt() ?: 0) * theme.fontSize.value
         val style = baseStyle(row, tablePicture).copy(
-            textIndent = if (prefixWidth > 0f && !tablePicture) {
-                TextIndent(restLine = with(px) { prefixWidth.toSp() })
+            textIndent = if ((prefixWidth > 0f || hang > 0f) && !tablePicture) {
+                TextIndent(restLine = (with(px) { prefixWidth.toSp() }.value + hang).sp)
             } else null,
         )
         val wrap = !tablePicture

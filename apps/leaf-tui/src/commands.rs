@@ -106,6 +106,9 @@ pub enum Command {
     /// empty one on a blank line, since the rich view escapes a typed backtick
     /// and offers no other way in. Its language is [`Command::CodeLanguage`].
     CodeBlock,
+    /// A verse over the selected paragraphs or the caret's — a block whose
+    /// line breaks are the content — or the verse at the caret back to prose.
+    Verse,
     TaskItem,
     TaskChecked,
     /// Step the alignment of the block at the caret one notch — the *key's*
@@ -211,6 +214,7 @@ impl Command {
             NumberedList => "Numbered List",
             Quote => "Quote",
             CodeBlock => "Code Block",
+            Verse => "Verse",
             TaskItem => "Checklist Item",
             TaskChecked => "Tick Checkbox",
             // "Text", against the `Align Column …` rows a table offers: the two
@@ -389,6 +393,7 @@ impl Command {
             NumberedList => c.ordered_list,
             Quote => c.blockquote,
             CodeBlock => c.code_block,
+            Verse => c.verse,
             TaskItem | TaskChecked => c.task,
             CycleAlign => c.alignment,
             MoveBlockUp | MoveBlockDown => c.move_block,
@@ -514,6 +519,7 @@ impl Command {
             NumberedList => doc.toggle_list(true),
             Quote => doc.toggle_blockquote(),
             CodeBlock => doc.toggle_code_block(),
+            Verse => doc.toggle_verse(),
             TaskItem => doc.toggle_task_item(),
             TaskChecked => doc.toggle_task_checked(),
             CycleAlign => leaf_ratatui::cycle_alignment(doc),
@@ -636,6 +642,7 @@ const BLOCK: &[Command] = &[
     Command::NumberedList,
     Command::Quote,
     Command::CodeBlock,
+    Command::Verse,
     Command::TaskItem,
     Command::TaskChecked,
     Command::CycleAlign,

@@ -120,6 +120,8 @@ fun LeafFormattingBar(
             Key("{ }", "Code block", caps.codeBlock && !source, chrome.codeBlock, TextStyle(fontFamily = FontFamily.Monospace)) {
                 state.command { it.toggleCodeBlock() }
             }
+            // The hedera, the fleuron a stanza break has long been set with.
+            Key("❦", "Verse", caps.verse && !source, chrome.verse) { state.command { it.toggleVerse() } }
             Divider()
             Key("⇤", "Outdent", !source) { state.command { it.outdent() } }
             Key("⇥", "Indent", !source) { state.command { it.indent() } }
