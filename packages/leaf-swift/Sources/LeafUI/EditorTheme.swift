@@ -41,6 +41,10 @@ public struct EditorTheme {
     /// the block above should be the wider of its two margins — otherwise it
     /// floats between its neighbours and reads as belonging to neither.
     public var headingGapScale: CGFloat
+    /// The gap above and below a verse, as a multiple of the ordinary block
+    /// gap — the room a book leaves around verse set off in a page of prose,
+    /// so the poem reads as a block of its own and not as short paragraphs.
+    public var verseGapScale: CGFloat
     /// How much larger than the body each heading level is, `[h1…h6]`.
     public var headingScale: [CGFloat]
     /// The leading ratio (line box ÷ font size) at the *largest* heading on the
@@ -236,6 +240,7 @@ public struct EditorTheme {
         lineHeight: CGFloat = 24,
         blockGapScale: CGFloat = 0.5,
         headingGapScale: CGFloat = 1.8,
+        verseGapScale: CGFloat = 1.5,
         headingScale: [CGFloat] = [1.625, 1.375, 1.1875, 1.0625, 1.0, 0.9375],
         headingLineRatio: CGFloat = 1.2,
         baselineScale: CGFloat = 0.72,
@@ -280,6 +285,7 @@ public struct EditorTheme {
         self.lineHeight = lineHeight
         self.blockGapScale = blockGapScale
         self.headingGapScale = headingGapScale
+        self.verseGapScale = verseGapScale
         self.headingScale = headingScale
         self.headingLineRatio = headingLineRatio
         self.baselineScale = baselineScale
@@ -333,6 +339,7 @@ public struct EditorTheme {
             || lineHeight != other.lineHeight
             || blockGapScale != other.blockGapScale
             || headingGapScale != other.headingGapScale
+            || verseGapScale != other.verseGapScale
             || headingScale != other.headingScale
             || headingLineRatio != other.headingLineRatio
             // A raised run is set at its own size, so these change how wide it
@@ -503,7 +510,9 @@ public struct EditorTheme {
     /// not something re-derived here from glyph roles — see `leaf_core::Boundary`
     /// for why that division is where it is.
     func blockGap(_ boundary: Boundary?) -> CGFloat {
-        boundary?.below == .heading ? blockGap * headingGapScale : blockGap
+        if boundary?.below == .heading { return blockGap * headingGapScale }
+        if boundary?.below == .verse || boundary?.above == .verse { return blockGap * verseGapScale }
+        return blockGap
     }
 
     // ── the text column ──────────────────────────────────────────────────────

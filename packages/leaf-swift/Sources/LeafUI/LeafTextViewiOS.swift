@@ -1580,6 +1580,10 @@ public final class LeafTextView: UIView, UITextInput {
         if !isPaper { drawLandingFlash(in: ctx) }
         if !isPaper { drawFoundText(in: ctx) }
         drawDirectiveBorders(in: ctx, dirtyRect: rect)
+        // The verse the caret is in, while it is being written — not on paper.
+        BlockChrome.drawVerseMark(layoutEngine.rows,
+                                  caretRow: !isPaper && !isReadOnly && isFirstResponder ? Int(docView.caretRow) : nil,
+                                  theme: renderTheme, in: ctx)
         // One pass for the quote bars (a run of quoted rows merges into a single
         // bar), before the rows, exactly as the AppKit surface orders it.
         BlockChrome.drawQuoteBars(layoutEngine.rows, theme: renderTheme, in: ctx)

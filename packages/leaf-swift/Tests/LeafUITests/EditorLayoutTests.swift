@@ -990,6 +990,13 @@ final class EditorLayoutTests: XCTestCase {
         XCTAssertGreaterThan(above, below, "a heading groups with the text it introduces")
     }
 
+    func testAVerseIsSetOffByAWiderGapOnBothSides() {
+        XCTAssertEqual(gapHeight(.paragraph, .verse), theme.blockGap * theme.verseGapScale, accuracy: 0.5)
+        XCTAssertEqual(gapHeight(.verse, .paragraph), theme.blockGap * theme.verseGapScale, accuracy: 0.5)
+        // A heading after a verse still takes the heading's gap.
+        XCTAssertEqual(gapHeight(.verse, .heading), theme.blockGap * theme.headingGapScale, accuracy: 0.5)
+    }
+
     func testOrdinaryBoundariesTakeThePlainGap() {
         for boundary: (BlockClass, BlockClass) in [(.paragraph, .paragraph), (.list, .paragraph),
                                                    (.quote, .code), (.paragraph, .table)] {

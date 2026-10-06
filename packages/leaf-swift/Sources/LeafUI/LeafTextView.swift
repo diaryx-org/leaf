@@ -898,6 +898,10 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // the words, not something drawn over them.
         if !printing { drawLandingFlash(in: ctx) }
         drawDirectiveBorders(in: ctx, dirtyRect: band)
+        // The verse the caret is in, while it is being written — not on paper.
+        BlockChrome.drawVerseMark(layoutEngine.rows,
+                                  caretRow: active && isEditable ? Int(docView.caretRow) : nil,
+                                  theme: theme, in: ctx)
         // The quote bars are one pass over the frame (a run of quoted rows merges
         // into a single bar), so they're painted before the rows, like the
         // directive outlines — the text then draws beside them.
