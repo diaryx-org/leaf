@@ -161,6 +161,8 @@ struct ToolCatalogue {
                 : String(format: loc("menu.headingN", "Heading %d"), Int(level))
         } else if editor.state.codeBlock {
             name = short ? loc("toolbar.style.code", "Code") : loc("menu.codeBlock", "Code Block")
+        } else if editor.state.verse {
+            name = loc("menu.verse", "Verse")
         } else {
             name = loc("toolbar.style.body", "Body")
         }
@@ -188,6 +190,7 @@ struct ToolCatalogue {
         }
         let names = headings + [
             short ? loc("toolbar.style.code", "Code") : loc("menu.codeBlock", "Code Block"),
+            loc("menu.verse", "Verse"),
             loc("toolbar.style.body", "Body"),
         ]
         return names + names.map { quoteMark + $0 }
@@ -202,7 +205,8 @@ struct ToolCatalogue {
 
     var paragraph: ToolItem {
         ToolItem(id: "body", glyph: .symbol("paragraphsign"), label: loc("toolbar.style.body", "Body"),
-                 active: editor.state.heading == nil && !editor.state.codeBlock, toggles: true,
+                 active: editor.state.heading == nil && !editor.state.codeBlock && !editor.state.verse,
+                 toggles: true,
                  action: { editor.setParagraph() })
     }
 

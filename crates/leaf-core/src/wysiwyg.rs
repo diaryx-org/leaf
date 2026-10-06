@@ -195,7 +195,9 @@ pub struct VRow {
     /// How many ems past its prefix a frontend that wraps this row itself
     /// hangs the row's later lines — a verse line's turnover, set deeper than
     /// the line it continues so a reader can tell a wrapped line from a new
-    /// one. `None` on every other row, whose later lines hang at the prefix.
+    /// one. `None` on every row that is not a verse's, whose later lines hang
+    /// at the prefix; `Some` on every row a verse draws, its blank lines
+    /// included, which is how a frontend finds a verse's rows to mark them.
     ///
     /// The em count includes the line's own indent, which is drawn as real em
     /// spaces at the row's start rather than as prefix, so a frontend's hang
@@ -319,6 +321,10 @@ pub enum BlockClass {
     Math,
     /// A `:::name{.class}` directive container.
     Directive,
+    /// A verse — a block whose line breaks are the content. Its own class so
+    /// a frontend can set it apart from the prose around it the way a book
+    /// sets off an extract: a little more room above and below.
+    Verse,
     Rule,
     Footnote,
     Other,
@@ -334,7 +340,8 @@ impl BlockClass {
             // A verse is spaced from its neighbours as a paragraph is: it is
             // prose set in lines, and a frontend needs no class of its own to
             // put it in its place.
-            Kind::Para | Kind::LineBlock => BlockClass::Paragraph,
+            Kind::Para => BlockClass::Paragraph,
+            Kind::LineBlock => BlockClass::Verse,
             Kind::Heading => BlockClass::Heading,
             Kind::BulletList | Kind::OrderedList | Kind::TaskList => BlockClass::List,
             Kind::ListItem | Kind::TaskListItem => BlockClass::ListItem,
@@ -4191,6 +4198,17 @@ impl Builder<'_> {
         }
         self.presentation = pres;
         let style = pres.over(Style::default());
+        // The whole block stands [`VERSE_INSET`] ems in from the prose around
+        // it, the way a book sets off verse quoted in a page of prose — the
+        // one sign, before any line runs long, that these breaks are the
+        // poet's and not the page's. Prefix, so every frontend draws it.
+        let inset = synth(
+            &"\u{2003}".repeat(VERSE_INSET),
+            Role::ListIndent,
+            span.start,
+        );
+        let pf = &concat(pf, &inset);
+        let pc = &concat(pc, &inset);
         // Markdown's tag lines take a blank line each side; djot's fence and
         // AsciiDoc's delimiter do not.
         let tagged = self
@@ -4300,7 +4318,10 @@ impl Builder<'_> {
                 heading: None,
                 align: self.presentation.align,
                 line_height: self.presentation.line_height,
-                hang: None,
+                // Every row a verse draws carries a hang, its blank lines too,
+                // so a frontend can find the block's rows by it — see
+                // [`VRow::hang`].
+                hang: Some(VERSE_HANG as u8),
                 boundary: None,
                 mark_ends: Vec::new(),
                 math: Vec::new(),
@@ -6614,6 +6635,9 @@ fn push_escaped_text(
 
 /// How many ems deeper than its own line a verse line's turnover hangs.
 pub const VERSE_HANG: usize = 2;
+
+/// How many ems a verse stands in from the prose around it.
+pub const VERSE_INSET: usize = 2;
 
 /// The byte length of the em space (U+2003) `source` spells at `at`, raw or as
 /// an entity, or `None` — the spellings twig's verse pass reads as one step of
@@ -11157,11 +11181,27 @@ mod verse_tests {
         )
     }
 
+    /// The text each row draws, the blank prefix (a list's indent, a verse's
+    /// inset and turnover) left out.
     fn texts(m: &VisualMap) -> Vec<String> {
         m.rows
             .iter()
-            .map(|r| r.glyphs.iter().map(|g| g.ch).collect())
+            .map(|r| {
+                r.glyphs
+                    .iter()
+                    .filter(|g| g.style.role != Role::ListIndent)
+                    .map(|g| g.ch)
+                    .collect()
+            })
             .collect()
+    }
+
+    /// How many blank prefix glyphs — ems — a row starts with.
+    fn lead(r: &VRow) -> usize {
+        r.glyphs
+            .iter()
+            .take_while(|g| g.style.role == Role::ListIndent)
+            .count()
     }
 
     #[test]
@@ -11213,10 +11253,15 @@ mod verse_tests {
         assert_eq!(texts(&m), ["zero", "\u{2003}one", "\u{2003}\u{2003}two"]);
         // Each em space is a real glyph at its own spelling's offset.
         let at = src.find("&emsp;").unwrap();
-        let row = &m.rows[2];
-        assert_eq!(row.glyphs[0].src, at);
-        assert_eq!(row.glyphs[1].src, at + "&emsp;".len());
-        assert!(row.glyphs[0].stop && row.glyphs[1].stop);
+        // Past the inset, which is prefix and draws blank.
+        let row: Vec<_> = m.rows[2]
+            .glyphs
+            .iter()
+            .filter(|g| g.style.role != Role::ListIndent)
+            .collect();
+        assert_eq!(row[0].src, at);
+        assert_eq!(row[1].src, at + "&emsp;".len());
+        assert!(row[0].stop && row[1].stop);
         assert_eq!(m.rows[1].hang, Some(1 + VERSE_HANG as u8));
         assert_eq!(m.rows[2].hang, Some(2 + VERSE_HANG as u8));
     }
@@ -11226,15 +11271,32 @@ mod verse_tests {
         let src = "::: verse\n\u{2003}one two three four five six\n:::\n";
         let m = map(src, Format::Djot, Some(16));
         assert!(m.rows.len() >= 2, "{:?}", texts(&m));
-        // The turnover's prefix is the line's indent plus the hang, in ems,
-        // drawn blank: one em space of indent and two of hang.
-        let cont = &m.rows[1];
-        let lead: Vec<_> = cont
-            .glyphs
-            .iter()
-            .take_while(|g| g.style.role == Role::ListIndent)
-            .collect();
-        assert_eq!(lead.len(), 1 + VERSE_HANG);
+        // The first row stands in by the inset alone (its indent is its own
+        // em spaces); the turnover by the inset, the indent and the hang.
+        assert_eq!(lead(&m.rows[0]), VERSE_INSET);
+        assert_eq!(lead(&m.rows[1]), VERSE_INSET + 1 + VERSE_HANG);
+    }
+
+    #[test]
+    fn a_verse_stands_in_from_the_prose_and_its_gaps_say_verse() {
+        let src = "Prose above.\n\n<div class=\"verse\">\n\none\n\ntwo\n\n</div>\n\nProse below.\n";
+        let m = map(src, Format::Markdown, Some(80));
+        assert_eq!(
+            texts(&m),
+            ["Prose above.", "", "one", "", "two", "", "Prose below."]
+        );
+        // Every row the verse draws — lines and the stanza break — stands in
+        // by the inset and carries a hang; the prose does not.
+        assert!(
+            m.rows[2..5]
+                .iter()
+                .all(|r| lead(r) == VERSE_INSET && r.hang.is_some())
+        );
+        assert!(lead(&m.rows[0]) == 0 && m.rows[0].hang.is_none());
+        assert!(lead(&m.rows[6]) == 0 && m.rows[6].hang.is_none());
+        // The gaps either side name the verse, so a frontend can widen them.
+        assert_eq!(m.rows[1].boundary.map(|b| b.below), Some(BlockClass::Verse));
+        assert_eq!(m.rows[5].boundary.map(|b| b.above), Some(BlockClass::Verse));
     }
 
     #[test]

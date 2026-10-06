@@ -478,6 +478,9 @@ pub enum BlockClass {
     /// A display formula on lines of its own — a `$$…$$` block.
     Math,
     Directive,
+    /// A verse — a block whose line breaks are the content. A frontend sets it
+    /// off from the prose around it with a little more room.
+    Verse,
     Rule,
     Footnote,
     Other,
@@ -497,6 +500,7 @@ impl From<leaf_core::BlockClass> for BlockClass {
             K::Media => BlockClass::Media,
             K::Math => BlockClass::Math,
             K::Directive => BlockClass::Directive,
+            K::Verse => BlockClass::Verse,
             K::Rule => BlockClass::Rule,
             K::Footnote => BlockClass::Footnote,
             K::Other => BlockClass::Other,

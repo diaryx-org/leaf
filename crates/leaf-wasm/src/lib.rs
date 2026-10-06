@@ -1119,6 +1119,7 @@ fn class_name(c: BlockClass) -> String {
         BlockClass::Media => "media",
         BlockClass::Math => "math",
         BlockClass::Directive => "directive",
+        BlockClass::Verse => "verse",
         BlockClass::Rule => "rule",
         BlockClass::Footnote => "footnote",
         BlockClass::Other => "other",

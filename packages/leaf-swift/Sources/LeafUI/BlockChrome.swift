@@ -237,6 +237,52 @@ enum BlockChrome {
         ctx.fillPath()
     }
 
+    /// Mark the verse the caret stands in: a dashed hairline down the left of
+    /// its inset, the length of the block — dashed because that is what leaf
+    /// draws structure in that only the editor shows (a directive's outline, a
+    /// page break), and because a solid bar is a blockquote's, which says
+    /// someone else's words. A writer's sign only — drawn while the
+    /// caret is inside, never on paper, never on a page that isn't being
+    /// edited — that here Enter makes a line and Tab indents one, where a
+    /// paragraph would reflow. The reader's sign is the inset itself, which
+    /// core puts on every row.
+    ///
+    /// A verse's rows are the ones core gave a `hang`, its blank lines
+    /// included; `caretRow` picks the run. A run broken by a sheet edge is
+    /// marked on each sheet, as a directive's outline is.
+    static func drawVerseMark(_ rows: [RowLayout], caretRow: Int?, theme: EditorTheme, in ctx: CGContext) {
+        guard let caretRow, rows.indices.contains(caretRow), rows[caretRow].row.hang != nil else { return }
+        var start = caretRow
+        while start > 0, rows[start - 1].row.hang != nil { start -= 1 }
+        var end = caretRow + 1
+        while end < rows.count, rows[end].row.hang != nil { end += 1 }
+        // Halfway into the inset, which is the last two ems of the prefix.
+        let inset = CGFloat(2) * theme.fontSize
+        var spans: [CGRect] = []
+        for rl in rows[start..<end] {
+            let x = rl.originX + max(0, rl.shaped.prefixWidth - inset * 0.55)
+            for b in rl.bands {
+                let band = CGRect(x: x, y: b.minY, width: 0, height: b.height)
+                if let last = spans.last, abs(last.maxY - band.minY) < 0.5, abs(last.minX - band.minX) < 0.5 {
+                    spans[spans.count - 1].size.height += band.height
+                } else {
+                    spans.append(band)
+                }
+            }
+        }
+        ctx.saveGState()
+        defer { ctx.restoreGState() }
+        ctx.setStrokeColor(theme.directiveBorderColor.cgColor)
+        ctx.setLineWidth(1)
+        ctx.setLineDash(phase: 0, lengths: [3, 3])
+        let trim = theme.lineHeight * 0.2
+        for span in spans where span.height > 2 * trim {
+            ctx.move(to: CGPoint(x: span.minX, y: span.minY + trim))
+            ctx.addLine(to: CGPoint(x: span.minX, y: span.maxY - trim))
+        }
+        ctx.strokePath()
+    }
+
     /// Paint a thematic break: a hairline across the text column, inset past any
     /// gutter the break sits inside. `selColor` (macOS, where the view draws its
     /// own selection) fills the row's box first, so a selection running through a

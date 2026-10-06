@@ -7510,6 +7510,11 @@ public enum BlockClass: Equatable, Hashable {
      */
     case math
     case directive
+    /**
+     * A verse — a block whose line breaks are the content. A frontend sets it
+     * off from the prose around it with a little more room.
+     */
+    case verse
     case rule
     case footnote
     case other
@@ -7554,11 +7559,13 @@ public struct FfiConverterTypeBlockClass: FfiConverterRustBuffer {
         
         case 10: return .directive
         
-        case 11: return .rule
+        case 11: return .verse
         
-        case 12: return .footnote
+        case 12: return .rule
         
-        case 13: return .other
+        case 13: return .footnote
+        
+        case 14: return .other
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -7608,16 +7615,20 @@ public struct FfiConverterTypeBlockClass: FfiConverterRustBuffer {
             writeInt(&buf, Int32(10))
         
         
-        case .rule:
+        case .verse:
             writeInt(&buf, Int32(11))
         
         
-        case .footnote:
+        case .rule:
             writeInt(&buf, Int32(12))
         
         
-        case .other:
+        case .footnote:
             writeInt(&buf, Int32(13))
+        
+        
+        case .other:
+            writeInt(&buf, Int32(14))
         
         }
     }
