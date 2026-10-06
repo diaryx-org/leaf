@@ -354,7 +354,15 @@ internal class EditorLayout(
         }
 
         if (row.isBlockGap) {
-            val lh = theme.blockGap.value * if (row.boundary?.below == BlockClass.HEADING) theme.headingGapScale else 1f
+            // Wider above a heading, which belongs to the text under it, and
+            // around a verse, which a page sets off from its prose.
+            val b = row.boundary
+            val scale = when {
+                b?.below == BlockClass.HEADING -> theme.headingGapScale
+                b?.below == BlockClass.VERSE || b?.above == BlockClass.VERSE -> 1.5f
+                else -> 1f
+            }
+            val lh = theme.blockGap.value * scale
             return ShapedRow(null, with(px) { lh.sp.toPx() }, prefixWidth, bars, tablePicture)
         }
 
