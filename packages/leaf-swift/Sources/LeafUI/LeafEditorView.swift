@@ -1547,11 +1547,11 @@ public struct LeafEditor: View {
     /// With a view laid under the last line, *inside* the scroll — the
     /// header's twin at the other end: what is attached to the document, a
     /// row of related pages, anything that belongs to the end of the document
-    /// rather than to the screen. Reached by scrolling past the prose, and
-    /// no earlier: the fill that keeps a short document's paper tappable to
-    /// the bottom of the viewport is the text view's, so the footer sits
-    /// below the fold on a short document rather than riding up under its
-    /// last line. Same reasons as `header` for being a modifier, and for
+    /// rather than to the screen. On a long document it is reached by
+    /// scrolling past the prose; on a short one it rests on the bottom of
+    /// what is visible — over a bar, over the keyboard and the strip above
+    /// it — and the fill that keeps the paper tappable is the text view's,
+    /// above it. Same reasons as `header` for being a modifier, and for
     /// being inside the scroll rather than stacked under it by the host.
     public func footer<Footer: View>(@ViewBuilder _ content: () -> Footer) -> LeafEditor {
         var copy = self
@@ -1603,7 +1603,7 @@ public struct LeafEditor: View {
 /// moved afterwards.
 final class LeafEditorController: UIViewController {
     let scroll = UIScrollView()
-    /// `text.bottom - content.top >= frame.height - insets`, the fill
+    /// `content.height >= frame.height - insets`, the fill
     /// `pin(_:into:header:footer:)` installs. The constant is the adjusted insets, so a short document fills
     /// what is *visible* — under a bar, above a keyboard — and no further: at
     /// the frame's full height it could be pulled up into blank paper by the
@@ -2072,13 +2072,16 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
         // constant is the controller's to keep — the visible height, not the
         // frame's, see `LeafEditorController.fill`.
         //
-        // From the content's top to the *text view's* bottom, not the content's
-        // height: a footer is outside the fill, so on a short document it sits
-        // under the fold, reached by scrolling past the prose, rather than
-        // riding up to the bottom of the viewport — which with the keyboard up
-        // would be the top of the keyboard, in the space a fresh note is
-        // written in. Without a footer the two are the same measure.
-        let fill = scroll.contentLayoutGuide.topAnchor.anchorWithOffset(to: zoomed.bottomAnchor)
+        // The content's whole height, footer included, so on a short document
+        // the footer rests on the bottom of what is visible — on the
+        // keyboard's strip while writing, on the host's bar while reading.
+        // Measured to the text view's bottom instead, the footer sat one
+        // viewport down: just under the fold, which with the keyboard up is
+        // behind the formatting strip, its top edge showing through the glass
+        // and nothing saying it was there to scroll to. A host that wants
+        // the space over the keys kept clear on a fresh page keeps its footer
+        // empty there.
+        let fill = scroll.contentLayoutGuide.heightAnchor
             .constraint(greaterThanOrEqualTo: scroll.frameLayoutGuide.heightAnchor)
         controller.fill = fill
         // The width is the viewport's — except on paper, where a sheet wider
@@ -2100,8 +2103,8 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
             footer.didMove(toParent: controller)
             footer.view.translatesAutoresizingMaskIntoConstraints = false
             // Hugs, as the header does, so the fill's slack stays the text
-            // view's: on a short document the footer sits under the fold and
-            // the paper above it is tappable to the bottom of the screen.
+            // view's: on a short document the footer rests on the bottom of
+            // what is visible and the paper above it is tappable down to it.
             footer.view.setContentHuggingPriority(.required, for: .vertical)
             zoomed.setContentHuggingPriority(.defaultLow, for: .vertical)
             constraints += [
