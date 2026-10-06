@@ -1,7 +1,7 @@
 ---
 status: open
 created: 2026-09-16
-updated: 2026-09-22
+updated: 2026-10-06
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 # The heading the caret is under is a question `Doc` cannot answer
@@ -11,7 +11,8 @@ heading_at — the heading a place in the document is under` adds
 `Doc::heading_at` / `heading_at_caret` and the `Heading` type, in the shape
 below, and exposes both through leaf-ffi and the wasm binding as a
 `HeadingView` (`text`, `level`, `start`, `end`). What remains is provui's,
-after a leaf release carrying it: `DocumentSession::heading_at_caret`
+and it waits on nothing now: provui takes leaf from git, and its lock
+(`17dd988`, 2026-10-06) already carries `heading_at`. `DocumentSession::heading_at_caret`
 delegates to leaf, and `twig` leaves `provui-core`'s manifest.
 
 **Where.** `crates/leaf-core/src/doc.rs`, beside `link_destination_at_caret`
