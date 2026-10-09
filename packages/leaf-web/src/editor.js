@@ -419,11 +419,25 @@ export class LeafEditor {
      *  for — `tableSpans`' peer, for placing a caret core put on a filler. */
     this.directiveSpans = [];
     this._directiveItems = catalogue(opts.directives);
+    /** How a formula is edited — see `EditorOptions.mathEditing`. */
+    const mathEditing = opts.mathEditing ?? "structure";
+    if (!["structure", "source"].includes(mathEditing)) {
+      throw new Error(`mathEditing must be "structure" or "source", not ${JSON.stringify(mathEditing)}`);
+    }
+    this._mathEditing = mathEditing;
+    /** Whether core has been told this editor edits formulas as structure
+     *  (`_editMathAsStructure`), and the formula open for it, if any
+     *  (`_openMath`). */
+    this._mathStructural = false;
+    this._mathEdit = null;
 
     this.doc = new LeafDoc(opts.source ?? "", opts.format ?? "markdown");
     // A browser paints a picture in a line, so an inline formula arrives as an
     // atom to draw over rather than as its TeX — see _mathRunEl.
     this.doc.set_inline_pictures(true);
+    // With the math module already here, formulas are edited as structure
+    // from the first frame; otherwise from when it lands (`_mathSettled`).
+    this._editMathAsStructure();
     // Every frame after the first is the change since the frame before —
     // the rows that differ, and where they go — spliced into the last whole
     // one by `_whole`. See `render`.
@@ -482,6 +496,12 @@ export class LeafEditor {
     doc.set_incremental_frames(true);
     if (this._darkQuery) doc.set_color_scheme(this._darkQuery.matches ? "dark" : "light");
     this.doc = doc;
+    // A new document is a new set of formulas: none is open, and the new
+    // core has yet to be told who edits them.
+    this._mathEdit = null;
+    this.contentEl.classList.remove("leaf-math-editing");
+    this._mathStructural = false;
+    this._editMathAsStructure();
     // A frame of the new document is no change to the old one's rows.
     this._lastView = null;
     // Nor are its directives the old one's, however alike: the host draws a
@@ -1155,13 +1175,38 @@ export class LeafEditor {
     // module was still on its way is rebuilt when it lands.
     const mathRows = new Set();
     const ink = this._inkColor();
+    // The open formula, if any, draws from its session; its key carries the
+    // session's revision, since a caret move inside it changes the picture
+    // and nothing core knows. A frame without it — an undo took it away —
+    // closes it.
+    const editing = this._mathEdit;
+    let editingSeen = false;
+    for (const m of view.math || []) {
+      if (editing && m.src === editing.src) {
+        editingSeen = true;
+        editing.end = m.end;
+        editing.texStart = m.tex_start;
+        if (editing.session.tex() !== m.tex) {
+          try {
+            editing.session.reload(m.tex);
+          } catch {
+            editingSeen = false;
+          }
+        }
+        if (editingSeen) m.edit = editing.rev;
+      }
+    }
+    if (editing && !editingSeen) {
+      this._mathEdit = null;
+      this.contentEl.classList.remove("leaf-math-editing");
+    }
     for (const m of view.math || []) {
       mathRows.add(m.row);
       if (m.inline) {
         mathInlineAt.set(m.src, m);
         continue;
       }
-      const pic = typesetMath(m.tex, m.display, this.theme.fontSize, ink);
+      const pic = this._mathPicture(m, this.theme.fontSize, ink);
       // TeX that will not typeset stays core's `∑ tex` placeholder row, drawn
       // as text with the fault in its title — see `_runEl`. So does every
       // block while the typesetter is absent; `_mathSettled` repaints then.
@@ -1575,8 +1620,10 @@ export class LeafEditor {
     div.classList.add("leaf-media-row", "leaf-math-row");
     div.dataset.leafCoreLen = String((row?.runs || []).reduce((n, r) => n + r.text.length, 0));
     div.appendChild(document.createTextNode(ZWSP));
-    const pic = typesetMath(m.tex, m.display, this.theme.fontSize, this._ink);
+    const pic = this._mathPicture(m, this.theme.fontSize, this._ink);
     const img = el("img", "leaf-media leaf-math-block");
+    img._math = m;
+    img._mathPx = this.theme.fontSize;
     img.src = svgDataUrl(pic.svg);
     img.alt = m.tex.trim();
     img.setAttribute("contenteditable", "false");
@@ -1854,7 +1901,7 @@ export class LeafEditor {
     span.textContent = run.text;
     const m = this._mathInline?.get(run.src);
     if (!m) return span;
-    const pic = typesetMath(m.tex, m.display, fontPx, this._ink);
+    const pic = this._mathPicture(m, fontPx, this._ink);
     if (pic === null) return span; // the typesetter is on its way, or off: the atom stands
     if (pic instanceof Error) {
       span.classList.add("leaf-math-error");
@@ -1864,7 +1911,9 @@ export class LeafEditor {
     const w = pic.width * fontPx;
     const h = (pic.height + pic.depth) * fontPx;
     span.classList.add("leaf-math");
-    span.title = m.tex.trim();
+    span._math = m;
+    span._mathPx = fontPx;
+    if (!m.edit) span.title = m.tex.trim();
     span.style.width = w.toFixed(2) + "px";
     span.style.height = h.toFixed(2) + "px";
     span.style.verticalAlign = (-pic.depth * fontPx).toFixed(2) + "px";
@@ -1900,7 +1949,153 @@ export class LeafEditor {
    */
   _mathSettled() {
     if (this._destroyed || !this._lastView) return;
-    this.render(this._lastView);
+    this.render(this._editMathAsStructure() ?? this._lastView);
+  }
+
+  /**
+   * Once the math module is here, formulas are edited as structure rather
+   * than as TeX: core keeps a formula on the caret's line a picture
+   * (`set_edits_math`), and the arrows and a click open it in a
+   * `MathSession` (`_openMath`). Until then — or for a host that turned
+   * math off — a formula reveals its TeX on the caret's line, as it always
+   * did. Returns the frame the switch produced, or `null` when nothing
+   * changed.
+   */
+  _editMathAsStructure() {
+    if (this._mathStructural || this._mathEditing !== "structure" || !mathModule?.MathSession) return null;
+    this._mathStructural = true;
+    return this.doc.set_edits_math(true);
+  }
+
+  /**
+   * A formula's picture: the open one's from its session — its caret drawn
+   * in, its empty slots shown — and every other's from the typesetter.
+   * Both answer with the same shape, so the row draws either the same way.
+   */
+  _mathPicture(m, size, ink) {
+    const ed = this._mathEdit;
+    if (ed && m.src === ed.src) {
+      try {
+        return ed.session.picture(size, ink, this._accentColor());
+      } catch (e) {
+        return e instanceof Error ? e : new Error(String(e));
+      }
+    }
+    return typesetMath(m.tex, m.display, size, ink);
+  }
+
+  /** The caret's colour, for the open formula's caret: `--leaf-caret`. */
+  _accentColor() {
+    const c = getComputedStyle(this.contentEl).getPropertyValue("--leaf-caret").trim();
+    return /^#[0-9a-f]{3,8}$/i.test(c) ? c : "#2563eb";
+  }
+
+  /**
+   * Open formula `m` for structural editing, the caret at its first stop
+   * (`"home"`), its last (`"end"`), or nearest `point` — `{x, y, size}`, in
+   * pixels from the picture's top left. Keys then go to the session
+   * (`_mathKey`) until the caret leaves. Core's caret waits in front of the
+   * formula, where the DOM can hold it; the browser's is hidden meanwhile,
+   * since the formula draws its own. `false` when the TeX is beyond what
+   * the structural editor reads, and the formula stays as it was.
+   */
+  _openMath(m, where, point) {
+    if (!mathModule?.MathSession || this.viewName() === "source") return false;
+    let session;
+    try {
+      session = new mathModule.MathSession(m.tex, m.display);
+    } catch {
+      return false;
+    }
+    if (where === "home") session.home();
+    else session.end();
+    if (point) session.click(point.x, point.y, point.size);
+    this._mathEdit = {
+      session,
+      src: m.src,
+      end: m.end,
+      texStart: m.tex_start,
+      rev: 1,
+    };
+    this.contentEl.classList.add("leaf-math-editing");
+    this.render(this.doc.select_range(m.src, m.src));
+    return true;
+  }
+
+  /**
+   * Close the open formula. The caret lands in front of it (`"start"`),
+   * behind it (`"end"`), or — `null`, when a click elsewhere is what closed
+   * it — wherever that click puts it.
+   */
+  _closeMath(where) {
+    const ed = this._mathEdit;
+    if (!ed) return;
+    this._mathEdit = null;
+    this.contentEl.classList.remove("leaf-math-editing");
+    const at = where === "start" ? ed.src : where === "end" ? ed.end : null;
+    this.render(at === null ? this._lastView : this.doc.select_range(at, at));
+  }
+
+  /**
+   * A key while a formula is open. Typing, Backspace and the arrows are the
+   * session's; each keystroke's splices land in the document through
+   * `edit_source`, written exactly, as one undo step. ← at the first stop
+   * and → at the last leave the formula, as do Escape, Enter and Tab; a
+   * shortcut (⌘Z among them) leaves it and then runs. Returns whether the
+   * key was handled.
+   */
+  _mathKey(e) {
+    const ed = this._mathEdit;
+    const k = e.key;
+    if (primaryModifier(e) || e.altKey) {
+      this._closeMath(null);
+      return false;
+    }
+    if (k === "Escape" || k === "Enter" || k === "Tab") {
+      e.preventDefault();
+      this._closeMath("end");
+      return true;
+    }
+    if ((k === "ArrowLeft" && ed.session.at_home()) || (k === "ArrowRight" && ed.session.at_end())) {
+      e.preventDefault();
+      this._closeMath(k === "ArrowLeft" ? "start" : "end");
+      return true;
+    }
+    if (!(k.length === 1 || k === "Backspace" || ARROWS.has(k))) return false;
+    e.preventDefault();
+    const splices = ed.session.key(k);
+    ed.rev++;
+    if (!splices.length) {
+      this.render(this._lastView);
+      return true;
+    }
+    // Every splice is against the TeX as the one before it left it, and
+    // none moves the TeX's start.
+    this.doc.begin_undo_group();
+    for (const sp of splices) {
+      this._lastView = this._whole(this.doc.edit_source(ed.texStart + sp.from, ed.texStart + sp.to, sp.text));
+    }
+    this.doc.end_undo_group();
+    this.render(this.doc.select_range(ed.src, ed.src));
+    return true;
+  }
+
+  /**
+   * → in front of a formula, or ← behind one, opens it — at its first stop or
+   * its last — instead of stepping over its picture. Read off the last
+   * frame's caret, which `selectionchange` keeps current.
+   */
+  _enterMathByKey(e) {
+    if (!this._mathStructural || e.shiftKey || e.altKey || primaryModifier(e)) return false;
+    if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return false;
+    const v = this._lastView;
+    if (!v || v.has_selection || v.view === "source") return false;
+    const at = v.caret_src;
+    const right = e.key === "ArrowRight";
+    const m = (v.math || []).find((m) => (right ? m.src === at : m.end === at));
+    if (!m || !this._openMath(m, right ? "home" : "end")) return false;
+    e.preventDefault();
+    return true;
   }
 
   /**
@@ -2360,6 +2555,14 @@ export class LeafEditor {
       if (!this.contentEl.contains(sel.getRangeAt(0).commonAncestorContainer)) return;
       const view = this._selectionToCore(sel);
       if (!view) return;
+      // The open formula holds core's caret in front of itself; the caret
+      // anywhere else means the author went elsewhere.
+      if (this._mathEdit && (view.has_selection || view.caret_src !== this._mathEdit.src)) {
+        this._mathEdit = null;
+        this.contentEl.classList.remove("leaf-math-editing");
+        this.render(view);
+        return;
+      }
       // A caret move is not an edit, but it can still change what the rows
       // show: crossing onto a line that reveals its markup — every line under
       // the "full" markup mode, a formula's line in every mode — or off one.
@@ -2367,6 +2570,28 @@ export class LeafEditor {
       // ordinary motion keeps costing nothing.
       if (view.map_key !== this._lastView?.map_key) this.render(view);
       else this._emitChange((this._lastView = this._whole(view)));
+    });
+
+    // A click on a formula's picture opens it, the caret at the stop nearest
+    // the pointer — once structural editing is on; before, the click is the
+    // browser's, and lands in front of the picture as it always did.
+    on(ce, "mousedown", (e) => {
+      if (e.button !== 0 || e.shiftKey || primaryModifier(e) || !this._mathStructural) return;
+      const t = e.target;
+      const m = t?._math;
+      if (!m || !(t.classList.contains("leaf-math") || t.classList.contains("leaf-math-block"))) return;
+      const r = t.getBoundingClientRect();
+      const point = { x: e.clientX - r.left, y: e.clientY - r.top, size: t._mathPx };
+      e.preventDefault();
+      this.focus();
+      if (this._mathEdit && this._mathEdit.src === m.src) {
+        this._mathEdit.session.click(point.x, point.y, point.size);
+        this._mathEdit.rev++;
+        this.render(this._lastView);
+      } else {
+        this._mathEdit = null;
+        this._openMath(m, "end", point);
+      }
     });
 
     // Triple-click: the browser's is a *visual line*; leaf's is the *logical
@@ -2901,6 +3126,10 @@ export class LeafEditor {
     if (this._composing || e.isComposing || e.keyCode === 229) return;
     const d = this.doc;
 
+    // A formula open for structural editing takes the keys it knows; → or ←
+    // onto one opens it.
+    if (this._mathEdit ? this._mathKey(e) : this._enterMathByKey(e)) return;
+
     // ⌘⇧V: the paste that follows takes the plain flavour. Remembered here and
     // consumed by the paste handler, since the paste itself is the browser's
     // to deliver; any other key retires it, so a ⌘⇧V with nothing to paste
@@ -3265,7 +3494,7 @@ function mediaKey(media, row) {
  *  addresses. The ink is in it because the picture is. */
 function mathBlockKey(m, row, ink) {
   const len = (row?.runs || []).reduce((n, r) => n + r.text.length, 0);
-  return "M" + len + "|" + ink + "|" + (m.display ? "D" : "T") + m.tex;
+  return "M" + len + "|" + ink + "|" + (m.edit ?? "") + "|" + (m.display ? "D" : "T") + m.tex;
 }
 
 /** What an ordinary row's key leaves out when it holds a formula: the TeX
@@ -3278,7 +3507,7 @@ function mathRowKey(runs, mathInlineAt, ink, hasMath) {
   for (const run of runs) {
     if (run.role !== "math") continue;
     const m = mathInlineAt.get(run.src);
-    if (m) key += "\u0004" + (m.display ? "D" : "T") + m.tex;
+    if (m) key += "\u0004" + (m.edit ?? "") + (m.display ? "D" : "T") + m.tex;
   }
   return key + "|" + ink + "|" + mathState();
 }
@@ -3910,6 +4139,9 @@ img.leaf-media, video.leaf-media { max-height: 60vh; }
 /* TeX the typesetter could not read: the atom, tinted, with the fault in its
    title. Also every math run before the surface has said it paints pictures. */
 .leaf-r-math { color: var(--leaf-muted); }
+/* A formula open for structural editing draws its own caret; the browser's,
+   waiting in front of it, would be a second one. */
+.leaf-content.leaf-math-editing { caret-color: transparent; }
 .leaf-r-math.leaf-math-error { color: #c0392b; text-decoration: underline wavy; }
 
 /* Didn't load: a missing file would otherwise leave the row blank, with nothing

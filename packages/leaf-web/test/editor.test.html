@@ -1782,7 +1782,7 @@ await test("an inline formula is a picture the caret sits either side of", async
 
 await test("a formula on the caret's line is its TeX, and folds back when the caret leaves", async () => {
   await LeafEditor.loadMath();
-  const ed = editor("say $x+y$ here\n\nnext\n");
+  const ed = editor("say $x+y$ here\n\nnext\n", { mathEditing: "source" });
   // The caret opens on the first line: the formula is source, in code style.
   let row = ed.rowEls[0];
   assert(!row.querySelector(".leaf-r-math"), "a picture stood in under the caret");
@@ -1801,7 +1801,7 @@ await test("a formula on the caret's line is its TeX, and folds back when the ca
 
 await test("printed, the caret's line is not revealed, and the screen's is again after", async () => {
   await LeafEditor.loadMath();
-  const ed = editor("say $x+y$ here\n\nnext\n");
+  const ed = editor("say $x+y$ here\n\nnext\n", { mathEditing: "source" });
   eq(ed.rowEls[0].textContent, "say $x+y$ here");
   window.dispatchEvent(new Event("beforeprint"));
   eq(ed.rowEls[0].textContent, "say ∑ here");
@@ -1816,7 +1816,7 @@ await test("printed, the caret's line is not revealed, and the screen's is again
 
 await test("a caret move onto a formula's line repaints, through the real selection", async () => {
   await LeafEditor.loadMath();
-  const ed = editor("say $x+y$ here\n\nnext\n");
+  const ed = editor("say $x+y$ here\n\nnext\n", { mathEditing: "source" });
   const next = ed.rowEls.find((r) => r.textContent === "next");
   place(firstText(next), 0);
   ed._syncFromDom();
@@ -1855,6 +1855,105 @@ await test("a display formula is a centred picture in a row of its own", async (
   const after = ed._lastView.caret_src;
   eq(ed.source().slice(after - 2, after), "$$");
   assert(after > before);
+  return ed;
+});
+
+/** A key pressed on the surface, as the keyboard would deliver it. */
+function press(ed, key, mods = {}) {
+  ed.contentEl.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...mods }));
+}
+
+await test("→ onto a formula opens it, and what is typed there is TeX in the document", async () => {
+  await LeafEditor.loadMath();
+  const ed = editor("say $x$ here\n");
+  const m = ed._lastView.math[0];
+  ed.render(ed.doc.select_range(m.src, m.src));
+  press(ed, "ArrowRight");
+  assert(ed._mathEdit, "→ in front of the formula did not open it");
+  assert(ed.contentEl.classList.contains("leaf-math-editing"), "the browser's caret is still shown");
+  for (const k of ["ArrowRight", "^", "2", "ArrowRight", "+", "1", "/", "2"]) press(ed, k);
+  eq(ed.source(), "say $x^{2}+\\frac{1}{2}$ here\n");
+  // The open formula is drawn from its session: the caret is in the picture.
+  const atom = ed.contentEl.querySelector(".leaf-r-math.leaf-math");
+  assert(decodeURIComponent(atom.style.backgroundImage).includes("<rect"), "no caret in the picture");
+  // Out of the denominator, then out of the formula, behind it.
+  press(ed, "ArrowRight");
+  assert(ed._mathEdit, "left the formula a stop early");
+  press(ed, "ArrowRight");
+  assert(!ed._mathEdit, "→ at the last stop did not leave the formula");
+  eq(ed._lastView.caret_src, ed._lastView.math[0].end);
+  // ← from behind it opens it again, at its end.
+  press(ed, "ArrowLeft");
+  assert(ed._mathEdit && ed._mathEdit.session.at_end(), "← behind the formula did not open it at its end");
+  press(ed, "Escape");
+  assert(!ed._mathEdit, "Escape did not close it");
+  return ed;
+});
+
+await test("on the caret's line a formula stays its picture when it is edited as structure", async () => {
+  await LeafEditor.loadMath();
+  const ed = editor("say $x+y$ here\n");
+  ed.render(ed.doc.select_range(1, 1));
+  assert(ed.contentEl.querySelector(".leaf-r-math.leaf-math"), "the formula revealed its TeX");
+  assert(!ed.contentEl.textContent.includes("$x+y$"));
+  return ed;
+});
+
+await test("a click on a formula's picture opens it at the stop under the pointer", async () => {
+  await LeafEditor.loadMath();
+  const ed = editor("say $xy$ here\n");
+  const atom = ed.contentEl.querySelector(".leaf-r-math.leaf-math");
+  const r = atom.getBoundingClientRect();
+  atom.dispatchEvent(new MouseEvent("mousedown", {
+    bubbles: true, cancelable: true, button: 0, detail: 1, clientX: r.left + 1, clientY: r.top + r.height / 2,
+  }));
+  assert(ed._mathEdit, "the click did not open the formula");
+  assert(ed._mathEdit.session.at_home(), "the click at its left edge is not at its first stop");
+  press(ed, "a");
+  eq(ed.source(), "say $axy$ here\n");
+  return ed;
+});
+
+await test("a keystroke in a formula is one undo step, and ⌘Z leaves the formula to undo it", async () => {
+  await LeafEditor.loadMath();
+  const mac = /Mac|iPhone|iPad/.test(navigator.platform);
+  const ed = editor("say $x$ here\n");
+  const m = ed._lastView.math[0];
+  ed.render(ed.doc.select_range(m.end, m.end));
+  press(ed, "ArrowLeft");
+  // `sqrt` is four keystrokes, the last of which makes two splices: the `t`,
+  // then the letters becoming `\sqrt{}`. Both are one step.
+  for (const k of "+sqrt") press(ed, k);
+  eq(ed.source(), "say $x+\\sqrt{}$ here\n");
+  press(ed, "z", mac ? { metaKey: true } : { ctrlKey: true });
+  assert(!ed._mathEdit, "⌘Z did not close the formula");
+  eq(ed.source(), "say $x+sqr$ here\n");
+  return ed;
+});
+
+await test("a display block opens, and its TeX stays between its own lines", async () => {
+  await LeafEditor.loadMath();
+  const ed = editor("intro\n\n$$\n\\int_0^1 x\n$$\n\nend\n");
+  const m = ed._lastView.math.find((m) => !m.inline);
+  ed.render(ed.doc.select_range(m.end, m.end));
+  press(ed, "ArrowLeft");
+  assert(ed._mathEdit, "← behind the block did not open it");
+  press(ed, "+");
+  press(ed, "1");
+  eq(ed.source(), "intro\n\n$$\n\\int_0^1 x+1\n$$\n\nend\n");
+  const img = ed.contentEl.querySelector(".leaf-math-block");
+  assert(decodeURIComponent(img.src).includes("<rect"), "no caret in the block's picture");
+  return ed;
+});
+
+await test("mathEditing \"source\" keeps a formula's TeX to be typed on the caret's line", async () => {
+  await LeafEditor.loadMath();
+  const ed = editor("say $x+y$ here\n", { mathEditing: "source" });
+  ed.render(ed.doc.select_range(1, 1));
+  assert(ed.contentEl.textContent.includes("$x+y$"), "the formula did not reveal its TeX");
+  let threw = false;
+  try { editor("x", { mathEditing: "wysiwyg" }); } catch { threw = true; }
+  assert(threw, "an unknown mathEditing was accepted");
   return ed;
 });
 

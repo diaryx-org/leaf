@@ -126,6 +126,21 @@ for a host that decides later.
   importable on its own, for a host that renders leaf documents outside the
   editor: `typeset_math(tex, display, sizePx, "#rrggbb")` gives the SVG and
   its baseline metrics.
+- **Formulas edited as structure.** Once the math module is here, → in front
+  of a formula, ← behind it, or a click on its picture opens it in place:
+  `/` makes a fraction of the term before the caret, `^` and `_` open a
+  script, space leaves a slot, `sqrt`, `pi`, `alpha`… become symbols as they
+  are typed, and the arrows walk the slots — ↑ and ↓ across a fraction bar.
+  The picture is drawn from the open formula, its caret and empty slots in
+  it. What it writes is TeX: each keystroke is one or two splices on the
+  formula's bytes (`edit_source`, exact) and one undo step, and nothing it
+  did not name is rewritten, so hand-written TeX survives it. ← at the first
+  stop, → at the last, Escape, Enter or Tab leave it; a shortcut leaves it
+  and then runs, so ⌘Z undoes the last keystroke. The editor is
+  `MathSession`, in the same module as the typesetter; core keeps the
+  formula a picture on the caret's line (`set_edits_math`) only once it has
+  loaded, so until then — and with `mathEditing: "source"`, or under
+  `markupMode("full")` — a formula reveals its TeX to be typed instead.
 - **Syntax highlighting** in a fenced block whose language a grammar knows:
   each run carries a `token` — one of core's eight classes — and arrives as a
   `.leaf-t-<token>` class beside `.leaf-r-code`, coloured by the

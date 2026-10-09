@@ -185,6 +185,15 @@ export interface EditorOptions {
    * directive", since a name no one draws is only a placeholder.
    */
   directives?: DirectiveItem[];
+  /**
+   * How a formula is edited. `"structure"`, the default: → or ← onto a
+   * formula, or a click on its picture, opens it in place — `/` makes a
+   * fraction, `^` and `_` scripts, `sqrt` a root, the arrows walk its slots —
+   * and what it writes is TeX, spliced into the document. `"source"`: a
+   * formula on the caret's line reveals its TeX to be typed, as it does
+   * while the math module has not loaded, or under `markupMode("full")`.
+   */
+  mathEditing?: "structure" | "source";
 }
 
 /**
