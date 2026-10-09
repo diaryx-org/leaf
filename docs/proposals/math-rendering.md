@@ -12,8 +12,11 @@ part_of: '[Proposals](/docs/proposals/proposals.md)'
 `implemented` on 2026-09-19, unreleased, in the order the text below gives:
 `leaf-math` in `17dff4b`; the Markdown flag in `d4485c2` and the core
 rendering in `eaa73b4`; both bindings in `086fd0d`; leaf-ratatui in
-`f112676`; leaf-web in `c4b644e`; leaf-swift in `ac8fae4`. leaf-gpui is not
-done: it is archived, and stays on the code-styled text it drew before.
+`f112676`; leaf-web in `c4b644e`; leaf-swift in `ac8fae4`. leaf-gpui
+followed on 2026-10-09, once it was off its archive and on gpui-pre — not
+through gpui's `svg` element as the text below expected, since that paints an
+icon's single colour, but by rasterizing leaf-math's SVG with resvg at the
+window's density and painting it with `paint_image`, in tables too.
 The wasm measure below was then answered: the typesetter moved into a module
 of its own, `leaf-math-wasm`, that the web editor fetches on the first
 formula, so a page without one pays nothing for it — the numbers are in

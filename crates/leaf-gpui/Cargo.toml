@@ -59,6 +59,12 @@ arboard = { version = "3", optional = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"] }
 smallvec = "1"
 
+# Math: leaf-math typesets a formula's TeX to an SVG with its baseline metrics,
+# and resvg rasterizes that SVG to the frame `paint_image` draws. resvg is the
+# version gpui already carries for its own icons, so it adds no second copy.
+leaf-math = { path = "../leaf-math" }
+resvg = "0.46"
+
 [dev-dependencies]
 # gpui's own test harness, which hands out a real `Window` (and so a text system
 # that shapes lines) with no platform window on screen. That's what lets the

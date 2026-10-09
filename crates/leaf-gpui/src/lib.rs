@@ -27,7 +27,7 @@
 mod prompt;
 mod style;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map::Entry};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -206,8 +206,8 @@ impl Default for EditorStyle {
     }
 }
 use leaf_core::{
-    Alignment, BlockKind, ColorScheme, DiskState, Doc, Glyph, InlineKind, InlineMarks, MediaInfo,
-    TableInfo, View,
+    Alignment, BlockKind, ColorScheme, DiskState, Doc, Glyph, InlineKind, InlineMarks, MathInfo,
+    MediaInfo, TableInfo, View, VisualKey,
 };
 
 use crate::style::{RunStyle, heading_scale, text_run};
@@ -471,6 +471,10 @@ pub struct Editor {
     /// retried at most once per session, not every frame. The stable `RenderImage`
     /// id also keeps gpui's sprite-atlas upload cached across frames.
     image_cache: HashMap<PathBuf, Option<Arc<RenderImage>>>,
+    /// Typeset formulas from the last relayout, keyed by everything their
+    /// raster depends on. `None` marks TeX that doesn't parse. Rebuilt from the
+    /// formulas each relayout uses, so one edited away is dropped with it.
+    math_cache: HashMap<MathKey, Option<MathRaster>>,
     /// The horizontal pixel delta added to each row's text when it was painted —
     /// a code block's indent-minus-scroll, zero for ordinary rows. Parallel to
     /// [`Self::last_rows`]; the mouse subtracts it to hit-test a scrolled row.
@@ -559,6 +563,7 @@ impl Editor {
             last_code_geoms: Rc::new(Vec::new()),
             last_image_geoms: Rc::new(Vec::new()),
             image_cache: HashMap::new(),
+            math_cache: HashMap::new(),
             last_row_x: Rc::new(Vec::new()),
             layout_key: None,
             shape_cache: HashMap::new(),
@@ -2313,14 +2318,7 @@ impl Shaper<'_> {
     /// stray body glyph can't shrink a heading; in practice a heading's glyphs
     /// all carry the same level, and everything else is body.
     fn line_size(&self, glyphs: &[Glyph]) -> Pixels {
-        let scale = glyphs
-            .iter()
-            .map(|g| match g.style.role {
-                Role::Heading(l) => heading_scale(l, &self.heading_scale),
-                _ => 1.0,
-            })
-            .fold(1.0f32, f32::max);
-        self.body_size * scale
+        line_size(glyphs, self.body_size, &self.heading_scale)
     }
 
     /// The height of a row of these glyphs — its font size stretched by the
@@ -2430,6 +2428,19 @@ fn shape_key(glyphs: &[Glyph], marked: Option<&Range<usize>>) -> u64 {
     h
 }
 
+/// [`Shaper::line_size`] without a shaper, for the math pass, which has to know
+/// the size a line's formulas are set at before the shaper borrows the window.
+fn line_size(glyphs: &[Glyph], body_size: Pixels, scales: &[f32; 6]) -> Pixels {
+    let scale = glyphs
+        .iter()
+        .map(|g| match g.style.role {
+            Role::Heading(l) => heading_scale(l, scales),
+            _ => 1.0,
+        })
+        .fold(1.0f32, f32::max);
+    body_size * scale
+}
+
 /// A style packed into the bits that reach the font: colour and the emphasis
 /// flags. `Style` is `Eq` but not `Hash`, and this is the part that matters.
 fn style_bits(s: CoreStyle) -> u16 {
@@ -2484,6 +2495,11 @@ struct RowSegment {
     /// next to a wide column is exactly the case that gets that wrong.) For prose
     /// it's just the text, which is moot — there's only ever one segment.
     field: (Pixels, Pixels),
+    /// An inline formula's picture, when this segment is one: the formula's
+    /// single atom glyph, which answers for the picture's whole width rather
+    /// than its own — the caret before it at `x`, after it at `x` plus the
+    /// picture's width — and is painted as the picture rather than as text.
+    atom: Option<MathRaster>,
 }
 
 /// One painted row: its shaped segments plus the mapping the caret/selection/
@@ -2522,6 +2538,7 @@ impl RowLayout {
                 char_byte,
                 first: 0,
                 field,
+                atom: None,
             }],
             char_srcs,
             end_src,
@@ -2558,7 +2575,11 @@ impl RowLayout {
     fn x_in(&self, si: usize, gi: usize) -> Pixels {
         let seg = &self.segments[si];
         let local = gi.saturating_sub(seg.first).min(seg.char_byte.len() - 1);
-        seg.x + seg.shaped.x_for_index(seg.char_byte[local])
+        match &seg.atom {
+            Some(m) if local > 0 => seg.x + m.size.width,
+            Some(_) => seg.x,
+            None => seg.x + seg.shaped.x_for_index(seg.char_byte[local]),
+        }
     }
 
     /// The flat character index nearest x — where a click lands. x is relative to
@@ -2568,6 +2589,11 @@ impl RowLayout {
             return 0;
         };
         let seg = &self.segments[si];
+        // A formula is one caret stop either side of its picture: a click on its
+        // left half lands before it, on its right half after it.
+        if let Some(m) = &seg.atom {
+            return seg.first + usize::from(x - seg.x > m.size.width / 2.0);
+        }
         let byte = seg.shaped.closest_index_for_x(x - seg.x);
         let local = seg
             .char_byte
@@ -2580,9 +2606,11 @@ impl RowLayout {
         // different cell — so a click in a cell's right gutter would jump the
         // caret into its neighbour. A table cell needs no such spot anyway: its
         // trailing gutter space carries the cell's end stop.
+        // A formula's atom is no cell, though: the spot just before it is the
+        // text segment's end, and the caret belongs there.
         match self.segments.get(si + 1) {
-            Some(next) => gi.min(next.first - 1),
-            None => gi,
+            Some(next) if next.atom.is_none() => gi.min(next.first - 1),
+            _ => gi,
         }
     }
 
@@ -2699,6 +2727,14 @@ struct LayoutKey {
     source_view: bool,
     /// The IME preedit underlines glyphs, so it changes what gets shaped.
     marked: Option<Range<usize>>,
+    /// Core's own key for the WYSIWYG map, which moves without the revision
+    /// when the caret crosses into another line that core reveals — a
+    /// formula's line shows its TeX, every other line its picture — so the
+    /// rows have to be rebuilt then too. `None` in source view.
+    visual: Option<VisualKey>,
+    /// The window's pixel density: a formula's raster is drawn at it, so a move
+    /// to a screen of another density re-typesets rather than stretching.
+    scale: u32,
 }
 
 /// One unit of the document as prepaint gathers it: a line of text to be pixel-
@@ -2714,14 +2750,21 @@ enum Logical {
     /// heading (`# ` with nothing typed after it) carries no glyph to read a
     /// [`Role::Heading`] from, so its row would otherwise be laid out — and its
     /// caret drawn — at body height until the first character landed.
+    ///
+    /// `atoms` are the line's inline formulas: the index of each one's atom glyph
+    /// in `glyphs`, ascending, its TeX, and whether it is set in display style.
     Line {
         glyphs: Vec<Glyph>,
         end_src: usize,
         code: Option<usize>,
         decoration: bool,
         heading: Option<u8>,
+        atoms: Vec<(usize, String, bool)>,
     },
-    Table(TableInfo),
+    /// A table, with the inline formulas in its cells: each one's atom glyph's
+    /// source offset — what a cell's glyph is found by, since the cells are not
+    /// the map's rows — its TeX, and whether it is set in display style.
+    Table(TableInfo, Vec<(usize, String, bool)>),
     /// A block-level image, whose placeholder row (the `🖼 alt` picture core
     /// draws) is skipped the way a table's box rows are — the GUI paints the real
     /// raster instead. `glyphs`/`end_src` are copied from that placeholder row so
@@ -2730,6 +2773,15 @@ enum Logical {
     /// alt text to fall back to.
     Image {
         info: MediaInfo,
+        glyphs: Vec<Glyph>,
+        end_src: usize,
+    },
+    /// A display formula, skipped and painted over exactly as an image is:
+    /// `glyphs`/`end_src` are its placeholder row's (`∑ tex`), whose caret stops
+    /// the reserved row keeps, and which is laid out as text if the TeX doesn't
+    /// typeset.
+    Math {
+        info: MathInfo,
         glyphs: Vec<Glyph>,
         end_src: usize,
     },
@@ -2766,6 +2818,7 @@ fn gather_logical(doc: &Doc) -> Vec<Logical> {
                     decoration: false,
                     // Source view draws raw markup at one size: the `# ` is text.
                     heading: None,
+                    atoms: Vec::new(),
                 });
                 start += line.len() + 1;
             }
@@ -2775,6 +2828,7 @@ fn gather_logical(doc: &Doc) -> Vec<Logical> {
             // cursor apiece walks them alongside the rows rather than re-scanning.
             let mut next_table = doc.vmap.tables.iter().peekable();
             let mut next_image = doc.vmap.media.iter().peekable();
+            let mut next_math = doc.vmap.math.iter().peekable();
             let mut code = doc.vmap.code_blocks.iter().enumerate().peekable();
             let mut r = 0usize;
             while r < doc.vmap.rows.len() {
@@ -2783,9 +2837,21 @@ fn gather_logical(doc: &Doc) -> Vec<Logical> {
                 while next_image.peek().is_some_and(|im| im.rows_span.end <= r) {
                     next_image.next();
                 }
+                // Likewise formulas.
+                while next_math.peek().is_some_and(|m| m.rows_span.end <= r) {
+                    next_math.next();
+                }
                 match next_table.peek().filter(|t| t.rows_span.start == r) {
                     Some(t) => {
-                        lines.push(Logical::Table((*t).clone()));
+                        let mut atoms = Vec::new();
+                        while let Some(m) =
+                            next_math.next_if(|m| m.rows_span.start < t.rows_span.end)
+                        {
+                            if m.glyph.is_some() {
+                                atoms.push((m.src, m.tex.clone(), m.display));
+                            }
+                        }
+                        lines.push(Logical::Table((*t).clone(), atoms));
                         r = t.rows_span.end;
                         next_table.next();
                     }
@@ -2801,6 +2867,19 @@ fn gather_logical(doc: &Doc) -> Vec<Logical> {
                         });
                         r = im.rows_span.end;
                     }
+                    _ if next_math
+                        .peek()
+                        .is_some_and(|m| m.glyph.is_none() && m.rows_span.start == r) =>
+                    {
+                        let m = next_math.next().unwrap();
+                        let vrow = &doc.vmap.rows[r];
+                        lines.push(Logical::Math {
+                            info: m.clone(),
+                            glyphs: vrow.glyphs.clone(),
+                            end_src: vrow.end_src,
+                        });
+                        r = m.rows_span.end;
+                    }
                     None => {
                         // Which code block, if any, this row falls inside — the
                         // cursor advances past a block once its rows are behind us.
@@ -2812,10 +2891,17 @@ fn gather_logical(doc: &Doc) -> Vec<Logical> {
                             .filter(|(_, c)| c.rows_span.contains(&r))
                             .map(|(i, _)| *i);
                         let vrow = &doc.vmap.rows[r];
+                        let mut atoms = Vec::new();
+                        while let Some(m) = next_math.next_if(|m| m.row == r) {
+                            if let Some(g) = m.glyph {
+                                atoms.push((g, m.tex.clone(), m.display));
+                            }
+                        }
                         lines.push(Logical::Line {
                             glyphs: vrow.glyphs.clone(),
                             end_src: vrow.end_src,
                             code: in_code,
+                            atoms,
                             // Tables and images are already skipped above, so the
                             // only decoration rows reaching here are the blank
                             // block-gap separators — laid out short below.
@@ -2879,6 +2965,7 @@ fn build_runs(
 /// line once to measure real glyph advances, then greedily breaks it at word
 /// boundaries wherever the measured width exceeds `wrap_px`. A line that doesn't
 /// need to wrap reuses its single shaped line as-is (no re-shaping).
+#[allow(clippy::too_many_arguments)]
 fn wrap_logical(
     shaper: &mut Shaper,
     glyphs: &[Glyph],
@@ -2886,6 +2973,7 @@ fn wrap_logical(
     wrap_px: f32,
     marked: Option<&Range<usize>>,
     height_override: Option<Pixels>,
+    atoms: &[(usize, MathRaster)],
     out: &mut Vec<RowLayout>,
 ) {
     // Every visual row of one logical line shares its role, so its height too:
@@ -2908,7 +2996,13 @@ fn wrap_logical(
     let char_byte = char_bytes(glyphs);
     let n = glyphs.len();
     let hash = shape_key(glyphs, marked);
-    let key = (hash, wrap_px.to_bits());
+    // A formula's atom is the same `∑` whatever it typesets to, so the glyphs
+    // alone can't key where the line breaks: the pictures' widths go in too.
+    let atom_bits = atoms.iter().fold(0u64, |h, (i, m)| {
+        let packed = (*i as u64) ^ (u64::from(f32::from(m.size.width).to_bits()) << 32);
+        (h.rotate_left(5) ^ packed).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95)
+    });
+    let key = (hash ^ atom_bits, wrap_px.to_bits());
 
     // Where this line breaks. Known already unless its text or the width moved —
     // which is the difference between a keystroke re-measuring the paragraph it
@@ -2919,7 +3013,23 @@ fn wrap_logical(
             // Shape the whole line once, purely to measure where the breaks
             // fall.
             let full = shaper.shape_keyed(hash, glyphs, marked);
-            let x = |byte: usize| f32::from(full.x_for_index(byte));
+            // How much further right each glyph sits than the shape says, for the
+            // formulas before it being their pictures' width rather than an
+            // atom glyph's.
+            let mut shift = vec![0f32; n + 1];
+            let mut atom = atoms.iter().peekable();
+            for i in 0..n {
+                let grow = match atom.next_if(|(a, _)| *a == i) {
+                    Some((_, m)) => {
+                        let drawn =
+                            full.x_for_index(char_byte[i + 1]) - full.x_for_index(char_byte[i]);
+                        f32::from(m.size.width - drawn)
+                    }
+                    None => 0.0,
+                };
+                shift[i + 1] = shift[i] + grow;
+            }
+            let x = |i: usize| f32::from(full.x_for_index(char_byte[i])) + shift[i];
 
             // Greedy word wrap: walk maximal non-space runs, breaking before a
             // word when the line up to that word's end would overflow.
@@ -2935,15 +3045,16 @@ fn wrap_logical(
                 while j < n && glyphs[j].ch != ' ' {
                     j += 1;
                 }
-                if x(char_byte[j]) - x(char_byte[line_start]) > wrap_px && word_start > line_start {
+                if x(j) - x(line_start) > wrap_px && word_start > line_start {
                     starts.push(word_start);
                     line_start = word_start;
                 }
             }
             drop(full);
-            if starts.len() > 1 {
-                // It wraps, so the rows are built from the shorter lines below
-                // and nothing will ever paint the whole-line shape. Keeping it
+            if starts.len() > 1 || !atoms.is_empty() {
+                // It wraps, or has formulas in it, so the rows are built from
+                // shorter runs below and nothing will ever paint the whole-line
+                // shape. Keeping it
                 // would double the memory the cache holds for every paragraph on
                 // screen; the breaks say all we needed it for.
                 shaper.forget(hash);
@@ -2956,7 +3067,7 @@ fn wrap_logical(
 
     // The common case — the line fits — is its own single row, and the shape
     // measured above is the one it paints.
-    if starts.len() == 1 {
+    if starts.len() == 1 && atoms.is_empty() {
         out.push(RowLayout::prose(
             shaper.shape_keyed(hash, glyphs, marked),
             glyphs.iter().map(|g| g.src).collect(),
@@ -2971,8 +3082,6 @@ fn wrap_logical(
         let gs = starts[k];
         let ge = starts.get(k + 1).copied().unwrap_or(n);
         let sub = &glyphs[gs..ge];
-        let scb = char_bytes(sub);
-        let shaped = shaper.shape(sub, marked);
         // The offset the caret lands on past this row: the block's end on the
         // last row, else the start of the next row's first glyph.
         let end_src = if ge == n {
@@ -2981,6 +3090,17 @@ fn wrap_logical(
             let last = &glyphs[ge - 1];
             last.src + last.ch.len_utf8()
         };
+        let here: Vec<(usize, MathRaster)> = atoms
+            .iter()
+            .filter(|(a, _)| (gs..ge).contains(a))
+            .map(|(a, m)| (a - gs, m.clone()))
+            .collect();
+        if !here.is_empty() {
+            out.push(atom_row(shaper, sub, &here, marked, end_src, height));
+            continue;
+        }
+        let scb = char_bytes(sub);
+        let shaped = shaper.shape(sub, marked);
         out.push(RowLayout::prose(
             shaped,
             sub.iter().map(|g| g.src).collect(),
@@ -2988,6 +3108,95 @@ fn wrap_logical(
             end_src,
             height,
         ));
+    }
+}
+
+/// A row with inline formulas on it, as segments: the text between them shaped
+/// in runs of its own, and each formula's atom glyph a segment as wide as its
+/// picture, so the text after it starts where the picture ends. `atoms` index
+/// into `glyphs`, ascending.
+///
+/// The row grows past `height` when a picture is taller than the line — a
+/// fraction, a sum with limits — by as much as keeps the picture inside it once
+/// gpui centres the line's text in the row, so the baseline the picture is
+/// placed on in paint is the one the text sits on.
+fn atom_row(
+    shaper: &mut Shaper,
+    glyphs: &[Glyph],
+    atoms: &[(usize, MathRaster)],
+    marked: Option<&Range<usize>>,
+    end_src: usize,
+    height: Pixels,
+) -> RowLayout {
+    fn text(
+        shaper: &mut Shaper,
+        glyphs: &[Glyph],
+        first: usize,
+        x: Pixels,
+        marked: Option<&Range<usize>>,
+    ) -> RowSegment {
+        let shaped = shaper.shape(glyphs, marked);
+        let field = (x, x + shaped.width);
+        RowSegment {
+            x,
+            shaped,
+            char_byte: char_bytes(glyphs),
+            first,
+            field,
+            atom: None,
+        }
+    }
+    let mut segments = Vec::new();
+    let mut x = px(0.0);
+    let mut start = 0usize;
+    let mut height = height;
+    for (a, m) in atoms {
+        if *a > start {
+            let seg = text(shaper, &glyphs[start..*a], start, x, marked);
+            x += seg.shaped.width;
+            segments.push(seg);
+        }
+        // The atom takes the line's size, so its metrics — which place the
+        // picture on the baseline — are the text's around it. Core gives it
+        // `Role::Math`, which shapes at the body size; in a heading that would
+        // put the picture on a baseline the heading's text isn't on. The glyph
+        // is never painted, so its role only decides the shape it measures as.
+        let mut atom = [glyphs[*a].clone()];
+        if let Some(h) = glyphs
+            .iter()
+            .find(|g| matches!(g.style.role, Role::Heading(_)))
+        {
+            atom[0].style.role = h.style.role;
+        }
+        let atom = &atom[..];
+        let shaped = shaper.shape(atom, marked);
+        // gpui centres a line's ascent-plus-descent in its row, so the baseline
+        // sits `(h - ascent - descent) / 2 + ascent` down. Solved for the least
+        // `h` that keeps the picture's ascent above and depth below inside it.
+        let (asc, desc) = (shaped.ascent, shaped.descent);
+        let pad = px(MATH_INLINE_PAD_Y);
+        let above = m.ascent + pad - (asc - desc) / 2.0;
+        let below = m.size.height - m.ascent + pad + (asc - desc) / 2.0;
+        height = height.max(above * 2.0).max(below * 2.0);
+        segments.push(RowSegment {
+            x,
+            shaped,
+            char_byte: char_bytes(atom),
+            first: *a,
+            field: (x, x + m.size.width),
+            atom: Some(m.clone()),
+        });
+        x += m.size.width;
+        start = a + 1;
+    }
+    // The text after the last formula — or, if a formula ends the row, an empty
+    // segment so the caret past it still has somewhere to stand.
+    segments.push(text(shaper, &glyphs[start..], start, x, marked));
+    RowLayout {
+        segments,
+        char_srcs: glyphs.iter().map(|g| g.src).collect(),
+        end_src,
+        height,
     }
 }
 
@@ -3064,6 +3273,10 @@ struct ImageGeom {
     image: Arc<RenderImage>,
     /// The painted box size, in logical pixels.
     size: Size<Pixels>,
+    /// The box's left edge from the text's left — zero for an image, which sits
+    /// flush left; half the slack for a display formula, which is centred on the
+    /// measure.
+    x: Pixels,
 }
 
 /// The tallest a block image is drawn, in logical pixels — a very tall image is
@@ -3072,6 +3285,86 @@ struct ImageGeom {
 const IMAGE_MAX_H: f32 = 480.0;
 /// Vertical breathing room above and below an image's box.
 const IMAGE_PAD_Y: f32 = 6.0;
+
+// ── math ─────────────────────────────────────────────────────────────────────
+//
+// leaf-core lays out in glyphs and cannot know how big a typeset formula is, so
+// it hands the GUI two shapes (see `MathInfo`): a display formula is a
+// placeholder row the GUI skips and paints the picture over, exactly as it does
+// a block image; an inline formula is one atom glyph the GUI makes as wide as
+// the picture, by giving it a row segment of its own (see `RowSegment::atom`).
+// The picture is leaf-math's SVG, rasterized here at the window's pixel density.
+
+/// Room an inline formula keeps from the row edge above and below it when it is
+/// taller than the line and the row grows to hold it.
+const MATH_INLINE_PAD_Y: f32 = 2.0;
+
+/// A typeset formula, rasterized: the picture and where the text baseline
+/// crosses it.
+#[derive(Clone)]
+struct MathRaster {
+    image: Arc<RenderImage>,
+    /// The painted box, in logical pixels — the size the formula was typeset at,
+    /// whatever the raster's own pixel density.
+    size: Size<Pixels>,
+    /// How far the picture rises above its baseline; the rest of its height is
+    /// below it.
+    ascent: Pixels,
+}
+
+/// Everything a formula's raster is a function of. The size is the font size it
+/// is set at, as bits for the same reason [`LayoutKey`]'s width is; the colour is
+/// the ink, and the scale the window's pixel density.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct MathKey {
+    tex: String,
+    display: bool,
+    size: u32,
+    color: [u8; 4],
+    scale: u32,
+}
+
+/// Typeset `key`'s TeX and rasterize it, or `None` if the TeX doesn't parse —
+/// a frontend then shows core's own rendering of the formula, the `∑` atom or
+/// the `∑ tex` placeholder row, which is what a plain surface shows anyway.
+fn typeset_math(key: &MathKey) -> Option<MathRaster> {
+    let font_px = f32::from_bits(key.size);
+    let scale = f32::from_bits(key.scale).max(1.0);
+    let pic = leaf_math::typeset(&key.tex, key.display, f64::from(font_px), key.color).ok()?;
+    let tree = resvg::usvg::Tree::from_data(pic.svg.as_bytes(), &Default::default()).ok()?;
+    let (w, h) = (
+        pic.px_width(f64::from(font_px)),
+        pic.px_height(f64::from(font_px)),
+    );
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(
+        ((w as f32 * scale).ceil() as u32).max(1),
+        ((h as f32 * scale).ceil() as u32).max(1),
+    )?;
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::from_scale(scale, scale),
+        &mut pixmap.as_mut(),
+    );
+    let (pw, ph) = (pixmap.width(), pixmap.height());
+    // resvg draws premultiplied RGBA; gpui paints straight BGRA. The swap is
+    // gpui's own, the one its SVG renderer makes.
+    let mut data = pixmap.take();
+    for px in data.as_chunks_mut::<4>().0 {
+        gpui::swap_rgba_pa_to_bgra(px);
+    }
+    let frame = image::Frame::new(image::RgbaImage::from_raw(pw, ph, data)?);
+    Some(MathRaster {
+        image: Arc::new(RenderImage::new(vec![frame])),
+        size: size(px(w as f32), px(h as f32)),
+        ascent: px((pic.height * f64::from(font_px)) as f32),
+    })
+}
+
+/// A colour as the `[r, g, b, a]` bytes leaf-math inks a formula in.
+fn color_bytes(c: Hsla) -> [u8; 4] {
+    let c = c.to_rgb();
+    [c.r, c.g, c.b, c.a].map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
+}
 
 /// The window's light/dark appearance as a [`ColorScheme`], for picking a
 /// `<picture>`'s `prefers-color-scheme` source (see [`MediaInfo::resolve`]). GPUI
@@ -3188,14 +3481,31 @@ fn fit_widths_px(widths: &mut [f32], avail: f32) {
 /// glyph that opens one), since the caller anchors each line's end stop just past
 /// its last glyph — a line cut mid-cluster would put a caret stop inside a
 /// character, and the next Backspace would take it apart from the middle.
-fn wrap_glyphs_px(shaper: &mut Shaper, glyphs: &[Glyph], width: f32) -> Vec<Vec<Glyph>> {
+fn wrap_glyphs_px(
+    shaper: &mut Shaper,
+    glyphs: &[Glyph],
+    width: f32,
+    atoms: &HashMap<usize, MathRaster>,
+) -> Vec<Vec<Glyph>> {
     if glyphs.is_empty() {
         return vec![Vec::new()];
     }
     let char_byte = char_bytes(glyphs);
     let hash = shape_key(glyphs, None);
     let shaped = shaper.shape_keyed(hash, glyphs, None);
-    let x = |i: usize| f32::from(shaped.x_for_index(char_byte[i]));
+    // A formula's atom measures as its picture, as in `wrap_logical`.
+    let mut shift = vec![0f32; glyphs.len() + 1];
+    for (i, g) in glyphs.iter().enumerate() {
+        let grow = match atom_of(g, atoms) {
+            Some(m) => {
+                let drawn = shaped.x_for_index(char_byte[i + 1]) - shaped.x_for_index(char_byte[i]);
+                f32::from(m.size.width - drawn)
+            }
+            None => 0.0,
+        };
+        shift[i + 1] = shift[i] + grow;
+    }
+    let x = |i: usize| f32::from(shaped.x_for_index(char_byte[i])) + shift[i];
 
     let n = glyphs.len();
     let mut lines: Vec<Vec<Glyph>> = Vec::new();
@@ -3236,6 +3546,13 @@ fn wrap_glyphs_px(shaper: &mut Shaper, glyphs: &[Glyph], width: f32) -> Vec<Vec<
     lines
 }
 
+/// The typeset picture `g` stands for, if it is a formula's atom in a table cell.
+fn atom_of<'a>(g: &Glyph, atoms: &'a HashMap<usize, MathRaster>) -> Option<&'a MathRaster> {
+    (g.style.role == Role::Math)
+        .then(|| atoms.get(&g.src))
+        .flatten()
+}
+
 /// Lay a table out in pixels and push a [`RowLayout`] per grid line, returning
 /// the geometry its chrome is painted from.
 ///
@@ -3246,6 +3563,7 @@ fn layout_table(
     info: &TableInfo,
     avail: f32,
     marked: Option<&Range<usize>>,
+    atoms: &HashMap<usize, MathRaster>,
     out: &mut Vec<RowLayout>,
 ) -> Option<TableGeom> {
     let cols = info.grid.iter().map(|r| r.cells.len()).max().unwrap_or(0);
@@ -3276,7 +3594,19 @@ fn layout_table(
         .map(|row| {
             row.cells
                 .iter()
-                .map(|cell| measure_glyphs(shaper, &cell.glyphs))
+                .map(|cell| {
+                    // A formula is as wide as its picture, not its atom glyph.
+                    let extra: f32 = cell
+                        .glyphs
+                        .iter()
+                        .filter_map(|g| Some((g, atom_of(g, atoms)?)))
+                        .map(|(g, m)| {
+                            let drawn = shaper.shape(std::slice::from_ref(g), None).width;
+                            f32::from(m.size.width - drawn)
+                        })
+                        .sum();
+                    measure_glyphs(shaper, &cell.glyphs) + extra
+                })
                 .collect()
         })
         .collect();
@@ -3306,7 +3636,9 @@ fn layout_table(
                 Some(cell) if measured[ri][c] <= widths[c] => vec![cell.glyphs.clone()],
                 // The wrap width leaves room for the gutter space appended
                 // below, or the line plus its space would overrun the column.
-                Some(cell) => wrap_glyphs_px(shaper, &cell.glyphs, (widths[c] - space).max(1.0)),
+                Some(cell) => {
+                    wrap_glyphs_px(shaper, &cell.glyphs, (widths[c] - space).max(1.0), atoms)
+                }
                 None => vec![Vec::new()],
             })
             .collect();
@@ -3315,6 +3647,8 @@ fn layout_table(
         for j in 0..height {
             let mut segments = Vec::new();
             let mut char_srcs: Vec<usize> = Vec::new();
+            // Body height, unless a formula in one of the cells stands taller.
+            let mut line_h = row_h;
             // The prefix opens every grid row, before the grid itself — its
             // glyphs point at the enclosing block, so a click in the gutter lands
             // there rather than in a cell.
@@ -3325,6 +3659,7 @@ fn layout_table(
                     char_byte,
                     first: 0,
                     field: (px(0.0), px(indent)),
+                    atom: None,
                 });
                 char_srcs.extend(glyphs.iter().map(|g| g.src));
             }
@@ -3352,6 +3687,46 @@ fn layout_table(
                     src: end,
                     stop: true,
                 });
+                let here: Vec<(usize, MathRaster)> = gs
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, g)| Some((i, atom_of(g, atoms)?.clone())))
+                    .collect();
+                if !here.is_empty() {
+                    // Formulas in the cell: lay its line out as a row of its
+                    // own, text and pictures, and move that into the column.
+                    let laid = atom_row(shaper, &gs, &here, marked, end, row_h);
+                    let last = laid
+                        .segments
+                        .last()
+                        .expect("atom_row ends on a text segment");
+                    let width = f32::from(last.x + last.shaped.width);
+                    let slack = (widths[c] - width).max(0.0);
+                    let lead = match cell.align {
+                        Alignment::Right => slack,
+                        Alignment::Center => slack / 2.0,
+                        _ => 0.0,
+                    };
+                    let x0 = px(bounds[c] + BORDER + CELL_PAD_X + lead);
+                    let n = laid.segments.len();
+                    let base = char_srcs.len();
+                    for (k, mut seg) in laid.segments.into_iter().enumerate() {
+                        seg.x += x0;
+                        seg.first += base;
+                        seg.field = (seg.field.0 + x0, seg.field.1 + x0);
+                        // The cell still answers for its whole column.
+                        if k == 0 {
+                            seg.field.0 = px(bounds[c]);
+                        }
+                        if k + 1 == n {
+                            seg.field.1 = px(bounds[c + 1]);
+                        }
+                        segments.push(seg);
+                    }
+                    char_srcs.extend(laid.char_srcs);
+                    line_h = line_h.max(laid.height);
+                    continue;
+                }
                 let char_byte = char_bytes(&gs);
                 let shaped = shaper.shape(&gs, marked);
 
@@ -3368,6 +3743,7 @@ fn layout_table(
                     first: char_srcs.len(),
                     // The cell answers for its whole column, borders included.
                     field: (px(bounds[c]), px(bounds[c + 1])),
+                    atom: None,
                 });
                 char_srcs.extend(gs.iter().map(|g| g.src));
             }
@@ -3377,7 +3753,7 @@ fn layout_table(
                 segments,
                 char_srcs,
                 end_src,
-                height: row_h,
+                height: line_h,
             });
         }
         bands.push((band_start..out.len(), row.head));
@@ -3777,8 +4153,15 @@ impl Element for TextElement {
         // document's revision, so this is free unless the text moved.
         let view = self.editor.read(cx).doc.as_ref().unwrap().view;
         if view == View::Wysiwyg {
-            self.editor
-                .update(cx, |e, _| e.doc.as_mut().unwrap().build_visual_unwrapped());
+            self.editor.update(cx, |e, _| {
+                let doc = e.doc.as_mut().unwrap();
+                // The GUI paints a formula inside a line, so core should hand it
+                // an atom to paint over rather than the TeX as code. A no-op once
+                // set, and set here rather than where the document arrives so a
+                // host that swaps `doc` in directly gets it too.
+                doc.set_inline_pictures(true);
+                doc.build_visual_unwrapped();
+            });
         }
 
         let (key, sel, caret, style, marked, cached, doc_dir) = {
@@ -3789,6 +4172,8 @@ impl Element for TextElement {
                 width: wrap_px.to_bits(),
                 source_view: doc.view == View::Source,
                 marked: editor.marked_range.clone(),
+                visual: (doc.view == View::Wysiwyg).then(|| doc.visual_key()),
+                scale: window.scale_factor().to_bits(),
             };
             // Reusing the rows is only sound if they're really there: the first
             // paint has the key unset.
@@ -3889,6 +4274,55 @@ impl Element for TextElement {
                     }
                     loaded
                 };
+                // Typeset every formula this layout shows, likewise before the
+                // shaper borrows the window. A display formula is set at the body
+                // size; an inline one at its line's, so one in a heading is as
+                // big as the heading. Reused from the last relayout by key.
+                let ink = color_bytes(style.text);
+                let density = window.scale_factor().to_bits();
+                let math_key = |tex: &str, display: bool, size: Pixels| MathKey {
+                    tex: tex.to_owned(),
+                    display,
+                    size: f32::from(size).to_bits(),
+                    color: ink,
+                    scale: density,
+                };
+                let math: HashMap<MathKey, Option<MathRaster>> = {
+                    let mut old = self
+                        .editor
+                        .update(cx, |e, _| std::mem::take(&mut e.math_cache));
+                    let mut fresh = HashMap::new();
+                    for logical in &logical_lines {
+                        let wanted: Vec<MathKey> = match logical {
+                            Logical::Line { glyphs, atoms, .. } if !atoms.is_empty() => {
+                                let size = line_size(glyphs, font_size, &style.heading_scale);
+                                atoms
+                                    .iter()
+                                    .map(|(_, tex, d)| math_key(tex, *d, size))
+                                    .collect()
+                            }
+                            Logical::Math { info, .. } => {
+                                vec![math_key(&info.tex, info.display, font_size)]
+                            }
+                            // A table is body text throughout.
+                            Logical::Table(_, atoms) if !atoms.is_empty() => atoms
+                                .iter()
+                                .map(|(_, tex, d)| math_key(tex, *d, font_size))
+                                .collect(),
+                            _ => continue,
+                        };
+                        for key in wanted {
+                            if let Entry::Vacant(slot) = fresh.entry(key) {
+                                let raster = old
+                                    .remove(slot.key())
+                                    .unwrap_or_else(|| typeset_math(slot.key()));
+                                slot.insert(raster);
+                            }
+                        }
+                    }
+                    self.editor.update(cx, |e, _| e.math_cache = fresh.clone());
+                    fresh
+                };
                 // The shape cache rides with the editor between paints; take
                 // it for the duration, since shaping needs the window mutably
                 // and the editor can't be borrowed across that.
@@ -3938,8 +4372,17 @@ impl Element for TextElement {
                             code,
                             decoration,
                             heading,
+                            atoms,
                         } => {
                             let before = rows.len();
+                            let size = shaper.line_size(glyphs);
+                            let atoms: Vec<(usize, MathRaster)> = atoms
+                                .iter()
+                                .filter_map(|(i, tex, d)| {
+                                    let m = math.get(&math_key(tex, *d, size))?.clone()?;
+                                    Some((*i, m))
+                                })
+                                .collect();
                             // A code line never wraps — it scrolls inside its box —
                             // so it's laid out at an unbounded width and stays one
                             // row. Prose wraps at the element width as before.
@@ -3967,6 +4410,7 @@ impl Element for TextElement {
                                 w,
                                 marked.as_ref(),
                                 gap.or(head),
+                                &atoms,
                                 &mut rows,
                             );
                             if let Some(id) = code {
@@ -3983,10 +4427,22 @@ impl Element for TextElement {
                                 }
                             }
                         }
-                        Logical::Table(info) => {
-                            if let Some(g) =
-                                layout_table(&mut shaper, info, wrap_px, marked.as_ref(), &mut rows)
-                            {
+                        Logical::Table(info, atoms) => {
+                            let atoms: HashMap<usize, MathRaster> = atoms
+                                .iter()
+                                .filter_map(|(src, tex, d)| {
+                                    let m = math.get(&math_key(tex, *d, font_size))?.clone()?;
+                                    Some((*src, m))
+                                })
+                                .collect();
+                            if let Some(g) = layout_table(
+                                &mut shaper,
+                                info,
+                                wrap_px,
+                                marked.as_ref(),
+                                &atoms,
+                                &mut rows,
+                            ) {
                                 geoms.push(g);
                             }
                         }
@@ -4016,6 +4472,7 @@ impl Element for TextElement {
                                         row: rows.len() - 1,
                                         image,
                                         size: box_size,
+                                        x: px(0.0),
                                     });
                                 }
                                 None => {
@@ -4029,9 +4486,85 @@ impl Element for TextElement {
                                         wrap_px,
                                         marked.as_ref(),
                                         None,
+                                        &[],
                                         &mut rows,
                                     );
                                 }
+                            }
+                        }
+                        Logical::Math {
+                            info,
+                            glyphs,
+                            end_src,
+                        } => {
+                            let key = math_key(&info.tex, info.display, font_size);
+                            match math.get(&key).cloned().flatten() {
+                                Some(m) => {
+                                    // A typeset formula: one row as tall as the
+                                    // picture plus an image's padding. What comes
+                                    // before the placeholder — a quote's bar, a
+                                    // list item's marker — stays as text, and the
+                                    // picture is centred in the measure after it,
+                                    // shrunk to fit if the formula is wider. The
+                                    // formula's caret stops stand at its left.
+                                    let lead = glyphs
+                                        .iter()
+                                        .position(|g| g.style.role == Role::Math)
+                                        .unwrap_or(0);
+                                    let mut segments = Vec::new();
+                                    let mut char_srcs = Vec::new();
+                                    let mut indent = px(0.0);
+                                    if lead > 0 {
+                                        let prefix = &glyphs[..lead];
+                                        let shaped = shaper.shape(prefix, marked.as_ref());
+                                        indent = shaped.width;
+                                        segments.push(RowSegment {
+                                            x: px(0.0),
+                                            shaped,
+                                            char_byte: char_bytes(prefix),
+                                            first: 0,
+                                            field: (px(0.0), indent),
+                                            atom: None,
+                                        });
+                                        char_srcs.extend(prefix.iter().map(|g| g.src));
+                                    }
+                                    let avail = (px(wrap_px) - indent).max(px(1.0));
+                                    let fit = (avail / m.size.width.max(px(1.0))).min(1.0);
+                                    let box_size = size(m.size.width * fit, m.size.height * fit);
+                                    let x = indent + ((avail - box_size.width) / 2.0).max(px(0.0));
+                                    segments.push(RowSegment {
+                                        x,
+                                        shaped: shaper.empty(),
+                                        char_byte: vec![0, 0],
+                                        first: char_srcs.len(),
+                                        field: (indent, px(wrap_px)),
+                                        atom: None,
+                                    });
+                                    char_srcs.push(glyphs.get(lead).map_or(*end_src, |g| g.src));
+                                    rows.push(RowLayout {
+                                        segments,
+                                        char_srcs,
+                                        end_src: *end_src,
+                                        height: box_size.height + px(2.0 * IMAGE_PAD_Y),
+                                    });
+                                    image_geoms.push(ImageGeom {
+                                        row: rows.len() - 1,
+                                        image: m.image,
+                                        size: box_size,
+                                        x,
+                                    });
+                                }
+                                // TeX that doesn't parse: core's `∑ tex` row.
+                                None => wrap_logical(
+                                    &mut shaper,
+                                    glyphs,
+                                    *end_src,
+                                    wrap_px,
+                                    marked.as_ref(),
+                                    None,
+                                    &[],
+                                    &mut rows,
+                                ),
                             }
                         }
                     }
@@ -4255,7 +4788,7 @@ impl Element for TextElement {
             .iter()
             .filter(|g| g.row + 1 < tops.len())
             .map(|g| {
-                let origin = point(left, row_top(g.row) + px(IMAGE_PAD_Y));
+                let origin = point(left + g.x, row_top(g.row) + px(IMAGE_PAD_Y));
                 (Bounds::new(origin, g.size), g.image.clone())
             })
             .collect();
@@ -4344,6 +4877,17 @@ impl Element for TextElement {
             let paint_row = |window: &mut Window, cx: &mut App| {
                 for seg in &row.segments {
                     let origin = point(left + seg.x + dx, y);
+                    // An inline formula paints its picture in place of its atom
+                    // glyph, on the baseline gpui would have set that glyph on.
+                    if let Some(m) = &seg.atom {
+                        let (asc, desc) = (seg.shaped.ascent, seg.shaped.descent);
+                        let baseline = y + (row.height - asc - desc) / 2.0 + asc;
+                        let rect = Bounds::new(point(origin.x, baseline - m.ascent), m.size);
+                        window
+                            .paint_image(rect, rect, Corners::default(), m.image.clone(), 0, false)
+                            .ok();
+                        continue;
+                    }
                     // A run's background — a highlight's wash, inline code's pill —
                     // is its own pass since gpui split it out of `paint`, and goes
                     // down first so the glyphs land on top of it.
@@ -4840,7 +5384,7 @@ mod table_layout_tests {
                 prev_breaks: HashMap::new(),
             };
             let mut rows = Vec::new();
-            let geom = layout_table(&mut shaper, &info, avail, None, &mut rows)
+            let geom = layout_table(&mut shaper, &info, avail, None, &HashMap::new(), &mut rows)
                 .expect("the table should lay out");
             (rows, geom, info)
         })
@@ -5090,8 +5634,8 @@ mod table_layout_tests {
         let mut tables = 0;
         for l in &logical {
             match l {
-                Logical::Table(_) => tables += 1,
-                Logical::Image { .. } => {}
+                Logical::Table(..) => tables += 1,
+                Logical::Image { .. } | Logical::Math { .. } => {}
                 Logical::Line { glyphs, .. } => {
                     let text: String = glyphs.iter().map(|g| g.ch).collect();
                     assert!(
@@ -5342,6 +5886,8 @@ mod table_layout_tests {
                 width: 800f32.to_bits(),
                 source_view: true,
                 marked: None,
+                visual: None,
+                scale: 1f32.to_bits(),
             });
             e.last_rows = Rc::new(vec![RowLayout::prose(
                 Default::default(),
@@ -5370,6 +5916,8 @@ mod table_layout_tests {
                 width: 800f32.to_bits(),
                 source_view: true,
                 marked: None,
+                visual: None,
+                scale: 1f32.to_bits(),
             });
         });
         editor.update(cx, |e, cx| {
@@ -5733,5 +6281,404 @@ mod table_layout_tests {
         assert_eq!(row_at_y(&tops, px(64.0)), 2);
         // Past the bottom clamps to the last real row, not the boundary entry.
         assert_eq!(row_at_y(&tops, px(999.0)), 2);
+    }
+}
+
+/// Formulas: what `gather_logical` hands prepaint, and the geometry an inline
+/// formula gives its row. Driven through gpui's test window for the same reason
+/// the table tests are — every x here comes out of a real text system.
+#[cfg(test)]
+mod math_layout_tests {
+    use super::*;
+    use gpui::TestAppContext;
+    use gpui::VisualTestContext;
+    use leaf_core::{Doc, View};
+
+    /// A WYSIWYG document over `body`, with inline pictures on as the editor
+    /// sets them. The caret is at 0, so the first line is the revealed one:
+    /// fixtures keep their formulas off it.
+    fn math_doc(name: &str, body: &str) -> Doc {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut p = std::env::temp_dir();
+        p.push(format!("leaf_gpui_math_{name}_{seq}.md"));
+        std::fs::write(&p, body).unwrap();
+        let mut doc = Doc::open(p).unwrap();
+        doc.view = View::Wysiwyg;
+        doc.set_inline_pictures(true);
+        doc.build_visual_unwrapped();
+        doc
+    }
+
+    fn key(tex: &str, display: bool) -> MathKey {
+        MathKey {
+            tex: tex.into(),
+            display,
+            size: 16f32.to_bits(),
+            color: [0, 0, 0, 255],
+            scale: 2f32.to_bits(),
+        }
+    }
+
+    /// Run `f` with a shaper over a test window, at the metrics the table tests
+    /// use.
+    fn with_shaper<R>(cx: &mut TestAppContext, f: impl FnOnce(&mut Shaper) -> R) -> R {
+        let window = cx.add_window(|_, _| gpui::Empty);
+        let mut vcx = VisualTestContext::from_window(window.into(), cx);
+        vcx.update(|window, _| {
+            let font = window.text_style().font();
+            let mut shaper = Shaper {
+                window,
+                styler: test_run_style(font),
+                body_size: px(16.0),
+                heading_scale: EditorStyle::default().heading_scale,
+                line_ratio: 1.5,
+                prev: HashMap::new(),
+                fresh: HashMap::new(),
+                breaks: HashMap::new(),
+                prev_breaks: HashMap::new(),
+            };
+            f(&mut shaper)
+        })
+    }
+
+    /// The glyphs and atoms of the first line that has a formula on it.
+    fn first_atom_line(doc: &Doc) -> (Vec<Glyph>, usize, Vec<(usize, String, bool)>) {
+        gather_logical(doc)
+            .into_iter()
+            .find_map(|l| match l {
+                Logical::Line {
+                    glyphs,
+                    end_src,
+                    atoms,
+                    ..
+                } if !atoms.is_empty() => Some((glyphs, end_src, atoms)),
+                _ => None,
+            })
+            .expect("a line with an inline formula")
+    }
+
+    #[test]
+    fn a_display_formula_is_gathered_as_math_and_an_inline_one_as_an_atom() {
+        let doc = math_doc("gather", "top\n\nSee $x^2$ here.\n\n$$\\frac{a}{b}$$\n");
+        let logical = gather_logical(&doc);
+        let display: Vec<&MathInfo> = logical
+            .iter()
+            .filter_map(|l| match l {
+                Logical::Math { info, .. } => Some(info),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(display.len(), 1, "one display formula");
+        assert_eq!(display[0].tex, "\\frac{a}{b}");
+        let (glyphs, _, atoms) = first_atom_line(&doc);
+        assert_eq!(atoms.len(), 1);
+        assert_eq!(atoms[0].1, "x^2");
+        assert_eq!(
+            glyphs[atoms[0].0].style.role,
+            Role::Math,
+            "the atom is the formula's glyph"
+        );
+    }
+
+    #[test]
+    fn a_formula_rasterizes_at_its_typeset_size_and_the_window_density() {
+        let m = typeset_math(&key("x^2", false)).expect("x^2 typesets");
+        let pic = leaf_math::typeset("x^2", false, 16.0, [0, 0, 0, 255]).unwrap();
+        assert!((f32::from(m.size.width) - pic.px_width(16.0) as f32).abs() < 0.01);
+        assert!((f32::from(m.ascent) - (pic.height * 16.0) as f32).abs() < 0.01);
+        // Drawn at 2×, so the raster carries twice the box's pixels.
+        let raster = m.image.size(0);
+        assert_eq!(
+            raster.width.0,
+            (f32::from(m.size.width) * 2.0).ceil() as i32
+        );
+        // And TeX that doesn't parse is no picture, so core's atom stands.
+        assert!(typeset_math(&key("\\frac{1}{", false)).is_none());
+    }
+
+    #[gpui::test]
+    fn the_text_after_a_formula_starts_where_its_picture_ends(cx: &mut TestAppContext) {
+        let doc = math_doc("after", "top\n\nab $\\frac{a+b}{c-d}$ cd\n");
+        let (glyphs, end_src, atoms) = first_atom_line(&doc);
+        let m = typeset_math(&key(&atoms[0].1, false)).unwrap();
+        let a = atoms[0].0;
+        let row = with_shaper(cx, |shaper| {
+            let mut rows = Vec::new();
+            wrap_logical(
+                shaper,
+                &glyphs,
+                end_src,
+                10_000.0,
+                None,
+                None,
+                &[(a, m.clone())],
+                &mut rows,
+            );
+            assert_eq!(rows.len(), 1);
+            rows.pop().unwrap()
+        });
+        let before = row.x_at(a);
+        // The caret after the formula stands a whole picture past the one before
+        // it, and the next character is right there.
+        assert!((f32::from(row.x_at(a + 1) - before) - f32::from(m.size.width)).abs() < 0.01);
+        assert_eq!(
+            row.x_at(a + 1),
+            row.x_in(row.segment_of(a + 1).unwrap(), a + 1)
+        );
+        // A click on the picture's left half lands before it, on its right half
+        // after it.
+        let quarter = m.size.width / 4.0;
+        assert_eq!(row.index_for_x(before + quarter), a);
+        assert_eq!(row.index_for_x(before + quarter * 3.0), a + 1);
+        // A fraction stands taller than a body line, and the row grows to hold it.
+        assert!(row.height > px(16.0 * 1.5), "row stayed {:?}", row.height);
+        // Every glyph keeps its source offset: the row is still one run of stops.
+        assert_eq!(
+            row.char_srcs,
+            glyphs.iter().map(|g| g.src).collect::<Vec<_>>()
+        );
+    }
+
+    #[gpui::test]
+    fn painting_formulas_reserves_their_rows_and_does_not_panic(cx: &mut TestAppContext) {
+        // The real prepaint and paint, with formulas inline (one in a heading),
+        // a display block, and TeX that doesn't parse: the editor turns inline
+        // pictures on itself, typesets, rasterizes, and paints them. Then the
+        // rows it kept are read back for what the formulas did to them.
+        let doc = math_doc(
+            "paint",
+            "top\n\n# Euler $e^{i\\pi}$\n\nA $\\frac{a}{b}$ line and a broken $\\frac{1}{$ one.\n\n$$\\int_0^1 x\\,dx$$\n\nafter\n",
+        );
+        // Off, as a host's freshly opened document has it: the editor's job.
+        let mut doc = doc;
+        doc.set_inline_pictures(false);
+        let window = cx.add_window(|_, cx| Editor::new(cx, Some(doc)));
+        let editor = window.root(cx).unwrap();
+        let mut vcx = VisualTestContext::from_window(window.into(), cx);
+        vcx.draw(
+            gpui::point(px(0.0), px(0.0)),
+            gpui::size(px(480.0), px(600.0)),
+            |_, _| TextElement {
+                editor: editor.clone(),
+            },
+        );
+        editor.read_with(&vcx, |e, _| {
+            let atoms = e
+                .last_rows
+                .iter()
+                .flat_map(|r| &r.segments)
+                .filter(|s| s.atom.is_some())
+                .count();
+            assert_eq!(
+                atoms, 2,
+                "the heading's and the paragraph's formula; not the broken one"
+            );
+            assert_eq!(
+                e.last_image_geoms.len(),
+                1,
+                "the display formula is painted like an image"
+            );
+            assert_eq!(
+                e.math_cache.values().filter(|m| m.is_none()).count(),
+                1,
+                "the broken formula is remembered as one that doesn't typeset"
+            );
+        });
+    }
+
+    /// Draw `editor` once into a 480×600 window.
+    fn draw(vcx: &mut VisualTestContext, editor: &Entity<Editor>) {
+        vcx.draw(
+            gpui::point(px(0.0), px(0.0)),
+            gpui::size(px(480.0), px(600.0)),
+            |_, _| TextElement {
+                editor: editor.clone(),
+            },
+        );
+    }
+
+    /// An editor over `body`, drawn once.
+    fn drawn_editor(
+        cx: &mut TestAppContext,
+        name: &str,
+        body: &str,
+    ) -> (Entity<Editor>, VisualTestContext) {
+        let doc = math_doc(name, body);
+        let window = cx.add_window(|_, cx| Editor::new(cx, Some(doc)));
+        let editor = window.root(cx).unwrap();
+        let mut vcx = VisualTestContext::from_window(window.into(), cx);
+        draw(&mut vcx, &editor);
+        (editor, vcx)
+    }
+
+    #[gpui::test]
+    fn the_caret_reaching_a_formula_s_line_shows_its_tex_and_leaving_shows_the_picture(
+        cx: &mut TestAppContext,
+    ) {
+        // Core reveals the TeX of the formula on the caret's line, which moves
+        // its map without moving the revision — so the rows must follow the
+        // caret, or the picture stays up with no TeX under it to edit.
+        let body = "top\n\nab $x^2$ cd\n";
+        let (editor, mut vcx) = drawn_editor(cx, "reveal", body);
+        let atoms = |e: &Editor| {
+            e.last_rows
+                .iter()
+                .flat_map(|r| &r.segments)
+                .filter(|s| s.atom.is_some())
+                .count()
+        };
+        assert_eq!(editor.read_with(&vcx, |e, _| atoms(e)), 1);
+        let inside = body.find("x^2").unwrap();
+        editor.update(&mut vcx, |e, _| {
+            e.doc.as_mut().unwrap().place_caret(inside, false)
+        });
+        draw(&mut vcx, &editor);
+        editor.read_with(&vcx, |e, _| {
+            assert_eq!(atoms(e), 0, "the revealed formula is TeX, not a picture");
+            assert!(
+                e.last_rows.iter().any(|r| r.char_srcs.contains(&inside)),
+                "the TeX's offsets are on screen to put the caret among"
+            );
+        });
+        editor.update(&mut vcx, |e, _| {
+            e.doc.as_mut().unwrap().place_caret(0, false)
+        });
+        draw(&mut vcx, &editor);
+        assert_eq!(
+            editor.read_with(&vcx, |e, _| atoms(e)),
+            1,
+            "and back to the picture"
+        );
+    }
+
+    #[gpui::test]
+    fn a_click_just_before_a_formula_lands_before_it_not_a_character_early(
+        cx: &mut TestAppContext,
+    ) {
+        // The clamp that keeps a click in a table cell's gutter out of the next
+        // cell must not apply to a formula: the spot before its picture is the
+        // text's end, and that is where the caret goes.
+        let doc = math_doc("edge", "top\n\nab$x^2$ cd\n");
+        let (glyphs, end_src, atoms) = first_atom_line(&doc);
+        let m = typeset_math(&key(&atoms[0].1, false)).unwrap();
+        let a = atoms[0].0;
+        let row = with_shaper(cx, |shaper| {
+            let mut rows = Vec::new();
+            wrap_logical(
+                shaper,
+                &glyphs,
+                end_src,
+                10_000.0,
+                None,
+                None,
+                &[(a, m)],
+                &mut rows,
+            );
+            rows.pop().unwrap()
+        });
+        let edge = row.x_at(a);
+        assert_eq!(row.index_for_x(edge - px(1.0)), a);
+        assert_eq!(row.index_for_x(edge), a);
+    }
+
+    #[gpui::test]
+    fn a_formula_in_a_heading_sits_on_the_heading_s_baseline(cx: &mut TestAppContext) {
+        // The atom glyph's role is `Math`, which shapes at the body size; the
+        // picture is placed by the atom's metrics, so they must be the heading's.
+        let doc = math_doc("heading", "top\n\n# Head $x^2$ tail\n");
+        let (glyphs, end_src, atoms) = first_atom_line(&doc);
+        let row = with_shaper(cx, |shaper| {
+            let size = shaper.line_size(&glyphs);
+            let mut k = key(&atoms[0].1, false);
+            k.size = f32::from(size).to_bits();
+            let m = typeset_math(&k).unwrap();
+            let mut rows = Vec::new();
+            wrap_logical(
+                shaper,
+                &glyphs,
+                end_src,
+                10_000.0,
+                None,
+                None,
+                &[(atoms[0].0, m)],
+                &mut rows,
+            );
+            rows.pop().unwrap()
+        });
+        let text = row.segments.iter().find(|s| s.atom.is_none()).unwrap();
+        let atom = row.segments.iter().find(|s| s.atom.is_some()).unwrap();
+        assert_eq!(atom.shaped.ascent, text.shaped.ascent);
+        assert_eq!(atom.shaped.descent, text.shaped.descent);
+    }
+
+    #[gpui::test]
+    fn a_formula_in_a_table_cell_is_a_picture_the_column_makes_room_for(cx: &mut TestAppContext) {
+        let body = "top\n\n| a | b |\n|---|---|\n| one | $\\frac{x}{y}$ |\n";
+        let (editor, vcx) = drawn_editor(cx, "table", body);
+        editor.read_with(&vcx, |e, _| {
+            let (r, row) = e
+                .last_rows
+                .iter()
+                .enumerate()
+                .find(|(_, r)| r.segments.iter().any(|s| s.atom.is_some()))
+                .expect("the cell's formula is an atom segment");
+            let atom = row.segments.iter().find(|s| s.atom.is_some()).unwrap();
+            let m = atom.atom.as_ref().unwrap();
+            // Inside its column, which is at least as wide as the picture.
+            let g = &e.last_geoms[0];
+            assert!(f32::from(atom.x) >= g.bounds[1]);
+            assert!(f32::from(atom.x + m.size.width) <= g.bounds[2]);
+            // A fraction outgrows a body row, and its grid line grows with it.
+            assert!(row.height > e.last_rows[r - 1].height);
+        });
+    }
+
+    #[gpui::test]
+    fn a_display_formula_in_a_quote_keeps_the_quote_s_bar(cx: &mut TestAppContext) {
+        let (editor, vcx) = drawn_editor(cx, "quote", "top\n\n> $$x^2$$\n");
+        editor.read_with(&vcx, |e, _| {
+            let geom = e.last_image_geoms.first().expect("the formula is painted");
+            let row = &e.last_rows[geom.row];
+            let bar = &row.segments[0];
+            assert!(
+                bar.shaped.text.contains('│'),
+                "the bar is drawn: {:?}",
+                bar.shaped.text
+            );
+            assert!(geom.x >= bar.shaped.width, "and the picture is clear of it");
+        });
+    }
+
+    #[gpui::test]
+    fn a_wide_formula_wraps_the_line_its_picture_overflows(cx: &mut TestAppContext) {
+        // At this width the line fits as glyphs — the atom is one `∑` — but not
+        // with the picture in it, so measuring the atom would leave it running
+        // off the edge.
+        let doc = math_doc(
+            "wrap",
+            "top\n\nsome words $\\sum_{k=1}^{n} k^2 + \\frac{n(n+1)(2n+1)}{6}$ end\n",
+        );
+        let (glyphs, end_src, atoms) = first_atom_line(&doc);
+        let m = typeset_math(&key(&atoms[0].1, false)).unwrap();
+        let (bare, wide) = with_shaper(cx, |shaper| {
+            let width = f32::from(shaper.shape(&glyphs, None).width) + 1.0;
+            let mut bare = Vec::new();
+            wrap_logical(shaper, &glyphs, end_src, width, None, None, &[], &mut bare);
+            let mut wide = Vec::new();
+            wrap_logical(
+                shaper,
+                &glyphs,
+                end_src,
+                width,
+                None,
+                None,
+                &[(atoms[0].0, m.clone())],
+                &mut wide,
+            );
+            (bare.len(), wide.len())
+        });
+        assert_eq!(bare, 1, "the glyphs alone fit");
+        assert!(wide > 1, "the picture should push the line to wrap");
     }
 }
