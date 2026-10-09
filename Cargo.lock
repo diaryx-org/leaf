@@ -1062,6 +1062,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "leaf-math-edit"
+version = "0.5.1"
+dependencies = [
+ "console_error_panic_hook",
+ "ratex-font",
+ "ratex-layout",
+ "ratex-parser",
+ "ratex-svg",
+ "ratex-types",
+ "twig-doc",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "leaf-math-wasm"
 version = "0.5.1"
 dependencies = [

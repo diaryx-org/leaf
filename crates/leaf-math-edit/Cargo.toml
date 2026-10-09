@@ -1,0 +1,26 @@
+[package]
+name = "leaf-math-edit"
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "Spike: a structural math editor over TeX formulas found by twig — edit the tree, write the TeX back as splices."
+
+[dependencies]
+twig-doc.workspace = true
+ratex-parser = "0.1.14"
+ratex-layout = "0.1.14"
+ratex-types = "0.1.14"
+ratex-font = "0.1.14"
+ratex-svg = { version = "0.1.14", features = ["embed-fonts"] }
+wasm-bindgen = { version = "0.2", optional = true }
+console_error_panic_hook = { version = "0.1", optional = true }
+
+[features]
+# The browser demo's binding (`demo/`): `wasm-pack build --target web -- --features wasm`.
+wasm = ["dep:wasm-bindgen", "dep:console_error_panic_hook"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
