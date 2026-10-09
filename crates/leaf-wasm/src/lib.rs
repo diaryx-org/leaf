@@ -752,6 +752,12 @@ pub struct MathView {
     /// The formula's source start: what the `math` run's `src` carries, and
     /// where a click on the picture lands the caret.
     src: usize,
+    /// The formula's source end, past its closing delimiter.
+    end: usize,
+    /// The TeX's bytes, `[tex_start, tex_end)`: what a structural formula
+    /// editor splices into ([`LeafDoc::edit_source`]).
+    tex_start: usize,
+    tex_end: usize,
 }
 
 /// A per-formula measured height, the way JS reports one back — the input
@@ -1625,6 +1631,16 @@ impl LeafDoc {
     pub fn set_math_rows(&mut self, heights: Vec<MathHeight>) -> Result<DocView, JsValue> {
         self.doc
             .set_math_rows(heights.into_iter().map(|h| (h.tex, h.rows)).collect());
+        self.frame()
+    }
+
+    /// Say whether the frontend edits formulas itself, as structure, through
+    /// [`edit_source`](Self::edit_source) on each [`MathView`]'s TeX range.
+    /// When it does, a formula on the caret's line keeps its picture rather
+    /// than revealing its TeX, except under `MarkupMode::Full`. See
+    /// `Doc::set_edits_math`.
+    pub fn set_edits_math(&mut self, on: bool) -> Result<DocView, JsValue> {
+        self.doc.set_edits_math(on);
         self.frame()
     }
 
@@ -2697,6 +2713,15 @@ impl LeafDoc {
         self.frame()
     }
 
+    /// Replace the source range `[from, to)` with `text`, written exactly —
+    /// nothing escaped, the way a formula editor writes TeX — and the caret
+    /// after it. Its own undo step; group several with
+    /// [`begin_undo_group`](Self::begin_undo_group). See `Doc::edit`.
+    pub fn edit_source(&mut self, from: usize, to: usize, text: &str) -> Result<DocView, JsValue> {
+        self.doc.edit(from, to, text);
+        self.frame()
+    }
+
     /// Replace the source range `[from, to)` with `text`.
     pub fn replace_range(
         &mut self,
@@ -2969,6 +2994,9 @@ fn math_views(vmap: &VisualMap) -> Vec<MathView> {
             tex: m.tex.clone(),
             display: m.display,
             src: m.src,
+            end: m.end,
+            tex_start: m.tex_span.start,
+            tex_end: m.tex_span.end,
         })
         .collect()
 }

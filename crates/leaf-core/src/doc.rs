@@ -1309,6 +1309,11 @@ impl Doc {
         if self.markup_mode.reveals_caret_line() {
             return Some(Reveal::full(line));
         }
+        // A frontend with a formula editor of its own opens the picture,
+        // not the source.
+        if self.surface.edits_math {
+            return None;
+        }
         self.block_cache
             .math_meets(&line)
             .then_some(Reveal::math(line))
@@ -1527,6 +1532,19 @@ impl Doc {
             return;
         }
         self.surface.inline_pictures = on;
+        self.surface_changed();
+    }
+
+    /// Say whether the frontend edits formulas itself — as structure, over
+    /// [`MathInfo::tex_span`](crate::wysiwyg::MathInfo::tex_span) — rather than
+    /// as their TeX. When it does, a formula on the caret's line stays a
+    /// picture in the two hidden markup modes instead of revealing its
+    /// source; [`MarkupMode::Full`] still reveals everything, math included.
+    pub fn set_edits_math(&mut self, on: bool) {
+        if self.surface.edits_math == on {
+            return;
+        }
+        self.surface.edits_math = on;
         self.surface_changed();
     }
 
@@ -22500,6 +22518,44 @@ mod tests {
         d.build_visual(80);
         assert_eq!(drawn_rows(&d)[2], "∑ \\int_0^1 x^2");
         assert_eq!(d.vmap.math[0].tex, "\n\\int_0^1 x^2\n");
+    }
+
+    #[test]
+    fn a_frontend_that_edits_math_keeps_the_picture_on_the_caret_line() {
+        let src = "*one* $x+y$ here\n\n$$\n\\int_0^1 x\n$$\n\nend\n";
+        let mut d = doc_in(View::Wysiwyg, "math_edits", src);
+        d.set_inline_pictures(true);
+        d.set_edits_math(true);
+        // On the formula's line, and on the block's: still pictures.
+        caret_at(&mut d, "here");
+        assert!(
+            drawn_rows(&d).iter().any(|r| r == "one ∑ here"),
+            "{:?}",
+            drawn_rows(&d)
+        );
+        assert_eq!(d.reveal_line(), None);
+        d.move_down(false);
+        d.move_down(false);
+        d.build_visual(80);
+        assert_eq!(d.vmap.math.len(), 2, "{:?}", drawn_rows(&d));
+        // Each formula says where it is and where its TeX is, exactly.
+        for m in &d.vmap.math {
+            assert_eq!(&d.source[m.tex_span.clone()], m.tex);
+            assert!(d.source[m.src..m.end].starts_with('$'));
+            assert!(d.source[m.src..m.end].ends_with('$'));
+        }
+        assert_eq!(&d.source[d.vmap.math[0].tex_span.clone()], "x+y");
+        // An edit above shifts the reused block; its spans move with it.
+        d.place_caret(0, false);
+        d.insert("Z");
+        d.build_visual(80);
+        for m in &d.vmap.math {
+            assert_eq!(&d.source[m.tex_span.clone()], m.tex);
+        }
+        // Full still reveals everything.
+        d.set_markup_mode(MarkupMode::Full);
+        caret_at(&mut d, "here");
+        assert!(drawn_rows(&d).iter().any(|r| r.contains("$x+y$")));
     }
 
     #[test]

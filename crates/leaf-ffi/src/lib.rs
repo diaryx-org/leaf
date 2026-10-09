@@ -708,6 +708,12 @@ pub struct MathView {
     /// The formula's source start: what the `math` run's `src` carries, and
     /// where a click on the picture lands the caret.
     pub src: u32,
+    /// The formula's source end, past its closing delimiter.
+    pub end: u32,
+    /// The TeX's bytes, `[tex_start, tex_end)`: what a structural formula
+    /// editor splices into ([`LeafDoc::edit_source`]).
+    pub tex_start: u32,
+    pub tex_end: u32,
 }
 
 /// A per-formula measured height, the way a renderer that reserves rows
@@ -2312,6 +2318,17 @@ impl LeafDoc {
         g.frame()
     }
 
+    /// Say whether the frontend edits formulas itself, as structure, through
+    /// [`edit_source`](Self::edit_source) on each [`MathView`]'s TeX range.
+    /// When it does, a formula on the caret's line keeps its picture rather
+    /// than revealing its TeX, except under `MarkupMode::Full`. See
+    /// `Doc::set_edits_math`.
+    pub fn set_edits_math(&self, on: bool) -> DocView {
+        let mut g = self.lock();
+        g.doc.set_edits_math(on);
+        g.frame()
+    }
+
     /// Say whether the renderer can paint a picture *inside* a line of text.
     /// When it can, an inline formula arrives as one `math` run and a
     /// [`MathView`] with `inline` set, for the renderer to draw its typeset
@@ -3741,6 +3758,16 @@ impl LeafDoc {
         g.frame()
     }
 
+    /// Replace the source range `[from, to)` with `text`, written exactly —
+    /// nothing escaped, the way a formula editor writes TeX — and the caret
+    /// after it. Its own undo step; group several with
+    /// [`begin_undo_group`](Self::begin_undo_group). See `Doc::edit`.
+    pub fn edit_source(&self, from: u32, to: u32, text: String) -> DocView {
+        let mut g = self.lock();
+        g.doc.edit(from as usize, to as usize, &text);
+        g.frame()
+    }
+
     /// Replace the source range `[from, to]` with `text` — `replace(_:withText:)`.
     pub fn replace_range(&self, from: u32, to: u32, text: String) -> DocView {
         let mut g = self.lock();
@@ -4041,6 +4068,9 @@ fn wysiwyg_math(vmap: &VisualMap) -> Vec<MathView> {
             tex: m.tex.clone(),
             display: m.display,
             src: m.src as u32,
+            end: m.end as u32,
+            tex_start: m.tex_span.start as u32,
+            tex_end: m.tex_span.end as u32,
         })
         .collect()
 }

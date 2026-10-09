@@ -269,6 +269,12 @@ pub struct MathMark {
     /// reports its height through [`crate::Doc::set_math_rows`]. `1` for an
     /// inline atom, which reserves nothing.
     pub rows: usize,
+    /// The node's length in bytes, delimiters included — relative, like
+    /// everything here, so a reused block's mark needs no shifting.
+    pub len: usize,
+    /// Where `tex` starts, as an offset from the node's start: past `$`, `$$`
+    /// or `` $` ``, and whatever newline a display block opens with.
+    pub tex_at: usize,
 }
 
 /// What a drawn block boundary separates: the kinds of the blocks it falls
@@ -1538,6 +1544,14 @@ fn directive_spans(rows: &[VRow]) -> Vec<DirectiveInfo> {
         .collect()
 }
 
+/// Where `tex` sits inside the node at `span`, as an offset from its start.
+/// twig hands a formula's text and not its range, so the text is found in the
+/// node's bytes; the delimiters before it are never TeX, so the first match is
+/// the text. `0` if it is somehow not there, which only misplaces an edit.
+fn tex_offset(source: &str, span: Range<usize>, tex: &str) -> usize {
+    source.get(span).and_then(|s| s.find(tex)).unwrap_or(0)
+}
+
 /// Collect one [`MathInfo`] per [`VRow::math`] mark — the peer of
 /// [`media_spans`] and [`directive_spans`], derived from the final rows for the
 /// same reason. A block mark spans its fillers; an atom spans its own row.
@@ -1561,6 +1575,8 @@ fn math_spans(rows: &[VRow]) -> Vec<MathInfo> {
                     tex: m.tex.clone(),
                     display: m.display,
                     src,
+                    end: src + m.len,
+                    tex_span: src + m.tex_at..src + m.tex_at + m.tex.len(),
                 }
             })
         })
@@ -1744,6 +1760,10 @@ pub struct Surface {
     /// composite an image over one cell, and leaves this off to keep an inline
     /// formula as the code-styled TeX it always showed. Off by default.
     pub inline_pictures: bool,
+    /// The frontend edits formulas itself, as structure, so a formula on the
+    /// caret's line keeps its picture instead of revealing its TeX
+    /// ([`crate::Doc::set_edits_math`]).
+    pub edits_math: bool,
 }
 
 /// The one source line rendering its markup raw — the caret's, when the mode
@@ -4982,6 +5002,8 @@ impl Builder<'_> {
         self.push_row_at(glyphs, end);
         if let Some(row) = self.rows.last_mut() {
             row.math = vec![MathMark {
+                len: end - start,
+                tex_at: tex_offset(self.source, start..end, &tex),
                 tex,
                 display: true,
                 glyph: None,
@@ -5281,6 +5303,8 @@ impl Builder<'_> {
                     self.pending_math.borrow_mut().push((
                         node.span.start,
                         MathMark {
+                            len: node.span.len(),
+                            tex_at: tex_offset(self.source, node.span.clone(), &tex),
                             tex,
                             display: node.kind == Kind::DisplayMath,
                             glyph: None,
@@ -6203,6 +6227,11 @@ pub struct MathInfo {
     /// The formula's source start: where a click on its picture lands the
     /// caret, and the same offset every placeholder glyph carries.
     pub src: usize,
+    /// The formula's source end, past its closing delimiter.
+    pub end: usize,
+    /// The TeX's own bytes — `tex` is exactly `source[tex_span]` — for a
+    /// frontend that edits the formula by splicing them.
+    pub tex_span: Range<usize>,
 }
 
 impl DirectiveInfo {
