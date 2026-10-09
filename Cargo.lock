@@ -1045,6 +1045,7 @@ version = "0.5.1"
 dependencies = [
  "leaf-core",
  "leaf-math",
+ "leaf-math-edit",
  "resvg-uniffi",
  "thiserror 1.0.69",
  "unicode-segmentation",

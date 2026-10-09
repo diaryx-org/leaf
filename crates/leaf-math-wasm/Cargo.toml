@@ -18,7 +18,7 @@ crate-type = ["cdylib", "rlib"]
 leaf-math = { path = "../leaf-math" }
 # The structural formula editor, without its twig half: the web editor owns
 # the document and applies the splices itself.
-leaf-math-edit = { path = "../leaf-math-edit", default-features = false }
+leaf-math-edit.workspace = true
 
 # No serde and no tsify here, unlike `leaf-wasm`: the one thing that crosses
 # back is four fields, a wasm-bindgen class with getters carries them, and

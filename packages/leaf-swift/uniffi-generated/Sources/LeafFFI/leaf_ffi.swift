@@ -612,6 +612,24 @@ fileprivate struct FfiConverterString: FfiConverter {
     }
 }
 
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterData: FfiConverterRustBuffer {
+    typealias SwiftType = Data
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Data {
+        let len: Int32 = try readInt(&buf)
+        return Data(try readBytes(&buf, count: Int(len)))
+    }
+
+    public static func write(_ value: Data, into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        writeBytes(&buf, value)
+    }
+}
+
 
 
 
@@ -790,6 +808,14 @@ public protocol LeafDocProtocol: AnyObject, Sendable {
      * a row with no block under it. See [`leaf_core::Doc::drop_target_at`].
      */
     func dropTargetAt(row: UInt32)  -> DropTargetView?
+    
+    /**
+     * Replace the source range `[from, to)` with `text`, written exactly —
+     * nothing escaped, the way a formula editor writes TeX — and the caret
+     * after it. Its own undo step; group several with
+     * [`begin_undo_group`](Self::begin_undo_group). See `Doc::edit`.
+     */
+    func editSource(from: UInt32, to: UInt32, text: String)  -> DocView
     
     /**
      * Close the group [`begin_undo_group`](Self::begin_undo_group) opened; a
@@ -1280,6 +1306,15 @@ public protocol LeafDocProtocol: AnyObject, Sendable {
      * [`set_media_rows`]: Self::set_media_rows
      */
     func setDirectiveRows(heights: [DirectiveHeight])  -> DocView
+    
+    /**
+     * Say whether the frontend edits formulas itself, as structure, through
+     * [`edit_source`](Self::edit_source) on each [`MathView`]'s TeX range.
+     * When it does, a formula on the caret's line keeps its picture rather
+     * than revealing its TeX, except under `MarkupMode::Full`. See
+     * `Doc::set_edits_math`.
+     */
+    func setEditsMath(on: Bool)  -> DocView
     
     /**
      * Set the face of the selected run, or of the caret's whole block.
@@ -2078,6 +2113,24 @@ open func dropTargetAt(row: UInt32) -> DropTargetView?  {
     uniffi_leaf_ffi_fn_method_leafdoc_drop_target_at(
             self.uniffiCloneHandle(),
         FfiConverterUInt32.lower(row),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Replace the source range `[from, to)` with `text`, written exactly —
+     * nothing escaped, the way a formula editor writes TeX — and the caret
+     * after it. Its own undo step; group several with
+     * [`begin_undo_group`](Self::begin_undo_group). See `Doc::edit`.
+     */
+open func editSource(from: UInt32, to: UInt32, text: String) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_edit_source(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(from),
+        FfiConverterUInt32.lower(to),
+        FfiConverterString.lower(text),uniffiCallStatus
     )
 })
 }
@@ -3104,6 +3157,23 @@ open func setDirectiveRows(heights: [DirectiveHeight]) -> DocView  {
 }
     
     /**
+     * Say whether the frontend edits formulas itself, as structure, through
+     * [`edit_source`](Self::edit_source) on each [`MathView`]'s TeX range.
+     * When it does, a formula on the caret's line keeps its picture rather
+     * than revealing its TeX, except under `MarkupMode::Full`. See
+     * `Doc::set_edits_math`.
+     */
+open func setEditsMath(on: Bool) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_set_edits_math(
+            self.uniffiCloneHandle(),
+        FfiConverterBool.lower(on),uniffiCallStatus
+    )
+})
+}
+    
+    /**
      * Set the face of the selected run, or of the caret's whole block.
      * [`set_font_size`](Self::set_font_size)'s peer. Gate on
      * [`Capabilities::font_family`].
@@ -3934,6 +4004,298 @@ public func FfiConverterTypeLeafDoc_lift(_ handle: UInt64) throws -> LeafDoc {
 #endif
 public func FfiConverterTypeLeafDoc_lower(_ value: LeafDoc) -> UInt64 {
     return FfiConverterTypeLeafDoc.lower(value)
+}
+
+
+
+
+
+
+/**
+ * A formula being edited as structure: typing `/` makes a fraction, `^` a
+ * superscript, `sqrt` a root; the arrows walk the slots. Each keystroke
+ * answers with the splices it made to the TeX, so the document stays the
+ * source of truth and its undo history sees ordinary edits. The web
+ * editor's `MathSession`, over the same `leaf-math-edit`.
+ */
+public protocol MathSessionProtocol: AnyObject, Sendable {
+    
+    /**
+     * Whether → would leave it.
+     */
+    func atEnd()  -> Bool
+    
+    /**
+     * Whether ← would leave the formula.
+     */
+    func atHome()  -> Bool
+    
+    /**
+     * The caret to the stop nearest `(x, y)`, in points from the picture's
+     * top left at `size` points per em.
+     */
+    func click(x: Double, y: Double, size: Double) 
+    
+    /**
+     * The caret to the last stop, as ← into the formula from behind.
+     */
+    func end() 
+    
+    /**
+     * The caret to the first stop, as → into the formula from in front.
+     */
+    func home() 
+    
+    /**
+     * Apply a key, returning the splices it made, in order.
+     */
+    func key(key: MathKey)  -> [MathSplice]
+    
+    /**
+     * The formula with its caret: ink in `ink`, empty slots in a third of
+     * it, the caret in `accent` — [`typeset_math`]'s shape, so the view
+     * draws it where it would have drawn the typeset picture.
+     */
+    func picture(size: Double, ink: Data, accent: Data) throws  -> MathPicture
+    
+    /**
+     * Take `tex` as the formula's source after an undo or an outside change.
+     */
+    func reload(tex: String) throws 
+    
+    func tex()  -> String
+    
+}
+/**
+ * A formula being edited as structure: typing `/` makes a fraction, `^` a
+ * superscript, `sqrt` a root; the arrows walk the slots. Each keystroke
+ * answers with the splices it made to the TeX, so the document stays the
+ * source of truth and its undo history sees ordinary edits. The web
+ * editor's `MathSession`, over the same `leaf-math-edit`.
+ */
+open class MathSession: MathSessionProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_leaf_ffi_fn_clone_mathsession(self.handle, $0) }
+    }
+    /**
+     * Open `tex` for editing, the caret at its end. [`LeafError::Math`] when
+     * the TeX is beyond what the structural editor reads; the view leaves
+     * that formula to be edited as source.
+     */
+public convenience init(tex: String, display: Bool)throws  {
+    let handle =
+        try rustCallWithError(FfiConverterTypeLeafError_lift) {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_constructor_mathsession_new(
+        FfiConverterString.lower(tex),
+        FfiConverterBool.lower(display),uniffiCallStatus
+    )
+}
+    self.init(unsafeFromHandle: handle)
+}
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_leaf_ffi_fn_free_mathsession(handle, $0) }
+    }
+
+    
+
+    
+    /**
+     * Whether → would leave it.
+     */
+open func atEnd() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_mathsession_at_end(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Whether ← would leave the formula.
+     */
+open func atHome() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_mathsession_at_home(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The caret to the stop nearest `(x, y)`, in points from the picture's
+     * top left at `size` points per em.
+     */
+open func click(x: Double, y: Double, size: Double)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_mathsession_click(
+            self.uniffiCloneHandle(),
+        FfiConverterDouble.lower(x),
+        FfiConverterDouble.lower(y),
+        FfiConverterDouble.lower(size),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * The caret to the last stop, as ← into the formula from behind.
+     */
+open func end()  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_mathsession_end(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * The caret to the first stop, as → into the formula from in front.
+     */
+open func home()  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_mathsession_home(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Apply a key, returning the splices it made, in order.
+     */
+open func key(key: MathKey) -> [MathSplice]  {
+    return try!  FfiConverterSequenceTypeMathSplice.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_mathsession_key(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeMathKey_lower(key),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The formula with its caret: ink in `ink`, empty slots in a third of
+     * it, the caret in `accent` — [`typeset_math`]'s shape, so the view
+     * draws it where it would have drawn the typeset picture.
+     */
+open func picture(size: Double, ink: Data, accent: Data)throws  -> MathPicture  {
+    return try  FfiConverterTypeMathPicture_lift(try rustCallWithError(FfiConverterTypeLeafError_lift) {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_mathsession_picture(
+            self.uniffiCloneHandle(),
+        FfiConverterDouble.lower(size),
+        FfiConverterData.lower(ink),
+        FfiConverterData.lower(accent),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Take `tex` as the formula's source after an undo or an outside change.
+     */
+open func reload(tex: String)throws   {try rustCallWithError(FfiConverterTypeLeafError_lift) {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_mathsession_reload(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(tex),uniffiCallStatus
+    )
+}
+}
+    
+open func tex() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_mathsession_tex(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMathSession: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = MathSession
+
+    public static func lift(_ handle: UInt64) throws -> MathSession {
+        return MathSession(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: MathSession) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MathSession {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: MathSession, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMathSession_lift(_ handle: UInt64) throws -> MathSession {
+    return try FfiConverterTypeMathSession.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMathSession_lower(_ value: MathSession) -> UInt64 {
+    return FfiConverterTypeMathSession.lower(value)
 }
 
 
@@ -5804,6 +6166,70 @@ public func FfiConverterTypeMathPicture_lower(_ value: MathPicture) -> RustBuffe
 
 
 /**
+ * One splice a [`MathSession`] keystroke made to its TeX: replace
+ * `[from, to)` — byte offsets into the TeX as it stood before this splice —
+ * with `text`. The view adds the formula's `tex_start` and applies it with
+ * [`LeafDoc::edit_source`].
+ */
+public struct MathSplice: Equatable, Hashable {
+    public var from: UInt32
+    public var to: UInt32
+    public var text: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(from: UInt32, to: UInt32, text: String) {
+        self.from = from
+        self.to = to
+        self.text = text
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension MathSplice: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMathSplice: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MathSplice {
+        return
+            try MathSplice(
+                from: FfiConverterUInt32.read(from: &buf), 
+                to: FfiConverterUInt32.read(from: &buf), 
+                text: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MathSplice, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.from, into: &buf)
+        FfiConverterUInt32.write(value.to, into: &buf)
+        FfiConverterString.write(value.text, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMathSplice_lift(_ buf: RustBuffer) throws -> MathSplice {
+    return try FfiConverterTypeMathSplice.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMathSplice_lower(_ value: MathSplice) -> RustBuffer {
+    return FfiConverterTypeMathSplice.lower(value)
+}
+
+
+/**
  * One formula standing as a picture: what to typeset and where its picture
  * goes. The peer of [`leaf_core::MathInfo`]. Two shapes:
  *
@@ -5846,6 +6272,16 @@ public struct MathView: Equatable, Hashable {
      * where a click on the picture lands the caret.
      */
     public var src: UInt32
+    /**
+     * The formula's source end, past its closing delimiter.
+     */
+    public var end: UInt32
+    /**
+     * The TeX's bytes, `[tex_start, tex_end)`: what a structural formula
+     * editor splices into ([`LeafDoc::edit_source`]).
+     */
+    public var texStart: UInt32
+    public var texEnd: UInt32
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -5867,13 +6303,23 @@ public struct MathView: Equatable, Hashable {
         /**
          * The formula's source start: what the `math` run's `src` carries, and
          * where a click on the picture lands the caret.
-         */src: UInt32) {
+         */src: UInt32, 
+        /**
+         * The formula's source end, past its closing delimiter.
+         */end: UInt32, 
+        /**
+         * The TeX's bytes, `[tex_start, tex_end)`: what a structural formula
+         * editor splices into ([`LeafDoc::edit_source`]).
+         */texStart: UInt32, texEnd: UInt32) {
         self.startRow = startRow
         self.endRow = endRow
         self.inline = inline
         self.tex = tex
         self.display = display
         self.src = src
+        self.end = end
+        self.texStart = texStart
+        self.texEnd = texEnd
     }
 
     
@@ -5897,7 +6343,10 @@ public struct FfiConverterTypeMathView: FfiConverterRustBuffer {
                 inline: FfiConverterBool.read(from: &buf), 
                 tex: FfiConverterString.read(from: &buf), 
                 display: FfiConverterBool.read(from: &buf), 
-                src: FfiConverterUInt32.read(from: &buf)
+                src: FfiConverterUInt32.read(from: &buf), 
+                end: FfiConverterUInt32.read(from: &buf), 
+                texStart: FfiConverterUInt32.read(from: &buf), 
+                texEnd: FfiConverterUInt32.read(from: &buf)
         )
     }
 
@@ -5908,6 +6357,9 @@ public struct FfiConverterTypeMathView: FfiConverterRustBuffer {
         FfiConverterString.write(value.tex, into: &buf)
         FfiConverterBool.write(value.display, into: &buf)
         FfiConverterUInt32.write(value.src, into: &buf)
+        FfiConverterUInt32.write(value.end, into: &buf)
+        FfiConverterUInt32.write(value.texStart, into: &buf)
+        FfiConverterUInt32.write(value.texEnd, into: &buf)
     }
 }
 
@@ -8466,6 +8918,106 @@ public func FfiConverterTypeMarkupMode_lower(_ value: MarkupMode) -> RustBuffer 
 
 
 /**
+ * A key a [`MathSession`] understands.
+ */
+
+public enum MathKey: Equatable, Hashable {
+    
+    case char(ch: String
+    )
+    case left
+    case right
+    case up
+    case down
+    case backspace
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MathKey: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMathKey: FfiConverterRustBuffer {
+    typealias SwiftType = MathKey
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MathKey {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .char(ch: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 2: return .left
+        
+        case 3: return .right
+        
+        case 4: return .up
+        
+        case 5: return .down
+        
+        case 6: return .backspace
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MathKey, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case let .char(ch):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(ch, into: &buf)
+            
+        
+        case .left:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .right:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .up:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .down:
+            writeInt(&buf, Int32(5))
+        
+        
+        case .backspace:
+            writeInt(&buf, Int32(6))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMathKey_lift(_ buf: RustBuffer) throws -> MathKey {
+    return try FfiConverterTypeMathKey.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMathKey_lower(_ value: MathKey) -> RustBuffer {
+    return FfiConverterTypeMathKey.lower(value)
+}
+
+
+
+/**
  * What a block-level media placeholder is, so Swift knows which view to build
  * over the rows core reserved: an `NSImageView`/`UIImageView`, or an
  * `AVPlayerView` with or without a picture to show. The peer of
@@ -9455,6 +10007,31 @@ fileprivate struct FfiConverterSequenceTypeMathHeight: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeMathSplice: FfiConverterRustBuffer {
+    typealias SwiftType = [MathSplice]
+
+    public static func write(_ value: [MathSplice], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeMathSplice.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [MathSplice] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [MathSplice]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeMathSplice.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeMathView: FfiConverterRustBuffer {
     typealias SwiftType = [MathView]
 
@@ -9818,6 +10395,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_drop_target_at() != 28018) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_edit_source() != 23680) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_end_undo_group() != 59997) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -10022,6 +10602,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_directive_rows() != 14815) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_edits_math() != 19213) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_font_family() != 65323) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -10181,7 +10764,37 @@ private let initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_word_range_at() != 44185) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_leaf_ffi_checksum_method_mathsession_at_end() != 22725) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_mathsession_at_home() != 17759) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_mathsession_click() != 19974) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_mathsession_end() != 44236) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_mathsession_home() != 6391) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_mathsession_key() != 1212) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_mathsession_picture() != 25200) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_mathsession_reload() != 55262) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_mathsession_tex() != 36275) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_leaf_ffi_checksum_constructor_leafdoc_new() != 63804) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_constructor_mathsession_new() != 24684) {
         return InitializationResult.apiChecksumMismatch
     }
 
