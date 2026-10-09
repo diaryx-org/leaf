@@ -16,6 +16,7 @@
 //! [`doc`] finds formulas in a document through twig and applies a formula's
 //! splices to the document.
 
+#[cfg(feature = "doc")]
 pub mod doc;
 pub mod edit;
 pub mod layout;

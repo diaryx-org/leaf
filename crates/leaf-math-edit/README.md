@@ -53,9 +53,26 @@ cp demo/index.html <scratch>/ && python3 -m http.server -d <scratch>
   empty slot, which is intended. That is also why the fuzz test only compares
   probe and plain layouts when no slot is empty.
 
+## In leaf
+
+The web editor uses it (`packages/leaf-web`, *Formulas edited as structure*
+in its README). `leaf-math-wasm` exports a `MathSession` over the editor here
+without its twig half, and the web editor applies its splices to the document
+through `LeafDoc::edit_source`. Core keeps a formula a picture on the caret's
+line once the frontend says it edits formulas itself (`Doc::set_edits_math`),
+and every `MathView` carries the formula's end and its TeX range. That adds
+about 60 KB raw to the math module, measured against the README's September
+figure.
+
 ## Not done
 
-Selection, copy/paste, delete-forward, matrices and environments as grids,
-`\left(` auto-pairing, removing empty scripts when the caret leaves them, IME,
-and any leaf frontend. The demo calls `layout` again on every key; caching by
-source would be the first optimisation.
+- Selection, copy/paste and delete-forward.
+- Matrices and environments as grids.
+- `\left(` auto-pairing.
+- Removing an empty script when the caret leaves it.
+- IME input.
+- The Swift and terminal frontends.
+
+The binding exports `edit_source` and `set_edits_math` to Swift already. The
+open formula is laid out again on every key; caching by source would be the
+first optimisation.

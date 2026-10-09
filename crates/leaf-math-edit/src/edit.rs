@@ -307,6 +307,8 @@ impl Formula {
 pub struct Session {
     pub formula: Formula,
     pub caret: Caret,
+    /// Display style, which ↑ and ↓ measure the formula in.
+    pub display: bool,
 }
 
 /// A key a session understands.
@@ -324,7 +326,42 @@ impl Session {
     pub fn new(tex: &str) -> Result<Self, crate::ParseError> {
         let formula = Formula::new(tex)?;
         let caret = formula.end();
-        Ok(Session { formula, caret })
+        Ok(Session {
+            formula,
+            caret,
+            display: false,
+        })
+    }
+
+    /// The first stop: where → from in front of the formula enters it.
+    pub fn home(&mut self) {
+        self.caret = self.formula.stops[0];
+    }
+
+    /// The last stop: where ← from behind the formula enters it.
+    pub fn end(&mut self) {
+        self.caret = self.formula.end();
+    }
+
+    pub fn at_home(&self) -> bool {
+        self.caret == self.formula.stops[0]
+    }
+
+    pub fn at_end(&self) -> bool {
+        self.caret == self.formula.end()
+    }
+
+    /// Take `tex` as the formula's source — an undo, or a change from
+    /// elsewhere — keeping the caret at the same offset where it can.
+    pub fn reload(&mut self, tex: &str) -> Result<(), crate::ParseError> {
+        if tex == self.formula.src {
+            return Ok(());
+        }
+        let at = self.formula.offset(self.caret);
+        let row = self.formula.rows[self.caret.row].content.start;
+        self.formula = Formula::new(tex)?;
+        self.caret = self.formula.caret_at(at.min(tex.len()), row);
+        Ok(())
     }
 
     /// Apply a key, returning the splices it made to the source in order
@@ -337,7 +374,7 @@ impl Session {
             Key::Backspace => f.backspace(self.caret),
             Key::Left => Outcome::Move(f.left(self.caret)),
             Key::Right => Outcome::Move(f.right(self.caret)),
-            Key::Up | Key::Down => match f.layout(false) {
+            Key::Up | Key::Down => match f.layout(self.display) {
                 Ok(l) => l
                     .vertical(f, self.caret, key == Key::Up)
                     .map_or(Outcome::None, Outcome::Move),
@@ -490,6 +527,19 @@ mod tests {
         assert_eq!(s.tex(), "x^{2b}");
         let s = run(r"\frac12", "←←←3");
         assert_eq!(s.tex(), r"\frac{13}2");
+    }
+
+    #[test]
+    fn a_display_block_s_newlines_stay_outside_the_formula() {
+        // `$$\n…\n$$`: typing at the end lands before the closing newline.
+        let s = run("\n\\int x\n", "y");
+        assert_eq!(s.tex(), "\n\\int xy\n");
+        let mut s = Session::new("\n\n").unwrap();
+        s.key(Key::Char('a'));
+        assert_eq!(s.tex(), "\na\n");
+        s.home();
+        s.key(Key::Char('b'));
+        assert_eq!(s.tex(), "\nba\n");
     }
 
     #[test]

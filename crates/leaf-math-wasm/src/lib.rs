@@ -81,6 +81,131 @@ pub fn typeset_math(
 /// [`typeset_math`] reads, because it is the one a stylesheet's custom
 /// property most often resolves to and the one JS can produce without a
 /// canvas.
+/// One splice a [`MathSession`] keystroke made to its TeX: replace
+/// `[from, to)` — byte offsets into the TeX as it stood before this splice —
+/// with `text`. A host adds the TeX's offset in its document and applies it.
+#[wasm_bindgen(getter_with_clone)]
+pub struct MathSplice {
+    pub from: usize,
+    pub to: usize,
+    pub text: String,
+}
+
+/// A formula being edited as structure: typing `/` makes a fraction, `^` a
+/// superscript, `sqrt` a root; the arrows walk the slots. Each keystroke
+/// answers with the splices it made to the TeX, so the host's document stays
+/// the source of truth and its undo history sees ordinary edits.
+#[wasm_bindgen]
+pub struct MathSession {
+    session: leaf_math_edit::edit::Session,
+}
+
+#[wasm_bindgen]
+impl MathSession {
+    /// Open `tex` for editing, the caret at its end. An error when the TeX is
+    /// beyond what the structural editor reads, which a host answers by
+    /// leaving the formula to be edited as source.
+    #[wasm_bindgen(constructor)]
+    pub fn new(tex: &str, display: bool) -> Result<MathSession, JsValue> {
+        let mut session =
+            leaf_math_edit::edit::Session::new(tex).map_err(|e| JsValue::from_str(&e.message))?;
+        session.display = display;
+        Ok(MathSession { session })
+    }
+
+    /// A key, by its DOM `KeyboardEvent.key`: a printable character, an
+    /// arrow, or `Backspace`. Anything else is not the session's and makes
+    /// no splice.
+    pub fn key(&mut self, key: &str) -> Vec<MathSplice> {
+        use leaf_math_edit::edit::Key;
+        let k = match key {
+            "ArrowLeft" => Key::Left,
+            "ArrowRight" => Key::Right,
+            "ArrowUp" => Key::Up,
+            "ArrowDown" => Key::Down,
+            "Backspace" => Key::Backspace,
+            k if k.chars().count() == 1 => Key::Char(k.chars().next().unwrap()),
+            _ => return Vec::new(),
+        };
+        self.session
+            .key(k)
+            .into_iter()
+            .map(|s| MathSplice {
+                from: s.range.start,
+                to: s.range.end,
+                text: s.text,
+            })
+            .collect()
+    }
+
+    /// The caret to the first stop, as → into the formula from in front.
+    pub fn home(&mut self) {
+        self.session.home();
+    }
+
+    /// The caret to the last stop, as ← into the formula from behind.
+    pub fn end(&mut self) {
+        self.session.end();
+    }
+
+    /// Whether ← would leave the formula: the caret is at its first stop.
+    pub fn at_home(&self) -> bool {
+        self.session.at_home()
+    }
+
+    /// Whether → would leave it.
+    pub fn at_end(&self) -> bool {
+        self.session.at_end()
+    }
+
+    /// Take `tex` as the formula's source after an undo or an outside change.
+    pub fn reload(&mut self, tex: &str) -> Result<(), JsValue> {
+        self.session
+            .reload(tex)
+            .map_err(|e| JsValue::from_str(&e.message))
+    }
+
+    /// The caret to the stop nearest `(x, y)`, in pixels from the picture's
+    /// top left at `size` px per em.
+    pub fn click(&mut self, x: f64, y: f64, size: f64) {
+        let f = &self.session.formula;
+        if let Ok(l) = f.layout(self.session.display) {
+            self.session.caret = l.hit(f, x / size, y / size);
+        }
+    }
+
+    pub fn tex(&self) -> String {
+        self.session.formula.src.clone()
+    }
+
+    /// The formula with its caret, in `color` with empty slots faint and the
+    /// caret in `accent` — the shape [`typeset_math`] returns, so the host
+    /// draws it where it would have drawn the picture.
+    pub fn picture(&self, size: f64, color: &str, accent: &str) -> Result<MathPicture, JsValue> {
+        let ink = parse_hex_color(color)
+            .ok_or_else(|| JsValue::from_str(&format!("not a hex colour: {color}")))?;
+        let accent = parse_hex_color(accent).unwrap_or([37, 99, 235, 255]);
+        let f = &self.session.formula;
+        let l = f
+            .layout(self.session.display)
+            .map_err(|e| JsValue::from_str(&e))?;
+        let style = leaf_math_edit::layout::Style {
+            size,
+            pad: 0.0,
+            ink,
+            faint: [ink[0], ink[1], ink[2], ink[3] / 3],
+            accent,
+        };
+        let p = l.picture(f, &style, Some(self.session.caret));
+        Ok(MathPicture {
+            svg: p.svg,
+            width: p.width,
+            height: p.height,
+            depth: p.depth,
+        })
+    }
+}
+
 fn parse_hex_color(s: &str) -> Option<[u8; 4]> {
     let hex = s.trim().strip_prefix('#')?;
     let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
@@ -106,6 +231,23 @@ mod tests {
         assert_eq!(parse_hex_color(" #00000080 "), Some([0, 0, 0, 0x80]));
         assert_eq!(parse_hex_color("red"), None);
         assert_eq!(parse_hex_color("#12345"), None);
+    }
+
+    #[test]
+    fn a_session_answers_keys_with_splices_on_its_tex() {
+        let mut s = MathSession::new("x", false).unwrap();
+        let sp = s.key("/");
+        assert_eq!(sp.len(), 1);
+        assert_eq!(
+            (sp[0].from, sp[0].to, sp[0].text.as_str()),
+            (0, 1, "\\frac{x}{}")
+        );
+        assert_eq!(s.tex(), "\\frac{x}{}");
+        assert!(s.key("Escape").is_empty());
+        s.end();
+        assert!(s.at_end() && !s.at_home());
+        let p = s.picture(16.0, "#000", "#00f").unwrap();
+        assert!(p.svg.contains("<rect"), "the caret is drawn");
     }
 
     #[test]

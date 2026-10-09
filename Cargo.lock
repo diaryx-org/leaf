@@ -1081,6 +1081,7 @@ version = "0.5.1"
 dependencies = [
  "console_error_panic_hook",
  "leaf-math",
+ "leaf-math-edit",
  "wasm-bindgen",
 ]
 

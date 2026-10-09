@@ -475,13 +475,29 @@ impl Layout {
             .map(|(s, _)| s)
     }
 
-    /// The formula as a standalone SVG at `size` px per em, in `ink`, with
-    /// empty slots in `faint` and the caret at `caret` drawn in `accent`.
+    /// The formula as a standalone SVG at `size` px per em, with a 4 px
+    /// margin and the demo's colours — what `demo/` draws.
     pub fn svg(&self, f: &Formula, size: f64, caret: Option<Caret>) -> String {
-        let pad = 4.0;
+        let style = Style {
+            size,
+            pad: 4.0,
+            ..Style::default()
+        };
+        self.picture(f, &style, caret).svg
+    }
+
+    /// The formula drawn for a host: ink, empty slots and the caret in the
+    /// style's colours, with the metrics a host places the picture by —
+    /// `leaf-math`'s `MathPicture` shape, so an editor swaps one for the
+    /// other in place.
+    pub fn picture(&self, f: &Formula, style: &Style, caret: Option<Caret>) -> Picture {
+        let (size, pad) = (style.size, style.pad);
         let mut list = self.list.clone();
-        let ink = Color::new(0.1, 0.1, 0.12, 1.0);
-        let faint = Color::new(0.6, 0.6, 0.65, 1.0);
+        let rgba = |c: [u8; 4]| {
+            let [r, g, b, a] = c.map(|v| f32::from(v) / 255.0);
+            Color::new(r, g, b, a)
+        };
+        let (ink, faint) = (rgba(style.ink), rgba(style.faint));
         for item in &mut list.items {
             let (c, _) = item_bounds(item);
             set_colour(
@@ -493,7 +509,7 @@ impl Layout {
                 },
             );
         }
-        let svg = render_to_svg_with_color_syntax(
+        let mut svg = in_pixels(render_to_svg_with_color_syntax(
             &list,
             &SvgOptions {
                 font_size: size,
@@ -503,21 +519,87 @@ impl Layout {
                 font_dir: String::new(),
             },
             SvgColorSyntax::Rgb,
-        );
-        let Some(caret) = caret else { return svg };
-        let r = self.caret(f, caret);
-        let bar = format!(
-            r##"<rect x="{:.2}" y="{:.2}" width="{:.2}" height="{:.2}" fill="#2563eb"/>"##,
-            r.x * size + pad - size * 0.02,
-            r.y0 * size + pad,
-            (size * 0.04).max(1.0),
-            (r.y1 - r.y0) * size,
-        );
-        match svg.rfind("</svg>") {
-            Some(i) => format!("{}{bar}</svg>", &svg[..i]),
-            None => svg,
+        ));
+        if let Some(caret) = caret {
+            let r = self.caret(f, caret);
+            let w = (size * 0.06).max(1.5);
+            let full = self.list.width * size + 2.0 * pad;
+            // Inside the picture, so a caret at either end is not clipped by
+            // a host that draws it without a margin.
+            let x = (r.x * size + pad - w / 2.0).clamp(0.0, (full - w).max(0.0));
+            let [cr, cg, cb, _] = style.accent;
+            let bar = format!(
+                r#"<rect x="{x:.2}" y="{:.2}" width="{w:.2}" height="{:.2}" fill="rgb({cr},{cg},{cb})"/>"#,
+                r.y0 * size + pad,
+                (r.y1 - r.y0) * size,
+            );
+            if let Some(i) = svg.rfind("</svg>") {
+                svg = format!("{}{bar}</svg>", &svg[..i]);
+            }
+        }
+        Picture {
+            svg,
+            width: self.list.width + 2.0 * pad / size,
+            height: self.list.height + pad / size,
+            depth: self.list.depth + pad / size,
         }
     }
+}
+
+/// How [`Layout::picture`] draws.
+#[derive(Clone, Debug)]
+pub struct Style {
+    /// Pixels per em.
+    pub size: f64,
+    /// Margin on every side, in pixels.
+    pub pad: f64,
+    pub ink: [u8; 4],
+    /// Empty slots' placeholders.
+    pub faint: [u8; 4],
+    /// The caret.
+    pub accent: [u8; 4],
+}
+
+impl Default for Style {
+    fn default() -> Self {
+        Style {
+            size: 16.0,
+            pad: 0.0,
+            ink: [26, 26, 31, 255],
+            faint: [150, 150, 160, 255],
+            accent: [37, 99, 235, 255],
+        }
+    }
+}
+
+/// A drawn formula: a standalone SVG and, in em, its advance width and its
+/// extent above and below the baseline — margin included.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Picture {
+    pub svg: String,
+    pub width: f64,
+    pub height: f64,
+    pub depth: f64,
+}
+
+/// `ratex-svg` sizes the root in `pt`; a host places the picture in pixels.
+fn in_pixels(svg: String) -> String {
+    let Some(head_end) = svg.find('>') else {
+        return svg;
+    };
+    let (head, rest) = svg.split_at(head_end);
+    let mut head = head.to_string();
+    for attr in ["width=\"", "height=\""] {
+        if let Some(i) = head.find(attr) {
+            let v = i + attr.len();
+            if let Some(q) = head[v..].find('"') {
+                let value = head[v..v + q].trim_end_matches("pt").to_string();
+                head.replace_range(v..v + q, &value);
+            }
+        }
+    }
+    head.push_str(rest);
+    head
 }
 
 #[cfg(test)]

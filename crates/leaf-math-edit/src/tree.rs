@@ -184,20 +184,31 @@ pub fn parse(src: &str) -> Result<Row, ParseError> {
     if p.pos < src.len() {
         return Err(p.err("unmatched `}`"));
     }
+    // The root's interior is its TeX without the whitespace around it: a
+    // display block's TeX is `\n…\n`, and its end stop belongs before the
+    // newline, not on the `$$` line after it.
+    let start = src.len() - src.trim_start().len();
+    let end = src.trim_end().len();
+    let content = if start <= end {
+        start..end
+    } else {
+        // Whitespace only: inside it, past a first newline if there is one.
+        let at = src.find('\n').map_or(0, |i| i + 1);
+        at..at
+    };
     if atoms.iter().any(is_infix) {
-        let span = 0..src.len();
         let atoms = vec![Atom {
-            span,
+            span: content.clone(),
             kind: AtomKind::Opaque,
         }];
         return Ok(Row {
-            content: 0..src.len(),
+            content,
             braced: false,
             atoms,
         });
     }
     Ok(Row {
-        content: 0..src.len(),
+        content,
         braced: false,
         atoms,
     })
