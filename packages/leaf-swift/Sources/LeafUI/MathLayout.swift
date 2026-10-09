@@ -76,24 +76,31 @@ enum MathStore {
 
     /// The picture for `tex` at `size` points in `ink`, typeset on first use.
     static func glyph(tex: String, display: Bool, size: CGFloat, ink: LeafColor) -> MathGlyph? {
+        // The formula open for editing is drawn by its session, afresh each
+        // revision, and never cached — see `MathEditing.swift`.
+        if let open = openGlyph(tex: tex, size: size, ink: ink) { return open }
         let rgba = ink.rgbaBytes
         let key = "\(display ? "D" : "T")\(size)|\(rgba)|\(tex)"
         if let hit = cache[key] { return hit }
         if cache.count >= cap { cache.removeAll(keepingCapacity: true) }
-        let glyph: MathGlyph? = {
-            guard let p = try? typesetMath(tex: tex, display: display, size: Double(size),
-                                           r: rgba.0, g: rgba.1, b: rgba.2, a: rgba.3),
-                  let data = p.svg.data(using: .utf8),
-                  let picture = try? SVGPicture(data: data)
-            else { return nil }
-            let glyph = MathGlyph(picture: picture,
-                                  width: CGFloat(p.width) * size,
-                                  ascent: CGFloat(p.height) * size,
-                                  descent: CGFloat(p.depth) * size)
-            return glyph.isDrawable ? glyph : nil
-        }()
+        let glyph = (try? typesetMath(tex: tex, display: display, size: Double(size),
+                                      r: rgba.0, g: rgba.1, b: rgba.2, a: rgba.3))
+            .flatMap { glyph(from: $0, size: size) }
         cache[key] = glyph
         return glyph
+    }
+
+    /// A typeset picture parsed and measured in points at `size`; `nil` when
+    /// its SVG does not parse or its box is not one a surface can draw.
+    static func glyph(from p: MathPicture, size: CGFloat) -> MathGlyph? {
+        guard let data = p.svg.data(using: .utf8),
+              let picture = try? SVGPicture(data: data)
+        else { return nil }
+        let glyph = MathGlyph(picture: picture,
+                              width: CGFloat(p.width) * size,
+                              ascent: CGFloat(p.height) * size,
+                              descent: CGFloat(p.depth) * size)
+        return glyph.isDrawable ? glyph : nil
     }
 }
 

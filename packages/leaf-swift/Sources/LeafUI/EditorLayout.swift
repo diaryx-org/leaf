@@ -823,7 +823,7 @@ struct EditorLayout {
     /// rows, and a formula's row names its `∑` and not its TeX.
     private let tables: [TableView]
     private let media: [MediaView]
-    private let math: [MathView]
+    let math: [MathView]
     private let directives: [DirectiveView]
     /// Whether the host was asked to draw this frame's directives — a frame
     /// laid out with a hook and one laid out without it place the same rows

@@ -394,6 +394,34 @@ behave natively. *Inline IME (marked text) is the one remaining follow-up* —
 committed CJK/emoji insert correctly, but the composing overlay isn't drawn yet
 (the web got that free from `contenteditable`; AppKit needs it explicit).
 
+### Formulas
+
+A `$…$` formula is its typeset picture in the line, and a `$$` block a
+picture centred in a row of its own: leaf-math's SVG, drawn as vectors
+through resvg-swift. You don't edit one as TeX. → in front of a formula, ←
+behind it, or a click or tap on its picture opens it in place:
+
+- `/` makes a fraction of the term before the caret.
+- `^` and `_` open a superscript or subscript, and space leaves the slot.
+- `sqrt`, `pi`, `alpha` and the like become symbols as they are typed.
+- The arrows walk the slots; ↑ and ↓ cross a fraction bar.
+
+The open formula draws its own caret, and its empty slots, inside its
+picture.
+
+What it writes is TeX. Each keystroke becomes one or two splices on the
+formula's bytes (`LeafDoc.editSource`) and is one undo step, so nothing it
+didn't touch is rewritten.
+
+- ← at the first stop or → at the last leaves the formula.
+- Escape, Return or Tab leave it too.
+- ⌘Z leaves it and then undoes.
+
+`editsFormulasAsStructure = false` on the text view puts back the old
+behaviour, where a formula on the caret's line reveals its TeX. The editing
+lives in `MathEditing.swift` over the binding's `MathSession`, the same Rust
+as the web editor's.
+
 ### Type-checking the Swift without an app
 
 The renderer is validated against the real generated binding with `swiftc`:

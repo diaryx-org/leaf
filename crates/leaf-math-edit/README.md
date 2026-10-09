@@ -55,14 +55,23 @@ cp demo/index.html <scratch>/ && python3 -m http.server -d <scratch>
 
 ## In leaf
 
-The web editor uses it (`packages/leaf-web`, *Formulas edited as structure*
-in its README). `leaf-math-wasm` exports a `MathSession` over the editor here
-without its twig half, and the web editor applies its splices to the document
-through `LeafDoc::edit_source`. Core keeps a formula a picture on the caret's
-line once the frontend says it edits formulas itself (`Doc::set_edits_math`),
-and every `MathView` carries the formula's end and its TeX range. That adds
-about 60 KB raw to the math module, measured against the README's September
-figure.
+Two frontends use it, the web editor (`packages/leaf-web`) and the Swift views
+(`packages/leaf-swift`). Each README has a section on formulas.
+
+- `MathSession` is exported twice, over the editor here without its twig half:
+  by `leaf-math-wasm` for the web, and by `leaf-ffi` for Swift. CI holds the two
+  to the same methods.
+- Each frontend applies the session's splices to the document through
+  `LeafDoc::edit_source`.
+- Core keeps a formula a picture on the caret's line once the frontend says it
+  edits formulas itself (`Doc::set_edits_math`). Every `MathView` carries the
+  formula's end and its TeX range.
+- The Swift views draw the open formula without the layout knowing. The frame
+  they lay out names it by a stand-in TeX for each revision, which `MathStore`
+  answers with the session's picture.
+
+The editor adds about 60 KB raw to the web's math module, measured against that
+README's September figure.
 
 ## Not done
 
@@ -71,8 +80,7 @@ figure.
 - `\left(` auto-pairing.
 - Removing an empty script when the caret leaves it.
 - IME input.
-- The Swift and terminal frontends.
+- The terminal frontend.
 
-The binding exports `edit_source` and `set_edits_math` to Swift already. The
-open formula is laid out again on every key; caching by source would be the
+The open formula is laid out again on every key; caching by source would be the
 first optimisation.

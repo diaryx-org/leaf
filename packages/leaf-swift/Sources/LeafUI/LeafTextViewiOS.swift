@@ -501,6 +501,33 @@ public final class LeafTextView: UIView, UITextInput {
     /// The caret offset the view last scrolled to reveal. Only a *move* re-scrolls,
     /// so passive reflows leave the reader's scroll position alone.
     private var lastCaretOffset: UInt32?
+    /// The formula open for structural editing, if any — see `MathEditing.swift`.
+    private var openFormula: OpenFormula? {
+        didSet {
+            // An open formula draws its own caret; the system's — and its
+            // selection handles — would be a second one, in front of it.
+            if (openFormula == nil) != (oldValue == nil) {
+                if openFormula != nil { tintBeforeFormula = tintColor; tintColor = .clear }
+                else { tintColor = tintBeforeFormula }
+            }
+        }
+    }
+    private var tintBeforeFormula: UIColor?
+    /// The stand-in the open formula was last laid out under — the AppKit
+    /// peer's.
+    private var laidStandIn: String?
+    /// Whether a formula is open for structural editing.
+    var isEditingFormula: Bool { openFormula != nil }
+
+    /// Whether a formula is edited in place as structure, or — `false` —
+    /// revealed as its TeX on the caret's line. On by default.
+    public var editsFormulasAsStructure: Bool = true {
+        didSet {
+            guard editsFormulasAsStructure != oldValue else { return }
+            openFormula = nil
+            render(doc.setEditsMath(on: editsFormulasAsStructure))
+        }
+    }
     /// Per-row shaped-text cache reused across frames; an edit re-shapes only the
     /// changed row(s). Cleared when the theme geometry changes (see `theme`).
     private var shapeCache: [Row: ShapedRow] = [:]
@@ -857,6 +884,10 @@ public final class LeafTextView: UIView, UITextInput {
         self.doc = doc
         self.hostTheme = theme
         self.renderTheme = theme
+        // A formula is edited in place as structure (`MathEditing.swift`), so
+        // on the caret's line it stays its picture rather than revealing TeX.
+        // Said before frames become changes, as the AppKit peer does.
+        _ = doc.setEditsMath(on: true)
         // Every frame after the first is the change since the frame before,
         // spliced into `docView` by `render` — the AppKit peer's rule.
         doc.setIncrementalFrames(on: true)
@@ -990,6 +1021,8 @@ public final class LeafTextView: UIView, UITextInput {
             onTapHighlight(hit.id)
             return
         }
+        // A tap on a formula's picture opens it.
+        if formulaTap(point) { return }
         // A playing recording's strip answers its own taps.
         if mediaPlayers.ownsTouch(at: point) { return }
         // A tap on a video or audio box starts it, and a tap on an *empty*
@@ -1415,6 +1448,12 @@ public final class LeafTextView: UIView, UITextInput {
             docView = frame
         }
         let view = docView
+        // The open formula followed into this frame, or closed — the AppKit
+        // peer's rule.
+        if let open = openFormula, !open.follow(view) { openFormula = nil }
+        let laid = openFormula?.laidOut(view) ?? view
+        let standInChanged = openFormula?.standIn != laidStandIn
+        laidStandIn = openFormula?.standIn
         readingLines = nil
         // The input traits answer differently per view (see `isSourceView`), and
         // UIKit reads them when the keyboard is set up — so set it up again.
@@ -1427,16 +1466,16 @@ public final class LeafTextView: UIView, UITextInput {
         // its formulas in white — and print them on white.
         traitCollection.performAsCurrent {
             if reflow {
-                layoutEngine = EditorLayout(view, theme: renderTheme, viewWidth: viewWidth, page: pageSetup,
+                layoutEngine = EditorLayout(laid, theme: renderTheme, viewWidth: viewWidth, page: pageSetup,
                                             cache: &shapeCache, media: mediaStore,
                                             directives: directiveHost.measure)
-            } else if change != nil || blocksChanged || layoutEngine.rows.isEmpty {
-                layoutEngine = EditorLayout(view, theme: renderTheme, viewWidth: viewWidth, page: pageSetup,
+            } else if change != nil || blocksChanged || standInChanged || layoutEngine.rows.isEmpty {
+                layoutEngine = EditorLayout(laid, theme: renderTheme, viewWidth: viewWidth, page: pageSetup,
                                             cache: &shapeCache, media: mediaStore, previous: layoutEngine,
                                             change: change, directives: directiveHost.measure)
             }
         }
-        let relaid = reflow || change != nil || blocksChanged
+        let relaid = reflow || change != nil || blocksChanged || standInChanged
         // The host's views follow their boxes; one whose directive was edited
         // away goes with it.
         if relaid, !directiveHost.isEmpty {
@@ -1818,6 +1857,13 @@ public final class LeafTextView: UIView, UITextInput {
 
     public func insertText(_ text: String) {
         closeWritingToolsGroupForUserEdit()
+        // Typing into the open formula is the session's; Return and Tab leave
+        // it, behind it, and a composition closes it and lands as text.
+        if let open = openFormula {
+            if text == "\n" || text == "\t" { return leaveFormula(atEnd: true) }
+            if marked == nil { return act(open.type(text, in: doc)) }
+            closeFormula()
+        }
         if let m = marked {
             marked = nil
             render(doc.replaceRange(from: UInt32(m.from.offset), to: UInt32(m.to.offset), text: text))
@@ -1835,6 +1881,7 @@ public final class LeafTextView: UIView, UITextInput {
 
     public func deleteBackward() {
         closeWritingToolsGroupForUserEdit()
+        if let open = openFormula, marked == nil { return act(open.press(.backspace, in: doc)) }
         if let m = marked {
             marked = nil
             render(doc.replaceRange(from: UInt32(m.from.offset), to: UInt32(m.to.offset), text: ""))
@@ -1866,7 +1913,97 @@ public final class LeafTextView: UIView, UITextInput {
                 // list item with its children — one place, as the Mac's Format
                 // menu does. Unmodified arrows stay the text-input system's.
                 k(UIKeyCommand.inputUpArrow, .alternate),
-                k(UIKeyCommand.inputDownArrow, .alternate)]
+                k(UIKeyCommand.inputDownArrow, .alternate)] + formulaKeyCommands
+    }
+
+    // MARK: formulas edited as structure
+
+    /// The plain arrows, taken from the text-input system only where a
+    /// formula needs them: all four while one is open, and → in front of one
+    /// or ← behind one, which open it. Everywhere else the arrows stay the
+    /// system's, so ordinary motion is untouched.
+    private var formulaKeyCommands: [UIKeyCommand] {
+        let inputs: [String]
+        if openFormula != nil {
+            inputs = [UIKeyCommand.inputLeftArrow, UIKeyCommand.inputRightArrow,
+                      UIKeyCommand.inputUpArrow, UIKeyCommand.inputDownArrow, UIKeyCommand.inputEscape]
+        } else if editsFormulasAsStructure, !docView.hasSelection, !isSourceView {
+            let caret = doc.caretOffset()
+            inputs = (docView.math.contains { $0.src == caret } ? [UIKeyCommand.inputRightArrow] : [])
+                + (docView.math.contains { $0.end == caret } ? [UIKeyCommand.inputLeftArrow] : [])
+        } else {
+            inputs = []
+        }
+        return inputs.map { input in
+            let c = UIKeyCommand(input: input, modifierFlags: [], action: #selector(handleFormulaKey(_:)))
+            c.wantsPriorityOverSystemBehavior = true
+            return c
+        }
+    }
+
+    @objc private func handleFormulaKey(_ cmd: UIKeyCommand) {
+        let input = cmd.input ?? ""
+        guard let open = openFormula else {
+            let right = input == UIKeyCommand.inputRightArrow
+            let caret = doc.caretOffset()
+            guard let m = docView.math.first(where: { right ? $0.src == caret : $0.end == caret }),
+                  let open = OpenFormula(m, entry: right ? .home : .end, accent: renderTheme.caretColor)
+            else { return }
+            openFormula = open
+            render(doc.selectRange(start: m.src, end: m.src))
+            return
+        }
+        switch input {
+        case UIKeyCommand.inputLeftArrow: act(open.press(.left, in: doc))
+        case UIKeyCommand.inputRightArrow: act(open.press(.right, in: doc))
+        case UIKeyCommand.inputUpArrow: act(open.press(.up, in: doc))
+        case UIKeyCommand.inputDownArrow: act(open.press(.down, in: doc))
+        default: leaveFormula(atEnd: true)
+        }
+    }
+
+    /// Do what a keystroke in the open formula asked — the AppKit peer's.
+    private func act(_ outcome: OpenFormula.Outcome) {
+        switch outcome {
+        case let .edited(frame): render(frame)
+        case .moved: render(docView)
+        case let .leave(atEnd): leaveFormula(atEnd: atEnd)
+        }
+    }
+
+    /// Close the open formula with the caret in front of it or behind it.
+    private func leaveFormula(atEnd: Bool) {
+        guard let open = openFormula else { return }
+        openFormula = nil
+        let at = atEnd ? open.end : open.src
+        render(doc.selectRange(start: at, end: at))
+    }
+
+    /// Close the open formula where the caret is, for whatever acts next.
+    private func closeFormula() {
+        guard openFormula != nil else { return }
+        openFormula = nil
+        render(docView)
+    }
+
+    /// A tap on a formula's picture opens it at the stop under the finger, or
+    /// moves the caret in the one already open. Whether the tap was one.
+    private func formulaTap(_ point: CGPoint) -> Bool {
+        guard editsFormulasAsStructure, !isSourceView,
+              let hit = layoutEngine.mathPicture(at: point, theme: renderTheme)
+        else { return false }
+        let local = CGPoint(x: point.x - hit.rect.minX, y: point.y - hit.rect.minY)
+        if let open = openFormula, open.src == hit.math.src {
+            open.click(local, size: hit.size)
+            render(docView)
+            return true
+        }
+        guard let open = OpenFormula(hit.math, entry: .point(local, size: hit.size),
+                                     accent: renderTheme.caretColor)
+        else { return false }
+        openFormula = open
+        render(doc.selectRange(start: hit.math.src, end: hit.math.src))
+        return true
     }
 
     @objc private func handleShortcut(_ cmd: UIKeyCommand) {
@@ -1879,8 +2016,8 @@ public final class LeafTextView: UIView, UITextInput {
         case ("u", _): command { $0.toggleUnderline() }
         case ("\t", true): command { $0.cellTab(forward: false) ?? $0.outdent() }
         case ("\r", true): command { $0.cellLineBreak() ?? $0.newline() }
-        case ("z", false): historyManager.undo()
-        case ("z", true): historyManager.redo()
+        case ("z", false): closeFormula(); historyManager.undo()
+        case ("z", true): closeFormula(); historyManager.redo()
         // ⇧⌘V — plain-flavor escape hatch: paste as leaf source, ignoring rich HTML.
         case ("v", true):
             let text = UIPasteboard.general.string ?? ""
@@ -2019,6 +2156,20 @@ public final class LeafTextView: UIView, UITextInput {
         }
         set {
             guard let r = newValue as? LeafTextRange else { return }
+            // The system moving the caret anywhere but onto the open formula
+            // — a tap elsewhere, a selection — closes it. Onto it is the
+            // system's own half of a tap on its picture, which `textInteraction`
+            // answers with a caret at one of the picture's edges, before or
+            // after the tap recogniser opens it: the formula stays open, its
+            // caret where the tap put it, and core's waits in front of it.
+            if let open = openFormula {
+                let edges = [Int(open.src), Int(open.end)]
+                if r.from.offset == r.to.offset, edges.contains(r.from.offset) {
+                    render(doc.selectRange(start: open.src, end: open.src))
+                    return
+                }
+                openFormula = nil
+            }
             render(doc.setSelectionOffsets(anchor: UInt32(r.from.offset), focus: UInt32(r.to.offset)))
         }
     }
