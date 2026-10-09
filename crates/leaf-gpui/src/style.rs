@@ -90,6 +90,10 @@ pub fn text_run(len: usize, s: LStyle, rs: &RunStyle) -> TextRun {
         // quote gutters are: it's the scaffolding around the prose, and the
         // caret's line should still read as a line of text.
         (Role::ListMarker | Role::QuoteGutter | Role::Rule | Role::Delimiter, _) => rs.muted,
+        // A list item's indent on its later rows is the marker's own characters,
+        // shaped so the row starts where the item's first row does, and never
+        // seen: ink with no alpha takes their width and draws nothing.
+        (Role::ListIndent, _) => gpui::transparent_black(),
         // Body, Heading, plain Code, Mark all read in the default text color.
         _ => rs.text,
     };

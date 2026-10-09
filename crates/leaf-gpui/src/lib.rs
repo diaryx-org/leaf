@@ -2451,6 +2451,8 @@ fn style_bits(s: CoreStyle) -> u16 {
         // that differ only in colour are two different shapes — they cannot
         // share a key with each other or with the uncoloured `3`.
         Role::Mark(Some(c)) => 17 + c.index() as u16, // 17..=23
+        Role::ListIndent => 24,
+        Role::Math => 25,
     };
     (s.bold as u16)
         | ((s.italic as u16) << 1)
@@ -4341,15 +4343,15 @@ impl Element for TextElement {
             let dx = row_x[r];
             let paint_row = |window: &mut Window, cx: &mut App| {
                 for seg in &row.segments {
+                    let origin = point(left + seg.x + dx, y);
+                    // A run's background — a highlight's wash, inline code's pill —
+                    // is its own pass since gpui split it out of `paint`, and goes
+                    // down first so the glyphs land on top of it.
                     seg.shaped
-                        .paint(
-                            point(left + seg.x + dx, y),
-                            row.height,
-                            TextAlign::Left,
-                            None,
-                            window,
-                            cx,
-                        )
+                        .paint_background(origin, row.height, TextAlign::Left, None, window, cx)
+                        .ok();
+                    seg.shaped
+                        .paint(origin, row.height, TextAlign::Left, None, window, cx)
                         .ok();
                 }
             };
@@ -4365,7 +4367,7 @@ impl Element for TextElement {
         // reusing the same `Arc<RenderImage>` across frames re-uploads nothing.
         for (rect, image) in prepaint.images.drain(..) {
             window
-                .paint_image(rect, Corners::default(), image, 0, false)
+                .paint_image(rect, rect, Corners::default(), image, 0, false)
                 .ok();
         }
 

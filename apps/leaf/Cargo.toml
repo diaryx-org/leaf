@@ -3,11 +3,9 @@ name = "leaf"
 version = "0.1.2"
 edition = "2024"
 description = "leaf — the flagship rich-text document editor: a standalone gpui application over the leaf-gpui editor widget."
-# Never crates.io, for two independent reasons: the app pins gpui to a Zed commit
-# (crates.io accepts no upload carrying a git dependency), and the name `leaf`
-# there has belonged to an unrelated 2016 machine-learning framework since long
-# before this one. `cargo xtask publish` works the first reason out on its own;
-# this line is the second, which no manifest scan could infer.
+# Never crates.io: the name `leaf` there has belonged to an unrelated 2016
+# machine-learning framework since long before this one, which no manifest scan
+# could infer.
 publish = false
 
 # The binary keeps the name `leaf-gui`; the TUI crate ships the `leaf` binary for
@@ -30,6 +28,8 @@ leaf-gpui = { path = "../../crates/leaf-gpui" }
 leaf-core = { path = "../../crates/leaf-core" }
 
 # The app shell owns the window and the run-loop, so it pulls gpui + the platform
-# backend directly (font-kit is required — see leaf-gpui's Cargo.toml).
-gpui = { git = "https://github.com/zed-industries/zed", rev = "bd72919555149fc072d33c4fa6805c742a11ee8b" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "bd72919555149fc072d33c4fa6805c742a11ee8b", features = ["font-kit"] }
+# backend directly, as the same gpui-pre snapshot leaf-gpui names — the crates pin
+# each other with `=`, so the two must move together (font-kit and
+# runtime_shaders as there — see leaf-gpui's Cargo.toml).
+gpui = { package = "gpui-pre", version = "=0.3.8" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.8", features = ["font-kit", "runtime_shaders"] }

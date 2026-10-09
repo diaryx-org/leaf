@@ -4,8 +4,9 @@ resolver = "3"
 # explicitly — apps/ also holds non-Cargo frontends (apps/leaf-web-demo) that a
 # glob would wrongly try to load as workspace members.
 members = ["crates/*", "apps/leaf-tui", "xtask"]
-# The gpui side of the project, deliberately outside this workspace. All three
-# reach the Zed monorepo, and a lockfile that names it carries 22 git-sourced
+# The gpui side of the project, deliberately outside this workspace. leaf-gpui
+# and apps/leaf are on gpui-pre from crates.io; leaf-ios still reaches the Zed
+# monorepo. When all three did, a lockfile that named it carried 22 git-sourced
 # crates and roughly 500 packages nothing here compiles — measured: 769 packages
 # with them, 275 without, against the 141 `leaf-tui` actually uses. That is a
 # cost to everything that reads this lockfile rather than resolving fresh, and

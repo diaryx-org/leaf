@@ -3,13 +3,13 @@ name = "leaf-gpui"
 version = "0.1.2"
 edition = "2024"
 description = "Embeddable gpui rich-text editor widget for leaf: the Editor view, its input/rendering, and a turnkey app runner. Built on leaf-core + twig."
-# crates.io accepts no upload carrying a git dependency, and this crate's whole
-# reason for existing is gpui, which is only on the Zed monorepo. The same line
-# and the same reason as apps/leaf.
+# Held back while gpui was only on the Zed monorepo, which crates.io cannot take
+# a dependency on. On gpui-pre that reason is gone; whether to publish is a
+# decision still to be made, not one this line records.
 publish = false
 
 # Standalone workspace — deliberately separate from leaf's, and `exclude`d there.
-# gpui brings 22 git-sourced crates with it, and a lockfile that carries them
+# gpui brought 22 git-sourced crates with it, and a lockfile that carries them
 # makes every consumer that vendors rather than resolves (nix's buildRustPackage,
 # to name the one that forced this) fetch the Zed monorepo to build anything at
 # all. Keeping it here costs leaf's own lockfile 494 packages it never uses.
@@ -33,13 +33,19 @@ desktop = ["dep:gpui_platform", "dep:arboard"]
 leaf-core = { path = "../leaf-core" }
 anyhow = "1"
 
-# gpui is consumed from the Zed monorepo as a git dependency (not on crates.io),
-# pinned to a specific commit. The `font-kit` feature on gpui_platform is
-# REQUIRED — without it the macOS backend rasterizes no glyphs (invisible text).
-gpui = { git = "https://github.com/zed-industries/zed", rev = "bd72919555149fc072d33c4fa6805c742a11ee8b" }
+# gpui is consumed as `gpui-pre`, Longbridge's weekly crates.io snapshot of the
+# Zed monorepo (0.3.8 is zed@279fe07), renamed back to `gpui` so the source reads
+# as upstream. The snapshot crates pin each other with `=`, so every gpui-pre
+# crate in a graph — here, apps/leaf, and gpui-pre-mobile — must name the same
+# version. The `font-kit` feature on gpui_platform is REQUIRED — without it the
+# macOS backend rasterizes no glyphs (invisible text). `runtime_shaders` compiles
+# the Metal shaders when the app starts rather than at build time, which spares a
+# build the Metal Toolchain — an Xcode component `xcodebuild -downloadComponent
+# MetalToolchain` installs and Xcode 27 no longer ships by default.
+gpui = { package = "gpui-pre", version = "=0.3.8" }
 # Desktop-only backend, pulled in only by the `desktop` feature. Never compiled
 # for iOS/Android, where the host supplies gpui-mobile's platform layer instead.
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "bd72919555149fc072d33c4fa6805c742a11ee8b", features = ["font-kit"], optional = true }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.8", features = ["font-kit", "runtime_shaders"], optional = true }
 # The system clipboard, for the desktop build only (see the `desktop` feature).
 # Same crate and the same open-fresh-per-operation discipline as leaf-tui, which
 # is what lets both frontends carry the same two flavors.
@@ -59,4 +65,4 @@ smallvec = "1"
 # table's geometry — column x, caret round-trips — be an actual test instead of a
 # claim: everything the widget draws is measured through a text system, and a
 # `Window` is the only way to reach one.
-gpui = { git = "https://github.com/zed-industries/zed", rev = "bd72919555149fc072d33c4fa6805c742a11ee8b", features = ["test-support"] }
+gpui = { package = "gpui-pre", version = "=0.3.8", features = ["test-support"] }
