@@ -868,6 +868,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         postAccessibilityChanges(textChanged: textChanged)
         onStateChange?(EditorState(view))
         if relaid { onLayoutChange?() }
+        if relaid { sheetsRelaid() }
         if edited { onEdit?() }
     }
 
@@ -1107,6 +1108,151 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// Every sheet's frame in layout coordinates, top to bottom. Empty in the
     /// continuous flow.
     var pages: [CGRect] { layoutEngine.pages }
+
+    // MARK: sheets as leaves (see `Sheets`)
+
+    /// Whether scrolling stops at the edges of the sheet in view, `sheet` —
+    /// for a host that turns the sheets itself. The UIKit peer's twin; see it.
+    /// Bound through `LeafClipView`, which `LeafEditor` puts this view in.
+    public var holdsSheet = false {
+        didSet {
+            guard holdsSheet != oldValue else { return }
+            if holdsSheet { moveSheet(to: sheetInView()) }
+            rehold()
+        }
+    }
+
+    /// The sheet in view: the held one, or the one under the middle of the
+    /// clip view. `0` off paper.
+    public private(set) var sheet = 0
+
+    /// How many sheets the document is laid out on; `0` off paper.
+    public var sheetCount: Int { pageSetup == nil ? 0 : pages.count }
+
+    /// Told the sheet in view and the count, whenever either changes.
+    public var onSheetChange: ((_ sheet: Int, _ count: Int) -> Void)?
+
+    /// Bring sheet `index` to the top of the viewport; past the last, the
+    /// last. The caret goes with it from another sheet. Asked before the
+    /// document is laid out, it is done once it is.
+    public func showSheet(_ index: Int, animated: Bool = false) {
+        guard pageSetup != nil, !pages.isEmpty, let scroll = enclosingScrollView,
+              scroll.contentView.bounds.height > 0 else {
+            wantedSheet = (index, animated)
+            // Unseen until it is there — see the UIKit peer.
+            if pageSetup != nil { alphaValue = 0 }
+            return
+        }
+        wantedSheet = nil
+        alphaValue = 1
+        let target = min(max(index, 0), pages.count - 1)
+        if let caret = layoutEngine.caretRect(docView, theme: theme),
+           Sheets.index(at: caret.midY, in: pages) != target, let page = pageSetup {
+            let sheet = pages[target]
+            let (row, ch) = layoutEngine.hit(CGPoint(x: sheet.minX + page.margins.left,
+                                                     y: sheet.minY + page.margins.top + 1))
+            let offset = doc.offsetForPos(row: UInt32(row), ch: UInt32(ch))
+            command { $0.caretMoved(to: offset) }
+        }
+        moveSheet(to: target)
+        let clip = scroll.contentView
+        let origin = CGPoint(x: clip.bounds.origin.x, y: heldRange(target, in: clip).lowerBound)
+        if animated {
+            NSAnimationContext.runAnimationGroup { _ in clip.animator().setBoundsOrigin(origin) }
+        } else {
+            clip.scroll(to: origin)
+        }
+        scroll.reflectScrolledClipView(clip)
+    }
+
+    private var wantedSheet: (index: Int, animated: Bool)?
+    private var reportedSheets: (sheet: Int, count: Int)?
+
+    private func moveSheet(to index: Int) {
+        sheet = pages.isEmpty ? 0 : min(max(index, 0), pages.count - 1)
+        reportSheets()
+    }
+
+    private func reportSheets() {
+        let now = (sheet: sheet, count: sheetCount)
+        guard reportedSheets.map({ $0 != now }) ?? true else { return }
+        reportedSheets = now
+        onSheetChange?(now.sheet, now.count)
+    }
+
+    private func sheetInView() -> Int {
+        guard pageSetup != nil, !pages.isEmpty, let clip = enclosingScrollView?.contentView else { return 0 }
+        return Sheets.index(at: clip.bounds.midY / zoomScale, in: pages)
+    }
+
+    /// The clip origins the held sheet `index` allows: its band in this
+    /// view's (zoomed) coordinates, within the clip's own range.
+    private func heldRange(_ index: Int, in clip: NSClipView) -> ClosedRange<CGFloat> {
+        let insets = clip.contentInsets
+        let lowest = -insets.top
+        let highest = max(lowest, frame.height - clip.bounds.height + insets.bottom)
+        guard let page = pageSetup, pages.indices.contains(index) else { return lowest...highest }
+        let band = Sheets.band(index, pages: pages, backdrop: page.backdrop,
+                               contentHeight: layoutEngine.contentHeight)
+        let top = index == 0 ? lowest : band.lowerBound * zoomScale - insets.top
+        let bottom = index == pages.count - 1 ? highest
+            : band.upperBound * zoomScale - clip.bounds.height + insets.bottom
+        let from = Sheets.clamp(top, to: lowest...highest)
+        return from...max(from, Sheets.clamp(bottom, to: lowest...highest))
+    }
+
+    /// `proposed` as the held sheet allows it — what `LeafClipView` asks of
+    /// every bounds it is about to take.
+    func heldBounds(_ proposed: NSRect, in clip: NSClipView) -> NSRect {
+        guard holdsSheet, pageSetup != nil, !pages.isEmpty else { return proposed }
+        var bounds = proposed
+        bounds.origin.y = Sheets.clamp(bounds.origin.y, to: heldRange(sheet, in: clip))
+        return bounds
+    }
+
+    /// The clip view moved: not holding, the sheet in view may be another.
+    @objc private func clipScrolled() {
+        guard !holdsSheet, pageSetup != nil else { return }
+        moveSheet(to: sheetInView())
+    }
+
+    private func followCaretToItsSheet() {
+        guard holdsSheet, pageSetup != nil, !pages.isEmpty,
+              let caret = layoutEngine.caretRect(docView, theme: theme) else { return }
+        moveSheet(to: Sheets.index(at: caret.midY, in: pages))
+    }
+
+    private func sheetsRelaid() {
+        guard pageSetup != nil else {
+            wantedSheet = nil
+            alphaValue = 1
+            return moveSheet(to: 0)
+        }
+        // A sheet asked for is the one in view from here on, not the first
+        // the view was made at — see the UIKit peer.
+        if let wanted = wantedSheet {
+            moveSheet(to: wanted.index)
+        } else if sheet >= pages.count {
+            moveSheet(to: pages.count - 1)
+        } else {
+            reportSheets()
+        }
+        if let wanted = wantedSheet {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let again = self.wantedSheet,
+                      again.index == wanted.index else { return }
+                self.showSheet(wanted.index, animated: wanted.animated)
+            }
+        }
+        rehold()
+    }
+
+    private func rehold() {
+        guard holdsSheet, let scroll = enclosingScrollView else { return }
+        let clip = scroll.contentView
+        clip.scroll(to: clip.bounds.origin)
+        scroll.reflectScrolledClipView(clip)
+    }
 
     public override func rectForPage(_ page: Int) -> NSRect {
         let pages = layoutEngine.pages
@@ -1404,6 +1550,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// viewport. Falls back to the ordinary minimum scroll when there is no clip
     /// view to measure against (a text view not in a scroll view at all).
     private func land() {
+        followCaretToItsSheet()
         guard let clip = enclosingScrollView?.contentView,
               let rect = layoutEngine.caretRect(docView, theme: theme)
         else { return scrollCaretToVisible() }
@@ -1416,6 +1563,10 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     }
 
     private func scrollCaretToVisible() {
+        // A sheet asked for and not yet shown takes the caret there itself —
+        // see the UIKit peer.
+        guard wantedSheet == nil else { return }
+        followCaretToItsSheet()
         if let rect = layoutEngine.caretRect(docView, theme: theme) {
             scrollToVisible(viewRect(rect.insetBy(dx: 0, dy: -theme.lineHeight)))
         }
@@ -4050,6 +4201,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         nc.removeObserver(self, name: NSWindow.didBecomeKeyNotification, object: nil)
         nc.removeObserver(self, name: NSWindow.didResignKeyNotification, object: nil)
         nc.removeObserver(self, name: NSView.frameDidChangeNotification, object: nil)
+        nc.removeObserver(self, name: NSView.boundsDidChangeNotification, object: nil)
         guard let window else { return }
         // Paginated, the frame is the stack's own width rather than the clip
         // view's, so `layout()` no longer fires on a window resize — and where the
@@ -4061,6 +4213,10 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             clip.postsFrameChangedNotifications = true
             nc.addObserver(self, selector: #selector(viewportResized),
                            name: NSView.frameDidChangeNotification, object: clip)
+            // Scrolled, the sheet in view may be another (`sheet`).
+            clip.postsBoundsChangedNotifications = true
+            nc.addObserver(self, selector: #selector(clipScrolled),
+                           name: NSView.boundsDidChangeNotification, object: clip)
             clipTopInset = clip.contentInsets.top
             clipInsetObservation = clip.observe(\.contentInsets) { [weak self] clip, _ in
                 self?.clipInsetsChanged(clip)

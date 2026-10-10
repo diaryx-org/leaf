@@ -494,6 +494,188 @@ public final class LeafTextView: UIView, UITextInput {
     /// Every sheet's frame in layout coordinates, top to bottom — what a PDF
     /// takes one page from each of. Empty in the continuous flow.
     var pages: [CGRect] { layoutEngine.pages }
+
+    // MARK: sheets as leaves (see `Sheets`)
+
+    /// Whether scrolling stops at the edges of the sheet in view, `sheet` —
+    /// for a host that turns the sheets itself, as the leaves of a book. A
+    /// pinch still zooms and a drag still looks round the sheet; the caret
+    /// carried on to another sheet takes the hold with it. Nothing off paper.
+    public var holdsSheet = false {
+        didSet {
+            guard holdsSheet != oldValue else { return }
+            if holdsSheet { moveSheet(to: sheetInView()) }
+            rehold()
+        }
+    }
+
+    /// The editor's scroll view asks this view where it may scroll, once
+    /// the view is in it — see `heldOffset`.
+    public override func didMoveToWindow() {
+        super.didMoveToWindow()
+        (enclosingScrollView() as? LeafScrollView)?.sheetHolder = self
+    }
+
+    /// The sheet in view: the held one, or — not holding — the one under the
+    /// middle of the viewport. `0` off paper.
+    public private(set) var sheet = 0
+
+    /// How many sheets the document is laid out on; `0` off paper.
+    public var sheetCount: Int { pageSetup == nil ? 0 : pages.count }
+
+    /// Told the sheet in view and the count, whenever either changes.
+    public var onSheetChange: ((_ sheet: Int, _ count: Int) -> Void)?
+
+    /// Bring sheet `index` to the top of the viewport, holding it if the view
+    /// holds a sheet; past the last, the last. The caret goes with it when it
+    /// was on another sheet, so what is typed next lands on the sheet shown.
+    /// Asked before the document is laid out, it is done once it is.
+    public func showSheet(_ index: Int, animated: Bool = false) {
+        guard let scroll = enclosingScrollView(), isSettledForSheets(in: scroll) else {
+            wantedSheet = (index, animated)
+            // Unseen until it is there: what a surface draws before then is
+            // another sheet, at a scale about to change.
+            if pageSetup != nil { alpha = 0 }
+            enclosingScrollView()?.setNeedsLayout()
+            return
+        }
+        wantedSheet = nil
+        alpha = 1
+        let target = min(max(index, 0), pages.count - 1)
+        if let caret = layoutEngine.caretRect(docView, theme: renderTheme),
+           Sheets.index(at: caret.midY, in: pages) != target, let page = pageSetup {
+            let sheet = pages[target]
+            let (row, ch) = layoutEngine.hit(CGPoint(x: sheet.minX + page.margins.left,
+                                                     y: sheet.minY + page.margins.top + 1))
+            let offset = doc.offsetForPos(row: UInt32(row), ch: UInt32(ch))
+            command { $0.caretMoved(to: offset) }
+        }
+        moveSheet(to: target)
+        let y = heldRange(target, in: scroll).lowerBound
+        scroll.setContentOffset(CGPoint(x: scroll.contentOffset.x, y: y), animated: animated)
+    }
+
+    /// A `showSheet` that came before there was a layout to show it in.
+    private var wantedSheet: (index: Int, animated: Bool)?
+    /// What `onSheetChange` was last told, so it is told only of a change.
+    private var reportedSheets: (sheet: Int, count: Int)?
+
+    private func moveSheet(to index: Int) {
+        sheet = pages.isEmpty ? 0 : min(max(index, 0), pages.count - 1)
+        reportSheets()
+    }
+
+    private func reportSheets() {
+        let now = (sheet: sheet, count: sheetCount)
+        guard reportedSheets.map({ $0 != now }) ?? true else { return }
+        reportedSheets = now
+        onSheetChange?(now.sheet, now.count)
+    }
+
+    /// The sheet under the middle of what is visible.
+    private func sheetInView() -> Int {
+        guard pageSetup != nil, !pages.isEmpty, let scroll = enclosingScrollView() else { return 0 }
+        let inset = scroll.adjustedContentInset
+        let middle = CGPoint(x: scroll.bounds.midX,
+                             y: (scroll.bounds.minY + inset.top + scroll.bounds.maxY - inset.bottom) / 2)
+        return Sheets.index(at: convert(middle, from: scroll).y, in: pages)
+    }
+
+    /// The content offsets the held sheet `index` allows in `scroll`: its band
+    /// (`Sheets.band`) in the scroll view's coordinates, within the ones the
+    /// scroll view allows anyway — the keyboard's inset included, so a held
+    /// sheet still scrolls its foot up above the keys.
+    private func heldRange(_ index: Int, in scroll: UIScrollView) -> ClosedRange<CGFloat> {
+        let inset = scroll.adjustedContentInset
+        let lowest = -inset.top
+        let highest = max(lowest, scroll.contentSize.height + inset.bottom - scroll.bounds.height)
+        guard let page = pageSetup, pages.indices.contains(index) else { return lowest...highest }
+        let band = Sheets.band(index, pages: pages, backdrop: page.backdrop,
+                               contentHeight: layoutEngine.contentHeight)
+        let top = index == 0 ? lowest
+            : convert(CGPoint(x: 0, y: band.lowerBound), to: scroll).y - inset.top
+        let bottom = index == pages.count - 1 ? highest
+            : convert(CGPoint(x: 0, y: band.upperBound), to: scroll).y + inset.bottom - scroll.bounds.height
+        let from = Sheets.clamp(top, to: lowest...highest)
+        return from...max(from, Sheets.clamp(bottom, to: lowest...highest))
+    }
+
+    /// `offset` as the held sheet allows it — what `LeafScrollView` asks of
+    /// every offset it is given. Untouched when nothing is held.
+    func heldOffset(_ offset: CGPoint, in scroll: UIScrollView) -> CGPoint {
+        guard holdsSheet, pageSetup != nil, !pages.isEmpty else { return offset }
+        return CGPoint(x: offset.x, y: Sheets.clamp(offset.y, to: heldRange(sheet, in: scroll)))
+    }
+
+    /// The scroll view moved: not holding, the sheet in view may be another.
+    func scrolled() {
+        guard !holdsSheet, pageSetup != nil else { return }
+        moveSheet(to: sheetInView())
+    }
+
+    /// The caret is about to be scrolled to: held, the hold goes to its sheet
+    /// first, or the clamp would keep the caret out of view.
+    private func followCaretToItsSheet() {
+        guard holdsSheet, pageSetup != nil, !pages.isEmpty,
+              let caret = layoutEngine.caretRect(docView, theme: renderTheme) else { return }
+        moveSheet(to: Sheets.index(at: caret.midY, in: pages))
+    }
+
+    /// After a relayout: the sheet count may have changed, a sheet asked for
+    /// may now be there to show, and a held sheet's band has moved.
+    ///
+    /// A sheet asked for is the sheet in view from here on — reported as such,
+    /// not the first sheet the view was made at — and is scrolled to in the
+    /// layout pass this one asks for (`settleWantedSheet`), before anything
+    /// is drawn: scrolled to a turn later, a sheet made to show the fifth of a
+    /// page showed the first for a frame. A turn later still, for a host that
+    /// put the view in a scroll view of its own, where nothing calls it.
+    private func sheetsRelaid() {
+        guard pageSetup != nil else {
+            // Off paper there is no sheet to wait for.
+            wantedSheet = nil
+            alpha = 1
+            return moveSheet(to: 0)
+        }
+        if let wanted = wantedSheet {
+            moveSheet(to: wanted.index)
+            enclosingScrollView()?.setNeedsLayout()
+            DispatchQueue.main.async { [weak self] in self?.settleWantedSheet() }
+        } else if sheet >= pages.count {
+            moveSheet(to: pages.count - 1)
+        } else {
+            reportSheets()
+        }
+        rehold()
+    }
+
+    /// Show the sheet asked for before there was a layout, once there is one
+    /// to show it in: the document laid out, the scroll view sized, the fit
+    /// resolved against it, and the wrapper grown to the scaled document.
+    /// Sooner, the offset is reckoned at a scale about to change, and the
+    /// re-fit that follows carries it off the sheet. `LeafEditorController`
+    /// and `LeafZoomView` call this as they lay out.
+    func settleWantedSheet() {
+        guard let wanted = wantedSheet, let scroll = enclosingScrollView(),
+              isSettledForSheets(in: scroll) else { return }
+        showSheet(wanted.index, animated: wanted.animated)
+    }
+
+    /// Whether an offset reckoned now would stay where it is put: see
+    /// `settleWantedSheet`.
+    private func isSettledForSheets(in scroll: UIScrollView) -> Bool {
+        guard pageSetup != nil, !pages.isEmpty, scroll.bounds.height > 0 else { return false }
+        if zoomMode.isFit, abs(resolvedScale(zoomMode) - zoomScale) > 0.0001 { return false }
+        guard let host = zoomHost else { return true }
+        return host.bounds.height >= host.intrinsicContentSize.height - 1
+    }
+
+    /// Put the offset back inside the held sheet, now.
+    private func rehold() {
+        guard let scroll = enclosingScrollView() as? LeafScrollView else { return }
+        scroll.sheetHolder = self
+        scroll.contentOffset = scroll.contentOffset
+    }
     /// The view width the current layout was built for. The text column inside it
     /// — where it starts, how wide it wraps — is the theme's to decide (see
     /// `EditorTheme.column(in:)`), and the layout carries the answer.
@@ -1464,6 +1646,7 @@ public final class LeafTextView: UIView, UITextInput {
         }
         onStateChange?(EditorState(view))
         if relaid { onLayoutChange?() }
+        if relaid { sheetsRelaid() }
         if edited {
             invalidateFoundResultsAfterEdit()
             onEdit?()
@@ -1485,6 +1668,7 @@ public final class LeafTextView: UIView, UITextInput {
     /// Scroll so the caret's block sits a fixed distance below the top of the
     /// viewport, rather than the least distance that brings it into view.
     private func land() {
+        followCaretToItsSheet()
         guard let scroll = enclosingScrollView(),
               let rect = layoutEngine.caretRect(docView, theme: renderTheme)
         else { return scrollCaretToVisible() }
@@ -1552,6 +1736,11 @@ public final class LeafTextView: UIView, UITextInput {
     }
 
     private func scrollCaretToVisible() {
+        // A sheet asked for and not yet shown is where the reader is going,
+        // and takes the caret there itself; scrolled to first, the caret
+        // drew the sheet where it was for a frame (`settleWantedSheet`).
+        guard wantedSheet == nil else { return }
+        followCaretToItsSheet()
         guard let caret = layoutEngine.caretRect(docView, theme: renderTheme),
               let scroll = enclosingScrollView() else { return }
         scroll.scrollRectToVisible(convert(caret.insetBy(dx: 0, dy: -renderTheme.lineHeight), to: scroll), animated: false)

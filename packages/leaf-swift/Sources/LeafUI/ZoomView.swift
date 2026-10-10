@@ -62,6 +62,9 @@ public final class LeafZoomView: UIView {
         textView.layer.position = .zero
         let transform = CGAffineTransform(scaleX: s, y: s)
         if textView.transform != transform { textView.transform = transform }
+        // A sheet asked for before the document was laid out, shown once the
+        // fit and this view's size have both caught up with the layout.
+        textView.settleWantedSheet()
     }
 }
 #endif

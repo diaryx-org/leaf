@@ -1029,6 +1029,53 @@ public final class LeafEditorModel: ObservableObject {
     /// One layout point per screen point — View ▸ Actual Size.
     public func actualSize() { zoom = .actualSize }
 
+    // ── sheets ────────────────────────────────────────────────────────────────
+    // On paper, the document read a sheet at a time — see `Sheets.swift`.
+
+    /// The sheet in view, and how many there are; `0` and `0` off paper or
+    /// before there is a surface. Published, so a host's "2 of 5" follows a
+    /// scroll, a turn, and the caret typed on to the next sheet.
+    @Published public private(set) var sheet = 0
+    @Published public private(set) var sheetCount = 0
+
+    /// Whether the surface holds the sheet in view, scrolling no further than
+    /// its edges — for a host that turns the sheets itself (`showSheet`). A
+    /// pinch zooms within the sheet; the caret carried on to another sheet
+    /// takes the hold with it, and `sheet` says where it went.
+    public var holdsSheet = false {
+        didSet { textView?.holdsSheet = holdsSheet }
+    }
+
+    /// Bring sheet `index` into view — past the last, the last — with the
+    /// caret, if it was on another. Asked before there is a surface, or
+    /// before it has laid the document out, it is done once there is.
+    public func showSheet(_ index: Int, animated: Bool = false) {
+        guard let textView else { pendingSheet = index; return }
+        textView.showSheet(index, animated: animated)
+    }
+
+    /// Whether the editor takes the keyboard focus as it comes on screen. On
+    /// by default, which suits an editor opened to write in; off for a page
+    /// shown among others — a leaf of a book — that is written on when the
+    /// reader taps into it.
+    public var focusesWhenShown = true
+
+    private var pendingSheet: Int?
+
+    fileprivate func takePendingSheet() -> Int? {
+        defer { pendingSheet = nil }
+        return pendingSheet
+    }
+
+    /// What the surface reports, a turn later — see `zoomChanged`.
+    fileprivate func sheetsChanged(_ sheet: Int, _ count: Int) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if self.sheet != sheet { self.sheet = sheet }
+            if self.sheetCount != count { self.sheetCount = count }
+        }
+    }
+
     /// What the surface reports after a pinch, a resize under a fit, or a page
     /// set or cleared. The mode is written at once when a gesture moved it — a
     /// gesture is never inside a SwiftUI update — and the scale a turn later,
@@ -1290,6 +1337,10 @@ struct LeafEditorSurface: NSViewRepresentable {
         let textView = makeTextView()
 
         let scroll = NSScrollView()
+        // Before the document view goes in, which the clip view then holds.
+        let clip = LeafClipView()
+        clip.drawsBackground = false
+        scroll.contentView = clip
         scroll.documentView = textView
         scroll.hasVerticalScroller = true
         Self.configureScrollers(scroll, page: page)
@@ -1300,7 +1351,7 @@ struct LeafEditorSurface: NSViewRepresentable {
         // A reader is opened to be read, not typed into — leaving focus where
         // the host put it instead of claiming it for a keyboard that will
         // change nothing.
-        if !model.isReadOnly {
+        if !model.isReadOnly, model.focusesWhenShown {
             DispatchQueue.main.async { scroll.window?.makeFirstResponder(textView) }
         }
         return scroll
@@ -1324,7 +1375,7 @@ struct LeafEditorSurface: NSViewRepresentable {
             // forces an immediate render → `onStateChange`, rather than waiting on
             // whatever layout pass happens to come next.
             textView.command { $0.view() }
-            if !model.isReadOnly {
+            if !model.isReadOnly, model.focusesWhenShown {
                 DispatchQueue.main.async { scroll.window?.makeFirstResponder(textView) }
             }
             return
@@ -1412,6 +1463,13 @@ struct LeafEditorSurface: NSViewRepresentable {
         textView.pageSetup = page
         textView.zoom = model.zoom
         textView.onZoomChange = { [weak model] mode, scale in model?.zoomChanged(mode, scale) }
+        textView.holdsSheet = model.holdsSheet
+        textView.onSheetChange = { [weak model] sheet, count in model?.sheetsChanged(sheet, count) }
+        // On the sheet asked for, or — a surface made again for a model
+        // that was on screen before — the one it was on.
+        if let sheet = model.takePendingSheet() ?? (model.sheet > 0 ? model.sheet : nil) {
+            textView.showSheet(sheet)
+        }
         textView.placeholder = placeholder
         // Defer the publish: `render()` can fire during a SwiftUI layout pass, and
         // mutating an `@Published` mid-update loops the view system.
@@ -1476,6 +1534,30 @@ struct LeafEditorSurface: NSViewRepresentable {
             }
         }
         return textView
+    }
+}
+
+/// The editor's clip view: every bounds it is about to take — a scroll, a
+/// fling, a zoom, a reveal — is first held to the sheet the text view holds
+/// (`LeafTextView.holdsSheet`). Both where AppKit asks (`constrainBoundsRect`,
+/// a scroll by the reader) and where it does not (`scroll(to:)`, which the
+/// view's own reveals and zooms call, moves the origin unasked).
+final class LeafClipView: NSClipView {
+    override func constrainBoundsRect(_ proposedBounds: NSRect) -> NSRect {
+        held(super.constrainBoundsRect(proposedBounds))
+    }
+
+    override func scroll(to newOrigin: NSPoint) {
+        super.scroll(to: held(NSRect(origin: newOrigin, size: bounds.size)).origin)
+    }
+
+    override func setBoundsOrigin(_ newOrigin: NSPoint) {
+        super.setBoundsOrigin(held(NSRect(origin: newOrigin, size: bounds.size)).origin)
+    }
+
+    private func held(_ bounds: NSRect) -> NSRect {
+        guard let text = documentView as? LeafTextView else { return bounds }
+        return text.heldBounds(bounds, in: self)
     }
 }
 
@@ -1572,6 +1654,23 @@ public struct LeafEditor: View {
     }
 }
 
+/// The editor's scroll view: every offset it is given — a drag, a fling,
+/// a zoom, a reveal — is first held to the sheet the text view holds
+/// (`LeafTextView.holdsSheet`), and the text view is told it moved. Through
+/// the offset rather than a delegate, so the hold binds the scroll view's own
+/// gestures, which never ask a delegate before they move.
+final class LeafScrollView: UIScrollView {
+    weak var sheetHolder: LeafTextView?
+
+    override var contentOffset: CGPoint {
+        get { super.contentOffset }
+        set {
+            super.contentOffset = sheetHolder?.heldOffset(newValue, in: self) ?? newValue
+            sheetHolder?.scrolled()
+        }
+    }
+}
+
 /// The controller under `LeafEditorSurface`: the scroll view is its view, and
 /// the header's `UIHostingController`, when there is one, is its child.
 ///
@@ -1602,7 +1701,7 @@ public struct LeafEditor: View {
 /// was true then: a band of blank paper above the keys as tall as whatever
 /// moved afterwards.
 final class LeafEditorController: UIViewController {
-    let scroll = UIScrollView()
+    let scroll = LeafScrollView()
     /// `content.height >= frame.height - insets`, the fill
     /// `pin(_:into:header:footer:)` installs. The constant is the adjusted insets, so a short document fills
     /// what is *visible* — under a bar, above a keyboard — and no further: at
@@ -1668,6 +1767,9 @@ final class LeafEditorController: UIViewController {
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         applyKeyboardInset()
+        // A sheet asked for before the document was laid out, shown in the
+        // pass that lays it out — see `LeafTextView.sheetsRelaid`.
+        textView?.settleWantedSheet()
     }
 
     /// Told when the window turns or resizes: a formatting panel that is up
@@ -1849,7 +1951,7 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
             footer: makeFooter(context: context))
 
         // A reader is opened to be read — see the AppKit peer.
-        if !model.isReadOnly { controller.focusWhenShown(textView) }
+        if !model.isReadOnly, model.focusesWhenShown { controller.focusWhenShown(textView) }
         return controller
     }
 
@@ -1881,7 +1983,7 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
             // forces an immediate render → `onStateChange`, rather than waiting on
             // whatever layout pass happens to come next.
             textView.command { $0.view() }
-            if !model.isReadOnly { controller.focusWhenShown(textView) }
+            if !model.isReadOnly, model.focusesWhenShown { controller.focusWhenShown(textView) }
             return
         }
         hosted.theme = theme
@@ -1979,6 +2081,13 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
         textView.pageSetup = page
         textView.zoom = model.zoom
         textView.onZoomChange = { [weak model] mode, scale in model?.zoomChanged(mode, scale) }
+        textView.holdsSheet = model.holdsSheet
+        textView.onSheetChange = { [weak model] sheet, count in model?.sheetsChanged(sheet, count) }
+        // On the sheet asked for, or — a surface made again for a model
+        // that was on screen before — the one it was on.
+        if let sheet = model.takePendingSheet() ?? (model.sheet > 0 ? model.sheet : nil) {
+            textView.showSheet(sheet)
+        }
         // Defer the publish: `render()` can fire during a SwiftUI layout pass, and
         // mutating an `@Published` mid-update loops the view system.
         textView.onStateChange = { [weak model] s in
