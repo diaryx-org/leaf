@@ -50,7 +50,7 @@ clipboard, and file I/O.
 |-----|------------|
 | [`leaf-tui`](apps/leaf-tui) | the terminal editor (binary `leaf`) — a thin host around `leaf-ratatui` wiring a terminal, clipboard, and dialogs. The workspace default `cargo run`. |
 | [`leaf`](apps/leaf) | the standalone gpui **application** (binary `leaf-gui`) — a thin host around `leaf-gpui`. A standalone workspace, like `leaf-ios`. |
-| [`leaf-ios`](apps/leaf-ios) | the gpui iOS host (a standalone workspace on the gpui-mobile platform). |
+| [`leaf-ios`](apps/leaf-ios) | the gpui iOS host — **archived**; see its [README](apps/leaf-ios/README.md). leaf on iOS is `leaf-swift`. |
 | [`leaf-editor`](apps/leaf-editor) | **Leaf**, the macOS + iOS document app (`Leaf.app`, `org.diaryx.leaf`), consuming `packages/leaf-swift`. Opens, edits and saves `.md`, `.dj` and `.html` through the document system — Finder's Open With, autosave, Versions, the Files app — with an icon, a Settings window, and Export as PDF. |
 | [`leaf-android`](apps/leaf-android) | **Leaf** for Android (`org.diaryx.leaf`), consuming `packages/leaf-android`. Opens, edits and autosaves `.md`, `.dj` and `.html` through the Storage Access Framework and Open With, with the rendered/source toggle and a formatting bar over the keyboard. |
 | [`leaf-web-demo`](apps/leaf-web-demo) | the web demo page, consuming `packages/leaf-web`. Published from each release tag at **<https://diaryx-org.github.io/leaf/>** by [`pages.yml`](.github/workflows/pages.yml). |
@@ -126,8 +126,8 @@ leaf leaf is [`.config/release.toml`](.config/release.toml) and nothing else.
 
 [devtools]: https://github.com/diaryx-org/devtools
 
-`leaf` and `leaf-gpui` pin gpui to a specific Zed commit (gpui isn't published to
-crates.io); the first build fetches and compiles the gpui tree, so it is slow.
+`leaf` and `leaf-gpui` take gpui from `gpui-pre`, Longbridge's crates.io
+snapshots of Zed's gpui; the first build compiles the gpui tree, so it is slow.
 It has **both views**, toggled with `⌘e`, just like the TUI's `⌥w`:
 
 - **source** — the raw document, caret in source bytes.
