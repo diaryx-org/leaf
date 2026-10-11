@@ -53,6 +53,19 @@
   .embed-card .url { color: var(--muted); font-family: ui-monospace, Menlo, monospace;
     font-size: 12px; overflow-wrap: anywhere; }
 
+  /* The demo host's Mermaid editor (mermaid-editor.js): a fence drawn as its
+     diagram, and opened as its source beside a live preview. */
+  .mermaid-drawing { margin: 4px 0; padding: 8px; border: 1px solid var(--border);
+    border-radius: 8px; background: var(--panel); cursor: pointer; text-align: center; }
+  .mermaid-drawing svg { max-width: 100%; height: auto; }
+  .mermaid-drawing.fault { color: #c0392b; font: 12px ui-monospace, Menlo, monospace;
+    text-align: left; white-space: pre-wrap; }
+  .mermaid-editor { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 4px 0; }
+  .mermaid-editor textarea { font: 13px/1.5 ui-monospace, Menlo, monospace; min-height: 160px;
+    resize: vertical; padding: 8px; border-radius: 8px; border: 1px solid var(--accent);
+    background: var(--panel); color: var(--text); }
+  .mermaid-editor .mermaid-drawing { margin: 0; cursor: default; }
+
   /* The editor mounts here; LeafEditor injects its own surface styles. */
   #editor { flex: 1; min-height: 0; }
 
@@ -170,6 +183,7 @@ import {
   SIZE_STEPS,
   FONT_FAMILIES,
 } from "../../packages/leaf-web/src/index.js";
+import { mermaidEditor } from "./mermaid-editor.js";
 
 const SAMPLE = `# leaf on the web 🍃
 
@@ -257,6 +271,20 @@ it has and how each one looks. This page draws an embed as a card, and the
 ⧉ Embed button up top writes one. The caret steps over it like a picture.
 
 ::embed{src="https://diaryx.org"}
+
+## Diagrams are the host's too
+A fence can be an editor of the host's own. This page hands every
+\`mermaid\` fence to a Mermaid editor: it is drawn as its diagram, and → in
+front of it or a click opens its source beside a live preview. leaf writes
+what the editor sends back, one undo step at a time, and knows nothing of
+Mermaid.
+
+\`\`\`mermaid
+graph LR
+  Source --> Doc --> Frame
+  Frame --> Editor
+  Editor -- splices --> Doc
+\`\`\`
 
 ## Attachments
 Images, video, and audio are block media — core reserves the row, the browser
@@ -435,6 +463,7 @@ async function main() {
     onChange: syncChrome,
     directive: drawDirective,
     directives: DIRECTIVES,
+    regionEditors: { "fence:mermaid": mermaidEditor },
   });
   // Exposed for poking at from the console (and for driving the demo in tests).
   window.leafEditor = editor;
