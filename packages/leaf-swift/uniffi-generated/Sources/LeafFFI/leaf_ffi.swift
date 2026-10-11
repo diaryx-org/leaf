@@ -1308,15 +1308,6 @@ public protocol LeafDocProtocol: AnyObject, Sendable {
     func setDirectiveRows(heights: [DirectiveHeight])  -> DocView
     
     /**
-     * Say whether the frontend edits formulas itself, as structure, through
-     * [`edit_source`](Self::edit_source) on each [`MathView`]'s TeX range.
-     * When it does, a formula on the caret's line keeps its picture rather
-     * than revealing its TeX, except under `MarkupMode::Full`. See
-     * `Doc::set_edits_math`.
-     */
-    func setEditsMath(on: Bool)  -> DocView
-    
-    /**
      * Set the face of the selected run, or of the caret's whole block.
      * [`set_font_size`](Self::set_font_size)'s peer. Gate on
      * [`Capabilities::font_family`].
@@ -1446,6 +1437,17 @@ public protocol LeafDocProtocol: AnyObject, Sendable {
      * to call this at all.
      */
     func setMediaRows(heights: [MediaHeight])  -> DocView
+    
+    /**
+     * Name the regions the view edits itself: `"math"` for formulas, and
+     * `"fence:"` and a language for that language's fenced blocks. Each is
+     * published in [`DocView::regions`] and edited through
+     * [`edit_source`](Self::edit_source) on its content. An owned formula on
+     * the caret's line keeps its picture rather than revealing its TeX, and
+     * an owned fence is one placeholder row, except under `MarkupMode::Full`.
+     * Replaces the whole set. See `Doc::set_owned_regions`.
+     */
+    func setOwnedRegions(kinds: [String])  -> DocView
     
     func setParagraph()  -> DocView
     
@@ -3157,23 +3159,6 @@ open func setDirectiveRows(heights: [DirectiveHeight]) -> DocView  {
 }
     
     /**
-     * Say whether the frontend edits formulas itself, as structure, through
-     * [`edit_source`](Self::edit_source) on each [`MathView`]'s TeX range.
-     * When it does, a formula on the caret's line keeps its picture rather
-     * than revealing its TeX, except under `MarkupMode::Full`. See
-     * `Doc::set_edits_math`.
-     */
-open func setEditsMath(on: Bool) -> DocView  {
-    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
-        uniffiCallStatus in
-    uniffi_leaf_ffi_fn_method_leafdoc_set_edits_math(
-            self.uniffiCloneHandle(),
-        FfiConverterBool.lower(on),uniffiCallStatus
-    )
-})
-}
-    
-    /**
      * Set the face of the selected run, or of the caret's whole block.
      * [`set_font_size`](Self::set_font_size)'s peer. Gate on
      * [`Capabilities::font_family`].
@@ -3395,6 +3380,25 @@ open func setMediaRows(heights: [MediaHeight]) -> DocView  {
     uniffi_leaf_ffi_fn_method_leafdoc_set_media_rows(
             self.uniffiCloneHandle(),
         FfiConverterSequenceTypeMediaHeight.lower(heights),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Name the regions the view edits itself: `"math"` for formulas, and
+     * `"fence:"` and a language for that language's fenced blocks. Each is
+     * published in [`DocView::regions`] and edited through
+     * [`edit_source`](Self::edit_source) on its content. An owned formula on
+     * the caret's line keeps its picture rather than revealing its TeX, and
+     * an owned fence is one placeholder row, except under `MarkupMode::Full`.
+     * Replaces the whole set. See `Doc::set_owned_regions`.
+     */
+open func setOwnedRegions(kinds: [String]) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_leafdoc_set_owned_regions(
+            self.uniffiCloneHandle(),
+        FfiConverterSequenceString.lower(kinds),uniffiCallStatus
     )
 })
 }
@@ -5043,6 +5047,12 @@ public struct DocView: Equatable, Hashable {
      */
     public var math: [MathView]
     /**
+     * The regions this view edits itself, in row order — see
+     * [`RegionView`]. Empty in the source view, and until the view names
+     * some ([`LeafDoc::set_owned_regions`]).
+     */
+    public var regions: [RegionView]
+    /**
      * The caret's row: an index into [`Self::rows`].
      */
     public var caretRow: UInt32
@@ -5237,6 +5247,11 @@ public struct DocView: Equatable, Hashable {
          * empty of any formula on the caret's line, which is its TeX there.
          */math: [MathView], 
         /**
+         * The regions this view edits itself, in row order — see
+         * [`RegionView`]. Empty in the source view, and until the view names
+         * some ([`LeafDoc::set_owned_regions`]).
+         */regions: [RegionView], 
+        /**
          * The caret's row: an index into [`Self::rows`].
          */caretRow: UInt32, 
         /**
@@ -5353,6 +5368,7 @@ public struct DocView: Equatable, Hashable {
         self.directives = directives
         self.media = media
         self.math = math
+        self.regions = regions
         self.caretRow = caretRow
         self.caretCol = caretCol
         self.caretCh = caretCh
@@ -5401,6 +5417,7 @@ public struct FfiConverterTypeDocView: FfiConverterRustBuffer {
                 directives: FfiConverterSequenceTypeDirectiveView.read(from: &buf), 
                 media: FfiConverterSequenceTypeMediaView.read(from: &buf), 
                 math: FfiConverterSequenceTypeMathView.read(from: &buf), 
+                regions: FfiConverterSequenceTypeRegionView.read(from: &buf), 
                 caretRow: FfiConverterUInt32.read(from: &buf), 
                 caretCol: FfiConverterUInt32.read(from: &buf), 
                 caretCh: FfiConverterUInt32.read(from: &buf), 
@@ -5435,6 +5452,7 @@ public struct FfiConverterTypeDocView: FfiConverterRustBuffer {
         FfiConverterSequenceTypeDirectiveView.write(value.directives, into: &buf)
         FfiConverterSequenceTypeMediaView.write(value.media, into: &buf)
         FfiConverterSequenceTypeMathView.write(value.math, into: &buf)
+        FfiConverterSequenceTypeRegionView.write(value.regions, into: &buf)
         FfiConverterUInt32.write(value.caretRow, into: &buf)
         FfiConverterUInt32.write(value.caretCol, into: &buf)
         FfiConverterUInt32.write(value.caretCh, into: &buf)
@@ -6272,16 +6290,6 @@ public struct MathView: Equatable, Hashable {
      * where a click on the picture lands the caret.
      */
     public var src: UInt32
-    /**
-     * The formula's source end, past its closing delimiter.
-     */
-    public var end: UInt32
-    /**
-     * The TeX's bytes, `[tex_start, tex_end)`: what a structural formula
-     * editor splices into ([`LeafDoc::edit_source`]).
-     */
-    public var texStart: UInt32
-    public var texEnd: UInt32
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -6303,23 +6311,13 @@ public struct MathView: Equatable, Hashable {
         /**
          * The formula's source start: what the `math` run's `src` carries, and
          * where a click on the picture lands the caret.
-         */src: UInt32, 
-        /**
-         * The formula's source end, past its closing delimiter.
-         */end: UInt32, 
-        /**
-         * The TeX's bytes, `[tex_start, tex_end)`: what a structural formula
-         * editor splices into ([`LeafDoc::edit_source`]).
-         */texStart: UInt32, texEnd: UInt32) {
+         */src: UInt32) {
         self.startRow = startRow
         self.endRow = endRow
         self.inline = inline
         self.tex = tex
         self.display = display
         self.src = src
-        self.end = end
-        self.texStart = texStart
-        self.texEnd = texEnd
     }
 
     
@@ -6343,10 +6341,7 @@ public struct FfiConverterTypeMathView: FfiConverterRustBuffer {
                 inline: FfiConverterBool.read(from: &buf), 
                 tex: FfiConverterString.read(from: &buf), 
                 display: FfiConverterBool.read(from: &buf), 
-                src: FfiConverterUInt32.read(from: &buf), 
-                end: FfiConverterUInt32.read(from: &buf), 
-                texStart: FfiConverterUInt32.read(from: &buf), 
-                texEnd: FfiConverterUInt32.read(from: &buf)
+                src: FfiConverterUInt32.read(from: &buf)
         )
     }
 
@@ -6357,9 +6352,6 @@ public struct FfiConverterTypeMathView: FfiConverterRustBuffer {
         FfiConverterString.write(value.tex, into: &buf)
         FfiConverterBool.write(value.display, into: &buf)
         FfiConverterUInt32.write(value.src, into: &buf)
-        FfiConverterUInt32.write(value.end, into: &buf)
-        FfiConverterUInt32.write(value.texStart, into: &buf)
-        FfiConverterUInt32.write(value.texEnd, into: &buf)
     }
 }
 
@@ -6663,6 +6655,141 @@ public func FfiConverterTypeMediaView_lift(_ buf: RustBuffer) throws -> MediaVie
 #endif
 public func FfiConverterTypeMediaView_lower(_ value: MediaView) -> RustBuffer {
     return FfiConverterTypeMediaView.lower(value)
+}
+
+
+/**
+ * A part of the document the view edits itself, as it asked through
+ * [`LeafDoc::set_owned_regions`]: a formula (`kind` `"math"`), or a fenced
+ * block of a language it named (`"fence:mermaid"`). The view opens one in an
+ * editor of its own, which reads `[content_start, content_end)` and writes
+ * back through [`LeafDoc::edit_source`]. An owned fence stands as one
+ * placeholder row the view draws over; an owned formula is the picture its
+ * [`MathView`] already describes.
+ */
+public struct RegionView: Equatable, Hashable {
+    /**
+     * `"math"`, or `"fence:"` and the fence's language.
+     */
+    public var kind: String
+    /**
+     * An inline formula's atom, rather than a block on rows of its own.
+     */
+    public var inline: Bool
+    /**
+     * The [`DocView::rows`] it stands on, `[start_row, end_row)`.
+     */
+    public var startRow: UInt32
+    public var endRow: UInt32
+    /**
+     * Its source start, where the caret rests in front of it.
+     */
+    public var src: UInt32
+    /**
+     * Its source end, past its closing delimiter or fence.
+     */
+    public var end: UInt32
+    /**
+     * The bytes its editor reads and splices: a formula's TeX, or a fence's
+     * lines between the fences, each with its newline.
+     */
+    public var contentStart: UInt32
+    public var contentEnd: UInt32
+    /**
+     * Those bytes, so a view can open an editor without asking for them.
+     */
+    public var content: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * `"math"`, or `"fence:"` and the fence's language.
+         */kind: String, 
+        /**
+         * An inline formula's atom, rather than a block on rows of its own.
+         */inline: Bool, 
+        /**
+         * The [`DocView::rows`] it stands on, `[start_row, end_row)`.
+         */startRow: UInt32, endRow: UInt32, 
+        /**
+         * Its source start, where the caret rests in front of it.
+         */src: UInt32, 
+        /**
+         * Its source end, past its closing delimiter or fence.
+         */end: UInt32, 
+        /**
+         * The bytes its editor reads and splices: a formula's TeX, or a fence's
+         * lines between the fences, each with its newline.
+         */contentStart: UInt32, contentEnd: UInt32, 
+        /**
+         * Those bytes, so a view can open an editor without asking for them.
+         */content: String) {
+        self.kind = kind
+        self.inline = inline
+        self.startRow = startRow
+        self.endRow = endRow
+        self.src = src
+        self.end = end
+        self.contentStart = contentStart
+        self.contentEnd = contentEnd
+        self.content = content
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension RegionView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRegionView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RegionView {
+        return
+            try RegionView(
+                kind: FfiConverterString.read(from: &buf), 
+                inline: FfiConverterBool.read(from: &buf), 
+                startRow: FfiConverterUInt32.read(from: &buf), 
+                endRow: FfiConverterUInt32.read(from: &buf), 
+                src: FfiConverterUInt32.read(from: &buf), 
+                end: FfiConverterUInt32.read(from: &buf), 
+                contentStart: FfiConverterUInt32.read(from: &buf), 
+                contentEnd: FfiConverterUInt32.read(from: &buf), 
+                content: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: RegionView, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.kind, into: &buf)
+        FfiConverterBool.write(value.inline, into: &buf)
+        FfiConverterUInt32.write(value.startRow, into: &buf)
+        FfiConverterUInt32.write(value.endRow, into: &buf)
+        FfiConverterUInt32.write(value.src, into: &buf)
+        FfiConverterUInt32.write(value.end, into: &buf)
+        FfiConverterUInt32.write(value.contentStart, into: &buf)
+        FfiConverterUInt32.write(value.contentEnd, into: &buf)
+        FfiConverterString.write(value.content, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRegionView_lift(_ buf: RustBuffer) throws -> RegionView {
+    return try FfiConverterTypeRegionView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRegionView_lower(_ value: RegionView) -> RustBuffer {
+    return FfiConverterTypeRegionView.lower(value)
 }
 
 
@@ -10132,6 +10259,31 @@ fileprivate struct FfiConverterSequenceTypeMediaView: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeRegionView: FfiConverterRustBuffer {
+    typealias SwiftType = [RegionView]
+
+    public static func write(_ value: [RegionView], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeRegionView.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [RegionView] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [RegionView]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeRegionView.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeRow: FfiConverterRustBuffer {
     typealias SwiftType = [Row]
 
@@ -10602,9 +10754,6 @@ private let initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_directive_rows() != 14815) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_edits_math() != 19213) {
-        return InitializationResult.apiChecksumMismatch
-    }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_font_family() != 65323) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -10639,6 +10788,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_media_rows() != 28680) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_leafdoc_set_owned_regions() != 50786) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_set_paragraph() != 35833) {

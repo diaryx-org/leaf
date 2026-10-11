@@ -24,6 +24,7 @@ final class MathEditingTests: XCTestCase {
     }
 
     private func math(_ view: LeafTextView) -> MathView { view.doc.view().math[0] }
+    private func region(_ view: LeafTextView) -> RegionView { view.doc.view().regions[0] }
 
     private func place(_ view: LeafTextView, _ at: UInt32) {
         view.command { $0.selectRange(start: at, end: at) }
@@ -46,7 +47,7 @@ final class MathEditingTests: XCTestCase {
         XCTAssertTrue(view.isEditingFormula, "left the formula a stop early")
         send(#selector(NSResponder.moveRight(_:)), to: view)
         XCTAssertFalse(view.isEditingFormula, "→ at the last stop did not leave the formula")
-        XCTAssertEqual(view.doc.caretOffset(), math(view).end)
+        XCTAssertEqual(view.doc.caretOffset(), region(view).end)
         // ← from behind it opens it again; Escape leaves it.
         send(#selector(NSResponder.moveLeft(_:)), to: view)
         XCTAssertTrue(view.isEditingFormula)
@@ -65,7 +66,7 @@ final class MathEditingTests: XCTestCase {
 
     func testAKeystrokeIsOneUndoStepAndUndoLeavesTheFormula() throws {
         let view = try editor("say $x$ here\n")
-        place(view, math(view).end)
+        place(view, region(view).end)
         send(#selector(NSResponder.moveLeft(_:)), to: view)
         // A key at a time, as the keyboard sends them. `sqrt`'s last letter
         // makes two splices: the `t`, then the root.
@@ -88,7 +89,7 @@ final class MathEditingTests: XCTestCase {
 
     func testADisplayBlocksTeXStaysBetweenItsOwnLines() throws {
         let view = try editor("intro\n\n$$\n\\int_0^1 x\n$$\n\nend\n")
-        let m = try XCTUnwrap(view.doc.view().math.first { !$0.inline })
+        let m = try XCTUnwrap(view.doc.view().regions.first { !$0.inline })
         place(view, m.end)
         send(#selector(NSResponder.moveLeft(_:)), to: view)
         XCTAssertTrue(view.isEditingFormula)
@@ -173,12 +174,12 @@ final class MathEditingTests: XCTestCase {
         press(view, UIKeyCommand.inputRightArrow)
         press(view, UIKeyCommand.inputRightArrow)
         XCTAssertFalse(view.isEditingFormula, "→ at the last stop did not leave the formula")
-        XCTAssertEqual(view.doc.caretOffset(), view.doc.view().math[0].end)
+        XCTAssertEqual(view.doc.caretOffset(), view.doc.view().regions[0].end)
     }
 
     func testReturnLeavesAndASelectionElsewhereCloses() throws {
         let view = try editor("say $x$ here\n")
-        let m = view.doc.view().math[0]
+        let m = view.doc.view().regions[0]
         place(view, m.end)
         XCTAssertTrue(press(view, UIKeyCommand.inputLeftArrow))
         XCTAssertTrue(view.isEditingFormula)

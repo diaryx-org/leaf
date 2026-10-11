@@ -1182,10 +1182,11 @@ export class LeafEditor {
     const editing = this._mathEdit;
     let editingSeen = false;
     for (const m of view.math || []) {
-      if (editing && m.src === editing.src) {
+      const region = editing && m.src === editing.src ? formulaRegion(view, m.src) : null;
+      if (region) {
         editingSeen = true;
-        editing.end = m.end;
-        editing.texStart = m.tex_start;
+        editing.end = region.end;
+        editing.texStart = region.content_start;
         if (editing.session.tex() !== m.tex) {
           try {
             editing.session.reload(m.tex);
@@ -1955,7 +1956,7 @@ export class LeafEditor {
   /**
    * Once the math module is here, formulas are edited as structure rather
    * than as TeX: core keeps a formula on the caret's line a picture
-   * (`set_edits_math`), and the arrows and a click open it in a
+   * (`set_owned_regions(["math"])`), and the arrows and a click open it in a
    * `MathSession` (`_openMath`). Until then — or for a host that turned
    * math off — a formula reveals its TeX on the caret's line, as it always
    * did. Returns the frame the switch produced, or `null` when nothing
@@ -1964,7 +1965,7 @@ export class LeafEditor {
   _editMathAsStructure() {
     if (this._mathStructural || this._mathEditing !== "structure" || !mathModule?.MathSession) return null;
     this._mathStructural = true;
-    return this.doc.set_edits_math(true);
+    return this.doc.set_owned_regions(["math"]);
   }
 
   /**
@@ -2001,6 +2002,8 @@ export class LeafEditor {
    */
   _openMath(m, where, point) {
     if (!mathModule?.MathSession || this.viewName() === "source") return false;
+    const region = formulaRegion(this._lastView, m.src);
+    if (!region) return false;
     let session;
     try {
       session = new mathModule.MathSession(m.tex, m.display);
@@ -2013,8 +2016,8 @@ export class LeafEditor {
     this._mathEdit = {
       session,
       src: m.src,
-      end: m.end,
-      texStart: m.tex_start,
+      end: region.end,
+      texStart: region.content_start,
       rev: 1,
     };
     this.contentEl.classList.add("leaf-math-editing");
@@ -2092,7 +2095,7 @@ export class LeafEditor {
     if (!v || v.has_selection || v.view === "source") return false;
     const at = v.caret_src;
     const right = e.key === "ArrowRight";
-    const m = (v.math || []).find((m) => (right ? m.src === at : m.end === at));
+    const m = (v.math || []).find((m) => (right ? m.src === at : formulaRegion(v, m.src)?.end === at));
     if (!m || !this._openMath(m, right ? "home" : "end")) return false;
     e.preventDefault();
     return true;
@@ -3495,6 +3498,11 @@ function mediaKey(media, row) {
 function mathBlockKey(m, row, ink) {
   const len = (row?.runs || []).reduce((n, r) => n + r.text.length, 0);
   return "M" + len + "|" + ink + "|" + (m.edit ?? "") + "|" + (m.display ? "D" : "T") + m.tex;
+}
+
+/** The owned formula starting at `src` in frame `view`, as a region. */
+function formulaRegion(view, src) {
+  return (view?.regions || []).find((r) => r.kind === "math" && r.src === src) ?? null;
 }
 
 /** What an ordinary row's key leaves out when it holds a formula: the TeX

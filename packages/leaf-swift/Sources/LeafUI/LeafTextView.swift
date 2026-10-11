@@ -593,7 +593,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         didSet {
             guard editsFormulasAsStructure != oldValue else { return }
             openFormula = nil
-            render(doc.setEditsMath(on: editsFormulasAsStructure))
+            render(doc.setOwnedRegions(kinds: editsFormulasAsStructure ? ["math"] : []))
         }
     }
 
@@ -604,7 +604,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // on the caret's line it stays its picture rather than revealing TeX.
         // Said before frames become changes: the frame it answers with is
         // dropped, and `setUnwrapped`'s below must be whole.
-        _ = doc.setEditsMath(on: true)
+        _ = doc.setOwnedRegions(kinds: ["math"])
         // Every frame after the first is the change since the frame before —
         // the rows that differ, and where they go — which `render` splices
         // into `docView`. Lifting every row of a long document into Swift
@@ -2512,8 +2512,8 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         guard editsFormulasAsStructure, right || selector == #selector(moveLeft(_:)),
               !docView.hasSelection, docView.view != "source" else { return false }
         let caret = doc.caretOffset()
-        guard let m = docView.math.first(where: { right ? $0.src == caret : $0.end == caret }),
-              let open = OpenFormula(m, entry: right ? .home : .end, accent: theme.caretColor)
+        guard let m = docView.math.first(where: { m in right ? m.src == caret : docView.formulaRegion(at: m.src)?.end == caret }),
+              let open = OpenFormula(m, in: docView, entry: right ? .home : .end, accent: theme.caretColor)
         else { return false }
         openFormula = open
         render(doc.selectRange(start: m.src, end: m.src))
@@ -2587,7 +2587,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             return true
         }
         openFormula = nil
-        guard let open = OpenFormula(hit.math, entry: .point(local, size: hit.size), accent: theme.caretColor)
+        guard let open = OpenFormula(hit.math, in: docView, entry: .point(local, size: hit.size), accent: theme.caretColor)
         else { return false }
         openFormula = open
         render(doc.selectRange(start: hit.math.src, end: hit.math.src))

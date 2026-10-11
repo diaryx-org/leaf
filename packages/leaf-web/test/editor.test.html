@@ -1881,7 +1881,7 @@ await test("→ onto a formula opens it, and what is typed there is TeX in the d
   assert(ed._mathEdit, "left the formula a stop early");
   press(ed, "ArrowRight");
   assert(!ed._mathEdit, "→ at the last stop did not leave the formula");
-  eq(ed._lastView.caret_src, ed._lastView.math[0].end);
+  eq(ed._lastView.caret_src, ed._lastView.regions[0].end);
   // ← from behind it opens it again, at its end.
   press(ed, "ArrowLeft");
   assert(ed._mathEdit && ed._mathEdit.session.at_end(), "← behind the formula did not open it at its end");
@@ -1918,7 +1918,7 @@ await test("a keystroke in a formula is one undo step, and ⌘Z leaves the formu
   await LeafEditor.loadMath();
   const mac = /Mac|iPhone|iPad/.test(navigator.platform);
   const ed = editor("say $x$ here\n");
-  const m = ed._lastView.math[0];
+  const m = ed._lastView.regions[0];
   ed.render(ed.doc.select_range(m.end, m.end));
   press(ed, "ArrowLeft");
   // `sqrt` is four keystrokes, the last of which makes two splices: the `t`,
@@ -1934,7 +1934,7 @@ await test("a keystroke in a formula is one undo step, and ⌘Z leaves the formu
 await test("a display block opens, and its TeX stays between its own lines", async () => {
   await LeafEditor.loadMath();
   const ed = editor("intro\n\n$$\n\\int_0^1 x\n$$\n\nend\n");
-  const m = ed._lastView.math.find((m) => !m.inline);
+  const m = ed._lastView.regions.find((m) => !m.inline);
   ed.render(ed.doc.select_range(m.end, m.end));
   press(ed, "ArrowLeft");
   assert(ed._mathEdit, "← behind the block did not open it");

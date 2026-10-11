@@ -723,11 +723,6 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_dark_appearance(uint64_t ptr, i
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_directive_rows(uint64_t ptr, RustBuffer heights, RustCallStatus *_Nonnull out_status
 );
 #endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_EDITS_MATH
-#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_EDITS_MATH
-RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_edits_math(uint64_t ptr, int8_t on, RustCallStatus *_Nonnull out_status
-);
-#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_FONT_FAMILY
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_FONT_FAMILY
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_font_family(uint64_t ptr, RustBuffer font, RustCallStatus *_Nonnull out_status
@@ -786,6 +781,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_math_rows(uint64_t ptr, RustBuf
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_MEDIA_ROWS
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_MEDIA_ROWS
 RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_media_rows(uint64_t ptr, RustBuffer heights, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_OWNED_REGIONS
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_OWNED_REGIONS
+RustBuffer uniffi_leaf_ffi_fn_method_leafdoc_set_owned_regions(uint64_t ptr, RustBuffer kinds, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_LEAFDOC_SET_PARAGRAPH
@@ -1882,12 +1882,6 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_directive_rows(void
     
 );
 #endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_EDITS_MATH
-#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_EDITS_MATH
-uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_edits_math(void
-    
-);
-#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_FONT_FAMILY
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_FONT_FAMILY
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_font_family(void
@@ -1957,6 +1951,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_math_rows(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_MEDIA_ROWS
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_MEDIA_ROWS
 uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_media_rows(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_OWNED_REGIONS
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_LEAFDOC_SET_OWNED_REGIONS
+uint16_t uniffi_leaf_ffi_checksum_method_leafdoc_set_owned_regions(void
     
 );
 #endif

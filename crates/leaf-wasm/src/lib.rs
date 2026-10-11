@@ -752,12 +752,34 @@ pub struct MathView {
     /// The formula's source start: what the `math` run's `src` carries, and
     /// where a click on the picture lands the caret.
     src: usize,
-    /// The formula's source end, past its closing delimiter.
+}
+
+/// A part of the document the renderer edits itself, as it asked through
+/// [`LeafDoc::set_owned_regions`]: a formula (`kind` `"math"`), or a fenced
+/// block of a language it named (`"fence:mermaid"`). The renderer opens one in
+/// an editor of its own, which reads `[content_start, content_end)` and writes
+/// back through [`LeafDoc::edit_source`]. An owned fence stands as one
+/// placeholder row the renderer draws over; an owned formula is the picture its
+/// [`MathView`] already describes.
+#[derive(Serialize, Tsify)]
+pub struct RegionView {
+    /// `"math"`, or `"fence:"` and the fence's language.
+    kind: String,
+    /// An inline formula's atom, rather than a block on rows of its own.
+    inline: bool,
+    /// The [`DocView::rows`] it stands on, `[start_row, end_row)`.
+    start_row: usize,
+    end_row: usize,
+    /// Its source start, where the caret rests in front of it.
+    src: usize,
+    /// Its source end, past its closing delimiter or fence.
     end: usize,
-    /// The TeX's bytes, `[tex_start, tex_end)`: what a structural formula
-    /// editor splices into ([`LeafDoc::edit_source`]).
-    tex_start: usize,
-    tex_end: usize,
+    /// The bytes its editor reads and splices: a formula's TeX, or a fence's
+    /// lines between the fences, each with its newline.
+    content_start: usize,
+    content_end: usize,
+    /// Those bytes, so a renderer can open an editor without asking for them.
+    content: String,
 }
 
 /// A per-formula measured height, the way JS reports one back — the input
@@ -955,6 +977,10 @@ pub struct DocView {
     /// `math` run or the placeholder rows. Empty in the source view, and
     /// empty of any formula on the caret's line, which is its TeX there.
     math: Vec<MathView>,
+    /// The regions this renderer edits itself, in row order — see
+    /// [`RegionView`]. Empty in the source view, and until the renderer names
+    /// some ([`LeafDoc::set_owned_regions`]).
+    regions: Vec<RegionView>,
     /// Which built map these rows came from — `leaf_core::Doc::visual_key`,
     /// spelled as a string the renderer compares and never reads. Two frames
     /// with the same key have the same rows, so a renderer that repaints only
@@ -1559,6 +1585,10 @@ impl LeafDoc {
                 View::Wysiwyg => math_views(&self.doc.vmap),
                 View::Source => Vec::new(),
             },
+            regions: match self.doc.view {
+                View::Wysiwyg => region_views(&self.doc.vmap, &self.doc.source),
+                View::Source => Vec::new(),
+            },
             map_key: format!("{:?}", self.doc.visual_key()),
         }
     }
@@ -1634,13 +1664,15 @@ impl LeafDoc {
         self.frame()
     }
 
-    /// Say whether the frontend edits formulas itself, as structure, through
-    /// [`edit_source`](Self::edit_source) on each [`MathView`]'s TeX range.
-    /// When it does, a formula on the caret's line keeps its picture rather
-    /// than revealing its TeX, except under `MarkupMode::Full`. See
-    /// `Doc::set_edits_math`.
-    pub fn set_edits_math(&mut self, on: bool) -> Result<DocView, JsValue> {
-        self.doc.set_edits_math(on);
+    /// Name the regions the renderer edits itself: `"math"` for formulas,
+    /// and `"fence:"` and a language for that language's fenced blocks. Each
+    /// is published in [`DocView::regions`] and edited through
+    /// [`edit_source`](Self::edit_source) on its content. An owned formula on
+    /// the caret's line keeps its picture rather than revealing its TeX, and
+    /// an owned fence is one placeholder row, except under `MarkupMode::Full`.
+    /// Replaces the whole set. See `Doc::set_owned_regions`.
+    pub fn set_owned_regions(&mut self, kinds: Vec<String>) -> Result<DocView, JsValue> {
+        self.doc.set_owned_regions(&kinds);
         self.frame()
     }
 
@@ -2994,9 +3026,24 @@ fn math_views(vmap: &VisualMap) -> Vec<MathView> {
             tex: m.tex.clone(),
             display: m.display,
             src: m.src,
-            end: m.end,
-            tex_start: m.tex_span.start,
-            tex_end: m.tex_span.end,
+        })
+        .collect()
+}
+
+/// The regions the renderer edits itself, as [`RegionView`]s.
+fn region_views(vmap: &VisualMap, source: &str) -> Vec<RegionView> {
+    vmap.regions
+        .iter()
+        .map(|r| RegionView {
+            kind: r.kind.clone(),
+            inline: r.inline,
+            start_row: r.rows_span.start,
+            end_row: r.rows_span.end,
+            src: r.src,
+            end: r.end,
+            content_start: r.content.start,
+            content_end: r.content.end,
+            content: source.get(r.content.clone()).unwrap_or("").to_string(),
         })
         .collect()
 }

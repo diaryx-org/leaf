@@ -708,12 +708,34 @@ pub struct MathView {
     /// The formula's source start: what the `math` run's `src` carries, and
     /// where a click on the picture lands the caret.
     pub src: u32,
-    /// The formula's source end, past its closing delimiter.
+}
+
+/// A part of the document the view edits itself, as it asked through
+/// [`LeafDoc::set_owned_regions`]: a formula (`kind` `"math"`), or a fenced
+/// block of a language it named (`"fence:mermaid"`). The view opens one in an
+/// editor of its own, which reads `[content_start, content_end)` and writes
+/// back through [`LeafDoc::edit_source`]. An owned fence stands as one
+/// placeholder row the view draws over; an owned formula is the picture its
+/// [`MathView`] already describes.
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
+pub struct RegionView {
+    /// `"math"`, or `"fence:"` and the fence's language.
+    pub kind: String,
+    /// An inline formula's atom, rather than a block on rows of its own.
+    pub inline: bool,
+    /// The [`DocView::rows`] it stands on, `[start_row, end_row)`.
+    pub start_row: u32,
+    pub end_row: u32,
+    /// Its source start, where the caret rests in front of it.
+    pub src: u32,
+    /// Its source end, past its closing delimiter or fence.
     pub end: u32,
-    /// The TeX's bytes, `[tex_start, tex_end)`: what a structural formula
-    /// editor splices into ([`LeafDoc::edit_source`]).
-    pub tex_start: u32,
-    pub tex_end: u32,
+    /// The bytes its editor reads and splices: a formula's TeX, or a fence's
+    /// lines between the fences, each with its newline.
+    pub content_start: u32,
+    pub content_end: u32,
+    /// Those bytes, so a view can open an editor without asking for them.
+    pub content: String,
 }
 
 /// A per-formula measured height, the way a renderer that reserves rows
@@ -821,6 +843,10 @@ pub struct DocView {
     /// `math` run or the placeholder rows. Empty in the source view, and
     /// empty of any formula on the caret's line, which is its TeX there.
     pub math: Vec<MathView>,
+    /// The regions this view edits itself, in row order — see
+    /// [`RegionView`]. Empty in the source view, and until the view names
+    /// some ([`LeafDoc::set_owned_regions`]).
+    pub regions: Vec<RegionView>,
     /// The caret's row: an index into [`Self::rows`].
     pub caret_row: u32,
     /// The caret's display *column* within its row — core's grid position. Kept
@@ -1902,6 +1928,10 @@ impl Inner {
             View::Wysiwyg => wysiwyg_math(&self.doc.vmap),
             View::Source => Vec::new(),
         };
+        let regions = match self.doc.view {
+            View::Wysiwyg => wysiwyg_regions(&self.doc.vmap, &self.doc.source),
+            View::Source => Vec::new(),
+        };
 
         let (caret_row, caret_col) = self.doc.caret_pos();
         // Map the caret's display column to a UTF-16 text offset so a native
@@ -1943,6 +1973,7 @@ impl Inner {
             directives,
             media,
             math,
+            regions,
             caret_row: caret_row as u32,
             caret_col: caret_col as u32,
             caret_ch: caret_ch as u32,
@@ -2484,14 +2515,16 @@ impl LeafDoc {
         g.frame()
     }
 
-    /// Say whether the frontend edits formulas itself, as structure, through
-    /// [`edit_source`](Self::edit_source) on each [`MathView`]'s TeX range.
-    /// When it does, a formula on the caret's line keeps its picture rather
-    /// than revealing its TeX, except under `MarkupMode::Full`. See
-    /// `Doc::set_edits_math`.
-    pub fn set_edits_math(&self, on: bool) -> DocView {
+    /// Name the regions the view edits itself: `"math"` for formulas, and
+    /// `"fence:"` and a language for that language's fenced blocks. Each is
+    /// published in [`DocView::regions`] and edited through
+    /// [`edit_source`](Self::edit_source) on its content. An owned formula on
+    /// the caret's line keeps its picture rather than revealing its TeX, and
+    /// an owned fence is one placeholder row, except under `MarkupMode::Full`.
+    /// Replaces the whole set. See `Doc::set_owned_regions`.
+    pub fn set_owned_regions(&self, kinds: Vec<String>) -> DocView {
         let mut g = self.lock();
-        g.doc.set_edits_math(on);
+        g.doc.set_owned_regions(&kinds);
         g.frame()
     }
 
@@ -4234,9 +4267,24 @@ fn wysiwyg_math(vmap: &VisualMap) -> Vec<MathView> {
             tex: m.tex.clone(),
             display: m.display,
             src: m.src as u32,
-            end: m.end as u32,
-            tex_start: m.tex_span.start as u32,
-            tex_end: m.tex_span.end as u32,
+        })
+        .collect()
+}
+
+/// The regions the view edits itself, as [`RegionView`]s.
+fn wysiwyg_regions(vmap: &VisualMap, source: &str) -> Vec<RegionView> {
+    vmap.regions
+        .iter()
+        .map(|r| RegionView {
+            kind: r.kind.clone(),
+            inline: r.inline,
+            start_row: r.rows_span.start as u32,
+            end_row: r.rows_span.end as u32,
+            src: r.src as u32,
+            end: r.end as u32,
+            content_start: r.content.start as u32,
+            content_end: r.content.end as u32,
+            content: source.get(r.content.clone()).unwrap_or("").to_string(),
         })
         .collect()
 }
@@ -6143,16 +6191,18 @@ mod tests {
     fn a_math_session_s_splices_land_in_the_document_through_edit_source() {
         let doc = LeafDoc::new("say $x$ here\n".into(), "markdown".into()).unwrap();
         doc.set_inline_pictures(true);
-        let view = doc.set_edits_math(true);
+        let view = doc.set_owned_regions(vec!["math".into()]);
         let m = &view.math[0];
         assert_eq!(m.tex, "x");
+        let r = &view.regions[0];
+        assert_eq!((r.kind.as_str(), r.content.as_str()), ("math", "x"));
         let session = MathSession::new(m.tex.clone(), m.display).unwrap();
         // `x/2`: the fraction takes the `x` as its numerator.
         for k in ["/", "2"] {
             let splices = session.key(MathKey::Char { ch: k.into() });
             doc.begin_undo_group();
             for sp in splices {
-                doc.edit_source(m.tex_start + sp.from, m.tex_start + sp.to, sp.text);
+                doc.edit_source(r.content_start + sp.from, r.content_start + sp.to, sp.text);
             }
             doc.end_undo_group();
         }

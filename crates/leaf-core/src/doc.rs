@@ -1311,7 +1311,7 @@ impl Doc {
         }
         // A frontend with a formula editor of its own opens the picture,
         // not the source.
-        if self.surface.edits_math {
+        if self.surface.owns(wysiwyg::MATH_REGION) {
             return None;
         }
         self.block_cache
@@ -1535,16 +1535,25 @@ impl Doc {
         self.surface_changed();
     }
 
-    /// Say whether the frontend edits formulas itself — as structure, over
-    /// [`MathInfo::tex_span`](crate::wysiwyg::MathInfo::tex_span) — rather than
-    /// as their TeX. When it does, a formula on the caret's line stays a
-    /// picture in the two hidden markup modes instead of revealing its
-    /// source; [`MarkupMode::Full`] still reveals everything, math included.
-    pub fn set_edits_math(&mut self, on: bool) {
-        if self.surface.edits_math == on {
+    /// Name the regions the frontend edits itself rather than as their
+    /// source: [`MATH_REGION`](wysiwyg::MATH_REGION) for formulas, and
+    /// [`FENCE_REGION`](wysiwyg::FENCE_REGION) with a language for that
+    /// language's fenced code blocks (`fence:mermaid`). Each owned region is
+    /// published in [`VisualMap::regions`](wysiwyg::VisualMap::regions), and
+    /// its edits come back through [`Doc::edit`] on its content range.
+    ///
+    /// An owned formula on the caret's line stays a picture in the two hidden
+    /// markup modes instead of revealing its TeX, and an owned fence is one
+    /// placeholder row the frontend draws its own view over.
+    /// [`MarkupMode::Full`] still reveals the caret's line, regions included.
+    /// Replaces the whole set; an empty list owns nothing, the default.
+    pub fn set_owned_regions<S: AsRef<str>>(&mut self, kinds: &[S]) {
+        let owned: std::collections::BTreeSet<String> =
+            kinds.iter().map(|k| k.as_ref().to_string()).collect();
+        if self.surface.owned_regions == owned {
             return;
         }
-        self.surface.edits_math = on;
+        self.surface.owned_regions = owned;
         self.surface_changed();
     }
 
@@ -22525,7 +22534,7 @@ mod tests {
         let src = "*one* $x+y$ here\n\n$$\n\\int_0^1 x\n$$\n\nend\n";
         let mut d = doc_in(View::Wysiwyg, "math_edits", src);
         d.set_inline_pictures(true);
-        d.set_edits_math(true);
+        d.set_owned_regions(&["math"]);
         // On the formula's line, and on the block's: still pictures.
         caret_at(&mut d, "here");
         assert!(
@@ -22538,24 +22547,120 @@ mod tests {
         d.move_down(false);
         d.build_visual(80);
         assert_eq!(d.vmap.math.len(), 2, "{:?}", drawn_rows(&d));
-        // Each formula says where it is and where its TeX is, exactly.
-        for m in &d.vmap.math {
-            assert_eq!(&d.source[m.tex_span.clone()], m.tex);
-            assert!(d.source[m.src..m.end].starts_with('$'));
-            assert!(d.source[m.src..m.end].ends_with('$'));
+        // Each formula is a region that says where it is and where its TeX
+        // is, exactly.
+        assert_eq!(d.vmap.regions.len(), 2);
+        for (r, m) in d.vmap.regions.iter().zip(&d.vmap.math) {
+            assert_eq!(r.kind, "math");
+            assert_eq!(r.src, m.src);
+            assert_eq!(r.inline, m.glyph.is_some());
+            assert_eq!(&d.source[r.content.clone()], m.tex);
+            assert!(d.source[r.src..r.end].starts_with('$'));
+            assert!(d.source[r.src..r.end].ends_with('$'));
         }
-        assert_eq!(&d.source[d.vmap.math[0].tex_span.clone()], "x+y");
+        assert_eq!(&d.source[d.vmap.regions[0].content.clone()], "x+y");
         // An edit above shifts the reused block; its spans move with it.
         d.place_caret(0, false);
         d.insert("Z");
         d.build_visual(80);
-        for m in &d.vmap.math {
-            assert_eq!(&d.source[m.tex_span.clone()], m.tex);
+        for (r, m) in d.vmap.regions.iter().zip(&d.vmap.math) {
+            assert_eq!(&d.source[r.content.clone()], m.tex);
         }
         // Full still reveals everything.
         d.set_markup_mode(MarkupMode::Full);
         caret_at(&mut d, "here");
         assert!(drawn_rows(&d).iter().any(|r| r.contains("$x+y$")));
+    }
+
+    #[test]
+    fn a_formula_nobody_owns_is_no_region() {
+        let mut d = doc_in(View::Wysiwyg, "math_unowned", "say $x$ here\n\nnext\n");
+        d.set_inline_pictures(true);
+        d.place_caret(d.source.len(), false);
+        d.build_visual(80);
+        assert_eq!(d.vmap.math.len(), 1);
+        assert!(d.vmap.regions.is_empty());
+        d.set_owned_regions(&["fence:mermaid"]);
+        d.build_visual(80);
+        assert!(
+            d.vmap.regions.is_empty(),
+            "owning fences owned formulas too"
+        );
+    }
+
+    #[test]
+    fn an_owned_fence_is_one_placeholder_row_and_a_region() {
+        let src = "intro\n\n```mermaid\ngraph TD\n  A-->B\n```\n\n```rust\nfn x() {}\n```\n\nend\n";
+        let mut d = doc_in(View::Wysiwyg, "fence_owned", src);
+        d.set_owned_regions(&["fence:mermaid"]);
+        caret_at(&mut d, "end");
+        let rows = drawn_rows(&d);
+        assert!(rows.iter().any(|r| r == "▤ mermaid"), "{rows:?}");
+        assert!(!rows.iter().any(|r| r.contains("A-->B")), "{rows:?}");
+        // The other language is still code.
+        assert!(rows.iter().any(|r| r == "fn x() {}"), "{rows:?}");
+        assert_eq!(d.vmap.regions.len(), 1);
+        let r = d.vmap.regions[0].clone();
+        assert_eq!(r.kind, "fence:mermaid");
+        assert!(!r.inline);
+        assert_eq!(&d.source[r.content.clone()], "graph TD\n  A-->B\n");
+        assert!(d.source[r.src..r.end].starts_with("```mermaid"));
+        assert!(d.source[r.src..r.end].trim_end().ends_with("```"));
+        // The caret rests either side of it, and on its line it stays a
+        // placeholder.
+        d.place_caret(r.src, false);
+        d.build_visual(80);
+        assert!(drawn_rows(&d).iter().any(|row| row == "▤ mermaid"));
+        assert_eq!(d.caret, r.src);
+        d.move_right(false);
+        assert_eq!(d.caret, r.end, "one step crosses the block");
+        // An edit through its content moves the end and keeps the region.
+        d.edit(r.content.start, r.content.start, "%% note\n");
+        d.build_visual(80);
+        let r2 = d.vmap.regions[0].clone();
+        assert_eq!(
+            &d.source[r2.content.clone()],
+            "%% note\ngraph TD\n  A-->B\n"
+        );
+        assert_eq!(r2.end, r.end + 8);
+        // An edit above shifts the reused block, and the region with it.
+        d.place_caret(0, false);
+        d.insert("Z");
+        d.build_visual(80);
+        let r3 = d.vmap.regions[0].clone();
+        assert_eq!(r3.src, r2.src + 1);
+        assert_eq!(
+            &d.source[r3.content.clone()],
+            "%% note\ngraph TD\n  A-->B\n"
+        );
+        // Full reveals the fence on the caret's line as its source.
+        d.set_markup_mode(MarkupMode::Full);
+        d.place_caret(r3.src, false);
+        d.build_visual(80);
+        assert!(drawn_rows(&d).iter().any(|row| row.contains("A-->B")));
+        assert!(d.vmap.regions.is_empty());
+    }
+
+    #[test]
+    fn an_empty_owned_fence_has_empty_content_at_its_closing_fence() {
+        let src = "```mermaid\n```\n\nend\n";
+        let mut d = doc_in(View::Wysiwyg, "fence_empty", src);
+        d.set_owned_regions(&["fence:mermaid"]);
+        caret_at(&mut d, "end");
+        let r = d.vmap.regions[0].clone();
+        assert_eq!(r.content, 11..11);
+        d.edit(r.content.start, r.content.end, "graph LR\n");
+        assert_eq!(d.source, "```mermaid\ngraph LR\n```\n\nend\n");
+    }
+
+    #[test]
+    fn a_fence_inside_a_quote_is_not_owned() {
+        let src = "> ```mermaid\n> graph TD\n> ```\n\nend\n";
+        let mut d = doc_in(View::Wysiwyg, "fence_quoted", src);
+        d.set_owned_regions(&["fence:mermaid"]);
+        caret_at(&mut d, "end");
+        assert!(d.vmap.regions.is_empty(), "{:?}", drawn_rows(&d));
+        assert!(drawn_rows(&d).iter().any(|r| r.contains("graph TD")));
     }
 
     #[test]

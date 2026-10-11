@@ -1,7 +1,7 @@
 //  MathEditing.swift
 //
 //  A formula edited in place, as structure. Once a view has told core it edits
-//  formulas itself (`setEditsMath`), a formula on the caret's line stays its
+//  formulas itself (`setOwnedRegions(["math"])`), a formula on the caret's line stays its
 //  picture; → in front of one, ← behind it, or a click on its picture opens it
 //  in a `MathSession` (leaf-math-edit, through the binding). Then `/` makes a
 //  fraction of the term before the caret, `^` and `_` open scripts, `sqrt` a
@@ -46,14 +46,17 @@ final class OpenFormula {
         case point(CGPoint, size: CGFloat)
     }
 
-    /// Open `math` with the caret at `entry`. `nil` when the TeX is beyond
-    /// what the structural editor reads, and the formula is left as it is.
-    init?(_ math: MathView, entry: Entry, accent: LeafColor) {
-        guard let session = try? MathSession(tex: math.tex, display: math.display) else { return nil }
+    /// Open `math` — its region in `frame` — with the caret at `entry`. `nil`
+    /// when the frame has no region for it, or when the TeX is beyond what the
+    /// structural editor reads, and the formula is left as it is.
+    init?(_ math: MathView, in frame: DocView, entry: Entry, accent: LeafColor) {
+        guard let region = frame.formulaRegion(at: math.src),
+              let session = try? MathSession(tex: math.tex, display: math.display)
+        else { return nil }
         self.session = session
         src = math.src
-        end = math.end
-        texStart = math.texStart
+        end = region.end
+        texStart = region.contentStart
         display = math.display
         switch entry {
         case .home: session.home()
@@ -96,11 +99,11 @@ final class OpenFormula {
     /// frame has no formula here any more, or one the session cannot read,
     /// and the view closes it.
     func follow(_ frame: DocView) -> Bool {
-        guard let m = frame.math.first(where: { $0.src == src }) else { return false }
-        end = m.end
-        texStart = m.texStart
-        if m.tex != session.tex() {
-            guard (try? session.reload(tex: m.tex)) != nil else { return false }
+        guard let r = frame.formulaRegion(at: src) else { return false }
+        end = r.end
+        texStart = r.contentStart
+        if r.content != session.tex() {
+            guard (try? session.reload(tex: r.content)) != nil else { return false }
             revision += 1
         }
         return true
@@ -152,6 +155,13 @@ final class OpenFormula {
     func click(_ p: CGPoint, size: CGFloat) {
         session.click(x: Double(p.x), y: Double(p.y), size: Double(size))
         revision += 1
+    }
+}
+
+extension DocView {
+    /// The owned formula starting at `src`, as a region.
+    func formulaRegion(at src: UInt32) -> RegionView? {
+        regions.first { $0.kind == "math" && $0.src == src }
     }
 }
 

@@ -707,7 +707,7 @@ public final class LeafTextView: UIView, UITextInput {
         didSet {
             guard editsFormulasAsStructure != oldValue else { return }
             openFormula = nil
-            render(doc.setEditsMath(on: editsFormulasAsStructure))
+            render(doc.setOwnedRegions(kinds: editsFormulasAsStructure ? ["math"] : []))
         }
     }
     /// Per-row shaped-text cache reused across frames; an edit re-shapes only the
@@ -1069,7 +1069,7 @@ public final class LeafTextView: UIView, UITextInput {
         // A formula is edited in place as structure (`MathEditing.swift`), so
         // on the caret's line it stays its picture rather than revealing TeX.
         // Said before frames become changes, as the AppKit peer does.
-        _ = doc.setEditsMath(on: true)
+        _ = doc.setOwnedRegions(kinds: ["math"])
         // Every frame after the first is the change since the frame before,
         // spliced into `docView` by `render` — the AppKit peer's rule.
         doc.setIncrementalFrames(on: true)
@@ -2119,7 +2119,7 @@ public final class LeafTextView: UIView, UITextInput {
         } else if editsFormulasAsStructure, !docView.hasSelection, !isSourceView {
             let caret = doc.caretOffset()
             inputs = (docView.math.contains { $0.src == caret } ? [UIKeyCommand.inputRightArrow] : [])
-                + (docView.math.contains { $0.end == caret } ? [UIKeyCommand.inputLeftArrow] : [])
+                + (docView.regions.contains { $0.kind == "math" && $0.end == caret } ? [UIKeyCommand.inputLeftArrow] : [])
         } else {
             inputs = []
         }
@@ -2135,8 +2135,8 @@ public final class LeafTextView: UIView, UITextInput {
         guard let open = openFormula else {
             let right = input == UIKeyCommand.inputRightArrow
             let caret = doc.caretOffset()
-            guard let m = docView.math.first(where: { right ? $0.src == caret : $0.end == caret }),
-                  let open = OpenFormula(m, entry: right ? .home : .end, accent: renderTheme.caretColor)
+            guard let m = docView.math.first(where: { m in right ? m.src == caret : docView.formulaRegion(at: m.src)?.end == caret }),
+                  let open = OpenFormula(m, in: docView, entry: right ? .home : .end, accent: renderTheme.caretColor)
             else { return }
             openFormula = open
             render(doc.selectRange(start: m.src, end: m.src))
@@ -2187,7 +2187,7 @@ public final class LeafTextView: UIView, UITextInput {
             render(docView)
             return true
         }
-        guard let open = OpenFormula(hit.math, entry: .point(local, size: hit.size),
+        guard let open = OpenFormula(hit.math, in: docView, entry: .point(local, size: hit.size),
                                      accent: renderTheme.caretColor)
         else { return false }
         openFormula = open
