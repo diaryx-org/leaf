@@ -10,10 +10,59 @@ part_of: '[Proposals](/docs/proposals/proposals.md)'
 
 ## Status
 
-`draft`. Written after reviewing `spike/math-editor` (`e865963`..`a65e65c`),
-which edits formulas in place as structure on the web, macOS and iOS. CI is
-green on that branch merged with `main`. It stays off `main` until the change
-argued here has been made with math as its first client.
+`draft`, being built on `embedded-editors`. Written after reviewing
+`spike/math-editor` (`e865963`..`a65e65c`), which edits formulas in place as
+structure on the web, macOS and iOS.
+
+Steps 1 and 2 of [How to get there](#how-to-get-there) are built, with both
+clients on the web and in the leaf-editor app:
+
+- **Core** (`4a1d64a`). `Doc::set_owned_regions` replaces `set_edits_math`,
+  and `VisualMap::regions` lists every owned region. An owned fence is one
+  `▤ lang` placeholder row. `MathView` keeps what drawing needs, and the
+  spike's `end`/`tex_start`/`tex_end` moved to the formula's `RegionView`.
+- **leaf-web** (`412e486`), **leaf-swift** (`e2715d9`). One open-session
+  slot per view. The Swift one, `RegionSlot`, is shared by the AppKit and
+  UIKit views. Math runs on it unchanged: the spike's web, Swift and iOS
+  tests pass, two of them reading the new slot instead of the spike's
+  internals. The Swift layout asks the open region for the formula's
+  picture, so the stand-in TeX and `MathStore.open` are gone.
+- **Mermaid** on the web demo (`845750f`) and in the leaf-editor app
+  (`e534037`). leaf depends on none of it.
+
+What the text below did not foresee, or decided:
+
+- **Inline host views** (open question). Not built. A host may name only
+  `fence:` kinds, and every fence is a block. Inline regions are pictures from
+  a leaf session.
+- **Android and the terminal** (open questions). Not touched. Neither calls
+  `set_owned_regions`, so both draw formulas and fences as before.
+- **Where the Mermaid editor lives** (open question). In each demo app
+  (`apps/leaf-web-demo/mermaid-editor.js`, `apps/leaf-editor/App/MermaidFence.swift`),
+  as the reference for Diaryx. It is not a leaf package.
+- **Rendering Mermaid on Apple** (open question). Not measured. The demo
+  takes the conservative route: one `WKWebView` per diagram, mermaid.js from
+  a CDN, at a fixed height, so the layout never waits on a web view to
+  measure itself. A shared offscreen renderer is the obvious next step if
+  documents hold many diagrams.
+- **Persistence of the open state** (open question). An open region does not
+  survive a view being rebuilt, as before.
+- **A fence's content** is its lines between the fences, each with its
+  newline, and empty for an empty fence. A fence inside a quote or a list
+  item is not owned, because its lines carry the container's prefix and a
+  splice on its content would write over them.
+- **Bytes on the wire.** Splices are in UTF-8 bytes of the content, as
+  `edit_source` is. Because a text widget speaks in its own units, the host
+  half also has `replace(content)`, which leaf diffs into one splice.
+- **Host views and history.** A host's view stays open across undo and redo
+  (`host.undo()`), and gets the change as `reload`. A formula closes and
+  then undoes, as in the spike.
+- **"Edited" on open.** Changing the owned kinds changes the rows. The Swift
+  views reported that as an edit, and the Mac app marked a document holding
+  a fence as edited the moment it opened. Re-showing is now told apart from
+  editing.
+
+Still to do: the math editor's own "Not done" list, below.
 
 ## The problem
 

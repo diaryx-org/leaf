@@ -63,12 +63,13 @@ Two frontends use it, the web editor (`packages/leaf-web`) and the Swift views
   to the same methods.
 - Each frontend applies the session's splices to the document through
   `LeafDoc::edit_source`.
-- Core keeps a formula a picture on the caret's line once the frontend says it
-  edits formulas itself (`Doc::set_edits_math`). Every `MathView` carries the
-  formula's end and its TeX range.
-- The Swift views draw the open formula without the layout knowing. The frame
-  they lay out names it by a stand-in TeX for each revision, which `MathStore`
-  answers with the session's picture.
+- Core keeps a formula a picture on the caret's line once the frontend owns
+  the `math` region kind (`Doc::set_owned_regions`). Each formula's region
+  carries its end and its TeX range.
+- Each frontend runs the session through its one region protocol, shared
+  with editors a host supplies for fences
+  ([proposal](../../docs/proposals/embedded-editors.md)). The Swift layout
+  asks the open region for the formula's picture.
 
 The editor adds about 60 KB raw to the web's math module, measured against that
 README's September figure.
