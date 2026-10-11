@@ -678,7 +678,7 @@ final class PresentationTests: XCTestCase {
         let layout = EditorLayout(doc.view(), theme: theme, wrapWidth: 400, cache: &cache)
         let rl = try XCTUnwrap(layout.rows.first { !$0.row.runs.isEmpty })
         XCTAssertEqual(rl.row.align, "center")
-        XCTAssertEqual(rl.lineHeight, theme.lineHeight * 1.5, accuracy: 0.01)
+        XCTAssertEqual(rl.shaped.lineHeight, theme.lineHeight * 1.5, accuracy: 0.01)
         XCTAssertGreaterThan(try XCTUnwrap(rl.wrapped.first).align, 0, "and the line moved")
     }
 

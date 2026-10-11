@@ -975,10 +975,10 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
                     // then back up to the top of the next, so passing the dirty band
                     // once says nothing about the lines after it.
                     let o = rl.lineOrigin(i)
-                    if o.y >= band.maxY || o.y + rl.lineHeight <= band.minY { continue }
+                    if o.y >= band.maxY || o.y + rl.lineHeight(i) <= band.minY { continue }
                     wl.attributed.draw(with: CGRect(x: o.x + wl.offset, y: o.y,
                                                     width: rl.columnWidth - wl.indent,
-                                                    height: rl.lineHeight),
+                                                    height: rl.lineHeight(i)),
                                        options: [.usesLineFragmentOrigin])
                 }
             }
@@ -1452,7 +1452,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
                 let x0 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(cs - lineStart), nil)
                 let x1 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(ce - lineStart), nil)
                 let o = rl.lineOrigin(i)
-                ctx.fill(CGRect(x: o.x + wl.offset + x0 + inset, y: o.y + rl.lineHeight - 0.5 - height,
+                ctx.fill(CGRect(x: o.x + wl.offset + x0 + inset, y: o.y + rl.lineHeight(i) - 0.5 - height,
                                 width: max(0, x1 - x0 - 2 * inset), height: height))
             }
         }
@@ -3833,9 +3833,9 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         for rl in layoutEngine.rows where rl.table == nil && rl.media == nil && rl.math == nil {
             for (i, wl) in rl.wrapped.enumerated() {
                 let o = rl.lineOrigin(i)
-                guard o.y < union.maxY, o.y + rl.lineHeight > union.minY else { continue }
+                guard o.y < union.maxY, o.y + rl.lineHeight(i) > union.minY else { continue }
                 wl.attributed.draw(with: CGRect(x: o.x + wl.offset, y: o.y,
-                                                width: rl.columnWidth - wl.indent, height: rl.lineHeight),
+                                                width: rl.columnWidth - wl.indent, height: rl.lineHeight(i)),
                                    options: [.usesLineFragmentOrigin])
             }
         }

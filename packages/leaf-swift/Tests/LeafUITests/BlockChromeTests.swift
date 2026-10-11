@@ -233,7 +233,7 @@ final class BlockChromeTests: XCTestCase {
         let rl = layout.rows[0]
         let secondLineStart = rl.wrapped[1].start
         let p = CGPoint(x: theme.padding.left + rl.shaped.prefixWidth + 0.5,
-                        y: rl.top + rl.lineHeight * 1.5)
+                        y: rl.top + rl.shaped.lineHeight * 1.5)
         let (r, ch) = layout.hit(p)
         XCTAssertEqual(r, 0)
         XCTAssertEqual(ch, secondLineStart, "the hit resolves to the start of the hanging line")

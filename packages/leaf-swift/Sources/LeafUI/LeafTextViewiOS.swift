@@ -1840,9 +1840,9 @@ public final class LeafTextView: UIView, UITextInput {
                     // then back up to the top of the next, so passing the dirty band
                     // once says nothing about the lines after it.
                     let o = rl.lineOrigin(i)
-                    if o.y >= rect.maxY || o.y + rl.lineHeight <= rect.minY { continue }
+                    if o.y >= rect.maxY || o.y + rl.lineHeight(i) <= rect.minY { continue }
                     wl.attributed.draw(with: CGRect(x: o.x + wl.offset, y: o.y,
-                                                    width: rl.columnWidth - wl.indent, height: rl.lineHeight),
+                                                    width: rl.columnWidth - wl.indent, height: rl.lineHeight(i)),
                                        options: [.usesLineFragmentOrigin], context: nil)
                 }
             }
@@ -2808,9 +2808,9 @@ extension LeafTextView {
                 for rl in layoutEngine.rows where rl.table == nil && rl.media == nil && rl.math == nil {
                     for (i, wl) in rl.wrapped.enumerated() {
                         let o = rl.lineOrigin(i)
-                        guard o.y < frame.maxY, o.y + rl.lineHeight > frame.minY else { continue }
+                        guard o.y < frame.maxY, o.y + rl.lineHeight(i) > frame.minY else { continue }
                         wl.attributed.draw(with: CGRect(x: o.x + wl.offset, y: o.y,
-                                                        width: rl.columnWidth - wl.indent, height: rl.lineHeight),
+                                                        width: rl.columnWidth - wl.indent, height: rl.lineHeight(i)),
                                            options: [.usesLineFragmentOrigin], context: nil)
                     }
                 }

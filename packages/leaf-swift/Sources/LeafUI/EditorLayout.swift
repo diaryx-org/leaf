@@ -381,6 +381,12 @@ struct WrappedLine {
     /// leave the caret where the text used to be. (A right-to-left default is a
     /// separate question — see `docs/tasks/right-to-left-text.md`.)
     var align: CGFloat = 0
+    /// How much taller than its row's line height this line stands: what an
+    /// inline formula on it reaches above the text's ascent and below its
+    /// descent. Zero on every line without one. A fraction or a big operator
+    /// is taller than a line of text, and a line box cut to the text would
+    /// clip the picture and lay the next line over it.
+    var rise: CGFloat = 0
 
     /// Where this line's glyphs start, relative to the row's own origin — the
     /// hanging indent plus the alignment. Every x in the layout is measured from
@@ -406,6 +412,21 @@ struct ShapedRow {
     /// Where each blockquote gutter bar sits, relative to the text margin: one x
     /// per nesting level, measured at the level's `│` glyph. Empty off a quote.
     var quoteBarXs: [CGFloat] = []
+
+    /// The height of visual line `i`: the row's line height, and whatever an
+    /// inline formula on that line stands beyond it.
+    func lineHeight(_ i: Int) -> CGFloat {
+        lineHeight + (wrapped.indices.contains(i) ? wrapped[i].rise : 0)
+    }
+
+    /// How far below the first line's top line `i` starts — the heights of the
+    /// lines above it.
+    func lineOffset(_ i: Int) -> CGFloat {
+        CGFloat(i) * lineHeight + wrapped.prefix(max(0, i)).reduce(0) { $0 + $1.rise }
+    }
+
+    /// The height of every line together.
+    var linesHeight: CGFloat { lineOffset(max(1, wrapped.count)) }
 }
 
 /// One logical row (block) placed in the document: its shaping plus a top offset.
@@ -490,17 +511,18 @@ struct RowLayout {
     /// moves its x as well, and back up the sheet.
     ///
     /// Empty in the continuous flow, where `(originX, top + labelInset +
-    /// i·lineHeight)` is exact and there is nothing to store. `lineOrigin(_:)` is
+    /// shaped.lineOffset(i))` is exact and there is nothing to store. `lineOrigin(_:)` is
     /// the one accessor both cases go through, so every caller reads line
     /// positions the same way.
     var lineOrigins: [CGPoint] = []
 
     var attributed: NSAttributedString { shaped.attributed }
     var wrapped: [WrappedLine] { shaped.wrapped }
-    var lineHeight: CGFloat { shaped.lineHeight }
+    /// The height of visual line `i` — see `ShapedRow.lineHeight(_:)`.
+    func lineHeight(_ i: Int) -> CGFloat { shaped.lineHeight(i) }
     /// The block's total height — the grid's height on a table's first row, zero
     /// on its other (collapsed) rows, a boundary's contextual gap, else the label
-    /// inset (if any) plus one `lineHeight` per visual line.
+    /// inset (if any) plus the height of each visual line.
     ///
     /// A split row measures from the top of its highest line to the bottom of its
     /// lowest — the union of its `bands`, not a reach downward from `top`, since a
@@ -513,7 +535,7 @@ struct RowLayout {
         if let d = directive { return directiveFirst ? d.height : 0 }
         if let gapHeight { return gapHeight }
         guard !lineOrigins.isEmpty else {
-            return labelInset + CGFloat(shaped.wrapped.count) * shaped.lineHeight
+            return labelInset + shaped.lineOffset(shaped.wrapped.count)
         }
         let boxes = lineBoxes
         guard let first = boxes.first else { return 0 }
@@ -529,7 +551,7 @@ struct RowLayout {
     func lineOrigin(_ i: Int) -> CGPoint {
         lineOrigins.indices.contains(i)
             ? lineOrigins[i]
-            : CGPoint(x: originX, y: top + labelInset + CGFloat(i) * lineHeight)
+            : CGPoint(x: originX, y: top + labelInset + shaped.lineOffset(i))
     }
 
     /// The top of visual line `i` — `lineOrigin(_:).y`, for the callers that only
@@ -547,7 +569,7 @@ struct RowLayout {
         }
         return wrapped.indices.map { i in
             let o = lineOrigin(i)
-            return CGRect(x: o.x, y: o.y, width: columnWidth, height: lineHeight)
+            return CGRect(x: o.x, y: o.y, width: columnWidth, height: lineHeight(i))
         }
     }
 
@@ -668,7 +690,7 @@ struct RowLayout {
         let o = lineOrigin(0)
         let x = o.x + shaped.prefixWidth
         let right = o.x + max(columnWidth, shaped.prefixWidth)
-        return CGRect(x: x, y: (o.y + lineHeight * 0.5 - theme.ruleThickness / 2).rounded(),
+        return CGRect(x: x, y: (o.y + lineHeight(0) * 0.5 - theme.ruleThickness / 2).rounded(),
                       width: max(0, right - x), height: theme.ruleThickness)
     }
 }
@@ -1221,7 +1243,7 @@ struct EditorLayout {
                     for k in 0..<count {
                         // The label strip rides the first line: it names the block
                         // that line opens, so the two travel together.
-                        let h = (k == 0 ? labelInset : 0) + shaped.lineHeight
+                        let h = (k == 0 ? labelInset : 0) + shaped.lineHeight(k)
                         flow.fit(h)
                         if k == 0 { startPage = flow.index }
                         // Each line takes the column it actually landed in — a
@@ -1232,7 +1254,7 @@ struct EditorLayout {
                         flow.y += h
                     }
                 } else {
-                    let h = labelInset + CGFloat(count) * shaped.lineHeight
+                    let h = labelInset + shaped.lineOffset(count)
                     // Keep a heading with the text it introduces. One left alone at
                     // the foot of a sheet announces nothing the reader can see —
                     // they turn the page to find out what it was for — so it asks
@@ -1252,7 +1274,7 @@ struct EditorLayout {
                     let x = flow.originX(originX)
                     for k in 0..<count {
                         lineOrigins.append(CGPoint(
-                            x: x, y: flow.y + labelInset + CGFloat(k) * shaped.lineHeight))
+                            x: x, y: flow.y + labelInset + shaped.lineOffset(k)))
                     }
                     flow.y += h
                 }
@@ -1567,11 +1589,38 @@ struct EditorLayout {
                 // of centre and a right-aligned one a whole space short of the
                 // margin.
                 align: alignOffset(align, room: budget - lineWidth
-                    + CGFloat(CTLineGetTrailingWhitespaceWidth(line)))
+                    + CGFloat(CTLineGetTrailingWhitespaceWidth(line))),
+                rise: rise(line)
             ))
             start += count
         }
         return lines
+    }
+
+    /// How far an inline formula on `line` stands past its text: the picture's
+    /// reach above the tallest font's ascent plus its reach below the deepest
+    /// font's descent. A formula is a run whose delegate reports the picture's
+    /// metrics (`MathRunDelegate`); every run, the formula's own included,
+    /// carries a font, so a line that is nothing but a formula still measures
+    /// against the text it stands in.
+    private static func rise(_ line: CTLine) -> CGFloat {
+        var fontAscent: CGFloat = 0, fontDescent: CGFloat = 0
+        var mathAscent: CGFloat = 0, mathDescent: CGFloat = 0
+        let delegateKey = kCTRunDelegateAttributeName as String
+        for run in CTLineGetGlyphRuns(line) as? [CTRun] ?? [] {
+            let attrs = CTRunGetAttributes(run) as? [String: Any] ?? [:]
+            if let font = attrs[kCTFontAttributeName as String] {
+                let f = font as! CTFont
+                fontAscent = max(fontAscent, CTFontGetAscent(f))
+                fontDescent = max(fontDescent, CTFontGetDescent(f))
+            }
+            guard attrs[delegateKey] != nil else { continue }
+            var ascent: CGFloat = 0, descent: CGFloat = 0
+            CTRunGetTypographicBounds(run, CFRange(location: 0, length: 0), &ascent, &descent, nil)
+            mathAscent = max(mathAscent, ascent)
+            mathDescent = max(mathDescent, descent)
+        }
+        return (max(0, mathAscent - fontAscent) + max(0, mathDescent - fontDescent)).rounded(.up)
     }
 
     /// How far into the room a line leaves its alignment pushes it: half for
@@ -1638,10 +1687,10 @@ struct EditorLayout {
         for (i, wl) in lines.enumerated() where ch < wl.start + wl.length || i == lines.count - 1 {
             let x = CTLineGetOffsetForStringIndex(wl.line, CFIndex(max(0, ch - wl.start)), nil)
             let o = rl.lineOrigin(i)
-            return CGRect(x: o.x + wl.offset + x, y: o.y, width: 1.5, height: rl.lineHeight)
+            return CGRect(x: o.x + wl.offset + x, y: o.y, width: 1.5, height: rl.lineHeight(i))
         }
         let o = rl.lineOrigin(0)
-        return CGRect(x: o.x, y: o.y, width: 1.5, height: rl.lineHeight)
+        return CGRect(x: o.x, y: o.y, width: 1.5, height: rl.lineHeight(0))
     }
 
     /// The caret's frame on a block media row: the box's leading edge in front of
@@ -1735,7 +1784,7 @@ struct EditorLayout {
     var placeholderBox: CGRect? {
         guard isEmpty, let first = rows.first else { return nil }
         let o = first.lineOrigin(0)
-        return CGRect(x: o.x, y: o.y, width: columnWidth, height: first.lineHeight)
+        return CGRect(x: o.x, y: o.y, width: columnWidth, height: first.lineHeight(0))
     }
 
     /// The caret's frame inside a table: the cell *line* its source offset falls
@@ -1798,7 +1847,7 @@ struct EditorLayout {
                 // `lineOrigin` is the one accessor both flows go through: the
                 // continuous stack's formula, or where pagination placed the line.
                 let o = rl.lineOrigin(i)
-                rects.append((CGRect(x: o.x + wl.offset + x0, y: o.y, width: x1 - x0, height: rl.lineHeight),
+                rects.append((CGRect(x: o.x + wl.offset + x0, y: o.y, width: x1 - x0, height: rl.lineHeight(i)),
                               row == s.row && cs == s.ch,
                               row == e.row && ce == e.ch))
             }
@@ -2062,7 +2111,7 @@ struct EditorLayout {
                 guard cs < ce else { continue }
                 let x0 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(cs - lineStart), nil)
                 let x1 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(ce - lineStart), nil)
-                ctx.fill(CGRect(x: o.x + wl.offset + x0, y: o.y, width: x1 - x0, height: rl.lineHeight))
+                ctx.fill(CGRect(x: o.x + wl.offset + x0, y: o.y, width: x1 - x0, height: rl.lineHeight(i)))
             }
         }
     }
