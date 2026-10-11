@@ -309,7 +309,7 @@ const PAGE_BREAK = "page-break";
  *  atom the renderer draws in place of core's placeholder glyphs — block media,
  *  and a host's drawing of a directive. None of it is document text, so none of
  *  it may count toward a caret offset. */
-const NOT_TEXT = ".leaf-code-lang, .leaf-media, .leaf-directive";
+const NOT_TEXT = ".leaf-code-lang, .leaf-media, .leaf-directive, .leaf-region";
 
 /** The keys `_onKeyDown` takes from the browser on a host's drawing. */
 const ARROWS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"]);
@@ -425,18 +425,28 @@ export class LeafEditor {
       throw new Error(`mathEditing must be "structure" or "source", not ${JSON.stringify(mathEditing)}`);
     }
     this._mathEditing = mathEditing;
-    /** Whether core has been told this editor edits formulas as structure
-     *  (`_editMathAsStructure`), and the formula open for it, if any
-     *  (`_openMath`). */
+    /** Whether formulas are edited as structure yet (`_editMathAsStructure`). */
     this._mathStructural = false;
-    this._mathEdit = null;
+    /** The editor for each region kind this editor edits itself: the host's
+     *  (`EditorOptions.regionEditors`), and leaf's own for `math` once the
+     *  math module is here. @type {Map<string, object>} */
+    this._regionEditors = regionEditors(opts.regionEditors);
+    /** The kinds core was last told it owns, joined — see `_ownRegions`. */
+    this._ownedKey = null;
+    /** The open region, if any — see `_openRegion`. */
+    this._session = null;
+    /** What each host editor drew for its closed regions, by key, for the
+     *  frame last painted — `_directiveAnswers`' peer. */
+    this._regionAnswers = new Map();
 
     this.doc = new LeafDoc(opts.source ?? "", opts.format ?? "markdown");
     // A browser paints a picture in a line, so an inline formula arrives as an
     // atom to draw over rather than as its TeX — see _mathRunEl.
     this.doc.set_inline_pictures(true);
-    // With the math module already here, formulas are edited as structure
-    // from the first frame; otherwise from when it lands (`_mathSettled`).
+    // The host's region kinds are owned from the first frame; with the math
+    // module already here so are formulas, and otherwise from when it lands
+    // (`_mathSettled`).
+    this._ownRegions();
     this._editMathAsStructure();
     // Every frame after the first is the change since the frame before —
     // the rows that differ, and where they go — spliced into the last whole
@@ -496,11 +506,17 @@ export class LeafEditor {
     doc.set_incremental_frames(true);
     if (this._darkQuery) doc.set_color_scheme(this._darkQuery.matches ? "dark" : "light");
     this.doc = doc;
-    // A new document is a new set of formulas: none is open, and the new
+    // A new document is a new set of regions: none is open, and the new
     // core has yet to be told who edits them.
-    this._mathEdit = null;
-    this.contentEl.classList.remove("leaf-math-editing");
-    this._mathStructural = false;
+    if (this._session) {
+      const s = this._session;
+      this._session = null;
+      this.contentEl.classList.remove("leaf-region-editing");
+      s.impl.close?.();
+    }
+    this._ownedKey = null;
+    this._regionAnswers = new Map();
+    this._ownRegions();
     this._editMathAsStructure();
     // A frame of the new document is no change to the old one's rows.
     this._lastView = null;
@@ -1175,32 +1191,11 @@ export class LeafEditor {
     // module was still on its way is rebuilt when it lands.
     const mathRows = new Set();
     const ink = this._inkColor();
-    // The open formula, if any, draws from its session; its key carries the
-    // session's revision, since a caret move inside it changes the picture
-    // and nothing core knows. A frame without it — an undo took it away —
-    // closes it.
-    const editing = this._mathEdit;
-    let editingSeen = false;
-    for (const m of view.math || []) {
-      const region = editing && m.src === editing.src ? formulaRegion(view, m.src) : null;
-      if (region) {
-        editingSeen = true;
-        editing.end = region.end;
-        editing.texStart = region.content_start;
-        if (editing.session.tex() !== m.tex) {
-          try {
-            editing.session.reload(m.tex);
-          } catch {
-            editingSeen = false;
-          }
-        }
-        if (editingSeen) m.edit = editing.rev;
-      }
-    }
-    if (editing && !editingSeen) {
-      this._mathEdit = null;
-      this.contentEl.classList.remove("leaf-math-editing");
-    }
+    // The open region, if any, followed into this frame — or closed, when
+    // the frame has none at its place. An open formula draws from its
+    // session, and its key carries the session's revision, since a caret move
+    // inside it changes the picture and nothing core knows.
+    this._followRegion(view);
     for (const m of view.math || []) {
       mathRows.add(m.row);
       if (m.inline) {
@@ -1279,6 +1274,35 @@ export class LeafEditor {
     // so a frame of it is no news about them, and the drawings are kept for
     // the way back.
     if (view.view !== "source") this._directiveAnswers = answers;
+    // A block region a host's editor draws: the open session's view, or the
+    // editor's drawing of it closed, standing in for its rows as a directive's
+    // drawing does. One the editor has no drawing for keeps its placeholder.
+    const regionAt = new Map();
+    const regionAnswers = new Map();
+    const regionSeen = new Map();
+    for (const r of view.regions || []) {
+      if (r.inline || r.kind === "math" || !this._regionEditors.has(r.kind)) continue;
+      const s = this._session;
+      const base = r.kind + "\u0000" + r.content;
+      const n = regionSeen.get(base) ?? 0;
+      regionSeen.set(base, n + 1);
+      const dkey = base + "#" + n;
+      let answer;
+      if (s && s.kind === r.kind && s.src === r.src && s.impl.element) {
+        // Open: its view stands where the drawing was, which is kept for
+        // when it closes on the content it was drawn from.
+        answer = s.impl.element;
+        if (this._regionAnswers.has(dkey)) regionAnswers.set(dkey, this._regionAnswers.get(dkey));
+      } else {
+        answer = this._regionDrawing(r, dkey);
+        regionAnswers.set(dkey, answer);
+        if (!answer) continue;
+      }
+      regionAt.set(r.start_row, { r, el: answer });
+      this.directiveSpans.push([r.start_row, r.end_row]);
+      for (let i = r.start_row + 1; i < r.end_row; i++) covered.add(i);
+    }
+    if (view.view !== "source") this._regionAnswers = regionAnswers;
     for (let i = 0; i < view.rows.length; i++) {
       // A filler row core reserved under the media: the element built on the
       // first row already occupies that height in the flow, so drawing these
@@ -1311,8 +1335,11 @@ export class LeafEditor {
       const mathBlock = mathBlockAt.get(i) || null;
       const pageBreak = breakAt.has(i);
       const directive = directiveAt.get(i) || null;
+      const region = regionAt.get(i) || null;
       const runs = canonicalRuns(row.runs);
-      const key = directive
+      const key = region
+        ? "R" + directiveRowKey(region.el, row)
+        : directive
         ? directiveRowKey(directive.el, row)
         : pageBreak
         ? pageBreakKey(row)
@@ -1325,6 +1352,8 @@ export class LeafEditor {
       if (el) {
         this._adoptRow(el, runs);
         this.rowEls.push(el);
+      } else if (region) {
+        el = this._regionRowEl(region.r, region.el, row);
       } else if (directive) {
         el = this._directiveRowEl(directive.d, directive.el, row);
       } else {
@@ -1678,7 +1707,7 @@ export class LeafEditor {
    */
   _fromDrawing(e) {
     const t = e.target;
-    return t !== this.contentEl && t?.nodeType === 1 && !!t.closest(".leaf-directive");
+    return t !== this.contentEl && t?.nodeType === 1 && !!t.closest(".leaf-directive, .leaf-region");
   }
 
   /**
@@ -1953,19 +1982,41 @@ export class LeafEditor {
     this.render(this._editMathAsStructure() ?? this._lastView);
   }
 
+  // ── regions an editor of their own edits ────────────────────────────────
+  // A formula, or a fence of a language the host has an editor for, is a
+  // region: core keeps it a picture or a placeholder row (`set_owned_regions`)
+  // and publishes it in `view.regions` with the content range its editor
+  // splices. One region at a time is open, in `_session`. Leaf runs the
+  // session's routing once for every kind: keys, clicks, undo and the caret
+  // go through the protocol below, whichever side owns the focus. See
+  // docs/proposals/embedded-editors.md.
+
+  /**
+   * Tell core which region kinds this editor edits itself: every kind it has
+   * an editor for. Returns the frame that produced, or `null` when the set is
+   * the one core already has.
+   */
+  _ownRegions() {
+    const kinds = [...this._regionEditors.keys()].sort();
+    const key = kinds.join("\n");
+    if (key === this._ownedKey) return null;
+    this._ownedKey = key;
+    return this.doc.set_owned_regions(kinds);
+  }
+
   /**
    * Once the math module is here, formulas are edited as structure rather
-   * than as TeX: core keeps a formula on the caret's line a picture
-   * (`set_owned_regions(["math"])`), and the arrows and a click open it in a
-   * `MathSession` (`_openMath`). Until then — or for a host that turned
-   * math off — a formula reveals its TeX on the caret's line, as it always
-   * did. Returns the frame the switch produced, or `null` when nothing
-   * changed.
+   * than as TeX: leaf's own editor takes the `math` kind, so core keeps a
+   * formula on the caret's line a picture, and the arrows and a click open it
+   * in a `MathSession`. Until then — or for a host that turned math off — a
+   * formula reveals its TeX on the caret's line, as it always did. Returns the
+   * frame the switch produced, or `null` when nothing changed.
    */
   _editMathAsStructure() {
     if (this._mathStructural || this._mathEditing !== "structure" || !mathModule?.MathSession) return null;
     this._mathStructural = true;
-    return this.doc.set_owned_regions(["math"]);
+    this._regionEditors.set("math", mathRegionEditor(this));
+    return this._ownRegions();
   }
 
   /**
@@ -1974,10 +2025,10 @@ export class LeafEditor {
    * Both answer with the same shape, so the row draws either the same way.
    */
   _mathPicture(m, size, ink) {
-    const ed = this._mathEdit;
-    if (ed && m.src === ed.src) {
+    const s = this._session;
+    if (s && s.kind === "math" && m.src === s.src && s.impl.picture) {
       try {
-        return ed.session.picture(size, ink, this._accentColor());
+        return s.impl.picture(size, ink, this._accentColor());
       } catch (e) {
         return e instanceof Error ? e : new Error(String(e));
       }
@@ -1992,113 +2043,256 @@ export class LeafEditor {
   }
 
   /**
-   * Open formula `m` for structural editing, the caret at its first stop
-   * (`"home"`), its last (`"end"`), or nearest `point` — `{x, y, size}`, in
-   * pixels from the picture's top left. Keys then go to the session
-   * (`_mathKey`) until the caret leaves. Core's caret waits in front of the
-   * formula, where the DOM can hold it; the browser's is hidden meanwhile,
-   * since the formula draws its own. `false` when the TeX is beyond what
-   * the structural editor reads, and the formula stays as it was.
+   * Open `region` in its kind's editor, the caret entering at `entry` —
+   * `{at: "home"}`, `{at: "end"}`, or `{at: "point", x, y, size}` in pixels
+   * from the drawing's top left. Core's caret waits in front of the region,
+   * where the DOM can hold it. A session that draws its own picture
+   * (`picture`) has the keys routed to it and the browser's caret hidden; one
+   * with a view of its own (`element`) is placed over the region's rows and
+   * given the focus. `false` when there is no editor for the kind, or the
+   * editor declined, and the region stays as it was.
    */
-  _openMath(m, where, point) {
-    if (!mathModule?.MathSession || this.viewName() === "source") return false;
-    const region = formulaRegion(this._lastView, m.src);
-    if (!region) return false;
-    let session;
+  _openRegion(region, entry) {
+    const editor = this._regionEditors.get(region.kind);
+    if (!editor || this.viewName() === "source") return false;
+    if (this._session) this._closeRegion(null, false);
+    const token = {};
+    const host = {
+      edit: (splices) => this._session?.token === token && this._regionEdit(splices),
+      replace: (content) =>
+        this._session?.token === token && this._regionEdit(diffSplice(this._session.content, String(content))),
+      leave: (side) => this._session?.token === token && this._closeRegion(side === "before" ? "before" : "after"),
+      undo: () => this._session?.token === token && this._regionHistory(false),
+      redo: () => this._session?.token === token && this._regionHistory(true),
+    };
+    let impl;
     try {
-      session = new mathModule.MathSession(m.tex, m.display);
-    } catch {
+      impl = editor.open(regionCopy(region), entry, host);
+    } catch (e) {
+      console.error(`leaf: the ${region.kind} editor threw on open`, e);
       return false;
     }
-    if (where === "home") session.home();
-    else session.end();
-    if (point) session.click(point.x, point.y, point.size);
-    this._mathEdit = {
-      session,
-      src: m.src,
+    if (!impl) return false;
+    if (impl.element != null && !(impl.element instanceof HTMLElement)) {
+      console.error(`leaf: the ${region.kind} editor opened with an element that is not an HTMLElement`);
+      return false;
+    }
+    this._session = {
+      token,
+      impl,
+      kind: region.kind,
+      src: region.src,
       end: region.end,
-      texStart: region.content_start,
+      contentStart: region.content_start,
+      content: region.content,
       rev: 1,
     };
-    this.contentEl.classList.add("leaf-math-editing");
-    this.render(this.doc.select_range(m.src, m.src));
+    if (!impl.element) this.contentEl.classList.add("leaf-region-editing");
+    this.render(this.doc.select_range(region.src, region.src));
+    if (impl.element) impl.focus?.();
     return true;
   }
 
   /**
-   * Close the open formula. The caret lands in front of it (`"start"`),
-   * behind it (`"end"`), or — `null`, when a click elsewhere is what closed
-   * it — wherever that click puts it.
+   * Close the open region. The caret lands in front of it (`"before"`),
+   * behind it (`"after"`), or — `null`, when a click elsewhere is what closed
+   * it — wherever that click puts it, with no repaint unless `paint`.
    */
-  _closeMath(where) {
-    const ed = this._mathEdit;
-    if (!ed) return;
-    this._mathEdit = null;
-    this.contentEl.classList.remove("leaf-math-editing");
-    const at = where === "start" ? ed.src : where === "end" ? ed.end : null;
+  _closeRegion(where, paint = true) {
+    const s = this._session;
+    if (!s) return;
+    this._session = null;
+    this.contentEl.classList.remove("leaf-region-editing");
+    const hadFocus = s.impl.element?.contains(document.activeElement);
+    try {
+      s.impl.close?.();
+    } catch (e) {
+      console.error(`leaf: the ${s.kind} editor threw on close`, e);
+    }
+    if (hadFocus || where !== null) this.focus();
+    if (!paint) return;
+    const at = where === "before" ? s.src : where === "after" ? s.end : null;
     this.render(at === null ? this._lastView : this.doc.select_range(at, at));
   }
 
   /**
-   * A key while a formula is open. Typing, Backspace and the arrows are the
-   * session's; each keystroke's splices land in the document through
-   * `edit_source`, written exactly, as one undo step. ← at the first stop
-   * and → at the last leave the formula, as do Escape, Enter and Tab; a
-   * shortcut (⌘Z among them) leaves it and then runs. Returns whether the
-   * key was handled.
+   * Apply the open session's splices — each `{from, to, text}` in bytes of
+   * its content as the splice before left it — through `edit_source`,
+   * written exactly, as one undo step. None moves the content's start.
    */
-  _mathKey(e) {
-    const ed = this._mathEdit;
-    const k = e.key;
-    if (primaryModifier(e) || e.altKey) {
-      this._closeMath(null);
-      return false;
-    }
-    if (k === "Escape" || k === "Enter" || k === "Tab") {
-      e.preventDefault();
-      this._closeMath("end");
-      return true;
-    }
-    if ((k === "ArrowLeft" && ed.session.at_home()) || (k === "ArrowRight" && ed.session.at_end())) {
-      e.preventDefault();
-      this._closeMath(k === "ArrowLeft" ? "start" : "end");
-      return true;
-    }
-    if (!(k.length === 1 || k === "Backspace" || ARROWS.has(k))) return false;
-    e.preventDefault();
-    const splices = ed.session.key(k);
-    ed.rev++;
-    if (!splices.length) {
+  _regionEdit(splices) {
+    const s = this._session;
+    s.rev++;
+    if (!splices?.length) {
       this.render(this._lastView);
-      return true;
+      return;
     }
-    // Every splice is against the TeX as the one before it left it, and
-    // none moves the TeX's start.
     this.doc.begin_undo_group();
     for (const sp of splices) {
-      this._lastView = this._whole(this.doc.edit_source(ed.texStart + sp.from, ed.texStart + sp.to, sp.text));
+      this._lastView = this._whole(this.doc.edit_source(s.contentStart + sp.from, s.contentStart + sp.to, sp.text));
+      s.content = spliceBytes(s.content, sp.from, sp.to, sp.text);
     }
     this.doc.end_undo_group();
-    this.render(this.doc.select_range(ed.src, ed.src));
+    this.render(this.doc.select_range(s.src, s.src));
+  }
+
+  /** Undo or redo for a session with a view of its own, which stays open: the
+   *  change reaches it as a `reload`. */
+  _regionHistory(redo) {
+    const s = this._session;
+    if (!(redo ? this._lastView?.can_redo : this._lastView?.can_undo)) return;
+    this.render(redo ? this.doc.redo() : this.doc.undo());
+    if (this._session === s) this.render(this.doc.select_range(s.src, s.src));
+  }
+
+  /** Do what a session's answer asks. */
+  _regionAct(out) {
+    if (out.leave) this._closeRegion(out.leave === "before" ? "before" : "after");
+    else if (out.edit) this._regionEdit(out.edit);
+    else {
+      this._session.rev++;
+      this.render(this._lastView);
+    }
+  }
+
+  /**
+   * Follow the open region into frame `view`: its end and content start,
+   * which its own edits move, and its content, which an undo can change
+   * under it — answered with `reload`. A frame without it, or a reload the
+   * session refuses, closes it. Marks the open formula's `MathView` with the
+   * session's revision, which its row key carries.
+   */
+  _followRegion(view) {
+    const s = this._session;
+    if (!s) return;
+    const r = (view.regions || []).find((r) => r.kind === s.kind && r.src === s.src);
+    let alive = !!r;
+    if (r) {
+      s.end = r.end;
+      s.contentStart = r.content_start;
+      if (r.content !== s.content) {
+        s.content = r.content;
+        s.rev++;
+        try {
+          alive = s.impl.reload?.(r.content) !== false;
+        } catch {
+          alive = false;
+        }
+      }
+    }
+    if (!alive) {
+      this._closeRegion(null, false);
+      return;
+    }
+    for (const m of view.math || []) if (m.src === s.src) m.edit = s.rev;
+  }
+
+  /**
+   * A key while a region is open and leaf has its keys — a session that draws
+   * its own picture. The session answers with an edit, a move, a leave, `{close:
+   * true}` for a key that leaves it and then runs (a shortcut), or `null` for
+   * one that is none of its business. Returns whether the key was handled.
+   */
+  _regionKey(e) {
+    const s = this._session;
+    if (s.impl.element || !s.impl.key) return false;
+    const out = s.impl.key(e);
+    if (!out) return false;
+    if (out.close) {
+      this._closeRegion(null);
+      return false;
+    }
+    e.preventDefault();
+    this._regionAct(out);
     return true;
   }
 
   /**
-   * → in front of a formula, or ← behind one, opens it — at its first stop or
-   * its last — instead of stepping over its picture. Read off the last
-   * frame's caret, which `selectionchange` keeps current.
+   * → in front of a region, or ← behind one, opens it — at its first stop or
+   * its last — instead of stepping over it. Read off the last frame's caret,
+   * which `selectionchange` keeps current.
    */
-  _enterMathByKey(e) {
-    if (!this._mathStructural || e.shiftKey || e.altKey || primaryModifier(e)) return false;
+  _enterRegionByKey(e) {
+    if (e.shiftKey || e.altKey || primaryModifier(e)) return false;
     if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return false;
     const v = this._lastView;
     if (!v || v.has_selection || v.view === "source") return false;
     const at = v.caret_src;
     const right = e.key === "ArrowRight";
-    const m = (v.math || []).find((m) => (right ? m.src === at : formulaRegion(v, m.src)?.end === at));
-    if (!m || !this._openMath(m, right ? "home" : "end")) return false;
+    const r = (v.regions || []).find((r) => this._regionEditors.has(r.kind) && (right ? r.src === at : r.end === at));
+    if (!r || !this._openRegion(r, { at: right ? "home" : "end" })) return false;
     e.preventDefault();
     return true;
+  }
+
+  /**
+   * The drawing a host's editor gives a region while it is closed — its
+   * `view`, asked once per region and reused while its content stands — or
+   * null for the placeholder row core laid out. Keyed like a directive's:
+   * kind, content, and which of several alike it is.
+   */
+  _regionDrawing(r, key) {
+    if (this._regionAnswers.has(key)) return this._regionAnswers.get(key);
+    const editor = this._regionEditors.get(r.kind);
+    let answer = null;
+    try {
+      answer = editor?.view?.(regionCopy(r)) ?? null;
+    } catch (e) {
+      console.error(`leaf: the ${r.kind} editor's view threw`, e);
+    }
+    if (answer != null && !(answer instanceof HTMLElement)) {
+      console.error(`leaf: the ${r.kind} editor's view is not an HTMLElement`, answer);
+      answer = null;
+    }
+    return answer;
+  }
+
+  /**
+   * The region a mousedown on `t` is on, and where on its drawing, in pixels
+   * from its top left: a formula's picture, or a host editor's drawing of a
+   * closed region. `null` for anything else.
+   */
+  _regionHit(t, e) {
+    if (t?.nodeType !== 1) return null;
+    const regions = this._lastView?.regions || [];
+    let target = null;
+    let region = null;
+    let size = this.theme.fontSize;
+    if (t._math && (t.classList.contains("leaf-math") || t.classList.contains("leaf-math-block"))) {
+      target = t;
+      size = t._mathPx;
+      region = regions.find((r) => r.kind === "math" && r.src === t._math.src);
+    } else {
+      // A reused row keeps the region it was built for, whose offsets an
+      // edit above has moved since — so the row's place says which it is.
+      target = t.closest(".leaf-region");
+      const row = target ? this.rowEls.indexOf(target.parentElement) : -1;
+      region = row < 0 ? null : regions.find((r) => r.start_row === row);
+    }
+    if (!region || !this._regionEditors.has(region.kind)) return null;
+    const box = target.getBoundingClientRect();
+    return { region, point: { x: e.clientX - box.left, y: e.clientY - box.top, size } };
+  }
+
+  /**
+   * Build the row for a block region a host's editor draws — its closed
+   * drawing, or the open session's view — in place of the placeholder row:
+   * the directive row's shape, a `contenteditable="false"` atom between the
+   * two caret homes.
+   */
+  _regionRowEl(r, answer, row) {
+    const div = el("div", "leaf-row leaf-media-row leaf-region-row");
+    div.dataset.leafCoreLen = String((row?.runs || []).reduce((n, run) => n + run.text.length, 0));
+    div.dataset.region = r.kind;
+    div.appendChild(document.createTextNode(ZWSP));
+    const atom = el("div", "leaf-region");
+    atom.setAttribute("contenteditable", "false");
+    atom._region = r;
+    atom.appendChild(answer);
+    div.appendChild(atom);
+    div.appendChild(document.createTextNode(ZWSP));
+    this.rowEls.push(div);
+    return div;
   }
 
   /**
@@ -2119,6 +2313,8 @@ export class LeafEditor {
   _restoreSelection(view) {
     const sel = window.getSelection();
     if (!sel) return;
+    // An open region's own view has the focus, and keeps it.
+    if (this._session?.impl.element?.contains(document.activeElement)) return;
     // Only where the selection already lives here. Putting a range into a
     // contenteditable focuses it, so restoring the caret on every repaint
     // would pull focus out of whatever the reader was typing in — a search
@@ -2553,16 +2749,17 @@ export class LeafEditor {
     // while we're the ones setting the selection (our own restore).
     on(document, "selectionchange", () => {
       if (this._settingSelection || this._composing) return;
+      // Inside an open region's own view, the selection is its editor's.
+      if (this._session?.impl.element?.contains(document.activeElement)) return;
       const sel = window.getSelection();
       if (!sel || sel.rangeCount === 0) return;
       if (!this.contentEl.contains(sel.getRangeAt(0).commonAncestorContainer)) return;
       const view = this._selectionToCore(sel);
       if (!view) return;
-      // The open formula holds core's caret in front of itself; the caret
+      // The open region holds core's caret in front of itself; the caret
       // anywhere else means the author went elsewhere.
-      if (this._mathEdit && (view.has_selection || view.caret_src !== this._mathEdit.src)) {
-        this._mathEdit = null;
-        this.contentEl.classList.remove("leaf-math-editing");
+      if (this._session && (view.has_selection || view.caret_src !== this._session.src)) {
+        this._closeRegion(null, false);
         this.render(view);
         return;
       }
@@ -2575,26 +2772,27 @@ export class LeafEditor {
       else this._emitChange((this._lastView = this._whole(view)));
     });
 
-    // A click on a formula's picture opens it, the caret at the stop nearest
-    // the pointer — once structural editing is on; before, the click is the
-    // browser's, and lands in front of the picture as it always did.
+    // A click on a region's drawing opens it — a formula at the stop nearest
+    // the pointer — and a click on the open formula moves its caret. A click
+    // in an open region's own view is its editor's; one anywhere else closes
+    // the open region, and goes on to put the caret where it landed.
     on(ce, "mousedown", (e) => {
-      if (e.button !== 0 || e.shiftKey || primaryModifier(e) || !this._mathStructural) return;
+      const s = this._session;
       const t = e.target;
-      const m = t?._math;
-      if (!m || !(t.classList.contains("leaf-math") || t.classList.contains("leaf-math-block"))) return;
-      const r = t.getBoundingClientRect();
-      const point = { x: e.clientX - r.left, y: e.clientY - r.top, size: t._mathPx };
+      if (s?.impl.element?.contains(t)) return;
+      if (e.button !== 0 || e.shiftKey || primaryModifier(e)) return;
+      const hit = this._regionHit(t, e);
+      if (!hit) {
+        if (s) this._closeRegion(null);
+        return;
+      }
       e.preventDefault();
       this.focus();
-      if (this._mathEdit && this._mathEdit.src === m.src) {
-        this._mathEdit.session.click(point.x, point.y, point.size);
-        this._mathEdit.rev++;
-        this.render(this._lastView);
-      } else {
-        this._mathEdit = null;
-        this._openMath(m, "end", point);
+      if (s && s.kind === hit.region.kind && s.src === hit.region.src) {
+        if (s.impl.click) this._regionAct(s.impl.click(hit.point.x, hit.point.y, hit.point.size) ?? { moved: true });
+        return;
       }
+      this._openRegion(hit.region, { at: "point", ...hit.point });
     });
 
     // Triple-click: the browser's is a *visual line*; leaf's is the *logical
@@ -3129,9 +3327,9 @@ export class LeafEditor {
     if (this._composing || e.isComposing || e.keyCode === 229) return;
     const d = this.doc;
 
-    // A formula open for structural editing takes the keys it knows; → or ←
-    // onto one opens it.
-    if (this._mathEdit ? this._mathKey(e) : this._enterMathByKey(e)) return;
+    // An open region whose session leaf draws takes the keys it knows; → or
+    // ← onto a region opens it.
+    if (this._session ? this._regionKey(e) : this._enterRegionByKey(e)) return;
 
     // ⌘⇧V: the paste that follows takes the plain flavour. Remembered here and
     // consumed by the paste handler, since the paste itself is the browser's
@@ -3176,7 +3374,7 @@ export class LeafEditor {
       // would take the frame a caret move repaints by (see `selectionchange`).
       const focus = window.getSelection()?.focusNode;
       const rowEl = focus ? this._rowOf(focus) : null;
-      if (rowEl?.classList.contains("leaf-directive-row")) {
+      if (rowEl?.classList.contains("leaf-directive-row") || rowEl?.classList.contains("leaf-region-row")) {
         e.preventDefault();
         this._syncFromDom();
         const x = e.shiftKey;
@@ -3500,9 +3698,121 @@ function mathBlockKey(m, row, ink) {
   return "M" + len + "|" + ink + "|" + (m.edit ?? "") + "|" + (m.display ? "D" : "T") + m.tex;
 }
 
-/** The owned formula starting at `src` in frame `view`, as a region. */
-function formulaRegion(view, src) {
-  return (view?.regions || []).find((r) => r.kind === "math" && r.src === src) ?? null;
+/**
+ * The host's region editors, by kind, checked: each kind is `fence:` and a
+ * language — formulas are leaf's own — and each editor has an `open`.
+ */
+function regionEditors(given) {
+  const map = new Map();
+  for (const [kind, editor] of Object.entries(given ?? {})) {
+    if (!/^fence:\S+$/.test(kind)) {
+      throw new Error(`regionEditors: ${JSON.stringify(kind)} is not a kind a host edits — name a fence, "fence:<language>"`);
+    }
+    if (typeof editor?.open !== "function") throw new Error(`regionEditors[${JSON.stringify(kind)}] has no open()`);
+    map.set(kind, editor);
+  }
+  return map;
+}
+
+/** A `RegionView` as a host's editor is handed it: a copy, so nothing it does
+ *  to it reaches the frame. */
+function regionCopy(r) {
+  return {
+    kind: r.kind,
+    inline: r.inline,
+    start_row: r.start_row,
+    end_row: r.end_row,
+    src: r.src,
+    end: r.end,
+    content_start: r.content_start,
+    content_end: r.content_end,
+    content: r.content,
+  };
+}
+
+const UTF8_IN = new TextEncoder();
+const UTF8_OUT = new TextDecoder();
+
+/** `s` with its UTF-8 bytes `[from, to)` replaced by `text`. */
+function spliceBytes(s, from, to, text) {
+  const b = UTF8_IN.encode(s);
+  return UTF8_OUT.decode(b.subarray(0, from)) + text + UTF8_OUT.decode(b.subarray(to));
+}
+
+/** The one splice, in UTF-8 bytes, that turns `before` into `after`: what
+ *  the two do not share at either end. `[]` when they are the same. */
+function diffSplice(before, after) {
+  if (before === after) return [];
+  const a = UTF8_IN.encode(before);
+  const b = UTF8_IN.encode(after);
+  const cont = (x, i) => i < x.length && (x[i] & 0xc0) === 0x80;
+  let p = 0;
+  while (p < a.length && p < b.length && a[p] === b[p]) p++;
+  while (p > 0 && (cont(a, p) || cont(b, p))) p--;
+  let q = 0;
+  while (q < a.length - p && q < b.length - p && a[a.length - 1 - q] === b[b.length - 1 - q]) q++;
+  while (q > 0 && (cont(a, a.length - q) || cont(b, b.length - q))) q--;
+  return [{ from: p, to: a.length - q, text: UTF8_OUT.decode(b.subarray(p, b.length - q)) }];
+}
+
+/**
+ * Leaf's own editor for the `math` kind: a `MathSession` from the math
+ * module, which edits a formula as structure and draws it with its caret.
+ * Leaf runs this session — keys, clicks and the picture go through it — and
+ * what it writes is splices on the formula's TeX.
+ */
+function mathRegionEditor(editor) {
+  const splices = (list) => {
+    const out = list.map((sp) => ({ from: sp.from, to: sp.to, text: sp.text }));
+    for (const sp of list) sp.free?.();
+    return out;
+  };
+  return {
+    open(region, entry) {
+      const m = (editor._lastView?.math || []).find((m) => m.src === region.src);
+      let session;
+      try {
+        session = new mathModule.MathSession(region.content, m?.display ?? false);
+      } catch {
+        return null; // beyond what the structural editor reads: left as TeX
+      }
+      if (entry.at === "home") session.home();
+      else session.end();
+      if (entry.at === "point") session.click(entry.x, entry.y, entry.size);
+      return {
+        session,
+        // Typing, Backspace and the arrows are the session's. ← at the first
+        // stop and → at the last leave the formula, as do Escape, Enter and
+        // Tab; a shortcut (⌘Z among them) leaves it and then runs.
+        key(e) {
+          const k = e.key;
+          if (primaryModifier(e) || e.altKey) return { close: true };
+          if (k === "Escape" || k === "Enter" || k === "Tab") return { leave: "after" };
+          if (k === "ArrowLeft" && session.at_home()) return { leave: "before" };
+          if (k === "ArrowRight" && session.at_end()) return { leave: "after" };
+          if (!(k.length === 1 || k === "Backspace" || ARROWS.has(k))) return null;
+          const sp = splices(session.key(k));
+          return sp.length ? { edit: sp } : { moved: true };
+        },
+        click(x, y, size) {
+          session.click(x, y, size);
+          return { moved: true };
+        },
+        picture: (size, ink, accent) => session.picture(size, ink, accent),
+        reload(tex) {
+          try {
+            session.reload(tex);
+            return true;
+          } catch {
+            return false;
+          }
+        },
+        close() {
+          session.free?.();
+        },
+      };
+    },
+  };
 }
 
 /** What an ordinary row's key leaves out when it holds a formula: the TeX
@@ -4147,9 +4457,9 @@ img.leaf-media, video.leaf-media { max-height: 60vh; }
 /* TeX the typesetter could not read: the atom, tinted, with the fault in its
    title. Also every math run before the surface has said it paints pictures. */
 .leaf-r-math { color: var(--leaf-muted); }
-/* A formula open for structural editing draws its own caret; the browser's,
-   waiting in front of it, would be a second one. */
-.leaf-content.leaf-math-editing { caret-color: transparent; }
+/* A region open in a session leaf draws — a formula — draws its own caret;
+   the browser's, waiting in front of it, would be a second one. */
+.leaf-content.leaf-region-editing { caret-color: transparent; }
 .leaf-r-math.leaf-math-error { color: #c0392b; text-decoration: underline wavy; }
 
 /* Didn't load: a missing file would otherwise leave the row blank, with nothing

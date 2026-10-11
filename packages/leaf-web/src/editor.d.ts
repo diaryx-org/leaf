@@ -12,6 +12,7 @@ import type {
   FootnoteView,
   HighlightIn,
   HighlightOut,
+  RegionView,
   SelectionQuote,
   TextCounts,
 } from "../pkg/leaf_wasm.js";
@@ -194,6 +195,85 @@ export interface EditorOptions {
    * while the math module has not loaded, or under `markupMode("full")`.
    */
   mathEditing?: "structure" | "source";
+  /**
+   * Editors of the host's own for fenced blocks, by region kind:
+   * `"fence:"` and the fence's language (`"fence:mermaid"`). Each named
+   * language's fences stop being code: core keeps each one a placeholder row
+   * (`set_owned_regions`), the editor's `view` draws it there, and → in front
+   * of it, ← behind it, or a click on the drawing opens it in the editor's
+   * own view (`open`). What that view writes comes back as splices on the
+   * fence's content, one undo step each. Leaf ships no editor of this kind,
+   * and depends on nothing a host's editor uses. Formulas (`"math"`) are
+   * leaf's own; naming one is an error.
+   */
+  regionEditors?: Record<`fence:${string}`, RegionEditor>;
+}
+
+/**
+ * Where the caret enters a region being opened: its first stop, its last, or
+ * nearest a point in CSS pixels from its drawing's top left.
+ */
+export type RegionEntry =
+  | { at: "home" }
+  | { at: "end" }
+  | { at: "point"; x: number; y: number; size: number };
+
+/**
+ * One splice on a region's content: replace the UTF-8 bytes `[from, to)` —
+ * offsets into the content as the splice before this one left it — with
+ * `text`, written exactly.
+ */
+export interface RegionSplice {
+  from: number;
+  to: number;
+  text: string;
+}
+
+/**
+ * What leaf hands a host's editor when it opens a region: the way back. Every
+ * call is ignored once the region has closed.
+ */
+export interface RegionHost {
+  /** Write splices on the content, as one undo step. */
+  edit(splices: RegionSplice[]): void;
+  /** Write the whole content anew; leaf splices only what differs, as one
+   *  undo step. For a fence the content is whole lines, each ending in `\n`
+   *  (empty for an empty fence) — keep it so. */
+  replace(content: string): void;
+  /** Close the region, the caret in front of it or behind it, and give the
+   *  focus back to the document. */
+  leave(side: "before" | "after"): void;
+  /** Undo or redo in the document. The region stays open, and a change to its
+   *  content reaches the session as `reload`. */
+  undo(): void;
+  redo(): void;
+}
+
+/** A region open in a host's editor: the view leaf places over it. */
+export interface RegionSession {
+  /** The view, placed over the region's rows in place of its drawing while it
+   *  is open. Its keys, clicks, input and clipboard are its own. */
+  element: HTMLElement;
+  /** Called once the view is in the document, to take the focus. */
+  focus?(): void;
+  /** The content changed under the view — an undo, a redo, another writer.
+   *  `false` closes the region. */
+  reload?(content: string): boolean | void;
+  /** The region closed: by `leave`, a click elsewhere, or because it went. */
+  close?(): void;
+}
+
+/** A host's editor for one kind of region. */
+export interface RegionEditor {
+  /**
+   * The region's drawing while it is closed, or null for leaf's `▤ kind`
+   * placeholder row. Asked once per region and kept while its content stands,
+   * as a directive's drawing is; wrapped as a `contenteditable="false"` atom
+   * with a caret stop before and after it.
+   */
+  view?(region: RegionView): HTMLElement | null;
+  /** Open `region`, or answer null to leave it closed. */
+  open(region: RegionView, entry: RegionEntry, host: RegionHost): RegionSession | null;
 }
 
 /**

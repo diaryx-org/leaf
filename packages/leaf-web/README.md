@@ -138,9 +138,22 @@ for a host that decides later.
   stop, → at the last, Escape, Enter or Tab leave it; a shortcut leaves it
   and then runs, so ⌘Z undoes the last keystroke. The editor is
   `MathSession`, in the same module as the typesetter; core keeps the
-  formula a picture on the caret's line (`set_edits_math`) only once it has
-  loaded, so until then — and with `mathEditing: "source"`, or under
-  `markupMode("full")` — a formula reveals its TeX to be typed instead.
+  formula a picture on the caret's line (`set_owned_regions(["math"])`)
+  only once it has loaded, so until then — and with `mathEditing:
+  "source"`, or under `markupMode("full")` — a formula reveals its TeX to
+  be typed instead.
+- **Fences a host edits.** `regionEditors: { "fence:mermaid": editor }`
+  hands every ```` ```mermaid ```` fence to the host: core keeps it one
+  placeholder row, `editor.view(region)` draws it there, and → in front of
+  it, ← behind it or a click on the drawing opens it in the element
+  `editor.open(region, entry, host)` answers with, placed where the drawing
+  was and given the focus. The element writes back through `host.edit`
+  (splices on the fence's content) or `host.replace` (the whole content,
+  spliced where it differs), one undo step each, undoes through `host.undo`,
+  and closes with `host.leave`. Formulas run on the same protocol with leaf
+  as their editor, which is why opening, leaving, undo and the caret behave
+  the same for both. leaf ships no fence editor and depends on nothing one
+  uses; the demo page's Mermaid editor is the example.
 - **Syntax highlighting** in a fenced block whose language a grammar knows:
   each run carries a `token` — one of core's eight classes — and arrives as a
   `.leaf-t-<token>` class beside `.leaf-r-code`, coloured by the

@@ -1869,8 +1869,8 @@ await test("→ onto a formula opens it, and what is typed there is TeX in the d
   const m = ed._lastView.math[0];
   ed.render(ed.doc.select_range(m.src, m.src));
   press(ed, "ArrowRight");
-  assert(ed._mathEdit, "→ in front of the formula did not open it");
-  assert(ed.contentEl.classList.contains("leaf-math-editing"), "the browser's caret is still shown");
+  assert(ed._session, "→ in front of the formula did not open it");
+  assert(ed.contentEl.classList.contains("leaf-region-editing"), "the browser's caret is still shown");
   for (const k of ["ArrowRight", "^", "2", "ArrowRight", "+", "1", "/", "2"]) press(ed, k);
   eq(ed.source(), "say $x^{2}+\\frac{1}{2}$ here\n");
   // The open formula is drawn from its session: the caret is in the picture.
@@ -1878,15 +1878,15 @@ await test("→ onto a formula opens it, and what is typed there is TeX in the d
   assert(decodeURIComponent(atom.style.backgroundImage).includes("<rect"), "no caret in the picture");
   // Out of the denominator, then out of the formula, behind it.
   press(ed, "ArrowRight");
-  assert(ed._mathEdit, "left the formula a stop early");
+  assert(ed._session, "left the formula a stop early");
   press(ed, "ArrowRight");
-  assert(!ed._mathEdit, "→ at the last stop did not leave the formula");
+  assert(!ed._session, "→ at the last stop did not leave the formula");
   eq(ed._lastView.caret_src, ed._lastView.regions[0].end);
   // ← from behind it opens it again, at its end.
   press(ed, "ArrowLeft");
-  assert(ed._mathEdit && ed._mathEdit.session.at_end(), "← behind the formula did not open it at its end");
+  assert(ed._session && ed._session.impl.session.at_end(), "← behind the formula did not open it at its end");
   press(ed, "Escape");
-  assert(!ed._mathEdit, "Escape did not close it");
+  assert(!ed._session, "Escape did not close it");
   return ed;
 });
 
@@ -1907,8 +1907,8 @@ await test("a click on a formula's picture opens it at the stop under the pointe
   atom.dispatchEvent(new MouseEvent("mousedown", {
     bubbles: true, cancelable: true, button: 0, detail: 1, clientX: r.left + 1, clientY: r.top + r.height / 2,
   }));
-  assert(ed._mathEdit, "the click did not open the formula");
-  assert(ed._mathEdit.session.at_home(), "the click at its left edge is not at its first stop");
+  assert(ed._session, "the click did not open the formula");
+  assert(ed._session.impl.session.at_home(), "the click at its left edge is not at its first stop");
   press(ed, "a");
   eq(ed.source(), "say $axy$ here\n");
   return ed;
@@ -1926,7 +1926,7 @@ await test("a keystroke in a formula is one undo step, and ⌘Z leaves the formu
   for (const k of "+sqrt") press(ed, k);
   eq(ed.source(), "say $x+\\sqrt{}$ here\n");
   press(ed, "z", mac ? { metaKey: true } : { ctrlKey: true });
-  assert(!ed._mathEdit, "⌘Z did not close the formula");
+  assert(!ed._session, "⌘Z did not close the formula");
   eq(ed.source(), "say $x+sqr$ here\n");
   return ed;
 });
@@ -1937,7 +1937,7 @@ await test("a display block opens, and its TeX stays between its own lines", asy
   const m = ed._lastView.regions.find((m) => !m.inline);
   ed.render(ed.doc.select_range(m.end, m.end));
   press(ed, "ArrowLeft");
-  assert(ed._mathEdit, "← behind the block did not open it");
+  assert(ed._session, "← behind the block did not open it");
   press(ed, "+");
   press(ed, "1");
   eq(ed.source(), "intro\n\n$$\n\\int_0^1 x+1\n$$\n\nend\n");
@@ -1955,6 +1955,150 @@ await test("mathEditing \"source\" keeps a formula's TeX to be typed on the care
   try { editor("x", { mathEditing: "wysiwyg" }); } catch { threw = true; }
   assert(threw, "an unknown mathEditing was accepted");
   return ed;
+});
+
+/**
+ * A host's editor for `fence:demo`, the stand-in for a Mermaid editor: drawn
+ * closed as a figure naming its content, open as a textarea that writes the
+ * whole content back. Records what leaf asked of it in `log`.
+ */
+function demoEditor(log) {
+  return {
+    view(r) {
+      log.push(["view", r.content]);
+      const f = document.createElement("figure");
+      f.className = "demo-drawing";
+      f.textContent = "drawn: " + r.content.trim();
+      return f;
+    },
+    open(r, entry, host) {
+      log.push(["open", entry.at]);
+      const ta = document.createElement("textarea");
+      ta.className = "demo-editor";
+      ta.value = r.content;
+      return {
+        element: ta,
+        host,
+        focus: () => ta.focus(),
+        reload(c) {
+          log.push(["reload", c]);
+          ta.value = c;
+          return true;
+        },
+        close: () => log.push(["close"]),
+      };
+    },
+  };
+}
+
+const DEMO = "intro\n\n```demo\nA\n```\n\n```rust\nfn x() {}\n```\n\nend\n";
+
+await test("a fence a host edits is its drawing, and → in front of it opens the host's view", async () => {
+  const log = [];
+  const ed = editor(DEMO, { regionEditors: { "fence:demo": demoEditor(log) } });
+  const fig = ed.contentEl.querySelector(".leaf-region .demo-drawing");
+  assert(fig, "the host's drawing is not on the page");
+  eq(fig.textContent, "drawn: A");
+  assert(!ed.contentEl.textContent.includes("```"), "the fence shows its markup");
+  // A language with no editor is still code.
+  assert(ed.contentEl.textContent.includes("fn x() {}"), "the rust fence is not code");
+  eq(ed._lastView.regions.map((r) => r.kind), ["fence:demo"]);
+  const r = ed._lastView.regions[0];
+  eq(r.content, "A\n");
+  ed.focus();
+  ed.render(ed.doc.select_range(r.src, r.src));
+  press(ed, "ArrowRight");
+  assert(ed._session?.kind === "fence:demo", "→ in front of the fence did not open it");
+  const ta = ed.contentEl.querySelector(".leaf-region textarea.demo-editor");
+  assert(ta, "the host's view is not where the drawing was");
+  eq(document.activeElement, ta, "the host's view does not have the focus");
+  eq(log.filter((l) => l[0] === "open"), [["open", "home"]]);
+  // A key in the host's view is the host's, not the document's.
+  ta.dispatchEvent(new KeyboardEvent("keydown", { key: "x", bubbles: true, cancelable: true }));
+  eq(ed.source(), DEMO);
+  return ed;
+});
+
+await test("what a host's view writes is one undo step, and an undo reaches it as a reload", async () => {
+  const log = [];
+  const ed = editor(DEMO, { regionEditors: { "fence:demo": demoEditor(log) } });
+  const r = ed._lastView.regions[0];
+  ed.focus();
+  ed.render(ed.doc.select_range(r.end, r.end));
+  press(ed, "ArrowLeft");
+  assert(ed._session, "← behind the fence did not open it");
+  eq(log.filter((l) => l[0] === "open"), [["open", "end"]]);
+  const { host } = ed._session.impl;
+  host.replace("A\nB\n");
+  eq(ed.source(), DEMO.replace("A\n", "A\nB\n"));
+  host.replace("A\nB é\n");
+  eq(ed.source(), DEMO.replace("A\n", "A\nB é\n"));
+  assert(ed._session, "an edit closed the host's view");
+  const ta = ed.contentEl.querySelector("textarea.demo-editor");
+  eq(document.activeElement, ta, "an edit took the focus from the host's view");
+  host.undo();
+  eq(ed.source(), DEMO.replace("A\n", "A\nB\n"));
+  assert(ed._session, "undo closed the host's view");
+  eq(log.at(-1), ["reload", "A\nB\n"]);
+  host.redo();
+  eq(log.at(-1), ["reload", "A\nB é\n"]);
+  // Leaving puts the caret behind the fence, and the drawing comes back.
+  host.leave("after");
+  assert(!ed._session, "leave did not close it");
+  // Closed, then asked to draw what it wrote.
+  eq(log.slice(-2), [["close"], ["view", "A\nB é\n"]]);
+  eq(ed._lastView.caret_src, ed._lastView.regions[0].end);
+  eq(ed.contentEl.querySelector(".demo-drawing")?.textContent, "drawn: A\nB é");
+  // A host that calls back after it closed changes nothing.
+  host.replace("gone\n");
+  eq(ed.source(), DEMO.replace("A\n", "A\nB é\n"));
+  return ed;
+});
+
+await test("a click on a host's drawing opens it, and a click elsewhere closes it", async () => {
+  const log = [];
+  const ed = editor(DEMO, { regionEditors: { "fence:demo": demoEditor(log) } });
+  const fig = ed.contentEl.querySelector(".demo-drawing");
+  const b = fig.getBoundingClientRect();
+  fig.dispatchEvent(new MouseEvent("mousedown", {
+    bubbles: true, cancelable: true, button: 0, detail: 1, clientX: b.left + 5, clientY: b.top + 3,
+  }));
+  assert(ed._session, "the click did not open the fence");
+  eq(log.filter((l) => l[0] === "open"), [["open", "point"]]);
+  const first = ed.rowEls[0];
+  const fb = first.getBoundingClientRect();
+  first.dispatchEvent(new MouseEvent("mousedown", {
+    bubbles: true, cancelable: true, button: 0, detail: 1, clientX: fb.left + 2, clientY: fb.top + 2,
+  }));
+  assert(!ed._session, "a click elsewhere left it open");
+  eq(log.at(-1), ["close"]);
+  return ed;
+});
+
+await test("an undo that takes a fence away closes its view", async () => {
+  const log = [];
+  const ed = editor("intro\n", { regionEditors: { "fence:demo": demoEditor(log) } });
+  ed.render(ed.doc.edit_source(5, 5, "\n\n```demo\nA\n```"));
+  const r = ed._lastView.regions[0];
+  assert(r, "the inserted fence is not a region");
+  ed.focus();
+  ed.render(ed.doc.select_range(r.src, r.src));
+  press(ed, "ArrowRight");
+  assert(ed._session);
+  ed._session.impl.host.undo();
+  eq(ed.source(), "intro\n");
+  assert(!ed._session, "the fence went and its view stayed");
+  eq(log.at(-1), ["close"]);
+  return ed;
+});
+
+await test("regionEditors takes only fences, each with an open()", async () => {
+  let threw = 0;
+  for (const bad of [{ math: { open() {} } }, { "fence:": { open() {} } }, { "fence:demo": {} }]) {
+    try { editor("x", { regionEditors: bad }); } catch { threw++; }
+  }
+  eq(threw, 3);
+  return editor("x");
 });
 
 await test("TeX that will not typeset keeps its atom, tinted, with the fault in its title", async () => {
