@@ -213,6 +213,36 @@ final class EditorLayoutTests: XCTestCase {
         XCTAssertNotNil(MathStore.glyph(tex: "x^2", display: false, size: 16, ink: .black))
     }
 
+    func testALineHoldingATallFormulaGrowsToHoldIt() throws {
+        // A fraction stands taller than a line of text. Its line grows by what
+        // the picture reaches past the text, so the picture is not clipped and
+        // the line under it starts below it rather than over it; a line with no
+        // formula keeps the row's own height.
+        let words = Array(repeating: "word", count: 12).joined(separator: " ")
+        let doc = try LeafDoc(source: "Caret here.\n\nword word $\\dfrac{K(b-a)^3}{24n^2}$ \(words)\n",
+                              format: "markdown")
+        let dv = doc.setInlinePictures(on: true)
+        let tex = try XCTUnwrap(dv.math.first { $0.inline }).tex
+        let glyph = try XCTUnwrap(MathStore.glyph(tex: tex, display: false, size: theme.fontSize,
+                                                  ink: theme.textColor))
+        let layout = EditorLayout(dv, theme: theme, wrapWidth: 150)
+        let rl = try XCTUnwrap(layout.rows.first { $0.row.runs.contains { $0.role == "math" } })
+        let tall = try XCTUnwrap(rl.wrapped.firstIndex { $0.attributed.string.contains("\u{FFFC}") })
+        XCTAssertGreaterThan(rl.wrapped.count, tall + 1, "the formula's line has a line after it")
+
+        let base = theme.rowHeight(for: rl.row)
+        XCTAssertGreaterThan(rl.lineHeight(tall), base)
+        XCTAssertGreaterThanOrEqual(rl.lineHeight(tall), glyph.ascent + glyph.descent)
+        XCTAssertEqual(rl.lineHeight(tall + 1), base, accuracy: 0.5)
+        XCTAssertEqual(rl.lineTop(tall + 1), rl.lineTop(tall) + rl.lineHeight(tall), accuracy: 0.5)
+        XCTAssertEqual(rl.height, CGFloat(rl.wrapped.count) * base + rl.wrapped[tall].rise, accuracy: 0.5)
+
+        // The caret on that line is as tall as the line.
+        let caret = try XCTUnwrap(layout.rect(row: layout.rows.firstIndex { $0.top == rl.top }!,
+                                              ch: rl.wrapped[tall].start))
+        XCTAssertEqual(caret.height, rl.lineHeight(tall), accuracy: 0.5)
+    }
+
     func testFitCutsEveryOverWideColumnToOneLevelAtOnce() {
         // The grid the point-at-a-time walk took over a second to fit: a hundred
         // columns of long cells. Solved, every column that gave anything ends at
@@ -918,7 +948,7 @@ final class EditorLayoutTests: XCTestCase {
     func testHitOnSecondVisualLineReturnsLaterOffset() {
         let long = "the quick brown fox jumps over the lazy dog and then keeps on running"
         let layout = EditorLayout(docView([row([mkRun(long)])]), theme: theme, wrapWidth: 120)
-        let lineHeight = layout.rows[0].lineHeight
+        let lineHeight = layout.rows[0].shaped.lineHeight
         let onLine2 = CGPoint(x: theme.padding.left + 5, y: theme.padding.top + lineHeight * 1.5)
         let (r, ch) = layout.hit(onLine2)
         XCTAssertEqual(r, 0)
@@ -1042,7 +1072,7 @@ final class EditorLayoutTests: XCTestCase {
         let end = try XCTUnwrap(layout.rect(row: 0, ch: 11))
         XCTAssertEqual(box.rect.minX, start.minX, accuracy: 0.5)
         XCTAssertEqual(box.rect.maxX, end.minX, accuracy: 0.5)
-        XCTAssertEqual(box.rect.height, layout.rows[0].lineHeight, accuracy: 0.5)
+        XCTAssertEqual(box.rect.height, layout.rows[0].shaped.lineHeight, accuracy: 0.5)
     }
 
     func testARangeAcrossAWrapIsOneBoxPerVisualLine() {

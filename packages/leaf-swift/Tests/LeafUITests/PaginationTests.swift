@@ -115,9 +115,9 @@ final class PaginationTests: XCTestCase {
         let rl = layout.rows[0]
         XCTAssertTrue(rl.lineOrigins.isEmpty)
         XCTAssertEqual(rl.lineTop(0), rl.top, accuracy: 0.5)
-        XCTAssertEqual(rl.lineTop(2), rl.top + 2 * rl.lineHeight, accuracy: 0.5)
+        XCTAssertEqual(rl.lineTop(2), rl.top + 2 * rl.shaped.lineHeight, accuracy: 0.5)
         XCTAssertEqual(rl.bands.count, 1, "an unbroken row is one band")
-        XCTAssertEqual(rl.height, CGFloat(rl.wrapped.count) * rl.lineHeight, accuracy: 0.5)
+        XCTAssertEqual(rl.height, CGFloat(rl.wrapped.count) * rl.shaped.lineHeight, accuracy: 0.5)
     }
 
     // MARK: where a break falls
@@ -132,7 +132,7 @@ final class PaginationTests: XCTestCase {
                 let sheet = page.index(at: top)
                 XCTAssertGreaterThanOrEqual(top, page.contentTop(sheet) - 0.5,
                                             "a line above sheet \(sheet)'s top margin")
-                XCTAssertLessThanOrEqual(top + rl.lineHeight, page.contentBottom(sheet) + 0.5,
+                XCTAssertLessThanOrEqual(top + rl.shaped.lineHeight, page.contentBottom(sheet) + 0.5,
                                          "a line below sheet \(sheet)'s bottom margin")
             }
         }
@@ -147,7 +147,7 @@ final class PaginationTests: XCTestCase {
         let carried = try! XCTUnwrap(rl.wrapped.indices.first { rl.lineTop($0) >= page.sheetTop(1) })
         XCTAssertEqual(rl.lineTop(carried), page.contentTop(1), accuracy: 0.5,
                        "the carried lines head the next sheet at its top margin")
-        XCTAssertEqual(rl.lineTop(carried - 1) + rl.lineHeight, page.contentBottom(0), accuracy: 24,
+        XCTAssertEqual(rl.lineTop(carried - 1) + rl.shaped.lineHeight, page.contentBottom(0), accuracy: 24,
                        "and the ones before it fill the sheet they were on")
         XCTAssertGreaterThan(rl.bands.count, 1, "the row is drawn as one band per sheet")
     }
@@ -254,7 +254,7 @@ final class PaginationTests: XCTestCase {
         let carried = try! XCTUnwrap(rl.wrapped.indices.first { rl.lineTop($0) >= page.sheetTop(1) })
         let wl = rl.wrapped[carried]
         let (row, ch) = layout.hit(CGPoint(x: layout.originX + 1,
-                                           y: rl.lineTop(carried) + rl.lineHeight / 2))
+                                           y: rl.lineTop(carried) + rl.shaped.lineHeight / 2))
         XCTAssertEqual(row, 0)
         XCTAssertGreaterThanOrEqual(ch, wl.start)
         XCTAssertLessThanOrEqual(ch, wl.start + wl.length)
@@ -369,12 +369,12 @@ final class PaginationTests: XCTestCase {
         let layout = laidTwoUp((0..<10).map { r in row([mkRun("row \(r)")]) })
         let target = layout.rows[7]
         let (hitRow, _) = layout.hit(CGPoint(x: target.lineOrigin(0).x + 4,
-                                             y: target.lineTop(0) + target.lineHeight / 2))
+                                             y: target.lineTop(0) + target.lineHeight(0) / 2))
         XCTAssertEqual(hitRow, 7)
 
         // And the same height in the *first* column still answers with that column.
         let (leftRow, _) = layout.hit(CGPoint(x: layout.rows[1].lineOrigin(0).x + 4,
-                                              y: target.lineTop(0) + target.lineHeight / 2))
+                                              y: target.lineTop(0) + target.lineHeight(0) / 2))
         XCTAssertEqual(leftRow, 1)
     }
 
