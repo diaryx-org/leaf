@@ -604,7 +604,11 @@ impl Session {
         };
         let mut splices = Vec::new();
         match outcome {
-            Outcome::Move(c) => self.caret = c,
+            Outcome::Move(c) => {
+                let left = self.caret;
+                self.caret = c;
+                splices.extend(self.drop_empty_script(left));
+            }
             Outcome::Edit(s) => {
                 if self.commit(&s) {
                     splices.push(s);
@@ -619,6 +623,33 @@ impl Session {
             Outcome::None => {}
         }
         splices
+    }
+
+    /// When the caret has just left the script slot `left` was in, and that
+    /// slot is empty, the splice that removes the script — `x^{}` back to
+    /// `x` — with the caret where it went.
+    fn drop_empty_script(&mut self, left: Caret) -> Option<Splice> {
+        let f = &self.formula;
+        let slot = &f.rows[left.row];
+        let p = slot.parent?;
+        let atom = &f.atoms[p];
+        if !matches!(atom.kind, Kind::Sup | Kind::Sub)
+            || !slot.atoms.is_empty()
+            || self.caret.row == left.row
+        {
+            return None;
+        }
+        let span = atom.span.clone();
+        let mut s = f.replace_in_row(atom.row, span.clone(), "", 0);
+        // A script on an unbraced row would rewrite the row around it; leave
+        // that one be.
+        if s.range != span || !s.text.is_empty() {
+            return None;
+        }
+        let shift = |o: usize| if o >= span.end { o - span.len() } else { o };
+        s.caret = shift(f.offset(self.caret));
+        s.row = shift(f.rows[self.caret.row].content.start);
+        self.commit(&s).then_some(s)
     }
 
     fn commit(&mut self, s: &Splice) -> bool {
@@ -797,6 +828,27 @@ mod tests {
         s.display = true;
         s.picture(&style).unwrap();
         assert!(s.laid.borrow().as_ref().unwrap().1);
+    }
+
+    #[test]
+    fn an_empty_script_goes_when_the_caret_leaves_it() {
+        assert_eq!(typed("x^→"), "x");
+        assert_eq!(typed("x_ "), "x");
+        assert_eq!(typed("x^←+"), "x+");
+        // One with something in it stays, and so does the one the caret is in.
+        assert_eq!(typed("x^2→"), "x^{2}");
+        assert_eq!(typed("x^"), "x^{}");
+        // The caret lands where it went, in front of what follows.
+        let mut s = Session::new("ab").unwrap();
+        s.home();
+        s.key(Key::Right);
+        s.key(Key::Char('^'));
+        assert_eq!(s.tex(), "a^{}b");
+        let sp = s.key(Key::Right);
+        assert_eq!(sp.len(), 1, "leaving made no splice");
+        assert_eq!(s.tex(), "ab");
+        s.key(Key::Char('c'));
+        assert_eq!(s.tex(), "acb");
     }
 
     #[test]

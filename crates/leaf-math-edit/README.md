@@ -89,11 +89,13 @@ README's September figure.
   one with something in it, steps from one slot to the next, and takes a
   structure apart at the end of its last slot.
 
+An empty superscript or subscript goes when the caret leaves it: `x^` then →
+leaves `x`, not `x^{}`. One the caret is still in stays, drawn as its slot.
+
 ## Not done
 
 - Matrices and environments as grids.
 - `\left(` auto-pairing.
-- Removing an empty script when the caret leaves it.
 - IME input.
 - The terminal frontend.
 
