@@ -389,6 +389,10 @@ pub struct Session {
     pub anchor: Option<Caret>,
     /// Display style, which ↑ and ↓ measure the formula in.
     pub display: bool,
+    /// The last layout, under the source and style it was made for: a
+    /// keystroke that only moves the caret draws, hits and walks ↑ ↓ on the
+    /// same layout, which typesetting the formula again would only repeat.
+    laid: std::cell::RefCell<Option<(String, bool, crate::layout::Layout)>>,
 }
 
 /// A key a session understands.
@@ -418,6 +422,7 @@ impl Session {
             caret,
             anchor: None,
             display: false,
+            laid: Default::default(),
         })
     }
 
@@ -433,10 +438,34 @@ impl Session {
         self.anchor = None;
     }
 
+    /// `f` with the formula's layout in its current style, laid out again
+    /// only when the source or the style has changed since the last.
+    pub fn with_layout<R>(&self, f: impl FnOnce(&crate::layout::Layout) -> R) -> Result<R, String> {
+        let mut laid = self.laid.borrow_mut();
+        let fresh = laid
+            .as_ref()
+            .is_some_and(|(src, display, _)| *src == self.formula.src && *display == self.display);
+        if !fresh {
+            let l = self.formula.layout(self.display)?;
+            *laid = Some((self.formula.src.clone(), self.display, l));
+        }
+        Ok(f(&laid.as_ref().unwrap().2))
+    }
+
+    /// The caret to the stop nearest `(x, y)`, in em from the picture's top
+    /// left, the selection dropped.
+    pub fn click(&mut self, x: f64, y: f64) {
+        if let Ok(c) = self.with_layout(|l| l.hit(&self.formula, x, y)) {
+            self.caret = c;
+            self.anchor = None;
+        }
+    }
+
     /// The formula drawn with its caret and its selection, in `style`.
     pub fn picture(&self, style: &crate::layout::Style) -> Result<crate::layout::Picture, String> {
-        let l = self.formula.layout(self.display)?;
-        Ok(l.picture_selecting(&self.formula, style, Some(self.caret), self.selection()))
+        self.with_layout(|l| {
+            l.picture_selecting(&self.formula, style, Some(self.caret), self.selection())
+        })
     }
 
     /// The selected atoms, as a row and a range of its atom indices.
@@ -566,12 +595,11 @@ impl Session {
             Key::Delete => f.delete(self.caret),
             Key::Left => Outcome::Move(f.left(self.caret)),
             Key::Right => Outcome::Move(f.right(self.caret)),
-            Key::Up | Key::Down => match f.layout(self.display) {
-                Ok(l) => l
-                    .vertical(f, self.caret, key == Key::Up)
-                    .map_or(Outcome::None, Outcome::Move),
-                Err(_) => Outcome::None,
-            },
+            Key::Up | Key::Down => self
+                .with_layout(|l| l.vertical(f, self.caret, key == Key::Up))
+                .ok()
+                .flatten()
+                .map_or(Outcome::None, Outcome::Move),
             Key::ShiftLeft | Key::ShiftRight | Key::SelectAll => Outcome::None,
         };
         let mut splices = Vec::new();
@@ -750,6 +778,25 @@ mod tests {
         let sp = s.paste("c");
         assert_eq!(s.tex(), "c");
         assert_eq!(sp.len(), 2);
+    }
+
+    #[test]
+    fn the_layout_is_kept_while_the_source_stands_and_laid_again_when_it_moves() {
+        let mut s = Session::new("a").unwrap();
+        let style = crate::layout::Style::default();
+        let one = s.picture(&style).unwrap().svg;
+        // A caret move draws on the same layout: only the caret differs.
+        s.key(Key::Left);
+        assert_eq!(s.laid.borrow().as_ref().unwrap().0, "a");
+        assert_ne!(s.picture(&style).unwrap().svg, one);
+        // An edit lays it out again.
+        s.key(Key::Char('b'));
+        s.picture(&style).unwrap();
+        assert_eq!(s.laid.borrow().as_ref().unwrap().0, "ba");
+        // So does a change of style.
+        s.display = true;
+        s.picture(&style).unwrap();
+        assert!(s.laid.borrow().as_ref().unwrap().1);
     }
 
     #[test]

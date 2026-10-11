@@ -97,5 +97,5 @@ README's September figure.
 - IME input.
 - The terminal frontend.
 
-The open formula is laid out again on every key; caching by source would be the
-first optimisation.
+The session keeps the open formula's layout while its source and style stand,
+so a caret move, a click or ↑ ↓ draws on the layout it has.

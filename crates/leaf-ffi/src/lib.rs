@@ -2294,12 +2294,7 @@ impl MathSession {
     /// The caret to the stop nearest `(x, y)`, in points from the picture's
     /// top left at `size` points per em.
     pub fn click(&self, x: f64, y: f64, size: f64) {
-        let mut s = self.lock();
-        if let Ok(l) = s.formula.layout(s.display) {
-            let c = l.hit(&s.formula, x / size, y / size);
-            s.caret = c;
-            s.anchor = None;
-        }
+        self.lock().click(x / size, y / size);
     }
 
     pub fn tex(&self) -> String {
