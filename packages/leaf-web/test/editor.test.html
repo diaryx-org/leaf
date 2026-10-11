@@ -2157,6 +2157,23 @@ await test("an undo that takes a fence away closes its view", async () => {
   return ed;
 });
 
+await test("an edit above an open fence keeps it open, and its edits land in it", async () => {
+  const log = [];
+  const ed = editor(DEMO, { regionEditors: { "fence:demo": demoEditor(log) } });
+  const r = ed._lastView.regions[0];
+  ed.focus();
+  ed.render(ed.doc.select_range(r.src, r.src));
+  press(ed, "ArrowRight");
+  const { host } = ed._session.impl;
+  // Another writer, above the fence.
+  ed.render(ed.doc.edit_source(0, 0, "more "));
+  assert(ed._session, "an edit above closed the fence");
+  eq(ed._session.src, r.src + 5);
+  host.replace("A\nC\n");
+  eq(ed.source(), "more " + DEMO.replace("A\n", "A\nC\n"));
+  return ed;
+});
+
 await test("regionEditors takes only fences, each with an open()", async () => {
   let threw = 0;
   for (const bad of [{ math: { open() {} } }, { "fence:": { open() {} } }, { "fence:demo": {} }]) {

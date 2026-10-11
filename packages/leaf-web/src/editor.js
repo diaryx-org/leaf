@@ -2077,10 +2077,13 @@ export class LeafEditor {
       console.error(`leaf: the ${region.kind} editor opened with an element that is not an HTMLElement`);
       return false;
     }
+    const alike = (this._lastView?.regions || []).filter((r) => r.kind === region.kind);
     this._session = {
       token,
       impl,
       kind: region.kind,
+      ordinal: Math.max(0, alike.findIndex((r) => r.src === region.src)),
+      siblings: alike.length,
       src: region.src,
       end: region.end,
       contentStart: region.content_start,
@@ -2165,9 +2168,16 @@ export class LeafEditor {
   _followRegion(view) {
     const s = this._session;
     if (!s) return;
-    const r = (view.regions || []).find((r) => r.kind === s.kind && r.src === s.src);
+    // By its place among regions of its kind while there are as many as
+    // before — an edit above moves its start, not its place — and by its
+    // start once one came or went.
+    const alike = (view.regions || []).filter((r) => r.kind === s.kind);
+    const r = alike.length === s.siblings ? alike[s.ordinal] : alike.find((r) => r.src === s.src);
     let alive = !!r;
     if (r) {
+      s.ordinal = alike.indexOf(r);
+      s.siblings = alike.length;
+      s.src = r.src;
       s.end = r.end;
       s.contentStart = r.content_start;
       if (r.content !== s.content) {

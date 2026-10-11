@@ -269,7 +269,7 @@ final class MermaidSourceView: NSTextView {
 /// The open editor on iOS: the source above the preview.
 final class MermaidEditorBox: UIView, UITextViewDelegate {
     weak var session: MermaidSession?
-    private let source = UITextView()
+    private let source = MermaidSourceView()
     private let preview: MermaidDrawing
 
     init(text: String, preview: MermaidDrawing) {
@@ -330,5 +330,11 @@ final class MermaidEditorBox: UIView, UITextViewDelegate {
     @objc private func escape() { session?.leave(atEnd: true) }
     @objc private func undoDocument() { session?.undo() }
     @objc private func redoDocument() { session?.redo() }
+}
+
+/// The source text view, whose undo is the document's: a shake or the
+/// keyboard's undo reaches the editor's history, not one of its own.
+final class MermaidSourceView: UITextView {
+    override var undoManager: UndoManager? { superview?.superview?.undoManager }
 }
 #endif

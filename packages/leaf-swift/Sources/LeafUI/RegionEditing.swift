@@ -54,7 +54,7 @@ public struct RegionSplice: Equatable {
     /// share at either end, on character boundaries. Empty when they are the
     /// same.
     public static func diff(_ before: String, _ after: String) -> [RegionSplice] {
-        guard before != after else { return [] }
+        guard !before.utf8.elementsEqual(after.utf8) else { return [] }
         let a = Array(before.utf8)
         let b = Array(after.utf8)
         let continuation = { (x: [UInt8], i: Int) in i < x.count && x[i] & 0xC0 == 0x80 }
@@ -249,7 +249,13 @@ final class OpenRegion {
     let session: RegionSession
     let host: RegionHost
     /// Core's caret waits here, in front of the region, while it is open.
-    let src: UInt32
+    /// Followed from frame to frame, since an undo above the region moves it.
+    private(set) var src: UInt32
+    /// Which region of its kind this is, counting from the top: how it is
+    /// found again when an edit above it has moved its start.
+    private var ordinal: Int
+    /// How many regions of its kind the frame had.
+    private var siblings: Int
     private(set) var end: UInt32
     private(set) var contentStart: UInt32
     /// The content as the view last saw it, or wrote it.
@@ -257,8 +263,11 @@ final class OpenRegion {
     /// Bumped by every change to what the region shows.
     private(set) var revision = 1
 
-    init(_ region: RegionView, session: RegionSession, host: RegionHost) {
+    init(_ region: RegionView, in frame: DocView, session: RegionSession, host: RegionHost) {
         kind = region.kind
+        let alike = frame.regions.filter { $0.kind == region.kind }
+        ordinal = alike.firstIndex { $0.src == region.src } ?? 0
+        siblings = alike.count
         self.session = session
         self.host = host
         src = region.src
@@ -278,10 +287,19 @@ final class OpenRegion {
     /// Follow the region into `frame`. `false` when the frame has no region
     /// here any more, or one whose new content the session refuses.
     func follow(_ frame: DocView) -> Bool {
-        guard let r = frame.regions.first(where: { $0.kind == kind && $0.src == src }) else { return false }
+        // By its place among regions of its kind while there are as many of
+        // them as before — an edit above moves its start, not its place — and
+        // by its start once one came or went.
+        let alike = frame.regions.filter { $0.kind == kind }
+        let found = alike.count == siblings && alike.indices.contains(ordinal)
+            ? alike[ordinal] : alike.first { $0.src == src }
+        guard let r = found else { return false }
+        ordinal = alike.firstIndex { $0.src == r.src } ?? ordinal
+        siblings = alike.count
+        src = r.src
         end = r.end
         contentStart = r.contentStart
-        if r.content != content {
+        if !r.content.utf8.elementsEqual(content.utf8) {
             content = r.content
             revision += 1
             return session.reload(content: r.content)
@@ -510,7 +528,7 @@ final class RegionSlot {
             session = views.editors[region.kind]?.open(region, entry, host)
         }
         guard let session else { return false }
-        let opened = OpenRegion(region, session: session, host: host)
+        let opened = OpenRegion(region, in: owner.shownFrame, session: session, host: host)
         host.wire(
             isCurrent: { [weak self, weak opened] in opened != nil && self?.open === opened },
             content: { [weak opened] in opened?.content },
@@ -549,14 +567,25 @@ final class RegionSlot {
 
     /// A key for the open region, when leaf runs its session. Whether it was
     /// taken; a key it passes on closes the region first.
+    /// A key reaching the view while a host's view is open — its own focus
+    /// was lost — closes the region before it acts on the document.
     func input(_ input: RegionInput) -> Bool {
-        guard let open, open.view == nil else { return false }
+        guard let open else { return false }
+        guard open.view == nil else {
+            close()
+            return false
+        }
         return act(open.session.input(input))
     }
 
-    /// Typed text for the open region, when leaf runs its session.
+    /// Typed text for the open region, when leaf runs its session; text
+    /// reaching the view while a host's view is open closes it, as a key does.
     func type(_ text: String) -> Bool {
-        guard let open, open.view == nil else { return false }
+        guard let open else { return false }
+        guard open.view == nil else {
+            close()
+            return false
+        }
         return act(open.session.type(text))
     }
 

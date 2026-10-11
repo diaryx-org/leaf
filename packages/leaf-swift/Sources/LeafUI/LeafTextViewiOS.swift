@@ -1619,6 +1619,14 @@ public final class LeafTextView: UIView, UITextInput {
         let frame = frame.isChange && frame.basis != docView.frame ? doc.view() : frame
         let blocksChanged = frame.tables != docView.tables || frame.media != docView.media
             || frame.math != docView.math || frame.directives != docView.directives
+            || frame.regions != docView.regions
+        // An owned fence is one placeholder row whatever it holds, so an edit
+        // inside it that keeps its length changes no row: its region's
+        // content says so instead.
+        let regionContentChanged = frame.view == docView.view
+            && !frame.regions.map(\.content).elementsEqual(docView.regions.map(\.content)) {
+                $0.utf8.elementsEqual($1.utf8)
+            }
         let viewFlipped = frame.view != docView.view
         // A flip shapes every row afresh: the cache is keyed by the row's
         // value, and a line that reads the same in both views — plain prose —
@@ -1636,10 +1644,10 @@ public final class LeafTextView: UIView, UITextInput {
             let shifted = frame.srcShift != 0
             let (span, replaced) = docView.apply(frame)
             change = span
-            edited = !viewFlipped && !reshowing && (shifted || !frame.rows.sameText(as: replaced))
+            edited = !viewFlipped && !reshowing && (regionContentChanged || (shifted || !frame.rows.sameText(as: replaced)))
         } else {
             change = frame.rows.changedRange(from: docView.rows)
-            edited = !viewFlipped && !reshowing && !frame.rows.sameText(as: docView.rows, over: change)
+            edited = !viewFlipped && !reshowing && (regionContentChanged || !frame.rows.sameText(as: docView.rows, over: change))
             docView = frame
         }
         let view = docView
@@ -1649,8 +1657,11 @@ public final class LeafTextView: UIView, UITextInput {
         let open = regionSlot.layout
         let openChanged = !(open?.same(as: laidRegion) ?? (laidRegion == nil))
         laidRegion = open
-        if regionSlot.isOpen != (tintBeforeRegion != nil) {
-            if regionSlot.isOpen { tintBeforeRegion = tintColor; tintColor = .clear }
+        // Only for a region leaf draws: a host's view has a caret of its own,
+        // which would inherit the cleared tint.
+        let drawsOwnCaret = regionSlot.open.map { $0.view == nil } ?? false
+        if drawsOwnCaret != (tintBeforeRegion != nil) {
+            if drawsOwnCaret { tintBeforeRegion = tintColor; tintColor = .clear }
             else { tintColor = tintBeforeRegion; tintBeforeRegion = nil }
         }
         readingLines = nil

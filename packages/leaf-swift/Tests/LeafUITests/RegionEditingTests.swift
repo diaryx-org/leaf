@@ -146,6 +146,34 @@ final class RegionEditingTests: XCTestCase {
         XCTAssertEqual(log.entries.last, "close")
     }
 
+    func testAnEditAboveAnOpenFenceKeepsItOpen() throws {
+        let log = Log()
+        let view = try editor(log)
+        let r = region(view)
+        place(view, r.src)
+        view.doCommand(by: #selector(NSResponder.moveRight(_:)))
+        let s = try XCTUnwrap(sessions.last)
+        view.command { $0.editSource(from: 0, to: 0, text: "more ") }
+        XCTAssertTrue(view.regionSlot.isOpen, "an edit above closed the fence")
+        XCTAssertEqual(view.regionSlot.open?.src, r.src + 5)
+        s.host.replace("A\nC\n")
+        XCTAssertEqual(view.doc.source(), "more intro\n\n```demo\nA\nC\n```\n\nend\n")
+    }
+
+    func testAnEditThatKeepsTheFencesLengthIsStillAnEdit() throws {
+        let log = Log()
+        let view = try editor(log)
+        var edits = 0
+        view.onEdit = { edits += 1 }
+        place(view, region(view).src)
+        view.doCommand(by: #selector(NSResponder.moveRight(_:)))
+        let s = try XCTUnwrap(sessions.last)
+        s.host.replace("B\n")
+        XCTAssertEqual(edits, 1, "an edit inside the fence that kept its length was not reported")
+        s.host.leave(atEnd: true)
+        XCTAssertEqual(log.entries.last, "view B\n", "the drawing was not asked for again")
+    }
+
     func testTheOneSpliceBetweenTwoContents() {
         XCTAssertEqual(RegionSplice.diff("abc", "abc"), [])
         XCTAssertEqual(RegionSplice.diff("abc", "abXc"), [RegionSplice(from: 2, to: 2, text: "X")])

@@ -821,6 +821,14 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // Complete on every frame, so compared before the rows are touched.
         let blocksChanged = frame.tables != docView.tables || frame.media != docView.media
             || frame.math != docView.math || frame.directives != docView.directives
+            || frame.regions != docView.regions
+        // An owned fence is one placeholder row whatever it holds, so an edit
+        // inside it that keeps its length changes no row: its region's
+        // content says so instead.
+        let regionContentChanged = frame.view == docView.view
+            && !frame.regions.map(\.content).elementsEqual(docView.regions.map(\.content)) {
+                $0.utf8.elementsEqual($1.utf8)
+            }
         // The find bar caches the string and its matches; an edit — or a view
         // toggle, which changes what the visible text *is* — invalidates both.
         // Rows compare cheaply, and a motion leaves them equal. A selection
@@ -859,13 +867,13 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         let open = regionSlot.layout
         let openChanged = !(open?.same(as: laidRegion) ?? (laidRegion == nil))
         laidRegion = open
-        if textChanged {
+        if textChanged || regionContentChanged {
             textFinder.noteClientStringWillChange()
             accessibilityTextCache = nil
         }
         // The document changed, as distinct from what is shown of it: a toggle
         // between source and rendered rewrites every row and edits nothing.
-        let edited = !viewFlipped && !reshowing && textChanged
+        let edited = !viewFlipped && !reshowing && (textChanged || regionContentChanged)
         // Under this view's own appearance, not whatever happens to be current.
         // The text's colours are dynamic and resolve when drawn, inside
         // `draw(_:)`, where AppKit has made the view's appearance current; a
