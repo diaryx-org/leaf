@@ -1028,6 +1028,11 @@ void uniffi_leaf_ffi_fn_method_mathsession_click(uint64_t ptr, double x, double 
 void uniffi_leaf_ffi_fn_method_mathsession_end(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_MATHSESSION_HAS_SELECTION
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_MATHSESSION_HAS_SELECTION
+int8_t uniffi_leaf_ffi_fn_method_mathsession_has_selection(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_MATHSESSION_HOME
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_MATHSESSION_HOME
 void uniffi_leaf_ffi_fn_method_mathsession_home(uint64_t ptr, RustCallStatus *_Nonnull out_status
@@ -1038,6 +1043,11 @@ void uniffi_leaf_ffi_fn_method_mathsession_home(uint64_t ptr, RustCallStatus *_N
 RustBuffer uniffi_leaf_ffi_fn_method_mathsession_key(uint64_t ptr, RustBuffer key, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_MATHSESSION_PASTE
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_MATHSESSION_PASTE
+RustBuffer uniffi_leaf_ffi_fn_method_mathsession_paste(uint64_t ptr, RustBuffer tex, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_MATHSESSION_PICTURE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_MATHSESSION_PICTURE
 RustBuffer uniffi_leaf_ffi_fn_method_mathsession_picture(uint64_t ptr, double size, RustBuffer ink, RustBuffer accent, RustCallStatus *_Nonnull out_status
@@ -1046,6 +1056,11 @@ RustBuffer uniffi_leaf_ffi_fn_method_mathsession_picture(uint64_t ptr, double si
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_MATHSESSION_RELOAD
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_MATHSESSION_RELOAD
 void uniffi_leaf_ffi_fn_method_mathsession_reload(uint64_t ptr, RustBuffer tex, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_MATHSESSION_SELECTED_TEX
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_MATHSESSION_SELECTED_TEX
+RustBuffer uniffi_leaf_ffi_fn_method_mathsession_selected_tex(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_FN_METHOD_MATHSESSION_TEX
@@ -2230,6 +2245,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_mathsession_end(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_MATHSESSION_HAS_SELECTION
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_MATHSESSION_HAS_SELECTION
+uint16_t uniffi_leaf_ffi_checksum_method_mathsession_has_selection(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_MATHSESSION_HOME
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_MATHSESSION_HOME
 uint16_t uniffi_leaf_ffi_checksum_method_mathsession_home(void
@@ -2242,6 +2263,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_mathsession_key(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_MATHSESSION_PASTE
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_MATHSESSION_PASTE
+uint16_t uniffi_leaf_ffi_checksum_method_mathsession_paste(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_MATHSESSION_PICTURE
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_MATHSESSION_PICTURE
 uint16_t uniffi_leaf_ffi_checksum_method_mathsession_picture(void
@@ -2251,6 +2278,12 @@ uint16_t uniffi_leaf_ffi_checksum_method_mathsession_picture(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_MATHSESSION_RELOAD
 #define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_MATHSESSION_RELOAD
 uint16_t uniffi_leaf_ffi_checksum_method_mathsession_reload(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_MATHSESSION_SELECTED_TEX
+#define UNIFFI_FFIDEF_UNIFFI_LEAF_FFI_CHECKSUM_METHOD_MATHSESSION_SELECTED_TEX
+uint16_t uniffi_leaf_ffi_checksum_method_mathsession_selected_tex(void
     
 );
 #endif

@@ -491,6 +491,19 @@ impl Layout {
     /// `leaf-math`'s `MathPicture` shape, so an editor swaps one for the
     /// other in place.
     pub fn picture(&self, f: &Formula, style: &Style, caret: Option<Caret>) -> Picture {
+        self.picture_selecting(f, style, caret, None)
+    }
+
+    /// [`picture`](Self::picture) with the atoms `selection` names — a row
+    /// and a range of its atoms, [`Formula::selection`]'s answer — shaded in
+    /// the accent behind the ink.
+    pub fn picture_selecting(
+        &self,
+        f: &Formula,
+        style: &Style,
+        caret: Option<Caret>,
+        selection: Option<(usize, std::ops::Range<usize>)>,
+    ) -> Picture {
         let (size, pad) = (style.size, style.pad);
         let mut list = self.list.clone();
         let rgba = |c: [u8; 4]| {
@@ -520,6 +533,22 @@ impl Layout {
             },
             SvgColorSyntax::Rgb,
         ));
+        let shade = selection.and_then(|(row, range)| {
+            f.rows[row].atoms[range]
+                .iter()
+                .fold(None, |acc, &a| Rect::merge(acc, self.atom_box[a]))
+        });
+        if let (Some(b), Some(head_end)) = (shade, svg.find('>')) {
+            let [cr, cg, cb, _] = style.accent;
+            let rect = format!(
+                r#"<rect x="{:.2}" y="{:.2}" width="{:.2}" height="{:.2}" fill="rgb({cr},{cg},{cb})" fill-opacity="0.25"/>"#,
+                b.x0 * size + pad,
+                b.y0 * size + pad,
+                (b.x1 - b.x0) * size,
+                (b.y1 - b.y0) * size,
+            );
+            svg.insert_str(head_end + 1, &rect);
+        }
         if let Some(caret) = caret {
             let r = self.caret(f, caret);
             let w = (size * 0.06).max(1.5);

@@ -2178,12 +2178,33 @@ pub struct MathSession {
 /// A key a [`MathSession`] understands.
 #[derive(uniffi::Enum)]
 pub enum MathKey {
-    Char { ch: String },
+    Char {
+        ch: String,
+    },
     Left,
     Right,
     Up,
     Down,
     Backspace,
+    /// Forward delete.
+    Delete,
+    /// ⇧← and ⇧→: move the caret, extending the selection.
+    ShiftLeft,
+    ShiftRight,
+    /// The whole formula.
+    SelectAll,
+}
+
+/// A session's splices as the binding hands them over.
+fn math_splices(splices: Vec<leaf_math_edit::edit::Splice>) -> Vec<MathSplice> {
+    splices
+        .into_iter()
+        .map(|s| MathSplice {
+            from: s.range.start as u32,
+            to: s.range.end as u32,
+            text: s.text,
+        })
+        .collect()
 }
 
 #[uniffi::export]
@@ -2217,16 +2238,29 @@ impl MathSession {
             MathKey::Up => Key::Up,
             MathKey::Down => Key::Down,
             MathKey::Backspace => Key::Backspace,
+            MathKey::Delete => Key::Delete,
+            MathKey::ShiftLeft => Key::ShiftLeft,
+            MathKey::ShiftRight => Key::ShiftRight,
+            MathKey::SelectAll => Key::SelectAll,
         };
-        self.lock()
-            .key(k)
-            .into_iter()
-            .map(|s| MathSplice {
-                from: s.range.start as u32,
-                to: s.range.end as u32,
-                text: s.text,
-            })
-            .collect()
+        math_splices(self.lock().key(k))
+    }
+
+    /// Whether part of the formula is selected.
+    pub fn has_selection(&self) -> bool {
+        self.lock().selection().is_some()
+    }
+
+    /// The selected part's TeX, as written — what a copy takes — or `None`
+    /// with nothing selected.
+    pub fn selected_tex(&self) -> Option<String> {
+        self.lock().selected_tex().map(str::to_string)
+    }
+
+    /// Paste `tex` at the caret, over the selection: written as it is where
+    /// the formula reads with it, typed a character at a time where not.
+    pub fn paste(&self, tex: String) -> Vec<MathSplice> {
+        math_splices(self.lock().paste(&tex))
     }
 
     /// The caret to the first stop, as → into the formula from in front.
@@ -2264,6 +2298,7 @@ impl MathSession {
         if let Ok(l) = s.formula.layout(s.display) {
             let c = l.hit(&s.formula, x / size, y / size);
             s.caret = c;
+            s.anchor = None;
         }
     }
 
@@ -2289,14 +2324,6 @@ impl MathSession {
             ]
         };
         let (ink, accent) = (rgba(&ink), rgba(&accent));
-        let s = self.lock();
-        let l = s
-            .formula
-            .layout(s.display)
-            .map_err(|message| LeafError::Math {
-                message,
-                position: None,
-            })?;
         let style = leaf_math_edit::layout::Style {
             size,
             pad: 0.0,
@@ -2304,7 +2331,13 @@ impl MathSession {
             faint: [ink[0], ink[1], ink[2], ink[3] / 3],
             accent,
         };
-        let p = l.picture(&s.formula, &style, Some(s.caret));
+        let p = self
+            .lock()
+            .picture(&style)
+            .map_err(|message| LeafError::Math {
+                message,
+                position: None,
+            })?;
         Ok(MathPicture {
             svg: p.svg,
             width: p.width,

@@ -2149,11 +2149,22 @@ public final class LeafTextView: UIView, UITextInput {
             inputs = (regionSlot.wouldEnter(right: true) ? [UIKeyCommand.inputRightArrow] : [])
                 + (regionSlot.wouldEnter(right: false) ? [UIKeyCommand.inputLeftArrow] : [])
         }
-        return inputs.map { input in
+        var commands = inputs.map { input in
             let c = UIKeyCommand(input: input, modifierFlags: [], action: #selector(handleRegionKey(_:)))
             c.wantsPriorityOverSystemBehavior = true
             return c
         }
+        // ⇧← ⇧→ extend the open formula's selection, and ⌦ deletes forward.
+        if let open = regionSlot.open, open.view == nil {
+            for (input, flags) in [(UIKeyCommand.inputLeftArrow, UIKeyModifierFlags.shift),
+                                   (UIKeyCommand.inputRightArrow, .shift),
+                                   (UIKeyCommand.inputDelete, UIKeyModifierFlags())] {
+                let c = UIKeyCommand(input: input, modifierFlags: flags, action: #selector(handleRegionKey(_:)))
+                c.wantsPriorityOverSystemBehavior = true
+                commands.append(c)
+            }
+        }
+        return commands
     }
 
     @objc private func handleRegionKey(_ cmd: UIKeyCommand) {
@@ -2162,9 +2173,11 @@ public final class LeafTextView: UIView, UITextInput {
             _ = regionSlot.enter(right: input == UIKeyCommand.inputRightArrow)
             return
         }
+        let shift = cmd.modifierFlags.contains(.shift)
         switch input {
-        case UIKeyCommand.inputLeftArrow: _ = regionSlot.input(.left)
-        case UIKeyCommand.inputRightArrow: _ = regionSlot.input(.right)
+        case UIKeyCommand.inputLeftArrow: _ = regionSlot.input(shift ? .extendLeft : .left)
+        case UIKeyCommand.inputRightArrow: _ = regionSlot.input(shift ? .extendRight : .right)
+        case UIKeyCommand.inputDelete: _ = regionSlot.input(.deleteForward)
         case UIKeyCommand.inputUpArrow: _ = regionSlot.input(.up)
         case UIKeyCommand.inputDownArrow: _ = regionSlot.input(.down)
         default: _ = regionSlot.input(.cancel)
@@ -2199,7 +2212,8 @@ public final class LeafTextView: UIView, UITextInput {
             return false
         }
         switch action {
-        case #selector(copy(_:)), #selector(cut(_:)): return docView.hasSelection
+        case #selector(copy(_:)), #selector(cut(_:)):
+            return regionSlot.isOpen ? regionSlot.copyText != nil : docView.hasSelection
         // A host that claims pastes makes an image-only clipboard pasteable, so
         // the item has to be offered for one — `hasStrings` alone would grey out
         // Paste for a screenshot and there would be no way to reach `onPaste`.
@@ -2241,6 +2255,11 @@ public final class LeafTextView: UIView, UITextInput {
     }
 
     public override func copy(_ sender: Any?) {
+        // The open formula copies its own selection, as TeX.
+        if let text = regionSlot.copyText {
+            UIPasteboard.general.string = text
+            return
+        }
         guard let text = doc.selectedText() else { return }
         let pb = UIPasteboard.general
         if let html = doc.selectionHtml() {
@@ -2251,6 +2270,10 @@ public final class LeafTextView: UIView, UITextInput {
     }
 
     public override func cut(_ sender: Any?) {
+        if let text = regionSlot.cut() {
+            UIPasteboard.general.string = text
+            return
+        }
         closeWritingToolsGroupForUserEdit()
         copy(sender)
         if doc.selectedText() != nil { render(doc.backspace()) }
@@ -2263,6 +2286,7 @@ public final class LeafTextView: UIView, UITextInput {
     public override func paste(_ sender: Any?) {
         // Before the text flavors: an image-only clipboard has no text, so a host
         // asked later would never hear about it. See `LeafEditorModel.onPaste`.
+        if regionSlot.isOpen, let text = UIPasteboard.general.string, regionSlot.paste(text) { return }
         if onPaste?() == true { return }
         let pb = UIPasteboard.general
         let html = pb.data(forPasteboardType: "public.html").flatMap { String(data: $0, encoding: .utf8) }
@@ -2274,6 +2298,7 @@ public final class LeafTextView: UIView, UITextInput {
     }
 
     public override func selectAll(_ sender: Any?) {
+        if regionSlot.isOpen, regionSlot.input(.selectAll) { return }
         notifyingDelegate { render(doc.selectAll()) }
     }
 

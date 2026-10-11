@@ -46,15 +46,20 @@ final class MathRegionSession: RegionPictureSession {
     /// at the last leave the formula, as do Escape, Return and Tab, behind it.
     func input(_ input: RegionInput) -> RegionOutcome {
         let key: MathKey
+        let selected = session.hasSelection()
         switch input {
-        case .left where session.atHome(): return .leave(atEnd: false)
-        case .right where session.atEnd(): return .leave(atEnd: true)
+        case .left where !selected && session.atHome(): return .leave(atEnd: false)
+        case .right where !selected && session.atEnd(): return .leave(atEnd: true)
         case .cancel, .newline, .tab: return .leave(atEnd: true)
         case .left: key = .left
         case .right: key = .right
         case .up: key = .up
         case .down: key = .down
+        case .extendLeft: key = .shiftLeft
+        case .extendRight: key = .shiftRight
         case .backspace: key = .backspace
+        case .deleteForward: key = .delete
+        case .selectAll: key = .selectAll
         }
         return outcome(session.key(key: key))
     }
@@ -75,6 +80,10 @@ final class MathRegionSession: RegionPictureSession {
     func reload(content: String) -> Bool {
         (try? session.reload(tex: content)) != nil
     }
+
+    func copy() -> String? { session.selectedTex() }
+
+    func paste(_ text: String) -> RegionOutcome { outcome(session.paste(tex: text)) }
 
     func picture(size: CGFloat, ink: LeafColor) -> MathGlyph? {
         let rgba = ink.rgbaBytes

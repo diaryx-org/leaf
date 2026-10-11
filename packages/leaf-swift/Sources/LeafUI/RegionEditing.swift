@@ -72,7 +72,13 @@ public struct RegionSplice: Equatable {
 /// A key a view hands the open region, when leaf runs its session.
 public enum RegionInput {
     case left, right, up, down
+    /// ⇧← and ⇧→: extend the selection.
+    case extendLeft, extendRight
     case backspace
+    /// Forward delete — and what deletes a selection a cut copied.
+    case deleteForward
+    /// Select All, of the region alone.
+    case selectAll
     /// Escape.
     case cancel
     /// Return.
@@ -110,6 +116,11 @@ public protocol RegionSession: AnyObject {
     func type(_ text: String) -> RegionOutcome
     /// A click on the open region's drawing, in points from its top left.
     func click(at point: CGPoint, size: CGFloat) -> RegionOutcome
+    /// What a copy takes from the region — its selection, as the content's
+    /// own text — or nil when nothing is selected.
+    func copy() -> String?
+    /// Text pasted into the region.
+    func paste(_ text: String) -> RegionOutcome
     /// The content changed under the session — an undo, another writer.
     /// `false` closes it.
     func reload(content: String) -> Bool
@@ -123,6 +134,8 @@ public extension RegionSession {
     func input(_ input: RegionInput) -> RegionOutcome { .pass }
     func type(_ text: String) -> RegionOutcome { .pass }
     func click(at point: CGPoint, size: CGFloat) -> RegionOutcome { .moved }
+    func copy() -> String? { nil }
+    func paste(_ text: String) -> RegionOutcome { .pass }
     func reload(content: String) -> Bool { true }
     func close() {}
 }
@@ -570,6 +583,27 @@ final class RegionSlot {
             return act(open.session.click(at: local, size: size))
         }
         return self.open(region, entry: entry)
+    }
+
+    /// What Copy takes from the open region leaf runs, or nil — the view's
+    /// own Copy acts then.
+    var copyText: String? {
+        guard let open, open.view == nil else { return nil }
+        return open.session.copy()
+    }
+
+    /// Cut from the open region leaf runs: what it copied, after deleting it,
+    /// or nil when there was nothing selected there.
+    func cut() -> String? {
+        guard let text = copyText else { return nil }
+        _ = input(.deleteForward)
+        return text
+    }
+
+    /// Paste into the open region leaf runs. Whether it was taken.
+    func paste(_ text: String) -> Bool {
+        guard let open, open.view == nil else { return false }
+        return act(open.session.paste(text))
     }
 
     /// Follow the open region into `frame`, closing it when the frame has

@@ -60,6 +60,7 @@ impl Demo {
             "ArrowUp" => Key::Up,
             "ArrowDown" => Key::Down,
             "Backspace" => Key::Backspace,
+            "Delete" => Key::Delete,
             k if k.chars().count() == 1 => Key::Char(k.chars().next().unwrap()),
             _ => return false,
         };

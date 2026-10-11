@@ -2859,6 +2859,14 @@ export class LeafEditor {
     // plain source and twig's HTML; paste prefers the HTML flavor.
     on(ce, "copy", (e) => {
       if (this._fromDrawing(e)) return;
+      // An open region leaf runs copies its own selection.
+      const s = this._session;
+      if (s?.impl.copy && !s.impl.element) {
+        const text = s.impl.copy();
+        if (text != null) e.clipboardData.setData("text/plain", text);
+        e.preventDefault();
+        return;
+      }
       const text = this.doc.selected_text();
       if (text == null) return;
       e.clipboardData.setData("text/plain", text);
@@ -2868,6 +2876,15 @@ export class LeafEditor {
     });
     on(ce, "cut", (e) => {
       if (this._fromDrawing(e)) return;
+      const s = this._session;
+      if (s?.impl.cut && !s.impl.element) {
+        const cut = s.impl.cut();
+        e.preventDefault();
+        if (!cut) return;
+        e.clipboardData.setData("text/plain", cut.text);
+        this._regionAct(cut.out);
+        return;
+      }
       const text = this.doc.selected_text();
       if (text == null) return;
       e.clipboardData.setData("text/plain", text);
@@ -2879,6 +2896,13 @@ export class LeafEditor {
     });
     on(ce, "paste", (e) => {
       if (this._fromDrawing(e)) return;
+      const s = this._session;
+      if (s?.impl.paste && !s.impl.element) {
+        e.preventDefault();
+        const text = e.clipboardData.getData("text/plain");
+        if (text) this._regionAct(s.impl.paste(text));
+        return;
+      }
       const plain = this._plainPaste;
       this._plainPaste = false;
       const html = plain ? "" : e.clipboardData.getData("text/html");
@@ -3786,12 +3810,36 @@ function mathRegionEditor(editor) {
         // Tab; a shortcut (⌘Z among them) leaves it and then runs.
         key(e) {
           const k = e.key;
-          if (primaryModifier(e) || e.altKey) return { close: true };
+          const run = (name) => {
+            const sp = splices(session.key(name));
+            return sp.length ? { edit: sp } : { moved: true };
+          };
+          if (primaryModifier(e) && !e.altKey) {
+            const c = k.toLowerCase();
+            if (c === "a" && !e.shiftKey) return run("SelectAll");
+            // Copy, cut and paste arrive as clipboard events: `copy` below.
+            if ((c === "c" || c === "x" || c === "v") && !e.shiftKey) return null;
+            return { close: true };
+          }
+          if (e.altKey || primaryModifier(e)) return { close: true };
           if (k === "Escape" || k === "Enter" || k === "Tab") return { leave: "after" };
-          if (k === "ArrowLeft" && session.at_home()) return { leave: "before" };
-          if (k === "ArrowRight" && session.at_end()) return { leave: "after" };
-          if (!(k.length === 1 || k === "Backspace" || ARROWS.has(k))) return null;
-          const sp = splices(session.key(k));
+          if (e.shiftKey && (k === "ArrowLeft" || k === "ArrowRight")) {
+            return run(k === "ArrowLeft" ? "ShiftLeft" : "ShiftRight");
+          }
+          const selected = session.has_selection();
+          if (k === "ArrowLeft" && !selected && session.at_home()) return { leave: "before" };
+          if (k === "ArrowRight" && !selected && session.at_end()) return { leave: "after" };
+          if (!(k.length === 1 || k === "Backspace" || k === "Delete" || ARROWS.has(k))) return null;
+          return run(k);
+        },
+        // The selection's TeX, as written.
+        copy: () => session.selected_tex() ?? null,
+        cut() {
+          const text = session.selected_tex();
+          return text == null ? null : { text, out: { edit: splices(session.key("Delete")) } };
+        },
+        paste(text) {
+          const sp = splices(session.paste(text));
           return sp.length ? { edit: sp } : { moved: true };
         },
         click(x, y, size) {

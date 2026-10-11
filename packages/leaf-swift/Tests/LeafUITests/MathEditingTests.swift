@@ -117,6 +117,39 @@ final class MathEditingTests: XCTestCase {
         XCTAssertEqual(view.doc.source(), "say $yx$ here\n")
     }
 
+    func testASelectionTakesWholeStructuresAndCopiesAsTeX() throws {
+        let view = try editor("say $1+\\frac{a}{b}$ here\n")
+        place(view, region(view).end)
+        send(#selector(NSResponder.moveLeft(_:)), to: view)
+        send(#selector(NSResponder.moveLeftAndModifySelection(_:)), to: view)
+        send(#selector(NSResponder.moveLeftAndModifySelection(_:)), to: view)
+        XCTAssertTrue(view.isEditingFormula, "⇧← left the formula")
+        XCTAssertEqual(view.regionSlot.copyText, "\\frac{a}{b}")
+        // Cut is the selection's TeX, and leaves the formula open. Through
+        // the slot rather than `cut(_:)`, which would write the general
+        // pasteboard of whoever runs the tests.
+        XCTAssertEqual(view.regionSlot.cut(), "\\frac{a}{b}")
+        XCTAssertEqual(view.doc.source(), "say $1+$ here\n")
+        XCTAssertTrue(view.isEditingFormula)
+        XCTAssertTrue(view.regionSlot.paste("\\frac{a}{b}"))
+        XCTAssertEqual(view.doc.source(), "say $1+\\frac{a}{b}$ here\n")
+        // Select All is the formula's, and Delete takes it.
+        view.selectAll(nil)
+        XCTAssertEqual(view.regionSlot.copyText, "1+\\frac{a}{b}")
+        send(#selector(NSResponder.deleteForward(_:)), to: view)
+        XCTAssertEqual(view.doc.source(), "say $$ here\n")
+    }
+
+    func testDeleteForwardEntersAStructureAndTakesItsLetters() throws {
+        let view = try editor("say $\\frac{a}{b}$ here\n")
+        place(view, region(view).src)
+        send(#selector(NSResponder.moveRight(_:)), to: view)
+        send(#selector(NSResponder.deleteForward(_:)), to: view)
+        XCTAssertEqual(view.doc.source(), "say $\\frac{a}{b}$ here\n", "entering the fraction wrote something")
+        send(#selector(NSResponder.deleteForward(_:)), to: view)
+        XCTAssertEqual(view.doc.source(), "say $\\frac{}{b}$ here\n")
+    }
+
     func testAClickOnAnInlinePictureFindsItsFormula() throws {
         let view = try editor("say $\\frac{a}{b}$ here\n")
         let row = try XCTUnwrap(view.layoutEngine.rows.firstIndex { $0.row.runs.contains { $0.role == "math" } })

@@ -301,12 +301,92 @@ impl Formula {
     }
 }
 
+impl Formula {
+    /// Delete forward — Backspace's mirror. The atom after the caret goes if
+    /// it has no slots or only empty ones; one with something in it is
+    /// entered, at the start of its first slot. At the end of a slot the
+    /// caret steps into the next one, and at the end of the last the
+    /// structure is taken apart, its slots' contents left in its place.
+    pub fn delete(&self, c: Caret) -> Outcome {
+        let row = &self.rows[c.row];
+        if let Some(&a) = row.atoms.get(c.index) {
+            let atom = &self.atoms[a];
+            if atom.rows.is_empty() || self.all_slots_empty(a) {
+                return Outcome::Edit(self.replace_in_row(c.row, atom.span.clone(), "", 0));
+            }
+            return Outcome::Move(Caret {
+                row: atom.rows[0],
+                index: 0,
+            });
+        }
+        let Some(p) = row.parent else {
+            return Outcome::None;
+        };
+        let parent = &self.atoms[p];
+        let outer = parent.row;
+        if self.all_slots_empty(p) {
+            return Outcome::Edit(self.replace_in_row(outer, parent.span.clone(), "", 0));
+        }
+        let slot = parent.rows.iter().position(|&r| r == c.row).unwrap();
+        if let Some(&next) = parent.rows.get(slot + 1) {
+            return Outcome::Move(Caret {
+                row: next,
+                index: 0,
+            });
+        }
+        let text: Vec<&str> = parent
+            .rows
+            .iter()
+            .map(|&r| &self.src[self.rows[r].content.clone()])
+            .collect();
+        let text = text.join(" ").trim().to_string();
+        let len = text.len();
+        Outcome::Edit(self.replace_in_row(outer, parent.span.clone(), &text, len))
+    }
+
+    /// The atoms a selection from `a` to `b` covers, as a row and a range of
+    /// its atom indices — `None` when it covers nothing. Both ends are lifted
+    /// to the innermost row that holds them both, and an end inside an atom's
+    /// slot takes in that whole atom: a selection never splits a fraction.
+    pub fn selection(&self, a: Caret, b: Caret) -> Option<(usize, Range<usize>)> {
+        // Each end's way out to the top: (row, index, through an atom).
+        let path = |c: Caret| {
+            let mut out = vec![(c.row, c.index, false)];
+            let mut row = c.row;
+            while let Some(p) = self.rows[row].parent {
+                let outer = self.atoms[p].row;
+                let index = self.rows[outer].atoms.iter().position(|&x| x == p).unwrap();
+                out.push((outer, index, true));
+                row = outer;
+            }
+            out
+        };
+        let (pa, pb) = (path(a), path(b));
+        let (ea, eb) = pa
+            .iter()
+            .find_map(|ea| pb.iter().find(|eb| eb.0 == ea.0).map(|eb| (*ea, *eb)))?;
+        let bounds = |(_, i, through): (usize, usize, bool)| (i, if through { i + 1 } else { i });
+        let ((sa, fa), (sb, fb)) = (bounds(ea), bounds(eb));
+        let range = sa.min(sb)..fa.max(fb);
+        (!range.is_empty()).then_some((ea.0, range))
+    }
+
+    /// The source bytes the atoms `range` of `row` span.
+    pub fn atoms_span(&self, row: usize, range: Range<usize>) -> Range<usize> {
+        let atoms = &self.rows[row].atoms[range];
+        self.atoms[atoms[0]].span.start..self.atoms[*atoms.last().unwrap()].span.end
+    }
+}
+
 /// A formula being edited: the source, the caret, and the steps that move
 /// them. What a frontend holds.
 #[derive(Clone, Debug)]
 pub struct Session {
     pub formula: Formula,
     pub caret: Caret,
+    /// Where a selection started, while there is one being made: the caret
+    /// is its other end, and [`Session::selection`] the atoms between.
+    pub anchor: Option<Caret>,
     /// Display style, which ↑ and ↓ measure the formula in.
     pub display: bool,
 }
@@ -320,6 +400,13 @@ pub enum Key {
     Up,
     Down,
     Backspace,
+    /// Forward delete.
+    Delete,
+    /// ⇧← and ⇧→: move the caret, extending the selection.
+    ShiftLeft,
+    ShiftRight,
+    /// The whole formula.
+    SelectAll,
 }
 
 impl Session {
@@ -329,6 +416,7 @@ impl Session {
         Ok(Session {
             formula,
             caret,
+            anchor: None,
             display: false,
         })
     }
@@ -336,11 +424,62 @@ impl Session {
     /// The first stop: where → from in front of the formula enters it.
     pub fn home(&mut self) {
         self.caret = self.formula.stops[0];
+        self.anchor = None;
     }
 
     /// The last stop: where ← from behind the formula enters it.
     pub fn end(&mut self) {
         self.caret = self.formula.end();
+        self.anchor = None;
+    }
+
+    /// The formula drawn with its caret and its selection, in `style`.
+    pub fn picture(&self, style: &crate::layout::Style) -> Result<crate::layout::Picture, String> {
+        let l = self.formula.layout(self.display)?;
+        Ok(l.picture_selecting(&self.formula, style, Some(self.caret), self.selection()))
+    }
+
+    /// The selected atoms, as a row and a range of its atom indices.
+    pub fn selection(&self) -> Option<(usize, Range<usize>)> {
+        self.formula.selection(self.anchor?, self.caret)
+    }
+
+    /// The selected atoms' TeX, as written — what a copy takes.
+    pub fn selected_tex(&self) -> Option<&str> {
+        let (row, range) = self.selection()?;
+        Some(&self.formula.src[self.formula.atoms_span(row, range)])
+    }
+
+    /// Paste `tex` at the caret, over the selection if there is one. Written
+    /// as it is when the formula still reads with it in place; otherwise
+    /// typed a character at a time, as though it had been typed, so that
+    /// `1/2` from plain text still makes a fraction.
+    pub fn paste(&mut self, tex: &str) -> Vec<Splice> {
+        let mut splices = self.delete_selection();
+        let at = self.formula.offset(self.caret);
+        let s = self
+            .formula
+            .replace_in_row(self.caret.row, at..at, tex, tex.len());
+        if !tex.is_empty() && self.commit(&s) {
+            splices.push(s);
+            return splices;
+        }
+        for ch in tex.chars().filter(|c| !c.is_control()) {
+            splices.extend(self.key(Key::Char(ch)));
+        }
+        splices
+    }
+
+    /// Delete the selection, if there is one, and drop it.
+    fn delete_selection(&mut self) -> Vec<Splice> {
+        let Some((row, range)) = self.selection() else {
+            self.anchor = None;
+            return Vec::new();
+        };
+        self.anchor = None;
+        let span = self.formula.atoms_span(row, range);
+        let s = self.formula.replace_in_row(row, span, "", 0);
+        if self.commit(&s) { vec![s] } else { Vec::new() }
     }
 
     pub fn at_home(&self) -> bool {
@@ -368,10 +507,63 @@ impl Session {
     /// (each against the source the one before it left), for a host that
     /// mirrors them into a document.
     pub fn key(&mut self, key: Key) -> Vec<Splice> {
+        match key {
+            Key::ShiftLeft | Key::ShiftRight => {
+                let anchor = *self.anchor.get_or_insert(self.caret);
+                self.caret = if key == Key::ShiftLeft {
+                    self.formula.left(self.caret)
+                } else {
+                    self.formula.right(self.caret)
+                };
+                if self.caret == anchor {
+                    self.anchor = None;
+                }
+                return Vec::new();
+            }
+            Key::SelectAll => {
+                self.anchor = Some(Caret { row: 0, index: 0 });
+                self.caret = self.formula.end();
+                return Vec::new();
+            }
+            _ => {}
+        }
+        if let Some((row, range)) = self.selection() {
+            match key {
+                // An arrow collapses the selection to its edge.
+                Key::Left | Key::Right => {
+                    let index = if key == Key::Left {
+                        range.start
+                    } else {
+                        range.end
+                    };
+                    self.caret = Caret { row, index };
+                    self.anchor = None;
+                    return Vec::new();
+                }
+                Key::Backspace | Key::Delete => return self.delete_selection(),
+                // The selection becomes the numerator, as MathQuill makes it.
+                Key::Char('/') => {
+                    self.anchor = None;
+                    let span = self.formula.atoms_span(row, range);
+                    let text = format!("\\frac{{{}}}{{}}", &self.formula.src[span.clone()]);
+                    let caret = text.len() - 1;
+                    let s = self.formula.replace_in_row(row, span, &text, caret);
+                    return if self.commit(&s) { vec![s] } else { Vec::new() };
+                }
+                Key::Char(_) => {
+                    let mut splices = self.delete_selection();
+                    splices.extend(self.key(key));
+                    return splices;
+                }
+                _ => self.anchor = None,
+            }
+        }
+        self.anchor = None;
         let f = &self.formula;
         let outcome = match key {
             Key::Char(ch) => f.type_char(self.caret, ch),
             Key::Backspace => f.backspace(self.caret),
+            Key::Delete => f.delete(self.caret),
             Key::Left => Outcome::Move(f.left(self.caret)),
             Key::Right => Outcome::Move(f.right(self.caret)),
             Key::Up | Key::Down => match f.layout(self.display) {
@@ -380,6 +572,7 @@ impl Session {
                     .map_or(Outcome::None, Outcome::Move),
                 Err(_) => Outcome::None,
             },
+            Key::ShiftLeft | Key::ShiftRight | Key::SelectAll => Outcome::None,
         };
         let mut splices = Vec::new();
         match outcome {
@@ -433,6 +626,9 @@ pub fn keys(script: &str) -> Vec<Key> {
             '↑' => Key::Up,
             '↓' => Key::Down,
             '⌫' => Key::Backspace,
+            '⌦' => Key::Delete,
+            '⇠' => Key::ShiftLeft,
+            '⇢' => Key::ShiftRight,
             c => Key::Char(c),
         })
         .collect()
@@ -452,6 +648,119 @@ mod tests {
 
     fn typed(script: &str) -> String {
         run("", script).tex().to_string()
+    }
+
+    /// The session after `script`, from `start` with the caret at its end.
+    fn after(start: &str, script: &str) -> String {
+        run(start, script).tex().to_string()
+    }
+
+    #[test]
+    fn delete_forward_mirrors_backspace() {
+        // Before an atom: it goes.
+        let mut s = Session::new("ab").unwrap();
+        s.home();
+        s.key(Key::Delete);
+        assert_eq!(s.tex(), "b");
+        // Before a fraction with something in it: into its first slot, then
+        // the numerator's letter goes, then the empty fraction comes apart
+        // around what is left.
+        let mut s = Session::new(r"\frac{a}{b}c").unwrap();
+        s.home();
+        s.key(Key::Delete);
+        assert!(s.selection().is_none());
+        assert_eq!(s.tex(), r"\frac{a}{b}c", "entering wrote something");
+        s.key(Key::Delete);
+        assert_eq!(s.tex(), r"\frac{}{b}c");
+        // At the end of the numerator: into the denominator.
+        s.key(Key::Delete);
+        assert_eq!(s.tex(), r"\frac{}{b}c");
+        // At the end of the last slot: the structure comes apart.
+        s.key(Key::Right);
+        s.key(Key::Delete);
+        assert_eq!(s.tex(), "bc");
+        // At the very end: nothing.
+        assert_eq!(after("x", "⌦"), "x");
+    }
+
+    #[test]
+    fn a_selection_takes_whole_structures_and_its_tex_is_what_was_written() {
+        let mut s = Session::new(r"1+\frac{a}{b}+2").unwrap();
+        s.end();
+        // ⇧← twice: the `2`, then the `+`.
+        s.key(Key::ShiftLeft);
+        s.key(Key::ShiftLeft);
+        assert_eq!(s.selected_tex(), Some("+2"));
+        // Into the fraction's denominator: the selection lifts to the whole
+        // fraction, never half of one.
+        s.key(Key::ShiftLeft);
+        s.key(Key::ShiftLeft);
+        assert_eq!(s.selected_tex(), Some(r"\frac{a}{b}+2"));
+        // Back to where it started: no selection.
+        for _ in 0..4 {
+            s.key(Key::ShiftRight);
+        }
+        assert_eq!(s.selection(), None);
+        // ← with a selection collapses it to its start, and writes nothing.
+        s.key(Key::ShiftLeft);
+        s.key(Key::Left);
+        assert_eq!(s.selection(), None);
+        assert_eq!(s.formula.offset(s.caret), r"1+\frac{a}{b}+".len());
+    }
+
+    #[test]
+    fn typing_over_a_selection_replaces_it() {
+        let mut s = Session::new("a+b+c").unwrap();
+        s.end();
+        s.key(Key::ShiftLeft);
+        s.key(Key::ShiftLeft);
+        let sp = s.key(Key::Char('x'));
+        assert_eq!(s.tex(), "a+bx");
+        assert_eq!(sp.len(), 2, "the delete and the typing, each a splice");
+        // Backspace and Delete take it whole.
+        s.key(Key::SelectAll);
+        assert_eq!(s.selected_tex(), Some("a+bx"));
+        s.key(Key::Backspace);
+        assert_eq!(s.tex(), "");
+        // `/` makes the selection a numerator.
+        let mut s = Session::new("a+bc").unwrap();
+        s.end();
+        s.key(Key::ShiftLeft);
+        s.key(Key::ShiftLeft);
+        s.key(Key::Char('/'));
+        assert_eq!(s.tex(), r"a+\frac{bc}{}");
+        s.key(Key::Char('2'));
+        assert_eq!(s.tex(), r"a+\frac{bc}{2}");
+    }
+
+    #[test]
+    fn paste_writes_tex_that_reads_and_types_what_does_not() {
+        let mut s = Session::new("x").unwrap();
+        s.end();
+        s.paste(r"+\sqrt{2}");
+        assert_eq!(s.tex(), r"x+\sqrt{2}");
+        // Not TeX the formula reads in place: typed, so `/` still makes a
+        // fraction.
+        let mut s = Session::new("").unwrap();
+        s.paste("1/2}");
+        assert_eq!(s.tex(), r"\frac{1}{2\}}");
+        // Over a selection.
+        let mut s = Session::new("a+b").unwrap();
+        s.key(Key::SelectAll);
+        let sp = s.paste("c");
+        assert_eq!(s.tex(), "c");
+        assert_eq!(sp.len(), 2);
+    }
+
+    #[test]
+    fn the_selection_is_shaded_in_the_picture() {
+        let mut s = Session::new(r"a+\frac{1}{2}").unwrap();
+        let style = crate::layout::Style::default();
+        let plain = s.picture(&style).unwrap().svg;
+        assert!(!plain.contains("fill-opacity"));
+        s.key(Key::SelectAll);
+        let shaded = s.picture(&style).unwrap().svg;
+        assert!(shaded.contains(r#"fill-opacity="0.25""#), "{shaded}");
     }
 
     #[test]

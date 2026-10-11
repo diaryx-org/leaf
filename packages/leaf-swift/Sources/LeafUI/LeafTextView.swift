@@ -2544,7 +2544,10 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         case #selector(moveRight(_:)): return .right
         case #selector(moveUp(_:)): return .up
         case #selector(moveDown(_:)): return .down
+        case #selector(moveLeftAndModifySelection(_:)): return .extendLeft
+        case #selector(moveRightAndModifySelection(_:)): return .extendRight
         case #selector(deleteBackward(_:)): return .backspace
+        case #selector(deleteForward(_:)): return .deleteForward
         case #selector(cancelOperation(_:)): return .cancel
         case #selector(insertNewline(_:)): return .newline
         case #selector(insertTab(_:)), #selector(insertBacktab(_:)): return .tab
@@ -3197,8 +3200,9 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         switch item.action {
         case #selector(undo(_:)): return docView.canUndo
         case #selector(redo(_:)): return docView.canRedo
-        case #selector(copy(_:)): return hasSelection
-        case #selector(cut(_:)): return hasSelection && !isReadOnly
+        case #selector(copy(_:)): return regionSlot.isOpen ? regionSlot.copyText != nil : hasSelection
+        case #selector(cut(_:)):
+            return (regionSlot.isOpen ? regionSlot.copyText != nil : hasSelection) && !isReadOnly
         case #selector(paste(_:)):
             guard !isReadOnly else { return false }
             let pb = NSPasteboard.general
@@ -3244,6 +3248,12 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     // MARK: rich clipboard
 
     @objc public func copy(_ sender: Any?) {
+        // The open formula copies its own selection, as TeX.
+        if let text = regionSlot.copyText {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            return
+        }
         guard let text = doc.selectedText() else { return }
         let pb = NSPasteboard.general
         pb.clearContents()
@@ -3252,6 +3262,11 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     }
 
     @objc public func cut(_ sender: Any?) {
+        if let text = regionSlot.cut() {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            return
+        }
         closeWritingToolsGroupForUserEdit()
         copy(sender)
         if doc.selectedText() != nil { render(doc.backspace()) }
@@ -3262,6 +3277,8 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // holding only an image has no text at all, so by the time this method
         // decided there was nothing to paste, the host would never hear about the
         // one thing that was there. See `LeafEditorModel.onPaste`.
+        if regionSlot.isOpen, let text = NSPasteboard.general.string(forType: .string),
+           regionSlot.paste(text) { return }
         if onPaste?() == true { return }
         closeWritingToolsGroupForUserEdit()
         let pb = NSPasteboard.general
@@ -3280,7 +3297,11 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         render(doc.paste(text: text))
     }
 
-    @objc public override func selectAll(_ sender: Any?) { render(doc.selectAll()) }
+    @objc public override func selectAll(_ sender: Any?) {
+        // The open formula selects itself; anything else closes and selects all.
+        if regionSlot.isOpen, regionSlot.input(.selectAll) { return }
+        render(doc.selectAll())
+    }
 
     // MARK: contextual menu + macOS text services
 

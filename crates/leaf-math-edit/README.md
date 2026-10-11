@@ -74,9 +74,23 @@ Two frontends use it, the web editor (`packages/leaf-web`) and the Swift views
 The editor adds about 60 KB raw to the web's math module, measured against that
 README's September figure.
 
+## Selection, the clipboard, and delete-forward
+
+- **Selection** is MathQuill's: ⇧← and ⇧→ move the caret from an anchor,
+  and the selection is the atoms between the two ends on the innermost row
+  holding both. An end inside a fraction's slot takes in the whole fraction,
+  so a selection never splits a structure. It is shaded in the accent behind
+  the ink. An arrow collapses it to its edge. Typing replaces it, Backspace
+  and Delete remove it, and `/` makes it a numerator.
+- **Copy** takes the selected atoms' TeX as written. **Paste** writes TeX as
+  it is when the formula still reads with it in place. Otherwise, as with
+  plain `1/2}`, it types the text a character at a time.
+- **Delete** mirrors Backspace. It removes the atom after the caret, enters
+  one with something in it, steps from one slot to the next, and takes a
+  structure apart at the end of its last slot.
+
 ## Not done
 
-- Selection, copy/paste and delete-forward.
 - Matrices and environments as grids.
 - `\left(` auto-pairing.
 - Removing an empty script when the caret leaves it.

@@ -4046,6 +4046,11 @@ public protocol MathSessionProtocol: AnyObject, Sendable {
     func end() 
     
     /**
+     * Whether part of the formula is selected.
+     */
+    func hasSelection()  -> Bool
+    
+    /**
      * The caret to the first stop, as → into the formula from in front.
      */
     func home() 
@@ -4054,6 +4059,12 @@ public protocol MathSessionProtocol: AnyObject, Sendable {
      * Apply a key, returning the splices it made, in order.
      */
     func key(key: MathKey)  -> [MathSplice]
+    
+    /**
+     * Paste `tex` at the caret, over the selection: written as it is where
+     * the formula reads with it, typed a character at a time where not.
+     */
+    func paste(tex: String)  -> [MathSplice]
     
     /**
      * The formula with its caret: ink in `ink`, empty slots in a third of
@@ -4066,6 +4077,12 @@ public protocol MathSessionProtocol: AnyObject, Sendable {
      * Take `tex` as the formula's source after an undo or an outside change.
      */
     func reload(tex: String) throws 
+    
+    /**
+     * The selected part's TeX, as written — what a copy takes — or `None`
+     * with nothing selected.
+     */
+    func selectedTex()  -> String?
     
     func tex()  -> String
     
@@ -4196,6 +4213,18 @@ open func end()  {try! rustCall() {
 }
     
     /**
+     * Whether part of the formula is selected.
+     */
+open func hasSelection() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_mathsession_has_selection(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
      * The caret to the first stop, as → into the formula from in front.
      */
 open func home()  {try! rustCall() {
@@ -4215,6 +4244,20 @@ open func key(key: MathKey) -> [MathSplice]  {
     uniffi_leaf_ffi_fn_method_mathsession_key(
             self.uniffiCloneHandle(),
         FfiConverterTypeMathKey_lower(key),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Paste `tex` at the caret, over the selection: written as it is where
+     * the formula reads with it, typed a character at a time where not.
+     */
+open func paste(tex: String) -> [MathSplice]  {
+    return try!  FfiConverterSequenceTypeMathSplice.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_mathsession_paste(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(tex),uniffiCallStatus
     )
 })
 }
@@ -4246,6 +4289,19 @@ open func reload(tex: String)throws   {try rustCallWithError(FfiConverterTypeLea
         FfiConverterString.lower(tex),uniffiCallStatus
     )
 }
+}
+    
+    /**
+     * The selected part's TeX, as written — what a copy takes — or `None`
+     * with nothing selected.
+     */
+open func selectedTex() -> String?  {
+    return try!  FfiConverterOptionString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_mathsession_selected_tex(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
 }
     
 open func tex() -> String  {
@@ -9057,6 +9113,19 @@ public enum MathKey: Equatable, Hashable {
     case up
     case down
     case backspace
+    /**
+     * Forward delete.
+     */
+    case delete
+    /**
+     * ⇧← and ⇧→: move the caret, extending the selection.
+     */
+    case shiftLeft
+    case shiftRight
+    /**
+     * The whole formula.
+     */
+    case selectAll
 
 
 
@@ -9091,6 +9160,14 @@ public struct FfiConverterTypeMathKey: FfiConverterRustBuffer {
         
         case 6: return .backspace
         
+        case 7: return .delete
+        
+        case 8: return .shiftLeft
+        
+        case 9: return .shiftRight
+        
+        case 10: return .selectAll
+        
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -9122,6 +9199,22 @@ public struct FfiConverterTypeMathKey: FfiConverterRustBuffer {
         
         case .backspace:
             writeInt(&buf, Int32(6))
+        
+        
+        case .delete:
+            writeInt(&buf, Int32(7))
+        
+        
+        case .shiftLeft:
+            writeInt(&buf, Int32(8))
+        
+        
+        case .shiftRight:
+            writeInt(&buf, Int32(9))
+        
+        
+        case .selectAll:
+            writeInt(&buf, Int32(10))
         
         }
     }
@@ -10928,16 +11021,25 @@ private let initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_mathsession_end() != 44236) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_leaf_ffi_checksum_method_mathsession_has_selection() != 61783) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_leaf_ffi_checksum_method_mathsession_home() != 6391) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_mathsession_key() != 1212) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_leaf_ffi_checksum_method_mathsession_paste() != 21463) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_leaf_ffi_checksum_method_mathsession_picture() != 25200) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_mathsession_reload() != 55262) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_mathsession_selected_tex() != 11948) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_mathsession_tex() != 36275) {

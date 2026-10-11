@@ -124,18 +124,31 @@ impl MathSession {
             "ArrowUp" => Key::Up,
             "ArrowDown" => Key::Down,
             "Backspace" => Key::Backspace,
+            "Delete" => Key::Delete,
+            "ShiftLeft" => Key::ShiftLeft,
+            "ShiftRight" => Key::ShiftRight,
+            "SelectAll" => Key::SelectAll,
             k if k.chars().count() == 1 => Key::Char(k.chars().next().unwrap()),
             _ => return Vec::new(),
         };
-        self.session
-            .key(k)
-            .into_iter()
-            .map(|s| MathSplice {
-                from: s.range.start,
-                to: s.range.end,
-                text: s.text,
-            })
-            .collect()
+        splices(self.session.key(k))
+    }
+
+    /// Whether part of the formula is selected.
+    pub fn has_selection(&self) -> bool {
+        self.session.selection().is_some()
+    }
+
+    /// The selected part's TeX, as written — what a copy takes — or
+    /// `undefined` with nothing selected.
+    pub fn selected_tex(&self) -> Option<String> {
+        self.session.selected_tex().map(str::to_string)
+    }
+
+    /// Paste `tex` at the caret, over the selection: written as it is where
+    /// the formula reads with it, typed a character at a time where not.
+    pub fn paste(&mut self, tex: &str) -> Vec<MathSplice> {
+        splices(self.session.paste(tex))
     }
 
     /// The caret to the first stop, as → into the formula from in front.
@@ -171,6 +184,7 @@ impl MathSession {
         let f = &self.session.formula;
         if let Ok(l) = f.layout(self.session.display) {
             self.session.caret = l.hit(f, x / size, y / size);
+            self.session.anchor = None;
         }
     }
 
@@ -185,10 +199,6 @@ impl MathSession {
         let ink = parse_hex_color(color)
             .ok_or_else(|| JsValue::from_str(&format!("not a hex colour: {color}")))?;
         let accent = parse_hex_color(accent).unwrap_or([37, 99, 235, 255]);
-        let f = &self.session.formula;
-        let l = f
-            .layout(self.session.display)
-            .map_err(|e| JsValue::from_str(&e))?;
         let style = leaf_math_edit::layout::Style {
             size,
             pad: 0.0,
@@ -196,7 +206,10 @@ impl MathSession {
             faint: [ink[0], ink[1], ink[2], ink[3] / 3],
             accent,
         };
-        let p = l.picture(f, &style, Some(self.session.caret));
+        let p = self
+            .session
+            .picture(&style)
+            .map_err(|e| JsValue::from_str(&e))?;
         Ok(MathPicture {
             svg: p.svg,
             width: p.width,
@@ -204,6 +217,17 @@ impl MathSession {
             depth: p.depth,
         })
     }
+}
+
+/// A session's splices as the binding hands them over.
+fn splices(list: Vec<leaf_math_edit::edit::Splice>) -> Vec<MathSplice> {
+    list.into_iter()
+        .map(|s| MathSplice {
+            from: s.range.start,
+            to: s.range.end,
+            text: s.text,
+        })
+        .collect()
 }
 
 fn parse_hex_color(s: &str) -> Option<[u8; 4]> {
@@ -248,6 +272,23 @@ mod tests {
         assert!(s.at_end() && !s.at_home());
         let p = s.picture(16.0, "#000", "#00f").unwrap();
         assert!(p.svg.contains("<rect"), "the caret is drawn");
+        // A selection: copied as TeX, pasted over, shaded in the picture.
+        assert!(s.key("SelectAll").is_empty());
+        assert!(s.has_selection());
+        assert_eq!(s.selected_tex().as_deref(), Some("\\frac{x}{}"));
+        assert!(
+            s.picture(16.0, "#000", "#00f")
+                .unwrap()
+                .svg
+                .contains("fill-opacity")
+        );
+        let sp = s.paste("y");
+        assert_eq!(sp.len(), 2, "the selection's removal, then the paste");
+        assert_eq!(s.tex(), "y");
+        assert!(!s.has_selection());
+        s.home();
+        assert_eq!(s.key("Delete").len(), 1);
+        assert_eq!(s.tex(), "");
     }
 
     #[test]

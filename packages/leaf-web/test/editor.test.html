@@ -1946,6 +1946,71 @@ await test("a display block opens, and its TeX stays between its own lines", asy
   return ed;
 });
 
+await test("in a formula, ⇧← selects whole structures, and typing, Delete and / act on the selection", async () => {
+  await LeafEditor.loadMath();
+  const ed = editor("say $1+\\frac{a}{b}$ here\n");
+  const r = ed._lastView.regions[0];
+  ed.render(ed.doc.select_range(r.end, r.end));
+  press(ed, "ArrowLeft");
+  assert(ed._session, "← behind the formula did not open it");
+  // From the end, into the denominator: the whole fraction is selected.
+  press(ed, "ArrowLeft", { shiftKey: true });
+  press(ed, "ArrowLeft", { shiftKey: true });
+  eq(ed._session.impl.copy(), "\\frac{a}{b}");
+  assert(ed._session, "⇧← at a selection's edge left the formula");
+  // The selection is drawn in the picture.
+  const atom = ed.contentEl.querySelector(".leaf-r-math.leaf-math");
+  assert(decodeURIComponent(atom.style.backgroundImage).includes("fill-opacity"), "no selection in the picture");
+  press(ed, "x");
+  eq(ed.source(), "say $1+x$ here\n");
+  // ⌘A selects the whole formula, not the document; / makes it a numerator.
+  const mac = /Mac|iPhone|iPad/.test(navigator.platform);
+  press(ed, "a", mac ? { metaKey: true } : { ctrlKey: true });
+  assert(ed._session, "⌘A left the formula");
+  press(ed, "/");
+  eq(ed.source(), "say $\\frac{1+x}{}$ here\n");
+  // Delete forward at the start of the denominator does nothing there; from
+  // the first stop it enters the fraction and takes its letters.
+  press(ed, "Escape");
+  ed.render(ed.doc.select_range(r.src, r.src));
+  press(ed, "ArrowRight");
+  press(ed, "Delete");
+  press(ed, "Delete");
+  eq(ed.source(), "say $\\frac{+x}{}$ here\n");
+  return ed;
+});
+
+await test("copy, cut and paste in a formula are its TeX, and each is one undo step", async () => {
+  await LeafEditor.loadMath();
+  const ed = editor("say $a+b$ here\n");
+  const r = ed._lastView.regions[0];
+  ed.render(ed.doc.select_range(r.end, r.end));
+  press(ed, "ArrowLeft");
+  press(ed, "ArrowLeft", { shiftKey: true });
+  press(ed, "ArrowLeft", { shiftKey: true });
+  const clip = (type, text) => {
+    const dt = new DataTransfer();
+    if (text != null) dt.setData("text/plain", text);
+    ed.contentEl.dispatchEvent(new ClipboardEvent(type, { clipboardData: dt, bubbles: true, cancelable: true }));
+    return dt.getData("text/plain");
+  };
+  eq(clip("copy"), "+b");
+  eq(ed.source(), "say $a+b$ here\n");
+  eq(clip("cut"), "+b");
+  eq(ed.source(), "say $a$ here\n");
+  assert(ed._session, "cut left the formula");
+  clip("paste", "\\sqrt{2}");
+  eq(ed.source(), "say $a\\sqrt{2}$ here\n");
+  // Text that is not TeX the formula reads is typed instead: the brace is
+  // escaped, as a typed one is.
+  clip("paste", "+x}");
+  eq(ed.source(), "say $a\\sqrt{2}+x\\}$ here\n");
+  assert(ed._session, "paste left the formula");
+  press(ed, "z", /Mac|iPhone|iPad/.test(navigator.platform) ? { metaKey: true } : { ctrlKey: true });
+  eq(ed.source(), "say $a\\sqrt{2}$ here\n", "the typed paste was not one undo step");
+  return ed;
+});
+
 await test("mathEditing \"source\" keeps a formula's TeX to be typed on the caret's line", async () => {
   await LeafEditor.loadMath();
   const ed = editor("say $x+y$ here\n", { mathEditing: "source" });
