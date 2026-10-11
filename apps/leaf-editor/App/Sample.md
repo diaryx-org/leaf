@@ -24,7 +24,7 @@ $$
 \int_0^1 x\,dx = \frac{1}{2}
 $$
 
-Put the caret on a formula's line and it shows its TeX, ready to edit.
+Arrow into a formula, or click it, and it opens in place: `/` makes a fraction, `^` a superscript, and the arrows walk its slots.
 
 This paragraph is written in semantic line breaks:
 one clause per source line,
@@ -35,6 +35,17 @@ Toggle the ⏎ menu to fold them into flowing prose or preserve them as written.
 fn main() {
     println!("rendered by leaf-core");
 }
+```
+
+## Diagrams
+
+A Mermaid fence is drawn as its diagram. Arrow into it, or click it, and it opens as its source beside a live preview:
+
+```mermaid
+graph LR
+  Source --> Doc --> Frame
+  Frame --> Editor
+  Editor -- splices --> Doc
 ```
 
 ## Attachments

@@ -132,6 +132,9 @@ struct ContentView: View {
         // stays leaf's placeholder.
         if model.directiveCatalogue.isEmpty { model.directiveCatalogue = [EmbedDirective.item] }
         if model.directiveView == nil { model.directiveView = EmbedDirective.view(for:) }
+        // The app's own fence editor: a ```mermaid fence is drawn as its
+        // diagram and opens as its source beside a live preview.
+        if model.regionEditors.isEmpty { model.regionEditors = [MermaidFence.kind: MermaidFence.editor] }
     }
 
     #if os(macOS)
