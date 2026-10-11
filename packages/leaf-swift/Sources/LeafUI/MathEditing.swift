@@ -1,184 +1,93 @@
 //  MathEditing.swift
 //
-//  A formula edited in place, as structure. Once a view has told core it edits
-//  formulas itself (`setOwnedRegions(["math"])`), a formula on the caret's line stays its
-//  picture; → in front of one, ← behind it, or a click on its picture opens it
-//  in a `MathSession` (leaf-math-edit, through the binding). Then `/` makes a
-//  fraction of the term before the caret, `^` and `_` open scripts, `sqrt` a
-//  root, and the arrows walk the slots. What the session writes is TeX: each
-//  keystroke answers with splices on the formula's bytes, which land in the
-//  document through `editSource` as one undo step — the web editor's
-//  behaviour, from the same Rust.
+//  A formula edited in place, as structure — leaf's own client of the region
+//  protocol (`RegionEditing.swift`). Once a view owns the `math` kind, a
+//  formula on the caret's line stays its picture; → in front of one, ← behind
+//  it, or a click on its picture opens it in a `MathSession` (leaf-math-edit,
+//  through the binding). Then `/` makes a fraction of the term before the
+//  caret, `^` and `_` open scripts, `sqrt` a root, and the arrows walk the
+//  slots. What the session writes is TeX: each keystroke answers with splices
+//  on the formula's bytes, which the view lands through `editSource` as one
+//  undo step — the web editor's behaviour, from the same Rust.
 //
-//  The view draws the open formula from the session, its caret and empty
-//  slots in it. It does that without the layout knowing: the frame it lays
-//  out names the open formula by a stand-in TeX unique to each revision, and
-//  `MathStore` answers that name with the session's picture. A new revision
-//  is a formula that differs, which is exactly what the layout already
-//  re-sets a row for.
+//  Leaf runs this session and draws it: the layout asks the open region for
+//  the formula's picture (`OpenRegionLayout.glyph`), with its caret and empty
+//  slots in it, and lays its row out again whenever the session's revision
+//  moves.
 
 import CoreGraphics
 import Foundation
 import LeafFFI
 import ResvgCoreGraphics
 
-/// The formula one view has open for structural editing.
-final class OpenFormula {
+/// A formula open for structural editing.
+final class MathRegionSession: RegionPictureSession {
+    /// The region kind every formula is.
+    static let kind = "math"
+
     let session: MathSession
-    /// The formula's source start: core's caret waits here, in front of the
-    /// picture, while it is open.
-    let src: UInt32
-    /// Its source end and the start of its TeX, followed across every frame
-    /// (`follow`), since the formula's own edits move the one.
-    private(set) var end: UInt32
-    private(set) var texStart: UInt32
-    let display: Bool
-    /// Bumped by every change to what the picture shows — a keystroke, a
-    /// caret move inside it — so the frame names it afresh.
-    private(set) var revision = 1
-    private let token = UUID().uuidString
+    private let accent: LeafColor
 
-    /// Where the caret goes when a formula is opened.
-    enum Entry {
-        case home, end
-        /// Nearest a point, in points from the picture's top left, at
-        /// `size` points per em.
-        case point(CGPoint, size: CGFloat)
-    }
-
-    /// Open `math` — its region in `frame` — with the caret at `entry`. `nil`
-    /// when the frame has no region for it, or when the TeX is beyond what the
-    /// structural editor reads, and the formula is left as it is.
-    init?(_ math: MathView, in frame: DocView, entry: Entry, accent: LeafColor) {
-        guard let region = frame.formulaRegion(at: math.src),
-              let session = try? MathSession(tex: math.tex, display: math.display)
-        else { return nil }
+    /// Open `region`, the formula `math`, with the caret at `entry`. `nil` when
+    /// the TeX is beyond what the structural editor reads, and the formula is
+    /// left as it is.
+    init?(_ region: RegionView, display: Bool, entry: RegionEntry, accent: LeafColor) {
+        guard let session = try? MathSession(tex: region.content, display: display) else { return nil }
         self.session = session
-        src = math.src
-        end = region.end
-        texStart = region.contentStart
-        display = math.display
+        self.accent = accent
         switch entry {
         case .home: session.home()
         case .end: session.end()
         case let .point(p, size): session.click(x: Double(p.x), y: Double(p.y), size: Double(size))
         }
-        let accent = accent.rgbaBytes
-        MathStore.open[token] = { [weak session] size, ink in
-            guard let session else { return nil }
-            let rgba = ink.rgbaBytes
-            guard let p = try? session.picture(size: Double(size),
-                                               ink: Data([rgba.0, rgba.1, rgba.2, rgba.3]),
-                                               accent: Data([accent.0, accent.1, accent.2, accent.3]))
-            else { return nil }
-            return MathStore.glyph(from: p, size: size)
-        }
     }
 
-    deinit { MathStore.open[token] = nil }
-
-    /// The TeX the laid-out frame names this formula by: unique to the view
-    /// and the revision, and recognised by `MathStore`.
-    var standIn: String { MathStore.openPrefix + token + " " + String(revision) }
-
-    /// `frame` as the layout should see it: the open formula named by its
-    /// stand-in, every other formula as it is.
-    func laidOut(_ frame: DocView) -> DocView {
-        var f = frame
-        f.math = frame.math.map { m in
-            guard m.src == src else { return m }
-            var m = m
-            m.tex = standIn
-            return m
-        }
-        return f
-    }
-
-    /// Follow the formula into a new frame: its end and TeX start, and its
-    /// TeX, which an undo can change under the session. `false` when the
-    /// frame has no formula here any more, or one the session cannot read,
-    /// and the view closes it.
-    func follow(_ frame: DocView) -> Bool {
-        guard let r = frame.formulaRegion(at: src) else { return false }
-        end = r.end
-        texStart = r.contentStart
-        if r.content != session.tex() {
-            guard (try? session.reload(tex: r.content)) != nil else { return false }
-            revision += 1
-        }
-        return true
-    }
-
-    /// What a key did, for the view to act on.
-    enum Outcome {
-        /// The document changed: render this frame.
-        case edited(DocView)
-        /// Only the caret inside the formula moved: redraw it.
-        case moved
-        /// Leave the formula, the caret in front of it or behind it.
-        case leave(atEnd: Bool)
-    }
-
-    /// Apply `key` — through the session, and its splices into `doc` as one
-    /// undo step. ← at the first stop and → at the last leave the formula.
-    func press(_ key: MathKey, in doc: LeafDoc) -> Outcome {
-        switch key {
+    /// The arrows and Backspace are the session's; ← at the first stop and →
+    /// at the last leave the formula, as do Escape, Return and Tab, behind it.
+    func input(_ input: RegionInput) -> RegionOutcome {
+        let key: MathKey
+        switch input {
         case .left where session.atHome(): return .leave(atEnd: false)
         case .right where session.atEnd(): return .leave(atEnd: true)
-        default: break
+        case .cancel, .newline, .tab: return .leave(atEnd: true)
+        case .left: key = .left
+        case .right: key = .right
+        case .up: key = .up
+        case .down: key = .down
+        case .backspace: key = .backspace
         }
-        return apply(session.key(key: key), in: doc)
+        return outcome(session.key(key: key))
     }
 
     /// Typed text, one character at a time: `sqrt` is four keys, the last of
     /// which turns the letters into a root.
-    func type(_ text: String, in doc: LeafDoc) -> Outcome {
+    func type(_ text: String) -> RegionOutcome {
         var splices: [MathSplice] = []
         for c in text { splices += session.key(key: .char(ch: String(c))) }
-        return apply(splices, in: doc)
+        return outcome(splices)
     }
 
-    private func apply(_ splices: [MathSplice], in doc: LeafDoc) -> Outcome {
-        revision += 1
-        guard !splices.isEmpty else { return .moved }
-        // Every splice is against the TeX as the one before it left it, and
-        // none moves the TeX's start.
-        doc.beginUndoGroup()
-        for s in splices {
-            _ = doc.editSource(from: texStart + s.from, to: texStart + s.to, text: s.text)
-        }
-        doc.endUndoGroup()
-        return .edited(doc.selectRange(start: src, end: src))
+    func click(at point: CGPoint, size: CGFloat) -> RegionOutcome {
+        session.click(x: Double(point.x), y: Double(point.y), size: Double(size))
+        return .moved
     }
 
-    /// A click inside the open formula's picture.
-    func click(_ p: CGPoint, size: CGFloat) {
-        session.click(x: Double(p.x), y: Double(p.y), size: Double(size))
-        revision += 1
+    func reload(content: String) -> Bool {
+        (try? session.reload(tex: content)) != nil
     }
-}
 
-extension DocView {
-    /// The owned formula starting at `src`, as a region.
-    func formulaRegion(at src: UInt32) -> RegionView? {
-        regions.first { $0.kind == "math" && $0.src == src }
+    func picture(size: CGFloat, ink: LeafColor) -> MathGlyph? {
+        let rgba = ink.rgbaBytes
+        let accent = accent.rgbaBytes
+        guard let p = try? session.picture(size: Double(size),
+                                           ink: Data([rgba.0, rgba.1, rgba.2, rgba.3]),
+                                           accent: Data([accent.0, accent.1, accent.2, accent.3]))
+        else { return nil }
+        return MathStore.glyph(from: p, size: size)
     }
-}
 
-extension MathStore {
-    /// The stand-in TeX's prefix: a byte no real formula's TeX can start with.
-    static let openPrefix = "\u{0}leaf-open "
-
-    /// The open formulas' pictures, by their stand-in's token: a picture at a
-    /// size in an ink, drawn by the session with its caret.
-    static var open: [String: (CGFloat, LeafColor) -> MathGlyph?] = [:]
-
-    /// The open formula a stand-in names, drawn — or `nil` when `tex` is not
-    /// a stand-in.
-    static func openGlyph(tex: String, size: CGFloat, ink: LeafColor) -> MathGlyph?? {
-        guard tex.hasPrefix(openPrefix) else { return nil }
-        let token = tex.dropFirst(openPrefix.count).split(separator: " ").first.map(String.init) ?? ""
-        return .some(open[token]?(size, ink) ?? nil)
+    private func outcome(_ splices: [MathSplice]) -> RegionOutcome {
+        splices.isEmpty ? .moved : .edited(splices.map { RegionSplice(from: $0.from, to: $0.to, text: $0.text) })
     }
 }
 
@@ -205,7 +114,7 @@ extension EditorLayout {
                 defer { ch += run.text.utf16.count }
                 guard run.role == "math",
                       let m = math.first(where: { $0.inline && $0.src == run.src }),
-                      let glyph = MathStore.glyph(tex: m.tex, display: m.display, size: size, ink: theme.textColor),
+                      let glyph = OpenRegionLayout.glyph(m, size: size, ink: theme.textColor, open: open),
                       let base = baselineOrigin(row: i, ch: ch)
                 else { continue }
                 let r = CGRect(x: base.x, y: base.y - glyph.ascent, width: glyph.width, height: glyph.ascent + glyph.descent)

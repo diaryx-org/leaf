@@ -76,9 +76,6 @@ enum MathStore {
 
     /// The picture for `tex` at `size` points in `ink`, typeset on first use.
     static func glyph(tex: String, display: Bool, size: CGFloat, ink: LeafColor) -> MathGlyph? {
-        // The formula open for editing is drawn by its session, afresh each
-        // revision, and never cached — see `MathEditing.swift`.
-        if let open = openGlyph(tex: tex, size: size, ink: ink) { return open }
         let rgba = ink.rgbaBytes
         let key = "\(display ? "D" : "T")\(size)|\(rgba)|\(tex)"
         if let hit = cache[key] { return hit }
@@ -115,9 +112,8 @@ struct MathLayout {
     /// below that keeps it from crowding the prose, as a media box has.
     var height: CGFloat { size.height + MediaMetrics.gap * 2 }
 
-    init?(_ math: MathView, contentWidth: CGFloat, theme: EditorTheme) {
-        guard let glyph = MathStore.glyph(tex: math.tex, display: math.display,
-                                          size: theme.fontSize, ink: theme.textColor)
+    init?(_ math: MathView, contentWidth: CGFloat, theme: EditorTheme, open: OpenRegionLayout? = nil) {
+        guard let glyph = OpenRegionLayout.glyph(math, size: theme.fontSize, ink: theme.textColor, open: open)
         else { return nil }
         self.math = math
         self.glyph = glyph

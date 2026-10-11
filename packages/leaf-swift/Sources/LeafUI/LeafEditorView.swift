@@ -785,6 +785,13 @@ public final class LeafEditorModel: ObservableObject {
         return { [weak self] directive in self?.directiveView?(directive) }
     }
 
+    /// The host's editors for fences, by region kind — `"fence:"` and a
+    /// language. See `LeafTextView.regionEditors`, which this reaches; leaf
+    /// ships none, and depends on nothing one uses.
+    public var regionEditors: [String: RegionEditor] = [:] {
+        didSet { textView?.regionEditors = regionEditors }
+    }
+
     /// Write the leaf directive `name` at the caret, with `label` and `attrs`,
     /// placed as a page break is: a paragraph parts around it and the caret
     /// lands on a line under it. An empty attribute value is a bare attribute.
@@ -1521,6 +1528,7 @@ struct LeafEditorSurface: NSViewRepresentable {
         // The host's drawings, through the bridge for the same reason; set only
         // when there is a hook, since setting it lays the document out again.
         if let draw = model.directiveViewBridge { textView.directiveView = draw }
+        if !model.regionEditors.isEmpty { textView.regionEditors = model.regionEditors }
         textView.isReadOnly = model.isReadOnly
         textView.onTapHighlight = model.tapHighlightBridge
         model.textView = textView
@@ -2135,6 +2143,7 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
         // The host's drawings, through the bridge for the same reason; set only
         // when there is a hook, since setting it lays the document out again.
         if let draw = model.directiveViewBridge { textView.directiveView = draw }
+        if !model.regionEditors.isEmpty { textView.regionEditors = model.regionEditors }
         textView.isReadOnly = model.isReadOnly
         textView.selectionMenuActions = model.selectionMenuBridge
         textView.onTapHighlight = model.tapHighlightBridge

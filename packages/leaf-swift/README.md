@@ -422,6 +422,23 @@ behaviour, where a formula on the caret's line reveals its TeX. The editing
 lives in `MathEditing.swift` over the binding's `MathSession`, the same Rust
 as the web editor's.
 
+### Fences a host edits
+
+`regionEditors` on the text view (or on `LeafEditorModel`) hands the fences
+of a language to the host: `["fence:mermaid": RegionEditor(view:open:)]`.
+Core keeps each such fence one placeholder row. The editor's `view` draws it
+there, sized and placed as a directive's view is. → in front of it, ← behind
+it, or a click on the drawing opens it: `open` answers with a
+`RegionSession` whose `view` stands where the drawing was and takes the
+focus. That view writes back through its `RegionHost` — `edit` (splices on
+the fence's content) or `replace` (the whole content), one undo step each —
+undoes through `undo`, and closes with `leave(atEnd:)`.
+
+Formulas run on the same protocol, with leaf's own session that draws its
+picture, so opening, leaving, undo and the caret behave alike for both
+(`RegionEditing.swift`). leaf ships no fence editor; the leaf-editor app's
+Mermaid editor (`MermaidFence.swift`) is the example.
+
 ### Type-checking the Swift without an app
 
 The renderer is validated against the real generated binding with `swiftc`:

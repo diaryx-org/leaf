@@ -64,10 +64,10 @@ struct DirectiveKey: Hashable {
 /// views; a closure in the tests.
 typealias DirectiveMeasure = (DirectiveView, DirectiveKey, CGFloat) -> CGFloat?
 
-/// The box one host-drawn directive occupies.
+/// The box one host's view occupies: a directive's, or a region's
+/// (`RegionEditing.swift`), which are placed alike.
 struct DirectiveLayout {
-    let directive: DirectiveView
-    let key: DirectiveKey
+    let key: HostedKey
     /// The view's own size: the column's width (less the row's prefix), and the
     /// height it asked for.
     let size: CGSize
@@ -143,22 +143,28 @@ final class DirectiveHost {
                 continue
             }
             guard let view = answer else { continue }
-            if view.superview !== container {
-                #if canImport(UIKit)
-                container.insertSubview(view, at: 0)
-                #else
-                container.addSubview(view, positioned: .below, relativeTo: nil)
-                #endif
-            }
+            Self.put(view, on: rect, in: container, scale: scale)
+        }
+    }
+
+    /// Put `view` on `rect`, in layout coordinates, in `container` — behind
+    /// its other subviews the first time.
+    static func put(_ view: LeafView, on rect: CGRect, in container: LeafView, scale: CGFloat) {
+        if view.superview !== container {
             #if canImport(UIKit)
-            view.frame = rect
+            container.insertSubview(view, at: 0)
             #else
-            view.frame = rect.applying(CGAffineTransform(scaleX: scale, y: scale))
-            // Scaled by its bounds, so what it draws zooms with the text around it
-            // rather than being re-laid-out at a size it never asked for.
-            view.setBoundsSize(rect.size)
+            container.addSubview(view, positioned: .below, relativeTo: nil)
             #endif
         }
+        #if canImport(UIKit)
+        view.frame = rect
+        #else
+        view.frame = rect.applying(CGAffineTransform(scaleX: scale, y: scale))
+        // Scaled by its bounds, so what it draws zooms with the text around it
+        // rather than being re-laid-out at a size it never asked for.
+        view.setBoundsSize(rect.size)
+        #endif
     }
 
     /// Take every view away and forget every answer — the hook changed, and

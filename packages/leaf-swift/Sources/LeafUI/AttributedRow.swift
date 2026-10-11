@@ -41,7 +41,8 @@ enum AttributedRow {
     /// `mathPiece` — and one that names none (the frame has not caught up, or
     /// the TeX would not typeset) stays core's own glyph.
     static func make(_ runs: [Run], row: Row, theme: EditorTheme,
-                     math: [UInt32: MathView] = [:], source: Bool = false) -> NSAttributedString {
+                     math: [UInt32: MathView] = [:], source: Bool = false,
+                     open: OpenRegionLayout? = nil) -> NSAttributedString {
         let result = NSMutableAttributedString()
         let size = row.heading.map { theme.headingSize(Int($0)) } ?? theme.fontSize
         let isHeadingRow = row.heading != nil
@@ -57,7 +58,7 @@ enum AttributedRow {
                 source: source
             )
             if run.role == "math", let mv = math[run.src],
-               let piece = mathPiece(run, view: mv, attrs: attrs, theme: theme) {
+               let piece = mathPiece(run, view: mv, attrs: attrs, theme: theme, open: open) {
                 result.append(piece)
                 continue
             }
@@ -103,11 +104,10 @@ enum AttributedRow {
     /// typeset, and the caller keeps core's glyph.
     private static func mathPiece(_ run: Run, view: MathView,
                                   attrs: [NSAttributedString.Key: Any],
-                                  theme: EditorTheme) -> NSAttributedString? {
+                                  theme: EditorTheme, open: OpenRegionLayout?) -> NSAttributedString? {
         guard run.text.utf16.count == 1,
               let font = attrs[.font] as? LeafFont,
-              let glyph = MathStore.glyph(tex: view.tex, display: view.display,
-                                          size: font.pointSize, ink: theme.textColor)
+              let glyph = OpenRegionLayout.glyph(view, size: font.pointSize, ink: theme.textColor, open: open)
         else { return nil }
         var a = attrs
         a[.attachment] = MathAttachment(glyph: glyph)

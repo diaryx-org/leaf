@@ -847,6 +847,13 @@ struct EditorLayout {
     private let media: [MediaView]
     let math: [MathView]
     private let directives: [DirectiveView]
+    /// The frame's regions, and whether a host's editors were asked to draw
+    /// them — `directives`' and `hostsDirectives`' peers.
+    let regions: [RegionView]
+    private let hostsRegions: Bool
+    /// The region open for editing, which the layout asks for the open
+    /// formula's picture.
+    let open: OpenRegionLayout?
     /// Whether the host was asked to draw this frame's directives — a frame
     /// laid out with a hook and one laid out without it place the same rows
     /// differently.
@@ -876,18 +883,19 @@ struct EditorLayout {
     /// so that no row outside it is compared; `nil` finds it by comparing.
     init(_ docView: DocView, theme: EditorTheme, viewWidth: CGFloat, page: PageSetup? = nil,
          cache: inout [Row: ShapedRow], media: MediaStore? = nil, previous: EditorLayout? = nil,
-         change: RowChange? = nil, directives measure: DirectiveMeasure? = nil) {
+         change: RowChange? = nil, directives measure: DirectiveMeasure? = nil,
+         regions: RegionMeasure? = nil, open: OpenRegionLayout? = nil) {
         if let page = page?.sanitized {
             let x = page.sheetX(in: viewWidth)
             self.init(docView, theme: theme, originX: x + page.margins.left,
                       columnWidth: page.columnWidth, page: page, sheetX: x,
                       cache: &cache, media: media, previous: previous, change: change,
-                      directives: measure)
+                      directives: measure, regions: regions, open: open)
         } else {
             let column = theme.column(in: viewWidth)
             self.init(docView, theme: theme, originX: column.originX, columnWidth: column.width,
                       cache: &cache, media: media, previous: previous, change: change,
-                      directives: measure)
+                      directives: measure, regions: regions, open: open)
         }
     }
 
@@ -903,7 +911,8 @@ struct EditorLayout {
     init(_ docView: DocView, theme: EditorTheme, originX: CGFloat, columnWidth: CGFloat,
          page: PageSetup? = nil, sheetX: CGFloat = 0,
          cache: inout [Row: ShapedRow], media: MediaStore? = nil, previous: EditorLayout? = nil,
-         change known: RowChange? = nil, directives measure: DirectiveMeasure? = nil) {
+         change known: RowChange? = nil, directives measure: DirectiveMeasure? = nil,
+         regions regionMeasure: RegionMeasure? = nil, open: OpenRegionLayout? = nil) {
         // Every setup the flow walks is a sound one — see `PageSetup.sanitized`.
         let page = page?.sanitized
         let wrapWidth = columnWidth
@@ -918,6 +927,9 @@ struct EditorLayout {
         self.math = docView.math
         self.directives = docView.directives
         self.hostsDirectives = measure != nil
+        self.regions = docView.regions
+        self.hostsRegions = regionMeasure != nil
+        self.open = open
         // Every glyph the reader can see is a run's text, including the ones a
         // surface redraws as graphics — a table's box picture, a media row's
         // `🖼 alt`, a break's `───`. So one pass over the runs answers this for
@@ -941,7 +953,7 @@ struct EditorLayout {
         // below it, each of them a different value by its offsets alone.
         let previous = previous.flatMap { $0.same(column: originX, width: columnWidth,
                                                    page: page, sheetX: sheetX, source: isSource)
-            && $0.hostsDirectives == (measure != nil) ? $0 : nil }
+            && $0.hostsDirectives == (measure != nil) && $0.hostsRegions == (regionMeasure != nil) ? $0 : nil }
         // Where the rows differ: as the caller read it off the frame, or by
         // comparing — and either way, narrowed by shape only over the span,
         // so a frame that changed one row compares one row.
@@ -953,7 +965,7 @@ struct EditorLayout {
                 docView.rows.narrowed(c, from: { p.rows[$0].row }) { $0 == $1 || $0.sameShape(as: $1) }
             }
         }
-        let kept = previous.map { $0.reusableRows(for: docView, change: change) } ?? 0
+        let kept = previous.map { $0.reusableRows(for: docView, change: change, open: open) } ?? 0
         if let previous, kept > 0 {
             layouts.append(contentsOf: previous.rows[..<kept])
             flowBefore.append(contentsOf: previous.flowBefore[..<kept])
@@ -1018,6 +1030,11 @@ struct EditorLayout {
         // kept under — which, for a document that says the same thing twice,
         // counts the ones before it. A page break is leaf's and never offered;
         // the source view has no pictures of anything.
+        // The regions a host's editor draws: its drawing of each closed one,
+        // and the open session's view over its own.
+        let regionAt = regionMeasure != nil && !isSource
+            ? regionKeys(docView, editors: { _ in true }, open: open) : [:]
+
         var directiveAt: [Int: (DirectiveView, DirectiveKey)] = [:]
         if measure != nil, !isSource {
             var seen: [DirectiveKey: Int] = [:]
@@ -1102,7 +1119,7 @@ struct EditorLayout {
                 continue
             }
 
-            if let mv = mathBlockAt[i], let box = MathLayout(mv, contentWidth: wrapWidth, theme: theme) {
+            if let mv = mathBlockAt[i], let box = MathLayout(mv, contentWidth: wrapWidth, theme: theme, open: open) {
                 // The media box's recipe: the placeholder row shaped and kept
                 // (its glyphs are the fallback, its prefix insets the box), the
                 // box atomic, the fillers collapsed under it.
@@ -1133,11 +1150,40 @@ struct EditorLayout {
             // list, and its length is where the caret's stop past it is — and
             // any rows core reserved under it collapse onto the one box. A nil
             // from the host falls through to the placeholder, drawn as before.
+            // A region a host's editor draws, closed or open: the directive's
+            // recipe, with the editor's view.
+            if let (rv, key) = regionAt[i] {
+                let shaped = EditorLayout.shape(docView.rows[i], theme: theme, wrapWidth: wrapWidth)
+                let width = max(0, wrapWidth - shaped.prefixWidth)
+                if let h = regionMeasure?(rv, key, width) {
+                    let box = DirectiveLayout(key: .region(key),
+                                              size: CGSize(width: width, height: max(0, h.rounded(.up))))
+                    flow.fit(box.height)
+                    let top = flow.y
+                    let x = flow.originX(originX)
+                    for r in Int(rv.startRow)..<Int(rv.endRow) where r < docView.rows.count {
+                        if r > i { flowBefore.append(nil) }
+                        layouts.append(RowLayout(
+                            row: docView.rows[r],
+                            shaped: r == Int(rv.startRow) ? shaped : emptyShape,
+                            top: top,
+                            originX: x, columnWidth: wrapWidth,
+                            directive: box, directiveTop: top,
+                            directiveFirst: r == Int(rv.startRow),
+                            page: flow.index
+                        ))
+                    }
+                    flow.y += box.height
+                    i = max(i + 1, Int(rv.endRow))
+                    continue
+                }
+            }
+
             if let (dv, key) = directiveAt[i] {
                 let shaped = EditorLayout.shape(docView.rows[i], theme: theme, wrapWidth: wrapWidth)
                 let width = max(0, wrapWidth - shaped.prefixWidth)
                 if let h = measure?(dv, key, width) {
-                    let box = DirectiveLayout(directive: dv, key: key,
+                    let box = DirectiveLayout(key: .directive(key),
                                               size: CGSize(width: width, height: max(0, h.rounded(.up))))
                     // Atomic, as a picture is: the host drew one thing, and half of
                     // it at the foot of a sheet is not a thing it drew.
@@ -1174,7 +1220,8 @@ struct EditorLayout {
                 shaped = hit
             } else {
                 shaped = EditorLayout.shape(row, theme: theme, wrapWidth: wrapWidth,
-                                            pageBreak: isPageBreak, math: mathInline, source: isSource)
+                                            pageBreak: isPageBreak, math: mathInline, source: isSource,
+                                            open: open)
             }
             if !hasMath { next[row] = shaped }
 
@@ -1352,13 +1399,27 @@ struct EditorLayout {
     /// fewer than the change, since a heading reads two rows ahead to keep
     /// itself with what it introduces; and backed off to a row the walk began
     /// an iteration at, since an iteration is what is re-run.
-    private func reusableRows(for docView: DocView, change: RowChange?) -> Int {
+    private func reusableRows(for docView: DocView, change: RowChange?, open: OpenRegionLayout?) -> Int {
         guard !docView.rows.isEmpty else { return 0 }
         var kept = min(rows.count, change.map { max(0, $0.new.lowerBound - 2) } ?? docView.rows.count)
         kept = min(kept, firstDiffering(docView.tables, tables, \.startRow))
         kept = min(kept, firstDiffering(docView.media, media, \.startRow))
         kept = min(kept, firstDiffering(docView.math, math, \.startRow))
         kept = min(kept, firstDiffering(docView.directives, directives, \.startRow))
+        kept = min(kept, firstDiffering(docView.regions, regions, \.startRow))
+        // What the open region draws is the session's, which core does not
+        // see: a region opened, closed or redrawn is laid out again from its
+        // row.
+        if !(open?.same(as: self.open) ?? (self.open == nil)) {
+            for o in [open, self.open].compactMap({ $0 }) {
+                if let r = docView.regions.first(where: { $0.kind == o.kind && $0.src == o.src }) {
+                    kept = min(kept, Int(r.startRow))
+                }
+                if let r = regions.first(where: { $0.kind == o.kind && $0.src == o.src }) {
+                    kept = min(kept, Int(r.startRow))
+                }
+            }
+        }
         while kept > 0 && flowBefore[kept] == nil { kept -= 1 }
         return kept
     }
@@ -1442,8 +1503,19 @@ struct EditorLayout {
     func directiveRects() -> [DirectiveKey: CGRect] {
         var out: [DirectiveKey: CGRect] = [:]
         for rl in rows {
-            guard let d = rl.directive, let r = rl.directiveRect else { continue }
-            out[d.key] = r
+            guard let d = rl.directive, case let .directive(key) = d.key, let r = rl.directiveRect else { continue }
+            out[key] = r
+        }
+        return out
+    }
+
+    /// Every host-drawn region's view frame, keyed as `RegionViews` keeps it —
+    /// `directiveRects`' peer.
+    func regionRects() -> [RegionKey: CGRect] {
+        var out: [RegionKey: CGRect] = [:]
+        for rl in rows {
+            guard let d = rl.directive, case let .region(key) = d.key, let r = rl.directiveRect else { continue }
+            out[key] = r
         }
         return out
     }
@@ -1496,10 +1568,11 @@ struct EditorLayout {
     /// `source` shapes the row for the source view — see `AttributedRow.make`.
     static func shape(_ row: Row, theme: EditorTheme, wrapWidth: CGFloat,
                       pageBreak: Bool = false, math: [UInt32: MathView] = [:],
-                      source: Bool = false) -> ShapedRow {
+                      source: Bool = false, open: OpenRegionLayout? = nil) -> ShapedRow {
         let prefix = row.prefixRuns
         let drawn = row.isThematicBreak || pageBreak ? prefix : row.runs
-        let attributed = AttributedRow.make(drawn, row: row, theme: theme, math: math, source: source)
+        let attributed = AttributedRow.make(drawn, row: row, theme: theme, math: math, source: source,
+                                            open: open)
 
         // The prefix's own geometry, measured on its own line: its total width (the
         // hanging indent) and where each level's bar glyph starts.

@@ -101,12 +101,20 @@ final class MathEditingTests: XCTestCase {
         let view = try editor("say $x$ here\n")
         place(view, math(view).src)
         send(#selector(NSResponder.moveRight(_:)), to: view)
-        // The layout names the open formula by its stand-in, which the store
-        // answers with the session's picture — wider than the typeset `x` by
-        // nothing, but a different picture: it carries the caret.
-        let laid = try XCTUnwrap(view.layoutEngine.math.first)
-        XCTAssertTrue(laid.tex.hasPrefix(MathStore.openPrefix))
-        XCTAssertNotNil(MathStore.glyph(tex: laid.tex, display: false, size: 16, ink: view.theme.textColor))
+        // The layout asks the open region for the formula's picture, which its
+        // session draws with its caret — a picture the typesetter's is not.
+        let open = try XCTUnwrap(view.layoutEngine.open)
+        XCTAssertEqual(open.kind, "math")
+        XCTAssertEqual(open.src, math(view).src)
+        XCTAssertNotNil(open.picture)
+        XCTAssertNotNil(OpenRegionLayout.glyph(math(view), size: 16, ink: view.theme.textColor, open: open))
+        // A caret move inside it changes nothing core knows, and still lays
+        // the picture out again.
+        view.insertText("y", replacementRange: none)
+        let typed = try XCTUnwrap(view.layoutEngine.open).revision
+        send(#selector(NSResponder.moveLeft(_:)), to: view)
+        XCTAssertGreaterThan(try XCTUnwrap(view.layoutEngine.open).revision, typed)
+        XCTAssertEqual(view.doc.source(), "say $yx$ here\n")
     }
 
     func testAClickOnAnInlinePictureFindsItsFormula() throws {
