@@ -62,7 +62,26 @@ What the text below did not foresee, or decided:
   a fence as edited the moment it opened. Re-showing is now told apart from
   editing.
 
-Still to do: the math editor's own "Not done" list, below.
+A review of the protocol found five problems, fixed in `ff97e56`:
+
+- An open region was found again only by its start, so an undo above it
+  closed it. It is now found by its place among regions of its kind, on both
+  platforms.
+- A fence edit that kept the rows equal was not reported as an edit.
+- On iOS, the cleared tint hid a host view's caret.
+- A key that reached the text view past a host's view acted on the document.
+- Contents were compared as characters rather than bytes.
+
+Step 3 has begun, with the math editor's "Not done" list in
+`crates/leaf-math-edit/README.md`:
+
+- Selection, copy, cut, paste and delete-forward (`fbcfeaf`). The region
+  protocol gained `copy` and `paste` for them.
+- The open formula's layout is kept while its source stands (`8b4d678`).
+- An empty script goes when the caret leaves it (`b9efe35`).
+
+Left on that list: matrices and environments as grids, `\left(` pairing,
+IME, user colours, and the terminal frontend.
 
 ## The problem
 
