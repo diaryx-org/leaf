@@ -249,6 +249,27 @@ pub struct VRow {
     /// [`regions`](VisualMap::regions) side-table is derived from it, and from
     /// the owned [`math`](Self::math) marks, once the rows are final.
     pub region: Option<RegionMark>,
+    /// The inline regions the frontend edits itself whose atoms stand on
+    /// this row — a text directive (`:date[…]`) of a name it named — each
+    /// with the index of its atom glyph. Empty on every other row.
+    pub inline_regions: Vec<InlineRegionMark>,
+}
+
+/// An inline region the frontend edits itself, standing as one atom glyph in
+/// its line — a text directive (`:name[label]{attrs}`) of a name it named in
+/// [`Surface::owned_regions`], on a surface that paints pictures in a line.
+/// Relative, like [`MathMark`], so a reused block's mark needs no shifting.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InlineRegionMark {
+    /// The region's kind: `directive:date`.
+    pub kind: String,
+    /// The index into [`VRow::glyphs`] of its atom.
+    pub glyph: usize,
+    /// The node's length in bytes, the whole directive — which is also its
+    /// content, as a leaf directive's is.
+    pub len: usize,
+    /// Its name, attributes and label.
+    pub directive: DirectiveMark,
 }
 
 /// One formula a row stands in for — what a picture-capable frontend typesets
@@ -1925,6 +1946,7 @@ pub fn build(
         reveal: reveal.clone(),
         pending_mark_ends: RefCell::new(Vec::new()),
         pending_math: RefCell::new(Vec::new()),
+        pending_regions: RefCell::new(Vec::new()),
         saw_math: Cell::new(false),
         presentation: Presentation::default(),
         faces: RefCell::new(FaceTable::default()),
@@ -2022,6 +2044,7 @@ pub fn build_cached(
         reveal: reveal.clone(),
         pending_mark_ends: RefCell::new(Vec::new()),
         pending_math: RefCell::new(Vec::new()),
+        pending_regions: RefCell::new(Vec::new()),
         saw_math: Cell::new(false),
         presentation: Presentation::default(),
         faces: RefCell::new(FaceTable::default()),
@@ -2106,6 +2129,7 @@ pub fn build_cached(
                     reveal: reveal.clone(),
                     pending_mark_ends: RefCell::new(Vec::new()),
                     pending_math: RefCell::new(Vec::new()),
+                    pending_regions: RefCell::new(Vec::new()),
                     saw_math: Cell::new(false),
                     presentation: Presentation::default(),
                     faces: RefCell::new(FaceTable::default()),
@@ -2382,6 +2406,7 @@ pub fn build_spliced(
         reveal: reveal.clone(),
         pending_mark_ends: RefCell::new(Vec::new()),
         pending_math: RefCell::new(Vec::new()),
+        pending_regions: RefCell::new(Vec::new()),
         saw_math: Cell::new(false),
         presentation: Presentation::default(),
         faces: RefCell::new(FaceTable::default()),
@@ -2806,6 +2831,8 @@ fn shift_row(row: &VRow, delta: isize) -> VRow {
         // did not.
         math: row.math.clone(),
         region: row.region.clone(),
+        // Relative, like `math`.
+        inline_regions: row.inline_regions.clone(),
     }
 }
 
@@ -3183,6 +3210,10 @@ struct Builder<'a> {
     /// how [`Builder::take_math`] pairs each with its glyph once the wrap has
     /// decided which row it landed on. Drained the way `pending_mark_ends` is.
     pending_math: RefCell<Vec<(usize, MathMark)>>,
+    /// The owned inline regions rendered since the last row was pushed, keyed
+    /// by start offset as `pending_math` is, and taken the same way
+    /// ([`Builder::take_inline_regions`]).
+    pending_regions: RefCell<Vec<(usize, InlineRegionMark)>>,
     /// Whether this walk met a formula at all, atom, block, or revealed — the
     /// fact [`BlockCache`] keeps per block so [`crate::Doc::reveal_line`] can
     /// tell whether the caret's line has anything to reveal without walking.
@@ -3302,6 +3333,28 @@ impl Builder<'_> {
         }
         out
     }
+    /// The pending inline regions whose atom is on the row `glyphs` is about
+    /// to become, each with its atom's index — [`take_math`](Self::take_math)'s
+    /// peer, for [`REGION_ATOM`] glyphs.
+    fn take_inline_regions(&self, glyphs: &[Glyph]) -> Vec<InlineRegionMark> {
+        let mut pending = self.pending_regions.borrow_mut();
+        if pending.is_empty() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for (i, g) in glyphs.iter().enumerate() {
+            if g.ch != REGION_ATOM || !g.stop {
+                continue;
+            }
+            if let Some(at) = pending.iter().position(|(src, _)| *src == g.src) {
+                let (_, mut mark) = pending.remove(at);
+                mark.glyph = i;
+                out.push(mark);
+            }
+        }
+        out
+    }
+
     /// Whether `span` belongs to the line that is showing its raw markup. True
     /// only when a reveal line is set *for markup* (`MarkupMode::Full`) and the
     /// two ranges actually meet — see [`Reveal::meets`] for what meeting is.
@@ -3641,6 +3694,7 @@ impl Builder<'_> {
                 mark_ends: Vec::new(),
                 math: Vec::new(),
                 region: None,
+                inline_regions: Vec::new(),
             });
         }
     }
@@ -3700,6 +3754,7 @@ impl Builder<'_> {
                 mark_ends: Vec::new(),
                 math: Vec::new(),
                 region: None,
+                inline_regions: Vec::new(),
             });
         }
     }
@@ -3787,6 +3842,7 @@ impl Builder<'_> {
                 mark_ends: Vec::new(),
                 math: Vec::new(),
                 region: None,
+                inline_regions: Vec::new(),
             });
         }
     }
@@ -4442,6 +4498,7 @@ impl Builder<'_> {
                 mark_ends: Vec::new(),
                 math: Vec::new(),
                 region: None,
+                inline_regions: Vec::new(),
             });
             self.last_off = end_src;
         }
@@ -4679,6 +4736,7 @@ impl Builder<'_> {
             mark_ends: Vec::new(),
             math: Vec::new(),
             region: None,
+            inline_regions: Vec::new(),
         });
     }
 
@@ -4762,6 +4820,7 @@ impl Builder<'_> {
                 .map_or(fallback, |g| g.src);
             let mark_ends = self.take_mark_ends(end_src);
             let math = self.take_math(&glyphs);
+            let inline_regions = self.take_inline_regions(&glyphs);
             self.rows.push(VRow {
                 glyphs,
                 end_src,
@@ -4781,6 +4840,7 @@ impl Builder<'_> {
                 mark_ends,
                 math,
                 region: None,
+                inline_regions,
             });
         }
     }
@@ -4898,6 +4958,7 @@ impl Builder<'_> {
                 mark_ends: Vec::new(),
                 math: Vec::new(),
                 region: None,
+                inline_regions: Vec::new(),
             });
         }
         self.last_off = end;
@@ -5131,6 +5192,7 @@ impl Builder<'_> {
                 mark_ends: Vec::new(),
                 math: Vec::new(),
                 region: None,
+                inline_regions: Vec::new(),
             });
         }
         self.last_off = end;
@@ -5283,6 +5345,7 @@ impl Builder<'_> {
                 mark_ends: Vec::new(),
                 math: Vec::new(),
                 region: None,
+                inline_regions: Vec::new(),
             });
         }
         self.last_off = end;
@@ -5521,6 +5584,49 @@ impl Builder<'_> {
             // span's text is the author's words.
             "container" if is_run_span(node) && !self.children(id).is_empty() => {
                 self.recurse(id, run_style(node, base, &self.faces), out)
+            }
+            // A text directive of a name the frontend draws and edits itself
+            // (`directive:<name>` in its owned regions), on a surface that paints
+            // pictures in a line: one atom glyph standing for the whole
+            // directive, `stop: true` at its start — an inline formula's
+            // recipe — and an [`InlineRegionMark`] drained onto the row, so the
+            // frontend finds it in [`VisualMap::regions`]. Under
+            // [`MarkupMode::Full`](crate::MarkupMode) the caret's line shows it
+            // as its source, as a fence on it is. Every other frontend gets the
+            // arms below, unchanged.
+            "container"
+                if container_is_directive(node)
+                    && node.directive_form == Some(DirectiveForm::Text)
+                    && self.surface.inline_pictures
+                    && !self.revealed(&node.span)
+                    && self.surface.owns(&format!(
+                        "{DIRECTIVE_REGION}{}",
+                        node.name.as_deref().unwrap_or_default()
+                    )) =>
+            {
+                let name = node.name.clone().unwrap_or_default();
+                let label = self.image_alt(id);
+                let attrs = node.attrs.clone();
+                self.pending_regions.borrow_mut().push((
+                    node.span.start,
+                    InlineRegionMark {
+                        kind: format!("{DIRECTIVE_REGION}{name}"),
+                        glyph: 0,
+                        len: node.span.len(),
+                        directive: DirectiveMark {
+                            name,
+                            attrs,
+                            label,
+                            rows: 1,
+                        },
+                    },
+                ));
+                out.push(Glyph {
+                    ch: REGION_ATOM,
+                    style: base.role(Role::Image),
+                    src: node.span.start,
+                    stop: true,
+                });
             }
             // A text directive (`:name[label]{…}`) — the inline form of a generic
             // directive. Its `[label]` children are the visible text; the name and
@@ -5843,6 +5949,7 @@ impl Builder<'_> {
         self.last_off = end_src;
         let mark_ends = self.take_mark_ends(end_src);
         let math = self.take_math(&glyphs);
+        let inline_regions = self.take_inline_regions(&glyphs);
         self.rows.push(VRow {
             glyphs,
             end_src,
@@ -5862,6 +5969,7 @@ impl Builder<'_> {
             mark_ends,
             math,
             region: None,
+            inline_regions,
         });
     }
 
@@ -6049,6 +6157,7 @@ impl Builder<'_> {
                 mark_ends: Vec::new(),
                 math: Vec::new(),
                 region: None,
+                inline_regions: Vec::new(),
             });
         }
     }
@@ -6455,6 +6564,19 @@ fn region_spans(rows: &[VRow]) -> Vec<RegionInfo> {
                 src,
                 end: src + m.len,
                 content: src + m.tex_at..src + m.tex_at + m.tex.len(),
+            });
+        }
+        for m in &row.inline_regions {
+            let src = row.glyphs.get(m.glyph).map_or(row.end_src, |g| g.src);
+            all.push(RegionInfo {
+                kind: m.kind.clone(),
+                inline: true,
+                display: false,
+                directive: Some(m.directive.clone()),
+                rows_span: i..i + 1,
+                src,
+                end: src + m.len,
+                content: src..src + m.len,
             });
         }
         if let Some(mark) = &row.region {

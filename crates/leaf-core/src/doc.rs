@@ -22659,6 +22659,131 @@ mod tests {
     }
 
     #[test]
+    fn an_owned_inline_directive_is_an_atom_and_an_inline_region() {
+        let src = "Due :date[2026-10-12] and :date[2026-11-01]{tz=UTC} then :tag[x] done\n\nend\n";
+        let mut d = doc_in(View::Wysiwyg, "inline_directive_owned", src);
+        d.set_inline_pictures(true);
+        caret_at(&mut d, "end");
+        let plain = drawn_rows(&d);
+        assert!(plain[0].contains("2026-10-12"), "{plain:?}");
+        assert!(d.vmap.regions.is_empty());
+        d.set_owned_regions(&["directive:date"]);
+        caret_at(&mut d, "end");
+        let rows = drawn_rows(&d);
+        assert_eq!(rows[0], "Due ▤ and ▤ then x done", "{rows:?}");
+        let [a, b] = d
+            .vmap
+            .regions
+            .clone()
+            .try_into()
+            .unwrap_or_else(|v| panic!("two regions: {v:?}"));
+        for r in [&a, &b] {
+            assert_eq!(r.kind, "directive:date");
+            assert!(r.inline && !r.display);
+            assert_eq!(r.rows_span, 0..1);
+            assert_eq!(
+                r.content,
+                r.src..r.end,
+                "an inline directive's content is its whole source"
+            );
+        }
+        assert_eq!(&d.source[a.src..a.end], ":date[2026-10-12]");
+        assert_eq!(&d.source[b.src..b.end], ":date[2026-11-01]{tz=UTC}");
+        let mark = a.directive.as_ref().expect("its directive");
+        assert_eq!(
+            (mark.name.as_str(), mark.label.as_str()),
+            ("date", "2026-10-12")
+        );
+        let mark = b.directive.as_ref().expect("its directive");
+        assert_eq!(
+            mark.attrs,
+            vec![("tz".to_string(), Some("UTC".to_string()))]
+        );
+        // The atom is one stop: the caret steps over the whole directive.
+        d.place_caret(a.src, false);
+        d.move_right(false);
+        assert_eq!(d.caret, a.end);
+        d.move_left(false);
+        assert_eq!(d.caret, a.src);
+        // An edit through its content is an edit of the directive.
+        let at = a.src + ":date[2026-10-".len();
+        d.edit(at, at + 2, "31");
+        d.build_visual(80);
+        assert_eq!(
+            d.vmap.regions[0].directive.as_ref().unwrap().label,
+            "2026-10-31"
+        );
+        // An edit above shifts the reused block, and the regions with it.
+        d.place_caret(0, false);
+        d.insert("Z");
+        d.build_visual(80);
+        assert_eq!(
+            &d.source[d.vmap.regions[1].src..d.vmap.regions[1].end],
+            ":date[2026-11-01]{tz=UTC}"
+        );
+        // Full shows the caret's line as an unowned directive is drawn: its
+        // label, to be typed into.
+        d.set_markup_mode(MarkupMode::Full);
+        caret_at(&mut d, "Due");
+        let line = &drawn_rows(&d)[0];
+        assert!(
+            line.contains("2026-10-31") && !line.contains('▤'),
+            "{line:?}"
+        );
+        assert!(d.vmap.regions.is_empty());
+    }
+
+    #[test]
+    fn an_inline_directive_draws_as_before_where_it_is_not_owned_or_cannot_be_a_picture() {
+        let src = "Due :date[2026-10-12] and :vis{.family} done\n\nend\n";
+        // Not owned, on a picture surface (the web, Apple).
+        let mut d = doc_in(View::Wysiwyg, "inline_directive_unowned", src);
+        d.set_inline_pictures(true);
+        caret_at(&mut d, "end");
+        let before = drawn_rows(&d);
+        d.set_owned_regions(&["directive:other", "math"]);
+        caret_at(&mut d, "end");
+        assert_eq!(drawn_rows(&d), before);
+        assert!(d.vmap.regions.is_empty());
+        // Owned, on a surface that paints nothing in a line (the terminal,
+        // Android): drawn as it always was.
+        let mut t = doc_in(View::Wysiwyg, "inline_directive_terminal", src);
+        caret_at(&mut t, "end");
+        let terminal = drawn_rows(&t);
+        t.set_owned_regions(&["directive:date", "directive:vis"]);
+        caret_at(&mut t, "end");
+        assert_eq!(drawn_rows(&t), terminal);
+        assert!(t.vmap.regions.is_empty());
+        assert!(
+            terminal[0].contains("2026-10-12") && terminal[0].contains("⧉ vis"),
+            "{terminal:?}"
+        );
+    }
+
+    #[test]
+    fn an_owned_inline_directive_wraps_with_its_atom() {
+        let words = "word ".repeat(30);
+        let src = format!("{words}:date[2026-10-12] {words}\n");
+        let mut d = doc_in(View::Wysiwyg, "inline_directive_wrapped", &src);
+        d.set_inline_pictures(true);
+        d.set_owned_regions(&["directive:date"]);
+        d.place_caret(0, false);
+        d.build_visual(40);
+        let [r] = d
+            .vmap
+            .regions
+            .clone()
+            .try_into()
+            .unwrap_or_else(|v| panic!("one region: {v:?}"));
+        let row = &d.vmap.rows[r.rows_span.start];
+        assert!(
+            row.glyphs.iter().any(|g| g.ch == '▤' && g.src == r.src),
+            "the region's row lacks its atom"
+        );
+        assert_eq!(&d.source[r.src..r.end], ":date[2026-10-12]");
+    }
+
+    #[test]
     fn an_owned_directive_is_a_region_of_its_whole_source() {
         let src = "intro\n\n::embed[Card]{src=\"a.md\" wide}\n\n::toc\n\n::page-break\n\nend\n";
         let mut d = doc_in(View::Wysiwyg, "directive_owned", src);
