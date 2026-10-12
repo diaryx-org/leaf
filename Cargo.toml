@@ -75,3 +75,10 @@ opt-level = "s"
 lto = "fat"
 codegen-units = 1
 panic = "abort"
+
+# mmdr optimised even in a debug build: unoptimised, its flowchart layout is
+# some six times slower (a 20-node chart 244 ms against 40 ms), which makes
+# the leaf-editor app's Debug configuration a poor guide to what Diaryx ships.
+# A profile here governs only builds of this workspace.
+[profile.dev.package.mermaid-rs-renderer]
+opt-level = 3

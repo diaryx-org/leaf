@@ -11,7 +11,8 @@
 //! through [`Measure`] — Core Text on Apple, a canvas on the web — and the
 //! renderer never goes looking for fonts of its own.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use mermaid_rs_renderer::{RenderOptions, Theme, metrics::TextMetrics};
 
@@ -22,8 +23,23 @@ pub trait Measure: Send + Sync {
     fn width(&self, text: &str, size: f32, family: &str) -> Option<f32>;
 }
 
-/// A host's [`Measure`] as mmdr's [`TextMetrics`].
-struct Host(Arc<dyn Measure>);
+/// A host's [`Measure`] as mmdr's [`TextMetrics`], asked once per label: mmdr
+/// measures the same label several times in one layout (a 60-node flowchart
+/// asks 412 times about 76 labels), and each ask may cross a binding into
+/// the host's text system.
+struct Host {
+    measure: Arc<dyn Measure>,
+    seen: Mutex<HashMap<(String, u32, String), Option<f32>>>,
+}
+
+impl Host {
+    fn new(measure: Arc<dyn Measure>) -> Self {
+        Host {
+            measure,
+            seen: Mutex::new(HashMap::new()),
+        }
+    }
+}
 
 impl std::fmt::Debug for Host {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -33,7 +49,24 @@ impl std::fmt::Debug for Host {
 
 impl TextMetrics for Host {
     fn measure_text_width(&self, text: &str, font_size: f32, font_family: &str) -> Option<f32> {
-        self.0.width(text, font_size, font_family)
+        let key = (
+            text.to_string(),
+            font_size.to_bits(),
+            font_family.to_string(),
+        );
+        if let Some(width) = self
+            .seen
+            .lock()
+            .ok()
+            .and_then(|seen| seen.get(&key).copied())
+        {
+            return width;
+        }
+        let width = self.measure.width(text, font_size, font_family);
+        if let Ok(mut seen) = self.seen.lock() {
+            seen.insert(key, width);
+        }
+        width
     }
 }
 
@@ -76,7 +109,7 @@ pub fn render(
         ..RenderOptions::default()
     };
     if let Some(m) = measure {
-        options.layout.metrics = Some(Arc::new(Host(m)));
+        options.layout.metrics = Some(Arc::new(Host::new(m)));
     }
     let svg = mermaid_rs_renderer::render_with_options(source, options).map_err(|e| Error {
         message: format!("{e:#}"),
@@ -143,6 +176,35 @@ mod tests {
         assert!(
             measured.width > narrow.width,
             "the host's wider text did not widen the diagram"
+        );
+    }
+
+    /// Every question a host was asked, in order.
+    #[derive(Default)]
+    struct Asked(Mutex<Vec<(String, u32, String)>>);
+
+    impl Measure for Asked {
+        fn width(&self, text: &str, size: f32, family: &str) -> Option<f32> {
+            self.0
+                .lock()
+                .unwrap()
+                .push((text.to_string(), size.to_bits(), family.to_string()));
+            Some(text.chars().count() as f32 * size * 0.5)
+        }
+    }
+
+    #[test]
+    fn the_host_is_asked_once_per_label() {
+        let src = "flowchart LR\n  A[Same] --> B[Same]\n  B --> C[Other]\n  C --> A\n";
+        let asked = Arc::new(Asked::default());
+        render(src, false, Some(asked.clone())).unwrap();
+        let asks = asked.0.lock().unwrap().clone();
+        let distinct: std::collections::HashSet<_> = asks.iter().collect();
+        assert!(!asks.is_empty());
+        assert_eq!(
+            asks.len(),
+            distinct.len(),
+            "a label was asked about twice: {asks:?}"
         );
     }
 
