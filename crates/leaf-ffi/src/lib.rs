@@ -592,7 +592,7 @@ pub struct DirectiveView {
 /// tuple because UniFFI has no tuple type; an absent value flattens to `""`,
 /// since a bare attribute is a flag and the distinction from `key=""` has no
 /// consumer on this side.
-#[derive(uniffi::Record)]
+#[derive(uniffi::Record, Clone, Debug, PartialEq)]
 pub struct DirectiveAttr {
     pub key: String,
     pub value: String,
@@ -713,19 +713,29 @@ pub struct MathView {
     pub src: u32,
 }
 
-/// A part of the document the view edits itself, as it asked through
-/// [`LeafDoc::set_owned_regions`]: a formula (`kind` `"math"`), or a fenced
-/// block of a language it named (`"fence:mermaid"`). The view opens one in an
-/// editor of its own, which reads `[content_start, content_end)` and writes
-/// back through [`LeafDoc::edit_source`]. An owned fence stands as one
-/// placeholder row the view draws over; an owned formula is the picture its
-/// [`MathView`] already describes.
+/// A part of the document the view draws or edits itself, as it asked
+/// through [`LeafDoc::set_owned_regions`]: a formula (`kind` `"math"`), a
+/// fenced block of a language it named (`"fence:mermaid"`), or a leaf
+/// directive of a name it named (`"directive:embed"`). A renderer draws one
+/// from its `content`; an editor opens it, reads `[content_start,
+/// content_end)` and writes back through [`LeafDoc::edit_source`]. An owned
+/// fence or directive stands as placeholder rows the view draws over; an
+/// owned formula is the picture its [`MathView`] already describes.
 #[derive(uniffi::Record, Clone, Debug, PartialEq)]
 pub struct RegionView {
-    /// `"math"`, or `"fence:"` and the fence's language.
+    /// `"math"`, `"fence:"` and the fence's language, or `"directive:"` and
+    /// the leaf directive's name.
     pub kind: String,
     /// An inline formula's atom, rather than a block on rows of its own.
     pub inline: bool,
+    /// A formula set in display style (`$$…$$`, inline or not) rather than
+    /// text style. False for every other kind.
+    pub display: bool,
+    /// A leaf directive's name, `[label]` and `{…}` attributes, as its
+    /// [`DirectiveView`] carries them. Empty for every other kind.
+    pub name: String,
+    pub label: String,
+    pub attrs: Vec<DirectiveAttr>,
     /// The [`DocView::rows`] it stands on, `[start_row, end_row)`.
     pub start_row: u32,
     pub end_row: u32,
@@ -4356,6 +4366,26 @@ fn wysiwyg_regions(vmap: &VisualMap, source: &str) -> Vec<RegionView> {
         .map(|r| RegionView {
             kind: r.kind.clone(),
             inline: r.inline,
+            display: r.display,
+            name: r
+                .directive
+                .as_ref()
+                .map(|d| d.name.clone())
+                .unwrap_or_default(),
+            label: r
+                .directive
+                .as_ref()
+                .map(|d| d.label.clone())
+                .unwrap_or_default(),
+            attrs: r.directive.as_ref().map_or_else(Vec::new, |d| {
+                d.attrs
+                    .iter()
+                    .map(|(k, v)| DirectiveAttr {
+                        key: k.clone(),
+                        value: v.clone().unwrap_or_default(),
+                    })
+                    .collect()
+            }),
             start_row: r.rows_span.start as u32,
             end_row: r.rows_span.end as u32,
             src: r.src as u32,

@@ -107,7 +107,8 @@ final class MathEditingTests: XCTestCase {
         XCTAssertEqual(open.kind, "math")
         XCTAssertEqual(open.src, math(view).src)
         XCTAssertNotNil(open.picture)
-        XCTAssertNotNil(OpenRegionLayout.glyph(math(view), size: 16, ink: view.theme.textColor, open: open))
+        let region = try XCTUnwrap(view.doc.view().region("math", at: math(view).src))
+        XCTAssertNotNil(view.layoutEngine.drawing.picture(region, size: 16, ink: view.theme.textColor))
         // A caret move inside it changes nothing core knows, and still lays
         // the picture out again.
         view.insertText("y", replacementRange: none)
@@ -156,9 +157,10 @@ final class MathEditingTests: XCTestCase {
         let rl = view.layoutEngine.rows[row]
         // Somewhere over the picture: right of `say `, through the line.
         let base = try XCTUnwrap(view.layoutEngine.baselineOrigin(row: row, ch: 4))
-        let hit = view.layoutEngine.mathPicture(at: CGPoint(x: base.x + 2, y: base.y - 2), theme: view.theme)
-        XCTAssertEqual(hit?.math.src, math(view).src)
-        XCTAssertNil(view.layoutEngine.mathPicture(at: CGPoint(x: rl.originX + 1, y: base.y - 2), theme: view.theme))
+        let hit = view.layoutEngine.regionPicture(at: CGPoint(x: base.x + 2, y: base.y - 2), theme: view.theme)
+        XCTAssertEqual(hit?.region.src, math(view).src)
+        XCTAssertEqual(hit?.region.kind, "math")
+        XCTAssertNil(view.layoutEngine.regionPicture(at: CGPoint(x: rl.originX + 1, y: base.y - 2), theme: view.theme))
     }
 }
 #endif

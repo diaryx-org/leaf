@@ -20,6 +20,11 @@ public typealias LeafColor = NSColor
 public typealias LeafFont = NSFont
 public typealias LeafView = NSView
 public typealias LeafImage = NSImage
+
+extension NSAppearance {
+    /// Whether this is a dark appearance — what a region renderer is told.
+    var isDark: Bool { bestMatch(from: [.aqua, .darkAqua]) == .darkAqua }
+}
 #endif
 
 /// Text insets, kept as a plain struct so the theme doesn't depend on either

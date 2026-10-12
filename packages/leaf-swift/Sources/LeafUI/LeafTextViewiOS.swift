@@ -697,7 +697,7 @@ public final class LeafTextView: UIView, UITextInput {
     /// What the open region was last laid out as — the AppKit peer's.
     private var laidRegion: OpenRegionLayout?
     /// Whether a formula is open for structural editing.
-    var isEditingFormula: Bool { regionSlot.open?.kind == MathRegionSession.kind }
+    var isEditingFormula: Bool { regionSlot.open?.kind == MathRenderer.kind }
 
     /// Whether a formula is edited in place as structure, or — `false` —
     /// revealed as its TeX on the caret's line. On by default.
@@ -711,15 +711,37 @@ public final class LeafTextView: UIView, UITextInput {
         }
     }
 
-    /// The host's editors for fences, by region kind — the AppKit peer's.
+    /// The host's editors, by region kind — the AppKit peer's.
     public var regionEditors: [String: RegionEditor] {
         get { regionSlot.editors }
         set {
-            regionSlot.editors = newValue.filter { $0.key.hasPrefix("fence:") }
-            reshowing = true
-            render(doc.setOwnedRegions(kinds: regionSlot.ownedKinds), reflow: true)
-            reshowing = false
+            regionSlot.editors = newValue.filter { RegionKinds.editable($0.key) }
+            reownRegions()
         }
+    }
+
+    /// The host's renderers, by region kind, over leaf's own — the AppKit
+    /// peer's.
+    public var regionRenderers: [String: RegionRenderer] {
+        get { regionSlot.pictures.renderers }
+        set {
+            regionSlot.pictures.renderers = newValue.filter { RegionKinds.hostable($0.key) }
+            reownRegions()
+        }
+    }
+
+    /// Forget the pictures drawn for regions of `kind`, or of every kind, and
+    /// draw them again — the AppKit peer's.
+    public func redrawRegions(kind: String? = nil) {
+        regionSlot.pictures.invalidate(kind: kind)
+        render(docView, reflow: true)
+    }
+
+    /// Tell core the kinds the view now owns, and show the document again.
+    private func reownRegions() {
+        reshowing = true
+        render(doc.setOwnedRegions(kinds: regionSlot.ownedKinds), reflow: true)
+        reshowing = false
     }
     /// Per-row shaped-text cache reused across frames; an edit re-shapes only the
     /// changed row(s). Cleared when the theme geometry changes (see `theme`).
@@ -1073,10 +1095,18 @@ public final class LeafTextView: UIView, UITextInput {
     /// The panel's last search, to run again when the text changes under it.
     private var lastFindQuery: (query: String, options: UITextSearchOptions)?
 
-    public init(doc: LeafDoc, theme: EditorTheme = .default) {
+    public convenience init(doc: LeafDoc, theme: EditorTheme = .default) {
+        self.init(doc: doc, theme: theme, regions: RegionSetup())
+    }
+
+    /// A view over `doc` that draws and edits its regions as `regions` says —
+    /// the AppKit peer's.
+    init(doc: LeafDoc, theme: EditorTheme, regions: RegionSetup) {
         self.doc = doc
         self.hostTheme = theme
         self.renderTheme = theme
+        regionSlot.adopt(regions)
+        editsFormulasAsStructure = regions.editsMath
         // A formula is edited in place as structure (`MathEditing.swift`), so
         // on the caret's line it stays its picture rather than revealing TeX.
         // Said before frames become changes, as the AppKit peer does.
@@ -1674,17 +1704,18 @@ public final class LeafTextView: UIView, UITextInput {
         // bytes the typesetter is handed. Left to the caller's traits, a paper
         // sheet (light, whatever the screen) laid out on a dark phone would set
         // its formulas in white — and print them on white.
+        let drawing = regionSlot.drawing(dark: traitCollection.userInterfaceStyle == .dark)
         traitCollection.performAsCurrent {
             if reflow {
                 layoutEngine = EditorLayout(view, theme: renderTheme, viewWidth: viewWidth, page: pageSetup,
                                             cache: &shapeCache, media: mediaStore,
                                             directives: directiveHost.measure,
-                                            regions: regionSlot.views.measure, open: open)
+                                            regions: regionSlot.views.measure, drawing: drawing)
             } else if change != nil || blocksChanged || openChanged || layoutEngine.rows.isEmpty {
                 layoutEngine = EditorLayout(view, theme: renderTheme, viewWidth: viewWidth, page: pageSetup,
                                             cache: &shapeCache, media: mediaStore, previous: layoutEngine,
                                             change: change, directives: directiveHost.measure,
-                                            regions: regionSlot.views.measure, open: open)
+                                            regions: regionSlot.views.measure, drawing: drawing)
             }
         }
         let relaid = reflow || change != nil || blocksChanged || openChanged
@@ -1694,7 +1725,7 @@ public final class LeafTextView: UIView, UITextInput {
             directiveHost.place(layoutEngine.directiveRects(), in: self)
         }
         if relaid, !regionSlot.views.isEmpty {
-            regionSlot.views.place(layoutEngine.regionRects(), in: self)
+            regionSlot.views.place(layoutEngine.openRegionRect(), in: self)
         }
         // Installed players follow their boxes; media edited out of the document
         // is absent from the rects, which is what stops its playback.
@@ -1877,9 +1908,9 @@ public final class LeafTextView: UIView, UITextInput {
             }
             // A display formula's picture, once, on its first placeholder row,
             // centred on the column.
-            if let box = rl.math {
-                if rl.mathFirst {
-                    box.draw(in: box.rect(top: rl.mathTop, left: rl.originX + rl.shaped.prefixWidth,
+            if let box = rl.picture {
+                if rl.pictureFirst {
+                    box.draw(in: box.rect(top: rl.pictureTop, left: rl.originX + rl.shaped.prefixWidth,
                                           width: rl.columnWidth - rl.shaped.prefixWidth), ctx: ctx)
                 }
                 continue
@@ -2602,8 +2633,8 @@ extension LeafTextView: UIAccessibilityReadingContent {
             if rl.row.isBlockGap { continue }
             // A table or a media block is one thing to a reader, spoken once
             // from the row that carries its box.
-            if rl.table != nil || rl.media != nil || rl.math != nil {
-                guard rl.tableFirst || rl.mediaFirst || rl.mathFirst, let box = rl.lineBoxes.first else { continue }
+            if rl.table != nil || rl.media != nil || rl.picture != nil {
+                guard rl.tableFirst || rl.mediaFirst || rl.pictureFirst, let box = rl.lineBoxes.first else { continue }
                 let text = rl.attributed.string.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !text.isEmpty { lines.append((text, box)) }
                 continue
@@ -2968,7 +2999,7 @@ extension LeafTextView {
             let ctx = renderer.cgContext
             ctx.clip(to: boxes)
             traitCollection.performAsCurrent {
-                for rl in layoutEngine.rows where rl.table == nil && rl.media == nil && rl.math == nil {
+                for rl in layoutEngine.rows where rl.table == nil && rl.media == nil && rl.picture == nil {
                     for (i, wl) in rl.wrapped.enumerated() {
                         let o = rl.lineOrigin(i)
                         guard o.y < frame.maxY, o.y + rl.lineHeight(i) > frame.minY else { continue }

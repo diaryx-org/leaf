@@ -785,11 +785,32 @@ public final class LeafEditorModel: ObservableObject {
         return { [weak self] directive in self?.directiveView?(directive) }
     }
 
-    /// The host's editors for fences, by region kind — `"fence:"` and a
-    /// language. See `LeafTextView.regionEditors`, which this reaches; leaf
-    /// ships none, and depends on nothing one uses.
+    /// The host's editors, by region kind — `"fence:"` and a language, or
+    /// `"directive:"` and a name. See `LeafTextView.regionEditors`, which this
+    /// reaches; leaf ships none, and depends on nothing one uses.
     public var regionEditors: [String: RegionEditor] = [:] {
         didSet { textView?.regionEditors = regionEditors }
+    }
+
+    /// The host's renderers, by region kind, over leaf's own — see
+    /// `LeafTextView.regionRenderers`, which this reaches. A region of a kind
+    /// with a renderer is drawn as its picture, on screen, on paper and in a
+    /// PDF alike.
+    public var regionRenderers: [String: RegionRenderer] = [:] {
+        didSet { textView?.regionRenderers = regionRenderers }
+    }
+
+    /// Forget the pictures drawn for regions of `kind`, or of every kind, and
+    /// draw them again. See `LeafTextView.redrawRegions(kind:)`.
+    public func redrawRegions(kind: String? = nil) {
+        textView?.redrawRegions(kind: kind)
+    }
+
+    /// The regions' renderers and editors, as a sheet over this document
+    /// takes them.
+    var regionSetup: RegionSetup {
+        RegionSetup(renderers: regionRenderers.filter { RegionKinds.hostable($0.key) },
+                    editors: regionEditors.filter { RegionKinds.editable($0.key) })
     }
 
     /// Write the leaf directive `name` at the caret, with `label` and `attrs`,
@@ -1466,7 +1487,7 @@ struct LeafEditorSurface: NSViewRepresentable {
     /// Build a `LeafTextView` over `model.doc`, wired the way `makeNSView` and the
     /// stale-binding rebuild in `updateNSView` both need it.
     private func makeTextView() -> LeafTextView {
-        let textView = LeafTextView(doc: model.doc, theme: theme)
+        let textView = LeafTextView(doc: model.doc, theme: theme, regions: model.regionSetup)
         textView.pageSetup = page
         textView.zoom = model.zoom
         textView.onZoomChange = { [weak model] mode, scale in model?.zoomChanged(mode, scale) }
@@ -1528,7 +1549,6 @@ struct LeafEditorSurface: NSViewRepresentable {
         // The host's drawings, through the bridge for the same reason; set only
         // when there is a hook, since setting it lays the document out again.
         if let draw = model.directiveViewBridge { textView.directiveView = draw }
-        if !model.regionEditors.isEmpty { textView.regionEditors = model.regionEditors }
         textView.isReadOnly = model.isReadOnly
         textView.onTapHighlight = model.tapHighlightBridge
         model.textView = textView
@@ -2084,7 +2104,7 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
     /// Build a `LeafTextView` over `model.doc`, wired the way `makeUIViewController` and the
     /// stale-binding rebuild in `updateUIViewController` both need it.
     private func makeTextView() -> LeafTextView {
-        let textView = LeafTextView(doc: model.doc, theme: theme)
+        let textView = LeafTextView(doc: model.doc, theme: theme, regions: model.regionSetup)
         textView.placeholder = placeholder
         textView.pageSetup = page
         textView.zoom = model.zoom
@@ -2143,7 +2163,6 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
         // The host's drawings, through the bridge for the same reason; set only
         // when there is a hook, since setting it lays the document out again.
         if let draw = model.directiveViewBridge { textView.directiveView = draw }
-        if !model.regionEditors.isEmpty { textView.regionEditors = model.regionEditors }
         textView.isReadOnly = model.isReadOnly
         textView.selectionMenuActions = model.selectionMenuBridge
         textView.onTapHighlight = model.tapHighlightBridge

@@ -422,27 +422,46 @@ behaviour, where a formula on the caret's line reveals its TeX. The editing
 lives in `MathEditing.swift` over the binding's `MathSession`, the same Rust
 as the web editor's.
 
-### Fences a host edits
+### Regions: renderers and editors
 
-`regionEditors` on the text view (or on `LeafEditorModel`) hands the fences
-of a language to the host: `["fence:mermaid": RegionEditor(view:open:)]`.
-Core keeps each such fence one placeholder row. The editor's `view` draws it
-there, sized and placed as a directive's view is. → in front of it, ← behind
-it, or a click on the drawing opens it: `open` answers with a
-`RegionSession` whose `view` stands where the drawing was and takes the
-focus. That view writes back through its `RegionHost` — `edit` (splices on
-the fence's content) or `replace` (the whole content), one undo step each —
-undoes through `undo`, and closes with `leave(atEnd:)`.
+A formula, a fence of a language the host names, or a leaf directive of a name
+it names is a *region*, and each kind has two parts, both registered by kind on
+the text view or on `LeafEditorModel`:
 
-Formulas run on the same protocol, with leaf's own session that draws its
-picture, so opening, leaving, undo and the caret behave alike for both
-(`RegionEditing.swift`). leaf ships no fence editor; the leaf-editor app's
-Mermaid editor (`MermaidFence.swift`) is the example.
+- **A renderer**, `regionRenderers[kind]`: a `(RegionView, RegionRenderContext)
+  -> RegionPicture?` that draws the region's content as a picture — vectors
+  with a size and a baseline (`RegionPicture(svg:)`, `RegionPicture(image:size:)`,
+  or a size and a draw closure). The layout places the picture itself, inline
+  on the baseline or as a block centred on the region's rows, and draws it with
+  the text, so it pages, prints and goes into a PDF like everything else. A
+  picture with no width takes the column's. Pictures are kept by kind, content,
+  size, ink and appearance; `redrawRegions(kind:)` draws them again when the
+  renderer's answer changed for a reason leaf cannot see. Leaf's `math`
+  renderer is leaf-math, and a host may replace it. A kind with no renderer, or
+  a nil answer, keeps leaf's placeholder row.
+- **An editor**, `regionEditors[kind]`, optional: `RegionEditor(open:)`. → in
+  front of a region, ← behind it, or a click on its picture opens it: `open`
+  answers with a `RegionSession` whose `view` stands where the picture was and
+  takes the focus. That view writes back through its `RegionHost` — `edit`
+  (splices on the region's content) or `replace` (the whole content), one undo
+  step each — undoes through `undo`, and closes with `leave(atEnd:)`. Only an
+  open region is ever a live view.
+
+Kinds are `math`, `fence:<lang>` (block) and `directive:<name>` (block); a
+host may draw `math` but not edit it, since leaf's own session edits a formula
+inside a line, where no host view can stand. A renderer is called on the main
+thread as the layout needs it; one that has to wait for something draws what it
+can now and asks for `redrawRegions(kind:)` when the rest arrives. A
+named fence stops being code. Formulas run on the same protocol, with leaf's
+own session that draws its picture, so opening, leaving, undo and the caret
+behave alike for every kind (`RegionEditing.swift`, `RegionPictures.swift`).
+leaf ships no fence renderer or editor; the leaf-editor app's Mermaid ones
+(`MermaidFence.swift`) are the example.
 
 `SVGView` draws an SVG document as vectors, through resvg-swift with the
 system's fonts, at its natural size or fitted to its bounds. leaf's own views
-do not use it. It is for a host's region drawings: the app's Mermaid fences
-draw `renderMermaid`'s SVG with it.
+do not use it. It is for a host's open editor: the app's Mermaid preview draws
+`renderMermaid`'s SVG with it.
 
 ### Type-checking the Swift without an app
 

@@ -754,19 +754,29 @@ pub struct MathView {
     src: usize,
 }
 
-/// A part of the document the renderer edits itself, as it asked through
-/// [`LeafDoc::set_owned_regions`]: a formula (`kind` `"math"`), or a fenced
-/// block of a language it named (`"fence:mermaid"`). The renderer opens one in
-/// an editor of its own, which reads `[content_start, content_end)` and writes
-/// back through [`LeafDoc::edit_source`]. An owned fence stands as one
-/// placeholder row the renderer draws over; an owned formula is the picture its
-/// [`MathView`] already describes.
+/// A part of the document the renderer draws or edits itself, as it asked
+/// through [`LeafDoc::set_owned_regions`]: a formula (`kind` `"math"`), a
+/// fenced block of a language it named (`"fence:mermaid"`), or a leaf
+/// directive of a name it named (`"directive:embed"`). A renderer draws one
+/// from its `content`; an editor opens it, reads `[content_start,
+/// content_end)` and writes back through [`LeafDoc::edit_source`]. An owned
+/// fence or directive stands as placeholder rows the renderer draws over; an
+/// owned formula is the picture its [`MathView`] already describes.
 #[derive(Serialize, Tsify)]
 pub struct RegionView {
-    /// `"math"`, or `"fence:"` and the fence's language.
+    /// `"math"`, `"fence:"` and the fence's language, or `"directive:"` and
+    /// the leaf directive's name.
     kind: String,
     /// An inline formula's atom, rather than a block on rows of its own.
     inline: bool,
+    /// A formula set in display style (`$$…$$`, inline or not) rather than
+    /// text style. False for every other kind.
+    display: bool,
+    /// A leaf directive's name, `[label]` and `{…}` attributes, as its
+    /// [`DirectiveView`] carries them. Empty for every other kind.
+    name: String,
+    label: String,
+    attrs: Vec<DirectiveAttr>,
     /// The [`DocView::rows`] it stands on, `[start_row, end_row)`.
     start_row: usize,
     end_row: usize,
@@ -3037,6 +3047,26 @@ fn region_views(vmap: &VisualMap, source: &str) -> Vec<RegionView> {
         .map(|r| RegionView {
             kind: r.kind.clone(),
             inline: r.inline,
+            display: r.display,
+            name: r
+                .directive
+                .as_ref()
+                .map(|d| d.name.clone())
+                .unwrap_or_default(),
+            label: r
+                .directive
+                .as_ref()
+                .map(|d| d.label.clone())
+                .unwrap_or_default(),
+            attrs: r.directive.as_ref().map_or_else(Vec::new, |d| {
+                d.attrs
+                    .iter()
+                    .map(|(k, v)| DirectiveAttr {
+                        key: k.clone(),
+                        value: v.clone().unwrap_or_default(),
+                    })
+                    .collect()
+            }),
             start_row: r.rows_span.start,
             end_row: r.rows_span.end,
             src: r.src,

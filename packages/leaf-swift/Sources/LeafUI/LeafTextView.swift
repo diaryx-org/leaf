@@ -589,7 +589,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// that changed nothing core knows still lays its row out again.
     private var laidRegion: OpenRegionLayout?
     /// Whether a formula is open for structural editing.
-    var isEditingFormula: Bool { regionSlot.open?.kind == MathRegionSession.kind }
+    var isEditingFormula: Bool { regionSlot.open?.kind == MathRenderer.kind }
 
     /// Whether a formula is edited in place as structure — fractions, scripts,
     /// roots, written back as TeX — or, when `false`, revealed as its TeX on
@@ -604,26 +604,62 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         }
     }
 
-    /// The host's editors for fences, by region kind — `"fence:"` and a
-    /// language (`"fence:mermaid"`). Each named language's fences stop being
-    /// code: core keeps each one a placeholder row, the editor's `view` draws
-    /// it there, and → in front of it, ← behind it or a click on the drawing
-    /// opens it in the session the editor's `open` answers with, whose view
-    /// stands in the drawing's place and takes the focus. Formulas are leaf's
-    /// own (`editsFormulasAsStructure`). See `RegionEditing.swift`.
+    /// The host's editors, by region kind — `"fence:"` and a language
+    /// (`"fence:mermaid"`), or `"directive:"` and a name. Formulas are leaf's
+    /// own (`editsFormulasAsStructure`).
+    /// → in front of a region, ← behind it or a click on its picture opens it
+    /// in the session the editor's `open` answers with; a session with a view
+    /// of its own stands it where the picture was and gives it the focus.
+    /// While closed, a region is its kind's picture (`regionRenderers`), or
+    /// leaf's placeholder row where the kind has no renderer. A kind a host may
+    /// not name is dropped. See `RegionEditing.swift`.
     public var regionEditors: [String: RegionEditor] {
         get { regionSlot.editors }
         set {
-            regionSlot.editors = newValue.filter { $0.key.hasPrefix("fence:") }
-            reshowing = true
-            render(doc.setOwnedRegions(kinds: regionSlot.ownedKinds), keepVerticalGoal: true, reflow: true)
-            reshowing = false
+            regionSlot.editors = newValue.filter { RegionKinds.editable($0.key) }
+            reownRegions()
         }
     }
 
-    public init(doc: LeafDoc, theme: EditorTheme = .default) {
+    /// The host's renderers, by region kind, over leaf's own: `"fence:"` and a
+    /// language, or `"math"` to replace leaf-math's pictures. Each named
+    /// kind's regions are drawn as the pictures it answers — laid out, paged
+    /// and printed with the text — and leaf's placeholder row where it
+    /// answers nil. A named fence stops being code. See `RegionPictures.swift`.
+    public var regionRenderers: [String: RegionRenderer] {
+        get { regionSlot.pictures.renderers }
+        set {
+            regionSlot.pictures.renderers = newValue.filter { RegionKinds.hostable($0.key) }
+            reownRegions()
+        }
+    }
+
+    /// Forget the pictures drawn for regions of `kind`, or of every kind, and
+    /// draw them again — for a renderer whose picture changed for a reason
+    /// leaf cannot see, such as data it was waiting for.
+    public func redrawRegions(kind: String? = nil) {
+        regionSlot.pictures.invalidate(kind: kind)
+        render(docView, keepVerticalGoal: true, reflow: true)
+    }
+
+    /// Tell core the kinds the view now owns, and show the document again.
+    private func reownRegions() {
+        reshowing = true
+        render(doc.setOwnedRegions(kinds: regionSlot.ownedKinds), keepVerticalGoal: true, reflow: true)
+        reshowing = false
+    }
+
+    public convenience init(doc: LeafDoc, theme: EditorTheme = .default) {
+        self.init(doc: doc, theme: theme, regions: RegionSetup())
+    }
+
+    /// A view over `doc` that draws and edits its regions as `regions` says —
+    /// a sheet over another view's document owns the kinds that view owns.
+    init(doc: LeafDoc, theme: EditorTheme, regions: RegionSetup) {
         self.doc = doc
         self.theme = theme
+        regionSlot.adopt(regions)
+        editsFormulasAsStructure = regions.editsMath
         // A formula is edited in place as structure (`MathEditing.swift`), so
         // on the caret's line it stays its picture rather than revealing TeX.
         // Said before frames become changes: the frame it answers with is
@@ -881,17 +917,18 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // handed. Left to the caller's appearance, a paper sheet (`aqua`,
         // whatever the screen) laid out from a dark-mode window would set its
         // formulas in white — and print them on white.
+        let drawing = regionSlot.drawing(dark: effectiveAppearance.isDark)
         effectiveAppearance.performAsCurrentDrawingAppearance {
             if reflow {
                 layoutEngine = EditorLayout(view, theme: theme, viewWidth: viewWidth, page: pageSetup,
                                             cache: &shapeCache, media: mediaStore,
                                             directives: directiveHost.measure,
-                                            regions: regionSlot.views.measure, open: open)
+                                            regions: regionSlot.views.measure, drawing: drawing)
             } else if change != nil || blocksChanged || openChanged || layoutEngine.rows.isEmpty {
                 layoutEngine = EditorLayout(view, theme: theme, viewWidth: viewWidth, page: pageSetup,
                                             cache: &shapeCache, media: mediaStore, previous: layoutEngine,
                                             change: change, directives: directiveHost.measure,
-                                            regions: regionSlot.views.measure, open: open)
+                                            regions: regionSlot.views.measure, drawing: drawing)
             }
         }
         let relaid = reflow || change != nil || blocksChanged || openChanged
@@ -902,7 +939,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             directiveHost.place(layoutEngine.directiveRects(), in: self, scale: zoomScale)
         }
         if relaid, !regionSlot.views.isEmpty {
-            regionSlot.views.place(layoutEngine.regionRects(), in: self, scale: zoomScale)
+            regionSlot.views.place(layoutEngine.openRegionRect(), in: self, scale: zoomScale)
         }
         // The misspellings still stand where the text did not change, but the
         // layout under them is new: map them onto it again. A text change
@@ -1005,11 +1042,11 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
                 }
                 continue
             }
-            // A display formula's picture, once, on its first placeholder row,
+            // A block region's picture, once, on its first placeholder row,
             // centred on the column — vectors, so the PDF gets paths.
-            if let box = rl.math {
-                if rl.mathFirst {
-                    box.draw(in: box.rect(top: rl.mathTop, left: rl.originX + rl.shaped.prefixWidth,
+            if let box = rl.picture {
+                if rl.pictureFirst {
+                    box.draw(in: box.rect(top: rl.pictureTop, left: rl.originX + rl.shaped.prefixWidth,
                                           width: rl.columnWidth - rl.shaped.prefixWidth), ctx: ctx)
                 }
                 continue
@@ -3975,7 +4012,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         defer { ctx.restoreGState() }
         ctx.scaleBy(x: zoomScale, y: zoomScale)
         ctx.clip(to: boxes)
-        for rl in layoutEngine.rows where rl.table == nil && rl.media == nil && rl.math == nil {
+        for rl in layoutEngine.rows where rl.table == nil && rl.media == nil && rl.picture == nil {
             for (i, wl) in rl.wrapped.enumerated() {
                 let o = rl.lineOrigin(i)
                 guard o.y < union.maxY, o.y + rl.lineHeight(i) > union.minY else { continue }

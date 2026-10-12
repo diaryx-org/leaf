@@ -466,13 +466,14 @@ struct RowLayout {
     var mediaTop: CGFloat = 0
     /// The one placeholder row that carries the box's height and paints it.
     var mediaFirst: Bool = false
-    /// The formula box, on every placeholder row of a display formula; `nil`
-    /// for an ordinary row. Collapsed exactly as a media box's rows are.
-    var math: MathLayout? = nil
-    /// The box's top (all of a formula's reserved rows share it).
-    var mathTop: CGFloat = 0
+    /// The picture box, on every row of a block region drawn as its picture —
+    /// a display formula, a fence or a directive whose kind has a renderer;
+    /// `nil` for an ordinary row. Collapsed exactly as a media box's rows are.
+    var picture: PictureLayout? = nil
+    /// The box's top (all of a region's reserved rows share it).
+    var pictureTop: CGFloat = 0
     /// The one placeholder row that carries the box's height and paints it.
-    var mathFirst: Bool = false
+    var pictureFirst: Bool = false
     /// The host's view's box, on every row of a leaf directive the host draws
     /// (`LeafTextView.directiveView`); `nil` for an ordinary row and for a
     /// directive left as its placeholder. Collapsed exactly as a media box's
@@ -531,7 +532,7 @@ struct RowLayout {
     var height: CGFloat {
         if let t = table { return tableFirst ? t.height : 0 }
         if let m = media { return mediaFirst ? m.height : 0 }
-        if let m = math { return mathFirst ? m.height : 0 }
+        if let p = picture { return pictureFirst ? p.height : 0 }
         if let d = directive { return directiveFirst ? d.height : 0 }
         if let gapHeight { return gapHeight }
         guard !lineOrigins.isEmpty else {
@@ -562,7 +563,7 @@ struct RowLayout {
     /// media block, or a boundary row occupies, those being placed whole. What a
     /// hit-test searches, since a point resolves to a *line*.
     var lineBoxes: [CGRect] {
-        if table != nil || media != nil || math != nil || directive != nil || gapHeight != nil {
+        if table != nil || media != nil || picture != nil || directive != nil || gapHeight != nil {
             return height > 0
                 ? [CGRect(x: originX, y: top, width: columnWidth, height: height)]
                 : []
@@ -640,7 +641,7 @@ struct RowLayout {
     /// Whether the row's glyphs are what is drawn for it. A table's grid, a
     /// picture, a formula and a host's directive view are each drawn *instead*
     /// of the placeholder glyphs core puts on their rows.
-    var drawsItsGlyphs: Bool { table == nil && media == nil && math == nil && directive == nil }
+    var drawsItsGlyphs: Bool { table == nil && media == nil && picture == nil && directive == nil }
 
     /// Whether this row belongs inside a directive's dashed outline — a
     /// `:::name{.class}` aside, which reads as a bordered panel.
@@ -847,13 +848,15 @@ struct EditorLayout {
     private let media: [MediaView]
     let math: [MathView]
     private let directives: [DirectiveView]
-    /// The frame's regions, and whether a host's editors were asked to draw
-    /// them — `directives`' and `hostsDirectives`' peers.
+    /// The frame's regions, and whether a host's editor's view was asked to
+    /// stand over the open one — `directives`' and `hostsDirectives`' peers.
     let regions: [RegionView]
     private let hostsRegions: Bool
-    /// The region open for editing, which the layout asks for the open
-    /// formula's picture.
-    let open: OpenRegionLayout?
+    /// What drew the regions' pictures: each kind's renderer, and the open
+    /// region's session.
+    let drawing: RegionDrawing
+    /// The region open for editing.
+    var open: OpenRegionLayout? { drawing.open }
     /// Whether the host was asked to draw this frame's directives — a frame
     /// laid out with a hook and one laid out without it place the same rows
     /// differently.
@@ -884,18 +887,18 @@ struct EditorLayout {
     init(_ docView: DocView, theme: EditorTheme, viewWidth: CGFloat, page: PageSetup? = nil,
          cache: inout [Row: ShapedRow], media: MediaStore? = nil, previous: EditorLayout? = nil,
          change: RowChange? = nil, directives measure: DirectiveMeasure? = nil,
-         regions: RegionMeasure? = nil, open: OpenRegionLayout? = nil) {
+         regions: RegionMeasure? = nil, drawing: RegionDrawing = RegionDrawing()) {
         if let page = page?.sanitized {
             let x = page.sheetX(in: viewWidth)
             self.init(docView, theme: theme, originX: x + page.margins.left,
                       columnWidth: page.columnWidth, page: page, sheetX: x,
                       cache: &cache, media: media, previous: previous, change: change,
-                      directives: measure, regions: regions, open: open)
+                      directives: measure, regions: regions, drawing: drawing)
         } else {
             let column = theme.column(in: viewWidth)
             self.init(docView, theme: theme, originX: column.originX, columnWidth: column.width,
                       cache: &cache, media: media, previous: previous, change: change,
-                      directives: measure, regions: regions, open: open)
+                      directives: measure, regions: regions, drawing: drawing)
         }
     }
 
@@ -912,7 +915,7 @@ struct EditorLayout {
          page: PageSetup? = nil, sheetX: CGFloat = 0,
          cache: inout [Row: ShapedRow], media: MediaStore? = nil, previous: EditorLayout? = nil,
          change known: RowChange? = nil, directives measure: DirectiveMeasure? = nil,
-         regions regionMeasure: RegionMeasure? = nil, open: OpenRegionLayout? = nil) {
+         regions regionMeasure: RegionMeasure? = nil, drawing: RegionDrawing = RegionDrawing()) {
         // Every setup the flow walks is a sound one — see `PageSetup.sanitized`.
         let page = page?.sanitized
         let wrapWidth = columnWidth
@@ -929,7 +932,8 @@ struct EditorLayout {
         self.hostsDirectives = measure != nil
         self.regions = docView.regions
         self.hostsRegions = regionMeasure != nil
-        self.open = open
+        self.drawing = drawing
+        let open = drawing.open
         // Every glyph the reader can see is a run's text, including the ones a
         // surface redraws as graphics — a table's box picture, a media row's
         // `🖼 alt`, a break's `───`. So one pass over the runs answers this for
@@ -953,7 +957,8 @@ struct EditorLayout {
         // below it, each of them a different value by its offsets alone.
         let previous = previous.flatMap { $0.same(column: originX, width: columnWidth,
                                                    page: page, sheetX: sheetX, source: isSource)
-            && $0.hostsDirectives == (measure != nil) && $0.hostsRegions == (regionMeasure != nil) ? $0 : nil }
+            && $0.hostsDirectives == (measure != nil) && $0.hostsRegions == (regionMeasure != nil)
+            && $0.drawing.sameClosed(as: drawing) ? $0 : nil }
         // Where the rows differ: as the caller read it off the frame, or by
         // comparing — and either way, narrowed by shape only over the span,
         // so a frame that changed one row compares one row.
@@ -971,7 +976,7 @@ struct EditorLayout {
             flowBefore.append(contentsOf: previous.flowBefore[..<kept])
             // The walk resumes where the frame before stood at that row.
             flow = previous.flowBefore[kept]!
-            for rl in layouts where rl.table == nil && rl.media == nil && rl.math == nil
+            for rl in layouts where rl.table == nil && rl.media == nil && rl.picture == nil
                 && rl.directive == nil && !rl.row.runs.contains(where: { $0.role == "math" }) {
                 next[rl.row] = rl.shaped
             }
@@ -992,7 +997,7 @@ struct EditorLayout {
             }
             guard j < previous.rows.count else { return nil }
             let rl = previous.rows[j]
-            guard rl.table == nil, rl.media == nil, rl.math == nil, rl.directive == nil else { return nil }
+            guard rl.table == nil, rl.media == nil, rl.picture == nil, rl.directive == nil else { return nil }
             return rl.shaped
         }
 
@@ -1006,14 +1011,30 @@ struct EditorLayout {
         var mediaAt: [Int: MediaView] = [:]
         for m in docView.media { mediaAt[Int(m.startRow)] = m }
 
-        // Formulas, two ways: a display block replaces its placeholder rows
-        // with one box the way a media block does, and an inline one is
-        // drawn into its row's text by `AttributedRow` — which finds it by the
-        // source offset its `math` run carries.
-        var mathBlockAt: [Int: MathView] = [:]
-        var mathInline: [UInt32: MathView] = [:]
-        for m in docView.math {
-            if m.inline { mathInline[m.src] = m } else { mathBlockAt[Int(m.startRow)] = m }
+        // Regions drawn as their pictures, two ways: a block — a display
+        // formula, or a fence or directive whose kind has a renderer —
+        // replaces its placeholder rows with one box the way a media block
+        // does, and an inline formula is drawn into its row's text by
+        // `AttributedRow`, which finds it by the source offset its `math` run
+        // carries. Every formula is drawn, owned or not; another kind only
+        // once the view owns it, so that core publishes it. The open region a
+        // host's view stands over is the view's, not a picture's.
+        var pictureAt: [Int: RegionView] = [:]
+        var mathInline: [UInt32: RegionView] = [:]
+        if !isSource {
+            for m in docView.math {
+                let r = docView.region(for: m)
+                if m.inline { mathInline[m.src] = r } else { pictureAt[Int(m.startRow)] = r }
+            }
+            for r in docView.regions where !r.inline && r.kind != MathRenderer.kind && drawing.draws(r.kind) {
+                if let open, regionMeasure != nil, open.kind == r.kind, open.src == r.src, open.picture == nil {
+                    continue
+                }
+                pictureAt[Int(r.startRow)] = r
+            }
+        }
+        let inlinePictures: InlinePictures? = mathInline.isEmpty ? nil : { src, size in
+            mathInline[src].flatMap { drawing.picture($0, size: size, ink: theme.textColor) }
         }
 
         // Which rows are page breaks. A `Row` cannot answer this itself — every
@@ -1030,10 +1051,10 @@ struct EditorLayout {
         // kept under — which, for a document that says the same thing twice,
         // counts the ones before it. A page break is leaf's and never offered;
         // the source view has no pictures of anything.
-        // The regions a host's editor draws: its drawing of each closed one,
-        // and the open session's view over its own.
-        let regionAt = regionMeasure != nil && !isSource
-            ? regionKeys(docView, editors: { _ in true }, open: open) : [:]
+        // The open region a host's session stands its own view over.
+        let openHosted: RegionView? = regionMeasure == nil || isSource ? nil : open.flatMap { o in
+            o.picture == nil ? docView.regions.first { $0.kind == o.kind && $0.src == o.src && !$0.inline } : nil
+        }
 
         var directiveAt: [Int: (DirectiveView, DirectiveKey)] = [:]
         if measure != nil, !isSource {
@@ -1119,28 +1140,30 @@ struct EditorLayout {
                 continue
             }
 
-            if let mv = mathBlockAt[i], let box = MathLayout(mv, contentWidth: wrapWidth, theme: theme, open: open) {
+            if let rv = pictureAt[i],
+               let picture = drawing.picture(rv, size: theme.fontSize, ink: theme.textColor) {
                 // The media box's recipe: the placeholder row shaped and kept
                 // (its glyphs are the fallback, its prefix insets the box), the
                 // box atomic, the fillers collapsed under it.
                 let placeholder = docView.rows[i]
                 let shaped = EditorLayout.shape(placeholder, theme: theme, wrapWidth: wrapWidth)
+                let box = PictureLayout(rv, picture: picture, contentWidth: wrapWidth - shaped.prefixWidth)
                 flow.fit(box.height)
-                let mathTop = flow.y
-                let mathX = flow.originX(originX)
-                for r in Int(mv.startRow)..<Int(mv.endRow) where r < docView.rows.count {
+                let top = flow.y
+                let x = flow.originX(originX)
+                for r in Int(rv.startRow)..<Int(rv.endRow) where r < docView.rows.count {
                     if r > i { flowBefore.append(nil) }
                     layouts.append(RowLayout(
                         row: docView.rows[r],
-                        shaped: r == Int(mv.startRow) ? shaped : emptyShape,
-                        top: mathTop,
-                        originX: mathX, columnWidth: wrapWidth,
-                        math: box, mathTop: mathTop, mathFirst: r == Int(mv.startRow),
+                        shaped: r == Int(rv.startRow) ? shaped : emptyShape,
+                        top: top,
+                        originX: x, columnWidth: wrapWidth,
+                        picture: box, pictureTop: top, pictureFirst: r == Int(rv.startRow),
                         page: flow.index
                     ))
                 }
                 flow.y += box.height
-                i = Int(mv.endRow)
+                i = max(i + 1, Int(rv.endRow))
                 continue
             }
 
@@ -1150,13 +1173,13 @@ struct EditorLayout {
             // list, and its length is where the caret's stop past it is — and
             // any rows core reserved under it collapse onto the one box. A nil
             // from the host falls through to the placeholder, drawn as before.
-            // A region a host's editor draws, closed or open: the directive's
-            // recipe, with the editor's view.
-            if let (rv, key) = regionAt[i] {
+            // The open region a host's session edits in a view of its own: the
+            // directive's recipe, with the session's view.
+            if let rv = openHosted, Int(rv.startRow) == i {
                 let shaped = EditorLayout.shape(docView.rows[i], theme: theme, wrapWidth: wrapWidth)
                 let width = max(0, wrapWidth - shaped.prefixWidth)
-                if let h = regionMeasure?(rv, key, width) {
-                    let box = DirectiveLayout(key: .region(key),
+                if let h = regionMeasure?(rv, width) {
+                    let box = DirectiveLayout(key: .openRegion,
                                               size: CGSize(width: width, height: max(0, h.rounded(.up))))
                     flow.fit(box.height)
                     let top = flow.y
@@ -1220,8 +1243,8 @@ struct EditorLayout {
                 shaped = hit
             } else {
                 shaped = EditorLayout.shape(row, theme: theme, wrapWidth: wrapWidth,
-                                            pageBreak: isPageBreak, math: mathInline, source: isSource,
-                                            open: open)
+                                            pageBreak: isPageBreak, pictures: hasMath ? inlinePictures : nil,
+                                            source: isSource)
             }
             if !hasMath { next[row] = shaped }
 
@@ -1509,17 +1532,6 @@ struct EditorLayout {
         return out
     }
 
-    /// Every host-drawn region's view frame, keyed as `RegionViews` keeps it —
-    /// `directiveRects`' peer.
-    func regionRects() -> [RegionKey: CGRect] {
-        var out: [RegionKey: CGRect] = [:]
-        for rl in rows {
-            guard let d = rl.directive, case let .region(key) = d.key, let r = rl.directiveRect else { continue }
-            out[key] = r
-        }
-        return out
-    }
-
     /// Lay out into a column `wrapWidth` wide at the theme's left inset — the text
     /// column stated directly rather than worked back out of a view width and a
     /// measure. Convenience for tests.
@@ -1567,12 +1579,11 @@ struct EditorLayout {
     ///
     /// `source` shapes the row for the source view — see `AttributedRow.make`.
     static func shape(_ row: Row, theme: EditorTheme, wrapWidth: CGFloat,
-                      pageBreak: Bool = false, math: [UInt32: MathView] = [:],
-                      source: Bool = false, open: OpenRegionLayout? = nil) -> ShapedRow {
+                      pageBreak: Bool = false, pictures: InlinePictures? = nil,
+                      source: Bool = false) -> ShapedRow {
         let prefix = row.prefixRuns
         let drawn = row.isThematicBreak || pageBreak ? prefix : row.runs
-        let attributed = AttributedRow.make(drawn, row: row, theme: theme, math: math, source: source,
-                                            open: open)
+        let attributed = AttributedRow.make(drawn, row: row, theme: theme, pictures: pictures, source: source)
 
         // The prefix's own geometry, measured on its own line: its total width (the
         // hanging indent) and where each level's bar glyph starts.
@@ -1754,7 +1765,7 @@ struct EditorLayout {
         guard rows.indices.contains(row) else { return nil }
         let rl = rows[row]
         if rl.media != nil { return mediaCaretRect(rl, ch: ch) }
-        if rl.math != nil { return mathCaretRect(rl, ch: ch) }
+        if rl.picture != nil { return pictureCaretRect(rl, ch: ch) }
         if rl.directive != nil { return directiveCaretRect(rl, ch: ch) }
         let lines = rl.wrapped
         for (i, wl) in lines.enumerated() where ch < wl.start + wl.length || i == lines.count - 1 {
@@ -1786,11 +1797,11 @@ struct EditorLayout {
         return CGRect(x: after ? r.maxX - 1.5 : r.minX, y: r.minY, width: 1.5, height: r.height)
     }
 
-    /// `mediaCaretRect` for a display formula: its two homes are the box's
-    /// edges, for the same reason.
-    private func mathCaretRect(_ rl: RowLayout, ch: Int) -> CGRect? {
-        guard let box = rl.math else { return nil }
-        let r = box.rect(top: rl.mathTop, left: rl.originX + rl.shaped.prefixWidth,
+    /// `mediaCaretRect` for a block region's picture: its two homes are the
+    /// box's edges, for the same reason.
+    private func pictureCaretRect(_ rl: RowLayout, ch: Int) -> CGRect? {
+        guard let box = rl.picture else { return nil }
+        let r = box.rect(top: rl.pictureTop, left: rl.originX + rl.shaped.prefixWidth,
                          width: rl.columnWidth - rl.shaped.prefixWidth)
         let after = ch >= rl.attributed.length
         return CGRect(x: after ? r.maxX - 1.5 : r.minX, y: r.minY, width: 1.5, height: r.height)
@@ -2095,9 +2106,9 @@ struct EditorLayout {
             let r = box.rect(top: rl.mediaTop, left: rl.originX + rl.shaped.prefixWidth)
             return (row, point.y < r.midY ? 0 : rl.attributed.length)
         }
-        // A display formula's picture, likewise: in front of it or past it.
-        if let box = rl.math {
-            let r = box.rect(top: rl.mathTop, left: rl.originX + rl.shaped.prefixWidth,
+        // A block region's picture, likewise: in front of it or past it.
+        if let box = rl.picture {
+            let r = box.rect(top: rl.pictureTop, left: rl.originX + rl.shaped.prefixWidth,
                              width: rl.columnWidth - rl.shaped.prefixWidth)
             return (row, point.y < r.midY ? 0 : rl.attributed.length)
         }

@@ -9,19 +9,37 @@ import AppKit
 import UIKit
 #endif
 
-/// The demo's Mermaid editor, on leaf's `regionEditors`: every ```mermaid
-/// fence is drawn as its diagram, and → in front of it, ← behind it or a click
-/// opens its source beside a live preview, written back to the document a
-/// keystroke at a time. The web demo's `mermaid-editor.js`, in AppKit and
-/// UIKit. The diagrams are rendered by leaf-mermaid (mmdr, in Rust) through
-/// `renderMermaid`, with labels measured by Core Text, and drawn as vectors by
-/// LeafUI's `SVGView`. leaf's own views draw no diagrams. See
+/// The demo's Mermaid renderer and editor, on leaf's `regionRenderers` and
+/// `regionEditors`: every ```mermaid fence is drawn as its diagram — a picture
+/// the layout places, pages and prints with the text — and → in front of it,
+/// ← behind it or a click opens its source beside a live preview, written back
+/// to the document a keystroke at a time. The web demo's `mermaid-editor.js`,
+/// in AppKit and UIKit. The diagrams are rendered by leaf-mermaid (mmdr, in
+/// Rust) through `renderMermaid`, with labels measured by Core Text, and drawn
+/// as vectors through resvg. leaf's own views draw no diagrams. See
 /// docs/proposals/embedded-editors.md.
 enum MermaidFence {
     static let kind = "fence:mermaid"
 
+    /// A closed fence's picture: its diagram, at most `maxDrawingHeight`
+    /// tall, or the renderer's complaint about the source in its place.
+    static let renderer: RegionRenderer = { region, context in
+        switch MermaidDrawing.render(region.content, dark: context.dark) {
+        case let .svg(svg):
+            guard var picture = RegionPicture(svg: svg) else { return nil }
+            // Drawn into whatever box it is given, so a smaller box is all it
+            // takes to scale it.
+            let scale = min(1, maxDrawingHeight / max(1, picture.height))
+            picture.width = picture.width.map { $0 * scale }
+            picture.height *= scale
+            picture.baseline = picture.height
+            return picture
+        case let .fault(message):
+            return faultPicture(message)
+        }
+    }
+
     static let editor = RegionEditor(
-        view: { region in MermaidDrawing(source: region.content, closed: true) },
         open: { region, entry, host in MermaidSession(region, entry: entry, host: host) })
 
     /// How tall the open editor is.
@@ -40,6 +58,32 @@ enum MermaidFence {
     /// Where diagrams are rendered when nothing waits on them: off the main
     /// thread, one at a time.
     static let queue = DispatchQueue(label: "org.diaryx.leaf.mermaid", qos: .userInitiated)
+
+    /// `message` set in red monospace, as a picture: what a fence whose
+    /// source does not parse shows where its diagram would be.
+    static func faultPicture(_ message: String) -> RegionPicture {
+        let font = CTFontCreateUIFontForLanguage(.userFixedPitch, 11, nil)
+            ?? CTFontCreateWithName("Menlo" as CFString, 11, nil)
+        let text = NSAttributedString(string: message, attributes: [
+            NSAttributedString.Key(kCTFontAttributeName as String): font,
+            NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(red: 0.85, green: 0.2, blue: 0.2, alpha: 1),
+        ])
+        let setter = CTFramesetterCreateWithAttributedString(text)
+        let size = CTFramesetterSuggestFrameSizeWithConstraints(
+            setter, CFRange(location: 0, length: 0), nil, CGSize(width: 480, height: CGFloat.greatestFiniteMagnitude), nil)
+        let w = size.width.rounded(.up), h = size.height.rounded(.up)
+        return RegionPicture(width: w, height: h) { ctx, rect in
+            // Core Text sets its lines y-up; the picture is drawn y-down.
+            ctx.saveGState()
+            ctx.textMatrix = .identity
+            ctx.translateBy(x: rect.minX, y: rect.maxY)
+            ctx.scaleBy(x: rect.width / max(1, w), y: -rect.height / max(1, h))
+            let frame = CTFramesetterCreateFrame(setter, CFRange(location: 0, length: 0),
+                                                 CGPath(rect: CGRect(x: 0, y: 0, width: w, height: h), transform: nil), nil)
+            CTFrameDraw(frame, ctx)
+            ctx.restoreGState()
+        }
+    }
 }
 
 /// Label widths for `renderMermaid`, from Core Text: the first face of the
@@ -78,33 +122,22 @@ enum Rendered {
     case fault(String)
 }
 
-/// One diagram: its picture, or what the renderer said about the source in
-/// its place. A closed fence's drawing renders at once, so the layout has its
-/// height on the first pass, and lets every click through to the editor,
-/// which opens the fence; the open editor's preview renders off the main
-/// thread as the source is typed.
+/// The open editor's preview of one diagram: its picture, or what the
+/// renderer said about the source in its place, rendered off the main thread
+/// as the source is typed. A closed fence is no view: it is the renderer's
+/// picture (`MermaidFence.renderer`).
 final class MermaidDrawing: LeafView {
     private let picture = SVGView(svg: "")
     private let fault = MermaidDrawing.label()
-    private let closed: Bool
     /// The source last asked for, so an older render that finishes late is
     /// dropped.
     private var asked = ""
 
-    init(source: String, closed: Bool) {
-        self.closed = closed
+    init(source: String) {
         super.init(frame: CGRect(x: 0, y: 0, width: 300, height: 120))
         addSubview(picture)
         addSubview(fault)
-        if closed {
-            asked = source
-            apply(Self.render(source, dark: isDark))
-        } else {
-            show(source)
-        }
-        #if canImport(UIKit)
-        isUserInteractionEnabled = !closed
-        #endif
+        show(source)
     }
 
     @available(*, unavailable)
@@ -133,7 +166,7 @@ final class MermaidDrawing: LeafView {
     }
 
     /// The picture's SVG, or the fault.
-    private static func render(_ source: String, dark: Bool) -> Rendered {
+    static func render(_ source: String, dark: Bool) -> Rendered {
         guard !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return .fault("(empty diagram)") }
         do {
             return .svg(try renderMermaid(source: source, dark: dark, measure: CoreTextMeasure.shared).svg)
@@ -181,8 +214,6 @@ final class MermaidDrawing: LeafView {
         layoutPictures()
     }
 
-    override func hitTest(_ point: NSPoint) -> NSView? { closed ? nil : super.hitTest(point) }
-
     private static func label() -> NSTextField {
         let l = NSTextField(wrappingLabelWithString: "")
         l.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
@@ -221,7 +252,7 @@ final class MermaidSession: NSObject, RegionSession {
     init(_ region: RegionView, entry: RegionEntry, host: RegionHost) {
         self.host = host
         self.entry = entry
-        preview = MermaidDrawing(source: region.content, closed: false)
+        preview = MermaidDrawing(source: region.content)
         box = MermaidEditorBox(text: MermaidFence.text(region.content), preview: preview)
         super.init()
         box.session = self

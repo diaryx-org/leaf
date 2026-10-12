@@ -18,6 +18,10 @@ import UIKit
 import AppKit
 #endif
 
+/// The picture of the inline region whose run starts at a source offset, set
+/// at a size in points per em — or nil to keep core's glyph.
+typealias InlinePictures = (UInt32, CGFloat) -> RegionPicture?
+
 enum AttributedRow {
     /// Build the attributed text for one visual row. `theme` supplies fonts and
     /// colours; the row's own `heading` level sizes the *whole* line (so an inline
@@ -26,9 +30,9 @@ enum AttributedRow {
     ///
     /// `source` is the source view: every run in the mono family at the body
     /// size, coloured by what its markup *is* — see `attributes(source:)`.
-    static func make(_ row: Row, theme: EditorTheme, math: [UInt32: MathView] = [:],
+    static func make(_ row: Row, theme: EditorTheme, pictures: InlinePictures? = nil,
                      source: Bool = false) -> NSAttributedString {
-        make(row.runs, row: row, theme: theme, math: math, source: source)
+        make(row.runs, row: row, theme: theme, pictures: pictures, source: source)
     }
 
     /// Build the attributed text for `runs` under `row`'s line-level styling. The
@@ -36,13 +40,12 @@ enum AttributedRow {
     /// runs, because its `───` glyphs are replaced by a drawn line (see
     /// `Row.isThematicBreak`).
     ///
-    /// `math` is the frame's inline formulas by source offset: a `math` run
-    /// whose `src` names one is drawn as its typeset picture — see
-    /// `mathPiece` — and one that names none (the frame has not caught up, or
-    /// the TeX would not typeset) stays core's own glyph.
+    /// `pictures` draws the frame's inline regions by source offset: a `math`
+    /// run whose `src` it has a picture for is drawn as that picture — see
+    /// `picturePiece` — and one it has none for (the frame has not caught up,
+    /// or the TeX would not typeset) stays core's own glyph.
     static func make(_ runs: [Run], row: Row, theme: EditorTheme,
-                     math: [UInt32: MathView] = [:], source: Bool = false,
-                     open: OpenRegionLayout? = nil) -> NSAttributedString {
+                     pictures: InlinePictures? = nil, source: Bool = false) -> NSAttributedString {
         let result = NSMutableAttributedString()
         let size = row.heading.map { theme.headingSize(Int($0)) } ?? theme.fontSize
         let isHeadingRow = row.heading != nil
@@ -57,8 +60,8 @@ enum AttributedRow {
                 theme: theme,
                 source: source
             )
-            if run.role == "math", let mv = math[run.src],
-               let piece = mathPiece(run, view: mv, attrs: attrs, theme: theme, open: open) {
+            if run.role == "math", let pictures,
+               let piece = picturePiece(run, attrs: attrs, pictures: pictures) {
                 result.append(piece)
                 continue
             }
@@ -95,23 +98,22 @@ enum AttributedRow {
         piece.addAttribute(.kern, value: codeFillOutset, range: NSRange(location: text.length - 2, length: 1))
     }
 
-    /// An inline formula's run as its picture: the one character core drew
+    /// An inline region's run as its picture: the one character core drew
     /// replaced by the attachment character — one UTF-16 unit for one, so the
-    /// row's offsets are untouched — carrying a `MathAttachment` for TextKit to
-    /// draw and a run delegate for Core Text to measure by, both the picture's
-    /// size. The picture is set at the run's own size in the theme's ink, so a
-    /// formula in a heading is the heading's size. `nil` when the TeX will not
-    /// typeset, and the caller keeps core's glyph.
-    private static func mathPiece(_ run: Run, view: MathView,
-                                  attrs: [NSAttributedString.Key: Any],
-                                  theme: EditorTheme, open: OpenRegionLayout?) -> NSAttributedString? {
+    /// row's offsets are untouched — carrying a `PictureAttachment` for TextKit
+    /// to draw and a run delegate for Core Text to measure by, both the
+    /// picture's size. The picture is drawn at the run's own size, so a
+    /// formula in a heading is the heading's size. `nil` when there is no
+    /// picture, and the caller keeps core's glyph.
+    private static func picturePiece(_ run: Run, attrs: [NSAttributedString.Key: Any],
+                                     pictures: InlinePictures) -> NSAttributedString? {
         guard run.text.utf16.count == 1,
               let font = attrs[.font] as? LeafFont,
-              let glyph = OpenRegionLayout.glyph(view, size: font.pointSize, ink: theme.textColor, open: open)
+              let picture = pictures(run.src, font.pointSize)
         else { return nil }
         var a = attrs
-        a[.attachment] = MathAttachment(glyph: glyph)
-        if let delegate = MathRunDelegate.make(glyph) {
+        a[.attachment] = PictureAttachment(picture: picture)
+        if let delegate = PictureRunDelegate.make(picture) {
             a[NSAttributedString.Key(kCTRunDelegateAttributeName as String)] = delegate
         }
         // The attachment character draws the picture; nothing else on the

@@ -1,9 +1,10 @@
 //  RegionEditingTests.swift
 //
-//  A fence a host's editor edits, as the macOS view answers it: drawn by the
-//  editor's view, opened by → or a click into a session whose view stands
-//  where the drawing was, and written back through its `RegionHost` — see
-//  `RegionEditing.swift`. The editor here is a stand-in for a Mermaid one.
+//  A fence a host's editor edits, as the macOS view answers it: drawn as its
+//  renderer's picture, opened by → or a click into a session whose view stands
+//  where the picture was, and written back through its `RegionHost` — see
+//  `RegionEditing.swift`. The renderer and editor here are stand-ins for
+//  Mermaid's.
 
 #if canImport(AppKit) && !targetEnvironment(macCatalyst)
 import AppKit
@@ -23,7 +24,7 @@ final class RegionEditingTests: XCTestCase {
     private final class DemoSession: RegionSession {
         let host: RegionHost
         let log: Log
-        let box = NSView(frame: NSRect(x: 0, y: 0, width: 100, height: 120))
+        let box = DemoBox(frame: NSRect(x: 0, y: 0, width: 100, height: 120))
         var view: LeafView? { box }
 
         init(host: RegionHost, log: Log) {
@@ -39,25 +40,33 @@ final class RegionEditingTests: XCTestCase {
         func close() { log.entries.append("close") }
     }
 
+    private final class DemoBox: NSView {}
+
     private var sessions: [DemoSession] = []
 
     private func editor(_ log: Log) throws -> LeafTextView {
         let doc = try LeafDoc(source: source, format: "markdown")
         let view = LeafTextView(doc: doc, theme: .default)
         view.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        view.regionRenderers = [
+            "fence:demo": { r, _ in
+                log.entries.append("render \(r.content)")
+                return RegionPicture(width: 100, height: 60) { _, _ in }
+            },
+            // Not a kind a host may name.
+            "code": { _, _ in nil },
+        ]
         view.regionEditors = [
             "fence:demo": RegionEditor(
-                view: { r in
-                    log.entries.append("view \(r.content)")
-                    return NSView(frame: NSRect(x: 0, y: 0, width: 100, height: 60))
-                },
                 open: { [unowned self] _, entry, host in
                     log.entries.append("open \(entry)")
                     let s = DemoSession(host: host, log: log)
                     sessions.append(s)
                     return s
                 }),
-            // Not a fence: not the host's to edit.
+            // Not kinds a host may edit: leaf's own name, and formulas, which
+            // leaf's session edits inside a line.
+            "directive:page-break": RegionEditor(open: { _, _, _ in nil }),
             "math": RegionEditor(open: { _, _, _ in nil }),
         ]
         view.layout()
@@ -70,22 +79,80 @@ final class RegionEditingTests: XCTestCase {
         view.command { $0.selectRange(start: at, end: at) }
     }
 
-    func testAFenceTheHostEditsIsItsDrawing() throws {
+    /// The picture of the demo fence, where the layout put it.
+    private func drawn(_ view: LeafTextView) -> CGRect? {
+        view.layoutEngine.pictureRects().first { $0.key.hasPrefix("fence:demo@") }?.value
+    }
+
+    func testAFenceTheHostDrawsIsItsPicture() throws {
         let log = Log()
         let view = try editor(log)
         XCTAssertEqual(view.regionEditors.keys.sorted(), ["fence:demo"])
+        XCTAssertEqual(view.regionRenderers.keys.sorted(), ["fence:demo"])
         XCTAssertEqual(view.doc.view().regions.map(\.kind), ["fence:demo"])
         XCTAssertEqual(region(view).content, "A\n")
-        XCTAssertEqual(log.entries, ["view A\n"])
-        let rects = view.layoutEngine.regionRects()
-        XCTAssertEqual(rects.count, 1)
-        XCTAssertEqual(rects.values.first?.height, 60)
+        XCTAssertEqual(log.entries, ["render A\n"], "the picture was not kept")
+        XCTAssertEqual(drawn(view)?.height, 60)
+        XCTAssertTrue(view.subviews.allSatisfy { !($0 is DemoBox) }, "a closed region is a live view")
+        // Asked again, it draws anew.
+        view.redrawRegions(kind: "fence:demo")
+        XCTAssertEqual(log.entries, ["render A\n", "render A\n"])
+        view.redrawRegions(kind: "fence:other")
+        XCTAssertEqual(log.entries.count, 2, "redrawing another kind drew this one")
+    }
+
+    func testARendererAloneDrawsTheFenceAndLeavesItShut() throws {
+        let doc = try LeafDoc(source: source, format: "markdown")
+        let view = LeafTextView(doc: doc, theme: .default)
+        view.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        view.regionRenderers = ["fence:demo": { _, _ in RegionPicture(width: 80, height: 40) { _, _ in } }]
+        view.layout()
+        XCTAssertEqual(drawn(view)?.height, 40)
+        let r = region(view)
+        place(view, r.src)
+        view.doCommand(by: #selector(NSResponder.moveRight(_:)))
+        XCTAssertFalse(view.regionSlot.isOpen)
+        XCTAssertEqual(view.doc.caretOffset(), r.end, "→ did not step over the picture")
+    }
+
+    func testAPictureComesOutOnPaperAndPrintingKeepsTheViewsRegions() throws {
+        let doc = try LeafDoc(source: source, format: "markdown")
+        let view = LeafTextView(doc: doc, theme: .default)
+        view.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        var drawnOnPaper = 0
+        var dark: [Bool] = []
+        view.regionRenderers = ["fence:demo": { _, context in
+            dark.append(context.dark)
+            return RegionPicture(width: 80, height: 40) { _, _ in drawnOnPaper += 1 }
+        }]
+        view.regionEditors = ["fence:demo": RegionEditor(open: { _, _, _ in nil })]
+        view.appearance = NSAppearance(named: .darkAqua)
+        view.redrawRegions()
+        view.layout()
+        XCTAssertEqual(dark.last, true, "the renderer was not told the view is dark")
+        drawnOnPaper = 0
+        let pdf = view.pdfData(page: .usLetter)
+        XCTAssertFalse(pdf.isEmpty)
+        XCTAssertGreaterThan(drawnOnPaper, 0, "the picture is not on the page")
+        XCTAssertEqual(dark.last, false, "paper is drawn dark")
+        // The sheet shares the document: it must own what the view owns.
+        XCTAssertEqual(view.doc.view().regions.map(\.kind), ["fence:demo"])
+    }
+
+    func testARendererThatDeclinesLeavesThePlaceholder() throws {
+        let doc = try LeafDoc(source: source, format: "markdown")
+        let view = LeafTextView(doc: doc, theme: .default)
+        view.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        view.regionRenderers = ["fence:demo": { _, _ in nil }]
+        view.layout()
+        XCTAssertNil(drawn(view))
+        XCTAssertTrue(view.layoutEngine.rows.contains { $0.row.runs.map(\.text).joined().hasPrefix("▤") })
     }
 
     func testAnArrowOpensItsViewWhereTheDrawingWas() throws {
         let log = Log()
         let view = try editor(log)
-        let drawn = try XCTUnwrap(view.layoutEngine.regionRects().values.first)
+        let drawn = try XCTUnwrap(drawn(view))
         place(view, region(view).src)
         view.doCommand(by: #selector(NSResponder.moveRight(_:)))
         let s = try XCTUnwrap(sessions.last)
@@ -117,7 +184,7 @@ final class RegionEditingTests: XCTestCase {
         XCTAssertFalse(view.regionSlot.isOpen)
         XCTAssertNil(s.box.superview)
         XCTAssertEqual(view.doc.caretOffset(), region(view).end)
-        XCTAssertEqual(log.entries.suffix(2), ["close", "view A\nB é\n"])
+        XCTAssertEqual(log.entries.suffix(2), ["close", "render A\nB é\n"])
         // A host that calls after it closed changes nothing.
         s.host.replace("gone\n")
         XCTAssertEqual(view.doc.source(), "intro\n\n```demo\nA\nB é\n```\n\nend\n")
@@ -126,7 +193,7 @@ final class RegionEditingTests: XCTestCase {
     func testAClickOnTheDrawingOpensItAndAClickElsewhereClosesIt() throws {
         let log = Log()
         let view = try editor(log)
-        let drawn = try XCTUnwrap(view.layoutEngine.regionRects().values.first)
+        let drawn = try XCTUnwrap(drawn(view))
         XCTAssertTrue(view.regionSlot.click(at: CGPoint(x: drawn.minX + 5, y: drawn.minY + 3),
                                             in: view.layoutEngine, theme: view.theme))
         XCTAssertEqual(log.entries.last, "open point((5.0, 3.0), size: \(view.theme.fontSize))")
@@ -171,7 +238,7 @@ final class RegionEditingTests: XCTestCase {
         s.host.replace("B\n")
         XCTAssertEqual(edits, 1, "an edit inside the fence that kept its length was not reported")
         s.host.leave(atEnd: true)
-        XCTAssertEqual(log.entries.last, "view B\n", "the drawing was not asked for again")
+        XCTAssertEqual(log.entries.last, "render B\n", "the picture was not drawn again")
     }
 
     func testAnEditThatWouldCloseTheFenceIsRefused() throws {

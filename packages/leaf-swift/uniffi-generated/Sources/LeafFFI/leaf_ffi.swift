@@ -7015,23 +7015,37 @@ public func FfiConverterTypeMermaidPicture_lower(_ value: MermaidPicture) -> Rus
 
 
 /**
- * A part of the document the view edits itself, as it asked through
- * [`LeafDoc::set_owned_regions`]: a formula (`kind` `"math"`), or a fenced
- * block of a language it named (`"fence:mermaid"`). The view opens one in an
- * editor of its own, which reads `[content_start, content_end)` and writes
- * back through [`LeafDoc::edit_source`]. An owned fence stands as one
- * placeholder row the view draws over; an owned formula is the picture its
- * [`MathView`] already describes.
+ * A part of the document the view draws or edits itself, as it asked
+ * through [`LeafDoc::set_owned_regions`]: a formula (`kind` `"math"`), a
+ * fenced block of a language it named (`"fence:mermaid"`), or a leaf
+ * directive of a name it named (`"directive:embed"`). A renderer draws one
+ * from its `content`; an editor opens it, reads `[content_start,
+ * content_end)` and writes back through [`LeafDoc::edit_source`]. An owned
+ * fence or directive stands as placeholder rows the view draws over; an
+ * owned formula is the picture its [`MathView`] already describes.
  */
 public struct RegionView: Equatable, Hashable {
     /**
-     * `"math"`, or `"fence:"` and the fence's language.
+     * `"math"`, `"fence:"` and the fence's language, or `"directive:"` and
+     * the leaf directive's name.
      */
     public var kind: String
     /**
      * An inline formula's atom, rather than a block on rows of its own.
      */
     public var inline: Bool
+    /**
+     * A formula set in display style (`$$…$$`, inline or not) rather than
+     * text style. False for every other kind.
+     */
+    public var display: Bool
+    /**
+     * A leaf directive's name, `[label]` and `{…}` attributes, as its
+     * [`DirectiveView`] carries them. Empty for every other kind.
+     */
+    public var name: String
+    public var label: String
+    public var attrs: [DirectiveAttr]
     /**
      * The [`DocView::rows`] it stands on, `[start_row, end_row)`.
      */
@@ -7060,11 +7074,20 @@ public struct RegionView: Equatable, Hashable {
     // declare one manually.
     public init(
         /**
-         * `"math"`, or `"fence:"` and the fence's language.
+         * `"math"`, `"fence:"` and the fence's language, or `"directive:"` and
+         * the leaf directive's name.
          */kind: String, 
         /**
          * An inline formula's atom, rather than a block on rows of its own.
          */inline: Bool, 
+        /**
+         * A formula set in display style (`$$…$$`, inline or not) rather than
+         * text style. False for every other kind.
+         */display: Bool, 
+        /**
+         * A leaf directive's name, `[label]` and `{…}` attributes, as its
+         * [`DirectiveView`] carries them. Empty for every other kind.
+         */name: String, label: String, attrs: [DirectiveAttr], 
         /**
          * The [`DocView::rows`] it stands on, `[start_row, end_row)`.
          */startRow: UInt32, endRow: UInt32, 
@@ -7083,6 +7106,10 @@ public struct RegionView: Equatable, Hashable {
          */content: String) {
         self.kind = kind
         self.inline = inline
+        self.display = display
+        self.name = name
+        self.label = label
+        self.attrs = attrs
         self.startRow = startRow
         self.endRow = endRow
         self.src = src
@@ -7110,6 +7137,10 @@ public struct FfiConverterTypeRegionView: FfiConverterRustBuffer {
             try RegionView(
                 kind: FfiConverterString.read(from: &buf), 
                 inline: FfiConverterBool.read(from: &buf), 
+                display: FfiConverterBool.read(from: &buf), 
+                name: FfiConverterString.read(from: &buf), 
+                label: FfiConverterString.read(from: &buf), 
+                attrs: FfiConverterSequenceTypeDirectiveAttr.read(from: &buf), 
                 startRow: FfiConverterUInt32.read(from: &buf), 
                 endRow: FfiConverterUInt32.read(from: &buf), 
                 src: FfiConverterUInt32.read(from: &buf), 
@@ -7123,6 +7154,10 @@ public struct FfiConverterTypeRegionView: FfiConverterRustBuffer {
     public static func write(_ value: RegionView, into buf: inout [UInt8]) {
         FfiConverterString.write(value.kind, into: &buf)
         FfiConverterBool.write(value.inline, into: &buf)
+        FfiConverterBool.write(value.display, into: &buf)
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterString.write(value.label, into: &buf)
+        FfiConverterSequenceTypeDirectiveAttr.write(value.attrs, into: &buf)
         FfiConverterUInt32.write(value.startRow, into: &buf)
         FfiConverterUInt32.write(value.endRow, into: &buf)
         FfiConverterUInt32.write(value.src, into: &buf)
