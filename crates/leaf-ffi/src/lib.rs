@@ -59,6 +59,10 @@ use unicode_segmentation::UnicodeSegmentation;
 // what makes rustc treat the crate as referenced and carry its objects into
 // the staticlib.
 use resvg_uniffi as _;
+// Mermaid, for a host that draws its fences — linked in only under the
+// `mermaid` feature, and a Swift module of its own. See leaf-mermaid-ffi.
+#[cfg(feature = "mermaid")]
+use leaf_mermaid_ffi as _;
 
 uniffi::setup_scaffolding!();
 
@@ -80,9 +84,6 @@ pub enum LeafError {
         message: String,
         position: Option<u32>,
     },
-    /// [`render_mermaid`] could not read a diagram: what the parser said.
-    #[error("mermaid error: {message}")]
-    Mermaid { message: String },
 }
 
 /// A selection cited out of the source — the text, a little of what
@@ -2164,53 +2165,6 @@ pub fn typeset_math(
         width: p.width,
         height: p.height,
         depth: p.depth,
-    })
-}
-
-/// How a host measures text for [`render_mermaid`]: the advance width of
-/// `text` at `size` points in the first face of the comma-separated `family`
-/// list it can draw, or `None` to leave it to the renderer's estimate. On
-/// Apple, Core Text — the faces the picture will be drawn in.
-#[uniffi::export(with_foreign)]
-pub trait MermaidMeasure: Send + Sync {
-    fn width(&self, text: String, size: f32, family: String) -> Option<f32>;
-}
-
-/// A rendered Mermaid diagram: a standalone SVG and its size in points.
-#[derive(uniffi::Record)]
-pub struct MermaidPicture {
-    pub svg: String,
-    pub width: f64,
-    pub height: f64,
-}
-
-/// [`MermaidMeasure`] as `leaf-mermaid`'s [`leaf_mermaid::Measure`].
-struct HostMeasure(Arc<dyn MermaidMeasure>);
-
-impl leaf_mermaid::Measure for HostMeasure {
-    fn width(&self, text: &str, size: f32, family: &str) -> Option<f32> {
-        self.0.width(text.to_string(), size, family.to_string())
-    }
-}
-
-/// Render a Mermaid diagram — a ```` ```mermaid ```` fence's content — to SVG,
-/// in Mermaid's light theme or its dark one, measuring text through
-/// `measure`. For a host's fence editor (`fence:mermaid`); leaf's own views
-/// draw no diagrams. A diagram that does not parse is a
-/// [`LeafError::Mermaid`] with the parser's message.
-#[uniffi::export]
-pub fn render_mermaid(
-    source: String,
-    dark: bool,
-    measure: Option<Arc<dyn MermaidMeasure>>,
-) -> Result<MermaidPicture, LeafError> {
-    let measure = measure.map(|m| Arc::new(HostMeasure(m)) as Arc<dyn leaf_mermaid::Measure>);
-    let p = leaf_mermaid::render(&source, dark, measure)
-        .map_err(|e| LeafError::Mermaid { message: e.message })?;
-    Ok(MermaidPicture {
-        svg: p.svg,
-        width: p.width,
-        height: p.height,
     })
 }
 
@@ -6293,25 +6247,6 @@ mod tests {
             Err(other) => panic!("expected a math error, got {other}"),
             Ok(_) => panic!("expected a math error, got a picture"),
         }
-    }
-
-    #[test]
-    fn a_mermaid_diagram_renders_through_the_host_s_measure() {
-        struct Counting(std::sync::atomic::AtomicUsize);
-        impl MermaidMeasure for Counting {
-            fn width(&self, text: String, size: f32, _family: String) -> Option<f32> {
-                self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                Some(text.chars().count() as f32 * size * 0.5)
-            }
-        }
-        let m = Arc::new(Counting(Default::default()));
-        let p = render_mermaid("flowchart LR\n  A --> B\n".into(), false, Some(m.clone())).unwrap();
-        assert!(p.svg.starts_with("<svg") && p.width > 0.0 && p.height > 0.0);
-        assert!(m.0.load(std::sync::atomic::Ordering::Relaxed) > 0);
-        assert!(matches!(
-            render_mermaid("flowchart LR\n  A -->\n".into(), false, None),
-            Err(LeafError::Mermaid { .. })
-        ));
     }
 
     #[test]

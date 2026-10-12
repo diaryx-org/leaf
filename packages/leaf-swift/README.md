@@ -461,7 +461,9 @@ leaf ships no fence renderer or editor; the leaf-editor app's Mermaid ones
 `SVGView` draws an SVG document as vectors, through resvg-swift with the
 system's fonts, at its natural size or fitted to its bounds. leaf's own views
 do not use it. It is for a host's open editor: the app's Mermaid preview draws
-`renderMermaid`'s SVG with it.
+`renderMermaid`'s SVG with it. `renderMermaid` itself is not in `LeafFFI`: it
+is `leaf-mermaid-ffi`'s, built into the app's archive under leaf-ffi's
+`mermaid` feature and compiled as its own module (`apps/leaf-editor/LeafMermaid`).
 
 ### Type-checking the Swift without an app
 

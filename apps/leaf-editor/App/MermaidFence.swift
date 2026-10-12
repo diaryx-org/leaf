@@ -1,6 +1,7 @@
 import CoreText
 import Foundation
 import LeafFFI
+import LeafMermaidFFI
 import LeafUI
 
 #if canImport(AppKit)
@@ -170,7 +171,7 @@ final class MermaidDrawing: LeafView {
         guard !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return .fault("(empty diagram)") }
         do {
             return .svg(try renderMermaid(source: source, dark: dark, measure: CoreTextMeasure.shared).svg)
-        } catch LeafError.Mermaid(let message) {
+        } catch MermaidError.Parse(let message) {
             return .fault(message)
         } catch {
             return .fault(String(describing: error))

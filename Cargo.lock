@@ -1056,7 +1056,7 @@ dependencies = [
  "leaf-core",
  "leaf-math",
  "leaf-math-edit",
- "leaf-mermaid",
+ "leaf-mermaid-ffi",
  "resvg-uniffi",
  "thiserror 1.0.69",
  "unicode-segmentation",
@@ -1102,6 +1102,15 @@ name = "leaf-mermaid"
 version = "0.5.1"
 dependencies = [
  "mermaid-rs-renderer",
+]
+
+[[package]]
+name = "leaf-mermaid-ffi"
+version = "0.5.1"
+dependencies = [
+ "leaf-mermaid",
+ "thiserror 1.0.69",
+ "uniffi",
 ]
 
 [[package]]
