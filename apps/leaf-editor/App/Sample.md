@@ -37,6 +37,12 @@ fn main() {
 }
 ```
 
+## Dates
+
+The draft is due :date[2026-10-12], and the review :date[2026-11-01]. Click a
+date, or arrow into it: ← and → pick the year, month or day, ↑ and ↓ change
+it, digits overwrite it, and a calendar opens beside it.
+
 ## Diagrams
 
 A Mermaid fence is drawn as its diagram. Arrow into it, or click it, and it opens as its source beside a live preview:

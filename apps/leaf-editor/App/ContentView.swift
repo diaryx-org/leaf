@@ -133,11 +133,15 @@ struct ContentView: View {
         // editor: a ```mermaid fence is drawn as its diagram and opens as its
         // source beside a live preview.
         if model.directiveCatalogue.isEmpty { model.directiveCatalogue = [EmbedDirective.item] }
+        // And a date chip, `:date[2026-10-12]`, edited in place.
         if model.regionRenderers.isEmpty {
             model.regionRenderers = [EmbedDirective.kind: EmbedDirective.renderer,
-                                     MermaidFence.kind: MermaidFence.renderer]
+                                     MermaidFence.kind: MermaidFence.renderer,
+                                     DateChip.kind: DateChip.renderer]
         }
-        if model.regionEditors.isEmpty { model.regionEditors = [MermaidFence.kind: MermaidFence.editor] }
+        if model.regionEditors.isEmpty {
+            model.regionEditors = [MermaidFence.kind: MermaidFence.editor, DateChip.kind: DateChip.editor]
+        }
     }
 
     #if os(macOS)

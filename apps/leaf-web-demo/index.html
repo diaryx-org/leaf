@@ -67,6 +67,21 @@
     background: var(--panel); color: var(--text); }
   .mermaid-editor .mermaid-drawing { margin: 0; cursor: default; }
 
+  /* The demo host's date chip (date-chip.js): leaf draws the chip as a
+     picture in the line, and the chip's calendar opens under its caret while
+     it is open. */
+  .date-popover { position: fixed; z-index: 10; padding: 8px; border-radius: 10px;
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    box-shadow: 0 6px 24px rgba(0,0,0,.25); font: 12px/1.2 -apple-system, system-ui, sans-serif; }
+  .date-popover-head { display: flex; align-items: center; justify-content: space-between;
+    gap: 8px; margin-bottom: 6px; font-weight: 600; }
+  .date-popover-grid { display: grid; grid-template-columns: repeat(7, 26px); gap: 2px; text-align: center; }
+  .date-popover .dow { color: var(--muted); font-size: 11px; padding: 2px 0; }
+  .date-popover button { font: inherit; color: inherit; background: none; border: 0;
+    border-radius: 6px; padding: 4px 0; cursor: pointer; }
+  .date-popover button:hover { background: var(--border); }
+  .date-popover button.on { background: var(--accent); color: var(--bg); }
+
   /* The editor mounts here; LeafEditor injects its own surface styles. */
   #editor { flex: 1; min-height: 0; }
 
@@ -185,6 +200,7 @@ import {
   FONT_FAMILIES,
 } from "../../packages/leaf-web/src/index.js";
 import { mermaidEditor, renderMermaid } from "./mermaid-editor.js";
+import { dateEditor, renderDate } from "./date-chip.js";
 
 const SAMPLE = `# leaf on the web 🍃
 
@@ -272,6 +288,11 @@ it has and how each one looks. This page draws an embed as a card, and the
 ⧉ Embed button up top writes one. The caret steps over it like a picture.
 
 ::embed{src="https://diaryx.org"}
+
+An inline directive can be the host's to edit, too: this page draws :date[2026-10-12]
+as a chip. → onto it, or a click, opens it — ← and → walk the year, month and
+day, ↑ and ↓ change one, digits type it, and a calendar opens under it. A label
+that is no date, :date[next week], is drawn red.
 
 ## Diagrams are the host's too
 A fence can be drawn and edited by the host. This page hands every
@@ -462,8 +483,12 @@ async function main() {
     format: "markdown",
     onChange: syncChrome,
     directives: DIRECTIVES,
-    regionRenderers: { "directive:embed": renderEmbed, "fence:mermaid": renderMermaid },
-    regionEditors: { "fence:mermaid": mermaidEditor },
+    regionRenderers: {
+      "directive:embed": renderEmbed,
+      "fence:mermaid": renderMermaid,
+      "directive:date": renderDate,
+    },
+    regionEditors: { "fence:mermaid": mermaidEditor, "directive:date": dateEditor },
   });
   // Exposed for poking at from the console (and for driving the demo in tests).
   window.leafEditor = editor;
