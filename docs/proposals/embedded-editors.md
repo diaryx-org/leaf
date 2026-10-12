@@ -2,7 +2,7 @@
 title: Editors inside a document
 status: draft
 created: 2026-10-11
-updated: 2026-10-11
+updated: 2026-10-12
 part_of: '[Proposals](/docs/proposals/proposals.md)'
 ---
 
@@ -50,8 +50,9 @@ What the text below did not foresee, or decided:
   vectors. On the web, `leaf-mermaid-wasm` is a module of its own that the
   demo loads in a worker, measuring labels on a canvas. The npm package does
   not carry it. leaf's frontends still draw no diagrams. So for now, on the
-  user's choice, Mermaid is a leaf crate behind the bindings, pending the
-  bring-your-own-renderer question below.
+  user's choice, Mermaid is a leaf crate behind the bindings. That question is
+  now decided: under [Renderers and editors](#renderers-and-editors), Mermaid
+  moves out of leaf's default build.
 - **Persistence of the open state** (open question). An open region does not
   survive a view being rebuilt, as before.
 - **A fence's content** is its lines between the fences, each with its
@@ -225,6 +226,74 @@ Only then work through the spike's own "Not done" list in
 inside a formula, IME, matrices and environments, `\left(` pairing, removing
 empty scripts, user colours, and caching the layout of the open formula.
 
+Then split rendering from editing, as
+[Renderers and editors](#renderers-and-editors) sets out:
+
+4. The public picture, and renderers by kind on every platform that draws
+   regions. Math's renderer is leaf-math, unchanged in what it draws.
+5. Mermaid as a host renderer. `leaf-mermaid` leaves the default `leaf-ffi`
+   and npm package, and the leaf-editor app and web demo register it.
+6. Directives as regions, with `directiveView` and `DirectiveHost` folded in.
+   Every frontend that draws directives today, Android and the terminal
+   included, still draws them afterwards.
+7. One generic Rust session across the bindings, with math as its first user.
+
+## Renderers and editors
+
+Decided 2026-10-12, after Mermaid was drawn natively. The protocol built in
+steps 1 and 2 can be extended in one direction only: a host can add a block
+fence edited by a view of its own. A host cannot claim any other kind of
+region. It cannot draw anything inline. It also cannot hand the layout a
+picture: a closed region is drawn either by leaf's placeholder or by a live
+view laid over it, and a live view does not paginate, print or export.
+Directives meanwhile have a second, parallel host-view mechanism
+(`directiveView` / `DirectiveHost`). And `leaf-ffi` depends on `leaf-mermaid`,
+so leaf ships a Mermaid renderer it does not use.
+
+So each region kind gets two parts. Both are registered by kind, and both are
+open to a host.
+
+- **A renderer**, required. It turns a region's content into a
+  `RegionPicture`. The layout places the picture inline, on the baseline, or as
+  a block on the region's rows, and caches it by kind and content. Because the
+  layout lays out and draws pictures itself, a host's regions page, print and
+  export the way formulas do. The picture is vectors with a size and a
+  baseline, in whatever form each platform draws cheaply: a display list or
+  SVG on Apple (LeafUI's `SVGView` already draws SVG), an element or SVG on
+  the web. `MathGlyph` becomes the math renderer's picture, not a type the
+  layout knows by name. A kind with no renderer keeps leaf's placeholder row.
+- **An editor**, optional. It is what `open` is today: a session leaf draws,
+  which answers keys and returns a picture (math), or a session a host runs in
+  a view of its own. Only an open region is ever a live view. Inline regions
+  are edited only by sessions leaf draws.
+
+Kinds:
+
+- `math`, inline or block. Leaf registers its renderer and its editor by
+  default, and a host may replace either.
+- `fence:<lang>`, block.
+- `directive:<name>`, block, as `::name[label]{attrs}`. The region carries the
+  name, the attributes and the label that `DirectiveInfo` carries now, as well
+  as its ranges. Its content is its whole source line, and its editor writes
+  through splices like any other. A directive renderer replaces
+  `directiveView`, which goes.
+- Inline directives and HTML blocks: not yet. See Open questions.
+
+Registration is one call per platform, with the same shape everywhere:
+`regionRenderers[kind]` and `regionEditors[kind]`, or one `regions[kind] =
+{ render, open }`, whichever reads better in each language. Core still needs
+`set_owned_regions` with every kind the frontend registers, so that it
+publishes those regions.
+
+The bindings export one Rust session type, chosen by kind, in place of
+`MathSession`. A second editor written in Rust then needs no new binding.
+
+Mermaid leaves leaf's default build. `leaf-mermaid` stays a crate in this
+workspace, but `render_mermaid` moves behind a cargo feature or into its own
+small FFI module, and `leaf-mermaid-wasm` stays out of the npm package. The
+leaf-editor app and the web demo register it as the renderer for
+`fence:mermaid`, and their editors draw their previews with it.
+
 ## Open questions
 
 - **Inline host views.** Should an inline region ever be a host view, or are
@@ -239,14 +308,9 @@ empty scripts, user colours, and caching the layout of the open formula.
   as the reference, or as an optional leaf package.
 - **Rendering Mermaid on Apple.** A web view per diagram, a shared offscreen
   renderer, or a native renderer if a good one exists. Measure before choosing.
-- **Bring your own renderer.** Should any region kind take a renderer a host
-  supplies, for any format, not only a fence's editor? The protocol already
-  keys editors by kind and splits drawing (`view`) from editing (`open`). It
-  would also need: kinds beyond fences (directives, HTML blocks, perhaps
-  inline spans), renderers that only draw, a host-supplied *picture* the
-  layout places (today only leaf's own session draws one), and one registry
-  across platforms. To be decided after Mermaid is drawn natively (mmdr
-  through resvg), which is the first host renderer that would want a picture
-  rather than a view.
+- **Bring your own renderer.** Decided 2026-10-12: yes. See
+  [Renderers and editors](#renderers-and-editors).
+- **Inline directives.** Whether core should publish `:name[…]{…}` as an
+  inline `directive:<name>` region now, or only once something needs it.
 - **Persistence of the open state.** Whether an open region should survive a
   re-render that rebuilds the view (it does not today).
