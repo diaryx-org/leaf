@@ -759,8 +759,9 @@ public final class LeafEditorModel: ObservableObject {
 
     // ── the host's directives ─────────────────────────────────────────────────
     // A leaf directive (`::name{…}`) means whatever the host says it means:
-    // leaf writes the ones the host lists and draws the ones the host draws, and
-    // leaves every other as the `⧉ name` placeholder. See
+    // leaf writes the ones the host lists, draws each as the picture of the
+    // host's renderer for `directive:<name>` (`regionRenderers`), and leaves
+    // every other as the `⧉ name` placeholder. See
     // `docs/proposals/host-directives.md`.
 
     /// The directives this app offers in Insert — the formatting bar's Insert
@@ -769,21 +770,6 @@ public final class LeafEditorModel: ObservableObject {
     /// cannot write a directive of the host's (`capabilities.directives`).
     /// Empty, the default, adds no row anywhere.
     @Published public var directiveCatalogue: [DirectiveItem] = []
-
-    /// Asked for a view to draw each leaf directive with — an `NSView` or a
-    /// `UIView` — or nil to leave it core's placeholder. See
-    /// `LeafTextView.directiveView`, which this reaches.
-    public var directiveView: ((DirectiveView) -> LeafView?)? {
-        didSet { textView?.directiveView = directiveViewBridge }
-    }
-
-    /// `directiveView` as the view is handed it: read through to the model,
-    /// so a host that swaps its hook is asked, and nil while the host has set
-    /// none, so a view with no hook lays out no directive of its own.
-    var directiveViewBridge: ((DirectiveView) -> LeafView?)? {
-        guard directiveView != nil else { return nil }
-        return { [weak self] directive in self?.directiveView?(directive) }
-    }
 
     /// The host's editors, by region kind — `"fence:"` and a language, or
     /// `"directive:"` and a name. See `LeafTextView.regionEditors`, which this
@@ -1546,9 +1532,6 @@ struct LeafEditorSurface: NSViewRepresentable {
         // Through the bridge, not read through: the menu gates on it. See
         // `showMediaBridge`.
         textView.onShowMedia = model.showMediaBridge
-        // The host's drawings, through the bridge for the same reason; set only
-        // when there is a hook, since setting it lays the document out again.
-        if let draw = model.directiveViewBridge { textView.directiveView = draw }
         textView.isReadOnly = model.isReadOnly
         textView.onTapHighlight = model.tapHighlightBridge
         model.textView = textView
@@ -2160,9 +2143,6 @@ struct LeafEditorSurface: UIViewControllerRepresentable {
         // Through the bridge, not read through: the menu gates on it. See
         // `showMediaBridge`.
         textView.onShowMedia = model.showMediaBridge
-        // The host's drawings, through the bridge for the same reason; set only
-        // when there is a hook, since setting it lays the document out again.
-        if let draw = model.directiveViewBridge { textView.directiveView = draw }
         textView.isReadOnly = model.isReadOnly
         textView.selectionMenuActions = model.selectionMenuBridge
         textView.onTapHighlight = model.tapHighlightBridge

@@ -168,17 +168,27 @@ app says it means. `model.directiveCatalogue` lists the ones it offers —
 `DirectiveItem`s with an id, a name, a title, an SF Symbol, and either a fixed
 label and attributes or an `ask` that prompts the author and may cancel — and
 they join Insert on the iOS row and panel, in the Mac bar, and in the menu bar's
-Format menu, dimmed by `capabilities.directives`. `model.directiveView` draws
-them: answer a directive with an `NSView`/`UIView` and it replaces core's
-`⧉ name` placeholder, as wide as the text column and as tall as its
-`intrinsicContentSize` (else its fitting size at that width). The directive's
-rows collapse onto that box, pages flow around it as around a picture, and the
-caret has a picture's two stops, in front of it and past it. A nil answer, and
-`::page-break`, which is leaf's own and never asked about, keep leaf's drawing.
-The view is the host's: make it ignore hits (`hitTest` → nil, or
-`isUserInteractionEnabled = false`) and a click on it places the caret.
-`apps/leaf-editor` draws an `::embed` as a titled card and offers Insert ▸
-Embed…. See `docs/proposals/host-directives.md`.
+Format menu, dimmed by `capabilities.directives`. Each directive is a region of
+kind `directive:<name>`, drawn by `model.regionRenderers["directive:<name>"]`
+(see Regions, below): answer it with a `RegionPicture` and it replaces core's
+`⧉ name` placeholder, as a picture laid out with the text. A picture with no
+width takes the text column's. The directive's rows collapse onto that box,
+pages flow around it, and the caret has a picture's two stops, in front of it
+and past it. A nil answer, and `::page-break`, which is leaf's own and cannot
+be named, keep leaf's drawing. `regionEditors["directive:<name>"]` opens one
+for editing: its content is the directive's whole source. `apps/leaf-editor`
+draws an `::embed` as a titled card and offers Insert ▸ Embed…. See
+`docs/proposals/host-directives.md`.
+
+*Migrating from `directiveView`.* The hook and its live views are gone. For
+each name the hook answered, register a renderer for `directive:<name>` that
+draws what the view showed as a picture — `RegionPicture(width: nil, height:)`
+with a draw closure, `RegionPicture(svg:)`, or `RegionPicture(image:size:)`.
+The `RegionView` it is handed carries the `name`, `label` and `attrs` the
+`DirectiveView` did. A picture that waits on data (an album's photographs)
+draws what it has, and the host calls `redrawRegions(kind:)` when the rest
+arrives. What a tap on the view did, such as following a link, belongs to a
+`RegionEditor` for the same kind, whose `open` may do it and answer nil.
 
 `LeafEditorModel` exposes every formatting command (`toggleBold`, `setHeading`,
 `toggleList`, `insertLink`, `undo`, …), `source()` / `markSaved()` for

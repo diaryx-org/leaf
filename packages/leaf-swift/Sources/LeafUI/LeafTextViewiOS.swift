@@ -978,22 +978,6 @@ public final class LeafTextView: UIView, UITextInput {
         set { mediaStore.onLocateMedia = newValue }
     }
 
-    /// Asked for a view to draw each leaf directive (`::name{…}`) with, in place
-    /// of core's `⧉ name` placeholder. The AppKit peer's `directiveView`; see it
-    /// for the whole contract. The view sits in this view's own coordinates, so
-    /// the zoom's transform scales it with the text. To leave the caret a tap
-    /// on it, turn off its `isUserInteractionEnabled`.
-    public var directiveView: ((DirectiveView) -> LeafView?)? {
-        get { directiveHost.provider }
-        set {
-            directiveHost.provider = newValue
-            render(docView, reflow: true)
-        }
-    }
-
-    /// The host's views for the document's directives.
-    private let directiveHost = DirectiveHost()
-
     /// Loads and caches the stills the media boxes draw.
     private let mediaStore = MediaStore()
     /// The AVKit players currently installed over media boxes.
@@ -1709,21 +1693,17 @@ public final class LeafTextView: UIView, UITextInput {
             if reflow {
                 layoutEngine = EditorLayout(view, theme: renderTheme, viewWidth: viewWidth, page: pageSetup,
                                             cache: &shapeCache, media: mediaStore,
-                                            directives: directiveHost.measure,
                                             regions: regionSlot.views.measure, drawing: drawing)
             } else if change != nil || blocksChanged || openChanged || layoutEngine.rows.isEmpty {
                 layoutEngine = EditorLayout(view, theme: renderTheme, viewWidth: viewWidth, page: pageSetup,
                                             cache: &shapeCache, media: mediaStore, previous: layoutEngine,
-                                            change: change, directives: directiveHost.measure,
+                                            change: change,
                                             regions: regionSlot.views.measure, drawing: drawing)
             }
         }
         let relaid = reflow || change != nil || blocksChanged || openChanged
         // The host's views follow their boxes; one whose directive was edited
         // away goes with it.
-        if relaid, !directiveHost.isEmpty {
-            directiveHost.place(layoutEngine.directiveRects(), in: self)
-        }
         if relaid, !regionSlot.views.isEmpty {
             regionSlot.views.place(layoutEngine.openRegionRect(), in: self)
         }
@@ -1915,8 +1895,8 @@ public final class LeafTextView: UIView, UITextInput {
                 }
                 continue
             }
-            // A directive the host draws is its view, a subview over the box.
-            if rl.directive != nil { continue }
+            // The open region's view is a subview over the box.
+            if rl.hosted != nil { continue }
             // The row's bands, not one rect over its whole height: a split row has
             // a sheet edge — or a column gutter — through the middle of it, and a
             // code fill drawn over that would tile the backdrop or the gutter too.

@@ -474,15 +474,14 @@ struct RowLayout {
     var pictureTop: CGFloat = 0
     /// The one placeholder row that carries the box's height and paints it.
     var pictureFirst: Bool = false
-    /// The host's view's box, on every row of a leaf directive the host draws
-    /// (`LeafTextView.directiveView`); `nil` for an ordinary row and for a
-    /// directive left as its placeholder. Collapsed exactly as a media box's
-    /// rows are.
-    var directive: DirectiveLayout? = nil
-    /// The box's top (all of the directive's rows share it).
-    var directiveTop: CGFloat = 0
+    /// The box of the host's view standing over the open region, on every row
+    /// of that region; `nil` on every other row. Collapsed exactly as a media
+    /// box's rows are.
+    var hosted: HostedLayout? = nil
+    /// The box's top (all of the region's rows share it).
+    var hostedTop: CGFloat = 0
     /// The one row that carries the box's height.
-    var directiveFirst: Bool = false
+    var hostedFirst: Bool = false
     /// Header space reserved above this row's own text for a directive's audience
     /// label (nonzero only on a directive block's first, labeled row) — keeps the
     /// label from painting over that row's real content. See `EditorTheme.directiveLabelHeight`.
@@ -533,7 +532,7 @@ struct RowLayout {
         if let t = table { return tableFirst ? t.height : 0 }
         if let m = media { return mediaFirst ? m.height : 0 }
         if let p = picture { return pictureFirst ? p.height : 0 }
-        if let d = directive { return directiveFirst ? d.height : 0 }
+        if let h = hosted { return hostedFirst ? h.height : 0 }
         if let gapHeight { return gapHeight }
         guard !lineOrigins.isEmpty else {
             return labelInset + shaped.lineOffset(shaped.wrapped.count)
@@ -563,7 +562,7 @@ struct RowLayout {
     /// media block, or a boundary row occupies, those being placed whole. What a
     /// hit-test searches, since a point resolves to a *line*.
     var lineBoxes: [CGRect] {
-        if table != nil || media != nil || picture != nil || directive != nil || gapHeight != nil {
+        if table != nil || media != nil || picture != nil || hosted != nil || gapHeight != nil {
             return height > 0
                 ? [CGRect(x: originX, y: top, width: columnWidth, height: height)]
                 : []
@@ -639,9 +638,9 @@ struct RowLayout {
     }
 
     /// Whether the row's glyphs are what is drawn for it. A table's grid, a
-    /// picture, a formula and a host's directive view are each drawn *instead*
-    /// of the placeholder glyphs core puts on their rows.
-    var drawsItsGlyphs: Bool { table == nil && media == nil && picture == nil && directive == nil }
+    /// picture, a region's picture and the open region's view are each drawn
+    /// *instead* of the placeholder glyphs core puts on their rows.
+    var drawsItsGlyphs: Bool { table == nil && media == nil && picture == nil && hosted == nil }
 
     /// Whether this row belongs inside a directive's dashed outline — a
     /// `:::name{.class}` aside, which reads as a bordered panel.
@@ -650,16 +649,18 @@ struct RowLayout {
     /// where the paper ends, and a box around that hairline would say a block of
     /// content stands there. A table inside a directive gets none either — it has
     /// no drawable rect of its own here, and never has had. Nor does a leaf
-    /// directive the host draws: its view is the drawing, and a dashed box
-    /// around it would be leaf's frame on the host's picture.
-    var isChromedDirective: Bool { row.directive && table == nil && !pageBreak && directive == nil }
+    /// directive drawn as its renderer's picture, or open in a host's view:
+    /// the picture is the drawing, and a dashed box around it would be leaf's
+    /// frame on the host's picture.
+    var isChromedDirective: Bool {
+        row.directive && table == nil && !pageBreak && picture == nil && hosted == nil
+    }
 
-    /// The host's view's frame, on the row that carries it; `nil` on every
-    /// other row. Inset by the row's own prefix, as a picture is, so a directive
-    /// inside a quote or a list stands beside its gutter.
-    var directiveRect: CGRect? {
-        guard directiveFirst, let d = directive else { return nil }
-        return d.rect(top: directiveTop, left: originX + shaped.prefixWidth)
+    /// The open region's view's frame, on the row that carries it; `nil` on
+    /// every other row. Inset by the row's own prefix, as a picture is.
+    var hostedRect: CGRect? {
+        guard hostedFirst, let h = hosted else { return nil }
+        return h.rect(top: hostedTop, left: originX + shaped.prefixWidth)
     }
 
     /// A page break's drawn line in the continuous flow: the same hairline a
@@ -849,7 +850,7 @@ struct EditorLayout {
     let math: [MathView]
     private let directives: [DirectiveView]
     /// The frame's regions, and whether a host's editor's view was asked to
-    /// stand over the open one — `directives`' and `hostsDirectives`' peers.
+    /// stand over the open one.
     let regions: [RegionView]
     private let hostsRegions: Bool
     /// What drew the regions' pictures: each kind's renderer, and the open
@@ -857,10 +858,6 @@ struct EditorLayout {
     let drawing: RegionDrawing
     /// The region open for editing.
     var open: OpenRegionLayout? { drawing.open }
-    /// Whether the host was asked to draw this frame's directives — a frame
-    /// laid out with a hook and one laid out without it place the same rows
-    /// differently.
-    private let hostsDirectives: Bool
 
     /// Lay out `docView` in a view `viewWidth` points wide, wrapping each row to
     /// the text column `theme` puts inside it (see `EditorTheme.column(in:)`).
@@ -886,19 +883,19 @@ struct EditorLayout {
     /// so that no row outside it is compared; `nil` finds it by comparing.
     init(_ docView: DocView, theme: EditorTheme, viewWidth: CGFloat, page: PageSetup? = nil,
          cache: inout [Row: ShapedRow], media: MediaStore? = nil, previous: EditorLayout? = nil,
-         change: RowChange? = nil, directives measure: DirectiveMeasure? = nil,
-         regions: RegionMeasure? = nil, drawing: RegionDrawing = RegionDrawing()) {
+         change: RowChange? = nil, regions: RegionMeasure? = nil,
+         drawing: RegionDrawing = RegionDrawing()) {
         if let page = page?.sanitized {
             let x = page.sheetX(in: viewWidth)
             self.init(docView, theme: theme, originX: x + page.margins.left,
                       columnWidth: page.columnWidth, page: page, sheetX: x,
                       cache: &cache, media: media, previous: previous, change: change,
-                      directives: measure, regions: regions, drawing: drawing)
+                      regions: regions, drawing: drawing)
         } else {
             let column = theme.column(in: viewWidth)
             self.init(docView, theme: theme, originX: column.originX, columnWidth: column.width,
                       cache: &cache, media: media, previous: previous, change: change,
-                      directives: measure, regions: regions, drawing: drawing)
+                      regions: regions, drawing: drawing)
         }
     }
 
@@ -908,14 +905,13 @@ struct EditorLayout {
     /// `page`/`sheetX` are the paginated flow's stack: the sheet to break onto and
     /// where its left edge sits. The `viewWidth` initializer above works both out;
     /// nothing else passes them.
-    /// `directives` asks the host how tall its view for a leaf directive is —
-    /// `DirectiveHost.measure`. `nil` (the default, and a host with no hook)
-    /// leaves every directive the placeholder row core drew.
+    /// `regions` asks how tall the open region's view is, when a host's
+    /// session stands one over it; `drawing` draws every region's picture.
     init(_ docView: DocView, theme: EditorTheme, originX: CGFloat, columnWidth: CGFloat,
          page: PageSetup? = nil, sheetX: CGFloat = 0,
          cache: inout [Row: ShapedRow], media: MediaStore? = nil, previous: EditorLayout? = nil,
-         change known: RowChange? = nil, directives measure: DirectiveMeasure? = nil,
-         regions regionMeasure: RegionMeasure? = nil, drawing: RegionDrawing = RegionDrawing()) {
+         change known: RowChange? = nil, regions regionMeasure: RegionMeasure? = nil,
+         drawing: RegionDrawing = RegionDrawing()) {
         // Every setup the flow walks is a sound one — see `PageSetup.sanitized`.
         let page = page?.sanitized
         let wrapWidth = columnWidth
@@ -929,7 +925,6 @@ struct EditorLayout {
         self.media = docView.media
         self.math = docView.math
         self.directives = docView.directives
-        self.hostsDirectives = measure != nil
         self.regions = docView.regions
         self.hostsRegions = regionMeasure != nil
         self.drawing = drawing
@@ -957,7 +952,7 @@ struct EditorLayout {
         // below it, each of them a different value by its offsets alone.
         let previous = previous.flatMap { $0.same(column: originX, width: columnWidth,
                                                    page: page, sheetX: sheetX, source: isSource)
-            && $0.hostsDirectives == (measure != nil) && $0.hostsRegions == (regionMeasure != nil)
+            && $0.hostsRegions == (regionMeasure != nil)
             && $0.drawing.sameClosed(as: drawing) ? $0 : nil }
         // Where the rows differ: as the caller read it off the frame, or by
         // comparing — and either way, narrowed by shape only over the span,
@@ -977,7 +972,7 @@ struct EditorLayout {
             // The walk resumes where the frame before stood at that row.
             flow = previous.flowBefore[kept]!
             for rl in layouts where rl.table == nil && rl.media == nil && rl.picture == nil
-                && rl.directive == nil && !rl.row.runs.contains(where: { $0.role == "math" }) {
+                && rl.hosted == nil && !rl.row.runs.contains(where: { $0.role == "math" }) {
                 next[rl.row] = rl.shaped
             }
         }
@@ -997,7 +992,7 @@ struct EditorLayout {
             }
             guard j < previous.rows.count else { return nil }
             let rl = previous.rows[j]
-            guard rl.table == nil, rl.media == nil, rl.picture == nil, rl.directive == nil else { return nil }
+            guard rl.table == nil, rl.media == nil, rl.picture == nil, rl.hosted == nil else { return nil }
             return rl.shaped
         }
 
@@ -1047,24 +1042,11 @@ struct EditorLayout {
             pageBreakRows.formUnion(Int(d.startRow)..<Int(d.endRow))
         }
 
-        // The leaf directives a host may draw, each with the key its view is
-        // kept under — which, for a document that says the same thing twice,
-        // counts the ones before it. A page break is leaf's and never offered;
-        // the source view has no pictures of anything.
-        // The open region a host's session stands its own view over.
+        // The open region a host's session stands its own view over. A leaf
+        // directive is a region like any other: drawn as its renderer's
+        // picture above, or open in its editor's view here.
         let openHosted: RegionView? = regionMeasure == nil || isSource ? nil : open.flatMap { o in
             o.picture == nil ? docView.regions.first { $0.kind == o.kind && $0.src == o.src && !$0.inline } : nil
-        }
-
-        var directiveAt: [Int: (DirectiveView, DirectiveKey)] = [:]
-        if measure != nil, !isSource {
-            var seen: [DirectiveKey: Int] = [:]
-            for d in docView.directives where d.name != EditorLayout.pageBreakDirective {
-                let bare = DirectiveKey(d, occurrence: 0)
-                let n = seen[bare, default: 0]
-                seen[bare] = n + 1
-                directiveAt[Int(d.startRow)] = (d, DirectiveKey(d, occurrence: n))
-            }
         }
 
         // An empty stand-in shape for a table's collapsed picture rows (they draw
@@ -1167,20 +1149,17 @@ struct EditorLayout {
                 continue
             }
 
-            // A leaf directive the host draws: the media box's recipe again,
-            // with the host's view for the picture. The placeholder row is
-            // shaped and kept — its prefix insets the view inside a quote or a
-            // list, and its length is where the caret's stop past it is — and
-            // any rows core reserved under it collapse onto the one box. A nil
-            // from the host falls through to the placeholder, drawn as before.
             // The open region a host's session edits in a view of its own: the
-            // directive's recipe, with the session's view.
+            // media box's recipe again, with the session's view for the
+            // picture. The placeholder row is shaped and kept — its prefix
+            // insets the view inside a quote or a list, and its length is where
+            // the caret's stop past it is — and any rows core reserved under it
+            // collapse onto the one box. Atomic, as a picture is.
             if let rv = openHosted, Int(rv.startRow) == i {
                 let shaped = EditorLayout.shape(docView.rows[i], theme: theme, wrapWidth: wrapWidth)
                 let width = max(0, wrapWidth - shaped.prefixWidth)
                 if let h = regionMeasure?(rv, width) {
-                    let box = DirectiveLayout(key: .openRegion,
-                                              size: CGSize(width: width, height: max(0, h.rounded(.up))))
+                    let box = HostedLayout(size: CGSize(width: width, height: max(0, h.rounded(.up))))
                     flow.fit(box.height)
                     let top = flow.y
                     let x = flow.originX(originX)
@@ -1191,42 +1170,13 @@ struct EditorLayout {
                             shaped: r == Int(rv.startRow) ? shaped : emptyShape,
                             top: top,
                             originX: x, columnWidth: wrapWidth,
-                            directive: box, directiveTop: top,
-                            directiveFirst: r == Int(rv.startRow),
+                            hosted: box, hostedTop: top,
+                            hostedFirst: r == Int(rv.startRow),
                             page: flow.index
                         ))
                     }
                     flow.y += box.height
                     i = max(i + 1, Int(rv.endRow))
-                    continue
-                }
-            }
-
-            if let (dv, key) = directiveAt[i] {
-                let shaped = EditorLayout.shape(docView.rows[i], theme: theme, wrapWidth: wrapWidth)
-                let width = max(0, wrapWidth - shaped.prefixWidth)
-                if let h = measure?(dv, key, width) {
-                    let box = DirectiveLayout(key: .directive(key),
-                                              size: CGSize(width: width, height: max(0, h.rounded(.up))))
-                    // Atomic, as a picture is: the host drew one thing, and half of
-                    // it at the foot of a sheet is not a thing it drew.
-                    flow.fit(box.height)
-                    let top = flow.y
-                    let x = flow.originX(originX)
-                    for r in Int(dv.startRow)..<Int(dv.endRow) where r < docView.rows.count {
-                        if r > i { flowBefore.append(nil) }
-                        layouts.append(RowLayout(
-                            row: docView.rows[r],
-                            shaped: r == Int(dv.startRow) ? shaped : emptyShape,
-                            top: top,
-                            originX: x, columnWidth: wrapWidth,
-                            directive: box, directiveTop: top,
-                            directiveFirst: r == Int(dv.startRow),
-                            page: flow.index
-                        ))
-                    }
-                    flow.y += box.height
-                    i = max(i + 1, Int(dv.endRow))
                     continue
                 }
             }
@@ -1520,35 +1470,23 @@ struct EditorLayout {
         return out
     }
 
-    /// Every host-drawn directive's view frame in layout coordinates, keyed as
-    /// its view is kept — what `DirectiveHost.place` puts each view on, and the
-    /// set that decides which views are still wanted.
-    func directiveRects() -> [DirectiveKey: CGRect] {
-        var out: [DirectiveKey: CGRect] = [:]
-        for rl in rows {
-            guard let d = rl.directive, case let .directive(key) = d.key, let r = rl.directiveRect else { continue }
-            out[key] = r
-        }
-        return out
-    }
-
     /// Lay out into a column `wrapWidth` wide at the theme's left inset — the text
     /// column stated directly rather than worked back out of a view width and a
     /// measure. Convenience for tests.
     init(_ docView: DocView, theme: EditorTheme, wrapWidth: CGFloat,
          cache: inout [Row: ShapedRow], media: MediaStore? = nil, previous: EditorLayout? = nil,
-         change: RowChange? = nil, directives measure: DirectiveMeasure? = nil) {
+         change: RowChange? = nil, drawing: RegionDrawing = RegionDrawing()) {
         self.init(docView, theme: theme, originX: theme.padding.left, columnWidth: wrapWidth,
                   cache: &cache, media: media, previous: previous, change: change,
-                  directives: measure)
+                  drawing: drawing)
     }
 
     /// The same with no cross-frame cache — every row shaped fresh.
     init(_ docView: DocView, theme: EditorTheme, wrapWidth: CGFloat, media: MediaStore? = nil,
-         directives measure: DirectiveMeasure? = nil) {
+         drawing: RegionDrawing = RegionDrawing()) {
         var scratch: [Row: ShapedRow] = [:]
         self.init(docView, theme: theme, wrapWidth: wrapWidth, cache: &scratch, media: media,
-                  directives: measure)
+                  drawing: drawing)
     }
 
     /// Lay out for a view `viewWidth` wide with no cross-frame cache — the
@@ -1766,7 +1704,7 @@ struct EditorLayout {
         let rl = rows[row]
         if rl.media != nil { return mediaCaretRect(rl, ch: ch) }
         if rl.picture != nil { return pictureCaretRect(rl, ch: ch) }
-        if rl.directive != nil { return directiveCaretRect(rl, ch: ch) }
+        if rl.hosted != nil { return hostedCaretRect(rl, ch: ch) }
         let lines = rl.wrapped
         for (i, wl) in lines.enumerated() where ch < wl.start + wl.length || i == lines.count - 1 {
             let x = CTLineGetOffsetForStringIndex(wl.line, CFIndex(max(0, ch - wl.start)), nil)
@@ -1807,13 +1745,13 @@ struct EditorLayout {
         return CGRect(x: after ? r.maxX - 1.5 : r.minX, y: r.minY, width: 1.5, height: r.height)
     }
 
-    /// `mediaCaretRect` for a directive the host draws: core gives it the same
+    /// `mediaCaretRect` for the open region's view: core gives it the same
     /// two homes, in front of it and past it, and the view is the picture the
     /// caret stands beside. The rows under the first are only ever "after".
-    private func directiveCaretRect(_ rl: RowLayout, ch: Int) -> CGRect? {
-        guard let box = rl.directive else { return nil }
-        let r = box.rect(top: rl.directiveTop, left: rl.originX + rl.shaped.prefixWidth)
-        let after = !rl.directiveFirst || ch >= rl.attributed.length
+    private func hostedCaretRect(_ rl: RowLayout, ch: Int) -> CGRect? {
+        guard let box = rl.hosted else { return nil }
+        let r = box.rect(top: rl.hostedTop, left: rl.originX + rl.shaped.prefixWidth)
+        let after = !rl.hostedFirst || ch >= rl.attributed.length
         return CGRect(x: after ? r.maxX - 1.5 : r.minX, y: r.minY, width: 1.5, height: r.height)
     }
 
@@ -1996,8 +1934,8 @@ struct EditorLayout {
     /// a point past it lands in the room under the view — still this row, whose
     /// hit answers the stop past it — and ↓ from past the view never left it.
     func caretBand(src: Int, row: Int? = nil) -> (minY: CGFloat, maxY: CGFloat)? {
-        if let row, rows.indices.contains(row), rows[row].directive != nil {
-            let first = rows[..<(row + 1)].lastIndex { $0.directiveFirst } ?? row
+        if let row, rows.indices.contains(row), rows[row].hosted != nil || rows[row].picture != nil {
+            let first = rows[..<(row + 1)].lastIndex { $0.hostedFirst || $0.pictureFirst } ?? row
             let rl = rows[first]
             return (rl.top, rl.top + rl.height)
         }
@@ -2112,10 +2050,10 @@ struct EditorLayout {
                              width: rl.columnWidth - rl.shaped.prefixWidth)
             return (row, point.y < r.midY ? 0 : rl.attributed.length)
         }
-        // A host's view for a directive, likewise — the picture is the host's,
-        // and its two homes are leaf's.
-        if let box = rl.directive {
-            let r = box.rect(top: rl.directiveTop, left: rl.originX + rl.shaped.prefixWidth)
+        // The open region's view, likewise — the view is the host's, and its
+        // two homes are leaf's.
+        if let box = rl.hosted {
+            let r = box.rect(top: rl.hostedTop, left: rl.originX + rl.shaped.prefixWidth)
             return (row, point.y < r.midY ? 0 : rl.attributed.length)
         }
         // A table's picture rows are collapsed onto its grid, and only the first

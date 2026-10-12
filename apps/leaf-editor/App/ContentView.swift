@@ -129,12 +129,14 @@ struct ContentView: View {
         }
         // The app's own directive: Insert ▸ Embed… writes an `::embed{src=…}`,
         // and the editor draws each one as the app's card. Every other directive
-        // stays leaf's placeholder.
+        // stays leaf's placeholder. And the app's own fence renderer and
+        // editor: a ```mermaid fence is drawn as its diagram and opens as its
+        // source beside a live preview.
         if model.directiveCatalogue.isEmpty { model.directiveCatalogue = [EmbedDirective.item] }
-        if model.directiveView == nil { model.directiveView = EmbedDirective.view(for:) }
-        // The app's own fence renderer and editor: a ```mermaid fence is drawn
-        // as its diagram and opens as its source beside a live preview.
-        if model.regionRenderers.isEmpty { model.regionRenderers = [MermaidFence.kind: MermaidFence.renderer] }
+        if model.regionRenderers.isEmpty {
+            model.regionRenderers = [EmbedDirective.kind: EmbedDirective.renderer,
+                                     MermaidFence.kind: MermaidFence.renderer]
+        }
         if model.regionEditors.isEmpty { model.regionEditors = [MermaidFence.kind: MermaidFence.editor] }
     }
 

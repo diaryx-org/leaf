@@ -195,10 +195,23 @@ public struct RegionEditor {
     }
 }
 
-/// Which host view a box stands for: a directive's, or the open region's.
-enum HostedKey: Hashable {
-    case directive(DirectiveKey)
-    case openRegion
+/// The box the open region's view occupies when a host's session has one:
+/// the column's width less the row's prefix, and the height the view asks for,
+/// with a picture's breathing room above and below.
+struct HostedLayout {
+    let size: CGSize
+
+    /// Breathing room above and below — a picture's.
+    static let gap: CGFloat = MediaMetrics.gap
+
+    /// The height the row reserves.
+    var height: CGFloat { size.height + Self.gap * 2 }
+
+    /// The view's frame in layout coordinates, given the top of the reserved
+    /// row and the left edge of its content.
+    func rect(top: CGFloat, left: CGFloat) -> CGRect {
+        CGRect(x: left, y: top + Self.gap, width: size.width, height: size.height)
+    }
 }
 
 /// Asked for the height the open region's view wants at a column `width`
@@ -326,8 +339,7 @@ extension DocView {
 }
 
 /// The open session's view, when a host's session has one: placed over its
-/// region's box on every frame that lays out, as `DirectiveHost` places a
-/// directive's.
+/// region's box on every frame that lays out.
 final class RegionViews {
     /// The open session's view, which stands where its region's picture was.
     var open: LeafView?
@@ -336,7 +348,7 @@ final class RegionViews {
 
     /// The height the open session's view wants at `width`.
     func height(width: CGFloat) -> CGFloat? {
-        open.map { DirectiveHost.measure($0, width: width) }
+        open.map { Self.measure($0, width: width) }
     }
 
     /// The measure the layout is handed, or nil when no view is open.
@@ -349,7 +361,7 @@ final class RegionViews {
     func place(_ rect: CGRect?, in container: LeafView, scale: CGFloat = 1) {
         guard let open else { return }
         if let rect {
-            DirectiveHost.put(open, on: rect, in: container, scale: scale)
+            Self.put(open, on: rect, in: container, scale: scale)
         } else {
             open.removeFromSuperview()
         }
@@ -359,6 +371,64 @@ final class RegionViews {
     func closeOpen() {
         open?.removeFromSuperview()
         open = nil
+    }
+
+    /// Put `view` on `rect`, in layout coordinates, in `container` — behind
+    /// its other subviews the first time, so the system's caret stands in
+    /// front of a view it is drawn at the edge of. `scale` is how many view
+    /// points a layout point is on a surface that zooms by scaling its drawing
+    /// rather than itself (the AppKit view), and 1 on one whose own transform
+    /// does the scaling (the UIKit view).
+    static func put(_ view: LeafView, on rect: CGRect, in container: LeafView, scale: CGFloat) {
+        if view.superview !== container {
+            #if canImport(UIKit)
+            container.insertSubview(view, at: 0)
+            #else
+            container.addSubview(view, positioned: .below, relativeTo: nil)
+            #endif
+        }
+        #if canImport(UIKit)
+        view.frame = rect
+        #else
+        view.frame = rect.applying(CGAffineTransform(scaleX: scale, y: scale))
+        // Scaled by its bounds, so what it draws zooms with the text around it
+        // rather than being re-laid-out at a size it never asked for.
+        view.setBoundsSize(rect.size)
+        #endif
+    }
+
+    /// The height `view` asks for at a column `width` wide: its intrinsic
+    /// height where it has one, its fitting height at that width where it has
+    /// not, and its frame's height where it has neither — a plain view the host
+    /// sized by hand.
+    static func measure(_ view: LeafView, width: CGFloat) -> CGFloat {
+        #if canImport(UIKit)
+        let intrinsic = view.intrinsicContentSize.height
+        if intrinsic != UIView.noIntrinsicMetric, intrinsic > 0 { return intrinsic }
+        let fitted = view.systemLayoutSizeFitting(
+            CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
+            withHorizontalFittingPriority: .required,
+            verticalFittingPriority: .fittingSizeLevel).height
+        if fitted > 0 { return fitted }
+        return max(0, view.frame.height)
+        #else
+        let intrinsic = view.intrinsicContentSize.height
+        if intrinsic != NSView.noIntrinsicMetric, intrinsic > 0 { return intrinsic }
+        // A width to fit at, for a view whose height follows from it. Only where
+        // the view lays itself out by constraints: one sized by its autoresizing
+        // mask has no fitting size to ask for.
+        var fitted: CGFloat = 0
+        if !view.translatesAutoresizingMaskIntoConstraints {
+            let pin = view.widthAnchor.constraint(equalToConstant: width)
+            pin.isActive = true
+            fitted = view.fittingSize.height
+            pin.isActive = false
+        } else {
+            fitted = view.fittingSize.height
+        }
+        if fitted > 0 { return fitted }
+        return max(0, view.frame.height)
+        #endif
     }
 }
 
@@ -382,10 +452,7 @@ extension RegionHost {
 extension EditorLayout {
     /// The open region's view's rect, when a host's view stands over it.
     func openRegionRect() -> CGRect? {
-        for rl in rows {
-            if let d = rl.directive, d.key == .openRegion, let r = rl.directiveRect { return r }
-        }
-        return nil
+        rows.lazy.compactMap(\.hostedRect).first
     }
 
     /// Every block region's picture rect, by the region's kind and start.
