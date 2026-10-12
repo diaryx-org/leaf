@@ -110,6 +110,108 @@ Step 3 has begun, with the math editor's "Not done" list in
 Left on that list: matrices and environments as grids, `\left(` pairing,
 IME, user colours, and the terminal frontend.
 
+Steps 4–7 of [How to get there](#how-to-get-there) are built, on the
+`mermaid-native-spike` branch:
+
+- **Core** (`5c21272`). A frontend that names `directive:<name>` in
+  `set_owned_regions` finds that name's leaf directives in
+  `VisualMap::regions`, each with its whole source as its content. Owning one
+  changes no rows. `RegionInfo` and both bindings' `RegionView` also carry
+  `display`, and a directive's `name`, `label` and `attrs`.
+- **Renderers, Swift** (`5ec8958`). `regionRenderers[kind]` answers a
+  `RegionPicture`: a size, a baseline and a draw closure, made from an SVG, a
+  bitmap or by hand. A picture with no width takes the column's. The layout
+  places it inline (an attachment, as a formula was) or as a block box
+  (`PictureLayout`), and draws it with the text. So pictures page, print and
+  go into a PDF. `MathGlyph` and `MathLayout` are gone; leaf's `math` renderer
+  is leaf-math through `MathRenderer`. Each view caches pictures by kind,
+  content, size, ink and appearance, and `redrawRegions(kind:)` forgets them.
+  The app's Mermaid fence is a renderer.
+- **Mermaid out of leaf** (`1ec775f`). `render_mermaid` moved to
+  leaf-mermaid-ffi, which leaf-ffi links only under its `mermaid` feature.
+  This follows the resvg-uniffi pattern, since a second Rust archive would
+  duplicate `std`. Its Swift module, `LeafMermaidFFI`, is generated beside the
+  app in `apps/leaf-editor/LeafMermaid`, and the app's pre-build turns the
+  feature on. Default leaf-ffi no longer depends on the mmdr fork.
+- **The web** (`1bb937c`). The same `regionRenderers` and `redrawRegions`.
+  A picture is `{svg, width, height, baseline}`, or `{element}` for a block.
+  A renderer may answer with a promise, and the placeholder stands until it
+  settles. The `directive` hook and `redrawDirectives()` are gone. The demo
+  registers Mermaid as a renderer that renders in its worker.
+- **Directives, Swift** (`f3d3217`). `directiveView` and `DirectiveHost` are
+  gone. The one host view left is the open region's (`HostedLayout`). The
+  app's `::embed` card is a picture drawn in Core Graphics.
+- **One Rust session** (`b2a9833`). leaf-session puts every editor leaf runs
+  behind one trait, and `open(kind, …)` chooses one by kind. Both bindings
+  export it as `EditSession` in place of `MathSession`. Math is its one kind.
+
+Decided while building them:
+
+- **Inline directives** (open question). Not published. Core makes a region
+  only of a leaf (block) directive. A `:name[…]` in a line stays as it was,
+  until something needs to draw one.
+- **A host's math editor.** Refused, on both platforms. A host may replace
+  the `math` renderer, but leaf's session edits a formula inside a line,
+  where no host view can stand. `directive:page-break` is refused as a
+  renderer kind and as an editor kind.
+- **Synchronous on Swift, a promise on the web.** A Swift renderer is called
+  on the main thread as the layout needs it. One that waits on data draws what
+  it has, then calls `redrawRegions(kind:)`. A web renderer may return a
+  promise instead.
+- **`dark`.** On Swift it comes from the view's appearance; a sheet for print or a
+  PDF is never dark. On the web it comes from the brightness of the text
+  colour.
+- **`{element}` pictures are web-only.** A web page prints live elements, so
+  the web keeps a host's element as a block picture. On Apple everything
+  closed is a picture.
+- **Paper sheets own what the view owns.** A sheet for print, a PDF or a page
+  image shares the view's `LeafDoc`, and used to reset its owned kinds to
+  formulas alone. It now takes the view's renderers and editors, and a test
+  holds it to that.
+- **A picture's caret band.** ↑ and ↓ from either side of a block picture
+  now probe past its whole box, as they did past a directive's view. This
+  includes a display formula, which before probed past the picture alone.
+- **Android and the terminal.** Unchanged. Neither owns regions, and core
+  still publishes `DocView.directives`, which both draw directives from. The
+  Android app builds and its five directive tests pass; leaf-ratatui's pass
+  in CI.
+
+**For Diaryx (migrating from `directiveView`).** `AlbumDirective` and
+`PageDirective` answer `model.directiveView` with SwiftUI cards. That hook is
+gone. For each name:
+
+1. Register `model.regionRenderers["directive:album"]` (and `page`). It gets
+   a `RegionView` with the `name`, `label` and `attrs` the `DirectiveView`
+   had, and answers a `RegionPicture`. For a card, use
+   `RegionPicture(width: nil, height:)` with a draw closure that draws into
+   any width. `ImageRenderer` can snapshot a SwiftUI card. The leaf-editor
+   app's `EmbedDirective.card` draws one in Core Graphics.
+2. A card's photographs arrive after it is first drawn. Draw what is there,
+   and call `model.redrawRegions(kind: "directive:album")` when they land.
+   The card no longer needs a fixed height for that reason, since the layout
+   asks again.
+3. A tap that followed the link belongs to
+   `model.regionEditors["directive:album"]`. Its `open` is called on a click,
+   with `.point`. It can follow the link and answer nil, and the caret is
+   then placed as on any picture.
+
+Not checked by hand: opening a region by a click or an arrow in the Mac app.
+Synthetic clicks do not reach the app's window, and keystrokes through System
+Events are off limits. The unit tests open fences, formulas and directives
+through the same calls. Drawing was checked in the app in light mode, and in
+paper mode, where diagrams, formulas and the `::embed` card are pictures.
+
+Left:
+
+- On the web, the placeholder shows for a moment when the Mermaid editor
+  closes, while the new picture renders. The renderer could keep the previous
+  picture until the new one arrives.
+- A Swift renderer runs on the main thread. A large flowchart takes 230–340
+  ms, so the first frame that shows one stalls for that long.
+- Font fallback for emoji and other scripts in resvg, as before.
+- A second Rust editor would need `RegionSlot.edits` to learn its kind. Today
+  it knows only `math`, through `editsFormulasAsStructure`.
+
 ## The problem
 
 Some parts of a document are a second document in another language: a
@@ -310,7 +412,7 @@ leaf-editor app and the web demo register it as the renderer for
   renderer, or a native renderer if a good one exists. Measure before choosing.
 - **Bring your own renderer.** Decided 2026-10-12: yes. See
   [Renderers and editors](#renderers-and-editors).
-- **Inline directives.** Whether core should publish `:name[…]{…}` as an
-  inline `directive:<name>` region now, or only once something needs it.
+- **Inline directives.** Decided 2026-10-12: only once something needs it.
+  See Status.
 - **Persistence of the open state.** Whether an open region should survive a
   re-render that rebuilds the view (it does not today).
