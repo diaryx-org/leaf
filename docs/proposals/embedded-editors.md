@@ -40,11 +40,18 @@ What the text below did not foresee, or decided:
 - **Where the Mermaid editor lives** (open question). In each demo app
   (`apps/leaf-web-demo/mermaid-editor.js`, `apps/leaf-editor/App/MermaidFence.swift`),
   as the reference for Diaryx. It is not a leaf package.
-- **Rendering Mermaid on Apple** (open question). Not measured. The demo
-  takes the conservative route: one `WKWebView` per diagram, mermaid.js from
-  a CDN, at a fixed height, so the layout never waits on a web view to
-  measure itself. A shared offscreen renderer is the obvious next step if
-  documents hold many diagrams.
+- **Rendering Mermaid on Apple** (open question). First answered with one
+  `WKWebView` per diagram and mermaid.js from a CDN. Now native, everywhere:
+  a spike (`spikes/mermaid-native/`) measured mmdr, a Mermaid renderer in
+  Rust, against mermaid.js. `crates/leaf-mermaid` wraps it, from a fork
+  carrying upstream's open PRs for wasm and for host text metrics until they
+  merge. leaf-ffi exports `render_mermaid`, which the app calls with Core
+  Text measuring the labels, and LeafUI's `SVGView` draws the result as
+  vectors. On the web, `leaf-mermaid-wasm` is a module of its own that the
+  demo loads in a worker, measuring labels on a canvas. The npm package does
+  not carry it. leaf's frontends still draw no diagrams. So for now, on the
+  user's choice, Mermaid is a leaf crate behind the bindings, pending the
+  bring-your-own-renderer question below.
 - **Persistence of the open state** (open question). An open region does not
   survive a view being rebuilt, as before.
 - **A fence's content** is its lines between the fences, each with its

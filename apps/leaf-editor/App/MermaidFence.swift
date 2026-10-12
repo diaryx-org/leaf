@@ -1,7 +1,7 @@
+import CoreText
 import Foundation
 import LeafFFI
 import LeafUI
-import WebKit
 
 #if canImport(AppKit)
 import AppKit
@@ -13,20 +13,21 @@ import UIKit
 /// fence is drawn as its diagram, and → in front of it, ← behind it or a click
 /// opens its source beside a live preview, written back to the document a
 /// keystroke at a time. The web demo's `mermaid-editor.js`, in AppKit and
-/// UIKit. leaf knows nothing of Mermaid: the diagrams are drawn by mermaid.js in
-/// a web view, fetched from a CDN. See docs/proposals/embedded-editors.md.
+/// UIKit. The diagrams are rendered by leaf-mermaid (mmdr, in Rust) through
+/// `renderMermaid`, with labels measured by Core Text, and drawn as vectors by
+/// LeafUI's `SVGView`. leaf's own views draw no diagrams. See
+/// docs/proposals/embedded-editors.md.
 enum MermaidFence {
     static let kind = "fence:mermaid"
 
     static let editor = RegionEditor(
-        view: { region in MermaidDrawing(source: region.content, passesClicks: true) },
+        view: { region in MermaidDrawing(source: region.content, closed: true) },
         open: { region, entry, host in MermaidSession(region, entry: entry, host: host) })
 
-    /// How tall a closed diagram is drawn: fixed, so the layout never waits on
-    /// a web view to measure itself. The diagram is fitted inside.
-    static let drawingHeight: CGFloat = 200
     /// How tall the open editor is.
-    static let editorHeight: CGFloat = 260
+    static let editorHeight: CGFloat = 280
+    /// The tallest a closed diagram is drawn; a taller one is scaled to fit.
+    static let maxDrawingHeight: CGFloat = 600
 
     // A fence's content is whole lines, each with its newline; the text view
     // shows it without the last one, and an empty text view is an empty fence.
@@ -35,82 +36,174 @@ enum MermaidFence {
     }
 
     static func content(_ text: String) -> String { text.isEmpty ? "" : text + "\n" }
+
+    /// Where diagrams are rendered when nothing waits on them: off the main
+    /// thread, one at a time.
+    static let queue = DispatchQueue(label: "org.diaryx.leaf.mermaid", qos: .userInitiated)
 }
 
-/// One diagram, drawn by mermaid.js in a web view.
-final class MermaidDrawing: WKWebView {
-    private static let page = """
-    <!doctype html><meta name="viewport" content="width=device-width">
-    <style>
-      html, body { margin: 0; height: 100%; background: transparent; }
-      #d { display: flex; align-items: center; justify-content: center; height: 100%; }
-      #d svg { max-width: 100%; max-height: 100%; }
-      #d.fault { display: block; color: #c0392b; font: 12px ui-monospace, Menlo, monospace;
-        white-space: pre-wrap; padding: 8px; }
-    </style>
-    <div id="d"></div>
-    <script type="module">
-      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
-      const dark = matchMedia("(prefers-color-scheme: dark)").matches;
-      mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: dark ? "dark" : "default" });
-      let n = 0;
-      window.draw = async (src) => {
-        const d = document.getElementById("d");
-        const ticket = ++n;
-        try {
-          const { svg } = src.trim() ? await mermaid.render("m" + ticket, src) : { svg: "" };
-          if (ticket === n) { d.className = ""; d.innerHTML = svg; }
-        } catch (e) {
-          if (ticket === n) { d.className = "fault"; d.textContent = String(e?.message ?? e); }
+/// Label widths for `renderMermaid`, from Core Text: the first face of the
+/// theme's family list that is installed, which is the face resvg will draw
+/// the picture's text in.
+final class CoreTextMeasure: MermaidMeasure, @unchecked Sendable {
+    static let shared = CoreTextMeasure()
+
+    func width(text: String, size: Float, family: String) -> Float? {
+        let font = Self.font(family, size: CGFloat(size))
+        let attributed = NSAttributedString(string: text,
+                                            attributes: [NSAttributedString.Key(kCTFontAttributeName as String): font])
+        let line = CTLineCreateWithAttributedString(attributed)
+        return Float(CTLineGetTypographicBounds(line, nil, nil, nil))
+    }
+
+    /// The first family in a CSS family list that Core Text has, else
+    /// Helvetica — the face a generic `sans-serif` comes to.
+    static func font(_ list: String, size: CGFloat) -> CTFont {
+        for part in list.split(separator: ",") {
+            let name = part.trimmingCharacters(in: CharacterSet(charactersIn: " '\""))
+            guard !name.isEmpty else { continue }
+            if ["sans-serif", "system-ui", "-apple-system", "ui-sans-serif"].contains(name.lowercased()) { break }
+            let descriptor = CTFontDescriptorCreateWithAttributes(
+                [kCTFontFamilyNameAttribute: name] as CFDictionary)
+            let font = CTFontCreateWithFontDescriptor(descriptor, size, nil)
+            if (CTFontCopyFamilyName(font) as String).caseInsensitiveCompare(name) == .orderedSame { return font }
         }
-      };
-      window.ready = true;
-      if (window.pending != null) draw(window.pending);
-    </script>
-    """
+        return CTFontCreateWithName("Helvetica" as CFString, size, nil)
+    }
+}
 
-    private let passesClicks: Bool
+/// What rendering a diagram came to: its SVG, or the fault in its place.
+enum Rendered {
+    case svg(String)
+    case fault(String)
+}
 
-    /// `passesClicks`: a closed diagram lets every click through to the
-    /// editor, which opens the fence; the open editor's preview does not.
-    init(source: String, passesClicks: Bool) {
-        self.passesClicks = passesClicks
-        let config = WKWebViewConfiguration()
-        let seed = (try? JSONSerialization.data(withJSONObject: source, options: .fragmentsAllowed))
-            .flatMap { String(data: $0, encoding: .utf8) } ?? "\"\""
-        config.userContentController.addUserScript(WKUserScript(
-            source: "window.pending = \(seed);", injectionTime: .atDocumentStart, forMainFrameOnly: true))
-        super.init(frame: CGRect(x: 0, y: 0, width: 300, height: MermaidFence.drawingHeight), configuration: config)
-        #if canImport(AppKit)
-        setValue(false, forKey: "drawsBackground")
-        #else
-        isOpaque = false
-        backgroundColor = .clear
-        scrollView.isScrollEnabled = false
-        isUserInteractionEnabled = !passesClicks
+/// One diagram: its picture, or what the renderer said about the source in
+/// its place. A closed fence's drawing renders at once, so the layout has its
+/// height on the first pass, and lets every click through to the editor,
+/// which opens the fence; the open editor's preview renders off the main
+/// thread as the source is typed.
+final class MermaidDrawing: LeafView {
+    private let picture = SVGView(svg: "")
+    private let fault = MermaidDrawing.label()
+    private let closed: Bool
+    /// The source last asked for, so an older render that finishes late is
+    /// dropped.
+    private var asked = ""
+
+    init(source: String, closed: Bool) {
+        self.closed = closed
+        super.init(frame: CGRect(x: 0, y: 0, width: 300, height: 120))
+        addSubview(picture)
+        addSubview(fault)
+        if closed {
+            asked = source
+            apply(Self.render(source, dark: isDark))
+        } else {
+            show(source)
+        }
+        #if canImport(UIKit)
+        isUserInteractionEnabled = !closed
         #endif
-        loadHTMLString(Self.page, baseURL: URL(string: "https://cdn.jsdelivr.net/"))
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-    /// Draw `source` in place of what is there.
+    /// Render `source` off the main thread and draw it when it is done, if
+    /// nothing newer was asked for meanwhile.
     func show(_ source: String) {
-        callAsyncJavaScript("window.ready ? draw(s) : (window.pending = s)", arguments: ["s": source],
-                            in: nil, in: .page, completionHandler: nil)
+        asked = source
+        let dark = isDark
+        MermaidFence.queue.async { [weak self] in
+            let result = Self.render(source, dark: dark)
+            DispatchQueue.main.async {
+                guard let self, self.asked == source else { return }
+                self.apply(result)
+            }
+        }
     }
 
-    override var intrinsicContentSize: CGSize {
+    private var isDark: Bool {
         #if canImport(AppKit)
-        CGSize(width: NSView.noIntrinsicMetric, height: MermaidFence.drawingHeight)
+        effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
         #else
-        CGSize(width: UIView.noIntrinsicMetric, height: MermaidFence.drawingHeight)
+        traitCollection.userInterfaceStyle == .dark
         #endif
     }
 
+    /// The picture's SVG, or the fault.
+    private static func render(_ source: String, dark: Bool) -> Rendered {
+        guard !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return .fault("(empty diagram)") }
+        do {
+            return .svg(try renderMermaid(source: source, dark: dark, measure: CoreTextMeasure.shared).svg)
+        } catch LeafError.Mermaid(let message) {
+            return .fault(message)
+        } catch {
+            return .fault(String(describing: error))
+        }
+    }
+
+    private func apply(_ result: Rendered) {
+        switch result {
+        case let .svg(svg):
+            picture.setSVG(svg)
+            picture.isHidden = false
+            fault.isHidden = true
+        case let .fault(message):
+            picture.isHidden = true
+            fault.isHidden = false
+            #if canImport(AppKit)
+            fault.stringValue = message
+            #else
+            fault.text = message
+            #endif
+        }
+        invalidateIntrinsicContentSize()
+        layoutPictures()
+    }
+
+    override var intrinsicContentSize: CGSize {
+        let height = picture.isHidden ? 44 : min(MermaidFence.maxDrawingHeight, max(24, picture.naturalSize.height))
+        return CGSize(width: -1, height: height + 16)
+    }
+
+    private func layoutPictures() {
+        let inner = bounds.insetBy(dx: 8, dy: 8)
+        picture.frame = inner
+        fault.frame = inner
+    }
+
     #if canImport(AppKit)
-    override func hitTest(_ point: NSPoint) -> NSView? { passesClicks ? nil : super.hitTest(point) }
+    override var isFlipped: Bool { true }
+    override func layout() {
+        super.layout()
+        layoutPictures()
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { closed ? nil : super.hitTest(point) }
+
+    private static func label() -> NSTextField {
+        let l = NSTextField(wrappingLabelWithString: "")
+        l.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        l.textColor = .systemRed
+        l.isHidden = true
+        return l
+    }
+    #else
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        layoutPictures()
+    }
+
+    private static func label() -> UILabel {
+        let l = UILabel()
+        l.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        l.textColor = .systemRed
+        l.numberOfLines = 0
+        l.isHidden = true
+        return l
+    }
     #endif
 }
 
@@ -128,7 +221,7 @@ final class MermaidSession: NSObject, RegionSession {
     init(_ region: RegionView, entry: RegionEntry, host: RegionHost) {
         self.host = host
         self.entry = entry
-        preview = MermaidDrawing(source: region.content, passesClicks: false)
+        preview = MermaidDrawing(source: region.content, closed: false)
         box = MermaidEditorBox(text: MermaidFence.text(region.content), preview: preview)
         super.init()
         box.session = self
@@ -163,7 +256,7 @@ final class MermaidSession: NSObject, RegionSession {
             preview.show(MermaidFence.content(box.text))
         }
         redraw = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work)
     }
 }
 

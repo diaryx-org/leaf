@@ -104,6 +104,14 @@ Upstream `master` is 24 commits past 0.3.1. Against this corpus:
 - **A `scene` feature** turns the SVG into draw commands through `usvg`. leaf's
   resvg-swift already does that with any SVG, so leaf does not need it.
 
+## What came of it
+
+Built on the `mermaid-native-spike` branch as `crates/leaf-mermaid` and
+`crates/leaf-mermaid-wasm`, with `render_mermaid` in leaf-ffi. See the
+proposal's Status section. Items 1–3 below are done. Font fallback (4) is
+not. Debouncing (5) is done in both demos, and the web one renders in a
+worker.
+
 ## What it would take
 
 1. **Upstream fixes to mmdr.** Both are open PRs, carried in the fork

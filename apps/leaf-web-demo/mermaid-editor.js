@@ -4,40 +4,53 @@
 // drawn as its diagram (`view`); opened by → in front of it, ← behind it or a
 // click, it is the fence's source in a textarea beside a live preview
 // (`open`). What the textarea holds goes back through `host.replace`, which
-// leaf turns into one splice on the fence's content and one undo step. leaf
-// knows nothing of Mermaid: mermaid.js is fetched from a CDN by this file the
-// first time a diagram is drawn. See docs/proposals/embedded-editors.md.
+// leaf turns into one splice on the fence's content and one undo step.
+//
+// The diagrams are drawn by leaf-mermaid (mmdr, in Rust) from a module of its
+// own beside this page, run in a worker the first time a diagram is drawn;
+// leaf-web draws none. See docs/proposals/embedded-editors.md.
 
-const MERMAID_URL = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+// One worker draws every diagram, in the order asked (mermaid-worker.js).
+let worker = null;
+let nextId = 0;
+const waiting = new Map();
 
-let loading = null;
-function mermaid() {
-  loading ??= import(MERMAID_URL).then(({ default: m }) => {
-    const dark = matchMedia("(prefers-color-scheme: dark)").matches;
-    m.initialize({ startOnLoad: false, securityLevel: "strict", theme: dark ? "dark" : "default" });
-    return m;
+function render(source, dark) {
+  if (!worker) {
+    worker = new Worker(new URL("./mermaid-worker.js", import.meta.url), { type: "module" });
+    worker.onmessage = ({ data }) => {
+      waiting.get(data.id)?.(data);
+      waiting.delete(data.id);
+    };
+  }
+  const id = ++nextId;
+  return new Promise((resolve) => {
+    waiting.set(id, resolve);
+    worker.postMessage({ id, source, dark });
   });
-  return loading;
 }
-
-let ids = 0;
 
 /** Draw `source` into `target`, or the fault in its place. A later call on
  *  the same target wins over an earlier one still rendering. */
 async function draw(target, source) {
   const ticket = (target._ticket = (target._ticket ?? 0) + 1);
-  let svg = null;
+  let img = null;
   let fault = null;
-  try {
-    const m = await mermaid();
-    svg = source.trim() ? (await m.render(`leaf-mermaid-${++ids}`, source)).svg : null;
-  } catch (e) {
-    fault = String(e?.message ?? e);
+  if (source.trim()) {
+    const p = await render(source, matchMedia("(prefers-color-scheme: dark)").matches);
+    if (p.fault != null) {
+      fault = p.fault;
+    } else {
+      img = document.createElement("img");
+      img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(p.svg);
+      img.width = Math.round(p.width);
+      img.height = Math.round(p.height);
+      img.alt = "Mermaid diagram";
+    }
   }
   if (target._ticket !== ticket) return;
   target.classList.toggle("fault", fault !== null);
-  if (svg) target.innerHTML = svg;
-  else target.textContent = fault ?? "(empty diagram)";
+  target.replaceChildren(img ?? document.createTextNode(fault ?? "(empty diagram)"));
 }
 
 // A fence's content is whole lines, each with its newline; the textarea shows
@@ -68,7 +81,7 @@ export const mermaidEditor = {
     let timer = 0;
     const redraw = () => {
       clearTimeout(timer);
-      timer = setTimeout(() => draw(preview, toContent(source.value)), 150);
+      timer = setTimeout(() => draw(preview, toContent(source.value)), 60);
     };
     source.addEventListener("input", () => {
       host.replace(toContent(source.value));
