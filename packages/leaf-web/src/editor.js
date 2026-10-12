@@ -307,9 +307,9 @@ const PAGE_BREAK = "page-break";
 
 /** What the text walkers step around: a code block's language label, and every
  *  atom the renderer draws in place of core's placeholder glyphs — block media,
- *  and a host's drawing of a directive. None of it is document text, so none of
- *  it may count toward a caret offset. */
-const NOT_TEXT = ".leaf-code-lang, .leaf-media, .leaf-directive, .leaf-region";
+ *  and a region's picture or open view. None of it is document text, so none
+ *  of it may count toward a caret offset. */
+const NOT_TEXT = ".leaf-code-lang, .leaf-media, .leaf-region";
 
 /** The keys `_onKeyDown` takes from the browser on a host's drawing. */
 const ARROWS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"]);
@@ -373,7 +373,8 @@ export class LeafEditor {
    *   scroll viewport; its contents are replaced).
    * @param {{ source?: string, format?: string, theme?: Partial<typeof DEFAULT_THEME>,
    *           autofocus?: boolean, onChange?: (state: EditorState) => void,
-   *           directive?: (view: object) => HTMLElement | null,
+   *           regionRenderers?: Record<string, Function>,
+   *           regionEditors?: Record<string, object>,
    *           directives?: DirectiveItem[] }} [opts]
    */
   constructor(container, opts = {}) {
@@ -409,14 +410,15 @@ export class LeafEditor {
     /** Set once a row has been found that no budget can wrap narrower — see
      *  `_fitWidth`. Cleared by `refit`, since a resize can make room again. */
     this._acceptedOverflow = false;
-    /** The host's drawing of a leaf directive, or null — see `EditorOptions.directive`. */
-    this._directiveHook = typeof opts.directive === "function" ? opts.directive : null;
-    /** What the hook answered, under each directive's key, for the frame
-     *  last painted — so a directive that is still there is not asked again.
-     *  See `render`. @type {Map<string, HTMLElement | null>} */
-    this._directiveAnswers = new Map();
-    /** @type {[number, number][]} the `rows` spans a host's drawing stands in
-     *  for — `tableSpans`' peer, for placing a caret core put on a filler. */
+    // The directive hook went when directives became regions: a host that
+    // still passes it would lose its drawings without a word.
+    if (opts.directive !== undefined) {
+      throw new Error(
+        'EditorOptions.directive is gone: register a renderer per name, regionRenderers["directive:<name>"], which answers {element}'
+      );
+    }
+    /** @type {[number, number][]} the `rows` spans a drawing stands in for —
+     *  `tableSpans`' peer, for placing a caret core put on a filler. */
     this.directiveSpans = [];
     this._directiveItems = catalogue(opts.directives);
     /** How a formula is edited — see `EditorOptions.mathEditing`. */
@@ -431,13 +433,21 @@ export class LeafEditor {
      *  (`EditorOptions.regionEditors`), and leaf's own for `math` once the
      *  math module is here. @type {Map<string, object>} */
     this._regionEditors = regionEditors(opts.regionEditors);
+    /** The renderer for each region kind: leaf's own for `math`, unless the
+     *  host named one, and the host's (`EditorOptions.regionRenderers`).
+     *  @type {Map<string, Function>} */
+    this._regionRenderers = regionRenderers(opts.regionRenderers);
     /** The kinds core was last told it owns, joined — see `_ownRegions`. */
     this._ownedKey = null;
     /** The open region, if any — see `_openRegion`. */
     this._session = null;
-    /** What each host editor drew for its closed regions, by key, for the
-     *  frame last painted — `_directiveAnswers`' peer. */
-    this._regionAnswers = new Map();
+    /** Every region's picture, under `_pictureKey`, for the frame last
+     *  painted — so a region that is still there is not rendered again. See
+     *  `_picture`. @type {Map<string, PictureEntry>} */
+    this._pictures = new Map();
+    /** The pictures the frame being painted has asked for, which become
+     *  `_pictures` once it is painted; null between frames. */
+    this._framePictures = null;
 
     this.doc = new LeafDoc(opts.source ?? "", opts.format ?? "markdown");
     // A browser paints a picture in a line, so an inline formula arrives as an
@@ -520,14 +530,13 @@ export class LeafEditor {
       s.impl.close?.();
     }
     this._ownedKey = null;
-    this._regionAnswers = new Map();
+    // Nor are its regions the old one's, however alike: a new document's are
+    // drawn afresh.
+    this._pictures = new Map();
     this._ownRegions();
     this._editMathAsStructure();
     // A frame of the new document is no change to the old one's rows.
     this._lastView = null;
-    // Nor are its directives the old one's, however alike: the host draws a
-    // new document's afresh.
-    this._directiveAnswers = new Map();
     old.free?.();
     // A new document is a new measure: the surrender to an unwrappable row
     // belonged to the old one.
@@ -923,8 +932,8 @@ export class LeafEditor {
 
   // ── a host's directives ───────────────────────────────────────────────────
   // The vocabulary is the host's: it names which directives it has
-  // (`EditorOptions.directives`) and how each one looks
-  // (`EditorOptions.directive`). leaf writes and places them; it never offers
+  // (`EditorOptions.directives`) and how each one looks (a renderer under
+  // `directive:<name>`). leaf writes and places them; it never offers
   // a free-form "insert directive" of its own, since a name nobody draws is
   // only the `⧉ name` row. See docs/proposals/host-directives.md.
 
@@ -983,15 +992,18 @@ export class LeafEditor {
   }
 
   /**
-   * Forget every drawing the `directive` hook has answered and ask it again
-   * for each directive on the page — for a host whose answer has changed
-   * without the document changing (a preview it fetched has arrived, a
-   * setting it draws by was flipped). A directive the hook keeps answering
-   * the same way costs a rebuild of its one row.
+   * Forget the pictures the renderers drew — every one, or those of one
+   * `kind` (`"fence:mermaid"`, `"directive:embed"`, `"math"`) — and ask the
+   * renderers again for each region on the page: for a host whose drawing
+   * has changed without the document changing (a preview it fetched has
+   * arrived, a setting it draws by was flipped). A region drawn the same way
+   * again costs a rebuild of its row.
+   * @param {string} [kind]
    */
-  redrawDirectives() {
-    this._directiveAnswers = new Map();
-    if (this._lastView) this.render(this._lastView);
+  redrawRegions(kind) {
+    if (kind === undefined) this._pictures = new Map();
+    else for (const [key, entry] of this._pictures) if (entry.kind === kind) this._pictures.delete(key);
+    if (this._lastView && !this._destroyed) this.render(this._lastView);
   }
 
   /** The alignment in force at the caret, or null for the theme's default —
@@ -1183,42 +1195,80 @@ export class LeafEditor {
       mediaAt.set(m.row, m);
       for (let r = m.row + 1; r < m.row + m.rows; r++) covered.add(r);
     }
+    // Every region is drawn from its kind's renderer, as a picture
+    // (`RegionPicture`): leaf's own for formulas, and the host's for the
+    // kinds it named. The pictures this frame asks for are kept, under what
+    // changes them, for the next frame to find (`_picture`). What the ink is
+    // comes from the surface's own text colour, so a theme change renders
+    // again through the cache.
+    const ink = this._inkColor();
+    this._ink = ink;
+    this._dark = isDarkInk(ink);
+    this._framePictures = new Map();
+    /** How many block regions alike each picture key has had so far this
+     *  frame: two identical directives are told apart by their order, so
+     *  each has a picture — an element — of its own. */
+    const seen = new Map();
+    const ordinal = (base) => {
+      const n = seen.get(base) ?? 0;
+      seen.set(base, n + 1);
+      return n;
+    };
+    /** Every element a picture stands in with this frame: one handed to two
+     *  regions could only stand in one place. */
+    const drawn = new Set();
+    this.directiveSpans = [];
+    // A block region drawn from its picture, or from an open session's own
+    // view, by its first row; `_rowEl` builds it there and skips the rows
+    // under it.
+    const regionAt = new Map();
     // Formulas, two ways. A display block is a media row's shape — a real
     // element on the first row, the fillers skipped. An inline atom rides its
     // row: `_runEl` finds it by the source offset the `math` run carries, and
-    // the row's key carries its TeX so a reused row never shows a stale
-    // picture. What the ink is comes from the surface's own text colour, so
-    // a theme change re-typesets through the cache.
+    // the row's key carries its picture so a reused row never shows a stale
+    // one.
     const mathBlockAt = new Map();
     const mathInlineAt = new Map();
-    // Every row a formula stands on, in whatever state its picture is: the
-    // row's key carries the typesetter's state, so a row drawn while the
-    // module was still on its way is rebuilt when it lands.
+    // Every row a formula stands on, whatever its picture: the row's key
+    // carries the picture's state, so a row drawn while it was on its way is
+    // rebuilt when it lands.
     const mathRows = new Set();
-    const ink = this._inkColor();
     // The open region, if any, followed into this frame — or closed, when
     // the frame has none at its place. An open formula draws from its
     // session, and its key carries the session's revision, since a caret move
     // inside it changes the picture and nothing core knows.
     this._followRegion(view);
+    const owned = new Map();
+    for (const r of view.regions || []) if (r.kind === "math") owned.set(r.src, r);
     for (const m of view.math || []) {
       mathRows.add(m.row);
+      const region = mathRegion(m, owned.get(m.src));
       if (m.inline) {
-        mathInlineAt.set(m.src, m);
+        mathInlineAt.set(m.src, { m, region });
         continue;
       }
-      const pic = this._mathPicture(m, this.theme.fontSize, ink);
-      // TeX that will not typeset stays core's `∑ tex` placeholder row, drawn
-      // as text with the fault in its title — see `_runEl`. So does every
-      // block while the typesetter is absent; `_mathSettled` repaints then.
-      if (pic && !(pic instanceof Error)) {
-        mathBlockAt.set(m.row, m);
-        for (let r = m.row + 1; r < m.row + m.rows; r++) covered.add(r);
+      const size = this.theme.fontSize;
+      const entry = this._mathPicture(m, region, size, ordinal(this._pictureKey(region, size)));
+      // A picture that is not here — TeX that will not typeset, a typesetter
+      // on its way or turned off, a renderer still working — leaves core's
+      // `∑ tex` placeholder row, drawn as text; a fault has its message in
+      // the row's title (see `_runEl`).
+      if (entry.state !== "ready") continue;
+      if (entry.pic.element) {
+        if (!this._standIn(entry.pic.element, drawn, "math")) continue;
+        regionAt.set(m.row, { r: region, el: entry.pic.element });
+        this.directiveSpans.push([m.row, m.row + m.rows]);
+      } else {
+        mathBlockAt.set(m.row, { m, entry });
       }
+      for (let r = m.row + 1; r < m.row + m.rows; r++) covered.add(r);
     }
-    if (mathRows.size && mathState() === "absent") MATH_WAITERS.add(this);
+    if (mathRows.size && mathState() === "absent") {
+      MATH_WAITERS.add(this);
+      // Editing formulas as structure needs the module whoever draws them.
+      if (this._mathEditing === "structure" && mathPolicy !== "off") loadMath().catch(() => {});
+    }
     this._mathInline = mathInlineAt;
-    this._ink = ink;
     // Tables the same way, but replacing the *whole* span rather than the first
     // row of it: core draws a table as a monospace box-glyph picture, which is
     // exact on a fixed-cell surface and shears in a proportional font — the `│`
@@ -1231,83 +1281,39 @@ export class LeafEditor {
       this.tableSpans.push([t.start_row, t.end_row]);
       for (let r = t.start_row + 1; r < t.end_row; r++) covered.add(r);
     }
-    // The one leaf directive this frontend has a drawing for: a page break,
-    // which is a rule across the measure rather than the `⧉ page-break`
-    // placeholder every other directive gets. The narrow half of the host hook
-    // `docs/tasks/closed/web-directive-hook.md` argues for — the vocabulary here is
-    // leaf's own, so it needs no hook to know what the name means.
+    // The one leaf directive this frontend has a drawing of its own for: a
+    // page break, which is a rule across the measure rather than the
+    // `⧉ page-break` placeholder. The name is leaf's, so it needs no renderer
+    // to know what it means, and it is never a region. Every other directive
+    // is a region when the host named a renderer or an editor for it, below,
+    // and otherwise its placeholder row.
     const breakAt = new Set();
-    // Every other leaf directive is the host's to draw, if it has a hook: its
-    // answer stands in for the rows in `[start_row, end_row)` as one atom, the
-    // way a picture stands in for its placeholder — the first row carries it,
-    // the rest are skipped. The hook is asked about a directive the frame
-    // before did not have; one it did keeps the answer it got, null included,
-    // as a picture keeps its element (`redrawDirectives` asks afresh). Two
-    // identical directives are told apart by their order, so each has an
-    // element of its own — and a hook that hands one element to two of them
-    // has drawn the second nowhere, so that one keeps its placeholder.
-    const directiveAt = new Map();
-    const answers = new Map();
-    const seen = new Map();
-    const drawn = new Set();
-    this.directiveSpans = [];
-    for (const d of view.directives || []) {
-      if (d.name === PAGE_BREAK) {
-        breakAt.add(d.start_row);
-        continue;
-      }
-      if (!this._directiveHook) continue;
-      const base = directiveKey(d);
-      const n = seen.get(base) ?? 0;
-      seen.set(base, n + 1);
-      const key = base + "#" + n;
-      const answer = this._directiveAnswers.has(key)
-        ? this._directiveAnswers.get(key)
-        : this._askDirective(d);
-      answers.set(key, answer);
-      if (!answer) continue;
-      if (drawn.has(answer)) {
-        console.error(`leaf: the directive hook answered two directives with one element (::${d.name})`);
-        continue;
-      }
-      drawn.add(answer);
-      directiveAt.set(d.start_row, { d, el: answer });
-      this.directiveSpans.push([d.start_row, d.end_row]);
-      for (let r = d.start_row + 1; r < d.end_row; r++) covered.add(r);
-    }
-    // The source view lists no directives — each is the text being edited —
-    // so a frame of it is no news about them, and the drawings are kept for
-    // the way back.
-    if (view.view !== "source") this._directiveAnswers = answers;
-    // A block region a host's editor draws: the open session's view, or the
-    // editor's drawing of it closed, standing in for its rows as a directive's
-    // drawing does. One the editor has no drawing for keeps its placeholder.
-    const regionAt = new Map();
-    const regionAnswers = new Map();
-    const regionSeen = new Map();
+    for (const d of view.directives || []) if (d.name === PAGE_BREAK) breakAt.add(d.start_row);
+    // A block region of any other kind — a fence, a directive — is its
+    // renderer's picture, standing in for its rows as one atom: the first row
+    // carries it, the rest are skipped. An open one with a view of its own
+    // shows that view instead, and its picture is kept for when it closes on
+    // the content it was drawn from. One with no picture keeps the
+    // placeholder row core laid out.
     for (const r of view.regions || []) {
-      if (r.inline || r.kind === "math" || !this._regionEditors.has(r.kind)) continue;
+      if (r.inline || r.kind === "math") continue;
+      const size = this.theme.fontSize;
+      const n = ordinal(this._pictureKey(r, size));
       const s = this._session;
-      const base = r.kind + "\u0000" + r.content;
-      const n = regionSeen.get(base) ?? 0;
-      regionSeen.set(base, n + 1);
-      const dkey = base + "#" + n;
-      let answer;
+      let at;
       if (s && s.kind === r.kind && s.src === r.src && s.impl.element) {
-        // Open: its view stands where the drawing was, which is kept for
-        // when it closes on the content it was drawn from.
-        answer = s.impl.element;
-        if (this._regionAnswers.has(dkey)) regionAnswers.set(dkey, this._regionAnswers.get(dkey));
+        this._keepPicture(r, size, n);
+        at = { r, el: s.impl.element };
       } else {
-        answer = this._regionDrawing(r, dkey);
-        regionAnswers.set(dkey, answer);
-        if (!answer) continue;
+        const entry = this._picture(r, size, n);
+        if (entry.state !== "ready") continue;
+        if (entry.pic.element && !this._standIn(entry.pic.element, drawn, r.kind)) continue;
+        at = entry.pic.element ? { r, el: entry.pic.element } : { r, entry };
       }
-      regionAt.set(r.start_row, { r, el: answer });
+      regionAt.set(r.start_row, at);
       this.directiveSpans.push([r.start_row, r.end_row]);
       for (let i = r.start_row + 1; i < r.end_row; i++) covered.add(i);
     }
-    if (view.view !== "source") this._regionAnswers = regionAnswers;
     for (let i = 0; i < view.rows.length; i++) {
       // A filler row core reserved under the media: the element built on the
       // first row already occupies that height in the flow, so drawing these
@@ -1339,28 +1345,25 @@ export class LeafEditor {
       const media = mediaAt.get(i) || null;
       const mathBlock = mathBlockAt.get(i) || null;
       const pageBreak = breakAt.has(i);
-      const directive = directiveAt.get(i) || null;
       const region = regionAt.get(i) || null;
       const runs = canonicalRuns(row.runs);
       const key = region
-        ? "R" + directiveRowKey(region.el, row)
-        : directive
-        ? directiveRowKey(directive.el, row)
+        ? region.el
+          ? "R" + directiveRowKey(region.el, row)
+          : pictureRowKey(region.r, region.entry, row)
         : pageBreak
         ? pageBreakKey(row)
         : media
           ? mediaKey(media, row)
           : mathBlock
-            ? mathBlockKey(mathBlock, row, ink)
-            : rowKey(row, runs, i, view.rows) + mathRowKey(runs, mathInlineAt, ink, mathRows.has(i));
+            ? mathBlockKey(mathBlock.m, mathBlock.entry, row)
+            : rowKey(row, runs, i, view.rows) + (mathRows.has(i) ? this._mathRowKey(runs, this._rowFontPx(row)) : "");
       let el = take(key);
       if (el) {
         this._adoptRow(el, runs);
         this.rowEls.push(el);
       } else if (region) {
-        el = this._regionRowEl(region.r, region.el, row);
-      } else if (directive) {
-        el = this._directiveRowEl(directive.d, directive.el, row);
+        el = region.el ? this._regionRowEl(region.r, region.el, row) : this._pictureRowEl(region.r, region.entry, row);
       } else {
         el = this._rowEl(row, i, view.rows, media, false, runs, pageBreak, mathBlock);
       }
@@ -1368,6 +1371,11 @@ export class LeafEditor {
     }
     this._reconcile(keyed);
     this._keyed = keyed;
+    // The source view lists no regions — each is the text being edited — so
+    // a frame of it is no news about them, and the pictures are kept for the
+    // way back.
+    if (view.view !== "source") this._pictures = this._framePictures;
+    this._framePictures = null;
 
     this._restoreSelection(view);
     this._scrollCaretIntoView(view);
@@ -1553,9 +1561,7 @@ export class LeafEditor {
 
     // The row's font size, for an inline formula set at the size of the text
     // around it — a heading's ramp, else the body's.
-    const fontPx = row.heading
-      ? this.theme.fontSize * this.theme.headingScale[Math.min(row.heading, 6) - 1]
-      : this.theme.fontSize;
+    const fontPx = this._rowFontPx(row);
     div._leafRuns = runs.map((run) => div.appendChild(this._runEl(run, fontPx)));
 
     // A contenteditable block needs a placeholder to hold a caret when it has no
@@ -1642,20 +1648,28 @@ export class LeafEditor {
     return div;
   }
 
+  /** The font size of a row's text, in CSS px — a heading's ramp, else the
+   *  body's — which an inline formula on it is set at. */
+  _rowFontPx(row) {
+    return row.heading
+      ? this.theme.fontSize * this.theme.headingScale[Math.min(row.heading, 6) - 1]
+      : this.theme.fontSize;
+  }
+
   /**
-   * Build the row for a display formula on lines of its own: the typeset
-   * picture, centred, in place of the `∑ tex` placeholder core drew for a
-   * surface that cannot paint one. The media row's shape exactly — an atom the
-   * caret sits either side of, a zero-width space on each side for it to land
-   * on, and `leafCoreLen` for the offsets to cross by — because that is what a
+   * Build the row for a display formula on lines of its own: its picture,
+   * centred, in place of the `∑ tex` placeholder core drew for a surface
+   * that cannot paint one. The media row's shape exactly — an atom the caret
+   * sits either side of, a zero-width space on each side for it to land on,
+   * and `leafCoreLen` for the offsets to cross by — because that is what a
    * block formula is to the caret. The picture is set at the body size; the
    * row grows to fit it, so nothing here calls `set_math_rows`.
    */
-  _mathRowEl(div, m, row) {
+  _mathRowEl(div, { m, entry }, row) {
     div.classList.add("leaf-media-row", "leaf-math-row");
     div.dataset.leafCoreLen = String((row?.runs || []).reduce((n, r) => n + r.text.length, 0));
     div.appendChild(document.createTextNode(ZWSP));
-    const pic = this._mathPicture(m, this.theme.fontSize, this._ink);
+    const pic = entry.pic;
     const img = el("img", "leaf-media leaf-math-block");
     img._math = m;
     img._mathPx = this.theme.fontSize;
@@ -1663,8 +1677,8 @@ export class LeafEditor {
     img.alt = m.tex.trim();
     img.setAttribute("contenteditable", "false");
     // The picture's own size, so it neither scales to the measure nor blurs.
-    img.style.width = (pic.width * this.theme.fontSize).toFixed(2) + "px";
-    img.style.height = ((pic.height + pic.depth) * this.theme.fontSize).toFixed(2) + "px";
+    img.style.width = pic.width.toFixed(2) + "px";
+    img.style.height = pic.height.toFixed(2) + "px";
     div.appendChild(img);
     div.appendChild(document.createTextNode(ZWSP));
     this.rowEls.push(div);
@@ -1712,75 +1726,7 @@ export class LeafEditor {
    */
   _fromDrawing(e) {
     const t = e.target;
-    return t !== this.contentEl && t?.nodeType === 1 && !!t.closest(".leaf-directive, .leaf-region");
-  }
-
-  /**
-   * Ask the host's `directive` hook for its drawing of one leaf directive, and
-   * say what it answered: an element, or null for the placeholder. The hook is
-   * handed a copy of the `DirectiveView`, so nothing it does to it reaches the
-   * frame. A hook that throws, or answers with something that is not an
-   * element, is a host bug — reported on the console — and the directive is
-   * drawn as though it had said null, rather than taking the frame down with
-   * it.
-   */
-  _askDirective(d) {
-    const view = {
-      start_row: d.start_row,
-      end_row: d.end_row,
-      name: d.name,
-      label: d.label,
-      attrs: d.attrs.map((a) => ({ key: a.key, value: a.value })),
-    };
-    let answer;
-    try {
-      answer = this._directiveHook(view);
-    } catch (e) {
-      console.error(`leaf: the directive hook threw on ::${d.name}`, e);
-      return null;
-    }
-    if (answer == null) return null;
-    if (!(answer instanceof HTMLElement)) {
-      console.error(`leaf: the directive hook answered ::${d.name} with something not an HTMLElement`, answer);
-      return null;
-    }
-    return answer;
-  }
-
-  /**
-   * Build the row for a leaf directive the host drew: its element, in place of
-   * the `⧉ label` placeholder glyphs core laid out for a surface that knows
-   * nothing of the name, standing in for every row in `[start_row, end_row)`.
-   *
-   * The media row's shape exactly, because that is what a host's drawing is to
-   * the caret — a thing it sits either side of, never inside. The host's
-   * element goes in a `contenteditable="false"` wrapper, so the browser will
-   * not let the caret enter it, edit it or split it, and so the text walkers
-   * can step around it (`NOT_TEXT`); what the host does with a click on it is
-   * the host's. A zero-width space on each side is the row's only editable
-   * text, the caret's two homes; and `leafCoreLen` is what core counts on the
-   * row, so its two stops — at the directive's start and past its end — map
-   * onto those two homes through `atomCoreLen`, as a picture's do. One way
-   * this row is not a picture's: a DOM point counts by which side of the
-   * drawing it is on (`offsetTo`), and the arrows on it are core's
-   * (`_onKeyDown`), so the browser's caret is never drawn on one side of the
-   * drawing while core has it on the other.
-   *
-   * The row grows to fit the element, so nothing here calls
-   * `set_directive_rows`: that is for a surface that reserves character rows.
-   */
-  _directiveRowEl(d, answer, row) {
-    const div = el("div", "leaf-row leaf-media-row leaf-directive-row");
-    div.dataset.leafCoreLen = String((row?.runs || []).reduce((n, r) => n + r.text.length, 0));
-    div.dataset.directive = d.name;
-    div.appendChild(document.createTextNode(ZWSP));
-    const atom = el("div", "leaf-directive");
-    atom.setAttribute("contenteditable", "false");
-    atom.appendChild(answer);
-    div.appendChild(atom);
-    div.appendChild(document.createTextNode(ZWSP));
-    this.rowEls.push(div);
-    return div;
+    return t !== this.contentEl && t?.nodeType === 1 && !!t.closest(".leaf-region");
   }
 
   /**
@@ -1934,24 +1880,35 @@ export class LeafEditor {
     span.className = "leaf-run leaf-r-math" + (run.bold ? " leaf-b" : "") + (run.italic ? " leaf-i" : "");
     span._src = run.src;
     span.textContent = run.text;
-    const m = this._mathInline?.get(run.src);
-    if (!m) return span;
-    const pic = this._mathPicture(m, fontPx, this._ink);
-    if (pic === null) return span; // the typesetter is on its way, or off: the atom stands
-    if (pic instanceof Error) {
+    const at = this._mathInline?.get(run.src);
+    if (!at) return span;
+    const { m, region } = at;
+    const entry = this._mathPicture(m, region, fontPx, 0);
+    if (entry.state === "fault") {
       span.classList.add("leaf-math-error");
-      span.title = pic.message;
+      span.title = entry.error.message;
       return span;
     }
-    const w = pic.width * fontPx;
-    const h = (pic.height + pic.depth) * fontPx;
+    // On its way, turned off, or nothing drawn: the atom stands.
+    if (entry.state !== "ready") return span;
+    const pic = entry.pic;
+    if (pic.element) {
+      // A line holds pictures, not views: an inline region is drawn from SVG.
+      if (!entry.warned) {
+        entry.warned = true;
+        console.error("leaf: the math renderer answered an inline formula with an element; inline regions take {svg}");
+      }
+      return span;
+    }
+    const w = pic.width;
+    const depth = pic.height - (pic.baseline ?? pic.height);
     span.classList.add("leaf-math");
     span._math = m;
     span._mathPx = fontPx;
     if (!m.edit) span.title = m.tex.trim();
     span.style.width = w.toFixed(2) + "px";
-    span.style.height = h.toFixed(2) + "px";
-    span.style.verticalAlign = (-pic.depth * fontPx).toFixed(2) + "px";
+    span.style.height = pic.height.toFixed(2) + "px";
+    span.style.verticalAlign = (-depth).toFixed(2) + "px";
     span.style.letterSpacing = (w - this._atomAdvance(fontPx, run.bold)).toFixed(2) + "px";
     span.style.backgroundImage = "url(\"" + svgDataUrl(pic.svg) + "\")";
     return span;
@@ -1984,6 +1941,11 @@ export class LeafEditor {
    */
   _mathSettled() {
     if (this._destroyed || !this._lastView) return;
+    // What leaf's renderer answered while the module was away was "not yet":
+    // forgotten, so the formulas are asked for again.
+    if (this._regionRenderers.get("math") === renderMath) {
+      for (const [key, entry] of this._pictures) if (entry.kind === "math") this._pictures.delete(key);
+    }
     this.render(this._editMathAsStructure() ?? this._lastView);
   }
 
@@ -1997,12 +1959,17 @@ export class LeafEditor {
   // docs/proposals/embedded-editors.md.
 
   /**
-   * Tell core which region kinds this editor edits itself: every kind it has
-   * an editor for. Returns the frame that produced, or `null` when the set is
+   * Tell core which region kinds this editor draws or edits itself: every
+   * kind it has an editor for, every kind but `math` it has a renderer for,
+   * and `math` once formulas are edited as structure. Returns the frame that produced, or `null` when the set is
    * the one core already has.
    */
   _ownRegions() {
-    const kinds = [...this._regionEditors.keys()].sort();
+    // Leaf's math renderer, or a host's, draws formulas whoever edits them:
+    // a renderer for `math` owns nothing. Every other renderer owns its kind.
+    const kinds = [
+      ...new Set([...this._regionEditors.keys(), ...[...this._regionRenderers.keys()].filter((k) => k !== "math")]),
+    ].sort();
     const key = kinds.join("\n");
     if (key === this._ownedKey) return null;
     this._ownedKey = key;
@@ -2025,20 +1992,155 @@ export class LeafEditor {
   }
 
   /**
-   * A formula's picture: the open one's from its session — its caret drawn
-   * in, its empty slots shown — and every other's from the typesetter.
-   * Both answer with the same shape, so the row draws either the same way.
+   * A formula's picture entry at `size`: the open one's from its session —
+   * its caret drawn in, its empty slots shown — and every other's from the
+   * `math` renderer (`_picture`). The session's picture is in ems, as the
+   * typesetter's is, and is turned into the same `RegionPicture` in pixels,
+   * so the row draws either the same way. Kept on the session for its
+   * revision, since a frame asks for it twice: for the row's key and to
+   * build the row.
    */
-  _mathPicture(m, size, ink) {
+  _mathPicture(m, region, size, n) {
     const s = this._session;
     if (s && s.kind === "math" && m.src === s.src && s.impl.picture) {
+      const accent = this._accentColor();
+      const memo = s.pictures?.get(size);
+      if (memo && memo.rev === s.rev && memo.ink === this._ink && memo.accent === accent) return memo.entry;
+      let entry;
       try {
-        return s.impl.picture(size, ink, this._accentColor());
+        entry = readyEntry("math", emPicture(s.impl.picture(size, this._ink, accent), size));
       } catch (e) {
-        return e instanceof Error ? e : new Error(String(e));
+        entry = faultEntry("math", e);
       }
+      (s.pictures ??= new Map()).set(size, { rev: s.rev, ink: this._ink, accent, entry });
+      return entry;
     }
-    return typesetMath(m.tex, m.display, size, ink);
+    return this._picture(region, size, n);
+  }
+
+  /**
+   * What a region's picture is kept under: everything that changes it — its
+   * kind, its content, its style, the size, the ink and the scheme — and not
+   * where it is, which every edit above it moves.
+   */
+  _pictureKey(r, size) {
+    return [r.kind, r.display ? "D" : "T", size, this._ink, this._dark ? "dark" : "light", r.content].join("\u0000");
+  }
+
+  /**
+   * The picture of region `r` at `size` — the `n`th of the frame's regions
+   * alike, which has a picture of its own, since an element stands in one
+   * place — as a `PictureEntry`: ready, on its way, faulted, or none (the
+   * renderer answered null, or there is none for the kind). Asked of the
+   * kind's renderer the first time, and kept while a frame still shows it
+   * (`render`). A renderer that answers with a promise is shown as the
+   * placeholder until the promise settles, when the frame is painted again —
+   * if the editor and the region are still there. A renderer that throws,
+   * or answers with something that is not a picture, is a bug — reported on
+   * the console — and drawn as the placeholder; leaf's own `math` renderer
+   * answers TeX it cannot read as a fault, which the row marks instead.
+   */
+  _picture(r, size, n) {
+    const key = this._pictureKey(r, size) + "#" + n;
+    const frame = this._framePictures;
+    let entry = frame?.get(key) ?? this._pictures.get(key);
+    if (!entry) {
+      entry = this._render(r, size, key);
+    }
+    frame?.set(key, entry);
+    return entry;
+  }
+
+  /** Keep region `r`'s picture for the next frame without asking for it —
+   *  for an open region whose own view stands in its place. */
+  _keepPicture(r, size, n) {
+    const key = this._pictureKey(r, size) + "#" + n;
+    const entry = this._pictures.get(key);
+    if (entry) this._framePictures?.set(key, entry);
+  }
+
+  /** Ask `r`'s renderer for its picture, as `_picture` describes; `key` is
+   *  what a promise settles under. */
+  _render(r, size, key) {
+    const kind = r.kind;
+    const renderer = this._regionRenderers.get(kind);
+    if (!renderer) return noneEntry(kind);
+    const ctx = { size, ink: this._ink, dark: this._dark };
+    let answer;
+    try {
+      answer = renderer(regionCopy(r), ctx);
+    } catch (e) {
+      console.error(`leaf: the ${kind} renderer threw`, e);
+      return faultEntry(kind, e);
+    }
+    if (answer instanceof Error && renderer === renderMath) return faultEntry(kind, answer);
+    if (answer && typeof answer.then === "function") {
+      const entry = { id: ++nextPictureId, kind, state: "pending", pic: null, error: null };
+      Promise.resolve(answer).then(
+        (pic) => this._settle(key, entry, pic),
+        (e) => {
+          console.error(`leaf: the ${kind} renderer's promise rejected`, e);
+          this._settle(key, entry, undefined, e);
+        },
+      );
+      return entry;
+    }
+    return checkedEntry(kind, answer);
+  }
+
+  /** A renderer's promise settled: the picture takes its entry's place, and
+   *  the frame is painted again, if the entry is still wanted. */
+  _settle(key, entry, answer, error) {
+    if (this._destroyed || this._pictures.get(key) !== entry) return;
+    const done = error === undefined ? checkedEntry(entry.kind, answer) : faultEntry(entry.kind, error);
+    Object.assign(entry, done, { id: ++nextPictureId });
+    this._repaintSoon();
+  }
+
+  /** Paint the last frame again once the current task is done — once, for
+   *  however many pictures arrived together. Not in the middle of a
+   *  composition, which a repaint would break: then a little later. */
+  _repaintSoon() {
+    if (this._repaintQueued) return;
+    this._repaintQueued = true;
+    const run = () => {
+      if (this._destroyed) return;
+      if (this._composing) {
+        setTimeout(run, 100);
+        return;
+      }
+      this._repaintQueued = false;
+      if (this._lastView) this.render(this._lastView);
+    };
+    queueMicrotask(run);
+  }
+
+  /** Whether `el` may stand in for a region this frame: an element handed to
+   *  two regions could only stand in one place, so the second keeps its
+   *  placeholder. */
+  _standIn(el, drawn, kind) {
+    if (drawn.has(el)) {
+      console.error(`leaf: the ${kind} renderer answered two regions with one element`);
+      return false;
+    }
+    drawn.add(el);
+    return true;
+  }
+
+  /** What an ordinary row's key leaves out when a formula stands on it: the
+   *  picture each inline one is drawn from, which the `∑` run itself does
+   *  not carry. A block's placeholder row is keyed by the typesetter's state
+   *  as well, so it is rebuilt when the typesetter lands. */
+  _mathRowKey(runs, fontPx) {
+    let key = "";
+    for (const run of runs) {
+      if (run.role !== "math") continue;
+      const at = this._mathInline.get(run.src);
+      if (!at) continue;
+      const entry = this._mathPicture(at.m, at.region, fontPx, 0);
+      key += "\u0004" + entry.id + entry.state + (at.m.edit ?? "") + (at.m.display ? "D" : "T") + at.m.tex;
+    }
+    return key + "|" + this._ink + "|" + mathState();
   }
 
   /** The caret's colour, for the open formula's caret: `--leaf-caret`. */
@@ -2118,7 +2220,7 @@ export class LeafEditor {
       console.error(`leaf: the ${s.kind} editor threw on close`, e);
     }
     if (hadFocus || where !== null) this.focus();
-    // The formula's picture is the typesetter's again: its row key must not
+    // The formula's picture is its renderer's again: its row key must not
     // carry the session's revision into the next paint.
     for (const m of this._lastView?.math || []) delete m.edit;
     if (!paint) return;
@@ -2260,31 +2362,10 @@ export class LeafEditor {
   }
 
   /**
-   * The drawing a host's editor gives a region while it is closed — its
-   * `view`, asked once per region and reused while its content stands — or
-   * null for the placeholder row core laid out. Keyed like a directive's:
-   * kind, content, and which of several alike it is.
-   */
-  _regionDrawing(r, key) {
-    if (this._regionAnswers.has(key)) return this._regionAnswers.get(key);
-    const editor = this._regionEditors.get(r.kind);
-    let answer = null;
-    try {
-      answer = editor?.view?.(regionCopy(r)) ?? null;
-    } catch (e) {
-      console.error(`leaf: the ${r.kind} editor's view threw`, e);
-    }
-    if (answer != null && !(answer instanceof HTMLElement)) {
-      console.error(`leaf: the ${r.kind} editor's view is not an HTMLElement`, answer);
-      answer = null;
-    }
-    return answer;
-  }
-
-  /**
    * The region a mousedown on `t` is on, and where on its drawing, in pixels
-   * from its top left: a formula's picture, or a host editor's drawing of a
-   * closed region. `null` for anything else.
+   * from its top left: a formula's picture, or any other region's picture
+   * or open view. `null` for anything else, and for a region of a kind with
+   * no editor.
    */
   _regionHit(t, e) {
     if (t?.nodeType !== 1) return null;
@@ -2314,20 +2395,68 @@ export class LeafEditor {
   }
 
   /**
-   * Build the row for a block region a host's editor draws — its closed
-   * drawing, or the open session's view — in place of the placeholder row:
-   * the directive row's shape, a `contenteditable="false"` atom between the
-   * two caret homes.
+   * Build the row for a block region drawn as an element — its renderer's
+   * `{element}` picture, or the open session's own view — in place of the
+   * placeholder glyphs core laid out, standing in for every row in
+   * `[start_row, end_row)`.
+   *
+   * The media row's shape exactly, because that is what a drawing is to the
+   * caret — a thing it sits either side of, never inside. The element goes
+   * in a `contenteditable="false"` wrapper, so the browser will not let the
+   * caret enter it, edit it or split it, and so the text walkers can step
+   * around it (`NOT_TEXT`); what the host does with a click or a key of its
+   * own on it is the host's. A zero-width space on each side is the row's
+   * only editable text, the caret's two homes; and `leafCoreLen` is what core
+   * counts on the row, so its two stops — at the region's start and past its
+   * end — map onto those two homes through `atomCoreLen`, as a picture's do.
+   * One way this row is not a picture's: a DOM point counts by which side of
+   * the drawing it is on (`offsetTo`), and the arrows on it are core's
+   * (`_onKeyDown`), so the browser's caret is never drawn on one side of the
+   * drawing while core has it on the other.
+   *
+   * A directive's row and atom carry `leaf-directive-row` and
+   * `leaf-directive` as well, and the directive's name, for a stylesheet.
+   * The row grows to fit the element, so nothing here calls
+   * `set_directive_rows`: that is for a surface that reserves character rows.
    */
   _regionRowEl(r, answer, row) {
-    const div = el("div", "leaf-row leaf-media-row leaf-region-row");
+    const div = this._regionRow(r, row);
+    const atom = div.querySelector(".leaf-region");
+    atom.appendChild(answer);
+    return div;
+  }
+
+  /**
+   * Build the row for a block region drawn as an `{svg}` picture: the
+   * picture as an `<img>`, centred at its own size and scaled down to fit
+   * the measure, in the same atom `_regionRowEl` builds.
+   */
+  _pictureRowEl(r, entry, row) {
+    const div = this._regionRow(r, row);
+    div.classList.add("leaf-picture-row");
+    const pic = entry.pic;
+    const img = el("img", "leaf-region-picture");
+    img.src = svgDataUrl(pic.svg);
+    img.alt = r.kind;
+    img.width = Math.max(1, Math.round(pic.width));
+    img.height = Math.max(1, Math.round(pic.height));
+    img.draggable = false;
+    div.querySelector(".leaf-region").appendChild(img);
+    return div;
+  }
+
+  /** The row `_regionRowEl` and `_pictureRowEl` fill: two caret homes
+   *  either side of an empty atom. */
+  _regionRow(r, row) {
+    const directive = r.kind.startsWith(DIRECTIVE_KIND);
+    const div = el("div", "leaf-row leaf-media-row leaf-region-row" + (directive ? " leaf-directive-row" : ""));
     div.dataset.leafCoreLen = String((row?.runs || []).reduce((n, run) => n + run.text.length, 0));
     div.dataset.region = r.kind;
+    if (directive) div.dataset.directive = r.name;
     div.appendChild(document.createTextNode(ZWSP));
-    const atom = el("div", "leaf-region");
+    const atom = el("div", "leaf-region" + (directive ? " leaf-directive" : ""));
     atom.setAttribute("contenteditable", "false");
     atom._region = r;
-    atom.appendChild(answer);
     div.appendChild(atom);
     div.appendChild(document.createTextNode(ZWSP));
     this.rowEls.push(div);
@@ -2825,6 +2954,9 @@ export class LeafEditor {
         if (s) this._closeRegion(null);
         return;
       }
+      // The click is the region's: leaf's handlers after this one — the
+      // click past the end, which the open region's scroll can put this
+      // point under, among them — see it prevented and stand aside.
       e.preventDefault();
       this.focus();
       if (s && s.kind === hit.region.kind && s.src === hit.region.src) {
@@ -2837,7 +2969,7 @@ export class LeafEditor {
     // Triple-click: the browser's is a *visual line*; leaf's is the *logical
     // block* (a paragraph across its soft-wraps). Intercept just that count.
     on(ce, "mousedown", (e) => {
-      if (e.button !== 0 || e.detail !== 3) return;
+      if (e.defaultPrevented || e.button !== 0 || e.detail !== 3) return;
       const hit = this._hitTest(e.clientX, e.clientY);
       if (!hit) return;
       e.preventDefault();
@@ -2856,7 +2988,7 @@ export class LeafEditor {
     // And only in the rich view — the source view is a text editor, where a
     // click under the last line lands on it at the pointer's x.
     on(ce, "mousedown", (e) => {
-      if (e.button !== 0 || e.detail !== 1 || e.shiftKey || primaryModifier(e)) return;
+      if (e.defaultPrevented || e.button !== 0 || e.detail !== 1 || e.shiftKey || primaryModifier(e)) return;
       if (this.viewName() === "source" || !this._isPastEnd(e.clientY)) return;
       e.preventDefault();
       this.focus();
@@ -3422,10 +3554,10 @@ export class LeafEditor {
       return;
     }
 
-    // The arrows on a host's drawing of a directive are core's, not the
-    // browser's. The browser's step from the caret home in front of the
-    // drawing is only to the far side of the zero-width space there, still in
-    // front of it, and its vertical step off the drawing lands in the other
+    // The arrows on a region's drawing — a picture, a directive's element —
+    // are core's, not the browser's. The browser's step from the caret home
+    // in front of the drawing is only to the far side of the zero-width space
+    // there, still in front of it, and its vertical step off the drawing lands in the other
     // home on the same row. Core has exactly two stops on the row, one either
     // side, so asking it moves over the drawing in one press each way — and
     // off the row in one more — and the repaint puts the browser's caret where
@@ -3437,7 +3569,7 @@ export class LeafEditor {
       // would take the frame a caret move repaints by (see `selectionchange`).
       const focus = window.getSelection()?.focusNode;
       const rowEl = focus ? this._rowOf(focus) : null;
-      if (rowEl?.classList.contains("leaf-directive-row") || rowEl?.classList.contains("leaf-region-row")) {
+      if (rowEl?.classList.contains("leaf-region-row")) {
         e.preventDefault();
         this._syncFromDom();
         const x = e.shiftKey;
@@ -3754,35 +3886,191 @@ function mediaKey(media, row) {
   return "m" + len + "|" + JSON.stringify([media.kind, media.src, media.poster, media.alt, media.sources]);
 }
 
-/** `rowKey` for a display formula's row: the picture drawn and the row core
- *  addresses. The ink is in it because the picture is. */
-function mathBlockKey(m, row, ink) {
+/** `rowKey` for a display formula's row: the picture drawn — which entry,
+ *  the ink and the size being in it — and the row core addresses. */
+function mathBlockKey(m, entry, row) {
   const len = (row?.runs || []).reduce((n, r) => n + r.text.length, 0);
-  return "M" + len + "|" + ink + "|" + (m.edit ?? "") + "|" + (m.display ? "D" : "T") + m.tex;
+  return "M" + len + "|" + entry.id + "|" + (m.edit ?? "") + "|" + (m.display ? "D" : "T") + m.tex;
+}
+
+/** `rowKey` for a block region drawn as `{svg}`: which picture, and the row
+ *  core addresses. */
+function pictureRowKey(r, entry, row) {
+  const len = (row?.runs || []).reduce((n, run) => n + run.text.length, 0);
+  return "P" + len + "|" + entry.id + "|" + r.kind;
+}
+
+/** The prefix of a leaf directive's region kind, before its name. */
+const DIRECTIVE_KIND = "directive:";
+
+/** Whether `kind` names a block region a host may draw or edit: a fence of a
+ *  language, or a leaf directive of a name other than `page-break`, which
+ *  is leaf's own and never a region. */
+function hostBlockKind(kind) {
+  return /^fence:\S+$/.test(kind) || (/^directive:\S+$/.test(kind) && kind !== DIRECTIVE_KIND + PAGE_BREAK);
 }
 
 /**
- * The host's region editors, by kind, checked: each kind is `fence:` and a
- * language — formulas are leaf's own — and each editor has an `open`.
+ * The host's region editors, by kind, checked: each kind is a fence's
+ * (`fence:<language>`) or a directive's (`directive:<name>`) — formulas are
+ * leaf's own — and each editor has an `open`, and no `view`, which went when
+ * renderers came.
  */
 function regionEditors(given) {
   const map = new Map();
   for (const [kind, editor] of Object.entries(given ?? {})) {
-    if (!/^fence:\S+$/.test(kind)) {
-      throw new Error(`regionEditors: ${JSON.stringify(kind)} is not a kind a host edits — name a fence, "fence:<language>"`);
+    if (!hostBlockKind(kind)) {
+      throw new Error(
+        `regionEditors: ${JSON.stringify(kind)} is not a kind a host edits — name a fence, "fence:<language>", or a directive, "directive:<name>"`
+      );
     }
     if (typeof editor?.open !== "function") throw new Error(`regionEditors[${JSON.stringify(kind)}] has no open()`);
+    if (editor.view !== undefined) {
+      throw new Error(
+        `regionEditors[${JSON.stringify(kind)}].view is gone: a closed region is drawn by its renderer, regionRenderers[${JSON.stringify(kind)}]`
+      );
+    }
     map.set(kind, editor);
   }
   return map;
 }
 
-/** A `RegionView` as a host's editor is handed it: a copy, so nothing it does
- *  to it reaches the frame. */
+/**
+ * The renderers, by kind: leaf's own for `math`, and the host's, checked —
+ * each kind is `math`, a fence's or a directive's, and each renderer a
+ * function. A host's `math` replaces leaf's.
+ */
+function regionRenderers(given) {
+  const map = new Map([["math", renderMath]]);
+  for (const [kind, renderer] of Object.entries(given ?? {})) {
+    if (kind !== "math" && !hostBlockKind(kind)) {
+      throw new Error(
+        `regionRenderers: ${JSON.stringify(kind)} is not a kind a host draws — name "math", a fence, "fence:<language>", or a directive, "directive:<name>"`
+      );
+    }
+    if (typeof renderer !== "function") throw new Error(`regionRenderers[${JSON.stringify(kind)}] is not a function`);
+    map.set(kind, renderer);
+  }
+  return map;
+}
+
+/**
+ * Leaf's own renderer for `math`: the typesetter's picture, in pixels. `null`
+ * while the typesetter is absent — not yet fetched, in flight, or turned off
+ * — which leaves the placeholder until `_mathSettled` asks again; an `Error`
+ * for TeX the typesetter cannot read, which only this renderer may answer,
+ * and which the row marks as a fault rather than reporting it.
+ */
+function renderMath(region, ctx) {
+  const p = typesetMath(region.content, region.display, ctx.size, ctx.ink);
+  if (p === null || p instanceof Error) return p;
+  return emPicture(p, ctx.size, false);
+}
+
+/** A picture in ems — the typesetter's, or an open formula's — as a
+ *  `RegionPicture` in pixels at `size`: its height is the height above the
+ *  baseline and the depth below it. A wasm object is copied out and freed. */
+function emPicture(p, size, free = true) {
+  const pic = {
+    svg: p.svg,
+    width: p.width * size,
+    height: (p.height + p.depth) * size,
+    baseline: p.height * size,
+  };
+  if (free) p.free?.();
+  return pic;
+}
+
+/**
+ * @typedef {Object} PictureEntry  a region's picture as the cache holds it
+ * @property {number} id   which picture this is: a row's key carries it, so a
+ *   row is rebuilt when the picture it was drawn from is replaced
+ * @property {string} kind
+ * @property {"ready" | "pending" | "fault" | "none"} state
+ * @property {{svg: string, width: number, height: number, baseline?: number} | {element: HTMLElement} | null} pic
+ * @property {Error | null} error
+ */
+let nextPictureId = 0;
+const readyEntry = (kind, pic) => ({ id: ++nextPictureId, kind, state: "ready", pic, error: null });
+const noneEntry = (kind) => ({ id: ++nextPictureId, kind, state: "none", pic: null, error: null });
+const faultEntry = (kind, e) => ({
+  id: ++nextPictureId,
+  kind,
+  state: "fault",
+  pic: null,
+  error: e instanceof Error ? e : new Error(String(e)),
+});
+
+/** A renderer's answer as an entry: a picture checked for its shape, `none`
+ *  for null, and a fault — reported on the console — for anything else. */
+function checkedEntry(kind, answer) {
+  if (answer == null) return noneEntry(kind);
+  const size = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0;
+  if (typeof answer === "object") {
+    if ("element" in answer && answer.element instanceof HTMLElement) {
+      return readyEntry(kind, { element: answer.element });
+    }
+    if (
+      typeof answer.svg === "string" &&
+      size(answer.width) &&
+      size(answer.height) &&
+      (answer.baseline === undefined || size(answer.baseline))
+    ) {
+      const pic = { svg: answer.svg, width: answer.width, height: answer.height };
+      if (answer.baseline !== undefined) pic.baseline = answer.baseline;
+      return readyEntry(kind, pic);
+    }
+  }
+  console.error(`leaf: the ${kind} renderer answered with something not a RegionPicture`, answer);
+  return faultEntry(kind, new Error(`the ${kind} renderer answered with something not a RegionPicture`));
+}
+
+/** Whether ink `hex` is light — a surface whose text is light is dark. */
+function isDarkInk(hex) {
+  const n = parseInt(hex.slice(1, 7), 16);
+  if (!Number.isFinite(n)) return false;
+  const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 128;
+}
+
+/**
+ * Formula `m` as a region: core's own `RegionView` of it when leaf edits
+ * formulas as structure (`owned`), and otherwise one made from its
+ * `MathView` — its TeX the content, its offsets as core counts them — so the
+ * `math` renderer is handed the same shape either way.
+ */
+function mathRegion(m, owned) {
+  if (owned) return owned;
+  const delim = m.display ? 2 : 1;
+  const start = m.src + delim;
+  const end = start + UTF8_IN.encode(m.tex).length;
+  return {
+    kind: "math",
+    inline: m.inline,
+    display: m.display,
+    name: "",
+    label: "",
+    attrs: [],
+    start_row: m.row,
+    end_row: m.row + m.rows,
+    src: m.src,
+    end: end + delim,
+    content_start: start,
+    content_end: end,
+    content: m.tex,
+  };
+}
+
+/** A `RegionView` as a host's renderer or editor is handed it: a copy, so
+ *  nothing it does to it reaches the frame. */
 function regionCopy(r) {
   return {
     kind: r.kind,
     inline: r.inline,
+    display: !!r.display,
+    name: r.name ?? "",
+    label: r.label ?? "",
+    attrs: (r.attrs || []).map((a) => ({ key: a.key, value: a.value })),
     start_row: r.start_row,
     end_row: r.end_row,
     src: r.src,
@@ -3908,21 +4196,6 @@ function mathRegionEditor(editor) {
   };
 }
 
-/** What an ordinary row's key leaves out when it holds a formula: the TeX
- *  and the ink of each inline one, neither of which the `∑` run itself
- *  carries, and — for any row a formula stands on, `hasMath`, a block's
- *  placeholder row included — whether the typesetter was there to draw it. */
-function mathRowKey(runs, mathInlineAt, ink, hasMath) {
-  if (!hasMath) return "";
-  let key = "";
-  for (const run of runs) {
-    if (run.role !== "math") continue;
-    const m = mathInlineAt.get(run.src);
-    if (m) key += "\u0004" + (m.edit ?? "") + (m.display ? "D" : "T") + m.tex;
-  }
-  return key + "|" + ink + "|" + mathState();
-}
-
 /** `rowKey` for a page break: a rule is a rule, and the only thing that can
  *  change under it is what core counts the placeholder row as. */
 function pageBreakKey(row) {
@@ -3930,22 +4203,16 @@ function pageBreakKey(row) {
   return "pb" + len;
 }
 
-/** What a directive is, for the hook's answers to be kept under: its name,
- *  label and attributes — core's `DirectiveKey`, and exactly what the hook is
- *  told. Not its rows, which move with every edit above it. */
-function directiveKey(d) {
-  return JSON.stringify([d.name, d.label, d.attrs.map((a) => [a.key, a.value])]);
-}
-
-/** Each host element a `directive` hook has answered with, numbered the first
- *  time it is seen — what a directive row's key names it by. */
+/** Each element a region is drawn as — a renderer's `{element}`, an open
+ *  session's view — numbered the first time it is seen: what the row's key
+ *  names it by. */
 const DRAWING_IDS = new WeakMap();
 let nextDrawingId = 0;
 
-/** `rowKey` for a directive the host drew: *which* element it answered with,
- *  and the row core addresses. The element rather than the directive, so a
- *  fresh answer (`redrawDirectives`) is a fresh row, and the same answer is
- *  the same row however far an edit above it moved it. */
+/** `rowKey` for a region drawn as an element: *which* element, and the row
+ *  core addresses. The element rather than the region, so a fresh answer
+ *  (`redrawRegions`) is a fresh row, and the same answer is the same row
+ *  however far an edit above it moved it. */
 function directiveRowKey(answer, row) {
   let id = DRAWING_IDS.get(answer);
   if (id === undefined) DRAWING_IDS.set(answer, (id = ++nextDrawingId));
@@ -4092,7 +4359,7 @@ function offsetTo(rowEl, node, offset) {
   // of it is its near stop, and past it — or inside it — is its far one. The
   // arrows over it are core's (see `_onKeyDown`), so no point needs to count
   // as past the drawing while the browser draws its caret in front of it.
-  const atom = coreLen != null && rowEl.querySelector(":scope > .leaf-directive");
+  const atom = coreLen != null && rowEl.querySelector(":scope > .leaf-region");
   if (atom) {
     // Against the point just in front of the drawing, not a range around it:
     // `comparePoint` calls a range's own boundary inside it, and the row
@@ -4503,12 +4770,14 @@ const EDITOR_CSS = `
 audio.leaf-media { width: 100%; max-width: 420px; border-radius: 999px; }
 img.leaf-media, video.leaf-media { max-height: 60vh; }
 
-/* A host's drawing of a leaf directive, in place of the placeholder glyphs: the
-   media row's shape, holding whatever element the host answered with. The row
-   zeroes its leading for the zero-width spaces either side, so the wrapper
-   puts the surface's own back for a drawing that has text in it; and it is an
-   atom, selected with the row and never internally. */
-.leaf-directive {
+/* A region drawn by its renderer, in place of the placeholder glyphs: the
+   media row's shape, holding the picture or the element the renderer
+   answered with. The row zeroes its leading for the zero-width spaces either
+   side, so the wrapper puts the surface's own back for a drawing that has
+   text in it; and it is an atom, selected with the row and never internally.
+   An open view (a host's editor) is the host's to style. */
+.leaf-region { display: block; line-height: var(--leaf-line); white-space: normal; }
+.leaf-directive, .leaf-picture-row .leaf-region {
   display: block;
   line-height: var(--leaf-line);
   white-space: normal;
@@ -4527,6 +4796,11 @@ img.leaf-media, video.leaf-media { max-height: 60vh; }
   position: absolute; left: 20px; right: 20px; height: 2px; margin-top: -1px;
   background: var(--leaf-caret); border-radius: 1px; pointer-events: none;
 }
+
+/* A block region's {svg} picture: centred on the measure at its own size,
+   scaled down to fit it. */
+.leaf-picture-row .leaf-region { text-align: center; }
+.leaf-region-picture { display: inline-block; max-width: 100%; height: auto; vertical-align: top; }
 
 /* A display formula: its picture centred on the measure, at its own size. */
 .leaf-math-row { text-align: center; }

@@ -6,7 +6,6 @@
 import type {
   CapabilitiesView,
   DirectiveAttr,
-  DirectiveView,
   DocView,
   FootnoteDefView,
   FootnoteView,
@@ -159,31 +158,12 @@ export interface EditorOptions {
   /** Called after every repaint with the new caret/document state. */
   onChange?: (state: EditorState) => void;
   /**
-   * The host's drawing of a leaf directive (`::name[label]{attrs}`), or null
-   * to leave it as leaf's `⧉ label` placeholder row.
-   *
-   * Asked about each directive a frame has that the frame before did not —
-   * one that survives an edit keeps the element it was answered with, as a
-   * picture keeps its `<img>`, and a null answer is remembered the same way;
-   * `redrawDirectives()` asks afresh. Two identical directives are asked about
-   * separately and must be answered with two elements. `::page-break` is
-   * leaf's own and is never offered.
-   *
-   * The element is wrapped as a `contenteditable="false"` atom standing in for
-   * the rows in `[view.start_row, view.end_row)`, with a caret stop before it
-   * and one after, so the caret steps over it in one press and never enters
-   * it. What it does with a click or a key of its own is the host's; the
-   * directive's source is edited by deleting it, or by the host writing it
-   * back. A hook that throws, or answers with something that is not an
-   * `HTMLElement`, is reported on the console and drawn as the placeholder.
-   */
-  directive?: (view: DirectiveView) => HTMLElement | null;
-  /**
    * The directives this host names — its catalogue, for a toolbar or an
    * Insert menu to list (`directiveItems()`) and run
    * (`insertDirectiveItem()`), each row dimmed by `capabilities().directives`.
    * Empty by default, which offers nothing: leaf has no free-form "insert
-   * directive", since a name no one draws is only a placeholder.
+   * directive", since a name no one draws is only a placeholder. How each
+   * one looks is its renderer's, `regionRenderers["directive:<name>"]`.
    */
   directives?: DirectiveItem[];
   /**
@@ -196,18 +176,82 @@ export interface EditorOptions {
    */
   mathEditing?: "structure" | "source";
   /**
-   * Editors of the host's own for fenced blocks, by region kind:
-   * `"fence:"` and the fence's language (`"fence:mermaid"`). Each named
-   * language's fences stop being code: core keeps each one a placeholder row
-   * (`set_owned_regions`), the editor's `view` draws it there, and → in front
-   * of it, ← behind it, or a click on the drawing opens it in the editor's
-   * own view (`open`). What that view writes comes back as splices on the
-   * fence's content, one undo step each. Leaf ships no editor of this kind,
-   * and depends on nothing a host's editor uses. Formulas (`"math"`) are
-   * leaf's own; naming one is an error.
+   * How each kind of region is drawn, by region kind: `"math"`,
+   * `"fence:<language>"` (`"fence:mermaid"`) or `"directive:<name>"`
+   * (`"directive:embed"`). A renderer turns a region's content into a
+   * picture the layout places — inline on the baseline for a formula in a
+   * line, or as a block standing in for the region's rows.
+   *
+   * Leaf registers one for `"math"`, the typesetter; a host's entry replaces
+   * it, and draws every formula, edited or not. Every other kind named here
+   * stops being drawn as its source: core keeps each such fence or directive
+   * a placeholder row (`set_owned_regions`), and the renderer's picture is
+   * drawn there, with a caret stop before it and one after. A kind with no
+   * renderer, or a region its renderer answers null for, keeps leaf's
+   * placeholder row. `"directive:page-break"` is leaf's own and cannot be
+   * named.
+   *
+   * A picture is kept by kind, content, style, size, ink and scheme, so a
+   * region whose content stands is not drawn again; `redrawRegions()` asks
+   * afresh. Two identical block regions are asked about separately, and an
+   * `{element}` picture must be a different element for each. A renderer
+   * that answers with a promise is shown as the placeholder until the
+   * promise settles. One that throws, rejects, or answers with something
+   * that is not a `RegionPicture` is reported on the console and drawn as
+   * the placeholder. An inline formula is drawn only from `{svg}`.
    */
-  regionEditors?: Record<`fence:${string}`, RegionEditor>;
+  regionRenderers?: Partial<Record<RegionKind, RegionRenderer>>;
+  /**
+   * Editors of the host's own for block regions, by kind: a fenced block's,
+   * `"fence:"` and its language (`"fence:mermaid"`), or a leaf directive's,
+   * `"directive:"` and its name (`"directive:embed"`). Each named kind is a
+   * region core keeps a placeholder row (`set_owned_regions`), drawn by its
+   * renderer if it has one, and → in front of it, ← behind it, or a click on
+   * its picture opens it in the editor's own view (`open`). What that view
+   * writes comes back as splices on the region's content, one undo step
+   * each. A fence's content is its lines between the fences; a directive's
+   * is its whole source, `::name[label]{attrs}`. Leaf ships no editor of
+   * this kind, and depends on nothing a host's editor uses. Formulas
+   * (`"math"`) are edited by leaf's own editor and cannot be named here;
+   * nor can `"directive:page-break"`.
+   */
+  regionEditors?: Partial<Record<`fence:${string}` | `directive:${string}`, RegionEditor>>;
 }
+
+/** A region kind a host may name: `"math"`, a fence's or a directive's. */
+export type RegionKind = "math" | `fence:${string}` | `directive:${string}`;
+
+/**
+ * What a region is drawn as, in CSS pixels. `{svg}` is a standalone SVG
+ * document at `width` × `height`, whose baseline — where an inline one sits
+ * on the line — is `baseline` from its top (default: its bottom). A block
+ * one is centred on the measure at its own size, scaled down to fit it.
+ * `{element}` is an element of the host's, placed as a block standing in for
+ * the region's rows, as a `contenteditable="false"` atom; what it does with
+ * a click or a key of its own is the host's.
+ */
+export type RegionPicture =
+  | { svg: string; width: number; height: number; baseline?: number }
+  | { element: HTMLElement };
+
+/** What a renderer is told about where its picture goes. */
+export interface RegionRenderContext {
+  /** The size of the text around the region, in CSS pixels per em. */
+  size: number;
+  /** The colour of that text, as a CSS hex (`"#1c1f26"`). */
+  ink: string;
+  /** Whether the surface is dark: its text is light. */
+  dark: boolean;
+}
+
+/**
+ * A region kind's renderer: its picture of `region`, or null for leaf's
+ * placeholder — at once, or once a promise settles. `region` is a copy.
+ */
+export type RegionRenderer = (
+  region: RegionView,
+  ctx: RegionRenderContext,
+) => RegionPicture | null | Promise<RegionPicture | null>;
 
 /**
  * Where the caret enters a region being opened: its first stop, its last, or
@@ -263,15 +307,12 @@ export interface RegionSession {
   close?(): void;
 }
 
-/** A host's editor for one kind of region. */
+/**
+ * A host's editor for one kind of region. Closed, the region is drawn by its
+ * kind's renderer (`EditorOptions.regionRenderers`); only an open region is
+ * the editor's live view.
+ */
 export interface RegionEditor {
-  /**
-   * The region's drawing while it is closed, or null for leaf's `▤ kind`
-   * placeholder row. Asked once per region and kept while its content stands,
-   * as a directive's drawing is; wrapped as a `contenteditable="false"` atom
-   * with a caret stop before and after it.
-   */
-  view?(region: RegionView): HTMLElement | null;
   /** Open `region`, or answer null to leave it closed. */
   open(region: RegionView, entry: RegionEntry, host: RegionHost): RegionSession | null;
 }
@@ -576,8 +617,12 @@ export class LeafEditor {
    * cancelled, the id names nothing, or core refused it.
    */
   insertDirectiveItem(item: string | DirectiveItem): Promise<boolean>;
-  /** Forget every drawing the `directive` hook answered, and ask it again. */
-  redrawDirectives(): void;
+  /**
+   * Forget the pictures the renderers drew — all, or those of one `kind` —
+   * and ask the renderers again for each region on the page, for a host
+   * whose drawing changed without the document changing.
+   */
+  redrawRegions(kind?: RegionKind): void;
   /** The alignment in force at the caret, or null — which swatch is lit. */
   alignmentAtCaret(): Align | null;
   /** The line spacing in force at the caret, or null. */

@@ -104,14 +104,16 @@ for a host that decides later.
   quote or out of a list arrives spelled for where it landed. A drag inside
   text is still a selection. Dim on `capabilities().move_block`.
 - **A host's directives.** A leaf directive (`::embed{src=…}`) is the host's
-  vocabulary, so the host draws it and offers it. `EditorOptions.directive`
-  answers each one with an element — wrapped as an atom the caret steps over
+  vocabulary, so the host draws it and offers it. A renderer per name,
+  `regionRenderers: { "directive:embed": render }`, answers each one with a
+  picture — typically `{ element }`, wrapped as an atom the caret steps over
   in one press either way, like a picture — or with null for leaf's `⧉ name`
-  placeholder. `EditorOptions.directives` is the catalogue a toolbar lists
-  (`directiveItems()`) and runs (`insertDirectiveItem(id)`, which asks the
-  author through the item's `ask()` first); `insertDirective(name, label,
-  attrs)` is the gesture underneath. Dim on `capabilities().directives`.
-  `::page-break` is leaf's own and is never offered to the hook.
+  placeholder (see **Regions** below). `EditorOptions.directives` is the
+  catalogue a toolbar lists (`directiveItems()`) and runs
+  (`insertDirectiveItem(id)`, which asks the author through the item's
+  `ask()` first); `insertDirective(name, label, attrs)` is the gesture
+  underneath. Dim on `capabilities().directives`. `::page-break` is leaf's
+  own: no host may name it.
 - **Math.** A `$…$` formula is its picture in the line, stretched over the
   one-character atom core counts the row by, and a `$$` block a centred
   picture in a row of its own — a self-contained SVG from `leaf-math`, the
@@ -144,18 +146,41 @@ for a host that decides later.
   only once it has loaded, so until then — and with `mathEditing:
   "source"`, or under `markupMode("full")` — a formula reveals its TeX to
   be typed instead.
-- **Fences a host edits.** `regionEditors: { "fence:mermaid": editor }`
-  hands every ```` ```mermaid ```` fence to the host: core keeps it one
-  placeholder row, `editor.view(region)` draws it there, and → in front of
-  it, ← behind it or a click on the drawing opens it in the element
-  `editor.open(region, entry, host)` answers with, placed where the drawing
-  was and given the focus. The element writes back through `host.edit`
-  (splices on the fence's content) or `host.replace` (the whole content,
-  spliced where it differs), one undo step each, undoes through `host.undo`,
-  and closes with `host.leave`. Formulas run on the same protocol with leaf
-  as their editor, which is why opening, leaving, undo and the caret behave
-  the same for both. leaf ships no fence editor and depends on nothing one
-  uses; the demo page's Mermaid editor is the example.
+- **Regions: renderers and editors.** A formula, a fenced block of a
+  language the host names, and a leaf directive of a name it names are each a
+  *region*, of kind `math`, `fence:<language>` or `directive:<name>`. Each
+  kind has two parts, both registered by kind:
+  - **A renderer**, `regionRenderers[kind]`: `(region, { size, ink, dark })`
+    answers with a picture — `{ svg, width, height, baseline? }` in CSS
+    pixels, or `{ element }` — or null for leaf's placeholder row, at once
+    or through a promise. The layout draws it: an inline formula on the
+    baseline, a block centred at its own size (scaled down to fit) or, for
+    an element, as an atom standing in for the region's rows, with a caret
+    stop before and after. Pictures are kept by kind, content, style, size,
+    ink and scheme; `redrawRegions(kind?)` asks again. A promise shows the
+    placeholder until it settles. A renderer that throws, rejects or answers
+    with something that is not a picture is reported on the console and
+    drawn as the placeholder. Leaf registers the renderer for `math`, the
+    typesetter, and a host's `math` entry replaces it.
+  - **An editor**, `regionEditors[kind]` (`fence:` and `directive:` kinds):
+    → in front of the region, ← behind it or a click on its picture opens it
+    in the element `editor.open(region, entry, host)` answers with, placed
+    where the picture was and given the focus. The element writes back
+    through `host.edit` (splices on the region's content) or `host.replace`
+    (the whole content, spliced where it differs), one undo step each,
+    undoes through `host.undo`, and closes with `host.leave`. A fence's
+    content is its lines between the fences; a directive's is its whole
+    source, `::name[label]{attrs}`. Formulas run on the same protocol with
+    leaf as their editor, which is why opening, leaving, undo and the caret
+    behave the same for every kind; leaf's math editor cannot be replaced.
+
+  Naming a kind other than `math` in either map makes core keep each such
+  region a placeholder row (`set_owned_regions`), so it is drawn by its
+  renderer, or is the placeholder, and is no longer code. leaf ships no
+  fence or directive renderer and depends on nothing one uses; the demo
+  page's Mermaid renderer and editor (`apps/leaf-web-demo/mermaid-editor.js`)
+  are the example, drawing in a worker from a wasm module the package does
+  not carry.
 - **Syntax highlighting** in a fenced block whose language a grammar knows:
   each run carries a `token` — one of core's eight classes — and arrives as a
   `.leaf-t-<token>` class beside `.leaf-r-code`, coloured by the
@@ -174,6 +199,25 @@ The keyboard mirrors leaf-gpui: ⌘B/I/U, ⌘⇧C code, ⌘⇧M highlight, ⌘�
 paragraph and headings, ⌘⇧7/8 lists, ⌘[ / ⌘] outdent and indent, ⌘E toggles
 the source view, ⌘⇧V pastes as plain text. Ctrl stands in for ⌘ off a Mac, and
 on a Mac Control is left to the system's own bindings.
+
+### Migrating from `directive` and `RegionEditor.view`
+
+Both went when renderers came, and passing either now throws, rather than
+leaving a host's drawings silently undrawn.
+
+- `EditorOptions.directive: (d) => el` becomes one renderer per name,
+  `regionRenderers: { "directive:embed": (r) => ({ element: el }) }`. The
+  region carries what `DirectiveView` did — `name`, `label`, `attrs` — and
+  its rows, and also its source range and `content`, the whole directive. A
+  name with no renderer is its placeholder, as a null answer was. An
+  element is still asked for once per directive and kept while it stands.
+- `redrawDirectives()` becomes `redrawRegions()`, or
+  `redrawRegions("directive:embed")` for one kind.
+- `RegionEditor.view(region)` becomes the kind's renderer,
+  `regionRenderers["fence:mermaid"]`. Answering `{ svg, width, height }`
+  rather than an element lets leaf lay the picture out, print it and page
+  it; `{ element }` keeps the old drawing as it was. The editor keeps
+  `open`, and its live view is still what an open region shows.
 
 ## `presentation.css`
 

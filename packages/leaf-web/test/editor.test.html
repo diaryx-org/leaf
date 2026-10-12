@@ -1426,23 +1426,24 @@ await test("the page-break gesture writes a directive the renderer knows", () =>
 
 // ── a host's directives ───────────────────────────────────────────────────
 
-/** The demo's drawing of `::embed{src=…}`: a card with a title and the URL.
- *  Every other name is left to the placeholder. Counts what it was asked. */
-function embedHook(asked = []) {
-  return (d) => {
-    asked.push(d.name + " " + d.attrs.map((a) => a.key + "=" + a.value).join(" "));
-    if (d.name !== "embed") return null;
+/** The demo's renderer for `::embed{src=…}`: a card with a title and the
+ *  URL, as an element. Counts what it was asked. */
+function embedRenderer(asked = []) {
+  return (r) => {
+    asked.push(r.name + " " + r.attrs.map((a) => a.key + "=" + a.value).join(" "));
     const card = document.createElement("div");
     card.className = "test-embed";
-    card.textContent = "Embed " + (d.attrs.find((a) => a.key === "src")?.value ?? "");
-    return card;
+    card.textContent = "Embed " + (r.attrs.find((a) => a.key === "src")?.value ?? "");
+    return { element: card };
   };
 }
+/** `regionRenderers` with the embed's renderer in it. */
+const embedRenderers = (asked) => ({ "directive:embed": embedRenderer(asked) });
 
 const EMBED_DOC = 'before\n\n::embed{src="https://x.org/a"}\n\nafter\n';
 
 await test("a directive the host draws stands in for its row, with a caret stop either side", () => {
-  const ed = editor(EMBED_DOC, { directive: embedHook() });
+  const ed = editor(EMBED_DOC, { regionRenderers: embedRenderers() });
   const d = ed._lastView.directives[0];
   const rowEl = ed.rowEls[d.start_row];
   assert(rowEl.isConnected, "the directive's row is not in the document");
@@ -1465,8 +1466,8 @@ await test("a directive the host draws stands in for its row, with a caret stop 
   return ed;
 });
 
-await test("a caret on a row the hook replaced round-trips through _syncFromDom", () => {
-  const ed = editor(EMBED_DOC, { directive: embedHook() });
+await test("a caret on a row a renderer drew round-trips through _syncFromDom", () => {
+  const ed = editor(EMBED_DOC, { regionRenderers: embedRenderers() });
   const src = ed.source();
   const start = src.indexOf("::embed");
   const end = src.indexOf("}", start) + 1;
@@ -1488,7 +1489,7 @@ await test("a caret on a row the hook replaced round-trips through _syncFromDom"
 });
 
 await test("the caret steps over a drawn directive in one press each way", () => {
-  const ed = editor(EMBED_DOC, { directive: embedHook() });
+  const ed = editor(EMBED_DOC, { regionRenderers: embedRenderers() });
   const src = ed.source();
   const start = src.indexOf("::embed");
   const end = src.indexOf("}", start) + 1;
@@ -1544,10 +1545,12 @@ await test("the caret steps over a drawn directive in one press each way", () =>
 
 await test("a key in a field of the host's drawing is the host's", () => {
   const ed = editor(EMBED_DOC, {
-    directive: () => {
-      const field = document.createElement("input");
-      field.className = "test-field";
-      return field;
+    regionRenderers: {
+      "directive:embed": () => {
+        const field = document.createElement("input");
+        field.className = "test-field";
+        return { element: field };
+      },
     },
   });
   const field = ed.contentEl.querySelector(".test-field");
@@ -1568,20 +1571,20 @@ await test("a key in a field of the host's drawing is the host's", () => {
 
 await test("a drawing is kept under its directive's key, and not asked for again", () => {
   const asked = [];
-  const ed = editor(EMBED_DOC, { directive: embedHook(asked) });
-  eq(asked.length, 1, "the hook is asked once for the one directive");
+  const ed = editor(EMBED_DOC, { regionRenderers: embedRenderers(asked) });
+  eq(asked.length, 1, "the renderer is asked once for the one directive");
   const card = ed.contentEl.querySelector(".test-embed");
   // An edit above it moves the directive's rows and source; its key is the same.
   place(firstText(ed.rowEls[0]), 0);
   input(ed, "insertText", "x");
   input(ed, "insertParagraph");
-  eq(asked.length, 1, "an edit elsewhere asked the hook again");
+  eq(asked.length, 1, "an edit elsewhere asked the renderer again");
   assert(ed.contentEl.querySelector(".test-embed") === card, "the drawing was rebuilt");
   assert(card.isConnected, "the drawing left the page");
   // The source view lists no directives; coming back from it is no news.
   ed.toggleView();
   ed.toggleView();
-  eq(asked.length, 1, "a trip through the source view asked the hook again");
+  eq(asked.length, 1, "a trip through the source view asked the renderer again");
   assert(ed.contentEl.querySelector(".test-embed") === card, "the drawing did not survive the trip");
   // Two identical directives are two drawings, not one element moved between them.
   ed.load(EMBED_DOC + '\n::embed{src="https://x.org/a"}\n');
@@ -1591,39 +1594,58 @@ await test("a drawing is kept under its directive's key, and not asked for again
   ed.load(EMBED_DOC.replace("/a", "/b"));
   eq(asked.length, n + 1, "a changed attribute was not asked about");
   assert(ed.contentEl.querySelector(".test-embed").textContent.endsWith("/b"), "stale drawing");
-  // And a host whose answer changed says so.
-  ed.redrawDirectives();
-  eq(asked.length, n + 2, "redrawDirectives did not ask again");
+  // And a host whose answer changed says so — for its own kind, which
+  // another kind's redraw leaves alone.
+  ed.redrawRegions("fence:demo");
+  eq(asked.length, n + 1, "redrawing another kind asked the embed again");
+  ed.redrawRegions("directive:embed");
+  eq(asked.length, n + 2, "redrawRegions did not ask again");
   return ed;
 });
 
 await test("a null answer keeps the placeholder, and a page break is never asked about", () => {
   const asked = [];
-  const ed = editor("::toc\n\n::page-break\n\nafter\n", { directive: embedHook(asked) });
-  eq(asked, ["toc "], "the hook was asked about the wrong directives");
+  const toc = (r) => {
+    asked.push(r.name + " " + r.attrs.map((a) => a.key + "=" + a.value).join(" "));
+    return null;
+  };
+  const ed = editor("::toc\n\n::page-break\n\nafter\n", { regionRenderers: { "directive:toc": toc } });
+  eq(asked, ["toc "], "the renderer was asked about the wrong directives");
   assert(ed.contentEl.textContent.includes("⧉ toc"), "the placeholder is gone");
   assert(!ed.contentEl.querySelector(".leaf-directive"), "a null answer was wrapped");
   assert(ed.rowEls.some((r) => r.classList.contains("leaf-page-break")), "the break lost its rule");
-  // Remembered like an element: an edit does not ask again.
+  // Remembered like a picture: an edit does not ask again.
   place(firstText(ed.rowEls.find((r) => r.textContent === "after")), 0);
   input(ed, "insertText", "x");
   eq(asked.length, 1, "a null answer was asked for again");
-  // A hook that throws is a host bug, drawn as the placeholder; so is one
-  // element handed to two directives, which could only stand in one place.
+  // A page break is leaf's, and no renderer of a host's can claim it.
+  let threw = false;
+  try { editor("x", { regionRenderers: { "directive:page-break": toc } }); } catch { threw = true; }
+  assert(threw, "a renderer for the page break was accepted");
+  // A renderer that throws is a host bug, drawn as the placeholder; so is
+  // one element handed to two directives, which could only stand in one
+  // place, and an answer that is not a picture.
   const quiet = console.error;
-  console.error = () => {};
+  const errors = [];
+  console.error = (...a) => errors.push(a);
   try {
-    const bad = editor("::embed{src=x}\n", { directive: () => { throw new Error("host bug"); } });
-    assert(bad.contentEl.textContent.includes("⧉ embed"), "a throwing hook took the placeholder");
+    const bad = editor("::embed{src=x}\n", { regionRenderers: { "directive:embed": () => { throw new Error("host bug"); } } });
+    assert(bad.contentEl.textContent.includes("⧉ embed"), "a throwing renderer took the placeholder");
     bad.destroy();
     const one = document.createElement("div");
-    const twice = editor("::embed{src=x}\n\n::embed{src=y}\n", { directive: () => one });
+    const twice = editor("::embed{src=x}\n\n::embed{src=y}\n", { regionRenderers: { "directive:embed": () => ({ element: one }) } });
     eq(twice.contentEl.querySelectorAll(".leaf-directive").length, 1, "one element drawn twice");
     assert(twice.contentEl.textContent.includes("⧉ embed"), "the second lost its placeholder");
     twice.destroy();
+    const n = errors.length;
+    const odd = editor("::embed{src=x}\n", { regionRenderers: { "directive:embed": () => document.createElement("div") } });
+    assert(odd.contentEl.textContent.includes("⧉ embed"), "a bare element was drawn as a picture");
+    eq(errors.length, n + 1, "an answer that is not a picture was not reported");
+    odd.destroy();
   } finally {
     console.error = quiet;
   }
+  assert(errors.length >= 3, "the host's bugs were not reported");
   return ed;
 });
 
@@ -1639,7 +1661,7 @@ await test("an item from the catalogue asks, then writes where the caret was", a
     { id: "directive.toc", name: "toc", title: "Contents", attrs: { depth: "2", wide: "" } },
     { id: "directive.none", name: "embed", ask: async () => null },
   ];
-  const ed = editor("one\n\ntwo\n", { directive: embedHook(), directives: items });
+  const ed = editor("one\n\ntwo\n", { regionRenderers: embedRenderers(), directives: items });
   eq(ed.directiveItems().map((i) => i.id), items.map((i) => i.id), "the catalogue as given");
   assert(Object.isFrozen(ed.directiveItems()), "the catalogue can be changed under the editor");
   assert(ed.capabilities().directives, "markdown spells a directive");
@@ -2023,19 +2045,22 @@ await test("mathEditing \"source\" keeps a formula's TeX to be typed on the care
 });
 
 /**
- * A host's editor for `fence:demo`, the stand-in for a Mermaid editor: drawn
- * closed as a figure naming its content, open as a textarea that writes the
- * whole content back. Records what leaf asked of it in `log`.
+ * A host's renderer and editor for `fence:demo`, the stand-in for a Mermaid
+ * editor: drawn closed as a figure naming its content, open as a textarea
+ * that writes the whole content back. Records what leaf asked of it in
+ * `log`.
  */
+function demoRenderer(log) {
+  return (r) => {
+    log.push(["render", r.content]);
+    const f = document.createElement("figure");
+    f.className = "demo-drawing";
+    f.textContent = "drawn: " + r.content.trim();
+    return { element: f };
+  };
+}
 function demoEditor(log) {
   return {
-    view(r) {
-      log.push(["view", r.content]);
-      const f = document.createElement("figure");
-      f.className = "demo-drawing";
-      f.textContent = "drawn: " + r.content.trim();
-      return f;
-    },
     open(r, entry, host) {
       log.push(["open", entry.at]);
       const ta = document.createElement("textarea");
@@ -2055,12 +2080,17 @@ function demoEditor(log) {
     },
   };
 }
+/** The options that hand `fence:demo` to both. */
+const demoOpts = (log) => ({
+  regionRenderers: { "fence:demo": demoRenderer(log) },
+  regionEditors: { "fence:demo": demoEditor(log) },
+});
 
 const DEMO = "intro\n\n```demo\nA\n```\n\n```rust\nfn x() {}\n```\n\nend\n";
 
 await test("a fence a host edits is its drawing, and → in front of it opens the host's view", async () => {
   const log = [];
-  const ed = editor(DEMO, { regionEditors: { "fence:demo": demoEditor(log) } });
+  const ed = editor(DEMO, demoOpts(log));
   const fig = ed.contentEl.querySelector(".leaf-region .demo-drawing");
   assert(fig, "the host's drawing is not on the page");
   eq(fig.textContent, "drawn: A");
@@ -2086,7 +2116,7 @@ await test("a fence a host edits is its drawing, and → in front of it opens th
 
 await test("what a host's view writes is one undo step, and an undo reaches it as a reload", async () => {
   const log = [];
-  const ed = editor(DEMO, { regionEditors: { "fence:demo": demoEditor(log) } });
+  const ed = editor(DEMO, demoOpts(log));
   const r = ed._lastView.regions[0];
   ed.focus();
   ed.render(ed.doc.select_range(r.end, r.end));
@@ -2111,7 +2141,7 @@ await test("what a host's view writes is one undo step, and an undo reaches it a
   host.leave("after");
   assert(!ed._session, "leave did not close it");
   // Closed, then asked to draw what it wrote.
-  eq(log.slice(-2), [["close"], ["view", "A\nB é\n"]]);
+  eq(log.slice(-2), [["close"], ["render", "A\nB é\n"]]);
   eq(ed._lastView.caret_src, ed._lastView.regions[0].end);
   eq(ed.contentEl.querySelector(".demo-drawing")?.textContent, "drawn: A\nB é");
   // A host that calls back after it closed changes nothing.
@@ -2122,7 +2152,7 @@ await test("what a host's view writes is one undo step, and an undo reaches it a
 
 await test("a click on a host's drawing opens it, and a click elsewhere closes it", async () => {
   const log = [];
-  const ed = editor(DEMO, { regionEditors: { "fence:demo": demoEditor(log) } });
+  const ed = editor(DEMO, demoOpts(log));
   const fig = ed.contentEl.querySelector(".demo-drawing");
   const b = fig.getBoundingClientRect();
   fig.dispatchEvent(new MouseEvent("mousedown", {
@@ -2140,9 +2170,29 @@ await test("a click on a host's drawing opens it, and a click elsewhere closes i
   return ed;
 });
 
+await test("a click on a drawing is the drawing's, wherever the open view scrolls the point", async () => {
+  const log = [];
+  const ed = editor("intro\n\n```demo\nA\n```\n", demoOpts(log));
+  const before = ed.source();
+  const fig = ed.contentEl.querySelector(".demo-drawing");
+  const b = fig.getBoundingClientRect();
+  // Opening a drawing below the fold scrolls to it, which can leave the
+  // pointer's point past the last row — no click past the end, which would
+  // write a paragraph there and take the focus from the view. Stood in for
+  // by a point already past it.
+  assert(ed._isPastEnd(b.bottom + 5000), "the point is not past the end");
+  fig.dispatchEvent(new MouseEvent("mousedown", {
+    bubbles: true, cancelable: true, button: 0, detail: 1, clientX: b.left + 5, clientY: b.bottom + 5000,
+  }));
+  assert(ed._session, "the click did not open the fence");
+  eq(document.activeElement, ed.contentEl.querySelector("textarea.demo-editor"), "the focus left the host's view");
+  eq(ed.source(), before, "the click wrote past the end");
+  return ed;
+});
+
 await test("an undo that takes a fence away closes its view", async () => {
   const log = [];
-  const ed = editor("intro\n", { regionEditors: { "fence:demo": demoEditor(log) } });
+  const ed = editor("intro\n", demoOpts(log));
   ed.render(ed.doc.edit_source(5, 5, "\n\n```demo\nA\n```"));
   const r = ed._lastView.regions[0];
   assert(r, "the inserted fence is not a region");
@@ -2159,7 +2209,7 @@ await test("an undo that takes a fence away closes its view", async () => {
 
 await test("an edit above an open fence keeps it open, and its edits land in it", async () => {
   const log = [];
-  const ed = editor(DEMO, { regionEditors: { "fence:demo": demoEditor(log) } });
+  const ed = editor(DEMO, demoOpts(log));
   const r = ed._lastView.regions[0];
   ed.focus();
   ed.render(ed.doc.select_range(r.src, r.src));
@@ -2176,7 +2226,7 @@ await test("an edit above an open fence keeps it open, and its edits land in it"
 
 await test("an edit that would close a fence is refused, and the host shown what stands", async () => {
   const log = [];
-  const ed = editor(DEMO, { regionEditors: { "fence:demo": demoEditor(log) } });
+  const ed = editor(DEMO, demoOpts(log));
   const r = ed._lastView.regions[0];
   ed.focus();
   ed.render(ed.doc.select_range(r.src, r.src));
@@ -2211,13 +2261,284 @@ await test("a click on a formula after an edit above it opens that formula", asy
   return ed;
 });
 
-await test("regionEditors takes only fences, each with an open()", async () => {
+await test("regionEditors takes fences and directives, each with an open() and no view()", async () => {
   let threw = 0;
-  for (const bad of [{ math: { open() {} } }, { "fence:": { open() {} } }, { "fence:demo": {} }]) {
-    try { editor("x", { regionEditors: bad }); } catch { threw++; }
+  const bad = [
+    { math: { open() {} } },
+    { "fence:": { open() {} } },
+    { "fence:demo": {} },
+    { "directive:page-break": { open() {} } },
+    { "fence:demo": { open() {}, view() {} } },
+  ];
+  for (const b of bad) {
+    try { editor("x", { regionEditors: b }); } catch { threw++; }
   }
-  eq(threw, 3);
-  return editor("x");
+  eq(threw, bad.length);
+  return editor("x", { regionEditors: { "fence:demo": { open() {} }, "directive:embed": { open() {} } } });
+});
+
+await test("regionRenderers takes math, fences and directives, each a function; the directive hook is gone", async () => {
+  let threw = 0;
+  const bad = [
+    { opts: { regionRenderers: { code: () => null } } },
+    { opts: { regionRenderers: { "fence:": () => null } } },
+    { opts: { regionRenderers: { "fence:demo": {} } } },
+    { opts: { regionRenderers: { "directive:page-break": () => null } } },
+    { opts: { directive: () => null } },
+  ];
+  for (const b of bad) {
+    try { editor("x", b.opts); } catch { threw++; }
+  }
+  eq(threw, bad.length);
+  return editor("x", { regionRenderers: { math: () => null, "fence:demo": () => null, "directive:embed": () => null } });
+});
+
+/** A standalone SVG of `w` × `h` naming `text`, as a host's renderer answers. */
+function svgOf(text, w, h) {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">` +
+    `<rect width="${w}" height="${h}" fill="#888"/><text x="4" y="${h - 4}">${text.replace(/[<&]/g, "")}</text></svg>`;
+}
+
+await test("a host's renderer draws a closed fence as a picture, with a caret stop either side", async () => {
+  const asked = [];
+  const ed = editor(DEMO, {
+    regionRenderers: {
+      "fence:demo": (r, ctx) => {
+        asked.push([r.kind, r.content, ctx.size, typeof ctx.ink, typeof ctx.dark]);
+        return { svg: svgOf(r.content, 120, 40), width: 120, height: 40 };
+      },
+    },
+  });
+  eq(asked, [["fence:demo", "A\n", ed.theme.fontSize, "string", "boolean"]]);
+  eq(ed._lastView.regions.map((r) => r.kind), ["fence:demo"], "a renderer does not own its kind");
+  const r = ed._lastView.regions[0];
+  const row = ed.rowEls[r.start_row];
+  assert(row.classList.contains("leaf-picture-row"), "the fence is not a picture row");
+  const img = row.querySelector(".leaf-region img.leaf-region-picture");
+  assert(img && img.src.startsWith("data:image/svg+xml"), "no picture in the row");
+  eq(img.getBoundingClientRect().width, 120, "the picture is not at its own size");
+  assert(!ed.contentEl.textContent.includes("```"), "the fence shows its markup");
+  assert(!ed.contentEl.textContent.includes("▤"), "the placeholder is painted beside the picture");
+  assert(ed.contentEl.textContent.includes("fn x() {}"), "a fence of another language is not code");
+  // Its two caret homes, at the fence's two ends.
+  const zwsps = [...row.childNodes].filter((n) => n.nodeType === 3);
+  eq(zwsps.length, 2, "the caret homes either side of the picture");
+  place(zwsps[0], 0);
+  ed._syncFromDom();
+  eq(ed._lastView.caret_src, r.src, "the near stop");
+  place(zwsps[1], 1);
+  ed._syncFromDom();
+  eq(ed._lastView.caret_src, r.end, "the far stop");
+  // With no editor, a click on it opens nothing; an edit elsewhere draws nothing anew.
+  const b = img.getBoundingClientRect();
+  img.dispatchEvent(new MouseEvent("mousedown", {
+    bubbles: true, cancelable: true, button: 0, detail: 1, clientX: b.left + 5, clientY: b.top + 3,
+  }));
+  assert(!ed._session, "a fence with no editor opened");
+  ed.render(ed.doc.edit_source(0, 0, "more "));
+  eq(asked.length, 1, "an edit elsewhere drew the fence again");
+  // Wider than the measure, it is scaled down to fit it.
+  const wide = editor(DEMO, {
+    regionRenderers: { "fence:demo": (r) => ({ svg: svgOf(r.content, 4000, 100), width: 4000, height: 100 }) },
+  });
+  const wimg = wide.contentEl.querySelector("img.leaf-region-picture");
+  assert(wimg.getBoundingClientRect().width < wide.contentEl.getBoundingClientRect().width, "a wide picture overflows");
+  wide.destroy();
+  return ed;
+});
+
+await test("a renderer's promise is the placeholder until it settles into the picture", async () => {
+  const settle = [];
+  let calls = 0;
+  const ed = editor(DEMO, {
+    regionRenderers: {
+      "fence:demo": (r) => {
+        calls++;
+        return new Promise((resolve) => settle.push(() => resolve({ svg: svgOf(r.content, 80, 30), width: 80, height: 30 })));
+      },
+    },
+  });
+  assert(ed.contentEl.textContent.includes("▤"), "no placeholder while the picture is on its way");
+  assert(!ed.contentEl.querySelector("img.leaf-region-picture"), "a picture before it arrived");
+  // A frame painted while it is on its way does not ask again.
+  ed.render(ed.doc.edit_source(0, 0, "x"));
+  eq(calls, 1, "a pending picture was asked for again");
+  settle.shift()();
+  await new Promise((r) => setTimeout(r, 0));
+  assert(ed.contentEl.querySelector("img.leaf-region-picture"), "the settled picture was not drawn");
+  assert(!ed.contentEl.textContent.includes("▤"), "the placeholder stayed");
+  // A picture that settles for content no longer there is dropped.
+  const r = ed._lastView.regions[0];
+  ed.render(ed.doc.edit_source(r.content_start, r.content_start, "B"));
+  eq(calls, 2);
+  ed.render(ed.doc.edit_source(r.content_start, r.content_start + 1, "C"));
+  eq(calls, 3);
+  settle.shift()();
+  await new Promise((r) => setTimeout(r, 0));
+  assert(ed.contentEl.textContent.includes("▤"), "a stale picture was drawn");
+  settle.shift()();
+  await new Promise((r) => setTimeout(r, 0));
+  assert(decodeURIComponent(ed.contentEl.querySelector("img.leaf-region-picture").src).includes("CA"), "the current picture was not drawn");
+  // One that rejects is reported, and stays the placeholder.
+  const quiet = console.error;
+  let reported = 0;
+  console.error = () => reported++;
+  try {
+    const bad = editor(DEMO, { regionRenderers: { "fence:demo": () => Promise.reject(new Error("no")) } });
+    await new Promise((r) => setTimeout(r, 0));
+    assert(bad.contentEl.textContent.includes("▤"), "a rejected picture took the placeholder");
+    bad.destroy();
+  } finally {
+    console.error = quiet;
+  }
+  eq(reported, 1, "the rejection was not reported");
+  return ed;
+});
+
+await test("redrawRegions asks the renderers again, all or one kind", async () => {
+  await LeafEditor.loadMath();
+  let fences = 0;
+  let version = "one";
+  const ed = editor("say $x$ here\n\n" + DEMO, {
+    regionRenderers: {
+      "fence:demo": (r) => {
+        fences++;
+        const f = document.createElement("figure");
+        f.className = "demo-drawing";
+        f.textContent = version;
+        return { element: f };
+      },
+    },
+  });
+  eq(fences, 1);
+  version = "two";
+  ed.redrawRegions("math");
+  eq(fences, 1, "a math redraw asked the fence again");
+  eq(ed.contentEl.querySelector(".demo-drawing").textContent, "one");
+  assert(ed.contentEl.querySelector(".leaf-r-math.leaf-math"), "the formula was not drawn again");
+  ed.redrawRegions();
+  eq(fences, 2, "redrawRegions() did not ask again");
+  eq(ed.contentEl.querySelector(".demo-drawing").textContent, "two", "the new drawing is not on the page");
+  ed.redrawRegions("fence:demo");
+  eq(fences, 3);
+  return ed;
+});
+
+await test("a renderer for math replaces leaf's, inline and in a block", async () => {
+  await LeafEditor.loadMath();
+  const asked = [];
+  const ed = editor("say $x+y$ here\n\n$$\n\\int x\n$$\n\nend\n", {
+    regionRenderers: {
+      math: (r, ctx) => {
+        asked.push([r.kind, r.content.trim(), r.inline, r.display, ctx.size]);
+        return { svg: svgOf(r.content, 30, 12), width: 30, height: 12, baseline: 9 };
+      },
+    },
+  });
+  assert(asked.some((a) => a[1] === "x+y" && a[2] && !a[3]), `the inline formula was not asked: ${JSON.stringify(asked)}`);
+  assert(asked.some((a) => a[1] === "\\int x" && !a[2] && a[3]), `the block was not asked: ${JSON.stringify(asked)}`);
+  const atom = ed.contentEl.querySelector(".leaf-r-math.leaf-math");
+  assert(atom, "the inline formula is not a picture");
+  eq(atom.style.width, "30px");
+  eq(atom.style.height, "12px");
+  eq(atom.style.verticalAlign, "-3px", "not dropped by its depth below the baseline");
+  assert(decodeURIComponent(atom.style.backgroundImage).includes("#888"), "not the host's picture");
+  const img = ed.contentEl.querySelector("img.leaf-math-block");
+  assert(img && decodeURIComponent(img.src).includes("#888"), "the block is not the host's picture");
+  eq(img.style.width, "30px");
+  // Formulas are still leaf's to edit: → opens the inline one, and the open
+  // formula is drawn by its session, caret and all.
+  const m = ed._lastView.regions.find((r) => r.inline);
+  ed.render(ed.doc.select_range(m.src, m.src));
+  press(ed, "ArrowRight");
+  assert(ed._session?.kind === "math", "the formula did not open");
+  const open = ed.contentEl.querySelector(".leaf-r-math.leaf-math");
+  assert(decodeURIComponent(open.style.backgroundImage).includes("<rect"), "the open formula is not its session's picture");
+  assert(!decodeURIComponent(open.style.backgroundImage).includes("#888"), "the open formula is the renderer's picture");
+  press(ed, "Escape");
+  assert(decodeURIComponent(ed.contentEl.querySelector(".leaf-r-math.leaf-math").style.backgroundImage).includes("#888"),
+    "closed, the formula is not the renderer's picture again");
+  // Math edited as source is drawn by it too.
+  const src = editor("say $x+y$ here\n\nnext\n", { mathEditing: "source", regionRenderers: { math: () => ({ svg: svgOf("m", 20, 10), width: 20, height: 10 }) } });
+  src.render(src.doc.move_doc_end(false));
+  eq(src.contentEl.querySelector(".leaf-r-math.leaf-math")?.style.width, "20px", "an unowned formula is not the host's picture");
+  src.destroy();
+  return ed;
+});
+
+await test("a directive renderer is handed the directive as a region", async () => {
+  const seen = [];
+  const ed = editor('intro\n\n::embed[Card]{src="a.md" wide}\n\nend\n', {
+    regionRenderers: {
+      "directive:embed": (r, ctx) => {
+        seen.push({ r, ctx });
+        const card = document.createElement("div");
+        card.className = "test-embed";
+        card.textContent = r.label;
+        return { element: card };
+      },
+    },
+  });
+  eq(seen.length, 1);
+  const { r, ctx } = seen[0];
+  eq(r.kind, "directive:embed");
+  eq(r.name, "embed");
+  eq(r.label, "Card");
+  eq(r.attrs, [{ key: "src", value: "a.md" }, { key: "wide", value: "" }]);
+  eq(r.content, '::embed[Card]{src="a.md" wide}', "the content is not the directive's whole source");
+  eq(r.inline, false);
+  eq(typeof ctx.dark, "boolean");
+  const row = ed.rowEls[r.start_row];
+  assert(row.classList.contains("leaf-directive-row") && row.dataset.directive === "embed", "the row does not say it is the directive");
+  eq(row.querySelector(".leaf-directive .test-embed")?.textContent, "Card");
+  return ed;
+});
+
+await test("a directive's editor writes its source through splices, and its renderer draws what it wrote", async () => {
+  const log = [];
+  const ed = editor(EMBED_DOC, {
+    regionRenderers: embedRenderers(log),
+    regionEditors: {
+      "directive:embed": {
+        open(r, entry, host) {
+          log.push("open " + entry.at);
+          const field = document.createElement("input");
+          field.className = "test-directive-field";
+          field.value = r.content;
+          return { element: field, host, focus: () => field.focus(), reload: () => true, close: () => log.push("close") };
+        },
+      },
+    },
+  });
+  const r = ed._lastView.regions[0];
+  eq(r.kind, "directive:embed");
+  ed.focus();
+  ed.render(ed.doc.select_range(r.src, r.src));
+  press(ed, "ArrowRight");
+  assert(ed._session?.kind === "directive:embed", "→ in front of the directive did not open it");
+  const field = ed.contentEl.querySelector(".leaf-directive .test-directive-field");
+  assert(field, "the editor's view is not where the drawing was");
+  eq(document.activeElement, field);
+  const { host } = ed._session.impl;
+  host.edit([{ from: r.content.indexOf("/a"), to: r.content.indexOf("/a") + 2, text: "/b" }]);
+  eq(ed.source(), EMBED_DOC.replace("/a", "/b"));
+  host.replace('::embed{src="https://x.org/c"}');
+  eq(ed.source(), EMBED_DOC.replace("/a", "/c"));
+  host.undo();
+  eq(ed.source(), EMBED_DOC.replace("/a", "/b"), "undo is not one step per write");
+  host.redo();
+  host.leave("after");
+  assert(!ed._session, "leave did not close it");
+  eq(ed._lastView.caret_src, ed._lastView.regions[0].end);
+  eq(ed.contentEl.querySelector(".test-embed")?.textContent, "Embed https://x.org/c", "the renderer did not draw what was written");
+  // A click on the drawing opens it at the point.
+  const card = ed.contentEl.querySelector(".test-embed");
+  const b = card.getBoundingClientRect();
+  card.dispatchEvent(new MouseEvent("mousedown", {
+    bubbles: true, cancelable: true, button: 0, detail: 1, clientX: b.left + 2, clientY: b.top + 2,
+  }));
+  eq(log.filter((l) => typeof l === "string" && l.startsWith("open")), ["open home", "open point"]);
+  return ed;
 });
 
 await test("TeX that will not typeset keeps its atom, tinted, with the fault in its title", async () => {

@@ -1,14 +1,18 @@
-// A Mermaid editor for leaf's `regionEditors` — this demo page's, not leaf's.
+// A Mermaid renderer and editor for leaf's `regionRenderers` and
+// `regionEditors` — this demo page's, not leaf's.
 //
-// leaf hands every ```mermaid fence to it as a region: closed, the fence is
-// drawn as its diagram (`view`); opened by → in front of it, ← behind it or a
-// click, it is the fence's source in a textarea beside a live preview
-// (`open`). What the textarea holds goes back through `host.replace`, which
-// leaf turns into one splice on the fence's content and one undo step.
+// leaf hands every ```mermaid fence to them as a region. Closed, the fence is
+// its diagram: `renderMermaid` answers with the SVG, which leaf lays out and
+// draws as a picture, as it does a formula, so it prints and pages with the
+// text around it. Opened by → in front of it, ← behind it or a click, it is
+// the fence's source in a textarea beside a live preview (`mermaidEditor`).
+// What the textarea holds goes back through `host.replace`, which leaf turns
+// into one splice on the fence's content and one undo step.
 //
 // The diagrams are drawn by leaf-mermaid (mmdr, in Rust) from a module of its
 // own beside this page, run in a worker the first time a diagram is drawn;
-// leaf-web draws none. See docs/proposals/embedded-editors.md.
+// leaf-web draws none, and its npm package does not carry the module. See
+// docs/proposals/embedded-editors.md.
 
 // One worker draws every diagram, in the order asked (mermaid-worker.js).
 let worker = null;
@@ -30,14 +34,40 @@ function render(source, dark) {
   });
 }
 
-/** Draw `source` into `target`, or the fault in its place. A later call on
- *  the same target wins over an earlier one still rendering. */
+/** Whether the page is dark: what the last picture leaf asked for said, or
+ *  the page's scheme before it has asked. The preview follows it. */
+let dark = matchMedia("(prefers-color-scheme: dark)").matches;
+
+/** A note in place of a diagram — an empty one, or one that will not draw. */
+function note(text, fault) {
+  const fig = document.createElement("figure");
+  fig.className = "mermaid-drawing" + (fault ? " fault" : "");
+  fig.textContent = text;
+  return fig;
+}
+
+/**
+ * The renderer for `fence:mermaid`: the diagram as `{svg, width, height}`,
+ * drawn in the worker, so leaf shows the fence's placeholder until it
+ * arrives. A fence that is empty, or that Mermaid cannot read, is a note
+ * instead, as an element.
+ */
+export async function renderMermaid(region, ctx) {
+  dark = ctx.dark;
+  if (!region.content.trim()) return { element: note("(empty diagram)", false) };
+  const p = await render(region.content, ctx.dark);
+  if (p.fault != null) return { element: note(p.fault, true) };
+  return { svg: p.svg, width: p.width, height: p.height };
+}
+
+/** Draw `source` into the preview `target`, or the fault in its place. A
+ *  later call on the same target wins over an earlier one still rendering. */
 async function draw(target, source) {
   const ticket = (target._ticket = (target._ticket ?? 0) + 1);
   let img = null;
   let fault = null;
   if (source.trim()) {
-    const p = await render(source, matchMedia("(prefers-color-scheme: dark)").matches);
+    const p = await render(source, dark);
     if (p.fault != null) {
       fault = p.fault;
     } else {
@@ -58,15 +88,8 @@ async function draw(target, source) {
 const toText = (content) => (content.endsWith("\n") ? content.slice(0, -1) : content);
 const toContent = (text) => (text === "" ? "" : text + "\n");
 
+/** The editor for `fence:mermaid`: the source beside a live preview. */
 export const mermaidEditor = {
-  view(region) {
-    const fig = document.createElement("figure");
-    fig.className = "mermaid-drawing";
-    fig.title = "Mermaid — click, or → in front of it, to edit";
-    draw(fig, region.content);
-    return fig;
-  },
-
   open(region, entry, host) {
     const box = document.createElement("div");
     box.className = "mermaid-editor";
