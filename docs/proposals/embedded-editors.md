@@ -232,5 +232,14 @@ empty scripts, user colours, and caching the layout of the open formula.
   as the reference, or as an optional leaf package.
 - **Rendering Mermaid on Apple.** A web view per diagram, a shared offscreen
   renderer, or a native renderer if a good one exists. Measure before choosing.
+- **Bring your own renderer.** Should any region kind take a renderer a host
+  supplies, for any format, not only a fence's editor? The protocol already
+  keys editors by kind and splits drawing (`view`) from editing (`open`). It
+  would also need: kinds beyond fences (directives, HTML blocks, perhaps
+  inline spans), renderers that only draw, a host-supplied *picture* the
+  layout places (today only leaf's own session draws one), and one registry
+  across platforms. To be decided after Mermaid is drawn natively (mmdr
+  through resvg), which is the first host renderer that would want a picture
+  rather than a view.
 - **Persistence of the open state.** Whether an open region should survive a
   re-render that rebuilds the view (it does not today).
