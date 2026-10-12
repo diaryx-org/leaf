@@ -439,6 +439,11 @@ picture, so opening, leaving, undo and the caret behave alike for both
 (`RegionEditing.swift`). leaf ships no fence editor; the leaf-editor app's
 Mermaid editor (`MermaidFence.swift`) is the example.
 
+`SVGView` draws an SVG document as vectors, through resvg-swift with the
+system's fonts, at its natural size or fitted to its bounds. leaf's own views
+do not use it. It is for a host's region drawings: the app's Mermaid fences
+draw `renderMermaid`'s SVG with it.
+
 ### Type-checking the Swift without an app
 
 The renderer is validated against the real generated binding with `swiftc`:
