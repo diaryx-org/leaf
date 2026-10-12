@@ -1,5 +1,6 @@
-//! The WebAssembly door onto [`leaf_math`]: one function, [`typeset_math`],
-//! in a module of its own.
+//! The WebAssembly door onto [`leaf_math`] and [`leaf_session`], in a module
+//! of its own: [`typeset_math`], and [`EditSession`], the editors leaf runs
+//! for a region, chosen by its kind.
 //!
 //! It is a separate module from `leaf-wasm` for one reason — weight. The
 //! typesetter and its embedded fonts are about two megabytes of a binding
@@ -77,47 +78,52 @@ pub fn typeset_math(
     })
 }
 
-/// `#rgb`, `#rrggbb` or `#rrggbbaa` to bytes — the one colour syntax
-/// [`typeset_math`] reads, because it is the one a stylesheet's custom
-/// property most often resolves to and the one JS can produce without a
-/// canvas.
-/// One splice a [`MathSession`] keystroke made to its TeX: replace
-/// `[from, to)` — byte offsets into the TeX as it stood before this splice —
-/// with `text`. A host adds the TeX's offset in its document and applies it.
+/// One splice an [`EditSession`] made to its region's content: replace
+/// `[from, to)` — byte offsets into the content as the splice before this one
+/// left it — with `text`. A host adds the content's offset in its document
+/// and applies it.
 #[wasm_bindgen(getter_with_clone)]
-pub struct MathSplice {
+pub struct EditSplice {
     pub from: usize,
     pub to: usize,
     pub text: String,
 }
 
-/// A formula being edited as structure: typing `/` makes a fraction, `^` a
-/// superscript, `sqrt` a root; the arrows walk the slots. Each keystroke
-/// answers with the splices it made to the TeX, so the host's document stays
-/// the source of truth and its undo history sees ordinary edits.
+/// A region open in an editor leaf runs itself, chosen by the region's kind
+/// (`leaf-session`): a formula (`math`) edited as structure, where `/` makes
+/// a fraction, `^` a superscript and `sqrt` a root. Each key answers with the
+/// splices it made to the content, so the host's document stays the source
+/// of truth and its undo history sees ordinary edits. One class for every
+/// kind, as leaf-ffi's `EditSession` is.
 #[wasm_bindgen]
-pub struct MathSession {
-    session: leaf_math_edit::edit::Session,
+pub struct EditSession {
+    editor: Box<dyn leaf_session::Editor>,
+}
+
+/// The kinds of region an [`EditSession`] can be opened for.
+#[wasm_bindgen]
+pub fn edit_session_kinds() -> Vec<String> {
+    leaf_session::KINDS.iter().map(|k| k.to_string()).collect()
 }
 
 #[wasm_bindgen]
-impl MathSession {
-    /// Open `tex` for editing, the caret at its end. An error when the TeX is
-    /// beyond what the structural editor reads, which a host answers by
-    /// leaving the formula to be edited as source.
+impl EditSession {
+    /// Open `content`, a region of `kind`, the caret at its end. `display` is
+    /// a formula's style. An error for a kind no editor here edits, or
+    /// content its editor cannot read, which a host answers by leaving the
+    /// region to be edited as source.
     #[wasm_bindgen(constructor)]
-    pub fn new(tex: &str, display: bool) -> Result<MathSession, JsValue> {
-        let mut session =
-            leaf_math_edit::edit::Session::new(tex).map_err(|e| JsValue::from_str(&e.message))?;
-        session.display = display;
-        Ok(MathSession { session })
+    pub fn new(kind: &str, content: &str, display: bool) -> Result<EditSession, JsValue> {
+        let editor = leaf_session::open(kind, content, display)
+            .map_err(|e| JsValue::from_str(&e.message))?;
+        Ok(EditSession { editor })
     }
 
     /// A key, by its DOM `KeyboardEvent.key`: a printable character, an
-    /// arrow, or `Backspace`. Anything else is not the session's and makes
-    /// no splice.
-    pub fn key(&mut self, key: &str) -> Vec<MathSplice> {
-        use leaf_math_edit::edit::Key;
+    /// arrow, `Backspace` or `Delete` — or `ExtendLeft`, `ExtendRight` or
+    /// `SelectAll`. Anything else is not the session's and makes no splice.
+    pub fn key(&mut self, key: &str) -> Vec<EditSplice> {
+        use leaf_session::Key;
         let k = match key {
             "ArrowLeft" => Key::Left,
             "ArrowRight" => Key::Right,
@@ -125,87 +131,80 @@ impl MathSession {
             "ArrowDown" => Key::Down,
             "Backspace" => Key::Backspace,
             "Delete" => Key::Delete,
-            "ShiftLeft" => Key::ShiftLeft,
-            "ShiftRight" => Key::ShiftRight,
+            "ExtendLeft" => Key::ExtendLeft,
+            "ExtendRight" => Key::ExtendRight,
             "SelectAll" => Key::SelectAll,
             k if k.chars().count() == 1 => Key::Char(k.chars().next().unwrap()),
             _ => return Vec::new(),
         };
-        splices(self.session.key(k))
+        splices(self.editor.key(k))
     }
 
-    /// Whether part of the formula is selected.
+    /// Whether part of the region is selected.
     pub fn has_selection(&self) -> bool {
-        self.session.selection().is_some()
+        self.editor.selected().is_some()
     }
 
-    /// The selected part's TeX, as written — what a copy takes — or
+    /// The selection as the content's own text — what a copy takes — or
     /// `undefined` with nothing selected.
-    pub fn selected_tex(&self) -> Option<String> {
-        self.session.selected_tex().map(str::to_string)
+    pub fn selected_text(&self) -> Option<String> {
+        self.editor.selected()
     }
 
-    /// Paste `tex` at the caret, over the selection: written as it is where
-    /// the formula reads with it, typed a character at a time where not.
-    pub fn paste(&mut self, tex: &str) -> Vec<MathSplice> {
-        splices(self.session.paste(tex))
+    /// Paste `text` at the caret, over the selection.
+    pub fn paste(&mut self, text: &str) -> Vec<EditSplice> {
+        splices(self.editor.paste(text))
     }
 
-    /// The caret to the first stop, as → into the formula from in front.
+    /// The caret to the first stop, as → into the region from in front.
     pub fn home(&mut self) {
-        self.session.home();
+        self.editor.home();
     }
 
-    /// The caret to the last stop, as ← into the formula from behind.
+    /// The caret to the last stop, as ← into the region from behind.
     pub fn end(&mut self) {
-        self.session.end();
+        self.editor.end();
     }
 
-    /// Whether ← would leave the formula: the caret is at its first stop.
+    /// Whether ← would leave the region: the caret is at its first stop.
     pub fn at_home(&self) -> bool {
-        self.session.at_home()
+        self.editor.at_home()
     }
 
     /// Whether → would leave it.
     pub fn at_end(&self) -> bool {
-        self.session.at_end()
+        self.editor.at_end()
     }
 
-    /// Take `tex` as the formula's source after an undo or an outside change.
-    pub fn reload(&mut self, tex: &str) -> Result<(), JsValue> {
-        self.session
-            .reload(tex)
+    /// Take `content` as the region's after an undo or an outside change.
+    pub fn reload(&mut self, content: &str) -> Result<(), JsValue> {
+        self.editor
+            .reload(content)
             .map_err(|e| JsValue::from_str(&e.message))
     }
 
     /// The caret to the stop nearest `(x, y)`, in pixels from the picture's
     /// top left at `size` px per em.
     pub fn click(&mut self, x: f64, y: f64, size: f64) {
-        self.session.click(x / size, y / size);
+        self.editor.click(x / size, y / size);
     }
 
-    pub fn tex(&self) -> String {
-        self.session.formula.src.clone()
+    /// The content as the session holds it.
+    pub fn content(&self) -> String {
+        self.editor.content()
     }
 
-    /// The formula with its caret, in `color` with empty slots faint and the
+    /// The region with its caret and selection drawn in, in `color` with the
     /// caret in `accent` — the shape [`typeset_math`] returns, so the host
-    /// draws it where it would have drawn the picture.
+    /// draws it where it would have drawn the renderer's picture.
     pub fn picture(&self, size: f64, color: &str, accent: &str) -> Result<MathPicture, JsValue> {
         let ink = parse_hex_color(color)
             .ok_or_else(|| JsValue::from_str(&format!("not a hex colour: {color}")))?;
         let accent = parse_hex_color(accent).unwrap_or([37, 99, 235, 255]);
-        let style = leaf_math_edit::layout::Style {
-            size,
-            pad: 0.0,
-            ink,
-            faint: [ink[0], ink[1], ink[2], ink[3] / 3],
-            accent,
-        };
         let p = self
-            .session
-            .picture(&style)
-            .map_err(|e| JsValue::from_str(&e))?;
+            .editor
+            .picture(&leaf_session::Style { size, ink, accent })
+            .map_err(|e| JsValue::from_str(&e.message))?;
         Ok(MathPicture {
             svg: p.svg,
             width: p.width,
@@ -216,9 +215,9 @@ impl MathSession {
 }
 
 /// A session's splices as the binding hands them over.
-fn splices(list: Vec<leaf_math_edit::edit::Splice>) -> Vec<MathSplice> {
+fn splices(list: Vec<leaf_session::Splice>) -> Vec<EditSplice> {
     list.into_iter()
-        .map(|s| MathSplice {
+        .map(|s| EditSplice {
             from: s.range.start,
             to: s.range.end,
             text: s.text,
@@ -226,6 +225,10 @@ fn splices(list: Vec<leaf_math_edit::edit::Splice>) -> Vec<MathSplice> {
         .collect()
 }
 
+/// `#rgb`, `#rrggbb` or `#rrggbbaa` to bytes — the one colour syntax
+/// [`typeset_math`] reads, because it is the one a stylesheet's custom
+/// property most often resolves to and the one JS can produce without a
+/// canvas.
 fn parse_hex_color(s: &str) -> Option<[u8; 4]> {
     let hex = s.trim().strip_prefix('#')?;
     let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
@@ -254,15 +257,16 @@ mod tests {
     }
 
     #[test]
-    fn a_session_answers_keys_with_splices_on_its_tex() {
-        let mut s = MathSession::new("x", false).unwrap();
+    fn a_session_answers_keys_with_splices_on_its_content() {
+        assert_eq!(edit_session_kinds(), vec!["math".to_string()]);
+        let mut s = EditSession::new("math", "x", false).unwrap();
         let sp = s.key("/");
         assert_eq!(sp.len(), 1);
         assert_eq!(
             (sp[0].from, sp[0].to, sp[0].text.as_str()),
             (0, 1, "\\frac{x}{}")
         );
-        assert_eq!(s.tex(), "\\frac{x}{}");
+        assert_eq!(s.content(), "\\frac{x}{}");
         assert!(s.key("Escape").is_empty());
         s.end();
         assert!(s.at_end() && !s.at_home());
@@ -271,7 +275,7 @@ mod tests {
         // A selection: copied as TeX, pasted over, shaded in the picture.
         assert!(s.key("SelectAll").is_empty());
         assert!(s.has_selection());
-        assert_eq!(s.selected_tex().as_deref(), Some("\\frac{x}{}"));
+        assert_eq!(s.selected_text().as_deref(), Some("\\frac{x}{}"));
         assert!(
             s.picture(16.0, "#000", "#00f")
                 .unwrap()
@@ -280,11 +284,11 @@ mod tests {
         );
         let sp = s.paste("y");
         assert_eq!(sp.len(), 2, "the selection's removal, then the paste");
-        assert_eq!(s.tex(), "y");
+        assert_eq!(s.content(), "y");
         assert!(!s.has_selection());
         s.home();
         assert_eq!(s.key("Delete").len(), 1);
-        assert_eq!(s.tex(), "");
+        assert_eq!(s.content(), "");
     }
 
     #[test]

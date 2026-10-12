@@ -2,7 +2,7 @@
 name = "leaf-math-wasm"
 version.workspace = true
 edition.workspace = true
-description = "WebAssembly binding for leaf-math: TeX to a self-contained SVG picture with baseline metrics, as a module of its own that the web editor fetches on the first formula."
+description = "WebAssembly binding for leaf-math and leaf-session: TeX to a self-contained SVG picture with baseline metrics, and the editors leaf runs for a region, as a module of its own that the web editor fetches on the first formula."
 publish = false
 
 [lib]
@@ -16,9 +16,10 @@ crate-type = ["cdylib", "rlib"]
 # editor loads this one the first time a frame shows one. Measured in
 # `packages/leaf-web/README.md`.
 leaf-math = { path = "../leaf-math" }
-# The structural formula editor, without its twig half: the web editor owns
-# the document and applies the splices itself.
-leaf-math-edit.workspace = true
+# The editors leaf runs itself, chosen by a region's kind, behind
+# `EditSession` — today the structural formula editor, without its twig
+# half: the web editor owns the document and applies the splices itself.
+leaf-session.workspace = true
 
 # No serde and no tsify here, unlike `leaf-wasm`: the one thing that crosses
 # back is four fields, a wasm-bindgen class with getters carries them, and

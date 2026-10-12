@@ -429,8 +429,8 @@ didn't touch is rewritten.
 
 `editsFormulasAsStructure = false` on the text view puts back the old
 behaviour, where a formula on the caret's line reveals its TeX. The editing
-lives in `MathEditing.swift` over the binding's `MathSession`, the same Rust
-as the web editor's.
+lives in `LeafSessions.swift` over the binding's `EditSession` — leaf's own
+region editors, chosen by kind — the same Rust as the web editor's.
 
 ### Regions: renderers and editors
 

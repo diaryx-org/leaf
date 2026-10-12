@@ -1055,8 +1055,8 @@ version = "0.5.1"
 dependencies = [
  "leaf-core",
  "leaf-math",
- "leaf-math-edit",
  "leaf-mermaid-ffi",
+ "leaf-session",
  "resvg-uniffi",
  "thiserror 1.0.69",
  "unicode-segmentation",
@@ -1093,7 +1093,7 @@ version = "0.5.1"
 dependencies = [
  "console_error_panic_hook",
  "leaf-math",
- "leaf-math-edit",
+ "leaf-session",
  "wasm-bindgen",
 ]
 
@@ -1142,6 +1142,13 @@ dependencies = [
  "ratatui",
  "ratatui-image",
  "terminal-colorsaurus",
+]
+
+[[package]]
+name = "leaf-session"
+version = "0.5.1"
+dependencies = [
+ "leaf-math-edit",
 ]
 
 [[package]]

@@ -58,9 +58,11 @@ cp demo/index.html <scratch>/ && python3 -m http.server -d <scratch>
 Two frontends use it, the web editor (`packages/leaf-web`) and the Swift views
 (`packages/leaf-swift`). Each README has a section on formulas.
 
-- `MathSession` is exported twice, over the editor here without its twig half:
-  by `leaf-math-wasm` for the web, and by `leaf-ffi` for Swift. CI holds the two
-  to the same methods.
+- It is the `math` kind's editor in [`leaf-session`](../leaf-session), which
+  puts one interface over every editor leaf runs itself, chosen by a region's
+  kind. That is exported twice as `EditSession`, over the editor here without
+  its twig half: by `leaf-math-wasm` for the web, and by `leaf-ffi` for Swift.
+  CI holds the two to the same methods.
 - Each frontend applies the session's splices to the document through
   `LeafDoc::edit_source`.
 - Core keeps a formula a picture on the caret's line once the frontend owns

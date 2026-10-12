@@ -141,7 +141,8 @@ for a host that decides later.
   and then runs, so ⌘Z undoes the last keystroke. ⇧← and ⇧→ select whole
   structures, ⌘A the formula; copy and cut take the selection's TeX, paste
   writes TeX (or types text that is not), and Delete mirrors Backspace. The editor is
-  `MathSession`, in the same module as the typesetter; core keeps the
+  an `EditSession` — leaf's Rust editors, chosen by a region's kind — in the
+  same module as the typesetter; core keeps the
   formula a picture on the caret's line (`set_owned_regions(["math"])`)
   only once it has loaded, so until then — and with `mathEditing:
   "source"`, or under `markupMode("full")` — a formula reveals its TeX to

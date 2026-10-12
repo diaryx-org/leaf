@@ -11,7 +11,7 @@
 //  A closed region is its kind's renderer's picture (`RegionPictures.swift`).
 //  Two kinds of session differ in who owns the focus while a region is open.
 //  Leaf runs one that draws its own picture — a formula, whose session is
-//  `MathRegionSession` over the Rust editor — passing it the keys and laying
+//  a `LeafRegionSession` over the Rust editor — passing it the keys and laying
 //  out what it draws. A host's editor runs one with a view of its own, which
 //  the view places over the region's rows and gives the focus; that view
 //  writes back through its `RegionHost`. Only an open region is ever a live
@@ -557,8 +557,8 @@ final class RegionSlot {
         close(repaint: false)
         let host = RegionHost()
         let session: RegionSession?
-        if region.kind == MathRenderer.kind {
-            session = MathRegionSession(region, entry: entry, accent: owner.regionAccent)
+        if LeafRegionSession.kinds.contains(region.kind) {
+            session = LeafRegionSession(region, entry: entry, accent: owner.regionAccent)
         } else {
             session = editors[region.kind]?.open(region, entry, host)
         }

@@ -634,6 +634,362 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 
 
 /**
+ * A region open in an editor leaf runs itself, chosen by the region's kind
+ * (`leaf-session`): a formula (`math`) edited as structure, where `/` makes
+ * a fraction, `^` a superscript and `sqrt` a root. Each key answers with the
+ * splices it made to the region's content, so the document stays the source
+ * of truth and its undo history sees ordinary edits. One type for every
+ * kind, so a second editor written in Rust needs no new binding; the web
+ * editor's `EditSession` is the same.
+ */
+public protocol EditSessionProtocol: AnyObject, Sendable {
+    
+    /**
+     * Whether → would leave it.
+     */
+    func atEnd()  -> Bool
+    
+    /**
+     * Whether ← would leave the region.
+     */
+    func atHome()  -> Bool
+    
+    /**
+     * The caret to the stop nearest `(x, y)`, in points from the picture's
+     * top left at `size` points per em.
+     */
+    func click(x: Double, y: Double, size: Double) 
+    
+    /**
+     * The content as the session holds it.
+     */
+    func content()  -> String
+    
+    /**
+     * The caret to the last stop, as ← into the region from behind.
+     */
+    func end() 
+    
+    /**
+     * Whether part of the region is selected.
+     */
+    func hasSelection()  -> Bool
+    
+    /**
+     * The caret to the first stop, as → into the region from in front.
+     */
+    func home() 
+    
+    /**
+     * Apply a key, returning the splices it made, in order.
+     */
+    func key(key: EditKey)  -> [EditSplice]
+    
+    /**
+     * Paste `text` at the caret, over the selection.
+     */
+    func paste(text: String)  -> [EditSplice]
+    
+    /**
+     * The region with its caret and selection drawn in, at `size` points
+     * per em: ink in `ink`, the caret in `accent`, each RGBA bytes.
+     */
+    func picture(size: Double, ink: Data, accent: Data) throws  -> EditPicture
+    
+    /**
+     * Take `content` as the region's after an undo or an outside change.
+     */
+    func reload(content: String) throws 
+    
+    /**
+     * The selection as the content's own text — what a copy takes — or
+     * `None` with nothing selected.
+     */
+    func selectedText()  -> String?
+    
+}
+/**
+ * A region open in an editor leaf runs itself, chosen by the region's kind
+ * (`leaf-session`): a formula (`math`) edited as structure, where `/` makes
+ * a fraction, `^` a superscript and `sqrt` a root. Each key answers with the
+ * splices it made to the region's content, so the document stays the source
+ * of truth and its undo history sees ordinary edits. One type for every
+ * kind, so a second editor written in Rust needs no new binding; the web
+ * editor's `EditSession` is the same.
+ */
+open class EditSession: EditSessionProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_leaf_ffi_fn_clone_editsession(self.handle, $0) }
+    }
+    /**
+     * Open `content`, a region of `kind`, the caret at its end. `display` is
+     * a formula's style. [`LeafError::Edit`] for a kind no editor here edits
+     * ([`edit_session_kinds`]), or content its editor cannot read; the view
+     * leaves that region to be edited as source.
+     */
+public convenience init(kind: String, content: String, display: Bool)throws  {
+    let handle =
+        try rustCallWithError(FfiConverterTypeLeafError_lift) {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_constructor_editsession_new(
+        FfiConverterString.lower(kind),
+        FfiConverterString.lower(content),
+        FfiConverterBool.lower(display),uniffiCallStatus
+    )
+}
+    self.init(unsafeFromHandle: handle)
+}
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_leaf_ffi_fn_free_editsession(handle, $0) }
+    }
+
+    
+
+    
+    /**
+     * Whether → would leave it.
+     */
+open func atEnd() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_editsession_at_end(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Whether ← would leave the region.
+     */
+open func atHome() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_editsession_at_home(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The caret to the stop nearest `(x, y)`, in points from the picture's
+     * top left at `size` points per em.
+     */
+open func click(x: Double, y: Double, size: Double)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_editsession_click(
+            self.uniffiCloneHandle(),
+        FfiConverterDouble.lower(x),
+        FfiConverterDouble.lower(y),
+        FfiConverterDouble.lower(size),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * The content as the session holds it.
+     */
+open func content() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_editsession_content(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The caret to the last stop, as ← into the region from behind.
+     */
+open func end()  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_editsession_end(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Whether part of the region is selected.
+     */
+open func hasSelection() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_editsession_has_selection(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The caret to the first stop, as → into the region from in front.
+     */
+open func home()  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_editsession_home(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Apply a key, returning the splices it made, in order.
+     */
+open func key(key: EditKey) -> [EditSplice]  {
+    return try!  FfiConverterSequenceTypeEditSplice.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_editsession_key(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeEditKey_lower(key),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Paste `text` at the caret, over the selection.
+     */
+open func paste(text: String) -> [EditSplice]  {
+    return try!  FfiConverterSequenceTypeEditSplice.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_editsession_paste(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(text),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The region with its caret and selection drawn in, at `size` points
+     * per em: ink in `ink`, the caret in `accent`, each RGBA bytes.
+     */
+open func picture(size: Double, ink: Data, accent: Data)throws  -> EditPicture  {
+    return try  FfiConverterTypeEditPicture_lift(try rustCallWithError(FfiConverterTypeLeafError_lift) {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_editsession_picture(
+            self.uniffiCloneHandle(),
+        FfiConverterDouble.lower(size),
+        FfiConverterData.lower(ink),
+        FfiConverterData.lower(accent),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Take `content` as the region's after an undo or an outside change.
+     */
+open func reload(content: String)throws   {try rustCallWithError(FfiConverterTypeLeafError_lift) {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_editsession_reload(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(content),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * The selection as the content's own text — what a copy takes — or
+     * `None` with nothing selected.
+     */
+open func selectedText() -> String?  {
+    return try!  FfiConverterOptionString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_method_editsession_selected_text(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeEditSession: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = EditSession
+
+    public static func lift(_ handle: UInt64) throws -> EditSession {
+        return EditSession(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: EditSession) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> EditSession {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: EditSession, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEditSession_lift(_ handle: UInt64) throws -> EditSession {
+    return try FfiConverterTypeEditSession.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEditSession_lower(_ value: EditSession) -> UInt64 {
+    return FfiConverterTypeEditSession.lower(value)
+}
+
+
+
+
+
+
+/**
  * A live leaf document bound for a native Apple frontend: `leaf_core::Doc` plus
  * the wrap width the current viewport implies, behind a mutex. Constructed from
  * an in-memory string and driven entirely through method calls — there is no
@@ -4013,354 +4369,6 @@ public func FfiConverterTypeLeafDoc_lower(_ value: LeafDoc) -> UInt64 {
 
 
 
-
-
-/**
- * A formula being edited as structure: typing `/` makes a fraction, `^` a
- * superscript, `sqrt` a root; the arrows walk the slots. Each keystroke
- * answers with the splices it made to the TeX, so the document stays the
- * source of truth and its undo history sees ordinary edits. The web
- * editor's `MathSession`, over the same `leaf-math-edit`.
- */
-public protocol MathSessionProtocol: AnyObject, Sendable {
-    
-    /**
-     * Whether → would leave it.
-     */
-    func atEnd()  -> Bool
-    
-    /**
-     * Whether ← would leave the formula.
-     */
-    func atHome()  -> Bool
-    
-    /**
-     * The caret to the stop nearest `(x, y)`, in points from the picture's
-     * top left at `size` points per em.
-     */
-    func click(x: Double, y: Double, size: Double) 
-    
-    /**
-     * The caret to the last stop, as ← into the formula from behind.
-     */
-    func end() 
-    
-    /**
-     * Whether part of the formula is selected.
-     */
-    func hasSelection()  -> Bool
-    
-    /**
-     * The caret to the first stop, as → into the formula from in front.
-     */
-    func home() 
-    
-    /**
-     * Apply a key, returning the splices it made, in order.
-     */
-    func key(key: MathKey)  -> [MathSplice]
-    
-    /**
-     * Paste `tex` at the caret, over the selection: written as it is where
-     * the formula reads with it, typed a character at a time where not.
-     */
-    func paste(tex: String)  -> [MathSplice]
-    
-    /**
-     * The formula with its caret: ink in `ink`, empty slots in a third of
-     * it, the caret in `accent` — [`typeset_math`]'s shape, so the view
-     * draws it where it would have drawn the typeset picture.
-     */
-    func picture(size: Double, ink: Data, accent: Data) throws  -> MathPicture
-    
-    /**
-     * Take `tex` as the formula's source after an undo or an outside change.
-     */
-    func reload(tex: String) throws 
-    
-    /**
-     * The selected part's TeX, as written — what a copy takes — or `None`
-     * with nothing selected.
-     */
-    func selectedTex()  -> String?
-    
-    func tex()  -> String
-    
-}
-/**
- * A formula being edited as structure: typing `/` makes a fraction, `^` a
- * superscript, `sqrt` a root; the arrows walk the slots. Each keystroke
- * answers with the splices it made to the TeX, so the document stays the
- * source of truth and its undo history sees ordinary edits. The web
- * editor's `MathSession`, over the same `leaf-math-edit`.
- */
-open class MathSession: MathSessionProtocol, @unchecked Sendable {
-    fileprivate let handle: UInt64
-
-    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
-#if swift(>=5.8)
-    @_documentation(visibility: private)
-#endif
-    public struct NoHandle {
-        public init() {}
-    }
-
-    // TODO: We'd like this to be `private` but for Swifty reasons,
-    // we can't implement `FfiConverter` without making this `required` and we can't
-    // make it `required` without making it `public`.
-#if swift(>=5.8)
-    @_documentation(visibility: private)
-#endif
-    required public init(unsafeFromHandle handle: UInt64) {
-        self.handle = handle
-    }
-
-    // This constructor can be used to instantiate a fake object.
-    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
-    //
-    // - Warning:
-    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
-#if swift(>=5.8)
-    @_documentation(visibility: private)
-#endif
-    public init(noHandle: NoHandle) {
-        self.handle = 0
-    }
-
-#if swift(>=5.8)
-    @_documentation(visibility: private)
-#endif
-    public func uniffiCloneHandle() -> UInt64 {
-        return try! rustCall { uniffi_leaf_ffi_fn_clone_mathsession(self.handle, $0) }
-    }
-    /**
-     * Open `tex` for editing, the caret at its end. [`LeafError::Math`] when
-     * the TeX is beyond what the structural editor reads; the view leaves
-     * that formula to be edited as source.
-     */
-public convenience init(tex: String, display: Bool)throws  {
-    let handle =
-        try rustCallWithError(FfiConverterTypeLeafError_lift) {
-        uniffiCallStatus in
-    uniffi_leaf_ffi_fn_constructor_mathsession_new(
-        FfiConverterString.lower(tex),
-        FfiConverterBool.lower(display),uniffiCallStatus
-    )
-}
-    self.init(unsafeFromHandle: handle)
-}
-
-    deinit {
-        if handle == 0 {
-            // Mock objects have handle=0 don't try to free them
-            return
-        }
-
-        try! rustCall { uniffi_leaf_ffi_fn_free_mathsession(handle, $0) }
-    }
-
-    
-
-    
-    /**
-     * Whether → would leave it.
-     */
-open func atEnd() -> Bool  {
-    return try!  FfiConverterBool.lift(try! rustCall() {
-        uniffiCallStatus in
-    uniffi_leaf_ffi_fn_method_mathsession_at_end(
-            self.uniffiCloneHandle(),uniffiCallStatus
-    )
-})
-}
-    
-    /**
-     * Whether ← would leave the formula.
-     */
-open func atHome() -> Bool  {
-    return try!  FfiConverterBool.lift(try! rustCall() {
-        uniffiCallStatus in
-    uniffi_leaf_ffi_fn_method_mathsession_at_home(
-            self.uniffiCloneHandle(),uniffiCallStatus
-    )
-})
-}
-    
-    /**
-     * The caret to the stop nearest `(x, y)`, in points from the picture's
-     * top left at `size` points per em.
-     */
-open func click(x: Double, y: Double, size: Double)  {try! rustCall() {
-        uniffiCallStatus in
-    uniffi_leaf_ffi_fn_method_mathsession_click(
-            self.uniffiCloneHandle(),
-        FfiConverterDouble.lower(x),
-        FfiConverterDouble.lower(y),
-        FfiConverterDouble.lower(size),uniffiCallStatus
-    )
-}
-}
-    
-    /**
-     * The caret to the last stop, as ← into the formula from behind.
-     */
-open func end()  {try! rustCall() {
-        uniffiCallStatus in
-    uniffi_leaf_ffi_fn_method_mathsession_end(
-            self.uniffiCloneHandle(),uniffiCallStatus
-    )
-}
-}
-    
-    /**
-     * Whether part of the formula is selected.
-     */
-open func hasSelection() -> Bool  {
-    return try!  FfiConverterBool.lift(try! rustCall() {
-        uniffiCallStatus in
-    uniffi_leaf_ffi_fn_method_mathsession_has_selection(
-            self.uniffiCloneHandle(),uniffiCallStatus
-    )
-})
-}
-    
-    /**
-     * The caret to the first stop, as → into the formula from in front.
-     */
-open func home()  {try! rustCall() {
-        uniffiCallStatus in
-    uniffi_leaf_ffi_fn_method_mathsession_home(
-            self.uniffiCloneHandle(),uniffiCallStatus
-    )
-}
-}
-    
-    /**
-     * Apply a key, returning the splices it made, in order.
-     */
-open func key(key: MathKey) -> [MathSplice]  {
-    return try!  FfiConverterSequenceTypeMathSplice.lift(try! rustCall() {
-        uniffiCallStatus in
-    uniffi_leaf_ffi_fn_method_mathsession_key(
-            self.uniffiCloneHandle(),
-        FfiConverterTypeMathKey_lower(key),uniffiCallStatus
-    )
-})
-}
-    
-    /**
-     * Paste `tex` at the caret, over the selection: written as it is where
-     * the formula reads with it, typed a character at a time where not.
-     */
-open func paste(tex: String) -> [MathSplice]  {
-    return try!  FfiConverterSequenceTypeMathSplice.lift(try! rustCall() {
-        uniffiCallStatus in
-    uniffi_leaf_ffi_fn_method_mathsession_paste(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(tex),uniffiCallStatus
-    )
-})
-}
-    
-    /**
-     * The formula with its caret: ink in `ink`, empty slots in a third of
-     * it, the caret in `accent` — [`typeset_math`]'s shape, so the view
-     * draws it where it would have drawn the typeset picture.
-     */
-open func picture(size: Double, ink: Data, accent: Data)throws  -> MathPicture  {
-    return try  FfiConverterTypeMathPicture_lift(try rustCallWithError(FfiConverterTypeLeafError_lift) {
-        uniffiCallStatus in
-    uniffi_leaf_ffi_fn_method_mathsession_picture(
-            self.uniffiCloneHandle(),
-        FfiConverterDouble.lower(size),
-        FfiConverterData.lower(ink),
-        FfiConverterData.lower(accent),uniffiCallStatus
-    )
-})
-}
-    
-    /**
-     * Take `tex` as the formula's source after an undo or an outside change.
-     */
-open func reload(tex: String)throws   {try rustCallWithError(FfiConverterTypeLeafError_lift) {
-        uniffiCallStatus in
-    uniffi_leaf_ffi_fn_method_mathsession_reload(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(tex),uniffiCallStatus
-    )
-}
-}
-    
-    /**
-     * The selected part's TeX, as written — what a copy takes — or `None`
-     * with nothing selected.
-     */
-open func selectedTex() -> String?  {
-    return try!  FfiConverterOptionString.lift(try! rustCall() {
-        uniffiCallStatus in
-    uniffi_leaf_ffi_fn_method_mathsession_selected_tex(
-            self.uniffiCloneHandle(),uniffiCallStatus
-    )
-})
-}
-    
-open func tex() -> String  {
-    return try!  FfiConverterString.lift(try! rustCall() {
-        uniffiCallStatus in
-    uniffi_leaf_ffi_fn_method_mathsession_tex(
-            self.uniffiCloneHandle(),uniffiCallStatus
-    )
-})
-}
-    
-
-    
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeMathSession: FfiConverter {
-    typealias FfiType = UInt64
-    typealias SwiftType = MathSession
-
-    public static func lift(_ handle: UInt64) throws -> MathSession {
-        return MathSession(unsafeFromHandle: handle)
-    }
-
-    public static func lower(_ value: MathSession) -> UInt64 {
-        return value.uniffiCloneHandle()
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MathSession {
-        let handle: UInt64 = try readInt(&buf)
-        return try lift(handle)
-    }
-
-    public static func write(_ value: MathSession, into buf: inout [UInt8]) {
-        writeInt(&buf, lower(value))
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeMathSession_lift(_ handle: UInt64) throws -> MathSession {
-    return try FfiConverterTypeMathSession.lift(handle)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeMathSession_lower(_ value: MathSession) -> UInt64 {
-    return FfiConverterTypeMathSession.lower(value)
-}
-
-
-
-
 /**
  * What a drawn block boundary separates. The FFI mirror of
  * [`leaf_core::Boundary`].
@@ -5609,6 +5617,138 @@ public func FfiConverterTypeDropTargetView_lower(_ value: DropTargetView) -> Rus
 
 
 /**
+ * An [`EditSession`]'s picture: a standalone SVG, and its advance, its rise
+ * above the baseline and its reach below it, in em of the size it was drawn
+ * at — [`typeset_math`]'s shape, so a view draws it where it would have
+ * drawn the region's renderer's picture.
+ */
+public struct EditPicture: Equatable, Hashable {
+    public var svg: String
+    public var width: Double
+    public var height: Double
+    public var depth: Double
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(svg: String, width: Double, height: Double, depth: Double) {
+        self.svg = svg
+        self.width = width
+        self.height = height
+        self.depth = depth
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension EditPicture: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeEditPicture: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> EditPicture {
+        return
+            try EditPicture(
+                svg: FfiConverterString.read(from: &buf), 
+                width: FfiConverterDouble.read(from: &buf), 
+                height: FfiConverterDouble.read(from: &buf), 
+                depth: FfiConverterDouble.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: EditPicture, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.svg, into: &buf)
+        FfiConverterDouble.write(value.width, into: &buf)
+        FfiConverterDouble.write(value.height, into: &buf)
+        FfiConverterDouble.write(value.depth, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEditPicture_lift(_ buf: RustBuffer) throws -> EditPicture {
+    return try FfiConverterTypeEditPicture.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEditPicture_lower(_ value: EditPicture) -> RustBuffer {
+    return FfiConverterTypeEditPicture.lower(value)
+}
+
+
+/**
+ * One splice an [`EditSession`] made to its region's content: replace
+ * `[from, to)` — byte offsets into the content as the splice before this one
+ * left it — with `text`. The view adds the region's `content_start` and
+ * applies it with [`LeafDoc::edit_source`].
+ */
+public struct EditSplice: Equatable, Hashable {
+    public var from: UInt32
+    public var to: UInt32
+    public var text: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(from: UInt32, to: UInt32, text: String) {
+        self.from = from
+        self.to = to
+        self.text = text
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension EditSplice: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeEditSplice: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> EditSplice {
+        return
+            try EditSplice(
+                from: FfiConverterUInt32.read(from: &buf), 
+                to: FfiConverterUInt32.read(from: &buf), 
+                text: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: EditSplice, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.from, into: &buf)
+        FfiConverterUInt32.write(value.to, into: &buf)
+        FfiConverterString.write(value.text, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEditSplice_lift(_ buf: RustBuffer) throws -> EditSplice {
+    return try FfiConverterTypeEditSplice.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEditSplice_lower(_ value: EditSplice) -> RustBuffer {
+    return FfiConverterTypeEditSplice.lower(value)
+}
+
+
+/**
  * A footnote definition and the reference that sends a reader to it — what
  * [`LeafDoc::footnote_definition_at_caret`] answers with, and the FFI mirror of
  * [`leaf_core::FootnoteDef`].
@@ -6236,70 +6376,6 @@ public func FfiConverterTypeMathPicture_lift(_ buf: RustBuffer) throws -> MathPi
 #endif
 public func FfiConverterTypeMathPicture_lower(_ value: MathPicture) -> RustBuffer {
     return FfiConverterTypeMathPicture.lower(value)
-}
-
-
-/**
- * One splice a [`MathSession`] keystroke made to its TeX: replace
- * `[from, to)` — byte offsets into the TeX as it stood before this splice —
- * with `text`. The view adds the formula's `tex_start` and applies it with
- * [`LeafDoc::edit_source`].
- */
-public struct MathSplice: Equatable, Hashable {
-    public var from: UInt32
-    public var to: UInt32
-    public var text: String
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(from: UInt32, to: UInt32, text: String) {
-        self.from = from
-        self.to = to
-        self.text = text
-    }
-
-    
-
-    
-}
-
-#if compiler(>=6)
-extension MathSplice: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeMathSplice: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MathSplice {
-        return
-            try MathSplice(
-                from: FfiConverterUInt32.read(from: &buf), 
-                to: FfiConverterUInt32.read(from: &buf), 
-                text: FfiConverterString.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: MathSplice, into buf: inout [UInt8]) {
-        FfiConverterUInt32.write(value.from, into: &buf)
-        FfiConverterUInt32.write(value.to, into: &buf)
-        FfiConverterString.write(value.text, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeMathSplice_lift(_ buf: RustBuffer) throws -> MathSplice {
-    return try FfiConverterTypeMathSplice.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeMathSplice_lower(_ value: MathSplice) -> RustBuffer {
-    return FfiConverterTypeMathSplice.lower(value)
 }
 
 
@@ -8322,6 +8398,143 @@ public func FfiConverterTypeBlockClass_lower(_ value: BlockClass) -> RustBuffer 
 
 
 /**
+ * A key an [`EditSession`] understands.
+ */
+
+public enum EditKey: Equatable, Hashable {
+    
+    case char(ch: String
+    )
+    case left
+    case right
+    case up
+    case down
+    case backspace
+    /**
+     * Forward delete.
+     */
+    case delete
+    /**
+     * ⇧← and ⇧→: move the caret, extending the selection.
+     */
+    case extendLeft
+    case extendRight
+    /**
+     * The whole region.
+     */
+    case selectAll
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension EditKey: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeEditKey: FfiConverterRustBuffer {
+    typealias SwiftType = EditKey
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> EditKey {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .char(ch: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 2: return .left
+        
+        case 3: return .right
+        
+        case 4: return .up
+        
+        case 5: return .down
+        
+        case 6: return .backspace
+        
+        case 7: return .delete
+        
+        case 8: return .extendLeft
+        
+        case 9: return .extendRight
+        
+        case 10: return .selectAll
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: EditKey, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case let .char(ch):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(ch, into: &buf)
+            
+        
+        case .left:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .right:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .up:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .down:
+            writeInt(&buf, Int32(5))
+        
+        
+        case .backspace:
+            writeInt(&buf, Int32(6))
+        
+        
+        case .delete:
+            writeInt(&buf, Int32(7))
+        
+        
+        case .extendLeft:
+            writeInt(&buf, Int32(8))
+        
+        
+        case .extendRight:
+            writeInt(&buf, Int32(9))
+        
+        
+        case .selectAll:
+            writeInt(&buf, Int32(10))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEditKey_lift(_ buf: RustBuffer) throws -> EditKey {
+    return try FfiConverterTypeEditKey.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEditKey_lower(_ value: EditKey) -> RustBuffer {
+    return FfiConverterTypeEditKey.lower(value)
+}
+
+
+
+/**
  * The face a run is set in: one of CSS's four generics, or the family the
  * author named.
  *
@@ -8610,6 +8823,13 @@ enum LeafError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
      */
     case Math(message: String, position: UInt32?
     )
+    /**
+     * An [`EditSession`] could not open, take new content, or draw: no
+     * editor for the kind, or content its editor cannot read. `position` is
+     * a byte offset into the content where, when it can say.
+     */
+    case Edit(message: String, position: UInt32?
+    )
 
     
 
@@ -8649,6 +8869,10 @@ public struct FfiConverterTypeLeafError: FfiConverterRustBuffer {
             message: try FfiConverterString.read(from: &buf), 
             position: try FfiConverterOptionUInt32.read(from: &buf)
             )
+        case 4: return .Edit(
+            message: try FfiConverterString.read(from: &buf), 
+            position: try FfiConverterOptionUInt32.read(from: &buf)
+            )
 
          default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -8673,6 +8897,12 @@ public struct FfiConverterTypeLeafError: FfiConverterRustBuffer {
         
         case let .Math(message,position):
             writeInt(&buf, Int32(3))
+            FfiConverterString.write(message, into: &buf)
+            FfiConverterOptionUInt32.write(position, into: &buf)
+            
+        
+        case let .Edit(message,position):
+            writeInt(&buf, Int32(4))
             FfiConverterString.write(message, into: &buf)
             FfiConverterOptionUInt32.write(position, into: &buf)
             
@@ -9131,143 +9361,6 @@ public func FfiConverterTypeMarkupMode_lift(_ buf: RustBuffer) throws -> MarkupM
 #endif
 public func FfiConverterTypeMarkupMode_lower(_ value: MarkupMode) -> RustBuffer {
     return FfiConverterTypeMarkupMode.lower(value)
-}
-
-
-
-/**
- * A key a [`MathSession`] understands.
- */
-
-public enum MathKey: Equatable, Hashable {
-    
-    case char(ch: String
-    )
-    case left
-    case right
-    case up
-    case down
-    case backspace
-    /**
-     * Forward delete.
-     */
-    case delete
-    /**
-     * ⇧← and ⇧→: move the caret, extending the selection.
-     */
-    case shiftLeft
-    case shiftRight
-    /**
-     * The whole formula.
-     */
-    case selectAll
-
-
-
-
-
-}
-
-#if compiler(>=6)
-extension MathKey: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeMathKey: FfiConverterRustBuffer {
-    typealias SwiftType = MathKey
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MathKey {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-        
-        case 1: return .char(ch: try FfiConverterString.read(from: &buf)
-        )
-        
-        case 2: return .left
-        
-        case 3: return .right
-        
-        case 4: return .up
-        
-        case 5: return .down
-        
-        case 6: return .backspace
-        
-        case 7: return .delete
-        
-        case 8: return .shiftLeft
-        
-        case 9: return .shiftRight
-        
-        case 10: return .selectAll
-        
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: MathKey, into buf: inout [UInt8]) {
-        switch value {
-        
-        
-        case let .char(ch):
-            writeInt(&buf, Int32(1))
-            FfiConverterString.write(ch, into: &buf)
-            
-        
-        case .left:
-            writeInt(&buf, Int32(2))
-        
-        
-        case .right:
-            writeInt(&buf, Int32(3))
-        
-        
-        case .up:
-            writeInt(&buf, Int32(4))
-        
-        
-        case .down:
-            writeInt(&buf, Int32(5))
-        
-        
-        case .backspace:
-            writeInt(&buf, Int32(6))
-        
-        
-        case .delete:
-            writeInt(&buf, Int32(7))
-        
-        
-        case .shiftLeft:
-            writeInt(&buf, Int32(8))
-        
-        
-        case .shiftRight:
-            writeInt(&buf, Int32(9))
-        
-        
-        case .selectAll:
-            writeInt(&buf, Int32(10))
-        
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeMathKey_lift(_ buf: RustBuffer) throws -> MathKey {
-    return try FfiConverterTypeMathKey.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeMathKey_lower(_ value: MathKey) -> RustBuffer {
-    return FfiConverterTypeMathKey.lower(value)
 }
 
 
@@ -10212,6 +10305,31 @@ fileprivate struct FfiConverterSequenceTypeDirectiveView: FfiConverterRustBuffer
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeEditSplice: FfiConverterRustBuffer {
+    typealias SwiftType = [EditSplice]
+
+    public static func write(_ value: [EditSplice], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeEditSplice.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [EditSplice] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [EditSplice]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeEditSplice.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeHighlight: FfiConverterRustBuffer {
     typealias SwiftType = [Highlight]
 
@@ -10254,31 +10372,6 @@ fileprivate struct FfiConverterSequenceTypeMathHeight: FfiConverterRustBuffer {
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeMathHeight.read(from: &buf))
-        }
-        return seq
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-fileprivate struct FfiConverterSequenceTypeMathSplice: FfiConverterRustBuffer {
-    typealias SwiftType = [MathSplice]
-
-    public static func write(_ value: [MathSplice], into buf: inout [UInt8]) {
-        let len = Int32(value.count)
-        writeInt(&buf, len)
-        for item in value {
-            FfiConverterTypeMathSplice.write(item, into: &buf)
-        }
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [MathSplice] {
-        let len: Int32 = try readInt(&buf)
-        var seq = [MathSplice]()
-        seq.reserveCapacity(Int(len))
-        for _ in 0 ..< len {
-            seq.append(try FfiConverterTypeMathSplice.read(from: &buf))
         }
         return seq
     }
@@ -10559,6 +10652,16 @@ fileprivate struct FfiConverterSequenceTypeTableView: FfiConverterRustBuffer {
     }
 }
 /**
+ * The kinds of region an [`EditSession`] can be opened for.
+ */
+public func editSessionKinds() -> [String]  {
+    return try!  FfiConverterSequenceString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_leaf_ffi_fn_func_edit_session_kinds(uniffiCallStatus
+    )
+})
+}
+/**
  * Typeset `tex` — the text between a formula's delimiters, as a [`MathView`]
  * hands it over — to a picture. `display` is the view's `display`; `size` is
  * the font size in points the formula is set at (an inline formula takes the
@@ -10600,7 +10703,46 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
+    if (uniffi_leaf_ffi_checksum_func_edit_session_kinds() != 58350) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_leaf_ffi_checksum_func_typeset_math() != 60617) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_editsession_at_end() != 23239) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_editsession_at_home() != 52164) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_editsession_click() != 50524) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_editsession_content() != 53390) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_editsession_end() != 30973) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_editsession_has_selection() != 21517) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_editsession_home() != 38496) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_editsession_key() != 50893) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_editsession_paste() != 39625) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_editsession_picture() != 19665) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_editsession_reload() != 10774) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_leaf_ffi_checksum_method_editsession_selected_text() != 15380) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_method_leafdoc_alignment_at_caret() != 31168) {
@@ -11044,46 +11186,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_leaf_ffi_checksum_method_leafdoc_word_range_at() != 44185) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_leaf_ffi_checksum_method_mathsession_at_end() != 22725) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_leaf_ffi_checksum_method_mathsession_at_home() != 17759) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_leaf_ffi_checksum_method_mathsession_click() != 19974) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_leaf_ffi_checksum_method_mathsession_end() != 44236) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_leaf_ffi_checksum_method_mathsession_has_selection() != 61783) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_leaf_ffi_checksum_method_mathsession_home() != 6391) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_leaf_ffi_checksum_method_mathsession_key() != 1212) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_leaf_ffi_checksum_method_mathsession_paste() != 21463) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_leaf_ffi_checksum_method_mathsession_picture() != 25200) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_leaf_ffi_checksum_method_mathsession_reload() != 55262) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_leaf_ffi_checksum_method_mathsession_selected_tex() != 11948) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_leaf_ffi_checksum_method_mathsession_tex() != 36275) {
+    if (uniffi_leaf_ffi_checksum_constructor_editsession_new() != 28946) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_leaf_ffi_checksum_constructor_leafdoc_new() != 63804) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_leaf_ffi_checksum_constructor_mathsession_new() != 24684) {
         return InitializationResult.apiChecksumMismatch
     }
 

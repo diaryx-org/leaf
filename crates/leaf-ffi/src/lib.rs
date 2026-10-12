@@ -84,6 +84,14 @@ pub enum LeafError {
         message: String,
         position: Option<u32>,
     },
+    /// An [`EditSession`] could not open, take new content, or draw: no
+    /// editor for the kind, or content its editor cannot read. `position` is
+    /// a byte offset into the content where, when it can say.
+    #[error("edit error: {message}")]
+    Edit {
+        message: String,
+        position: Option<u32>,
+    },
 }
 
 /// A selection cited out of the source — the text, a little of what
@@ -2168,30 +2176,32 @@ pub fn typeset_math(
     })
 }
 
-/// One splice a [`MathSession`] keystroke made to its TeX: replace
-/// `[from, to)` — byte offsets into the TeX as it stood before this splice —
-/// with `text`. The view adds the formula's `tex_start` and applies it with
-/// [`LeafDoc::edit_source`].
+/// One splice an [`EditSession`] made to its region's content: replace
+/// `[from, to)` — byte offsets into the content as the splice before this one
+/// left it — with `text`. The view adds the region's `content_start` and
+/// applies it with [`LeafDoc::edit_source`].
 #[derive(uniffi::Record)]
-pub struct MathSplice {
+pub struct EditSplice {
     pub from: u32,
     pub to: u32,
     pub text: String,
 }
 
-/// A formula being edited as structure: typing `/` makes a fraction, `^` a
-/// superscript, `sqrt` a root; the arrows walk the slots. Each keystroke
-/// answers with the splices it made to the TeX, so the document stays the
-/// source of truth and its undo history sees ordinary edits. The web
-/// editor's `MathSession`, over the same `leaf-math-edit`.
-#[derive(uniffi::Object)]
-pub struct MathSession {
-    inner: Mutex<leaf_math_edit::edit::Session>,
+/// An [`EditSession`]'s picture: a standalone SVG, and its advance, its rise
+/// above the baseline and its reach below it, in em of the size it was drawn
+/// at — [`typeset_math`]'s shape, so a view draws it where it would have
+/// drawn the region's renderer's picture.
+#[derive(uniffi::Record)]
+pub struct EditPicture {
+    pub svg: String,
+    pub width: f64,
+    pub height: f64,
+    pub depth: f64,
 }
 
-/// A key a [`MathSession`] understands.
+/// A key an [`EditSession`] understands.
 #[derive(uniffi::Enum)]
-pub enum MathKey {
+pub enum EditKey {
     Char {
         ch: String,
     },
@@ -2203,17 +2213,42 @@ pub enum MathKey {
     /// Forward delete.
     Delete,
     /// ⇧← and ⇧→: move the caret, extending the selection.
-    ShiftLeft,
-    ShiftRight,
-    /// The whole formula.
+    ExtendLeft,
+    ExtendRight,
+    /// The whole region.
     SelectAll,
 }
 
+/// A region open in an editor leaf runs itself, chosen by the region's kind
+/// (`leaf-session`): a formula (`math`) edited as structure, where `/` makes
+/// a fraction, `^` a superscript and `sqrt` a root. Each key answers with the
+/// splices it made to the region's content, so the document stays the source
+/// of truth and its undo history sees ordinary edits. One type for every
+/// kind, so a second editor written in Rust needs no new binding; the web
+/// editor's `EditSession` is the same.
+#[derive(uniffi::Object)]
+pub struct EditSession {
+    inner: Mutex<Box<dyn leaf_session::Editor>>,
+}
+
+/// The kinds of region an [`EditSession`] can be opened for.
+#[uniffi::export]
+pub fn edit_session_kinds() -> Vec<String> {
+    leaf_session::KINDS.iter().map(|k| k.to_string()).collect()
+}
+
+fn edit_error(e: leaf_session::Error) -> LeafError {
+    LeafError::Edit {
+        message: e.message,
+        position: e.at.map(|at| at as u32),
+    }
+}
+
 /// A session's splices as the binding hands them over.
-fn math_splices(splices: Vec<leaf_math_edit::edit::Splice>) -> Vec<MathSplice> {
+fn edit_splices(splices: Vec<leaf_session::Splice>) -> Vec<EditSplice> {
     splices
         .into_iter()
-        .map(|s| MathSplice {
+        .map(|s| EditSplice {
             from: s.range.start as u32,
             to: s.range.end as u32,
             text: s.text,
@@ -2222,72 +2257,67 @@ fn math_splices(splices: Vec<leaf_math_edit::edit::Splice>) -> Vec<MathSplice> {
 }
 
 #[uniffi::export]
-impl MathSession {
-    /// Open `tex` for editing, the caret at its end. [`LeafError::Math`] when
-    /// the TeX is beyond what the structural editor reads; the view leaves
-    /// that formula to be edited as source.
+impl EditSession {
+    /// Open `content`, a region of `kind`, the caret at its end. `display` is
+    /// a formula's style. [`LeafError::Edit`] for a kind no editor here edits
+    /// ([`edit_session_kinds`]), or content its editor cannot read; the view
+    /// leaves that region to be edited as source.
     #[uniffi::constructor]
-    pub fn new(tex: String, display: bool) -> Result<Arc<Self>, LeafError> {
-        let mut session =
-            leaf_math_edit::edit::Session::new(&tex).map_err(|e| LeafError::Math {
-                message: e.message,
-                position: Some(e.at as u32),
-            })?;
-        session.display = display;
-        Ok(Arc::new(MathSession {
-            inner: Mutex::new(session),
+    pub fn new(kind: String, content: String, display: bool) -> Result<Arc<Self>, LeafError> {
+        let editor = leaf_session::open(&kind, &content, display).map_err(edit_error)?;
+        Ok(Arc::new(EditSession {
+            inner: Mutex::new(editor),
         }))
     }
 
     /// Apply a key, returning the splices it made, in order.
-    pub fn key(&self, key: MathKey) -> Vec<MathSplice> {
-        use leaf_math_edit::edit::Key;
+    pub fn key(&self, key: EditKey) -> Vec<EditSplice> {
+        use leaf_session::Key;
         let k = match key {
-            MathKey::Char { ch } => match ch.chars().next() {
+            EditKey::Char { ch } => match ch.chars().next() {
                 Some(c) => Key::Char(c),
                 None => return Vec::new(),
             },
-            MathKey::Left => Key::Left,
-            MathKey::Right => Key::Right,
-            MathKey::Up => Key::Up,
-            MathKey::Down => Key::Down,
-            MathKey::Backspace => Key::Backspace,
-            MathKey::Delete => Key::Delete,
-            MathKey::ShiftLeft => Key::ShiftLeft,
-            MathKey::ShiftRight => Key::ShiftRight,
-            MathKey::SelectAll => Key::SelectAll,
+            EditKey::Left => Key::Left,
+            EditKey::Right => Key::Right,
+            EditKey::Up => Key::Up,
+            EditKey::Down => Key::Down,
+            EditKey::Backspace => Key::Backspace,
+            EditKey::Delete => Key::Delete,
+            EditKey::ExtendLeft => Key::ExtendLeft,
+            EditKey::ExtendRight => Key::ExtendRight,
+            EditKey::SelectAll => Key::SelectAll,
         };
-        math_splices(self.lock().key(k))
+        edit_splices(self.lock().key(k))
     }
 
-    /// Whether part of the formula is selected.
+    /// Whether part of the region is selected.
     pub fn has_selection(&self) -> bool {
-        self.lock().selection().is_some()
+        self.lock().selected().is_some()
     }
 
-    /// The selected part's TeX, as written — what a copy takes — or `None`
-    /// with nothing selected.
-    pub fn selected_tex(&self) -> Option<String> {
-        self.lock().selected_tex().map(str::to_string)
+    /// The selection as the content's own text — what a copy takes — or
+    /// `None` with nothing selected.
+    pub fn selected_text(&self) -> Option<String> {
+        self.lock().selected()
     }
 
-    /// Paste `tex` at the caret, over the selection: written as it is where
-    /// the formula reads with it, typed a character at a time where not.
-    pub fn paste(&self, tex: String) -> Vec<MathSplice> {
-        math_splices(self.lock().paste(&tex))
+    /// Paste `text` at the caret, over the selection.
+    pub fn paste(&self, text: String) -> Vec<EditSplice> {
+        edit_splices(self.lock().paste(&text))
     }
 
-    /// The caret to the first stop, as → into the formula from in front.
+    /// The caret to the first stop, as → into the region from in front.
     pub fn home(&self) {
         self.lock().home();
     }
 
-    /// The caret to the last stop, as ← into the formula from behind.
+    /// The caret to the last stop, as ← into the region from behind.
     pub fn end(&self) {
         self.lock().end();
     }
 
-    /// Whether ← would leave the formula.
+    /// Whether ← would leave the region.
     pub fn at_home(&self) -> bool {
         self.lock().at_home()
     }
@@ -2297,12 +2327,9 @@ impl MathSession {
         self.lock().at_end()
     }
 
-    /// Take `tex` as the formula's source after an undo or an outside change.
-    pub fn reload(&self, tex: String) -> Result<(), LeafError> {
-        self.lock().reload(&tex).map_err(|e| LeafError::Math {
-            message: e.message,
-            position: Some(e.at as u32),
-        })
+    /// Take `content` as the region's after an undo or an outside change.
+    pub fn reload(&self, content: String) -> Result<(), LeafError> {
+        self.lock().reload(&content).map_err(edit_error)
     }
 
     /// The caret to the stop nearest `(x, y)`, in points from the picture's
@@ -2311,19 +2338,19 @@ impl MathSession {
         self.lock().click(x / size, y / size);
     }
 
-    pub fn tex(&self) -> String {
-        self.lock().formula.src.clone()
+    /// The content as the session holds it.
+    pub fn content(&self) -> String {
+        self.lock().content()
     }
 
-    /// The formula with its caret: ink in `ink`, empty slots in a third of
-    /// it, the caret in `accent` — [`typeset_math`]'s shape, so the view
-    /// draws it where it would have drawn the typeset picture.
+    /// The region with its caret and selection drawn in, at `size` points
+    /// per em: ink in `ink`, the caret in `accent`, each RGBA bytes.
     pub fn picture(
         &self,
         size: f64,
         ink: Vec<u8>,
         accent: Vec<u8>,
-    ) -> Result<MathPicture, LeafError> {
+    ) -> Result<EditPicture, LeafError> {
         let rgba = |v: &[u8]| -> [u8; 4] {
             [
                 v.first().copied().unwrap_or(0),
@@ -2332,22 +2359,13 @@ impl MathSession {
                 v.get(3).copied().unwrap_or(255),
             ]
         };
-        let (ink, accent) = (rgba(&ink), rgba(&accent));
-        let style = leaf_math_edit::layout::Style {
+        let style = leaf_session::Style {
             size,
-            pad: 0.0,
-            ink,
-            faint: [ink[0], ink[1], ink[2], ink[3] / 3],
-            accent,
+            ink: rgba(&ink),
+            accent: rgba(&accent),
         };
-        let p = self
-            .lock()
-            .picture(&style)
-            .map_err(|message| LeafError::Math {
-                message,
-                position: None,
-            })?;
-        Ok(MathPicture {
+        let p = self.lock().picture(&style).map_err(edit_error)?;
+        Ok(EditPicture {
             svg: p.svg,
             width: p.width,
             height: p.height,
@@ -2356,8 +2374,8 @@ impl MathSession {
     }
 }
 
-impl MathSession {
-    fn lock(&self) -> std::sync::MutexGuard<'_, leaf_math_edit::edit::Session> {
+impl EditSession {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Box<dyn leaf_session::Editor>> {
         self.inner.lock().unwrap_or_else(|p| p.into_inner())
     }
 }
@@ -6250,7 +6268,7 @@ mod tests {
     }
 
     #[test]
-    fn a_math_session_s_splices_land_in_the_document_through_edit_source() {
+    fn an_edit_session_s_splices_land_in_the_document_through_edit_source() {
         let doc = LeafDoc::new("say $x$ here\n".into(), "markdown".into()).unwrap();
         doc.set_inline_pictures(true);
         let view = doc.set_owned_regions(vec!["math".into()]);
@@ -6258,10 +6276,11 @@ mod tests {
         assert_eq!(m.tex, "x");
         let r = &view.regions[0];
         assert_eq!((r.kind.as_str(), r.content.as_str()), ("math", "x"));
-        let session = MathSession::new(m.tex.clone(), m.display).unwrap();
+        assert_eq!(edit_session_kinds(), vec!["math".to_string()]);
+        let session = EditSession::new(r.kind.clone(), r.content.clone(), r.display).unwrap();
         // `x/2`: the fraction takes the `x` as its numerator.
         for k in ["/", "2"] {
-            let splices = session.key(MathKey::Char { ch: k.into() });
+            let splices = session.key(EditKey::Char { ch: k.into() });
             doc.begin_undo_group();
             for sp in splices {
                 doc.edit_source(r.content_start + sp.from, r.content_start + sp.to, sp.text);
@@ -6269,7 +6288,7 @@ mod tests {
             doc.end_undo_group();
         }
         assert_eq!(doc.source(), "say $\\frac{x}{2}$ here\n");
-        assert_eq!(session.tex(), "\\frac{x}{2}");
+        assert_eq!(session.content(), "\\frac{x}{2}");
         assert!(
             session
                 .picture(16.0, vec![0, 0, 0, 255], vec![0, 0, 255, 255])
@@ -6281,8 +6300,15 @@ mod tests {
         doc.undo();
         assert_eq!(doc.source(), "say $\\frac{x}{}$ here\n");
         assert!(matches!(
-            MathSession::new("\\frac{".into(), false),
-            Err(LeafError::Math { .. })
+            EditSession::new("math".into(), "\\frac{".into(), false),
+            Err(LeafError::Edit {
+                position: Some(_),
+                ..
+            })
+        ));
+        assert!(matches!(
+            EditSession::new("fence:mermaid".into(), "graph LR\n".into(), false),
+            Err(LeafError::Edit { position: None, .. })
         ));
     }
 

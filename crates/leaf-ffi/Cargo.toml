@@ -73,8 +73,9 @@ resvg-uniffi = { git = "https://github.com/diaryx-org/resvg-swift", branch = "ma
 # `typeset_math`; the fonts ride inside the crate, so nothing is loaded at
 # runtime.
 leaf-math.workspace = true
-# The structural formula editor behind `MathSession`: a formula opened in
-# place, edited as fractions and scripts, written back as splices on its TeX.
-leaf-math-edit.workspace = true
+# The editors leaf runs itself, chosen by a region's kind, behind
+# `EditSession`: today a formula opened in place, edited as fractions and
+# scripts, written back as splices on its TeX (leaf-math-edit).
+leaf-session.workspace = true
 # Under the `mermaid` feature: see above.
 leaf-mermaid-ffi = { path = "../leaf-mermaid-ffi", optional = true }

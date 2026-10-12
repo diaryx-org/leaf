@@ -123,6 +123,7 @@ const ISOLATED: &[&[&str]] = &[
     &["-p", "leaf-math-wasm"],
     &["-p", "leaf-math-edit"],
     &["-p", "leaf-math-edit", "--features", "wasm"],
+    &["-p", "leaf-session"],
     &["-p", "leaf-mermaid"],
     &["-p", "leaf-mermaid-ffi"],
     &["-p", "leaf-mermaid-wasm"],
@@ -387,14 +388,15 @@ mod tests {
         );
     }
 
-    /// The structural formula editor's two bindings: the Swift one beside
-    /// `LeafDoc` in leaf-ffi, the web one beside the typesetter in
-    /// leaf-math-wasm, which the web editor loads on its own.
+    /// The two bindings of leaf's own region editors (leaf-session): the
+    /// Swift one beside `LeafDoc` in leaf-ffi, the web one beside the
+    /// typesetter in leaf-math-wasm, which the web editor loads on its own.
     #[test]
-    fn the_two_math_sessions_export_the_same_methods() {
-        let ffi = exported_methods("crates/leaf-ffi/src/lib.rs", "MathSession").unwrap();
-        let wasm = exported_methods("crates/leaf-math-wasm/src/lib.rs", "MathSession").unwrap();
-        assert_eq!(ffi, wasm, "the two MathSession bindings have drifted");
+    fn the_two_edit_sessions_export_the_same_methods() {
+        let ffi = exported_methods("crates/leaf-ffi/src/lib.rs", "EditSession").unwrap();
+        let wasm = exported_methods("crates/leaf-math-wasm/src/lib.rs", "EditSession").unwrap();
+        assert!(!ffi.is_empty(), "no EditSession methods found in leaf-ffi");
+        assert_eq!(ffi, wasm, "the two EditSession bindings have drifted");
     }
 
     /// An entry that no longer describes a real divergence is worse than no

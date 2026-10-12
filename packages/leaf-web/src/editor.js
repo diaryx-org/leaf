@@ -1980,14 +1980,14 @@ export class LeafEditor {
    * Once the math module is here, formulas are edited as structure rather
    * than as TeX: leaf's own editor takes the `math` kind, so core keeps a
    * formula on the caret's line a picture, and the arrows and a click open it
-   * in a `MathSession`. Until then — or for a host that turned math off — a
+   * in an `EditSession`. Until then — or for a host that turned math off — a
    * formula reveals its TeX on the caret's line, as it always did. Returns the
    * frame the switch produced, or `null` when nothing changed.
    */
   _editMathAsStructure() {
-    if (this._mathStructural || this._mathEditing !== "structure" || !mathModule?.MathSession) return null;
+    if (this._mathStructural || this._mathEditing !== "structure" || !mathModule?.EditSession) return null;
     this._mathStructural = true;
-    this._regionEditors.set("math", mathRegionEditor(this));
+    this._regionEditors.set("math", leafRegionEditor());
     return this._ownRegions();
   }
 
@@ -4113,12 +4113,13 @@ function diffSplice(before, after) {
 }
 
 /**
- * Leaf's own editor for the `math` kind: a `MathSession` from the math
- * module, which edits a formula as structure and draws it with its caret.
- * Leaf runs this session — keys, clicks and the picture go through it — and
- * what it writes is splices on the formula's TeX.
+ * Leaf's own editor for a region kind its Rust editors take
+ * (`edit_session_kinds()`, the `math` kind today): an `EditSession` from the
+ * math module, which edits a formula as structure and draws it with its
+ * caret. Leaf runs this session — keys, clicks and the picture go through
+ * it — and what it writes is splices on the region's content.
  */
-function mathRegionEditor(editor) {
+function leafRegionEditor() {
   const splices = (list) => {
     const out = list.map((sp) => ({ from: sp.from, to: sp.to, text: sp.text }));
     for (const sp of list) sp.free?.();
@@ -4126,10 +4127,9 @@ function mathRegionEditor(editor) {
   };
   return {
     open(region, entry) {
-      const m = (editor._lastView?.math || []).find((m) => m.src === region.src);
       let session;
       try {
-        session = new mathModule.MathSession(region.content, m?.display ?? false);
+        session = new mathModule.EditSession(region.kind, region.content, region.display);
       } catch {
         return null; // beyond what the structural editor reads: left as TeX
       }
@@ -4157,7 +4157,7 @@ function mathRegionEditor(editor) {
           if (e.altKey || primaryModifier(e)) return { close: true };
           if (k === "Escape" || k === "Enter" || k === "Tab") return { leave: "after" };
           if (e.shiftKey && (k === "ArrowLeft" || k === "ArrowRight")) {
-            return run(k === "ArrowLeft" ? "ShiftLeft" : "ShiftRight");
+            return run(k === "ArrowLeft" ? "ExtendLeft" : "ExtendRight");
           }
           const selected = session.has_selection();
           if (k === "ArrowLeft" && !selected && session.at_home()) return { leave: "before" };
@@ -4165,10 +4165,10 @@ function mathRegionEditor(editor) {
           if (!(k.length === 1 || k === "Backspace" || k === "Delete" || ARROWS.has(k))) return null;
           return run(k);
         },
-        // The selection's TeX, as written.
-        copy: () => session.selected_tex() ?? null,
+        // The selection, as the content's own text.
+        copy: () => session.selected_text() ?? null,
         cut() {
-          const text = session.selected_tex();
+          const text = session.selected_text();
           return text == null ? null : { text, out: { edit: splices(session.key("Delete")) } };
         },
         paste(text) {
