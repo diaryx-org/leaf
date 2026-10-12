@@ -377,6 +377,18 @@ Then split rendering from editing, as
    included, still draws them afterwards.
 7. One generic Rust session across the bindings, with math as its first user.
 
+Then open the picture session to hosts, as
+[Editors a host draws as pictures](#editors-a-host-draws-as-pictures) sets
+out:
+
+8. Inline directives published by core as `directive:<name>` regions.
+9. The public picture session on Swift and the web. Leaf draws the caret and
+   selection, leaf composes IME text, keys can be added without breaking
+   hosts, `RegionHost` gives the caret's rect, typing coalesces into one undo
+   step, and sessions give an accessibility value. Math moves onto it, with no
+   change in behaviour beyond its caret.
+10. The date chip in the leaf-editor app and the web demo.
+
 ## Renderers and editors
 
 Decided 2026-10-12, after Mermaid was drawn natively. The protocol built in
@@ -433,6 +445,56 @@ small FFI module, and `leaf-mermaid-wasm` stays out of the npm package. The
 leaf-editor app and the web demo register it as the renderer for
 `fence:mermaid`, and their editors draw their previews with it.
 
+## Editors a host draws as pictures
+
+Decided 2026-10-12. Editing is open to a host in one form only: a view over a
+block. A session that leaf drives with keys and draws as a picture, the only
+kind that can sit in a line of text, is leaf's alone. The type is internal
+(`RegionPictureSession`), only `math` has one, and `RegionSlot.edits` names it.
+
+So the picture session becomes public on every platform with region editing:
+a Swift protocol, and a JS interface in `editor.d.ts`. `RegionEditor.open` may
+return one, for any kind, inline or block. Leaf's math editor is registered
+through the same door as a host's. A host may replace it, and
+`RegionSlot.edits` asks whether a kind has an editor. Rust editors in
+`leaf-session` stay one implementation behind it (`LeafRegionSession`), so a
+registry of Rust editors can come later without changing the protocol.
+
+What a session leaf does not write needs from the protocol:
+
+- **Leaf draws the caret and selection.** A session's picture comes with a
+  caret rect and selection rects, in the picture's coordinates. Leaf draws
+  them, with its own blink, caret colour and selection colour. Math moves to
+  this as well and stops drawing a caret in its SVG.
+- **Leaf composes IME text.** Marked text is shown by leaf, at the caret, over
+  the picture. The session gets only committed text, through `type`. A session
+  may opt in to composition later.
+- **Keys can be added without breaking hosts.** Add word moves, line moves,
+  Home/End and ⇧↑/↓ to `RegionInput`. In Swift, the input is not frozen: a
+  session's `switch` has a default, and the documentation says so. On the
+  web, keys are names.
+- **Popovers are the host's.** `RegionHost` gives the caret's rect and the
+  region's rect in view coordinates, so a host can anchor its own completion
+  list or calendar. Leaf draws no popups.
+- **Pictures are cheap while a region is open.** An open session's picture is
+  asked for on every keystroke, synchronously. The asynchronous renderers are
+  for closed regions only. A kind whose drawing is slow edits through a view.
+- **Typing is one undo step.** Consecutive `type` edits coalesce into one undo
+  step, as typing in the document does, and a key or a click ends the step.
+- **Accessibility.** A session gives an accessibility value, the region's
+  content by default.
+
+Core publishes inline directives (`:name[label]{attrs}`) as regions of kind
+`directive:<name>`, inline. That is what most inline editors will edit:
+mentions, dates, tags. Android and the terminal keep drawing them as they do
+now.
+
+The second client, as Mermaid was for host views, is a **date chip**, in the
+leaf-editor app and the web demo, not in leaf. `:date[2026-10-12]` is drawn as
+a pill. ← and → move between year, month and day. ↑ and ↓ change the field
+under the caret. Digits overwrite it. A calendar popover opens at the caret's
+rect. It uses every item in the list above, and it is inline.
+
 ## Open questions
 
 - **Inline host views.** Should an inline region ever be a host view, or are
@@ -449,7 +511,15 @@ leaf-editor app and the web demo register it as the renderer for
   renderer, or a native renderer if a good one exists. Measure before choosing.
 - **Bring your own renderer.** Decided 2026-10-12: yes. See
   [Renderers and editors](#renderers-and-editors).
-- **Inline directives.** Decided 2026-10-12: only once something needs it.
-  See Status.
+- **Inline directives.** First decided 2026-10-12: only once something needs
+  it. Now needed: core publishes them, as
+  [Editors a host draws as pictures](#editors-a-host-draws-as-pictures) sets
+  out.
+- **Inline host views on the web.** An inline element is cheap on the web, so
+  an existing editor such as MathLive could sit in a line there. Apple keeps
+  to pictures. Left until someone wants it.
+- **A built-in source-and-preview editor** for any kind with a renderer, so
+  that registering a renderer brings editing with it. Proposed 2026-10-12, not
+  yet decided.
 - **Persistence of the open state.** Whether an open region should survive a
   re-render that rebuilds the view (it does not today).
