@@ -8,7 +8,20 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::time::Instant;
 
-use mermaid_rs_renderer::{RenderOptions, render_with_timing};
+use mermaid_rs_renderer::{FlowchartLayoutEngine, RenderOptions, render_with_timing};
+
+/// The options every diagram is rendered with: mermaid's own theme, and the
+/// flowchart engine `MMDR_ENGINE` names (`current`, the default, `dagre`
+/// or `auto`).
+fn options() -> RenderOptions {
+    let mut o = RenderOptions::mermaid_default();
+    o.layout.flowchart.engine = match std::env::var("MMDR_ENGINE").as_deref() {
+        Ok("dagre") => FlowchartLayoutEngine::Dagre,
+        Ok("auto") => FlowchartLayoutEngine::Auto,
+        _ => FlowchartLayoutEngine::Current,
+    };
+    o
+}
 
 struct Row {
     name: String,
@@ -46,7 +59,7 @@ fn main() {
         let name = path.file_stem().unwrap().to_string_lossy().into_owned();
         let source = std::fs::read_to_string(&path).unwrap();
         let t = Instant::now();
-        let first = render_with_timing(&source, RenderOptions::mermaid_default());
+        let first = render_with_timing(&source, options());
         let cold_ms = t.elapsed().as_secs_f64() * 1000.0;
         let mut row = Row {
             name: name.clone(),
@@ -65,7 +78,7 @@ fn main() {
                 let mut times: Vec<f64> = (0..10)
                     .map(|_| {
                         let t = Instant::now();
-                        let _ = render_with_timing(&source, RenderOptions::mermaid_default());
+                        let _ = render_with_timing(&source, options());
                         t.elapsed().as_secs_f64() * 1000.0
                     })
                     .collect();

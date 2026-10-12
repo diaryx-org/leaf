@@ -9,7 +9,9 @@ edition = "2024"
 publish = false
 
 [dependencies]
-mermaid-rs-renderer = { version = "0.3.1", default-features = false }
+# The fork carries upstream's open PRs #155 (web-time, so it runs on wasm)
+# and #151 (host text metrics) until they merge.
+mermaid-rs-renderer = { git = "https://github.com/adammharris/mermaid-rs-renderer", branch = "diaryx", default-features = false }
 # The versions leaf already carries, so the raster here is the one leaf's
 # formulas go through.
 resvg = "0.46"

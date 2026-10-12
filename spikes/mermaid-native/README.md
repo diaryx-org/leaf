@@ -77,11 +77,37 @@ math module.
 - resvg-swift can already load system fonts (`ParseOptions.load_system_fonts`),
   so mmdr's `<text>` can be drawn on Apple.
 
+## The fork (2026-10-11)
+
+Upstream already has open PRs for the two library problems. Until they
+merge, the spike uses
+[adammharris/mermaid-rs-renderer](https://github.com/adammharris/mermaid-rs-renderer),
+branch `diaryx`, which is upstream `master` plus:
+
+- [#155](https://github.com/1jehuang/mermaid-rs-renderer/pull/155):
+  `web-time` in place of `std::time::Instant`. With it, the wasm module
+  renders in Chrome with no local patch.
+- [#151](https://github.com/1jehuang/mermaid-rs-renderer/pull/151): a
+  `TextMetrics` trait on `LayoutConfig`, so a host can measure text itself
+  (Core Text, or a canvas) and mmdr's system-font loading and `~/.cache`
+  writes never run.
+
+Upstream `master` is 24 commits past 0.3.1. Against this corpus:
+
+- **Speed is unchanged.** Run back to back under the same load, 0.3.1 and the
+  fork are within noise of each other.
+- **Edge labels on `flow-edges` are no longer clipped,** though the layout is
+  still tangled.
+- **A dagre-style flowchart engine** (`layout.flowchart.engine`, set by
+  `MMDR_ENGINE=dagre|auto` here) lays `flow-edges` out in rank order but does
+  worse on `flow-big`. `Auto` chooses between the two per diagram.
+- **A `scene` feature** turns the SVG into draw commands through `usvg`. leaf's
+  resvg-swift already does that with any SVG, so leaf does not need it.
+
 ## What it would take
 
-1. **Upstream fixes to mmdr**, all small:
-   - `web-time` in place of `std::time::Instant`.
-   - A way to pass in a font database, or turn off the `~/.cache` font cache.
+1. **Upstream fixes to mmdr.** Both are open PRs, carried in the fork
+   until they merge (above).
 2. **A leaf-side binding:** `render_mermaid(source) -> svg` in leaf-ffi and in
    a lazily loaded web module, as the math typesetter is.
 3. **The demos:** the editors draw that SVG. On Apple it goes through
