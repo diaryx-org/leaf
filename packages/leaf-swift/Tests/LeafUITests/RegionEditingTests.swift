@@ -174,6 +174,18 @@ final class RegionEditingTests: XCTestCase {
         XCTAssertEqual(log.entries.last, "view B\n", "the drawing was not asked for again")
     }
 
+    func testAnEditThatWouldCloseTheFenceIsRefused() throws {
+        let log = Log()
+        let view = try editor(log)
+        place(view, region(view).src)
+        view.doCommand(by: #selector(NSResponder.moveRight(_:)))
+        let s = try XCTUnwrap(sessions.last)
+        s.host.replace("A\n```\n")
+        XCTAssertEqual(view.doc.source(), source, "a closing fence was written into the fence")
+        XCTAssertEqual(log.entries.last, "reload A\n")
+        XCTAssertTrue(view.regionSlot.isOpen)
+    }
+
     func testTheOneSpliceBetweenTwoContents() {
         XCTAssertEqual(RegionSplice.diff("abc", "abc"), [])
         XCTAssertEqual(RegionSplice.diff("abc", "abXc"), [RegionSplice(from: 2, to: 2, text: "X")])

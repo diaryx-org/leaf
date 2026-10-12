@@ -489,7 +489,14 @@ impl Session {
         let s = self
             .formula
             .replace_in_row(self.caret.row, at..at, tex, tex.len());
-        if !tex.is_empty() && self.commit(&s) {
+        // A newline would split the paragraph an inline formula is in, and an
+        // unescaped `%` comments out the rest of the formula: such text is
+        // typed, never written as it is.
+        let unescaped_percent = tex
+            .char_indices()
+            .any(|(i, c)| c == '%' && !tex[..i].ends_with('\\'));
+        let writable = !tex.is_empty() && !tex.chars().any(char::is_control) && !unescaped_percent;
+        if writable && self.commit(&s) {
             splices.push(s);
             return splices;
         }
@@ -529,6 +536,8 @@ impl Session {
         let row = self.formula.rows[self.caret.row].content.start;
         self.formula = Formula::new(tex)?;
         self.caret = self.formula.caret_at(at.min(tex.len()), row);
+        // Whatever was selected was in the old formula.
+        self.anchor = None;
         Ok(())
     }
 
@@ -849,6 +858,27 @@ mod tests {
         assert_eq!(s.tex(), "ab");
         s.key(Key::Char('c'));
         assert_eq!(s.tex(), "acb");
+    }
+
+    #[test]
+    fn reload_drops_the_selection() {
+        let mut s = Session::new(r"a+\frac{1}{2}").unwrap();
+        s.key(Key::SelectAll);
+        s.reload("b").unwrap();
+        assert_eq!(s.selected_tex(), None);
+        assert!(s.picture(&crate::layout::Style::default()).is_ok());
+    }
+
+    #[test]
+    fn paste_never_writes_a_newline_or_a_comment() {
+        let mut s = Session::new("a").unwrap();
+        s.end();
+        s.paste("x\n\ny");
+        assert_eq!(s.tex(), "axy");
+        s.paste("%c");
+        assert_eq!(s.tex(), r"axy\%c");
+        s.paste(r"\%");
+        assert_eq!(s.tex(), r"axy\%c\%");
     }
 
     #[test]

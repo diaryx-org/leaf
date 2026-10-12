@@ -72,6 +72,25 @@ A review of the protocol found five problems, fixed in `ff97e56`:
 - A key that reached the text view past a host's view acted on the document.
 - Contents were compared as characters rather than bytes.
 
+A second review, of core and the web, found more, fixed in the commit after
+`4fc0a9c`:
+
+- A host's view could write a line that closes the fence (```` ``` ````),
+  which ended the region early and turned the rest of the document into
+  code. Such an edit is now refused, and the session shown the content as it
+  stands, on both platforms. Lengthening the fences around the content is the
+  friendlier answer, and it is left for later.
+- `Session::reload` kept a stale selection anchor, which panicked.
+- Paste wrote newlines and an unescaped `%` into the TeX as given. Such text
+  is now typed instead.
+- On the web, a formula closed by a click elsewhere kept drawing its caret.
+- On the web, a click on a formula after an edit above it could open the
+  wrong formula.
+- On the web, `destroy()` left an open region's session unclosed.
+- Not verified: Safari may not fire `copy` or `cut` when the DOM selection is
+  collapsed, so ⌘C and ⌘X in an open formula may do nothing there. Chrome
+  fires them.
+
 Step 3 has begun, with the math editor's "Not done" list in
 `crates/leaf-math-edit/README.md`:
 

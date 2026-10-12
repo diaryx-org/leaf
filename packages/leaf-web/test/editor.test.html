@@ -2174,6 +2174,43 @@ await test("an edit above an open fence keeps it open, and its edits land in it"
   return ed;
 });
 
+await test("an edit that would close a fence is refused, and the host shown what stands", async () => {
+  const log = [];
+  const ed = editor(DEMO, { regionEditors: { "fence:demo": demoEditor(log) } });
+  const r = ed._lastView.regions[0];
+  ed.focus();
+  ed.render(ed.doc.select_range(r.src, r.src));
+  press(ed, "ArrowRight");
+  ed._session.impl.host.replace("A\n```\n");
+  eq(ed.source(), DEMO);
+  eq(log.at(-1), ["reload", "A\n"]);
+  assert(ed._session, "the refusal closed the fence");
+  return ed;
+});
+
+await test("a click on a formula after an edit above it opens that formula", async () => {
+  await LeafEditor.loadMath();
+  const ed = editor("abcd\n\n$a$ and $b$\n");
+  ed.render(ed.doc.edit_source(0, 0, "wxyz"));
+  const atoms = ed.contentEl.querySelectorAll(".leaf-r-math.leaf-math");
+  const b = atoms[1].getBoundingClientRect();
+  atoms[1].dispatchEvent(new MouseEvent("mousedown", {
+    bubbles: true, cancelable: true, button: 0, detail: 1, clientX: b.left + 1, clientY: b.top + b.height / 2,
+  }));
+  assert(ed._session, "the click did not open a formula");
+  eq(ed._session.src, ed._lastView.regions[1].src, "the click opened the other formula");
+  // A click elsewhere closes it, and its caret goes from the picture.
+  const first = ed.rowEls[0];
+  const fb = first.getBoundingClientRect();
+  first.dispatchEvent(new MouseEvent("mousedown", {
+    bubbles: true, cancelable: true, button: 0, detail: 1, clientX: fb.left + 2, clientY: fb.top + 2,
+  }));
+  assert(!ed._session);
+  assert(!decodeURIComponent(atoms[1].isConnected ? atoms[1].style.backgroundImage : ed.contentEl.querySelectorAll(".leaf-r-math.leaf-math")[1].style.backgroundImage).includes("<rect"),
+    "the closed formula still draws its caret");
+  return ed;
+});
+
 await test("regionEditors takes only fences, each with an open()", async () => {
   let threw = 0;
   for (const bad of [{ math: { open() {} } }, { "fence:": { open() {} } }, { "fence:demo": {} }]) {

@@ -667,6 +667,17 @@ final class RegionSlot {
 
     private func edit(_ splices: [RegionSplice]) {
         guard let owner, let open else { return }
+        // A fence's content cannot hold a line that would close the fence: it
+        // would end the region early and turn the rest of the document into
+        // code. Such an edit is refused, and the session shown the content as
+        // it stands.
+        if open.kind.hasPrefix("fence:") {
+            let next = splices.reduce(open.content) { $0.replacingUTF8(Int($1.from)..<Int($1.to), with: $1.text) }
+            if Self.closesFence(next) {
+                _ = open.session.reload(content: open.content)
+                return
+            }
+        }
         if splices.isEmpty {
             open.moved()
             owner.regionRender(owner.shownFrame)
@@ -675,7 +686,17 @@ final class RegionSlot {
         }
     }
 
-    /// Do what the session answered. Whether the key or click was taken.
+    /// Whether fence content holds a line that would close a fence: three or
+    /// more backticks or tildes, indented at most three spaces.
+    static func closesFence(_ content: String) -> Bool {
+        content.split(separator: "\n", omittingEmptySubsequences: false).contains { line in
+            let indent = line.prefix { $0 == " " }.count
+            let rest = line.dropFirst(indent)
+            return indent <= 3 && (rest.hasPrefix("```") || rest.hasPrefix("~~~"))
+        }
+    }
+
+        /// Do what the session answered. Whether the key or click was taken.
     @discardableResult
     private func act(_ outcome: RegionOutcome) -> Bool {
         switch outcome {

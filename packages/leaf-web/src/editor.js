@@ -479,6 +479,11 @@ export class LeafEditor {
   destroy() {
     if (this._destroyed) return;
     this._destroyed = true;
+    if (this._session) {
+      const s = this._session;
+      this._session = null;
+      s.impl.close?.();
+    }
     for (const [t, fn, tgt] of this._listeners) tgt.removeEventListener(t, fn);
     this._resizeObs?.disconnect();
     MATH_WAITERS.delete(this);
@@ -2113,6 +2118,9 @@ export class LeafEditor {
       console.error(`leaf: the ${s.kind} editor threw on close`, e);
     }
     if (hadFocus || where !== null) this.focus();
+    // The formula's picture is the typesetter's again: its row key must not
+    // carry the session's revision into the next paint.
+    for (const m of this._lastView?.math || []) delete m.edit;
     if (!paint) return;
     const at = where === "before" ? s.src : where === "after" ? s.end : null;
     this.render(at === null ? this._lastView : this.doc.select_range(at, at));
@@ -2129,6 +2137,22 @@ export class LeafEditor {
     if (!splices?.length) {
       this.render(this._lastView);
       return;
+    }
+    // A fence's content cannot hold a line that would close the fence: it
+    // would end the region early and turn the rest of the document into
+    // code. Such an edit is refused, and the session shown the content as
+    // it stands.
+    if (s.kind.startsWith("fence:")) {
+      let next = s.content;
+      for (const sp of splices) next = spliceBytes(next, sp.from, sp.to, sp.text);
+      if (closesFence(next)) {
+        try {
+          s.impl.reload?.(s.content);
+        } catch (e) {
+          console.error(`leaf: the ${s.kind} editor threw on reload`, e);
+        }
+        return;
+      }
     }
     this.doc.begin_undo_group();
     for (const sp of splices) {
@@ -2271,7 +2295,12 @@ export class LeafEditor {
     if (t._math && (t.classList.contains("leaf-math") || t.classList.contains("leaf-math-block"))) {
       target = t;
       size = t._mathPx;
-      region = regions.find((r) => r.kind === "math" && r.src === t._math.src);
+      // A reused row keeps the formula it was built for; the run's offset,
+      // and a block's row, are what is current.
+      const row = this.rowEls.indexOf(t.closest(".leaf-row"));
+      region = t._math.inline
+        ? regions.find((r) => r.kind === "math" && r.src === (t._src ?? t._math.src))
+        : regions.find((r) => r.kind === "math" && r.start_row === row);
     } else {
       // A reused row keeps the region it was built for, whose offsets an
       // edit above has moved since — so the row's place says which it is.
@@ -3768,6 +3797,12 @@ const UTF8_IN = new TextEncoder();
 const UTF8_OUT = new TextDecoder();
 
 /** `s` with its UTF-8 bytes `[from, to)` replaced by `text`. */
+/** Whether fence content `s` holds a line that would close a fence: three or
+ *  more backticks or tildes, indented at most three spaces. */
+function closesFence(s) {
+  return /^ {0,3}(`{3,}|~{3,})/m.test(s);
+}
+
 function spliceBytes(s, from, to, text) {
   const b = UTF8_IN.encode(s);
   return UTF8_OUT.decode(b.subarray(0, from)) + text + UTF8_OUT.decode(b.subarray(to));
