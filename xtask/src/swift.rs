@@ -69,8 +69,9 @@ pub struct Args {
     file: Option<std::path::PathBuf>,
 }
 
-/// The Xcode project, generated first if it is missing or `regen` asks for it.
-/// Shared with `cargo xtask package`, which builds the same project.
+/// The Xcode project, generated first if it is missing, older than what it is
+/// generated from, or `regen` asks for it. Shared with `cargo xtask package`,
+/// which builds the same project.
 pub fn project(regen: bool) -> Result<std::path::PathBuf> {
     require_tool("xcodebuild", "install Xcode and its command-line tools")?;
     require_tool("xcodegen", "brew install xcodegen")?;
@@ -84,10 +85,36 @@ pub fn project(regen: bool) -> Result<std::path::PathBuf> {
     // guard its absence too — e.g. a checkout mid-rebase), so a fresh checkout
     // lands here on the first run rather than in an xcodebuild error about a
     // missing package.
-    if regen || !project.exists() || !binding.exists() {
+    if regen || !project.exists() || !binding.exists() || stale(&app_dir, &project) {
         run(cmd("bash").arg(app_dir.join("bootstrap.sh")))?;
     }
     Ok(project)
+}
+
+/// Whether the generated project is older than anything it is generated from:
+/// `project.yml`, a file in `App/` (xcodegen lists each source by name, so a
+/// file a merge or a checkout added is missing from a project generated before
+/// it), or the app's own packages' manifests. A checkout writes what it
+/// changes with the time it ran, so this catches every branch switch that
+/// adds or removes a source.
+fn stale(app_dir: &Path, project: &Path) -> bool {
+    let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    let Some(generated) = modified(&project.join("project.pbxproj")) else {
+        return true;
+    };
+    let mut inputs = vec![
+        app_dir.join("project.yml"),
+        app_dir.join("LeafMermaid/Package.swift"),
+    ];
+    if let Ok(entries) = std::fs::read_dir(app_dir.join("App")) {
+        inputs.extend(entries.filter_map(|e| e.ok()).map(|e| e.path()));
+    }
+    // A directory's own time moves when a file in it is added or removed.
+    inputs.push(app_dir.join("App"));
+    inputs
+        .iter()
+        .filter_map(|p| modified(p))
+        .any(|t| t > generated)
 }
 
 pub fn run_task(args: Args) -> Result<()> {
