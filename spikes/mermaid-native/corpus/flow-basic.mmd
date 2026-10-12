@@ -1,0 +1,6 @@
+flowchart LR
+  A[Start] --> B{Decide}
+  B -->|yes| C[Do it]
+  B -->|no| D[Skip]
+  C --> E((End))
+  D --> E

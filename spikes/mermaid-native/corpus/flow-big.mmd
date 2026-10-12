@@ -1,0 +1,20 @@
+flowchart LR
+  S[Source] --> P[Parse]
+  P --> T[Tree]
+  T --> W[Walk]
+  W --> R[Rows]
+  R --> C[Cache]
+  C --> R
+  R --> M[Map]
+  M --> F[Frame]
+  F --> Web[leaf-web]
+  F --> Mac[leaf-swift macOS]
+  F --> iOS[leaf-swift iOS]
+  F --> And[leaf-android]
+  F --> Tui[leaf-ratatui]
+  Web --> E1[edit_source]
+  Mac --> E1
+  iOS --> E1
+  And --> E1
+  Tui --> E1
+  E1 --> S

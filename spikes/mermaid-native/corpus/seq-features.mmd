@@ -1,0 +1,20 @@
+sequenceDiagram
+  autonumber
+  actor A as Author
+  participant E as Editor
+  participant H as Host view
+  A->>E: → onto the fence
+  activate E
+  E->>H: open(region, home)
+  Note right of H: takes the focus
+  loop every keystroke
+    H->>E: replace(content)
+    E-->>H: reload when it differs
+  end
+  alt Escape
+    H->>E: leave(after)
+  else click elsewhere
+    E->>H: close()
+  end
+  deactivate E
+  Note over A,H: the document is the source of truth
