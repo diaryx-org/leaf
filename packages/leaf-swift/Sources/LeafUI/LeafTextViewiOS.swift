@@ -1106,6 +1106,7 @@ public final class LeafTextView: UIView, UITextInput {
         self.shapeCache = seed
         super.init(frame: .zero)
         regionSlot.owner = self
+        regionSlot.listen()
         // A resolved source has a picture to draw, and may be the one the reader
         // tapped while it was still being fetched.
         // Laid out again rather than just repainted: the box keeps the still it
@@ -1625,7 +1626,7 @@ public final class LeafTextView: UIView, UITextInput {
     /// nothing changed but the caret, rebuilt from the first changed row on
     /// otherwise; `reflow` says the geometry under the rows moved and every row
     /// is laid out again. The AppKit peer's rule; see its `render`.
-    private func render(_ frame: DocView, reflow: Bool = false) {
+    private func render(_ frame: DocView, reflow: Bool = false, picturesFrom: Int? = nil) {
         // A peek is chrome anchored to a position, and the positions are being
         // rebuilt — an edit reflowed the line it points at, or a relayout moved
         // the reference out from under it.
@@ -1665,6 +1666,9 @@ public final class LeafTextView: UIView, UITextInput {
             docView = frame
         }
         let view = docView
+        // Pictures drawn later arrived for regions from `picturesFrom` on:
+        // the rows above it stand as they were laid out.
+        let layoutChange = change ?? picturesFrom.map { (new: $0..<$0 + 1, old: $0..<$0 + 1) }
         // The open region followed into this frame, or closed — the AppKit
         // peer's rule.
         regionSlot.follow(view)
@@ -1688,20 +1692,20 @@ public final class LeafTextView: UIView, UITextInput {
         // bytes the typesetter is handed. Left to the caller's traits, a paper
         // sheet (light, whatever the screen) laid out on a dark phone would set
         // its formulas in white — and print them on white.
-        let drawing = regionSlot.drawing(dark: traitCollection.userInterfaceStyle == .dark)
+        let drawing = regionSlot.drawing(dark: traitCollection.userInterfaceStyle == .dark, scale: contentScaleFactor)
         traitCollection.performAsCurrent {
             if reflow {
                 layoutEngine = EditorLayout(view, theme: renderTheme, viewWidth: viewWidth, page: pageSetup,
                                             cache: &shapeCache, media: mediaStore,
                                             regions: regionSlot.views.measure, drawing: drawing)
-            } else if change != nil || blocksChanged || openChanged || layoutEngine.rows.isEmpty {
+            } else if layoutChange != nil || blocksChanged || openChanged || layoutEngine.rows.isEmpty {
                 layoutEngine = EditorLayout(view, theme: renderTheme, viewWidth: viewWidth, page: pageSetup,
                                             cache: &shapeCache, media: mediaStore, previous: layoutEngine,
-                                            change: change,
+                                            change: layoutChange,
                                             regions: regionSlot.views.measure, drawing: drawing)
             }
         }
-        let relaid = reflow || change != nil || blocksChanged || openChanged
+        let relaid = reflow || layoutChange != nil || blocksChanged || openChanged
         // The host's views follow their boxes; one whose directive was edited
         // away goes with it.
         if relaid, !regionSlot.views.isEmpty {
@@ -1891,7 +1895,8 @@ public final class LeafTextView: UIView, UITextInput {
             if let box = rl.picture {
                 if rl.pictureFirst {
                     box.draw(in: box.rect(top: rl.pictureTop, left: rl.originX + rl.shaped.prefixWidth,
-                                          width: rl.columnWidth - rl.shaped.prefixWidth), ctx: ctx)
+                                          width: rl.columnWidth - rl.shaped.prefixWidth), ctx: ctx,
+                             screen: !isPaper)
                 }
                 continue
             }
@@ -3225,5 +3230,13 @@ extension LeafTextView: RegionSlotOwner {
         if redo { historyManager.redo() } else { historyManager.undo() }
     }
     func relayout() { render(docView, reflow: true) }
+
+    func regionPicturesArrived(_ kinds: Set<String>) {
+        // Only from the first region of an arrived kind down: the rows above
+        // it are as they were.
+        guard let first = docView.regions.filter({ kinds.contains($0.kind) }).map({ Int($0.startRow) }).min()
+        else { return }
+        render(docView, picturesFrom: first)
+    }
 }
 #endif

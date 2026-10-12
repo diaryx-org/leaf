@@ -24,8 +24,17 @@ enum MermaidFence {
 
     /// A closed fence's picture: its diagram, at most `maxDrawingHeight`
     /// tall, or the renderer's complaint about the source in its place.
-    static let renderer: RegionRenderer = { region, context in
-        switch MermaidDrawing.render(region.content, dark: context.dark) {
+    /// Drawn later, on `queue`: a large flowchart takes long enough to lay out
+    /// that drawing it as the layout asks would stall the view.
+    static let renderer = RegionRenderer(later: { region, context, done in
+        let source = region.content, dark = context.dark
+        queue.async { done(picture(source, dark: dark)) }
+    })
+
+    /// `source`'s picture, rendered, parsed into vectors and scaled, off the
+    /// main thread.
+    static func picture(_ source: String, dark: Bool) -> RegionPicture? {
+        switch MermaidDrawing.render(source, dark: dark) {
         case let .svg(svg):
             guard var picture = RegionPicture(svg: svg) else { return nil }
             // Drawn into whatever box it is given, so a smaller box is all it
@@ -89,16 +98,42 @@ enum MermaidFence {
 
 /// Label widths for `renderMermaid`, from Core Text: the first face of the
 /// theme's family list that is installed, which is the face resvg will draw
-/// the picture's text in.
+/// the picture's text in. Called from whichever thread renders, so each
+/// thread finds its fonts for itself and keeps them, and every width is kept
+/// for every thread: a diagram re-rendered as it is typed asks again about
+/// labels it has measured.
 final class CoreTextMeasure: MermaidMeasure, @unchecked Sendable {
     static let shared = CoreTextMeasure()
 
+    private let lock = NSLock()
+    private var widths: [String: Float] = [:]
+
     func width(text: String, size: Float, family: String) -> Float? {
-        let font = Self.font(family, size: CGFloat(size))
+        let key = "\(size)|\(family)|\(text)"
+        lock.lock()
+        let known = widths[key]
+        lock.unlock()
+        if let known { return known }
+        let font = Self.threadFont(family, size: CGFloat(size))
         let attributed = NSAttributedString(string: text,
                                             attributes: [NSAttributedString.Key(kCTFontAttributeName as String): font])
         let line = CTLineCreateWithAttributedString(attributed)
-        return Float(CTLineGetTypographicBounds(line, nil, nil, nil))
+        let width = Float(CTLineGetTypographicBounds(line, nil, nil, nil))
+        lock.lock()
+        if widths.count > 4096 { widths.removeAll() }
+        widths[key] = width
+        lock.unlock()
+        return width
+    }
+
+    /// `font(_:size:)`, kept per thread.
+    private static func threadFont(_ list: String, size: CGFloat) -> CTFont {
+        let key = "org.diaryx.leaf.mermaid.font|\(size)|\(list)"
+        let fonts = Thread.current.threadDictionary
+        if let font = fonts[key] { return font as! CTFont }
+        let font = Self.font(list, size: size)
+        fonts[key] = font
+        return font
     }
 
     /// The first family in a CSS family list that Core Text has, else

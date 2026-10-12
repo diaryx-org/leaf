@@ -44,7 +44,7 @@ extension LeafTextView {
                            page: PageSetup, index: Int, scale: CGFloat, dark: Bool,
                            regions: RegionSetup = RegionSetup()) -> SheetImage? {
         let sheet = paperSheet(of: doc, theme: theme, documentDirectory: documentDirectory, page: page,
-                               regions: regions)
+                               regions: regions.onPaper)
         sheet.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
         guard !sheet.pages.isEmpty else { return nil }
         let at = min(max(index, 0), sheet.pages.count - 1)
@@ -83,7 +83,7 @@ extension LeafTextView {
     static func sheetImage(of doc: LeafDoc, theme: EditorTheme, documentDirectory: URL?,
                            page: PageSetup, index: Int, scale: CGFloat, dark: Bool,
                            regions: RegionSetup = RegionSetup()) -> SheetImage? {
-        let sheet = LeafTextView(doc: doc, theme: theme, regions: regions)
+        let sheet = LeafTextView(doc: doc, theme: theme, regions: regions.onPaper)
         sheet.isPaper = true
         let style: UIUserInterfaceStyle = dark ? .dark : .light
         sheet.overrideUserInterfaceStyle = style

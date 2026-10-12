@@ -49,12 +49,12 @@ final class RegionEditingTests: XCTestCase {
         let view = LeafTextView(doc: doc, theme: .default)
         view.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
         view.regionRenderers = [
-            "fence:demo": { r, _ in
+            "fence:demo": RegionRenderer({ r, _ in
                 log.entries.append("render \(r.content)")
                 return RegionPicture(width: 100, height: 60) { _, _ in }
-            },
+            }),
             // Not a kind a host may name.
-            "code": { _, _ in nil },
+            "code": RegionRenderer({ _, _ in nil }),
         ]
         view.regionEditors = [
             "fence:demo": RegionEditor(
@@ -105,7 +105,7 @@ final class RegionEditingTests: XCTestCase {
         let doc = try LeafDoc(source: source, format: "markdown")
         let view = LeafTextView(doc: doc, theme: .default)
         view.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
-        view.regionRenderers = ["fence:demo": { _, _ in RegionPicture(width: 80, height: 40) { _, _ in } }]
+        view.regionRenderers = ["fence:demo": RegionRenderer({ _, _ in RegionPicture(width: 80, height: 40) { _, _ in } })]
         view.layout()
         XCTAssertEqual(drawn(view)?.height, 40)
         let r = region(view)
@@ -121,10 +121,10 @@ final class RegionEditingTests: XCTestCase {
         view.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
         var drawnOnPaper = 0
         var dark: [Bool] = []
-        view.regionRenderers = ["fence:demo": { _, context in
+        view.regionRenderers = ["fence:demo": RegionRenderer({ _, context in
             dark.append(context.dark)
             return RegionPicture(width: 80, height: 40) { _, _ in drawnOnPaper += 1 }
-        }]
+        })]
         view.regionEditors = ["fence:demo": RegionEditor(open: { _, _, _ in nil })]
         view.appearance = NSAppearance(named: .darkAqua)
         view.redrawRegions()
@@ -143,7 +143,7 @@ final class RegionEditingTests: XCTestCase {
         let doc = try LeafDoc(source: source, format: "markdown")
         let view = LeafTextView(doc: doc, theme: .default)
         view.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
-        view.regionRenderers = ["fence:demo": { _, _ in nil }]
+        view.regionRenderers = ["fence:demo": RegionRenderer({ _, _ in nil })]
         view.layout()
         XCTAssertNil(drawn(view))
         XCTAssertTrue(view.layoutEngine.rows.contains { $0.row.runs.map(\.text).joined().hasPrefix("▤") })

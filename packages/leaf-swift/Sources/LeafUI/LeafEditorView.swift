@@ -796,7 +796,8 @@ public final class LeafEditorModel: ObservableObject {
     /// takes them.
     var regionSetup: RegionSetup {
         RegionSetup(renderers: regionRenderers.filter { RegionKinds.hostable($0.key) },
-                    editors: regionEditors.filter { RegionKinds.editable($0.key) })
+                    editors: regionEditors.filter { RegionKinds.editable($0.key) },
+                    pictures: textView?.regionSlot.pictures)
     }
 
     /// Write the leaf directive `name` at the caret, with `label` and `attrs`,

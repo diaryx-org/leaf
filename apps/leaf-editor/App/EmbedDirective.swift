@@ -30,7 +30,7 @@ enum EmbedDirective {
 
     /// The picture: a card as wide as the column, titled "Embed", its URL
     /// beneath, in the text's ink.
-    static let renderer: RegionRenderer = { region, context in
+    static let renderer = RegionRenderer { region, context in
         let src = region.attrs.first { $0.key == "src" }?.value ?? ""
         return card(title: "Embed", detail: src.isEmpty ? "No URL" : src, ink: context.ink.cgColor)
     }

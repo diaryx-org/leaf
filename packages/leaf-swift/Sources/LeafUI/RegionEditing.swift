@@ -514,6 +514,9 @@ protocol RegionSlotOwner: AnyObject {
     func regionHistory(redo: Bool)
     /// Lay the document out again, at the same frame.
     func relayout()
+    /// Pictures of these kinds, drawn later, have arrived: lay their regions
+    /// out again.
+    func regionPicturesArrived(_ kinds: Set<String>)
 }
 
 /// One view's open region and its routing — the slot the AppKit and UIKit
@@ -525,8 +528,12 @@ final class RegionSlot {
     var editors: [String: RegionEditor] = [:] {
         didSet { close(repaint: false) }
     }
-    /// The renderers the view draws its regions with, and their pictures.
-    let pictures = RegionPictures()
+    /// The renderers the view draws its regions with, and their pictures —
+    /// a sheet over the same document shares its view's.
+    private(set) var pictures = RegionPictures()
+    /// Whether to wait for pictures drawn later rather than stand in for
+    /// them: a paper sheet's.
+    var waitsForPictures = false
     /// Whether formulas are edited in place, by leaf's own session.
     var editsMath = true {
         didSet { if !editsMath, open?.kind == MathRenderer.kind { close(repaint: false) } }
@@ -677,9 +684,10 @@ final class RegionSlot {
     /// What the layout needs of the open region.
     var layout: OpenRegionLayout? { open?.layout }
 
-    /// What the layout draws the regions with, in an appearance dark or not.
-    func drawing(dark: Bool) -> RegionDrawing {
-        RegionDrawing(pictures: pictures, open: layout, dark: dark)
+    /// What the layout draws the regions with, in an appearance dark or not,
+    /// on a screen of `scale`.
+    func drawing(dark: Bool, scale: CGFloat) -> RegionDrawing {
+        RegionDrawing(pictures: pictures, open: layout, dark: dark, waits: waitsForPictures, scale: scale)
     }
 
     /// Close the open region with the caret in front of it or behind it.
@@ -779,18 +787,42 @@ struct RegionSetup {
     var renderers: [String: RegionRenderer] = [:]
     var editors: [String: RegionEditor] = [:]
     var editsMath = true
+    /// The pictures already drawn, and the renderers: a sheet shares its
+    /// view's, so what the screen drew is not drawn again.
+    var pictures: RegionPictures?
+    /// Wait for pictures drawn later: paper never draws a placeholder for one.
+    var waits = false
+
+    /// This setup for a paper sheet.
+    var onPaper: RegionSetup {
+        var setup = self
+        setup.waits = true
+        return setup
+    }
 }
 
 extension RegionSlot {
     /// This slot's setup, for a sheet over the same document.
     var setup: RegionSetup {
-        RegionSetup(renderers: pictures.renderers, editors: editors, editsMath: editsMath)
+        RegionSetup(renderers: pictures.renderers, editors: editors, editsMath: editsMath, pictures: pictures)
     }
 
     /// Take `setup` on, before the view tells core what it owns.
     func adopt(_ setup: RegionSetup) {
-        pictures.renderers = setup.renderers
+        if let shared = setup.pictures {
+            pictures = shared
+        } else {
+            pictures.renderers = setup.renderers
+        }
         editors = setup.editors
         editsMath = setup.editsMath
+        waitsForPictures = setup.waits
+    }
+
+    /// Have arrived pictures reach `owner`, unless the pictures are shared
+    /// from another view, which hears of them itself.
+    func listen() {
+        guard pictures.onArrive == nil else { return }
+        pictures.onArrive = { [weak self] kinds in self?.owner?.regionPicturesArrived(kinds) }
     }
 }

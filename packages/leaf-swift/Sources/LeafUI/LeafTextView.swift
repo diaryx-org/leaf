@@ -651,6 +651,7 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         self.shapeCache = seed
         super.init(frame: .zero)
         regionSlot.owner = self
+        regionSlot.listen()
         if #available(macOS 14, *) {
             let indicator = NSTextInsertionIndicator(frame: .zero)
             indicator.displayMode = .hidden
@@ -816,7 +817,8 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
     /// keystroke or a drag. `reflow` says the geometry under the rows moved —
     /// the width, the theme, the page, a picture that arrived — and every row
     /// is laid out again.
-    private func render(_ frame: DocView, keepVerticalGoal: Bool = false, reflow: Bool = false) {
+    private func render(_ frame: DocView, keepVerticalGoal: Bool = false, reflow: Bool = false,
+                        picturesFrom: Int? = nil) {
         if !keepVerticalGoal { verticalGoalX = nil }
         // Whatever the peek was pointing at has just moved, changed or gone: an
         // edit reflowed the line under it, or a relayout put the reference
@@ -868,6 +870,9 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
             docView = frame
         }
         let view = docView
+        // Pictures drawn later arrived for regions from `picturesFrom` on:
+        // the rows above it stand as they were laid out.
+        let layoutChange = change ?? picturesFrom.map { (new: $0..<$0 + 1, old: $0..<$0 + 1) }
         // The open region, followed into this frame — or closed, when the
         // frame has none at its place any more — and laid out again whenever
         // what it draws changed.
@@ -889,20 +894,20 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
         // handed. Left to the caller's appearance, a paper sheet (`aqua`,
         // whatever the screen) laid out from a dark-mode window would set its
         // formulas in white — and print them on white.
-        let drawing = regionSlot.drawing(dark: effectiveAppearance.isDark)
+        let drawing = regionSlot.drawing(dark: effectiveAppearance.isDark, scale: (window?.backingScaleFactor ?? 2) * zoomScale)
         effectiveAppearance.performAsCurrentDrawingAppearance {
             if reflow {
                 layoutEngine = EditorLayout(view, theme: theme, viewWidth: viewWidth, page: pageSetup,
                                             cache: &shapeCache, media: mediaStore,
                                             regions: regionSlot.views.measure, drawing: drawing)
-            } else if change != nil || blocksChanged || openChanged || layoutEngine.rows.isEmpty {
+            } else if layoutChange != nil || blocksChanged || openChanged || layoutEngine.rows.isEmpty {
                 layoutEngine = EditorLayout(view, theme: theme, viewWidth: viewWidth, page: pageSetup,
                                             cache: &shapeCache, media: mediaStore, previous: layoutEngine,
-                                            change: change,
+                                            change: layoutChange,
                                             regions: regionSlot.views.measure, drawing: drawing)
             }
         }
-        let relaid = reflow || change != nil || blocksChanged || openChanged
+        let relaid = reflow || layoutChange != nil || blocksChanged || openChanged
         // The host's views follow their boxes, as the players do, and a view
         // whose directive was edited away goes with it. Scaled by hand: this
         // view zooms its drawing, not itself.
@@ -1011,11 +1016,13 @@ public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuReques
                 continue
             }
             // A block region's picture, once, on its first placeholder row,
-            // centred on the column — vectors, so the PDF gets paths.
+            // centred on the column — vectors, so the PDF gets paths, and a
+            // kept bitmap on screen.
             if let box = rl.picture {
                 if rl.pictureFirst {
                     box.draw(in: box.rect(top: rl.pictureTop, left: rl.originX + rl.shaped.prefixWidth,
-                                          width: rl.columnWidth - rl.shaped.prefixWidth), ctx: ctx)
+                                          width: rl.columnWidth - rl.shaped.prefixWidth), ctx: ctx,
+                             screen: !printing)
                 }
                 continue
             }
@@ -5502,5 +5509,13 @@ extension LeafTextView: RegionSlotOwner {
         if redo { historyManager.redo() } else { historyManager.undo() }
     }
     func relayout() { render(docView, keepVerticalGoal: true, reflow: true) }
+
+    func regionPicturesArrived(_ kinds: Set<String>) {
+        // Only from the first region of an arrived kind down: the rows above
+        // it are as they were.
+        guard let first = docView.regions.filter({ kinds.contains($0.kind) }).map({ Int($0.startRow) }).min()
+        else { return }
+        render(docView, keepVerticalGoal: true, picturesFrom: first)
+    }
 }
 #endif

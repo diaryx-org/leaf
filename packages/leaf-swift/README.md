@@ -438,8 +438,8 @@ A formula, a fence of a language the host names, or a leaf directive of a name
 it names is a *region*, and each kind has two parts, both registered by kind on
 the text view or on `LeafEditorModel`:
 
-- **A renderer**, `regionRenderers[kind]`: a `(RegionView, RegionRenderContext)
-  -> RegionPicture?` that draws the region's content as a picture — vectors
+- **A renderer**, `regionRenderers[kind]`: a `RegionRenderer` that draws the
+  region's content as a picture — vectors
   with a size and a baseline (`RegionPicture(svg:)`, `RegionPicture(image:size:)`,
   or a size and a draw closure). The layout places the picture itself, inline
   on the baseline or as a block centred on the region's rows, and draws it with
@@ -459,9 +459,18 @@ the text view or on `LeafEditorModel`:
 
 Kinds are `math`, `fence:<lang>` (block) and `directive:<name>` (block); a
 host may draw `math` but not edit it, since leaf's own session edits a formula
-inside a line, where no host view can stand. A renderer is called on the main
-thread as the layout needs it; one that has to wait for something draws what it
-can now and asks for `redrawRegions(kind:)` when the rest arrives. A
+inside a line, where no host view can stand. A renderer answers at once
+(`RegionRenderer { region, context in … }`), on the main thread as the layout
+needs it, which suits a cheap picture such as a formula's. Or it answers later
+(`RegionRenderer(later: { region, context, done in … })`), calling `done` from
+any thread, which suits a picture that takes long enough to draw to stall the
+view, such as a large diagram. Until then the region keeps the size of its last
+picture with the same content, else leaf's placeholder, and when the picture
+comes only that region is laid out again. An answer for content the region no
+longer has, or from before a `redrawRegions(kind:)`, is dropped. Print, PDF and
+page images wait for pictures drawn later, so `done` must not need the main
+thread. On screen a block picture is drawn from a bitmap kept at the screen's
+scale; on paper it is drawn as vectors. A
 named fence stops being code. Formulas run on the same protocol, with leaf's
 own session that draws its picture, so opening, leaving, undo and the caret
 behave alike for every kind (`RegionEditing.swift`, `RegionPictures.swift`).

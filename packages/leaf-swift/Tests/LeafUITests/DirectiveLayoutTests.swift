@@ -47,10 +47,10 @@ final class DirectiveLayoutTests: XCTestCase {
     private func renderer(_ height: CGFloat?) -> (RegionDrawing, () -> [String]) {
         var asked: [String] = []
         let pictures = RegionPictures()
-        pictures.renderers = ["directive:embed": { r, _ in
+        pictures.renderers = ["directive:embed": RegionRenderer({ r, _ in
             asked.append(r.name)
             return height.map { RegionPicture(width: nil, height: $0) { _, _ in } }
-        }]
+        })]
         return (RegionDrawing(pictures: pictures), { asked })
     }
 
@@ -230,10 +230,10 @@ final class DirectiveLayoutTests: XCTestCase {
     func testTheSurfaceDrawsTheHostsPictureAndZoomsIt() throws {
         let view = try surface()
         var seen: [RegionView] = []
-        view.regionRenderers = ["directive:embed": { r, _ in
+        view.regionRenderers = ["directive:embed": RegionRenderer({ r, _ in
             seen.append(r)
             return RegionPicture(width: nil, height: 90) { _, _ in }
-        }]
+        })]
         XCTAssertEqual(seen.map(\.name), ["embed"])
         XCTAssertEqual(seen.first?.attrs.first?.value, "https://x.org")
         XCTAssertEqual(seen.first?.content, "::embed{src=\"https://x.org\"}")
@@ -257,7 +257,7 @@ final class DirectiveLayoutTests: XCTestCase {
             init(host: RegionHost) { self.host = host }
         }
         var opened: Session?
-        view.regionRenderers = ["directive:embed": { _, _ in RegionPicture(width: nil, height: 40) { _, _ in } }]
+        view.regionRenderers = ["directive:embed": RegionRenderer({ _, _ in RegionPicture(width: nil, height: 40) { _, _ in } })]
         view.regionEditors = ["directive:embed": RegionEditor(open: { r, _, host in
             XCTAssertEqual(r.content, "::embed{src=\"https://x.org\"}")
             let s = Session(host: host)

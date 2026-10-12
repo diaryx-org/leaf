@@ -59,6 +59,8 @@ public struct RegionPicture {
     /// Draw into `rect` of a y-down context, at whatever size `rect` is — a
     /// block too wide for the column is drawn fitted to it.
     public let draw: (CGContext, CGRect) -> Void
+    /// The picture as a bitmap for the screen, kept once drawn.
+    let screen = ScreenRaster()
 
     public init(width: CGFloat?, height: CGFloat, baseline: CGFloat? = nil,
                 draw: @escaping (CGContext, CGRect) -> Void) {
@@ -66,6 +68,25 @@ public struct RegionPicture {
         self.height = height
         self.baseline = baseline ?? height
         self.draw = draw
+    }
+
+    /// Draw into `rect` of a y-down context on the screen: from a bitmap made
+    /// at the context's scale the first time and kept, so a picture that
+    /// takes long to draw as vectors — a large diagram's thousands of paths —
+    /// costs one blit a frame after that. Paper, print and PDF draw `draw`'s
+    /// vectors.
+    func drawOnScreen(_ ctx: CGContext, _ rect: CGRect) {
+        let scale = hypot(ctx.ctm.a, ctx.ctm.b)
+        guard let image = screen.image(of: self, size: rect.size, scale: scale) else {
+            draw(ctx, rect)
+            return
+        }
+        ctx.saveGState()
+        ctx.translateBy(x: rect.minX, y: rect.maxY)
+        ctx.scaleBy(x: 1, y: -1)
+        ctx.interpolationQuality = .high
+        ctx.draw(image, in: CGRect(origin: .zero, size: rect.size))
+        ctx.restoreGState()
     }
 
     /// An SVG document drawn as vectors through resvg, at `width` × `height`
@@ -115,6 +136,38 @@ public struct RegionPicture {
     }
 }
 
+/// A picture's bitmap for the screen, at one size and scale: made the first
+/// time the picture is drawn on screen, or ahead of time where the picture is
+/// made off the main thread, and made again when the size or the scale moves
+/// (a zoom). Too large a bitmap is not made at all, and the picture is drawn
+/// as vectors instead.
+final class ScreenRaster {
+    private let lock = NSLock()
+    private var made: (size: CGSize, scale: CGFloat, image: CGImage)?
+
+    /// The most pixels a picture's bitmap holds: 64 MB of RGBA.
+    static let maxPixels: CGFloat = 16_000_000
+
+    func image(of picture: RegionPicture, size: CGSize, scale: CGFloat) -> CGImage? {
+        lock.lock()
+        defer { lock.unlock() }
+        if let made, made.size == size, made.scale == scale { return made.image }
+        let w = (size.width * scale).rounded(.up), h = (size.height * scale).rounded(.up)
+        guard w > 0, h > 0, w * h <= Self.maxPixels,
+              let ctx = CGContext(data: nil, width: Int(w), height: Int(h), bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return nil }
+        // A bitmap is y-up and a picture draws y-down.
+        ctx.translateBy(x: 0, y: h)
+        ctx.scaleBy(x: scale, y: -scale)
+        picture.draw(ctx, CGRect(origin: .zero, size: size))
+        guard let image = ctx.makeImage() else { return nil }
+        made = (size, scale, image)
+        return image
+    }
+}
+
 /// What a renderer draws a region for.
 public struct RegionRenderContext {
     /// The text size around the region, in points per em: the run's for an
@@ -132,39 +185,103 @@ public struct RegionRenderContext {
     }
 }
 
-/// Draws the regions of one kind: the region's picture, or nil for leaf's
-/// placeholder. Called on the main thread, as the layout needs the picture;
-/// the answer is kept while the region's content and the context stand.
-public typealias RegionRenderer = (RegionView, RegionRenderContext) -> RegionPicture?
+/// Draws the regions of one kind, answering with the region's picture, or nil
+/// for leaf's placeholder. A renderer answers either at once, on the main
+/// thread as the layout asks (`init(_:)`), which suits a cheap picture such
+/// as a formula's, or later, from any thread (`init(later:)`), for one that
+/// takes long enough to stall the view — a large diagram. Either way the
+/// answer is kept while the region's content and the context stand.
+public struct RegionRenderer {
+    enum Body {
+        case now((RegionView, RegionRenderContext) -> RegionPicture?)
+        case later((RegionView, RegionRenderContext, @escaping (RegionPicture?) -> Void) -> Void)
+    }
+
+    let body: Body
+
+    /// A renderer that draws at once, on the main thread.
+    public init(_ render: @escaping (RegionView, RegionRenderContext) -> RegionPicture?) {
+        body = .now(render)
+    }
+
+    /// A renderer that draws later. It is called on the main thread and calls
+    /// `done` once, from any thread, with the picture or nil; drawing on a
+    /// queue of its own is the point. Until `done`, the region keeps the size
+    /// of its last picture with the same content, else leaf's placeholder,
+    /// and when it is called only that region is laid out again. An answer
+    /// for content the region no longer has, or after `redrawRegions`, is
+    /// dropped. A paper sheet — print, PDF, a page's image — waits for it
+    /// rather than drawing the placeholder, so `done` must not need the main
+    /// thread to be called; leaf waits `RegionPictures.paperWait` at most.
+    public init(later render: @escaping (RegionView, RegionRenderContext,
+                                         _ done: @escaping (RegionPicture?) -> Void) -> Void) {
+        body = .later(render)
+    }
+}
 
 /// The renderers a view draws its regions with — the host's, over leaf's own —
-/// and the pictures they drew.
+/// and the pictures they drew. Main-thread, but for the answers of a renderer
+/// that draws later, which may arrive on any thread.
 final class RegionPictures {
     /// Leaf's own renderers: `math`, through leaf-math.
-    static let leafRenderers: [String: RegionRenderer] = [MathRenderer.kind: MathRenderer.render]
+    static let leafRenderers: [String: RegionRenderer] = [MathRenderer.kind: RegionRenderer(MathRenderer.render)]
+
+    /// The longest a paper sheet waits for one picture a renderer draws later.
+    static var paperWait: TimeInterval = 15
 
     /// The host's renderers, by kind. Each replaces leaf's of the same kind.
     var renderers: [String: RegionRenderer] = [:] {
         didSet { invalidate() }
     }
 
+    /// Called on the main thread when pictures a renderer drew later have
+    /// arrived, with their kinds — for the view to lay those regions out again.
+    var onArrive: ((Set<String>) -> Void)?
+
     /// Bumped whenever a picture drawn before may no longer stand, so a layout
-    /// knows not to keep rows laid out under the old one.
+    /// knows not to keep rows laid out under the old one — and an answer
+    /// asked for before is dropped.
     private(set) var generation = 0
 
-    /// The ink is resolved to its bytes when the key is made: a dynamic
-    /// colour reads differently under each appearance.
     private struct Key: Hashable {
         let kind: String
         let content: String
         let display: Bool
         let inline: Bool
         let size: CGFloat
+        /// The ink, resolved to its bytes when the key is made: a dynamic
+        /// colour reads differently under each appearance.
         let ink: [UInt8]
         let dark: Bool
+
+        /// What a picture of this region looks like whatever the context:
+        /// whose size a region drawn later keeps while it waits.
+        var shape: Shape { Shape(kind: kind, content: content, display: display, inline: inline) }
     }
 
-    private var cache: [Key: RegionPicture?] = [:]
+    private struct Shape: Hashable {
+        let kind: String
+        let content: String
+        let display: Bool
+        let inline: Bool
+    }
+
+    /// A picture asked for and not yet answered; `done` is signalled when it
+    /// is, for a sheet that waits.
+    private final class Pending {
+        let done = DispatchSemaphore(value: 0)
+    }
+
+    private enum Entry {
+        case ready(RegionPicture?)
+        case pending(Pending)
+    }
+
+    private let lock = NSLock()
+    private var cache: [Key: Entry] = [:]
+    /// The size of the last picture drawn for each region, whatever its context.
+    private var lastSize: [Shape: CGSize] = [:]
+    private var arrived: Set<String> = []
     private static let cap = 512
 
     /// The pictures of leaf's own renderers, for a layout with no view behind
@@ -178,27 +295,132 @@ final class RegionPictures {
     /// The kinds with a renderer, leaf's included.
     var kinds: Set<String> { Set(renderers.keys).union(Self.leafRenderers.keys) }
 
-    /// `region`'s picture in `context`, drawn on first use; nil for a kind
-    /// with no renderer, or a picture its renderer declined or could not draw.
-    func picture(_ region: RegionView, _ context: RegionRenderContext) -> RegionPicture? {
-        guard let render = renderer(for: region.kind) else { return nil }
+    /// `region`'s picture in `context`: drawn on first use, or — for a
+    /// renderer that draws later — asked for and stood in for until it comes.
+    /// Nil for a kind with no renderer, for a picture its renderer declined or
+    /// could not draw, and while one is awaited that has no size to keep.
+    /// `wait` waits for an awaited picture instead, as paper does; `scale` is
+    /// what an awaited picture's bitmap for the screen is made at, off the
+    /// main thread, when it arrives.
+    func picture(_ region: RegionView, _ context: RegionRenderContext, wait: Bool = false,
+                 scale: CGFloat = 0) -> RegionPicture? {
+        guard let renderer = renderer(for: region.kind) else { return nil }
         let c = context.ink.rgbaBytes
         let key = Key(kind: region.kind, content: region.content, display: region.display,
                       inline: region.inline, size: context.size, ink: [c.0, c.1, c.2, c.3], dark: context.dark)
-        if let hit = cache[key] { return hit }
-        if cache.count >= Self.cap { cache.removeAll(keepingCapacity: true) }
-        let picture = render(region, context).flatMap { p -> RegionPicture? in
-            guard p.isDrawable, !region.inline || p.width != nil else { return nil }
-            return p
+        lock.lock()
+        let entry = cache[key]
+        lock.unlock()
+        switch entry {
+        case let .ready(picture):
+            return picture
+        case let .pending(pending):
+            return wait ? awaited(key, pending) : standIn(key)
+        case nil:
+            break
         }
-        cache[key] = .some(picture)
-        return picture
+        switch renderer.body {
+        case let .now(render):
+            let picture = Self.checked(render(region, context), region)
+            store(key, .ready(picture))
+            return picture
+        case let .later(render):
+            let pending = Pending()
+            store(key, .pending(pending))
+            let asked = generation
+            render(region, context) { [weak self] answer in
+                let picture = Self.checked(answer, region)
+                // Made here, off the main thread, so the first frame that
+                // shows the picture does not draw its vectors.
+                if let picture, let w = picture.width, scale > 0 {
+                    _ = picture.screen.image(of: picture, size: CGSize(width: w, height: picture.height), scale: scale)
+                }
+                self?.answer(key, pending, picture, asked: asked)
+            }
+            return wait ? awaited(key, pending) : standIn(key)
+        }
     }
 
-    /// Forget the pictures of `kind`, or of every kind.
+    /// A picture fit to lay out: drawable, and with a width if it is inline.
+    private static func checked(_ picture: RegionPicture?, _ region: RegionView) -> RegionPicture? {
+        picture.flatMap { p in p.isDrawable && (!region.inline || p.width != nil) ? p : nil }
+    }
+
+    private func store(_ key: Key, _ entry: Entry) {
+        lock.lock()
+        defer { lock.unlock() }
+        if cache.count >= Self.cap { cache = cache.filter { if case .pending = $0.value { true } else { false } } }
+        cache[key] = entry
+        if case let .ready(picture?) = entry {
+            lastSize[key.shape] = CGSize(width: picture.width ?? 0, height: picture.height)
+        }
+    }
+
+    /// An awaited picture's answer, from any thread. Kept only if it is still
+    /// the one awaited — nothing has been redrawn since it was asked for — and
+    /// the view told, on the main thread, which kinds arrived.
+    private func answer(_ key: Key, _ pending: Pending, _ picture: RegionPicture?, asked: Int) {
+        lock.lock()
+        var kept = false
+        if asked == generation, case let .pending(awaited)? = cache[key], awaited === pending {
+            cache[key] = .ready(picture)
+            if let picture { lastSize[key.shape] = CGSize(width: picture.width ?? 0, height: picture.height) }
+            kept = true
+            arrived.insert(key.kind)
+        }
+        lock.unlock()
+        pending.done.signal()
+        guard kept else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            let kinds = self.arrived
+            self.arrived = []
+            self.lock.unlock()
+            if !kinds.isEmpty { self.onArrive?(kinds) }
+        }
+    }
+
+    /// Wait for an awaited picture, as paper does, and answer it — nil when
+    /// it did not come in time.
+    private func awaited(_ key: Key, _ pending: Pending) -> RegionPicture? {
+        let came = pending.done.wait(timeout: .now() + Self.paperWait) == .success
+        if came { pending.done.signal() } // for anyone else waiting on it
+        lock.lock()
+        defer { lock.unlock() }
+        if case let .ready(picture)? = cache[key] { return picture }
+        return nil
+    }
+
+    /// What stands for a picture not yet drawn: an empty one the size of the
+    /// last picture with the same content, so the document does not jump when
+    /// it comes, or nil — leaf's placeholder — when there was none.
+    private func standIn(_ key: Key) -> RegionPicture? {
+        lock.lock()
+        let size = lastSize[key.shape]
+        lock.unlock()
+        guard let size else { return nil }
+        return RegionPicture(width: size.width > 0 ? size.width : nil, height: size.height) { _, _ in }
+    }
+
+    /// Whether `region`'s picture in `context` is still awaited.
+    func isAwaited(_ region: RegionView, _ context: RegionRenderContext) -> Bool {
+        let c = context.ink.rgbaBytes
+        let key = Key(kind: region.kind, content: region.content, display: region.display,
+                      inline: region.inline, size: context.size, ink: [c.0, c.1, c.2, c.3], dark: context.dark)
+        lock.lock()
+        defer { lock.unlock() }
+        if case .pending? = cache[key] { return true }
+        return false
+    }
+
+    /// Forget the pictures of `kind`, or of every kind. An answer awaited for
+    /// one of them is dropped when it comes.
     func invalidate(kind: String? = nil) {
+        lock.lock()
         if let kind { cache = cache.filter { $0.key.kind != kind } } else { cache.removeAll() }
         generation += 1
+        lock.unlock()
     }
 }
 
@@ -208,13 +430,20 @@ struct RegionDrawing {
     let pictures: RegionPictures
     let open: OpenRegionLayout?
     let dark: Bool
+    /// Wait for pictures drawn later rather than stand in for them — paper.
+    let waits: Bool
+    /// The screen's scale, for a picture drawn later to make its bitmap at.
+    let scale: CGFloat
     /// The pictures' generation when this drawing was taken.
     private let generation: Int
 
-    init(pictures: RegionPictures = .leaf, open: OpenRegionLayout? = nil, dark: Bool = false) {
+    init(pictures: RegionPictures = .leaf, open: OpenRegionLayout? = nil, dark: Bool = false,
+         waits: Bool = false, scale: CGFloat = 0) {
         self.pictures = pictures
         self.open = open
         self.dark = dark
+        self.waits = waits
+        self.scale = scale
         generation = pictures.generation
     }
 
@@ -225,7 +454,8 @@ struct RegionDrawing {
         if let open, open.kind == region.kind, open.src == region.src, let picture = open.picture {
             return picture(size, ink)
         }
-        return pictures.picture(region, RegionRenderContext(size: size, ink: ink, dark: dark))
+        return pictures.picture(region, RegionRenderContext(size: size, ink: ink, dark: dark),
+                                wait: waits, scale: scale)
     }
 
     /// Whether `kind` has a renderer.
@@ -233,9 +463,11 @@ struct RegionDrawing {
 
     /// Whether every closed region draws as it did in `other`: the same
     /// renderers, with nothing redrawn since, in the same appearance. The open
-    /// region is `OpenRegionLayout.same`'s to compare.
+    /// region is `OpenRegionLayout.same`'s to compare. A picture that arrived
+    /// since is laid out by the view, from its region's row on.
     func sameClosed(as other: RegionDrawing) -> Bool {
         pictures === other.pictures && generation == other.generation && dark == other.dark
+            && waits == other.waits
     }
 }
 
@@ -338,10 +570,16 @@ struct PictureLayout {
         return CGRect(x: x, y: top + MediaMetrics.gap, width: size.width, height: size.height)
     }
 
-    /// Paint the picture into `rect` of a flipped context — see `MediaStill.draw`.
-    func draw(in rect: CGRect, ctx: CGContext) {
+    /// Paint the picture into `rect` of a flipped context — see
+    /// `MediaStill.draw`: on the screen from its kept bitmap, on paper as
+    /// vectors, so a PDF gets paths.
+    func draw(in rect: CGRect, ctx: CGContext, screen: Bool) {
         ctx.saveGState()
-        picture.draw(ctx, rect)
+        if screen {
+            picture.drawOnScreen(ctx, rect)
+        } else {
+            picture.draw(ctx, rect)
+        }
         ctx.restoreGState()
     }
 }
