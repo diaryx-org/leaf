@@ -1536,9 +1536,11 @@ impl Doc {
     }
 
     /// Name the regions the frontend edits itself rather than as their
-    /// source: [`MATH_REGION`](wysiwyg::MATH_REGION) for formulas, and
+    /// source: [`MATH_REGION`](wysiwyg::MATH_REGION) for formulas,
     /// [`FENCE_REGION`](wysiwyg::FENCE_REGION) with a language for that
-    /// language's fenced code blocks (`fence:mermaid`). Each owned region is
+    /// language's fenced code blocks (`fence:mermaid`), and
+    /// [`DIRECTIVE_REGION`](wysiwyg::DIRECTIVE_REGION) with a name for that
+    /// name's leaf directives (`directive:embed`). Each owned region is
     /// published in [`VisualMap::regions`](wysiwyg::VisualMap::regions), and
     /// its edits come back through [`Doc::edit`] on its content range.
     ///
@@ -1546,6 +1548,9 @@ impl Doc {
     /// markup modes instead of revealing its TeX, and an owned fence is one
     /// placeholder row the frontend draws its own view over.
     /// [`MarkupMode::Full`] still reveals the caret's line, regions included.
+    /// A leaf directive is a placeholder row whether it is owned or not, so
+    /// owning one changes no rows: it only publishes the region, whose content
+    /// is the directive's whole source. `directive:page-break` is never one.
     /// Replaces the whole set; an empty list owns nothing, the default.
     pub fn set_owned_regions<S: AsRef<str>>(&mut self, kinds: &[S]) {
         let owned: std::collections::BTreeSet<String> =
@@ -22651,6 +22656,54 @@ mod tests {
         assert_eq!(r.content, 11..11);
         d.edit(r.content.start, r.content.end, "graph LR\n");
         assert_eq!(d.source, "```mermaid\ngraph LR\n```\n\nend\n");
+    }
+
+    #[test]
+    fn an_owned_directive_is_a_region_of_its_whole_source() {
+        let src = "intro\n\n::embed[Card]{src=\"a.md\" wide}\n\n::toc\n\n::page-break\n\nend\n";
+        let mut d = doc_in(View::Wysiwyg, "directive_owned", src);
+        caret_at(&mut d, "end");
+        let before = drawn_rows(&d);
+        assert!(d.vmap.regions.is_empty());
+        d.set_owned_regions(&["directive:embed", "directive:page-break"]);
+        caret_at(&mut d, "end");
+        assert_eq!(
+            drawn_rows(&d),
+            before,
+            "owning a directive changed its rows"
+        );
+        let [r] = d
+            .vmap
+            .regions
+            .clone()
+            .try_into()
+            .unwrap_or_else(|v| panic!("one region: {v:?}"));
+        assert_eq!(r.kind, "directive:embed");
+        assert!(!r.inline && !r.display);
+        assert_eq!(&d.source[r.src..r.end], "::embed[Card]{src=\"a.md\" wide}");
+        assert_eq!(r.content, r.src..r.end);
+        let mark = r.directive.as_ref().expect("its directive");
+        assert_eq!(mark.name, "embed");
+        assert_eq!(mark.label, "Card");
+        assert_eq!(
+            mark.attrs,
+            vec![
+                ("src".to_string(), Some("a.md".to_string())),
+                ("wide".to_string(), Some(String::new()))
+            ]
+        );
+        assert_eq!(r.rows_span, d.vmap.directives[0].rows_span);
+        // The caret rests either side of it, as before.
+        d.place_caret(r.src, false);
+        d.move_right(false);
+        assert_eq!(d.caret, r.end);
+        // An edit through its content is an edit of the directive.
+        let at = r.src + "::embed[".len();
+        d.edit(at, at + 4, "Album");
+        d.build_visual(80);
+        let r2 = d.vmap.regions[0].clone();
+        assert_eq!(r2.directive.expect("its directive").label, "Album");
+        assert_eq!(&d.source[r2.content], "::embed[Album]{src=\"a.md\" wide}");
     }
 
     #[test]

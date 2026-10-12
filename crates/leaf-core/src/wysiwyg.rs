@@ -286,12 +286,14 @@ pub struct MathMark {
 }
 
 /// A block the frontend edits itself, standing as one placeholder row — the
-/// fence of a language it named in [`Surface::owned_regions`]. Relative, like
-/// [`MathMark`], so a reused block's mark needs no shifting. Math does not use
-/// this: its regions come from its [`MathMark`]s, which every formula has.
+/// fence of a language, or the leaf directive of a name, it named in
+/// [`Surface::owned_regions`]. Relative, like [`MathMark`], so a reused block's
+/// mark needs no shifting. Math does not use this: its regions come from its
+/// [`MathMark`]s, which every formula has.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RegionMark {
-    /// The region's kind, as the frontend named it: `fence:mermaid`.
+    /// The region's kind, as the frontend named it: `fence:mermaid`,
+    /// `directive:embed`.
     pub kind: String,
     /// The node's length in bytes, fences included.
     pub len: usize,
@@ -1774,6 +1776,15 @@ pub const MATH_REGION: &str = "math";
 /// The prefix of a fenced code block's region kind, before its language:
 /// `fence:mermaid`.
 pub const FENCE_REGION: &str = "fence:";
+
+/// The prefix of a leaf directive's region kind, before its name:
+/// `directive:embed`. `directive:page-break` is never a region: the name is
+/// leaf's, and a page break is a layout fact rather than a picture.
+pub const DIRECTIVE_REGION: &str = "directive:";
+
+/// The label a leaf directive's placeholder row starts with — see
+/// [`Builder::block_directive`].
+const DIRECTIVE_ATOM: char = '⧉';
 
 /// The content of fenced code block `span`: the lines between its opening
 /// fence and its closing one, each with its newline — empty for a fence with
@@ -5218,7 +5229,7 @@ impl Builder<'_> {
             .max(1);
         let style = Style::default().role(Role::Image);
         let mut glyphs = pf.to_vec();
-        for ch in format!("⧉ {shown}").chars() {
+        for ch in format!("{DIRECTIVE_ATOM} {shown}").chars() {
             glyphs.push(Glyph {
                 ch,
                 style,
@@ -5229,8 +5240,19 @@ impl Builder<'_> {
         // End past the directive so the caret has a stop after it — the same
         // reason `block_media` anchors its row at the image's end.
         self.push_row_at(glyphs, end);
+        // A directive of a name the frontend draws itself is a region too,
+        // its whole source its content — what its editor reads and splices.
+        let kind = format!("{DIRECTIVE_REGION}{name}");
+        let region =
+            (name != crate::doc::PAGE_BREAK && self.surface.owns(&kind)).then(|| RegionMark {
+                kind,
+                len: end - start,
+                content_at: 0,
+                content_len: end - start,
+            });
         if let Some(row) = self.rows.last_mut() {
             row.directive = true;
+            row.region = region;
             row.leaf_directive = Some(DirectiveMark {
                 name,
                 attrs,
@@ -6392,10 +6414,17 @@ pub struct MathInfo {
 /// draws over it; edits come back through [`crate::Doc::edit`] on `content`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RegionInfo {
-    /// [`MATH_REGION`], or [`FENCE_REGION`] and a language: `fence:mermaid`.
+    /// [`MATH_REGION`], [`FENCE_REGION`] and a language (`fence:mermaid`), or
+    /// [`DIRECTIVE_REGION`] and a name (`directive:embed`).
     pub kind: String,
     /// An inline formula's atom, rather than a block on rows of its own.
     pub inline: bool,
+    /// A formula set in display style rather than text style — see
+    /// [`MathMark::display`]. False for every other kind.
+    pub display: bool,
+    /// A leaf directive's name, attributes and label, as its
+    /// [`DirectiveInfo`] carries them; `None` for every other kind.
+    pub directive: Option<DirectiveMark>,
     /// The rows it stands on: the atom's row, or a block's placeholder row and
     /// any fillers under it.
     pub rows_span: Range<usize>,
@@ -6420,6 +6449,8 @@ fn region_spans(rows: &[VRow]) -> Vec<RegionInfo> {
             all.push(RegionInfo {
                 kind: MATH_REGION.to_string(),
                 inline: m.glyph.is_some(),
+                display: m.display,
+                directive: None,
                 rows_span: i..i + m.rows.max(1),
                 src,
                 end: src + m.len,
@@ -6430,12 +6461,16 @@ fn region_spans(rows: &[VRow]) -> Vec<RegionInfo> {
             let src = row
                 .glyphs
                 .iter()
-                .find(|g| g.ch == REGION_ATOM)
+                .find(|g| g.ch == REGION_ATOM || g.ch == DIRECTIVE_ATOM)
                 .map_or(row.end_src, |g| g.src);
+            // A directive stands on as many rows as a terminal reserved for it.
+            let rows = row.leaf_directive.as_ref().map_or(1, |d| d.rows.max(1));
             all.push(RegionInfo {
                 kind: mark.kind.clone(),
                 inline: false,
-                rows_span: i..i + 1,
+                display: false,
+                directive: row.leaf_directive.clone(),
+                rows_span: i..i + rows,
                 src,
                 end: src + mark.len,
                 content: src + mark.content_at..src + mark.content_at + mark.content_len,
