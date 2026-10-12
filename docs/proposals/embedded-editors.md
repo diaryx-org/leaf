@@ -249,6 +249,58 @@ parses again. Parsing costs 4–17 ms, now off the main thread, so it was not
 worth the change. The first parse in a process also loads the system's fonts
 (25–180 ms); that too now happens on the queue.
 
+Steps 8–10 are built, on `mermaid-native-spike`:
+
+- **Inline directives** (`f8c9d3f`). An owned `:name[label]{attrs}` on a
+  surface that paints in a line is one atom glyph and an inline
+  `directive:<name>` region with its name, attributes, label and ranges; its
+  content is its whole source. Android and the terminal own no regions and
+  draw them as before.
+- **The picture session** (`2a3ff6f`), on Swift and the web, with every item
+  of [Editors a host draws as pictures](#editors-a-host-draws-as-pictures).
+- **The date chip** (`6eb4ebb`), in the leaf-editor app and the web demo.
+
+Decided or changed while building them:
+
+- **Math's typing coalesces.** A run of typing in a formula is one undo step,
+  as the protocol now says for every picture session, where it used to be one
+  step a keystroke. That is a change to math beyond its caret, made on
+  purpose; a key in between still splits the steps.
+- **`RegionHost.view` (Swift).** The caret's and region's rects are in the
+  text view's coordinates, so the host is also given the view, weakly, to
+  anchor its popover to.
+- **The caret on Apple is the system's**, placed at the session's caret:
+  `NSTextInsertionIndicator` on the Mac (leaf's drawn bar before macOS 14),
+  and UIKit's caret through `caretRect(for:)` on iOS, which no longer clears
+  its tint while a formula is open. Leaf draws the selection rects and the
+  composition.
+- **IME on the web** composes in a hidden `textarea` at the caret, since
+  composing into the document's own element would push the picture aside.
+- **Key names.** Plain Home and End are line ends on the web, everywhere;
+  ⌘↑ ⌘↓ and Ctrl+Home/End are the region's ends. On the Mac, Home and End
+  (`scrollToBeginningOfDocument:`) are the region's ends, as AppKit binds
+  them. Math answers the new keys by passing them on, so they leave a formula
+  and act on the document, as they did before they had names.
+- **Accessibility.** The open session's value is what `accessibilitySelectedText`
+  answers on the Mac, and is announced on opening and after each edit on both
+  Apple platforms; on the web it is the region's label and a polite live
+  region.
+
+Not checked by hand: opening a chip, typing, undo, and the Japanese input
+source in the Mac app. Nothing available to the session could type into a
+Mac app — the computer-use tools were absent, System Events keystrokes are
+off limits, and events posted to the process do not reach its window. The
+protocol, composition and undo are covered by unit tests through the view's
+own text-input methods (`PictureSessionTests`), and the chips were checked
+drawn in the app beside Japanese text. The web chip was driven in headless
+Chrome through real input events. The date chip's own logic has no unit
+tests: it lives in the app, which has none.
+
+Left: the date chip's logic tested in a package of its own; IME on iOS
+inside a picture session (built as on the Mac, not exercised); a session
+that opts in to composition itself; Android and the terminal still have no
+region protocol.
+
 ## The problem
 
 Some parts of a document are a second document in another language: a
