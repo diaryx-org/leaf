@@ -206,11 +206,48 @@ Left:
 - On the web, the placeholder shows for a moment when the Mermaid editor
   closes, while the new picture renders. The renderer could keep the previous
   picture until the new one arrives.
-- A Swift renderer runs on the main thread. A large flowchart takes 230–340
-  ms, so the first frame that shows one stalls for that long.
 - Font fallback for emoji and other scripts in resvg, as before.
 - A second Rust editor would need `RegionSlot.edits` to learn its kind. Today
   it knows only `math`, through `editsFormulasAsStructure`.
+
+**Mermaid's cost on the Mac** (`e22ae47`, `c850508`). The 230–340 ms
+reported for a large flowchart was mmdr's layout, much of it the debug build.
+Label measuring was small, and the SVG round trip smaller. mmdr layout, as the
+`timing` example in `crates/leaf-mermaid` measures it, Apple M-series:
+
+| Diagram | Debug before | Release before | After (debug or release) |
+|---|---|---|---|
+| 20 nodes, 19 edges, a cycle | 1077 ms | 147–174 ms | 40–50 ms |
+| 60 nodes, 87 edges | 40.4 s | 8.4 s | 1.55–1.6 s |
+| every edge kind | — | 101 ms | 38 ms |
+
+What took it there:
+
+- **mmdr.** Its routing tested every candidate path against every node and
+  every other segment exactly, allocating as it went. It now rejects by
+  bounds first. Output is byte-identical over the spike's corpus. The change
+  is in the fork's `diaryx` branch (`e680063`); it belongs upstream too.
+- **Debug builds** of this workspace optimise mmdr.
+- **Labels.** A render asks the host about each label once (412 asks became
+  76 for the 60-node chart). The app keeps a `CTFont` per thread and every
+  width. Core Text was 6–10 ms of a sequence diagram's 8 ms render, and is
+  now under 0.1 ms on a repeat render.
+- **Off the main thread.** A Swift renderer may answer later
+  (`RegionRenderer(later:)`), as a web one may with a promise. The region
+  keeps the size of its last picture with the same content, else the
+  placeholder, until the answer comes. Then only that region is laid out
+  again. A stale answer is dropped. Paper waits for the answer. The app renders
+  Mermaid, parses the SVG and makes the screen bitmap on its queue. Sampled
+  while it opened the 60-node chart, the main thread was idle for 1510 of 1809
+  samples.
+- **Repaints.** A block picture is drawn on screen from a kept bitmap: 59 ms of
+  vectors became a 12 ms blit for the 60-node chart, 3.1 became 1.7 ms for the
+  20-node one. Paper sheets share the view's pictures, and print vectors.
+
+Not done: a vector list straight from mmdr, in place of SVG text that resvg
+parses again. Parsing costs 4–17 ms, now off the main thread, so it was not
+worth the change. The first parse in a process also loads the system's fonts
+(25–180 ms); that too now happens on the queue.
 
 ## The problem
 
