@@ -13,7 +13,7 @@ crate-type = ["staticlib", "cdylib", "lib"]
 
 [dependencies]
 # The forked gpui-mobile platform layer, upgraded to gpui bd72919.
-gpui-mobile = { git = "https://github.com/adammharris/gpui-mobile", branch = "upgrade-gpui-bd72919", rev = "47ab1279b78304067749ab92b7b68916a3bed1a9" }
+gpui-mobile = { git = "https://github.com/adammharris/gpui-mobile", rev = "47ab1279b78304067749ab92b7b68916a3bed1a9" }
 # The embeddable editor widget WITHOUT its desktop backend (no gpui_platform).
 leaf-gpui = { path = "../../crates/leaf-gpui", default-features = false }
 # The document model — to seed a sample buffer so the editing surface has content.
